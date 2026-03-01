@@ -1159,6 +1159,14 @@ impl SimpleBackend {
             elide_dead_struct_allocs(func_ir);
         }
         inline_functions(&mut ir);
+        // Conditional trace elimination: skip emitting trace_enter/trace_exit calls
+        // when tracing is disabled. Each guarded call site emits 2 trace function calls
+        // (enter + exit); eliminating them saves ~10ns per call in release builds.
+        // Default: emit traces in debug builds, skip in release builds.
+        let emit_traces = env_setting("MOLT_BACKEND_EMIT_TRACES")
+            .as_deref()
+            .map(parse_truthy_env)
+            .unwrap_or(cfg!(debug_assertions));
         let defined_functions: HashSet<String> =
             ir.functions.iter().map(|func| func.name.clone()).collect();
         let mut task_kinds: HashMap<String, TrampolineKind> = HashMap::new();
@@ -1258,6 +1266,7 @@ impl SimpleBackend {
                 &task_kinds,
                 &task_closure_sizes,
                 &defined_functions,
+                emit_traces,
             );
         }
         let product = self.module.finish();
@@ -1607,6 +1616,7 @@ impl SimpleBackend {
         task_kinds: &HashMap<String, TrampolineKind>,
         task_closure_sizes: &HashMap<String, i64>,
         defined_functions: &HashSet<String>,
+        emit_traces: bool,
     ) {
         let mut builder_ctx = FunctionBuilderContext::new();
         self.module.clear_context(&mut self.ctx);
@@ -8882,27 +8892,31 @@ impl SimpleBackend {
                     let _ = builder.ins().call(local_callee, &[count_val]);
                 }
                 "trace_enter_slot" => {
-                    let code_id = op.value.unwrap_or(0);
-                    let code_id_val = builder.ins().iconst(types::I64, code_id);
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_trace_enter_slot", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let _ = builder.ins().call(local_callee, &[code_id_val]);
+                    if emit_traces {
+                        let code_id = op.value.unwrap_or(0);
+                        let code_id_val = builder.ins().iconst(types::I64, code_id);
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_trace_enter_slot", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let _ = builder.ins().call(local_callee, &[code_id_val]);
+                    }
                 }
                 "trace_exit" => {
-                    let mut sig = self.module.make_signature();
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_trace_exit", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let _ = builder.ins().call(local_callee, &[]);
+                    if emit_traces {
+                        let mut sig = self.module.make_signature();
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_trace_exit", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let _ = builder.ins().call(local_callee, &[]);
+                    }
                 }
                 "frame_locals_set" => {
                     let arg_names = op.args.as_deref().unwrap_or(&[]);
@@ -9150,12 +9164,16 @@ impl SimpleBackend {
 
                     builder.switch_to_block(call_block);
                     builder.seal_block(call_block);
-                    let code_id = op.value.unwrap_or(0);
-                    let code_id_val = builder.ins().iconst(types::I64, code_id);
-                    let _ = builder.ins().call(trace_enter_local, &[code_id_val]);
+                    if emit_traces {
+                        let code_id = op.value.unwrap_or(0);
+                        let code_id_val = builder.ins().iconst(types::I64, code_id);
+                        let _ = builder.ins().call(trace_enter_local, &[code_id_val]);
+                    }
                     let call = builder.ins().call(local_callee, &args);
                     let res = builder.inst_results(call)[0];
-                    let _ = builder.ins().call(trace_exit_local, &[]);
+                    if emit_traces {
+                        let _ = builder.ins().call(trace_exit_local, &[]);
+                    }
                     let _ = builder.ins().call(guard_exit_local, &[]);
                     for name in &origin_obj_cleanup {
                         if arg_cleanup_names.contains(name) {
@@ -9484,10 +9502,14 @@ impl SimpleBackend {
 
                     builder.switch_to_block(then_call_block);
                     builder.seal_block(then_call_block);
-                    let _ = builder.ins().call(trace_enter_local, &[*callee_bits]);
+                    if emit_traces {
+                        let _ = builder.ins().call(trace_enter_local, &[*callee_bits]);
+                    }
                     let direct_call = builder.ins().call(local_callee, &args);
                     let direct_res = builder.inst_results(direct_call)[0];
-                    let _ = builder.ins().call(trace_exit_local, &[]);
+                    if emit_traces {
+                        let _ = builder.ins().call(trace_exit_local, &[]);
+                    }
                     let _ = builder.ins().call(guard_exit_local, &[]);
                     jump_block(&mut builder, merge_block, &[direct_res]);
 
@@ -9509,11 +9531,15 @@ impl SimpleBackend {
 
                     builder.switch_to_block(else_call_block);
                     builder.seal_block(else_call_block);
-                    let _ = builder.ins().call(trace_enter_local, &[*callee_bits]);
+                    if emit_traces {
+                        let _ = builder.ins().call(trace_enter_local, &[*callee_bits]);
+                    }
                     let sig_ref = builder.import_signature(sig);
                     let fallback_call = builder.ins().call_indirect(sig_ref, fn_ptr, &args);
                     let fallback_res = builder.inst_results(fallback_call)[0];
-                    let _ = builder.ins().call(trace_exit_local, &[]);
+                    if emit_traces {
+                        let _ = builder.ins().call(trace_exit_local, &[]);
+                    }
                     let _ = builder.ins().call(guard_exit_local, &[]);
                     jump_block(&mut builder, merge_block, &[fallback_res]);
 
@@ -9854,13 +9880,17 @@ impl SimpleBackend {
 
                     builder.switch_to_block(bound_call_block);
                     builder.seal_block(bound_call_block);
-                    let _ = builder.ins().call(trace_enter_local, &[bound_func_bits]);
+                    if emit_traces {
+                        let _ = builder.ins().call(trace_enter_local, &[bound_func_bits]);
+                    }
                     let bound_call =
                         builder
                             .ins()
                             .call_indirect(bound_sig_ref, bound_fn_ptr, &bound_args);
                     let bound_res = builder.inst_results(bound_call)[0];
-                    let _ = builder.ins().call(trace_exit_local, &[]);
+                    if emit_traces {
+                        let _ = builder.ins().call(trace_exit_local, &[]);
+                    }
                     let _ = builder.ins().call(guard_exit_local, &[]);
                     jump_block(&mut builder, merge_block, &[bound_res]);
 
@@ -9931,13 +9961,17 @@ impl SimpleBackend {
 
                     builder.switch_to_block(bound_call_block);
                     builder.seal_block(bound_call_block);
-                    let _ = builder.ins().call(trace_enter_local, &[bound_func_bits]);
+                    if emit_traces {
+                        let _ = builder.ins().call(trace_enter_local, &[bound_func_bits]);
+                    }
                     let bound_call =
                         builder
                             .ins()
                             .call_indirect(bound_sig_ref, bound_fn_ptr, &bound_args);
                     let bound_res = builder.inst_results(bound_call)[0];
-                    let _ = builder.ins().call(trace_exit_local, &[]);
+                    if emit_traces {
+                        let _ = builder.ins().call(trace_exit_local, &[]);
+                    }
                     let _ = builder.ins().call(guard_exit_local, &[]);
                     jump_block(&mut builder, merge_block, &[bound_res]);
 
@@ -9970,13 +10004,17 @@ impl SimpleBackend {
 
                     builder.switch_to_block(bound_call_block);
                     builder.seal_block(bound_call_block);
-                    let _ = builder.ins().call(trace_enter_local, &[bound_func_bits]);
+                    if emit_traces {
+                        let _ = builder.ins().call(trace_enter_local, &[bound_func_bits]);
+                    }
                     let bound_call =
                         builder
                             .ins()
                             .call_indirect(bound_sig_ref, bound_fn_ptr, &bound_args);
                     let bound_res = builder.inst_results(bound_call)[0];
-                    let _ = builder.ins().call(trace_exit_local, &[]);
+                    if emit_traces {
+                        let _ = builder.ins().call(trace_exit_local, &[]);
+                    }
                     let _ = builder.ins().call(guard_exit_local, &[]);
                     jump_block(&mut builder, merge_block, &[bound_res]);
 
@@ -10022,13 +10060,17 @@ impl SimpleBackend {
 
                     builder.switch_to_block(bound_call_block);
                     builder.seal_block(bound_call_block);
-                    let _ = builder.ins().call(trace_enter_local, &[bound_func_bits]);
+                    if emit_traces {
+                        let _ = builder.ins().call(trace_enter_local, &[bound_func_bits]);
+                    }
                     let bound_call =
                         builder
                             .ins()
                             .call_indirect(bound_sig_ref, bound_fn_ptr, &bound_args);
                     let bound_res = builder.inst_results(bound_call)[0];
-                    let _ = builder.ins().call(trace_exit_local, &[]);
+                    if emit_traces {
+                        let _ = builder.ins().call(trace_exit_local, &[]);
+                    }
                     let _ = builder.ins().call(guard_exit_local, &[]);
                     jump_block(&mut builder, merge_block, &[bound_res]);
 
@@ -10079,13 +10121,17 @@ impl SimpleBackend {
 
                     builder.switch_to_block(bound_call_block);
                     builder.seal_block(bound_call_block);
-                    let _ = builder.ins().call(trace_enter_local, &[bound_func_bits]);
+                    if emit_traces {
+                        let _ = builder.ins().call(trace_enter_local, &[bound_func_bits]);
+                    }
                     let bound_call =
                         builder
                             .ins()
                             .call_indirect(bound_sig_ref, bound_fn_ptr, &bound_args);
                     let bound_res = builder.inst_results(bound_call)[0];
-                    let _ = builder.ins().call(trace_exit_local, &[]);
+                    if emit_traces {
+                        let _ = builder.ins().call(trace_exit_local, &[]);
+                    }
                     let _ = builder.ins().call(guard_exit_local, &[]);
                     jump_block(&mut builder, merge_block, &[bound_res]);
 
@@ -10436,10 +10482,14 @@ impl SimpleBackend {
 
                     builder.switch_to_block(func_call_block);
                     builder.seal_block(func_call_block);
-                    let _ = builder.ins().call(trace_enter_local, &[*func_bits]);
+                    if emit_traces {
+                        let _ = builder.ins().call(trace_enter_local, &[*func_bits]);
+                    }
                     let call = builder.ins().call_indirect(sig_ref, fn_ptr, &args);
                     let res = builder.inst_results(call)[0];
-                    let _ = builder.ins().call(trace_exit_local, &[]);
+                    if emit_traces {
+                        let _ = builder.ins().call(trace_exit_local, &[]);
+                    }
                     let _ = builder.ins().call(guard_exit_local, &[]);
                     jump_block(&mut builder, merge_block, &[res]);
 

@@ -463,7 +463,11 @@ pub(crate) fn alloc_object_zeroed_with_pool(
     type_id: u32,
 ) -> *mut u8 {
     crate::gil_assert();
-    let header_ptr = if type_id == TYPE_ID_OBJECT {
+    let pool_eligible = matches!(
+        type_id,
+        TYPE_ID_OBJECT | TYPE_ID_BOUND_METHOD | TYPE_ID_ITER
+    );
+    let header_ptr = if pool_eligible {
         object_pool_take(_py, total_size)
     } else {
         None
@@ -543,28 +547,38 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
             total_size, expected
         );
     }
-    let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
-    unsafe {
-        let ptr = std::alloc::alloc(layout);
-        if ptr.is_null() {
-            if debug_oom() {
-                eprintln!(
-                    "molt OOM alloc_object type_id={} total_size={}",
-                    type_id, total_size
-                );
-            }
-            return std::ptr::null_mut();
+    // Try the object pool for fixed-size high-churn types (bound methods,
+    // iterators). These are allocated/freed once per call or loop iteration.
+    let pool_eligible = matches!(type_id, TYPE_ID_BOUND_METHOD | TYPE_ID_ITER);
+    let header_ptr = if pool_eligible {
+        object_pool_take(_py, total_size)
+    } else {
+        None
+    };
+    let header_ptr = header_ptr.unwrap_or_else(|| {
+        let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
+        unsafe { std::alloc::alloc(layout) }
+    });
+    if header_ptr.is_null() {
+        if debug_oom() {
+            eprintln!(
+                "molt OOM alloc_object type_id={} total_size={}",
+                type_id, total_size
+            );
         }
-        profile_hit(_py, &ALLOC_COUNT);
-        profile_alloc_type(_py, type_id);
-        let header = ptr as *mut MoltHeader;
+        return std::ptr::null_mut();
+    }
+    profile_hit(_py, &ALLOC_COUNT);
+    profile_alloc_type(_py, type_id);
+    unsafe {
+        let header = header_ptr as *mut MoltHeader;
         (*header).type_id = type_id;
         (*header).ref_count.store(1, AtomicOrdering::Relaxed);
         (*header).poll_fn = 0;
         (*header).state = 0;
         (*header).size = total_size;
         (*header).flags = 0;
-        ptr.add(std::mem::size_of::<MoltHeader>())
+        header_ptr.add(std::mem::size_of::<MoltHeader>())
     }
 }
 
@@ -1559,8 +1573,10 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             }
             release_ptr(ptr);
             let total_size = header.size;
-            let should_pool = header.type_id == TYPE_ID_OBJECT
-                && object_pool_put(py, total_size, header_ptr as *mut u8);
+            let should_pool = matches!(
+                header.type_id,
+                TYPE_ID_OBJECT | TYPE_ID_BOUND_METHOD | TYPE_ID_ITER
+            ) && object_pool_put(py, total_size, header_ptr as *mut u8);
             if should_pool {
                 return;
             }
