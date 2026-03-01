@@ -117,8 +117,60 @@ fn json_encode_basestring_impl(value: &str, ensure_ascii: bool) -> String {
             }
         }
     } else {
-        // ensure_ascii mode — must escape all non-ASCII, no SIMD shortcut
-        for ch in value.chars() {
+        // ensure_ascii mode — SIMD scan for safe ASCII runs, escape everything else.
+        // Safe: 0x20 <= byte <= 0x7E && byte != '"' && byte != '\\'
+        let mut i = 0usize;
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            unsafe {
+                use std::arch::aarch64::*;
+                let lo_bound = vdupq_n_u8(0x20);
+                let hi_bound = vdupq_n_u8(0x7E);
+                let quote = vdupq_n_u8(b'"');
+                let backslash = vdupq_n_u8(b'\\');
+                while i + 16 <= bytes.len() {
+                    let chunk = vld1q_u8(bytes.as_ptr().add(i));
+                    let ge_lo = vcgeq_u8(chunk, lo_bound);
+                    let le_hi = vcleq_u8(chunk, hi_bound);
+                    let not_quote = vmvnq_u8(vceqq_u8(chunk, quote));
+                    let not_bs = vmvnq_u8(vceqq_u8(chunk, backslash));
+                    let safe = vandq_u8(vandq_u8(ge_lo, le_hi), vandq_u8(not_quote, not_bs));
+                    if vminvq_u8(safe) == 0xFF {
+                        out.push_str(std::str::from_utf8_unchecked(&bytes[i..i + 16]));
+                        i += 16;
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            unsafe {
+                use std::arch::x86_64::*;
+                let lo_bound = _mm_set1_epi8(0x1F);
+                let hi_bound = _mm_set1_epi8(0x7F_u8 as i8);
+                let quote = _mm_set1_epi8(b'"' as i8);
+                let backslash = _mm_set1_epi8(b'\\' as i8);
+                while i + 16 <= bytes.len() {
+                    let chunk = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
+                    let gt_lo = _mm_cmpgt_epi8(chunk, lo_bound);
+                    let lt_hi = _mm_cmpgt_epi8(hi_bound, chunk);
+                    let not_quote = _mm_andnot_si128(_mm_cmpeq_epi8(chunk, quote), _mm_set1_epi8(-1));
+                    let not_bs = _mm_andnot_si128(_mm_cmpeq_epi8(chunk, backslash), _mm_set1_epi8(-1));
+                    let safe = _mm_and_si128(_mm_and_si128(gt_lo, lt_hi), _mm_and_si128(not_quote, not_bs));
+                    if _mm_movemask_epi8(safe) == 0xFFFF {
+                        out.push_str(std::str::from_utf8_unchecked(&bytes[i..i + 16]));
+                        i += 16;
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+
+        for ch in value[i..].chars() {
             let code = ch as u32;
             match ch {
                 '"' => out.push_str("\\\""),
@@ -166,6 +218,8 @@ fn json_scanstring_decode(
     end: usize,
     strict: bool,
 ) -> Result<(String, usize), (String, usize)> {
+    let bytes = text.as_bytes();
+    // Use byte offsets for the SIMD fast path, converting to char offsets for escape handling
     let chars: Vec<char> = text.chars().collect();
     let len = chars.len();
     if end > len {
@@ -173,6 +227,67 @@ fn json_scanstring_decode(
     }
     let mut idx = end;
     let mut out = String::new();
+
+    // SIMD fast path: scan for safe ASCII bytes (not '"', not '\\', not control chars)
+    // and bulk-copy them. This is the common case for JSON string values.
+    if idx < len {
+        // Convert char offset to byte offset for SIMD scanning
+        let byte_start: usize = chars[..idx].iter().map(|c| c.len_utf8()).sum();
+        let mut bi = byte_start;
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            unsafe {
+                use std::arch::aarch64::*;
+                let lo_bound = vdupq_n_u8(0x20);
+                let hi_bound = vdupq_n_u8(0x7E);
+                let quote = vdupq_n_u8(b'"');
+                let backslash = vdupq_n_u8(b'\\');
+                while bi + 16 <= bytes.len() {
+                    let chunk = vld1q_u8(bytes.as_ptr().add(bi));
+                    let ge_lo = vcgeq_u8(chunk, lo_bound);
+                    let le_hi = vcleq_u8(chunk, hi_bound);
+                    let not_quote = vmvnq_u8(vceqq_u8(chunk, quote));
+                    let not_bs = vmvnq_u8(vceqq_u8(chunk, backslash));
+                    let safe = vandq_u8(vandq_u8(ge_lo, le_hi), vandq_u8(not_quote, not_bs));
+                    if vminvq_u8(safe) == 0xFF {
+                        out.push_str(std::str::from_utf8_unchecked(&bytes[bi..bi + 16]));
+                        bi += 16;
+                        idx += 16; // All safe ASCII, so 1 byte = 1 char
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            unsafe {
+                use std::arch::x86_64::*;
+                let lo_bound = _mm_set1_epi8(0x1F);
+                let hi_bound = _mm_set1_epi8(0x7F_u8 as i8);
+                let quote = _mm_set1_epi8(b'"' as i8);
+                let backslash = _mm_set1_epi8(b'\\' as i8);
+                while bi + 16 <= bytes.len() {
+                    let chunk = _mm_loadu_si128(bytes.as_ptr().add(bi) as *const __m128i);
+                    let gt_lo = _mm_cmpgt_epi8(chunk, lo_bound);
+                    let lt_hi = _mm_cmpgt_epi8(hi_bound, chunk);
+                    let not_quote = _mm_andnot_si128(_mm_cmpeq_epi8(chunk, quote), _mm_set1_epi8(-1));
+                    let not_bs = _mm_andnot_si128(_mm_cmpeq_epi8(chunk, backslash), _mm_set1_epi8(-1));
+                    let safe = _mm_and_si128(_mm_and_si128(gt_lo, lt_hi), _mm_and_si128(not_quote, not_bs));
+                    if _mm_movemask_epi8(safe) == 0xFFFF {
+                        out.push_str(std::str::from_utf8_unchecked(&bytes[bi..bi + 16]));
+                        bi += 16;
+                        idx += 16;
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    // Continue with scalar char-by-char processing from where SIMD left off
     while idx < len {
         let ch = chars[idx];
         if ch == '"' {
