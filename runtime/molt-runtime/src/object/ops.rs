@@ -20790,6 +20790,10 @@ pub extern "C" fn molt_string_isdigit(hay_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            // SIMD fast path: pure-ASCII strings use bulk digit range check
+            if hay_bytes.is_ascii() {
+                return MoltObject::from_bool(simd_is_all_ascii_digit(hay_bytes)).bits();
+            }
             let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
                 return MoltObject::from_bool(false).bits();
             };
@@ -20818,6 +20822,10 @@ pub extern "C" fn molt_string_isdecimal(hay_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            // SIMD fast path: ASCII decimals are exactly '0'-'9'
+            if hay_bytes.is_ascii() {
+                return MoltObject::from_bool(simd_is_all_ascii_digit(hay_bytes)).bits();
+            }
             let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
                 return MoltObject::from_bool(false).bits();
             };
@@ -20922,6 +20930,10 @@ pub extern "C" fn molt_string_isalpha(hay_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            // SIMD fast path: pure-ASCII strings use bulk alpha range check
+            if hay_bytes.is_ascii() {
+                return MoltObject::from_bool(simd_is_all_ascii_alpha(hay_bytes)).bits();
+            }
             let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
                 return MoltObject::from_bool(false).bits();
             };
@@ -20950,6 +20962,10 @@ pub extern "C" fn molt_string_isalnum(hay_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            // SIMD fast path: pure-ASCII strings use bulk alnum range check
+            if hay_bytes.is_ascii() {
+                return MoltObject::from_bool(simd_is_all_ascii_alnum(hay_bytes)).bits();
+            }
             let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
                 return MoltObject::from_bool(false).bits();
             };
@@ -20978,6 +20994,12 @@ pub extern "C" fn molt_string_islower(hay_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            // SIMD fast path for pure-ASCII: no uppercase letters + has lowercase
+            if hay_bytes.is_ascii() {
+                let has_lower = hay_bytes.iter().any(|b| b.is_ascii_lowercase());
+                let has_upper = simd_has_any_ascii_upper(hay_bytes);
+                return MoltObject::from_bool(has_lower && !has_upper).bits();
+            }
             let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
                 return MoltObject::from_bool(false).bits();
             };
@@ -21008,6 +21030,12 @@ pub extern "C" fn molt_string_isupper(hay_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            // SIMD fast path for pure-ASCII: no lowercase letters + has uppercase
+            if hay_bytes.is_ascii() {
+                let has_upper = hay_bytes.iter().any(|b| b.is_ascii_uppercase());
+                let has_lower = simd_has_any_ascii_lower(hay_bytes);
+                return MoltObject::from_bool(has_upper && !has_lower).bits();
+            }
             let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
                 return MoltObject::from_bool(false).bits();
             };
@@ -23432,6 +23460,267 @@ fn simd_is_all_ascii_whitespace(bytes: &[u8]) -> bool {
     true
 }
 
+/// SIMD-accelerated check: are ALL bytes ASCII alphabetic [A-Za-z]?
+fn simd_is_all_ascii_alpha(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut i = 0usize;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            use std::arch::aarch64::*;
+            let case_bit = vdupq_n_u8(0x20); // bit 5 forces lowercase
+            let a_lower = vdupq_n_u8(b'a');
+            let z_lower = vdupq_n_u8(b'z');
+            while i + 16 <= bytes.len() {
+                let chunk = vld1q_u8(bytes.as_ptr().add(i));
+                // Force lowercase via OR with 0x20, then range check 'a'-'z'
+                let lowered = vorrq_u8(chunk, case_bit);
+                let is_alpha = vandq_u8(vcgeq_u8(lowered, a_lower), vcleq_u8(lowered, z_lower));
+                if vminvq_u8(is_alpha) == 0 {
+                    return false;
+                }
+                i += 16;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe {
+            use std::arch::x86_64::*;
+            let case_bit = _mm_set1_epi8(0x20);
+            while i + 16 <= bytes.len() {
+                let chunk = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
+                let lowered = _mm_or_si128(chunk, case_bit);
+                let ge_a = _mm_cmpgt_epi8(lowered, _mm_set1_epi8((b'a' - 1) as i8));
+                let le_z = _mm_cmpgt_epi8(_mm_set1_epi8((b'z' + 1) as i8), lowered);
+                let is_alpha = _mm_and_si128(ge_a, le_z);
+                if _mm_movemask_epi8(is_alpha) != 0xFFFF {
+                    return false;
+                }
+                i += 16;
+            }
+        }
+    }
+
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_alphabetic() {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// SIMD-accelerated check: are ALL bytes ASCII digits [0-9]?
+fn simd_is_all_ascii_digit(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut i = 0usize;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            use std::arch::aarch64::*;
+            let zero = vdupq_n_u8(b'0');
+            let nine = vdupq_n_u8(b'9');
+            while i + 16 <= bytes.len() {
+                let chunk = vld1q_u8(bytes.as_ptr().add(i));
+                let is_digit = vandq_u8(vcgeq_u8(chunk, zero), vcleq_u8(chunk, nine));
+                if vminvq_u8(is_digit) == 0 {
+                    return false;
+                }
+                i += 16;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe {
+            use std::arch::x86_64::*;
+            while i + 16 <= bytes.len() {
+                let chunk = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
+                let ge_0 = _mm_cmpgt_epi8(chunk, _mm_set1_epi8((b'0' - 1) as i8));
+                let le_9 = _mm_cmpgt_epi8(_mm_set1_epi8((b'9' + 1) as i8), chunk);
+                let is_digit = _mm_and_si128(ge_0, le_9);
+                if _mm_movemask_epi8(is_digit) != 0xFFFF {
+                    return false;
+                }
+                i += 16;
+            }
+        }
+    }
+
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// SIMD-accelerated check: are ALL bytes ASCII alphanumeric [A-Za-z0-9]?
+fn simd_is_all_ascii_alnum(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut i = 0usize;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            use std::arch::aarch64::*;
+            let case_bit = vdupq_n_u8(0x20);
+            let a_lower = vdupq_n_u8(b'a');
+            let z_lower = vdupq_n_u8(b'z');
+            let zero = vdupq_n_u8(b'0');
+            let nine = vdupq_n_u8(b'9');
+            while i + 16 <= bytes.len() {
+                let chunk = vld1q_u8(bytes.as_ptr().add(i));
+                let lowered = vorrq_u8(chunk, case_bit);
+                let is_alpha = vandq_u8(vcgeq_u8(lowered, a_lower), vcleq_u8(lowered, z_lower));
+                let is_digit = vandq_u8(vcgeq_u8(chunk, zero), vcleq_u8(chunk, nine));
+                let is_alnum = vorrq_u8(is_alpha, is_digit);
+                if vminvq_u8(is_alnum) == 0 {
+                    return false;
+                }
+                i += 16;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe {
+            use std::arch::x86_64::*;
+            let case_bit = _mm_set1_epi8(0x20);
+            while i + 16 <= bytes.len() {
+                let chunk = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
+                let lowered = _mm_or_si128(chunk, case_bit);
+                let ge_a = _mm_cmpgt_epi8(lowered, _mm_set1_epi8((b'a' - 1) as i8));
+                let le_z = _mm_cmpgt_epi8(_mm_set1_epi8((b'z' + 1) as i8), lowered);
+                let is_alpha = _mm_and_si128(ge_a, le_z);
+                let ge_0 = _mm_cmpgt_epi8(chunk, _mm_set1_epi8((b'0' - 1) as i8));
+                let le_9 = _mm_cmpgt_epi8(_mm_set1_epi8((b'9' + 1) as i8), chunk);
+                let is_digit = _mm_and_si128(ge_0, le_9);
+                let is_alnum = _mm_or_si128(is_alpha, is_digit);
+                if _mm_movemask_epi8(is_alnum) != 0xFFFF {
+                    return false;
+                }
+                i += 16;
+            }
+        }
+    }
+
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_alphanumeric() {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// SIMD check: does the buffer contain ANY uppercase ASCII letter [A-Z]?
+fn simd_has_any_ascii_upper(bytes: &[u8]) -> bool {
+    let mut i = 0usize;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            use std::arch::aarch64::*;
+            let a_upper = vdupq_n_u8(b'A');
+            let z_upper = vdupq_n_u8(b'Z');
+            while i + 16 <= bytes.len() {
+                let chunk = vld1q_u8(bytes.as_ptr().add(i));
+                let is_upper = vandq_u8(vcgeq_u8(chunk, a_upper), vcleq_u8(chunk, z_upper));
+                if vmaxvq_u8(is_upper) != 0 {
+                    return true;
+                }
+                i += 16;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe {
+            use std::arch::x86_64::*;
+            while i + 16 <= bytes.len() {
+                let chunk = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
+                let ge_a = _mm_cmpgt_epi8(chunk, _mm_set1_epi8((b'A' - 1) as i8));
+                let le_z = _mm_cmpgt_epi8(_mm_set1_epi8((b'Z' + 1) as i8), chunk);
+                let is_upper = _mm_and_si128(ge_a, le_z);
+                if _mm_movemask_epi8(is_upper) != 0 {
+                    return true;
+                }
+                i += 16;
+            }
+        }
+    }
+
+    while i < bytes.len() {
+        if bytes[i].is_ascii_uppercase() {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// SIMD check: does the buffer contain ANY lowercase ASCII letter [a-z]?
+fn simd_has_any_ascii_lower(bytes: &[u8]) -> bool {
+    let mut i = 0usize;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            use std::arch::aarch64::*;
+            let a_lower = vdupq_n_u8(b'a');
+            let z_lower = vdupq_n_u8(b'z');
+            while i + 16 <= bytes.len() {
+                let chunk = vld1q_u8(bytes.as_ptr().add(i));
+                let is_lower = vandq_u8(vcgeq_u8(chunk, a_lower), vcleq_u8(chunk, z_lower));
+                if vmaxvq_u8(is_lower) != 0 {
+                    return true;
+                }
+                i += 16;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe {
+            use std::arch::x86_64::*;
+            while i + 16 <= bytes.len() {
+                let chunk = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
+                let ge_a = _mm_cmpgt_epi8(chunk, _mm_set1_epi8((b'a' - 1) as i8));
+                let le_z = _mm_cmpgt_epi8(_mm_set1_epi8((b'z' + 1) as i8), chunk);
+                let is_lower = _mm_and_si128(ge_a, le_z);
+                if _mm_movemask_epi8(is_lower) != 0 {
+                    return true;
+                }
+                i += 16;
+            }
+        }
+    }
+
+    while i < bytes.len() {
+        if bytes[i].is_ascii_lowercase() {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 #[inline]
 fn bytes_ascii_alpha(b: u8) -> bool {
     b.is_ascii_alphabetic()
@@ -24084,54 +24373,42 @@ pub extern "C" fn molt_bytearray_title(hay_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_isalpha(hay_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, |bytes| {
-            !bytes.is_empty() && bytes.iter().all(|b| bytes_ascii_alpha(*b))
-        })
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, simd_is_all_ascii_alpha)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_isalpha(hay_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, |bytes| {
-            !bytes.is_empty() && bytes.iter().all(|b| bytes_ascii_alpha(*b))
-        })
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, simd_is_all_ascii_alpha)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_isalnum(hay_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, |bytes| {
-            !bytes.is_empty() && bytes.iter().all(|b| bytes_ascii_alnum(*b))
-        })
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, simd_is_all_ascii_alnum)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_isalnum(hay_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, |bytes| {
-            !bytes.is_empty() && bytes.iter().all(|b| bytes_ascii_alnum(*b))
-        })
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, simd_is_all_ascii_alnum)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_isdigit(hay_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, |bytes| {
-            !bytes.is_empty() && bytes.iter().all(|b| b.is_ascii_digit())
-        })
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, simd_is_all_ascii_digit)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_isdigit(hay_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, |bytes| {
-            !bytes.is_empty() && bytes.iter().all(|b| b.is_ascii_digit())
-        })
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, simd_is_all_ascii_digit)
     })
 }
 
