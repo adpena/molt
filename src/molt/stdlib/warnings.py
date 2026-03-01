@@ -6,13 +6,29 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 
 from typing import Any
-import linecache as _linecache
-import os as _os
 import re as _re
 import sys as _sys
 
 _require_intrinsic("molt_stdlib_probe", globals())
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
+_molt_warnings_warn = _require_intrinsic("molt_warnings_warn", globals())
+_molt_warnings_warn_explicit = _require_intrinsic(
+    "molt_warnings_warn_explicit", globals()
+)
+_molt_warnings_formatwarning = _require_intrinsic(
+    "molt_warnings_formatwarning", globals()
+)
+_molt_warnings_showwarning = _require_intrinsic("molt_warnings_showwarning", globals())
+_molt_warnings_simplefilter = _require_intrinsic(
+    "molt_warnings_simplefilter", globals()
+)
+_molt_warnings_filterwarnings = _require_intrinsic(
+    "molt_warnings_filterwarnings", globals()
+)
+_molt_warnings_resetwarnings = _require_intrinsic(
+    "molt_warnings_resetwarnings", globals()
+)
+_molt_warnings_filters_get = _require_intrinsic("molt_warnings_filters_get", globals())
 
 
 class _WarningRecord:
@@ -49,80 +65,6 @@ _filters: list[tuple[str, Any, type | None, Any, int]] = []
 _default_action = "default"
 _once_registry: set[tuple[str, type]] = set()
 _record_stack: list[list["_WarningRecord"]] = []
-
-
-class _SimpleRegex:
-    def __init__(self, pattern: str, ignorecase: bool) -> None:
-        self._pattern = pattern
-        self._ignorecase = ignorecase
-
-    def match(self, text: str) -> bool:
-        return _simple_regex_match(self._pattern, text, self._ignorecase)
-
-
-def _simple_regex_match(pattern: str, text: str, ignorecase: bool) -> bool:
-    if ignorecase:
-        pattern = pattern.lower()
-        text = text.lower()
-    tokens = _tokenize_pattern(pattern)
-
-    memo: dict[tuple[int, int], bool] = {}
-
-    def _char_matches(token: tuple[str, bool], ch: str) -> bool:
-        char, is_wildcard = token
-        if is_wildcard:
-            return True
-        return char == ch
-
-    def _match_from(t_idx: int, s_idx: int) -> bool:
-        key = (t_idx, s_idx)
-        cached = memo.get(key)
-        if cached is not None:
-            return cached
-        if t_idx == len(tokens):
-            result = s_idx == len(text)
-            memo[key] = result
-            return result
-        token, star = tokens[t_idx]
-        if star:
-            if _match_from(t_idx + 1, s_idx):
-                memo[key] = True
-                return True
-            if s_idx < len(text) and _char_matches(token, text[s_idx]):
-                result = _match_from(t_idx, s_idx + 1)
-                memo[key] = result
-                return result
-            memo[key] = False
-            return False
-        if s_idx < len(text) and _char_matches(token, text[s_idx]):
-            result = _match_from(t_idx + 1, s_idx + 1)
-            memo[key] = result
-            return result
-        memo[key] = False
-        return False
-
-    return _match_from(0, 0)
-
-
-def _tokenize_pattern(pattern: str) -> list[tuple[tuple[str, bool], bool]]:
-    tokens: list[tuple[tuple[str, bool], bool]] = []
-    idx = 0
-    while idx < len(pattern):
-        ch = pattern[idx]
-        literal = False
-        if ch == "\\" and idx + 1 < len(pattern):
-            idx += 1
-            ch = pattern[idx]
-            literal = True
-        is_wildcard = (ch == ".") and not literal
-        star = False
-        if not literal and idx + 1 < len(pattern) and pattern[idx + 1] == "*":
-            star = True
-            idx += 1
-        tokens.append(((ch, is_wildcard), star))
-        idx += 1
-    return tokens
-
 
 _filters_version = 0
 
@@ -307,25 +249,6 @@ def _action_for(message: str, category: type, module: str, lineno: int) -> str:
     return _default_action
 
 
-def _file_exists_for_linecache(filename: str) -> bool:
-    try:
-        if _os.path.isabs(filename):
-            return _os.path.exists(filename)
-    except Exception:
-        return False
-    for dirname in _sys.path:
-        try:
-            candidate = _os.path.join(dirname, filename)
-        except Exception:
-            continue
-        try:
-            if _os.path.exists(candidate):
-                return True
-        except Exception:
-            continue
-    return False
-
-
 def formatwarning(
     message: Any,
     category: Any,
@@ -333,17 +256,7 @@ def formatwarning(
     lineno: int,
     line: str | None = None,
 ) -> str:
-    name = getattr(category, "__name__", "Warning")
-    text = str(message)
-    if line is None:
-        if _MOLT_CAPABILITIES_HAS("fs.read") and _file_exists_for_linecache(filename):
-            try:
-                line = _linecache.getline(filename, lineno) or None
-            except Exception:
-                line = None
-    if line:
-        return f"{filename}:{lineno}: {name}: {text}\n  {line.strip()}\n"
-    return f"{filename}:{lineno}: {name}: {text}\n"
+    return _molt_warnings_formatwarning(message, category, filename, lineno, line)
 
 
 def showwarning(
@@ -354,17 +267,14 @@ def showwarning(
     file: Any | None = None,
     line: str | None = None,
 ) -> None:
-    if filename is None:
-        filename = "<string>"
-    if lineno is None:
-        lineno = 1
-    text = formatwarning(message, category, filename, lineno, line)
-    if file is None:
-        file = getattr(_sys, "stderr", None)
-    if file is not None and hasattr(file, "write"):
-        file.write(text)
-        return
-    print(text, end="")
+    _molt_warnings_showwarning(
+        message,
+        category,
+        filename or "<string>",
+        lineno if lineno is not None else 1,
+        file,
+        line,
+    )
 
 
 def warn(
@@ -374,6 +284,11 @@ def warn(
     source: Any | None = None,
 ) -> None:
     _ = source
+    # Fast path: delegate entirely to Rust when no record/capture hooks.
+    if not _record_stack and not _capture_streams():
+        _molt_warnings_warn(message, _normalize_category(category), stacklevel)
+        return None
+    # Slow path: Python-level record capture.
     category = _normalize_category(category)
     msg_text = str(message)
     filename, lineno, module, module_globals = _get_location(stacklevel)
@@ -439,6 +354,19 @@ def warn_explicit(
     source: Any | None = None,
 ) -> None:
     _ = source
+    # Fast path: delegate to Rust when no record/capture hooks.
+    if not _record_stack and not _capture_streams():
+        _molt_warnings_warn_explicit(
+            message,
+            _normalize_category(category),
+            filename,
+            lineno,
+            module or "__main__",
+            registry,
+            module_globals,
+        )
+        return None
+    # Slow path: Python-level record capture.
     category = _normalize_category(category)
     msg_text = str(message)
     module_name = module or "__main__"
@@ -493,6 +421,9 @@ def filterwarnings(
     action = action.lower()
     if action not in _VALID_ACTIONS:
         raise ValueError(f"invalid warnings action: {action!r}")
+    # Sync to Rust filter state.
+    _molt_warnings_filterwarnings(action, message, category, module, lineno, append)
+    # Also maintain Python-side filter list for catch_warnings save/restore.
     msg_pat = None
     mod_pat = None
     if message or module:
@@ -516,10 +447,12 @@ def simplefilter(
     lineno: int = 0,
     append: bool = False,
 ) -> None:
+    _molt_warnings_simplefilter(action, category, lineno, append)
     filterwarnings(action, "", category, "", lineno, append=append)
 
 
 def resetwarnings() -> None:
+    _molt_warnings_resetwarnings()
     _filters.clear()
     _once_registry.clear()
     _bump_filters_version()
