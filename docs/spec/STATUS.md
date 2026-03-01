@@ -61,6 +61,15 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
     bytearray.isspace(), str.isspace() (ASCII fast path)
   - Whitespace split: NEON variant added to `find_ascii_split_whitespace` (was SSE2-only)
   - Strip fast-skip: SIMD left-strip 16-byte chunk skipping for bytes.strip()
+- Completed: **SIMD Phase 3+4 Expansion** — string/bytes predicate acceleration:
+  - String predicates (ASCII fast path): `isdigit`/`isdecimal` (SIMD '0'-'9' range),
+    `isalpha` (SIMD [A-Za-z] via OR-0x20), `isalnum` (combined alpha+digit),
+    `islower`/`isupper` (SIMD has-any-upper/lower scan), `isprintable` (SIMD [0x20..0x7E])
+  - Bytes predicates: `isalpha`/`isalnum`/`isdigit` all use SIMD bulk classification
+  - Case conversion: `str.swapcase()` → SIMD `bytes_ascii_swapcase`,
+    `str.capitalize()` → SIMD `bytes_ascii_capitalize` for pure-ASCII strings
+  - `ascii()`: SIMD non-ASCII byte scan + bulk prefix copy
+  - JSON encoding: SIMD safe-character scan (16B NEON/SSE2) skips bulk ASCII runs
 - Completed: `stringprep` module — new 719-line Rust module (`stringprep.rs`) with all 17
   RFC 3454 table membership intrinsics (a1, b1, c11-c9, d1, d2) as code point range checks,
   `map_table_b3` with 47 exception entries for case folding. 13 unit tests. Intrinsic-backed
