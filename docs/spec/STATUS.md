@@ -56,9 +56,12 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Assessed: `logging` — acceptable Python pattern. Class hierarchy IS the API (users
   subclass Handler/Logger/Formatter, access LogRecord attributes directly). The one
   computational piece (`%`-style formatting) is already in Rust.
-- Blocker: `string` Template/Formatter — ~350 lines of pure-Python string parsing
-  with no Rust intrinsics. Need: `molt_string_template_substitute`,
-  `molt_string_formatter_parse`, `molt_string_formatter_vformat`.
+- Completed: `string` Template/Formatter — 5 new Rust intrinsics in `string_ext.rs`:
+  `molt_string_template_scan`, `molt_string_template_is_valid`,
+  `molt_string_template_get_identifiers`, `molt_string_formatter_parse`,
+  `molt_string_formatter_field_name_split`. Eliminated ~290 lines of pure-Python
+  parsing (identifier helpers, template scanner, formatter parser, field name splitter).
+  Formatter._vformat stays as Python (user-subclassable API).
 - Blocker: `encodings/punycode.py` (~210 lines RFC 3492), `encodings/idna.py` (~280
   lines RFC 3490), `encodings/uu_codec.py` (~55 lines) — zero Rust intrinsics exist.
 

@@ -7,6 +7,15 @@ from typing import Any, NoReturn, cast
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_STRING_CAPITALIZE = _require_intrinsic("molt_string_capitalize", globals())
+_molt_template_scan = _require_intrinsic("molt_string_template_scan", globals())
+_molt_template_is_valid = _require_intrinsic("molt_string_template_is_valid", globals())
+_molt_template_get_identifiers = _require_intrinsic(
+    "molt_string_template_get_identifiers", globals()
+)
+_molt_formatter_parse = _require_intrinsic("molt_string_formatter_parse", globals())
+_molt_field_name_split = _require_intrinsic(
+    "molt_string_formatter_field_name_split", globals()
+)
 
 
 __all__ = [
@@ -37,29 +46,6 @@ printable = digits + ascii_letters + punctuation + whitespace
 _sentinel_dict: dict[str, object] = {}
 
 
-def _is_identifier_start(ch: str) -> bool:
-    if not ch:
-        return False
-    code = ord(ch)
-    return ch == "_" or (65 <= code <= 90) or (97 <= code <= 122)
-
-
-def _is_identifier_continue(ch: str) -> bool:
-    if _is_identifier_start(ch):
-        return True
-    code = ord(ch)
-    return 48 <= code <= 57
-
-
-def _scan_identifier(text: str, start: int) -> tuple[str, int] | None:
-    if start >= len(text) or not _is_identifier_start(text[start]):
-        return None
-    end = start + 1
-    while end < len(text) and _is_identifier_continue(text[end]):
-        end += 1
-    return text[start:end], end
-
-
 class Template:
     """A string class for supporting $-substitutions."""
 
@@ -82,72 +68,23 @@ class Template:
         raise ValueError(f"Invalid placeholder in string: line {lineno}, col {colno}")
 
     def _substitute(self, mapping: object, *, safe: bool) -> str:
-        text = self.template
-        delim = self.delimiter
-        if not delim:
-            return text
-        delim_len = len(delim)
+        segments = _molt_template_scan(self.template, self.delimiter)
         out: list[str] = []
-        idx = 0
-        length = len(text)
-        while idx < length:
-            next_idx = text.find(delim, idx)
-            if next_idx == -1:
-                out.append(text[idx:])
-                break
-            out.append(text[idx:next_idx])
-            if next_idx + delim_len > length - 1:
-                if safe:
-                    out.append(delim)
-                    break
-                self._invalid(next_idx + delim_len)
-            next_char = text[next_idx + delim_len]
-            if text.startswith(delim, next_idx + delim_len):
-                out.append(delim)
-                idx = next_idx + delim_len * 2
+        for literal, var_name, original in segments:
+            if literal:
+                out.append(literal)
+            if var_name is None:
                 continue
-            if next_char == "{":
-                brace_start = next_idx + delim_len + 1
-                brace_end = text.find("}", brace_start)
-                if brace_end == -1:
-                    if safe:
-                        out.append(text[next_idx : next_idx + delim_len])
-                        idx = next_idx + delim_len
-                        continue
-                    self._invalid(next_idx + delim_len)
-                name = text[brace_start:brace_end]
-                if not name or _scan_identifier(name, 0) is None:
-                    if safe:
-                        out.append(text[next_idx : next_idx + delim_len])
-                        idx = next_idx + delim_len
-                        continue
-                    self._invalid(next_idx + delim_len)
-                if safe:
-                    try:
-                        out.append(str(mapping[name]))  # type: ignore[index]
-                    except KeyError:
-                        out.append(text[next_idx : brace_end + 1])
-                else:
-                    out.append(str(mapping[name]))  # type: ignore[index]
-                idx = brace_end + 1
-                continue
-            ident = _scan_identifier(text, next_idx + delim_len)
-            if ident is None:
-                if safe:
-                    out.append(text[next_idx : next_idx + delim_len])
-                    idx = next_idx + delim_len
-                    continue
-                self._invalid(next_idx + delim_len)
-            assert ident is not None
-            name, end = ident
             if safe:
                 try:
-                    out.append(str(mapping[name]))  # type: ignore[index]
+                    out.append(str(mapping[var_name]))  # type: ignore[index]
                 except KeyError:
-                    out.append(text[next_idx:end])
+                    out.append(original)  # type: ignore[arg-type]
             else:
-                out.append(str(mapping[name]))  # type: ignore[index]
-            idx = end
+                try:
+                    out.append(str(mapping[var_name]))  # type: ignore[index]
+                except KeyError:
+                    self._invalid(self.template.find(original))  # type: ignore[arg-type]
         return "".join(out)
 
     def substitute(self, mapping: object = _sentinel_dict, /, **kws) -> str:
@@ -169,216 +106,10 @@ class Template:
         return self._substitute(mapping, safe=True)
 
     def is_valid(self) -> bool:
-        text = self.template
-        delim = self.delimiter
-        if not delim:
-            return True
-        delim_len = len(delim)
-        idx = 0
-        length = len(text)
-        while idx < length:
-            next_idx = text.find(delim, idx)
-            if next_idx == -1:
-                return True
-            if next_idx + delim_len > length - 1:
-                return False
-            next_char = text[next_idx + delim_len]
-            if text.startswith(delim, next_idx + delim_len):
-                idx = next_idx + delim_len * 2
-                continue
-            if next_char == "{":
-                brace_start = next_idx + delim_len + 1
-                brace_end = text.find("}", brace_start)
-                if brace_end == -1:
-                    return False
-                name = text[brace_start:brace_end]
-                if not name or _scan_identifier(name, 0) is None:
-                    return False
-                idx = brace_end + 1
-                continue
-            if _scan_identifier(text, next_idx + delim_len) is None:
-                return False
-            _, end = _scan_identifier(text, next_idx + delim_len)  # type: ignore[misc]
-            idx = end
-        return True
+        return bool(_molt_template_is_valid(self.template, self.delimiter))
 
     def get_identifiers(self) -> list[str]:
-        ids: list[str] = []
-        text = self.template
-        delim = self.delimiter
-        if not delim:
-            return ids
-        delim_len = len(delim)
-        idx = 0
-        length = len(text)
-        while idx < length:
-            next_idx = text.find(delim, idx)
-            if next_idx == -1 or next_idx == length - 1:
-                break
-            if next_idx + delim_len > length - 1:
-                break
-            next_char = text[next_idx + delim_len]
-            if text.startswith(delim, next_idx + delim_len):
-                idx = next_idx + delim_len * 2
-                continue
-            if next_char == "{":
-                brace_start = next_idx + delim_len + 1
-                brace_end = text.find("}", brace_start)
-                if brace_end == -1:
-                    break
-                name = text[brace_start:brace_end]
-                if name and _scan_identifier(name, 0) is not None and name not in ids:
-                    ids.append(name)
-                idx = brace_end + 1
-                continue
-            ident = _scan_identifier(text, next_idx + delim_len)
-            if ident is None:
-                idx = next_idx + delim_len
-                continue
-            name, end = ident
-            if name not in ids:
-                ids.append(name)
-            idx = end
-        return ids
-
-
-def _formatter_field_name_split(
-    field_name: str,
-) -> tuple[object, list[tuple[bool, object]]]:
-    if field_name == "":
-        return "", []
-    end = 0
-    length = len(field_name)
-    while end < length and field_name[end] not in ".[":
-        end += 1
-    first = field_name[:end]
-    if first.isdigit():
-        first_val: object = int(first)
-    else:
-        first_val = first
-    rest: list[tuple[bool, object]] = []
-    idx = end
-    while idx < length:
-        if field_name[idx] == ".":
-            idx += 1
-            start = idx
-            while idx < length and field_name[idx] not in ".[":
-                idx += 1
-            rest.append((True, field_name[start:idx]))
-            continue
-        if field_name[idx] == "[":
-            idx += 1
-            start = idx
-            while idx < length and field_name[idx] != "]":
-                idx += 1
-            if idx >= length:
-                raise ValueError("expected ']' before end of string")
-            key_text = field_name[start:idx]
-            if key_text.isdigit():
-                key: object = int(key_text)
-            else:
-                key = key_text
-            rest.append((False, key))
-            idx += 1
-            continue
-        break
-    return first_val, rest
-
-
-def _formatter_parser(format_string: str):
-    length = len(format_string)
-    idx = 0
-    literal: list[str] = []
-    while idx < length:
-        ch = format_string[idx]
-        if ch == "{":
-            if idx + 1 < length and format_string[idx + 1] == "{":
-                literal.append("{")
-                idx += 2
-                continue
-            literal_text = "".join(literal)
-            literal = []
-            idx += 1
-            if idx >= length:
-                raise ValueError("Single '{' encountered in format string")
-            field_name, format_spec, conversion, idx = _parse_field(format_string, idx)
-            yield literal_text, field_name, format_spec, conversion
-            continue
-        if ch == "}":
-            if idx + 1 < length and format_string[idx + 1] == "}":
-                literal.append("}")
-                idx += 2
-                continue
-            raise ValueError("Single '}' encountered in format string")
-        literal.append(ch)
-        idx += 1
-    if literal or length == 0:
-        yield "".join(literal), None, None, None
-
-
-def _parse_field(format_string: str, idx: int) -> tuple[str, str, str | None, int]:
-    length = len(format_string)
-    field_start = idx
-    bracket_depth = 0
-    while idx < length:
-        ch = format_string[idx]
-        if ch == "[":
-            bracket_depth += 1
-            idx += 1
-            continue
-        if ch == "]" and bracket_depth:
-            bracket_depth -= 1
-            idx += 1
-            continue
-        if bracket_depth == 0 and ch in "!:}":
-            break
-        idx += 1
-    if idx >= length:
-        if idx == field_start:
-            raise ValueError("Single '{' encountered in format string")
-        raise ValueError("expected '}' before end of string")
-    field_name = format_string[field_start:idx]
-    conversion: str | None = None
-    if format_string[idx] == "!":
-        if idx + 1 >= length:
-            raise ValueError("unmatched '{' in format spec")
-        conversion = format_string[idx + 1]
-        idx += 2
-        if idx >= length:
-            raise ValueError("unmatched '{' in format spec")
-        if format_string[idx] not in ":}":
-            raise ValueError("expected ':' after conversion specifier")
-    format_spec = ""
-    if format_string[idx] == ":":
-        idx += 1
-        spec_start = idx
-        nested = 0
-        while idx < length:
-            ch = format_string[idx]
-            if ch == "{":
-                if idx + 1 < length and format_string[idx + 1] == "{":
-                    idx += 2
-                    continue
-                nested += 1
-                idx += 1
-                continue
-            if ch == "}":
-                if idx + 1 < length and format_string[idx + 1] == "}":
-                    idx += 2
-                    continue
-                if nested == 0:
-                    break
-                nested -= 1
-                idx += 1
-                continue
-            idx += 1
-        if idx >= length:
-            raise ValueError("unmatched '{' in format spec")
-        format_spec = format_string[spec_start:idx]
-    if idx >= length or format_string[idx] != "}":
-        raise ValueError("expected '}' before end of string")
-    idx += 1
-    return field_name, format_spec, conversion, idx
+        return list(_molt_template_get_identifiers(self.template, self.delimiter))
 
 
 class Formatter:
@@ -411,7 +142,7 @@ class Formatter:
             if literal_text:
                 result.append(literal_text)
             if field_name is not None:
-                field_first, _ = _formatter_field_name_split(field_name)
+                field_first, _ = _molt_field_name_split(field_name)
                 if field_first == "":
                     if auto_arg_index is False:
                         raise ValueError(
@@ -466,12 +197,12 @@ class Formatter:
         raise ValueError(f"Unknown conversion specifier {conversion!s}")
 
     def parse(self, format_string: str):
-        return _formatter_parser(format_string)
+        return _molt_formatter_parse(format_string)
 
     def get_field(
         self, field_name: str, args: tuple[object, ...], kwargs: dict
     ) -> tuple[object, object]:
-        first, rest = _formatter_field_name_split(field_name)
+        first, rest = _molt_field_name_split(field_name)
         obj = self.get_value(first, args, kwargs)
         for is_attr, key in rest:
             if is_attr:
