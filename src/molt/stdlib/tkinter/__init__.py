@@ -5,6 +5,10 @@ import re
 import sys
 import warnings
 
+# On WASM targets without GUI support, fail at import time like CPython.
+if sys.platform in ("emscripten", "wasi"):
+    raise ImportError("No module named '_tkinter'")
+
 import _tkinter as _tkimpl
 from _intrinsics import require_intrinsic as _require_intrinsic
 from .constants import *  # noqa: F403
