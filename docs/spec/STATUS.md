@@ -61,6 +61,20 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
     bytearray.isspace(), str.isspace() (ASCII fast path)
   - Whitespace split: NEON variant added to `find_ascii_split_whitespace` (was SSE2-only)
   - Strip fast-skip: SIMD left-strip 16-byte chunk skipping for bytes.strip()
+- Completed: **SIMD Phase 5–7 Expansion** — comprehensive SIMD coverage push:
+  - Phase 5: SIMD `bytes_ascii_title` (NEON/SSE2 alpha classification + word-boundary tracking),
+    ASCII fast-path for `str.title()`, SIMD hex encoding for `bytes.hex()`/`bytearray.hex()`
+    (NEON vqtbl1q_u8 / SSE2 shuffle), SIMD `b16_encode` in base64 module, 4× unrolled
+    `b64_encode`, SIMD `b64_decode` filter (NEON/SSE2 valid-char classification), SIMD
+    `qp_encode` passthrough scan
+  - Phase 6: Hardware CRC32 for `zlib.crc32` (aarch64 __crc32d 8B/instruction, x86_64
+    _mm_crc32_u64 SSE4.2), optimized Adler-32 with chunked NMAX=5552 + 16× unrolled inner
+    loop, memchr-based `qp_decode` with bulk extend_from_slice, memchr2-based `splitlines`,
+    SIMD JSON `scanstring_decode` safe-ASCII scan, SIMD JSON `ensure_ascii` bulk copy,
+    SIMD whitespace split helpers (`find_next_ascii_whitespace`/`skip_ascii_whitespace`
+    with NEON 6-way vceqq/SSE2 cmpeq+movemask)
+  - Phase 7: memchr-based `array.count`/`array.index` for byte typecodes (B/UB),
+    memchr2-based HTML tokenizer data scanning for '<'/'&'
 - Completed: **SIMD Phase 3+4 Expansion** — string/bytes predicate acceleration:
   - String predicates (ASCII fast path): `isdigit`/`isdecimal` (SIMD '0'-'9' range),
     `isalpha` (SIMD [A-Za-z] via OR-0x20), `isalnum` (combined alpha+digit),
