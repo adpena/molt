@@ -13,6 +13,29 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   ecosystem interoperability, while preserving Molt vision constraints
   (determinism, explicit capabilities, and no implicit host-Python fallback).
 
+## Rust-First Stdlib Lowering Sprint (2026-02-28)
+- Completed: `base64` module rewired — all 18 public functions now delegate to
+  existing `molt_base64_*` Rust intrinsics in `base64_mod.rs`. Removed ~400 lines
+  of pure-Python encode/decode loops.
+- Completed: `random` module — new `random_mod.rs` (1457 lines) with full Mersenne
+  Twister engine, handle registry, and 21 intrinsics. Python `Random` class is now
+  a thin handle wrapper. Only `binomialvariate` retains Python control flow (uses
+  Rust-backed `random()` and math intrinsics).
+- Completed: `heapq` module — 5 new Rust intrinsics (`heapify_max`, `heappop_max`,
+  `nsmallest`, `nlargest`, `merge`) with proper heap algorithms. `nsmallest`/
+  `nlargest` use genuine heap tournament; `merge` uses k-way heap merge (replaces
+  naive Python sort fallbacks).
+- Completed: `copy` module rewired — `copy()` and `deepcopy()` now delegate to
+  `molt_copy_copy`/`molt_copy_deepcopy` Rust intrinsics. Removed ~350 lines of
+  Python dispatch tables and traversal loops.
+- Completed: `pprint` module rewired — `pprint`/`pformat`/`saferepr`/`isreadable`/
+  `isrecursive` and `PrettyPrinter.pformat` now delegate to Rust intrinsics
+  (`molt_pprint_pformat`, `molt_pprint_safe_repr`, etc.).
+- Completed: `uuid` — replaced `_int_to_bytes` byte-by-byte loop with
+  `int.to_bytes(length, "big")`, `_bytes_to_hex` with `data.hex()`.
+- Completed: `json` — deleted dead `_walk_circular_markers` and
+  `_validate_no_circular_references` pure-Python functions.
+
 ## Compiler + WASM + Stdlib Hardening Sprint (2026-02-28)
 - Completed: frontend `_guard_tag_for_hint` extended with `set` (17), `frozenset` (18),
   `intarray` (16) type tag mappings for guard emission.
