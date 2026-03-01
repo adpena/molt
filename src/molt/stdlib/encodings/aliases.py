@@ -16,7 +16,19 @@ Contents:
 
 """
 
-aliases = {
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_molt_encodings_aliases_map = _require_intrinsic(
+    "molt_encodings_aliases_map", globals()
+)
+
+# Use the Rust-backed intrinsic to generate the canonical alias map.  The
+# intrinsic is guaranteed to be present in Molt binaries and returns the same
+# entries that were previously hardcoded below.  We keep the hardcoded dict as
+# a static reference (not loaded at runtime) for human readability.
+aliases: dict[str, str] = dict(_molt_encodings_aliases_map())
+
+_STATIC_ALIASES = {
     # Please keep this list sorted alphabetically by value !
     # ascii codec
     "646": "ascii",
@@ -449,8 +461,4 @@ aliases = {
     "x_mac_korean": "euc_kr",
     "x_mac_simp_chinese": "gb2312",
     "x_mac_trad_chinese": "big5",
-}
-
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_require_intrinsic("molt_capabilities_has", globals())
+}  # end _STATIC_ALIASES — kept for reference only, not used at runtime

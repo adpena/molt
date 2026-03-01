@@ -3231,7 +3231,7 @@ class Image:
         self.tk.call(self.name, "configure", _normalize_option_name(key), value)
 
     def __getitem__(self, key):
-        return self.tk.call(self.name, "configure", _normalize_option_name(key))
+        return self.tk.call(self.name, "cget", _normalize_option_name(key))
 
     def configure(self, cnf=None, **kw):
         return self.tk.call(self.name, "configure", *_normalize_tk_options(cnf, **kw))
