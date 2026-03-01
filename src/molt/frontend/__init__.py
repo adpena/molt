@@ -1109,6 +1109,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.current_class: str | None = None
         self.current_method_first_param: str | None = None
         self.current_line: int | None = None
+        # Per-function cache: module name → cached MoltValue from MODULE_CACHE_GET.
+        # Avoids emitting redundant MODULE_CACHE_GET ops for the same module within
+        # a single function scope.  Reset at start_function().
+        self._module_cache_values: dict[str, MoltValue] = {}
         self._register_code_symbol("molt_main")
         if self.module_name:
             name_val = MoltValue(self.next_var(), type_hint="str")
@@ -2170,6 +2174,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.context_depth = 0
         self.control_flow_depth = 0
         self.const_ints = {}
+        self._module_cache_values = {}
         self.in_generator = False
         self.async_context = False
         self.current_line = None
@@ -4015,6 +4020,30 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             MoltOp(kind="GUARD_TAG", args=[value, tag_val], result=MoltValue("none"))
         )
 
+    def _get_or_emit_module_cache(self, module_name: str) -> MoltValue:
+        """Return a cached MoltValue for *module_name* from MODULE_CACHE_GET.
+
+        On the first call within a function scope, emits a CONST_STR + MODULE_CACHE_GET
+        pair and stores the result in ``self._module_cache_values``.  Subsequent calls
+        for the same *module_name* within the same function scope reuse the cached
+        MoltValue, eliminating redundant mutex acquisitions on the hot path.
+
+        Note: this helper is only appropriate for simple, unconditional MODULE_CACHE_GET
+        calls (i.e. for the *current* module or other modules that are guaranteed already
+        loaded).  Use ``_emit_module_load`` for modules that may need lazy-initialisation.
+        """
+        cached = self._module_cache_values.get(module_name)
+        if cached is not None:
+            return cached
+        module_name_val = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=module_name_val))
+        module_val = MoltValue(self.next_var(), type_hint="module")
+        self.emit(
+            MoltOp(kind="MODULE_CACHE_GET", args=[module_name_val], result=module_val)
+        )
+        self._module_cache_values[module_name] = module_val
+        return module_val
+
     def _emit_module_attr_set(
         self, name: str, value: MoltValue, *, defer: bool = True
     ) -> None:
@@ -4053,14 +4082,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
         module_val = self.module_obj
         if self.current_func_name != "molt_main" or module_val is None:
-            module_name = MoltValue(self.next_var(), type_hint="str")
-            self.emit(
-                MoltOp(kind="CONST_STR", args=[self.module_name], result=module_name)
-            )
-            module_val = MoltValue(self.next_var(), type_hint="module")
-            self.emit(
-                MoltOp(kind="MODULE_CACHE_GET", args=[module_name], result=module_val)
-            )
+            module_val = self._get_or_emit_module_cache(self.module_name)
         self.emit(
             MoltOp(
                 kind="MODULE_DEL_GLOBAL",
@@ -4074,14 +4096,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
         module_val = self.module_obj
         if self.current_func_name != "molt_main" or module_val is None:
-            module_name = MoltValue(self.next_var(), type_hint="str")
-            self.emit(
-                MoltOp(kind="CONST_STR", args=[self.module_name], result=module_name)
-            )
-            module_val = MoltValue(self.next_var(), type_hint="module")
-            self.emit(
-                MoltOp(kind="MODULE_CACHE_GET", args=[module_name], result=module_val)
-            )
+            module_val = self._get_or_emit_module_cache(self.module_name)
         baseline_exc = MoltValue(self.next_var(), type_hint="exception")
         self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=baseline_exc))
         baseline_none = MoltValue(self.next_var(), type_hint="None")
@@ -4447,12 +4462,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_module_attr_get(self, name: str) -> MoltValue:
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
-        module_name = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[self.module_name], result=module_name))
-        module_val = MoltValue(self.next_var(), type_hint="module")
-        self.emit(
-            MoltOp(kind="MODULE_CACHE_GET", args=[module_name], result=module_val)
-        )
+        module_val = self._get_or_emit_module_cache(self.module_name)
         res = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
             MoltOp(kind="MODULE_GET_ATTR", args=[module_val, name_val], result=res)
@@ -4469,12 +4479,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_global_get(self, name: str) -> MoltValue:
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
-        module_name = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[self.module_name], result=module_name))
-        module_val = MoltValue(self.next_var(), type_hint="module")
-        self.emit(
-            MoltOp(kind="MODULE_CACHE_GET", args=[module_name], result=module_val)
-        )
+        module_val = self._get_or_emit_module_cache(self.module_name)
         res = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
             MoltOp(kind="MODULE_GET_GLOBAL", args=[module_val, name_val], result=res)
@@ -4485,14 +4490,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if self.current_func_name == "molt_main" and self.module_obj is not None:
             module_val = self.module_obj
         else:
-            module_name = MoltValue(self.next_var(), type_hint="str")
-            self.emit(
-                MoltOp(kind="CONST_STR", args=[self.module_name], result=module_name)
-            )
-            module_val = MoltValue(self.next_var(), type_hint="module")
-            self.emit(
-                MoltOp(kind="MODULE_CACHE_GET", args=[module_name], result=module_val)
-            )
+            module_val = self._get_or_emit_module_cache(self.module_name)
         dict_name = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=["__dict__"], result=dict_name))
         res = MoltValue(self.next_var(), type_hint="dict")
@@ -4800,12 +4798,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_module_attr_set_runtime(self, name: str, value: MoltValue) -> None:
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
-        module_name = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[self.module_name], result=module_name))
-        module_val = MoltValue(self.next_var(), type_hint="module")
-        self.emit(
-            MoltOp(kind="MODULE_CACHE_GET", args=[module_name], result=module_val)
-        )
+        module_val = self._get_or_emit_module_cache(self.module_name)
         self.emit(
             MoltOp(
                 kind="MODULE_SET_ATTR",
@@ -4835,6 +4828,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
 
     def _emit_module_load(self, module_name: str) -> MoltValue:
+        # Fast path: if we have already loaded this module earlier in the same
+        # function scope, reuse the cached MoltValue and skip the entire
+        # MODULE_CACHE_GET + conditional-init + import-guard sequence.
+        cached = self._module_cache_values.get(module_name)
+        if cached is not None:
+            return cached
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=name_val))
         module_val = MoltValue(self.next_var(), type_hint="module")
@@ -4866,6 +4865,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         loaded_val = MoltValue(self.next_var(), type_hint="module")
         self.emit(MoltOp(kind="MODULE_CACHE_GET", args=[name_val], result=loaded_val))
         self._emit_import_guard(loaded_val, module_name)
+        # Cache the loaded module so subsequent accesses within this function scope
+        # do not re-emit MODULE_CACHE_GET + guard ops.
+        self._module_cache_values[module_name] = loaded_val
         return loaded_val
 
     def _lookup_func_defaults(
