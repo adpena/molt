@@ -1100,10 +1100,11 @@ pub extern "C" fn molt_select_selector_poll(handle_bits: u64, timeout_bits: u64)
                     let _release = GilReleaseGuard::new();
                     thread::sleep(Duration::from_secs_f64(timeout));
                 }
+                // On WASM there is no real fd polling and sleeping would freeze the
+                // host event loop; fall through immediately so the empty-list return
+                // below is reached without spinning.
                 #[cfg(target_arch = "wasm32")]
-                {
-                    std::hint::spin_loop();
-                }
+                {}
             }
             let ptr = alloc_list(_py, &[]);
             if ptr.is_null() {
@@ -1159,10 +1160,11 @@ pub extern "C" fn molt_select_selector_poll(handle_bits: u64, timeout_bits: u64)
             {
                 break;
             }
+            // On WASM there is no real fd polling; spinning would freeze the host
+            // event loop. Break immediately so callers receive empty results when
+            // no fds are ready — matching Python's behavior when timeout expires.
             #[cfg(target_arch = "wasm32")]
-            {
-                std::hint::spin_loop();
-            }
+            break;
         }
 
         let ready_count = ready_masks.iter().filter(|mask| **mask != 0).count();
@@ -1407,10 +1409,11 @@ pub extern "C" fn molt_select_select(
             {
                 break;
             }
+            // On WASM there is no real fd polling; spinning would freeze the host
+            // event loop. Break immediately so callers receive empty fd lists when
+            // no fds are ready — matching Python's behavior when timeout expires.
             #[cfg(target_arch = "wasm32")]
-            {
-                std::hint::spin_loop();
-            }
+            break;
         }
 
         let r_ptr = alloc_list(_py, &ready_r);
