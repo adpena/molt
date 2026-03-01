@@ -40,6 +40,23 @@ _molt_inc_dec_reset = _require_intrinsic(
 _molt_inc_dec_drop = _require_intrinsic(
     "molt_codecs_incremental_decoder_drop", globals()
 )
+_molt_stream_reader_new = _require_intrinsic("molt_codecs_stream_reader_new", globals())
+_molt_stream_reader_read = _require_intrinsic(
+    "molt_codecs_stream_reader_read", globals()
+)
+_molt_stream_reader_readline = _require_intrinsic(
+    "molt_codecs_stream_reader_readline", globals()
+)
+_molt_stream_reader_drop = _require_intrinsic(
+    "molt_codecs_stream_reader_drop", globals()
+)
+_molt_stream_writer_new = _require_intrinsic("molt_codecs_stream_writer_new", globals())
+_molt_stream_writer_write = _require_intrinsic(
+    "molt_codecs_stream_writer_write", globals()
+)
+_molt_stream_writer_drop = _require_intrinsic(
+    "molt_codecs_stream_writer_drop", globals()
+)
 
 # Align import-error provenance with uv-managed CPython layouts without
 # importing `glob` (which pulls in `re`/`warnings` during bootstrap).
@@ -236,28 +253,46 @@ class BufferedIncrementalDecoder(IncrementalDecoder):
 
 
 class StreamWriter(Codec):
+    _encoding = "utf-8"
+
     def __init__(self, stream, errors="strict"):
         self.stream = stream
         self.errors = errors
+        self._sw_handle = _molt_stream_writer_new(stream, self._encoding, errors)
 
     def write(self, obj):
-        data, _ = self.encode(obj, self.errors)
-        if hasattr(self.stream, "write"):
-            return self.stream.write(data)
-        return None
+        return _molt_stream_writer_write(self._sw_handle, obj)
+
+    def __del__(self):
+        handle = getattr(self, "_sw_handle", None)
+        if handle is not None:
+            try:
+                _molt_stream_writer_drop(handle)
+            except Exception:
+                pass
 
 
 class StreamReader(Codec):
+    _encoding = "utf-8"
+
     def __init__(self, stream, errors="strict"):
         self.stream = stream
         self.errors = errors
+        self._sr_handle = _molt_stream_reader_new(stream, self._encoding, errors)
 
     def read(self, size=-1):
-        if not hasattr(self.stream, "read"):
-            return ""
-        data = self.stream.read(size)
-        text, _ = self.decode(data, self.errors)
-        return text
+        return _molt_stream_reader_read(self._sr_handle, size)
+
+    def readline(self, size=None):
+        return _molt_stream_reader_readline(self._sr_handle)
+
+    def __del__(self):
+        handle = getattr(self, "_sr_handle", None)
+        if handle is not None:
+            try:
+                _molt_stream_reader_drop(handle)
+            except Exception:
+                pass
 
 
 class CodecInfo:

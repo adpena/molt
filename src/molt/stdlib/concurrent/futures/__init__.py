@@ -1,10 +1,17 @@
-"""Rust-intrinsic-backed concurrent.futures support for Molt."""
+"""Rust-intrinsic-backed concurrent.futures support for Molt.
+
+All ThreadPoolExecutor concurrency state lives in the Rust runtime via
+handle-based intrinsics.  Standalone Future objects (created directly by
+user code) maintain Python-side state to support the full CPython API.
+
+This module is a thin Python wrapper for argument normalization, error
+mapping, and CPython API compatibility.
+"""
 
 from __future__ import annotations
 
-from collections import deque, namedtuple
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass
+from collections import namedtuple
 from typing import Any, TYPE_CHECKING
 import os
 import threading
@@ -14,17 +21,89 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 from builtins import TimeoutError as _BuiltinTimeoutError
 
-
 if TYPE_CHECKING:
 
-    def molt_thread_submit(_func: Any, _args: Any, _kwargs: Any) -> Any: ...
+    def molt_concurrent_threadpool_new(max_workers_bits: Any) -> Any: ...
+    def molt_concurrent_threadpool_drop(handle_bits: Any) -> Any: ...
+    def molt_concurrent_threadpool_submit(
+        handle_bits: Any, fn_bits: Any, args_bits: Any
+    ) -> Any: ...
+    def molt_concurrent_threadpool_shutdown(
+        handle_bits: Any, wait_bits: Any, _cancel_futures_bits: Any
+    ) -> Any: ...
+    def molt_concurrent_future_add_done_callback(
+        handle_bits: Any, fn_bits: Any
+    ) -> Any: ...
+    def molt_concurrent_future_cancel(handle_bits: Any) -> Any: ...
+    def molt_concurrent_future_cancelled(handle_bits: Any) -> Any: ...
+    def molt_concurrent_future_done(handle_bits: Any) -> Any: ...
+    def molt_concurrent_future_drop(handle_bits: Any) -> Any: ...
+    def molt_concurrent_future_exception(
+        handle_bits: Any, timeout_bits: Any
+    ) -> Any: ...
+    def molt_concurrent_future_result(handle_bits: Any, timeout_bits: Any) -> Any: ...
+    def molt_concurrent_future_running(handle_bits: Any) -> Any: ...
+    def molt_concurrent_wait(
+        futures_bits: Any, timeout_bits: Any, return_when_bits: Any
+    ) -> Any: ...
+    def molt_concurrent_as_completed(futures_bits: Any, timeout_bits: Any) -> Any: ...
+    def molt_concurrent_all_completed() -> Any: ...
+    def molt_concurrent_first_completed() -> Any: ...
+    def molt_concurrent_first_exception() -> Any: ...
 
 
+# ---------------------------------------------------------------------------
+# Load all intrinsics at module import time (hard-fail if unavailable).
+# ---------------------------------------------------------------------------
+_MOLT_THREADPOOL_NEW = _require_intrinsic("molt_concurrent_threadpool_new", globals())
+_MOLT_THREADPOOL_DROP = _require_intrinsic("molt_concurrent_threadpool_drop", globals())
+_MOLT_THREADPOOL_SUBMIT = _require_intrinsic(
+    "molt_concurrent_threadpool_submit", globals()
+)
+_MOLT_THREADPOOL_SHUTDOWN = _require_intrinsic(
+    "molt_concurrent_threadpool_shutdown", globals()
+)
+_MOLT_FUTURE_ADD_DONE_CALLBACK = _require_intrinsic(
+    "molt_concurrent_future_add_done_callback", globals()
+)
+_MOLT_FUTURE_CANCEL = _require_intrinsic("molt_concurrent_future_cancel", globals())
+_MOLT_FUTURE_CANCELLED = _require_intrinsic(
+    "molt_concurrent_future_cancelled", globals()
+)
+_MOLT_FUTURE_DONE = _require_intrinsic("molt_concurrent_future_done", globals())
+_MOLT_FUTURE_DROP = _require_intrinsic("molt_concurrent_future_drop", globals())
+_MOLT_FUTURE_EXCEPTION = _require_intrinsic(
+    "molt_concurrent_future_exception", globals()
+)
+_MOLT_FUTURE_RESULT = _require_intrinsic("molt_concurrent_future_result", globals())
+_MOLT_FUTURE_RUNNING = _require_intrinsic("molt_concurrent_future_running", globals())
+_MOLT_WAIT = _require_intrinsic("molt_concurrent_wait", globals())
+_MOLT_AS_COMPLETED = _require_intrinsic("molt_concurrent_as_completed", globals())
+_MOLT_ALL_COMPLETED = _require_intrinsic("molt_concurrent_all_completed", globals())
+_MOLT_FIRST_COMPLETED = _require_intrinsic("molt_concurrent_first_completed", globals())
+_MOLT_FIRST_EXCEPTION = _require_intrinsic("molt_concurrent_first_exception", globals())
+
+
+# ---------------------------------------------------------------------------
+# Public constants (string values).
+# ---------------------------------------------------------------------------
+FIRST_COMPLETED = "FIRST_COMPLETED"
+FIRST_EXCEPTION = "FIRST_EXCEPTION"
+ALL_COMPLETED = "ALL_COMPLETED"
+
+_DoneAndNotDone = namedtuple("DoneAndNotDone", "done not_done")
+
+# Internal state string constants for Python-managed futures.
 _PENDING = "PENDING"
 _RUNNING = "RUNNING"
 _CANCELLED = "CANCELLED"
 _FINISHED = "FINISHED"
-_DONE_STATES = {_CANCELLED, _FINISHED}
+_DONE_STATES = frozenset((_CANCELLED, _FINISHED))
+
+
+# ---------------------------------------------------------------------------
+# Exceptions (match CPython's concurrent.futures hierarchy).
+# ---------------------------------------------------------------------------
 
 
 class CancelledError(Exception):
@@ -36,7 +115,7 @@ class TimeoutError(_BuiltinTimeoutError):
 
 
 class InvalidStateError(Exception):
-    """Raised when setting a Future state transition is invalid."""
+    """Raised when a Future state transition is invalid."""
 
 
 class BrokenExecutor(RuntimeError):
@@ -51,50 +130,62 @@ class BrokenProcessPool(BrokenExecutor):
     """Raised when ProcessPoolExecutor cannot schedule new work."""
 
 
-FIRST_COMPLETED = "FIRST_COMPLETED"
-FIRST_EXCEPTION = "FIRST_EXCEPTION"
-ALL_COMPLETED = "ALL_COMPLETED"
+# ---------------------------------------------------------------------------
+# Process-wide Future handle registry.
+#
+# The Rust wait/as_completed intrinsics return handle integers.  To map
+# those back to Python Future objects we maintain a global dict keyed by
+# the integer handle.  Entries are removed when the Future is dropped.
+# Access is always under the GIL; no locking needed.
+# ---------------------------------------------------------------------------
 
-_DoneAndNotDone = namedtuple("DoneAndNotDone", "done not_done")
-
-_MOLT_THREAD_SUBMIT = _require_intrinsic("molt_thread_submit", globals())
-_MOLT_THREAD_SPAWN = _require_intrinsic("molt_thread_spawn", globals())
-
-
-def _is_intrinsic(func: Any | None) -> bool:
-    if not callable(func):
-        return False
-    return type(func).__name__ == "builtin_function_or_method"
+_FUTURE_REGISTRY: dict = {}  # int handle -> Future instance
 
 
-_MOLT_THREADPOOL = _is_intrinsic(_MOLT_THREAD_SPAWN)
-
-
-def _submit_thread_work(
-    fn: Callable[..., Any],
-    args: tuple[Any, ...],
-    kwargs: dict[str, Any],
-) -> Any:
-    return _MOLT_THREAD_SUBMIT(fn, args, kwargs)
-
-
-@dataclass(slots=True)
-class _WorkItem:
-    fn: Callable[..., Any]
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
-    future: "Future"
+# ---------------------------------------------------------------------------
+# Future
+# ---------------------------------------------------------------------------
 
 
 class Future:
+    """Thread-safe future result container.
+
+    Futures created by ``ThreadPoolExecutor.submit()`` are backed by a Rust
+    handle and delegate state queries to the runtime.
+
+    Futures created directly (``Future()``) maintain Python-side state for
+    full CPython API compatibility (``set_result``, ``set_exception``,
+    ``set_running_or_notify_cancel``).
+    """
+
+    # No __slots__: Python-managed futures need __dict__ for _condition etc.
+
     def __init__(self) -> None:
+        """Create a standalone Python-managed future."""
+        # Rust handle; None means this future is Python-managed.
+        self._handle: int | None = None
+
+        # Python-managed state (only used when _handle is None).
         self._condition = _threading.Condition()
-        self._state = _PENDING
-        self._result: Any | None = None
+        self._state: str = _PENDING
+        self._result: Any = None
         self._exception: BaseException | None = None
         self._callbacks: list[Callable[[Future], Any]] = []
 
+    @classmethod
+    def _from_handle(cls, handle: int) -> "Future":
+        """Create a future that wraps a Rust runtime handle."""
+        self = cls.__new__(cls)
+        self._handle = handle
+        return self
+
+    # -- inspection ----------------------------------------------------------
+
     def cancel(self) -> bool:
+        """Request cancellation.  Returns True if successfully cancelled."""
+        if self._handle is not None:
+            return bool(_MOLT_FUTURE_CANCEL(self._handle))
+        # Python-managed path.
         callbacks: list[Callable[[Future], Any]] = []
         with self._condition:
             if self._state != _PENDING:
@@ -107,18 +198,192 @@ class Future:
         return True
 
     def cancelled(self) -> bool:
+        """Return True if the future was cancelled."""
+        if self._handle is not None:
+            return bool(_MOLT_FUTURE_CANCELLED(self._handle))
         with self._condition:
             return self._state == _CANCELLED
 
     def running(self) -> bool:
+        """Return True if the future is currently executing."""
+        if self._handle is not None:
+            return bool(_MOLT_FUTURE_RUNNING(self._handle))
         with self._condition:
             return self._state == _RUNNING
 
     def done(self) -> bool:
+        """Return True if the future completed (any terminal state)."""
+        if self._handle is not None:
+            return bool(_MOLT_FUTURE_DONE(self._handle))
         with self._condition:
             return self._state in _DONE_STATES
 
+    # -- results -------------------------------------------------------------
+
+    def result(self, timeout: float | None = None) -> Any:
+        """Block until complete and return the result.
+
+        Raises CancelledError if cancelled, TimeoutError if timed out,
+        or re-raises the stored exception.
+        """
+        if self._handle is not None:
+            try:
+                return _MOLT_FUTURE_RESULT(self._handle, timeout)
+            except CancelledError:
+                raise
+            except TimeoutError:
+                raise
+            except Exception:
+                raise
+
+        # Python-managed path.
+        with self._condition:
+            if not self._wait_done_locked(timeout):
+                raise TimeoutError()
+            if self._state == _CANCELLED:
+                raise CancelledError()
+            if self._exception is not None:
+                raise self._exception
+            return self._result
+
+    def exception(self, timeout: float | None = None) -> BaseException | None:
+        """Return the exception raised by the callable, or None.
+
+        Raises CancelledError if cancelled, TimeoutError if timed out.
+        """
+        if self._handle is not None:
+            try:
+                raw = _MOLT_FUTURE_EXCEPTION(self._handle, timeout)
+            except CancelledError:
+                raise
+            except TimeoutError:
+                raise
+            if raw is None:
+                return None
+            # Rust returns a str for exceptions; wrap so callers get an object.
+            if isinstance(raw, str):
+                return Exception(raw)
+            return raw  # type: ignore[return-value]
+
+        # Python-managed path.
+        with self._condition:
+            if not self._wait_done_locked(timeout):
+                raise TimeoutError()
+            if self._state == _CANCELLED:
+                raise CancelledError()
+            return self._exception
+
+    # -- callbacks -----------------------------------------------------------
+
+    def add_done_callback(self, fn: Callable[["Future"], Any]) -> None:
+        """Register a callback to be called when this future completes.
+
+        If the future is already done the callback is invoked immediately.
+        """
+        if self._handle is not None:
+            handle = self._handle
+            future_self = self
+
+            def _callback_wrapper(_handle_arg: int) -> None:
+                f = _FUTURE_REGISTRY.get(handle, future_self)
+                try:
+                    fn(f)
+                except Exception:
+                    pass
+
+            _MOLT_FUTURE_ADD_DONE_CALLBACK(self._handle, _callback_wrapper)
+            return
+
+        # Python-managed path.
+        call_now = False
+        with self._condition:
+            if self._state in _DONE_STATES:
+                call_now = True
+            else:
+                self._callbacks.append(fn)
+        if call_now:
+            self._invoke_callbacks([fn])
+
+    # -- CPython internal API (used by executor implementations) -------------
+
+    def set_running_or_notify_cancel(self) -> bool:
+        """Transition PENDING -> RUNNING.
+
+        Returns False and fires callbacks if the future was cancelled.
+        Only valid on Python-managed futures (not Rust-backed).
+        """
+        if self._handle is not None:
+            raise InvalidStateError(
+                "set_running_or_notify_cancel is not supported on Rust-backed futures"
+            )
+        callbacks: list[Callable[[Future], Any]] = []
+        with self._condition:
+            if self._state == _CANCELLED:
+                callbacks = list(self._callbacks)
+                self._callbacks.clear()
+                self._condition.notify_all()
+                # Fire callbacks outside the lock.
+                result = False
+            elif self._state == _PENDING:
+                self._state = _RUNNING
+                result = True
+            else:
+                raise InvalidStateError(f"Future in unexpected state: {self._state!r}")
+        if not result:
+            self._invoke_callbacks(callbacks)
+        return result
+
+    # Alias used by older internal code.
+    _set_running_or_notify_cancel = set_running_or_notify_cancel
+
+    def set_result(self, result: Any) -> None:
+        """Store result and mark the future as finished.
+
+        Only valid on Python-managed futures (not Rust-backed).
+        """
+        if self._handle is not None:
+            raise InvalidStateError(
+                "set_result is not supported on Rust-backed futures"
+            )
+        callbacks: list[Callable[[Future], Any]] = []
+        with self._condition:
+            if self._state in _DONE_STATES:
+                raise InvalidStateError(
+                    f"Future already in terminal state: {self._state!r}"
+                )
+            self._result = result
+            self._state = _FINISHED
+            callbacks = list(self._callbacks)
+            self._callbacks.clear()
+            self._condition.notify_all()
+        self._invoke_callbacks(callbacks)
+
+    def set_exception(self, exc: BaseException) -> None:
+        """Store an exception and mark the future as finished.
+
+        Only valid on Python-managed futures (not Rust-backed).
+        """
+        if self._handle is not None:
+            raise InvalidStateError(
+                "set_exception is not supported on Rust-backed futures"
+            )
+        callbacks: list[Callable[[Future], Any]] = []
+        with self._condition:
+            if self._state in _DONE_STATES:
+                raise InvalidStateError(
+                    f"Future already in terminal state: {self._state!r}"
+                )
+            self._exception = exc
+            self._state = _FINISHED
+            callbacks = list(self._callbacks)
+            self._callbacks.clear()
+            self._condition.notify_all()
+        self._invoke_callbacks(callbacks)
+
+    # -- internal helpers ----------------------------------------------------
+
     def _wait_done_locked(self, timeout: float | None) -> bool:
+        """Wait until done or timeout; must be called under self._condition."""
         if self._state in _DONE_STATES:
             return True
         if timeout is None:
@@ -133,75 +398,7 @@ class Future:
             self._condition.wait(remaining)
         return True
 
-    def result(self, timeout: float | None = None) -> Any:
-        with self._condition:
-            if not self._wait_done_locked(timeout):
-                raise TimeoutError()
-            if self._state == _CANCELLED:
-                raise CancelledError()
-            if self._exception is not None:
-                raise self._exception
-            return self._result
-
-    def exception(self, timeout: float | None = None) -> BaseException | None:
-        with self._condition:
-            if not self._wait_done_locked(timeout):
-                raise TimeoutError()
-            if self._state == _CANCELLED:
-                raise CancelledError()
-            return self._exception
-
-    def add_done_callback(self, fn: Callable[[Future], Any]) -> None:
-        call_now = False
-        with self._condition:
-            if self._state in _DONE_STATES:
-                call_now = True
-            else:
-                self._callbacks.append(fn)
-        if call_now:
-            self._invoke_callbacks([fn])
-
-    def set_running_or_notify_cancel(self) -> bool:
-        with self._condition:
-            if self._state == _CANCELLED:
-                return False
-            if self._state != _PENDING:
-                raise InvalidStateError("Future in unexpected state")
-            self._state = _RUNNING
-            return True
-
-    def _set_running_or_notify_cancel(self) -> bool:
-        return self.set_running_or_notify_cancel()
-
-    def set_result(self, result: Any) -> None:
-        callbacks: list[Callable[[Future], Any]] = []
-        with self._condition:
-            if self._state in _DONE_STATES:
-                raise InvalidStateError("Future already done")
-            if self._state == _CANCELLED:
-                raise InvalidStateError("Future cancelled")
-            self._result = result
-            self._state = _FINISHED
-            callbacks = list(self._callbacks)
-            self._callbacks.clear()
-            self._condition.notify_all()
-        self._invoke_callbacks(callbacks)
-
-    def set_exception(self, exc: BaseException) -> None:
-        callbacks: list[Callable[[Future], Any]] = []
-        with self._condition:
-            if self._state in _DONE_STATES:
-                raise InvalidStateError("Future already done")
-            if self._state == _CANCELLED:
-                raise InvalidStateError("Future cancelled")
-            self._exception = exc
-            self._state = _FINISHED
-            callbacks = list(self._callbacks)
-            self._callbacks.clear()
-            self._condition.notify_all()
-        self._invoke_callbacks(callbacks)
-
-    def _invoke_callbacks(self, callbacks: list[Callable[[Future], Any]]) -> None:
+    def _invoke_callbacks(self, callbacks: list[Callable[["Future"], Any]]) -> None:
         for cb in callbacks:
             try:
                 cb(self)
@@ -209,8 +406,48 @@ class Future:
                 pass
 
     def _has_exception(self) -> bool:
+        """True if finished with an exception (non-blocking, used by wait())."""
+        if self._handle is not None:
+            # Only query exception state if the future is already done —
+            # calling _MOLT_FUTURE_EXCEPTION on a pending future would block.
+            if not _MOLT_FUTURE_DONE(self._handle):
+                return False
+            raw = _MOLT_FUTURE_EXCEPTION(self._handle, 0.0)
+            return raw is not None
         with self._condition:
             return self._state == _FINISHED and self._exception is not None
+
+    # -- lifecycle -----------------------------------------------------------
+
+    def __del__(self) -> None:
+        handle = self._handle
+        if handle is not None:
+            _FUTURE_REGISTRY.pop(handle, None)
+            try:
+                _MOLT_FUTURE_DROP(handle)
+            except Exception:
+                pass
+
+    def __repr__(self) -> str:
+        if self._handle is not None:
+            state = (
+                "cancelled"
+                if self.cancelled()
+                else "running"
+                if self.running()
+                else "finished"
+                if self.done()
+                else "pending"
+            )
+        else:
+            with self._condition:
+                state = self._state.lower()
+        return f"<Future at {id(self):#x} state={state}>"
+
+
+# ---------------------------------------------------------------------------
+# Executor base class
+# ---------------------------------------------------------------------------
 
 
 class Executor:
@@ -232,8 +469,6 @@ class Executor:
         if chunksize < 1:
             raise ValueError("chunksize must be >= 1")
 
-        args_iter = iter(zip(*iterables))
-        pending: list[Future] = []
         deadline = None if timeout is None else (_time.monotonic() + float(timeout))
 
         def _remaining() -> float | None:
@@ -244,8 +479,9 @@ class Executor:
                 raise TimeoutError()
             return rem
 
-        for args in args_iter:
-            pending.append(self.submit(fn, *args))
+        pending: list[Future] = []
+        for args_tuple in zip(*iterables):
+            pending.append(self.submit(fn, *args_tuple))
 
         try:
             while pending:
@@ -258,11 +494,23 @@ class Executor:
     def __enter__(self) -> "Executor":
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         self.shutdown(wait=True)
 
 
+# ---------------------------------------------------------------------------
+# ThreadPoolExecutor
+# ---------------------------------------------------------------------------
+
+
 class ThreadPoolExecutor(Executor):
+    """Thread pool backed entirely by Rust intrinsics.
+
+    All concurrency state is stored in the Rust runtime.  Python is only
+    responsible for argument normalisation, error mapping, and lifecycle
+    management.
+    """
+
     def __init__(
         self,
         max_workers: int | None = None,
@@ -276,203 +524,87 @@ class ThreadPoolExecutor(Executor):
             raise ValueError("max_workers must be greater than 0")
         if initializer is not None and not callable(initializer):
             raise TypeError("initializer must be a callable")
-
-        self._max_workers = int(max_workers)
-        self._thread_name_prefix = str(thread_name_prefix)
-        self._initializer = initializer
-        self._initargs = tuple(initargs)
-        self._broken: BrokenThreadPool | None = None
-
-        # Intrinsic pool runs through runtime threads and cannot guarantee per-thread
-        # Python-level initializer semantics.
-        self._molt_enabled = _MOLT_THREADPOOL and initializer is None
-        self._molt_cancel_futures = False
-        self._molt_inflight = 0
-        self._molt_running = 0
-        self._molt_lock = _threading.Lock()
-        self._molt_done = _threading.Condition(self._molt_lock)
-        self._molt_queue: deque[_WorkItem] = _deque()
-        self._molt_futures: set[Future] = set()
-
-        self._threads: list[threading.Thread] = []
-        self._queue: deque[_WorkItem] = _deque()
-        self._lock = _threading.Lock()
-        self._work_ready = _threading.Condition(self._lock)
-        self._shutdown = False
-
-        if not self._molt_enabled:
-            self._start_threads()
-
-    def _start_threads(self) -> None:
-        for idx in range(self._max_workers):
-            name = f"ThreadPoolExecutor-{idx}"
-            if self._thread_name_prefix:
-                name = f"{self._thread_name_prefix}_{idx}"
-            thread = _threading.Thread(
-                target=_threadpool_worker_bootstrap,
-                args=(self,),
-                name=name,
-                daemon=True,
+        if initializer is not None:
+            # Rust workers cannot run a Python initializer per-thread.
+            # TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P2, status:partial):
+            # Support per-thread initializer in ThreadPoolExecutor via Rust intrinsic.
+            raise NotImplementedError(
+                "ThreadPoolExecutor: per-thread initializer is not supported "
+                "in Molt compiled binaries (no CPython runtime)"
             )
-            thread.start()
-            self._threads.append(thread)
 
-    def _set_broken(self, exc: BaseException) -> None:
-        broken = (
-            exc
-            if isinstance(exc, BrokenThreadPool)
-            else BrokenThreadPool("ThreadPoolExecutor worker initialization failed")
-        )
-        if broken is not exc:
-            broken.__cause__ = exc
+        self._max_workers: int = int(max_workers)
+        self._thread_name_prefix: str = str(thread_name_prefix)
+        self._shutdown: bool = False
+        self._handle: int | None = None  # set after successful pool creation
 
-        pending: list[_WorkItem] = []
-        with self._work_ready:
-            if self._broken is not None:
-                return
-            self._broken = broken
-            pending.extend(self._queue)
-            self._queue.clear()
-            self._shutdown = True
-            self._work_ready.notify_all()
-
-        for item in pending:
-            if not item.future.done():
-                try:
-                    item.future.set_exception(broken)
-                except InvalidStateError:
-                    pass
+        handle = _MOLT_THREADPOOL_NEW(self._max_workers)
+        if not isinstance(handle, int):
+            raise BrokenThreadPool(
+                "molt_concurrent_threadpool_new returned unexpected value"
+            )
+        self._handle = handle
 
     def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future:
+        if self._shutdown:
+            raise RuntimeError("cannot schedule new futures after shutdown")
         if fn is None or not callable(fn):
             raise TypeError("submit expects a callable")
 
-        future = Future()
-        item = _WorkItem(fn=fn, args=tuple(args), kwargs=dict(kwargs), future=future)
+        # The Rust concurrent worker calls fn_bits(args_bits) via
+        # call_callable1 — i.e., fn(packed_args) with the args tuple as a
+        # single positional argument.  We always wrap the user callable in a
+        # shim that receives the packed tuple and unpacks it.
+        _fn = fn
+        _pos = tuple(args)
+        _kw = dict(kwargs) if kwargs else {}
 
-        if self._molt_enabled:
-            with self._molt_done:
-                if self._shutdown:
-                    raise RuntimeError("cannot schedule new futures after shutdown")
-                if self._broken is not None:
-                    raise self._broken
-                self._molt_queue.append(item)
-                self._molt_futures.add(future)
-                self._molt_inflight += 1
-                to_schedule = self._molt_drain_locked()
-            for work_item in to_schedule:
-                _submit_thread_work(_molt_threadpool_worker, (self, work_item), {})
-            return future
+        if _kw:
 
-        with self._work_ready:
-            if self._shutdown:
-                raise RuntimeError("cannot schedule new futures after shutdown")
-            if self._broken is not None:
-                raise self._broken
-            self._queue.append(item)
-            self._work_ready.notify()
-        return future
+            def _shim(_packed: tuple[Any, ...]) -> Any:
+                return _fn(*_packed, **_kw)
+        else:
+
+            def _shim(_packed: tuple[Any, ...]) -> Any:
+                return _fn(*_packed)
+
+        future_handle = _MOLT_THREADPOOL_SUBMIT(self._handle, _shim, _pos)
+
+        if not isinstance(future_handle, int):
+            raise RuntimeError(
+                "molt_concurrent_threadpool_submit returned unexpected value"
+            )
+
+        f = Future._from_handle(future_handle)
+        _FUTURE_REGISTRY[future_handle] = f
+        return f
 
     def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
-        if self._molt_enabled:
-            with self._molt_done:
-                self._shutdown = True
-                if cancel_futures:
-                    self._molt_cancel_futures = True
-                    self._molt_cancel_queued_locked()
-                self._molt_done.notify_all()
-                if wait:
-                    while self._molt_inflight:
-                        self._molt_done.wait()
+        if self._shutdown:
             return
+        self._shutdown = True
+        if self._handle is not None:
+            _MOLT_THREADPOOL_SHUTDOWN(self._handle, wait, cancel_futures)
 
-        with self._work_ready:
-            self._shutdown = True
-            if cancel_futures:
-                while self._queue:
-                    item = self._queue.popleft()
-                    item.future.cancel()
-            self._work_ready.notify_all()
-        if wait:
-            for thread in list(self._threads):
-                thread.join()
-
-    def _molt_task_done(self, future: Future) -> None:
-        with self._molt_done:
-            self._molt_futures.discard(future)
-            if self._molt_running > 0:
-                self._molt_running -= 1
-            if self._molt_inflight > 0:
-                self._molt_inflight -= 1
-            to_schedule = self._molt_drain_locked()
-            if self._molt_inflight == 0:
-                self._molt_done.notify_all()
-        for work_item in to_schedule:
-            _submit_thread_work(_molt_threadpool_worker, (self, work_item), {})
-
-    def _molt_drain_locked(self) -> list[_WorkItem]:
-        to_schedule: list[_WorkItem] = []
-        while self._molt_queue and self._molt_running < self._max_workers:
-            item = self._molt_queue.popleft()
-            if self._shutdown and self._molt_cancel_futures:
-                item.future.cancel()
-                self._molt_futures.discard(item.future)
-                if self._molt_inflight > 0:
-                    self._molt_inflight -= 1
-                continue
-            if item.future.cancelled():
-                self._molt_futures.discard(item.future)
-                if self._molt_inflight > 0:
-                    self._molt_inflight -= 1
-                continue
-            if not item.future.set_running_or_notify_cancel():
-                self._molt_futures.discard(item.future)
-                if self._molt_inflight > 0:
-                    self._molt_inflight -= 1
-                continue
-            self._molt_running += 1
-            to_schedule.append(item)
-        return to_schedule
-
-    def _molt_cancel_queued_locked(self) -> None:
-        while self._molt_queue:
-            item = self._molt_queue.popleft()
-            item.future.cancel()
-            self._molt_futures.discard(item.future)
-            if self._molt_inflight > 0:
-                self._molt_inflight -= 1
-
-    def _worker_bootstrap(self) -> None:
-        if self._initializer is not None:
+    def __del__(self) -> None:
+        try:
+            shutdown = self._shutdown
+            handle = self._handle
+        except AttributeError:
+            return
+        if not shutdown and handle is not None:
             try:
-                self._initializer(*self._initargs)
-            except BaseException as exc:  # noqa: BLE001
-                self._set_broken(exc)
-                return
-        self._worker_loop()
+                _MOLT_THREADPOOL_DROP(handle)
+            except Exception:
+                pass
 
-    def _worker_loop(self) -> None:
-        while True:
-            with self._work_ready:
-                while not self._queue and not self._shutdown:
-                    self._work_ready.wait()
-                if self._shutdown and not self._queue:
-                    return
-                item = self._queue.popleft()
-            if not item.future.set_running_or_notify_cancel():
-                continue
-            try:
-                result = item.fn(*item.args, **item.kwargs)
-            except BaseException as exc:  # noqa: BLE001
-                try:
-                    item.future.set_exception(exc)
-                except InvalidStateError:
-                    pass
-            else:
-                try:
-                    item.future.set_result(result)
-                except InvalidStateError:
-                    pass
+    def __repr__(self) -> str:
+        return f"<ThreadPoolExecutor at {id(self):#x} max_workers={self._max_workers}>"
+
+
+# ---------------------------------------------------------------------------
+# ProcessPoolExecutor — thread-based shim (fork not supported in Molt)
+# ---------------------------------------------------------------------------
 
 
 class ProcessPoolExecutor(ThreadPoolExecutor):
@@ -511,26 +643,9 @@ class ProcessPoolExecutor(ThreadPoolExecutor):
         )
 
 
-def _threadpool_worker_bootstrap(executor: ThreadPoolExecutor) -> None:
-    executor._worker_bootstrap()
-
-
-def _molt_threadpool_worker(executor: ThreadPoolExecutor, item: _WorkItem) -> None:
-    try:
-        try:
-            result = item.fn(*item.args, **item.kwargs)
-        except BaseException as exc:  # noqa: BLE001
-            try:
-                item.future.set_exception(exc)
-            except InvalidStateError:
-                pass
-        else:
-            try:
-                item.future.set_result(result)
-            except InvalidStateError:
-                pass
-    finally:
-        executor._molt_task_done(item.future)
+# ---------------------------------------------------------------------------
+# wait()
+# ---------------------------------------------------------------------------
 
 
 def wait(
@@ -538,26 +653,52 @@ def wait(
     timeout: float | None = None,
     return_when: str = ALL_COMPLETED,
 ) -> tuple[set[Future], set[Future]]:
-    futures = set(fs)
-    if not futures:
+    """Wait for futures to complete.
+
+    Returns a named 2-tuple (done, not_done) of Future sets.
+    """
+    futures_list = list(fs)
+    if not futures_list:
         return _DoneAndNotDone(set(), set())
     if return_when not in (FIRST_COMPLETED, FIRST_EXCEPTION, ALL_COMPLETED):
         raise ValueError(
             "return_when must be FIRST_COMPLETED, FIRST_EXCEPTION, or ALL_COMPLETED"
         )
 
-    done = {f for f in futures if f.done()}
-    pending = set(futures - done)
+    # Partition into Rust-backed and Python-managed futures.
+    rust_futures = [f for f in futures_list if f._handle is not None]
+    py_futures = [f for f in futures_list if f._handle is None]
 
-    if return_when == FIRST_COMPLETED and done:
-        return _DoneAndNotDone(done, pending)
+    if rust_futures and not py_futures:
+        # Fast path: all futures are Rust-backed.
+        handles = [f._handle for f in rust_futures]
+        handle_to_future = {f._handle: f for f in rust_futures}
+        done_handles, not_done_handles = _MOLT_WAIT(handles, timeout, return_when)
+        done: set[Future] = set()
+        for h in done_handles:
+            f = handle_to_future.get(h)
+            if f is not None:
+                done.add(f)
+        not_done: set[Future] = set()
+        for h in not_done_handles:
+            f = handle_to_future.get(h)
+            if f is not None:
+                not_done.add(f)
+        return _DoneAndNotDone(done, not_done)
+
+    # Mixed or Python-only path: poll with Python-side logic.
+    done_set = {f for f in futures_list if f.done()}
+    pending_set = set(futures_list) - done_set
+
+    if return_when == FIRST_COMPLETED and done_set:
+        return _DoneAndNotDone(done_set, pending_set)
     if return_when == FIRST_EXCEPTION:
-        if any((not fut.cancelled()) and fut._has_exception() for fut in done):
-            return _DoneAndNotDone(done, pending)
-        if not pending:
-            return _DoneAndNotDone(done, pending)
-    if return_when == ALL_COMPLETED and not pending:
-        return _DoneAndNotDone(done, pending)
+        if any((not f.cancelled()) and f._has_exception() for f in done_set):
+            return _DoneAndNotDone(done_set, pending_set)
+        if not pending_set:
+            return _DoneAndNotDone(done_set, pending_set)
+    if return_when == ALL_COMPLETED and not pending_set:
+        return _DoneAndNotDone(done_set, pending_set)
 
     notifier = _threading.Condition()
 
@@ -565,18 +706,18 @@ def wait(
         with notifier:
             notifier.notify_all()
 
-    for fut in pending:
-        fut.add_done_callback(_notify)
+    for f in pending_set:
+        f.add_done_callback(_notify)
 
     deadline = None if timeout is None else (_time.monotonic() + float(timeout))
-    while pending:
-        if return_when == FIRST_COMPLETED and done:
+    while pending_set:
+        if return_when == FIRST_COMPLETED and done_set:
             break
         if return_when == FIRST_EXCEPTION and any(
-            (not fut.cancelled()) and fut._has_exception() for fut in done
+            (not f.cancelled()) and f._has_exception() for f in done_set
         ):
             break
-        if return_when == ALL_COMPLETED and not pending:
+        if return_when == ALL_COMPLETED and not pending_set:
             break
 
         remaining = None
@@ -587,19 +728,54 @@ def wait(
         with notifier:
             notifier.wait(timeout=remaining)
 
-        done = {f for f in futures if f.done()}
-        pending = set(futures - done)
+        done_set = {f for f in futures_list if f.done()}
+        pending_set = set(futures_list) - done_set
 
-    return _DoneAndNotDone(done, pending)
+    return _DoneAndNotDone(done_set, pending_set)
+
+
+# ---------------------------------------------------------------------------
+# as_completed()
+# ---------------------------------------------------------------------------
 
 
 def as_completed(
     fs: Iterable[Future], timeout: float | None = None
 ) -> Iterator[Future]:
-    futures = set(fs)
-    if not futures:
-        return iter(())
-    pending = set(futures)
+    """Yield futures as they complete.
+
+    Raises TimeoutError if the timeout expires before all futures complete.
+    """
+    futures_list = list(fs)
+    if not futures_list:
+        return
+
+    # Partition into Rust-backed and Python-managed futures.
+    rust_futures = [f for f in futures_list if f._handle is not None]
+    py_futures = [f for f in futures_list if f._handle is None]
+
+    if rust_futures and not py_futures:
+        # Fast path: all Rust-backed; delegate to the Rust intrinsic.
+        handles = [f._handle for f in rust_futures]
+        handle_to_future = {f._handle: f for f in rust_futures}
+        completed_handles = _MOLT_AS_COMPLETED(handles, timeout)
+        yielded = 0
+        for h in completed_handles:
+            f = handle_to_future.get(h)
+            if f is not None:
+                if f.done():
+                    yielded += 1
+                    yield f
+                else:
+                    # Still pending — timeout was hit.
+                    raise TimeoutError(
+                        f"as_completed timed out with "
+                        f"{len(futures_list) - yielded} futures still pending"
+                    )
+        return
+
+    # Mixed or Python-only path: poll with Python-side logic.
+    pending = set(futures_list)
     deadline = None if timeout is None else (_time.monotonic() + float(timeout))
 
     while pending:
@@ -608,13 +784,19 @@ def as_completed(
             remaining = deadline - _time.monotonic()
             if remaining <= 0:
                 raise TimeoutError()
-        done, not_done = wait(pending, timeout=remaining, return_when=FIRST_COMPLETED)
+        done, not_done = wait(
+            list(pending), timeout=remaining, return_when=FIRST_COMPLETED
+        )
         if not done:
             raise TimeoutError()
-        pending = set(not_done)
-        for fut in done:
-            yield fut
+        pending = not_done
+        for f in done:
+            yield f
 
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 __all__ = [
     "ALL_COMPLETED",
@@ -636,24 +818,19 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# Namespace cleanup — remove names that are not part of CPython's
-# concurrent.futures public API.  These are import-time helpers, typing
-# aliases, or exception subclasses that CPython keeps in submodules.
+# Namespace cleanup — preserve runtime-accessible aliases before removing
+# public names that are not part of CPython's concurrent.futures public API.
 # ---------------------------------------------------------------------------
-# Preserve runtime-accessible aliases before removing public names.
-_deque = deque
 _threading = threading
 _time = time
 _os = os
 for _name in (
-    "deque",
     "namedtuple",
     "Callable",
     "Iterable",
     "Iterator",
     "Any",
     "TYPE_CHECKING",
-    "dataclass",
     "os",
     "threading",
     "time",
