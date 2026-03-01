@@ -82,6 +82,15 @@ class Font:
         elif options:
             self.configure(**options)
 
+    def __del__(self):
+        if not self._exists:
+            root = getattr(self, "_root", None)
+            if root is not None:
+                try:
+                    _MOLT_TK_CALL(_app_handle(root), ["font", "delete", self.name])
+                except Exception:  # noqa: BLE001
+                    pass
+
     def _call(self, operation, *argv):
         del operation
         return _MOLT_TK_CALL(_app_handle(self._root), ["font", *argv])

@@ -2206,6 +2206,10 @@ class Event:
                 _asyncio_waiters_remove(self._waiters, fut)
             raise
 
+    def __repr__(self) -> str:
+        state = "set" if self.is_set() else "unset"
+        return f"<Event [{state}]>"
+
     def __del__(self) -> None:
         handle = getattr(self, "_evt_handle", None)
         if handle is not None:
@@ -2247,6 +2251,10 @@ class Lock:
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         self.release()
+
+    def __repr__(self) -> str:
+        state = "locked" if self.locked() else "unlocked"
+        return f"<Lock [{state}]>"
 
     def __del__(self) -> None:
         handle = getattr(self, "_lock_handle", None)
@@ -2306,6 +2314,11 @@ class Condition:
     def notify_all(self) -> None:
         self.notify(len(self._waiters))
 
+    def __repr__(self) -> str:
+        state = "locked" if self.locked() else "unlocked"
+        waiters = len(self._waiters)
+        return f"<Condition [{state}, waiters:{waiters}]>"
+
 
 class Semaphore:
     def __init__(self, value: int = 1) -> None:
@@ -2334,6 +2347,18 @@ class Semaphore:
         molt_asyncio_semaphore_release_fast(self._sem_handle, -1)
         if self._waiters:
             _asyncio_waiters_notify(self._waiters, 1, True)
+
+    async def __aenter__(self) -> "Semaphore":
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.release()
+
+    def __repr__(self) -> str:
+        value = int(molt_asyncio_semaphore_value(self._sem_handle))
+        state = "locked" if value == 0 else f"unlocked, value:{value}"
+        return f"<Semaphore [{state}]>"
 
     def __del__(self) -> None:
         handle = getattr(self, "_sem_handle", None)
@@ -2369,22 +2394,65 @@ class Barrier:
         self._count += 1
         if self._count == self._parties:
             self._count = 0
-            _asyncio_barrier_release(self._waiters)
+            # Set the result of each waiter to its index.
+            waiters = self._waiters
+            self._waiters = []
+            for i, w in enumerate(waiters):
+                if not w.done():
+                    w.set_result(i)
         try:
             return await fut
         except BaseException as exc:
             if _is_cancelled_exc(exc):
                 _asyncio_waiters_remove(self._waiters, fut)
+                if self._count > 0:
+                    self._count -= 1
             raise
+
+    @property
+    def parties(self) -> int:
+        return self._parties
+
+    @property
+    def n_waiting(self) -> int:
+        return self._count
 
     @property
     def broken(self) -> bool:
         return self._broken
 
-    def reset(self) -> None:
-        self._broken = False
-        self._count = 0
+    async def reset(self) -> None:
+        waiters = self._waiters
         self._waiters = []
+        self._count = 0
+        self._broken = False
+        # Wake all waiters with BrokenBarrierError.
+        for w in waiters:
+            if not w.done():
+                w.set_exception(BrokenBarrierError("Barrier was reset"))
+
+    async def abort(self) -> None:
+        self._broken = True
+        waiters = self._waiters
+        self._waiters = []
+        self._count = 0
+        # Wake all waiters with BrokenBarrierError.
+        for w in waiters:
+            if not w.done():
+                w.set_exception(BrokenBarrierError("Barrier was aborted"))
+
+    async def __aenter__(self) -> int:
+        return await self.wait()
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        pass
+
+    def __repr__(self) -> str:
+        if self._broken:
+            state = "broken"
+        else:
+            state = "filling"
+        return f"<Barrier [{state}, waiters:{self._count}/{self._parties}]>"
 
 
 class TaskGroup:
@@ -2831,7 +2899,9 @@ class Server(AbstractServer):
         self._writer_ctor = writer_ctor
         self.sockets = [sock]
         self._closed = False
-        self._accept_task = get_running_loop().create_task(
+        self._serving = True
+        self._loop = get_running_loop()
+        self._accept_task = self._loop.create_task(
             self._accept_loop(), name=None, context=None
         )
 
@@ -2855,6 +2925,7 @@ class Server(AbstractServer):
         if self._closed:
             return
         self._closed = True
+        self._serving = False
         if hasattr(self._sock, "close"):
             self._sock.close()
         if self._accept_task is not None and not self._accept_task.done():
@@ -2872,6 +2943,31 @@ class Server(AbstractServer):
             await task
         except BaseException:
             return None
+
+    def is_serving(self) -> bool:
+        return self._serving and not self._closed
+
+    async def start_serving(self) -> None:
+        self._serving = True
+
+    async def serve_forever(self) -> None:
+        self._serving = True
+        if self._accept_task is not None:
+            await self._accept_task
+
+    def get_loop(self) -> "EventLoop":
+        return self._loop
+
+    def close_clients(self) -> None:
+        # Molt tracks connections at the Rust level; closing the server
+        # socket is sufficient to stop new connections.  Existing
+        # connections drain naturally.
+        pass
+
+    def abort_clients(self) -> None:
+        # Same as close_clients -- individual connection tracking is not
+        # exposed at the Python level.
+        pass
 
 
 class ProcessStreamReader:
@@ -5791,6 +5887,10 @@ class Queue:
         self._shutdown = False
         self._init()
 
+    @property
+    def maxsize(self) -> int:
+        return self._maxsize
+
     def _init(self) -> None:
         self._queue: Any = _deque()
 
@@ -5897,6 +5997,19 @@ class Queue:
             n_putters = int(molt_asyncio_queue_putter_count(self._q_handle))
             if n_putters > 0:
                 molt_asyncio_queue_notify_putters(self._q_handle, n_putters)
+
+    def __repr__(self) -> str:
+        size = self.qsize()
+        maxsize = self._maxsize
+        if maxsize > 0:
+            return f"<Queue maxsize={maxsize} qsize={size}>"
+        return f"<Queue qsize={size}>"
+
+    @classmethod
+    def __class_getitem__(cls, item: Any) -> Any:
+        return _require_asyncio_intrinsic(molt_generic_alias_new, "generic_alias_new")(
+            cls, item
+        )
 
     def __del__(self) -> None:
         handle = getattr(self, "_q_handle", None)
@@ -6133,6 +6246,7 @@ def _make_locks_module() -> _types.ModuleType:
             "Semaphore": Semaphore,
             "BoundedSemaphore": BoundedSemaphore,
             "Barrier": Barrier,
+            "BrokenBarrierError": BrokenBarrierError,
             "collections": _collections,
             "enum": _enum,
             "exceptions": exceptions,
