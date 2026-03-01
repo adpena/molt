@@ -36,6 +36,17 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   check). No new Rust code needed.
 - Cleanup: deleted 6 dead `molt_sys_bootstrap_*` intrinsics from manifest (superseded
   by aggregate `molt_sys_bootstrap_payload`). Regenerated generated.rs + _intrinsics.pyi.
+- Audit: identified 15 unwired importlib intrinsics as dead — superseded by aggregate
+  orchestration (`molt_importlib_find_spec_orchestrate`) or covered by more complete
+  aggregate intrinsics already wired in Python. Dead intrinsics pending manifest deletion:
+  `molt_importlib_source_loader_payload`, `molt_importlib_coerce_search_paths`,
+  `molt_importlib_finder_signature`, `molt_importlib_path_importer_cache_signature`,
+  `molt_importlib_existing_spec`, `molt_importlib_export_attrs`,
+  `molt_importlib_find_spec_payload`, `molt_importlib_find_spec_from_path_hooks`,
+  `molt_importlib_namespace_paths`, `molt_importlib_search_paths`,
+  `molt_importlib_parent_search_paths`, `molt_importlib_runtime_state_payload`,
+  `molt_importlib_runtime_state_view`, `molt_importlib_spec_from_file_location_payload`,
+  `molt_importlib_metadata_entry_points_payload`.
 
 - Completed: `base64` module rewired — all 18 public functions now delegate to
   existing `molt_base64_*` Rust intrinsics in `base64_mod.rs`. Removed ~400 lines
@@ -684,13 +695,13 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   (TODO(import-system, owner:stdlib, milestone:TC3, priority:P2, status:partial): full extension/sourceless execution parity beyond capability-gated restricted-source shim hooks.)
 - Entry modules execute under `__main__` while remaining importable under their real module name (distinct module objects).
 - Module metadata: compiled modules set `__file__`/`__package__`/`__spec__` (ModuleSpec + filesystem loader) and package `__path__`; `importlib.machinery.SourceFileLoader`
-  package/module shaping and source decode payload now lower through runtime intrinsics (`molt_importlib_source_loader_payload`,
-  `molt_importlib_source_exec_payload`), file reads lower via `molt_importlib_read_file`, and source execution remains intrinsic-lowered
+  package/module shaping and source decode payload now lower through runtime intrinsics (`molt_importlib_source_exec_payload`),
+  file reads lower via `molt_importlib_read_file`, and source execution remains intrinsic-lowered
   via `molt_importlib_exec_restricted_source` (restricted evaluator, no host fallback). `importlib.import_module` dispatch lowers through
   `molt_module_import` (no Python `__import__` fallback). `importlib.util` filesystem discovery/cache-path +
-  `spec_from_file_location` package shaping now lower through `molt_importlib_find_spec_payload`,
-  `molt_importlib_bootstrap_payload`, `molt_importlib_runtime_state_payload`, `molt_importlib_cache_from_source`, and
-  `molt_importlib_spec_from_file_location_payload`.
+  `spec_from_file_location` package shaping now lower through `molt_importlib_find_spec_orchestrate`,
+  `molt_importlib_bootstrap_payload`, `molt_importlib_cache_from_source`, and
+  `molt_importlib_spec_from_file_location`.
   `importlib.machinery.ZipSourceLoader` source payload/execution now lowers through
   `molt_importlib_zip_source_exec_payload`, and module spec package detection now lowers through
   `molt_importlib_module_spec_is_package`; extension/sourceless loader execution is intrinsic-owned via
