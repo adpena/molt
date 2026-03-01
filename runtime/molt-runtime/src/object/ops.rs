@@ -4284,10 +4284,148 @@ fn compare_numbers_outcome(lhs: MoltObject, rhs: MoltObject) -> CompareOutcome {
     CompareOutcome::NotComparable
 }
 
+// ---------------------------------------------------------------------------
+// SIMD-accelerated lexicographic byte comparison for string/bytes ordering.
+// Uses SIMD to skip past equal prefix, then scalar compare at divergence.
+// ---------------------------------------------------------------------------
+
+/// Find the first byte index where `a` and `b` differ, within `len` bytes.
+/// Returns `len` if the prefixes are identical.
+#[inline]
+unsafe fn simd_find_first_byte_diff(a: *const u8, b: *const u8, len: usize) -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return simd_find_first_byte_diff_avx2(a, b, len);
+        }
+        return simd_find_first_byte_diff_sse2(a, b, len);
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        return simd_find_first_byte_diff_neon(a, b, len);
+    }
+    #[allow(unreachable_code)]
+    {
+        for i in 0..len {
+            if *a.add(i) != *b.add(i) {
+                return i;
+            }
+        }
+        len
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+unsafe fn simd_find_first_byte_diff_sse2(a: *const u8, b: *const u8, len: usize) -> usize {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    while i + 16 <= len {
+        let va = _mm_loadu_si128(a.add(i) as *const __m128i);
+        let vb = _mm_loadu_si128(b.add(i) as *const __m128i);
+        let cmp = _mm_cmpeq_epi8(va, vb);
+        let mask = _mm_movemask_epi8(cmp) as u32;
+        if mask != 0xFFFF {
+            // Find first differing byte via trailing zeros of negated mask
+            return i + (!mask).trailing_zeros() as usize;
+        }
+        i += 16;
+    }
+    for j in i..len {
+        if *a.add(j) != *b.add(j) {
+            return j;
+        }
+    }
+    len
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+unsafe fn simd_find_first_byte_diff_avx2(a: *const u8, b: *const u8, len: usize) -> usize {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    while i + 32 <= len {
+        let va = _mm256_loadu_si256(a.add(i) as *const __m256i);
+        let vb = _mm256_loadu_si256(b.add(i) as *const __m256i);
+        let cmp = _mm256_cmpeq_epi8(va, vb);
+        let mask = _mm256_movemask_epi8(cmp) as u32;
+        if mask != 0xFFFFFFFF {
+            return i + (!mask).trailing_zeros() as usize;
+        }
+        i += 32;
+    }
+    // SSE2 tail
+    if i + 16 <= len {
+        let va = _mm_loadu_si128(a.add(i) as *const __m128i);
+        let vb = _mm_loadu_si128(b.add(i) as *const __m128i);
+        let cmp = _mm_cmpeq_epi8(va, vb);
+        let mask = _mm_movemask_epi8(cmp) as u32;
+        if mask != 0xFFFF {
+            return i + (!mask).trailing_zeros() as usize;
+        }
+        i += 16;
+    }
+    for j in i..len {
+        if *a.add(j) != *b.add(j) {
+            return j;
+        }
+    }
+    len
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn simd_find_first_byte_diff_neon(a: *const u8, b: *const u8, len: usize) -> usize {
+    unsafe {
+        use std::arch::aarch64::*;
+        let mut i = 0usize;
+        while i + 16 <= len {
+            let va = vld1q_u8(a.add(i));
+            let vb = vld1q_u8(b.add(i));
+            let cmp = vceqq_u8(va, vb);
+            if vminvq_u8(cmp) != 0xFF {
+                // Find the exact byte — check 8-byte halves first
+                let low = vget_low_u8(cmp);
+                let high = vget_high_u8(cmp);
+                if vminv_u8(low) != 0xFF {
+                    for j in 0..8 {
+                        if *a.add(i + j) != *b.add(i + j) {
+                            return i + j;
+                        }
+                    }
+                }
+                for j in 8..16 {
+                    if *a.add(i + j) != *b.add(i + j) {
+                        return i + j;
+                    }
+                }
+            }
+            i += 16;
+        }
+        for j in i..len {
+            if *a.add(j) != *b.add(j) {
+                return j;
+            }
+        }
+        len
+    }
+}
+
 unsafe fn compare_string_bytes(lhs_ptr: *mut u8, rhs_ptr: *mut u8) -> Ordering {
     unsafe {
         let l_len = string_len(lhs_ptr);
         let r_len = string_len(rhs_ptr);
+        let common = l_len.min(r_len);
+        if common >= 32 {
+            // SIMD fast path: skip past identical prefix
+            let l_data = string_bytes(lhs_ptr);
+            let r_data = string_bytes(rhs_ptr);
+            let diff_at = simd_find_first_byte_diff(l_data, r_data, common);
+            if diff_at == common {
+                return l_len.cmp(&r_len);
+            }
+            return (*l_data.add(diff_at)).cmp(&*r_data.add(diff_at));
+        }
         let l_bytes = std::slice::from_raw_parts(string_bytes(lhs_ptr), l_len);
         let r_bytes = std::slice::from_raw_parts(string_bytes(rhs_ptr), r_len);
         l_bytes.cmp(r_bytes)
@@ -4298,6 +4436,17 @@ unsafe fn compare_bytes_like(lhs_ptr: *mut u8, rhs_ptr: *mut u8) -> Ordering {
     unsafe {
         let l_len = bytes_len(lhs_ptr);
         let r_len = bytes_len(rhs_ptr);
+        let common = l_len.min(r_len);
+        if common >= 32 {
+            // SIMD fast path: skip past identical prefix
+            let l_data = bytes_data(lhs_ptr);
+            let r_data = bytes_data(rhs_ptr);
+            let diff_at = simd_find_first_byte_diff(l_data, r_data, common);
+            if diff_at == common {
+                return l_len.cmp(&r_len);
+            }
+            return (*l_data.add(diff_at)).cmp(&*r_data.add(diff_at));
+        }
         let l_bytes = std::slice::from_raw_parts(bytes_data(lhs_ptr), l_len);
         let r_bytes = std::slice::from_raw_parts(bytes_data(rhs_ptr), r_len);
         l_bytes.cmp(r_bytes)
@@ -4313,7 +4462,10 @@ unsafe fn compare_sequence(
         let lhs = seq_vec_ref(lhs_ptr);
         let rhs = seq_vec_ref(rhs_ptr);
         let common = lhs.len().min(rhs.len());
-        for idx in 0..common {
+        // SIMD fast path: bulk-compare NaN-boxed u64 arrays to skip past
+        // identity-equal prefix without per-element branch overhead.
+        let first_diff = simd_find_first_mismatch(lhs, rhs);
+        for idx in first_diff..common {
             let l_bits = lhs[idx];
             let r_bits = rhs[idx];
             if obj_eq(_py, obj_from_bits(l_bits), obj_from_bits(r_bits)) {
@@ -4949,9 +5101,7 @@ pub extern "C" fn molt_string_eq(a: u64, b: u64) -> u64 {
             if l_len != r_len {
                 return MoltObject::from_bool(false).bits();
             }
-            let l_bytes = std::slice::from_raw_parts(string_bytes(lp), l_len);
-            let r_bytes = std::slice::from_raw_parts(string_bytes(rp), r_len);
-            MoltObject::from_bool(l_bytes == r_bytes).bits()
+            MoltObject::from_bool(simd_bytes_eq(string_bytes(lp), string_bytes(rp), l_len)).bits()
         }
     })
 }
@@ -6687,6 +6837,241 @@ fn sum_floats_scalar(elems: &[u64], acc: f64) -> Option<f64> {
     Some(sum)
 }
 
+// ---------------------------------------------------------------------------
+// SIMD-accelerated float sum: SSE2 (2×f64), AVX2 (4×f64), NEON (2×f64)
+// ---------------------------------------------------------------------------
+
+/// Scalar float sum on pre-extracted f64 values (no NaN-box decode overhead).
+fn sum_f64_raw_scalar(vals: &[f64], acc: f64) -> f64 {
+    let mut sum = acc;
+    for &v in vals {
+        sum += v;
+    }
+    sum
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn sum_f64_simd_x86_64(vals: &[f64], acc: f64) -> f64 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_sum = _mm_set1_pd(0.0);
+    while i + 2 <= vals.len() {
+        let vec = _mm_loadu_pd(vals.as_ptr().add(i));
+        vec_sum = _mm_add_pd(vec_sum, vec);
+        i += 2;
+    }
+    let mut lanes = [0.0f64; 2];
+    _mm_storeu_pd(lanes.as_mut_ptr(), vec_sum);
+    let mut sum = acc + lanes[0] + lanes[1];
+    for &v in &vals[i..] {
+        sum += v;
+    }
+    sum
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn sum_f64_simd_x86_64_avx2(vals: &[f64], acc: f64) -> f64 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_sum = _mm256_setzero_pd();
+    while i + 4 <= vals.len() {
+        let vec = _mm256_loadu_pd(vals.as_ptr().add(i));
+        vec_sum = _mm256_add_pd(vec_sum, vec);
+        i += 4;
+    }
+    let mut lanes = [0.0f64; 4];
+    _mm256_storeu_pd(lanes.as_mut_ptr(), vec_sum);
+    let mut sum = acc + lanes[0] + lanes[1] + lanes[2] + lanes[3];
+    for &v in &vals[i..] {
+        sum += v;
+    }
+    sum
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn sum_f64_simd_aarch64(vals: &[f64], acc: f64) -> f64 {
+    unsafe {
+        use std::arch::aarch64::*;
+        let mut i = 0usize;
+        let mut vec_sum = vdupq_n_f64(0.0);
+        while i + 2 <= vals.len() {
+            let vec = vld1q_f64(vals.as_ptr().add(i));
+            vec_sum = vaddq_f64(vec_sum, vec);
+            i += 2;
+        }
+        let mut lanes = [0.0f64; 2];
+        vst1q_f64(lanes.as_mut_ptr(), vec_sum);
+        let mut sum = acc + lanes[0] + lanes[1];
+        for &v in &vals[i..] {
+            sum += v;
+        }
+        sum
+    }
+}
+
+/// Try to extract all elements as f64, then SIMD-sum. Returns None if any
+/// element is not a number (falls back to scalar path in caller).
+fn sum_floats_simd(elems: &[u64], acc: f64) -> Option<f64> {
+    // Pre-extract all f64 values (avoids per-element branch inside SIMD loop)
+    let mut vals: Vec<f64> = Vec::with_capacity(elems.len());
+    for &bits in elems {
+        vals.push(number_as_f64(MoltObject::from_bits(bits))?);
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return Some(unsafe { sum_f64_simd_x86_64_avx2(&vals, acc) });
+        }
+        if std::arch::is_x86_feature_detected!("sse2") {
+            return Some(unsafe { sum_f64_simd_x86_64(&vals, acc) });
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return Some(unsafe { sum_f64_simd_aarch64(&vals, acc) });
+        }
+    }
+    Some(sum_f64_raw_scalar(&vals, acc))
+}
+
+// ---------------------------------------------------------------------------
+// SIMD-accelerated sequence element identity comparison
+// Batch-compare NaN-boxed u64 arrays to quickly find first mismatch index.
+// ---------------------------------------------------------------------------
+
+/// Compare two u64 slices for element-wise bitwise equality using SIMD.
+/// Returns the index of the first mismatch, or `len` if all elements match.
+/// This is an identity check (bits ==), not semantic equality (obj_eq).
+fn simd_find_first_mismatch(lhs: &[u64], rhs: &[u64]) -> usize {
+    let len = lhs.len().min(rhs.len());
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { find_first_mismatch_avx2(lhs, rhs, len) };
+        }
+        if std::arch::is_x86_feature_detected!("sse2") {
+            return unsafe { find_first_mismatch_sse2(lhs, rhs, len) };
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { find_first_mismatch_neon(lhs, rhs, len) };
+        }
+    }
+    find_first_mismatch_scalar(lhs, rhs, len)
+}
+
+fn find_first_mismatch_scalar(lhs: &[u64], rhs: &[u64], len: usize) -> usize {
+    for i in 0..len {
+        if lhs[i] != rhs[i] {
+            return i;
+        }
+    }
+    len
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn find_first_mismatch_sse2(lhs: &[u64], rhs: &[u64], len: usize) -> usize {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    // Process 2 u64s (128 bits) per iteration
+    while i + 2 <= len {
+        let l_vec = _mm_loadu_si128(lhs.as_ptr().add(i) as *const __m128i);
+        let r_vec = _mm_loadu_si128(rhs.as_ptr().add(i) as *const __m128i);
+        let cmp = _mm_cmpeq_epi8(l_vec, r_vec);
+        let mask = _mm_movemask_epi8(cmp);
+        if mask != 0xFFFF {
+            // Mismatch in this 128-bit block — find which u64
+            if lhs[i] != rhs[i] {
+                return i;
+            }
+            return i + 1;
+        }
+        i += 2;
+    }
+    // Remainder
+    for j in i..len {
+        if lhs[j] != rhs[j] {
+            return j;
+        }
+    }
+    len
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn find_first_mismatch_avx2(lhs: &[u64], rhs: &[u64], len: usize) -> usize {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    // Process 4 u64s (256 bits) per iteration
+    while i + 4 <= len {
+        let l_vec = _mm256_loadu_si256(lhs.as_ptr().add(i) as *const __m256i);
+        let r_vec = _mm256_loadu_si256(rhs.as_ptr().add(i) as *const __m256i);
+        let cmp = _mm256_cmpeq_epi64(l_vec, r_vec);
+        let mask = _mm256_movemask_epi8(cmp);
+        if mask != -1i32 {
+            // Mismatch in this 256-bit block — find which u64
+            for j in 0..4 {
+                if lhs[i + j] != rhs[i + j] {
+                    return i + j;
+                }
+            }
+        }
+        i += 4;
+    }
+    // Remainder with SSE2
+    while i + 2 <= len {
+        let l_vec = _mm_loadu_si128(lhs.as_ptr().add(i) as *const __m128i);
+        let r_vec = _mm_loadu_si128(rhs.as_ptr().add(i) as *const __m128i);
+        let cmp = _mm_cmpeq_epi8(l_vec, r_vec);
+        let mask = _mm_movemask_epi8(cmp);
+        if mask != 0xFFFF {
+            if lhs[i] != rhs[i] {
+                return i;
+            }
+            return i + 1;
+        }
+        i += 2;
+    }
+    for j in i..len {
+        if lhs[j] != rhs[j] {
+            return j;
+        }
+    }
+    len
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn find_first_mismatch_neon(lhs: &[u64], rhs: &[u64], len: usize) -> usize {
+    unsafe {
+        use std::arch::aarch64::*;
+        let mut i = 0usize;
+        // Process 2 u64s (128 bits) per iteration
+        while i + 2 <= len {
+            let l_vec = vld1q_u64(lhs.as_ptr().add(i));
+            let r_vec = vld1q_u64(rhs.as_ptr().add(i));
+            let cmp = vceqq_u64(l_vec, r_vec);
+            // Both lanes must be all-ones (0xFFFFFFFFFFFFFFFF) for equality
+            let lane0 = vgetq_lane_u64(cmp, 0);
+            let lane1 = vgetq_lane_u64(cmp, 1);
+            if lane0 != u64::MAX {
+                return i;
+            }
+            if lane1 != u64::MAX {
+                return i + 1;
+            }
+            i += 2;
+        }
+        for j in i..len {
+            if lhs[j] != rhs[j] {
+                return j;
+            }
+        }
+        len
+    }
+}
+
 fn sum_float_range_arith_checked(start: i64, stop: i64, step: i64, acc: f64) -> Option<f64> {
     let len = range_len_i128(start, stop, step);
     if len <= 0 {
@@ -8028,7 +8413,7 @@ pub extern "C" fn molt_vec_sum_float(seq_bits: u64, acc_bits: u64) -> u64 {
                 vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
                 return vec_sum_f64_result(_py, acc, false);
             };
-            if let Some(sum) = sum_floats_scalar(elems, acc) {
+            if let Some(sum) = sum_floats_simd(elems, acc) {
                 vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, true);
                 return vec_sum_f64_result(_py, sum, true);
             }
@@ -8063,7 +8448,7 @@ pub extern "C" fn molt_vec_sum_float_trusted(seq_bits: u64, acc_bits: u64) -> u6
                 vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
                 return vec_sum_f64_result(_py, acc, false);
             };
-            if let Some(sum) = sum_floats_scalar(elems, acc) {
+            if let Some(sum) = sum_floats_simd(elems, acc) {
                 vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, true);
                 return vec_sum_f64_result(_py, sum, true);
             }
@@ -20277,6 +20662,15 @@ pub extern "C" fn molt_string_lower(hay_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            // SIMD fast path: pure ASCII strings use SIMD case conversion
+            if hay_bytes.iter().all(|&b| b < 0x80) {
+                let lowered = bytes_ascii_lower(hay_bytes);
+                let ptr = alloc_string(_py, &lowered);
+                if ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(ptr).bits();
+            }
             let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
                 return MoltObject::none().bits();
             };
@@ -20329,6 +20723,15 @@ pub extern "C" fn molt_string_upper(hay_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            // SIMD fast path: pure ASCII strings use SIMD case conversion
+            if hay_bytes.iter().all(|&b| b < 0x80) {
+                let uppered = bytes_ascii_upper(hay_bytes);
+                let ptr = alloc_string(_py, &uppered);
+                if ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(ptr).bits();
+            }
             let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
                 return MoltObject::none().bits();
             };
@@ -22658,26 +23061,106 @@ pub extern "C" fn molt_bytes_replace(
 
 #[inline]
 fn bytes_ascii_upper(bytes: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bytes.len());
-    for &b in bytes {
-        if b.is_ascii_lowercase() {
-            out.push(b.to_ascii_uppercase());
-        } else {
-            out.push(b);
+    let mut out = vec![0u8; bytes.len()];
+    let mut i = 0usize;
+    // SIMD: clear bit 5 on lowercase bytes [a-z] → [A-Z]
+    #[cfg(target_arch = "aarch64")]
+    {
+        if bytes.len() >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                use std::arch::aarch64::*;
+                let lower_a = vdupq_n_u8(b'a');
+                let lower_z = vdupq_n_u8(b'z');
+                let case_bit = vdupq_n_u8(0x20);
+                while i + 16 <= bytes.len() {
+                    let v = vld1q_u8(bytes.as_ptr().add(i));
+                    let is_lower = vandq_u8(vcgeq_u8(v, lower_a), vcleq_u8(v, lower_z));
+                    let clear = vandq_u8(is_lower, case_bit);
+                    let result = veorq_u8(v, clear); // XOR clears bit 5 on lowercase
+                    vst1q_u8(out.as_mut_ptr().add(i), result);
+                    i += 16;
+                }
+            }
         }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if bytes.len() >= 16 && std::arch::is_x86_feature_detected!("sse2") {
+            unsafe {
+                use std::arch::x86_64::*;
+                let case_bit = _mm_set1_epi8(0x20);
+                while i + 16 <= bytes.len() {
+                    let v = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
+                    let ge_a = _mm_cmpgt_epi8(v, _mm_set1_epi8(b'a' as i8 - 1));
+                    let le_z = _mm_cmpgt_epi8(_mm_set1_epi8(b'z' as i8 + 1), v);
+                    let is_lower = _mm_and_si128(ge_a, le_z);
+                    let clear = _mm_and_si128(is_lower, case_bit);
+                    let result = _mm_xor_si128(v, clear);
+                    _mm_storeu_si128(out.as_mut_ptr().add(i) as *mut __m128i, result);
+                    i += 16;
+                }
+            }
+        }
+    }
+    for j in i..bytes.len() {
+        out[j] = if bytes[j].is_ascii_lowercase() {
+            bytes[j].to_ascii_uppercase()
+        } else {
+            bytes[j]
+        };
     }
     out
 }
 
 #[inline]
 fn bytes_ascii_lower(bytes: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bytes.len());
-    for &b in bytes {
-        if b.is_ascii_uppercase() {
-            out.push(b.to_ascii_lowercase());
-        } else {
-            out.push(b);
+    let mut out = vec![0u8; bytes.len()];
+    let mut i = 0usize;
+    // SIMD: set bit 5 on uppercase bytes [A-Z] → [a-z]
+    #[cfg(target_arch = "aarch64")]
+    {
+        if bytes.len() >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                use std::arch::aarch64::*;
+                let upper_a = vdupq_n_u8(b'A');
+                let upper_z = vdupq_n_u8(b'Z');
+                let case_bit = vdupq_n_u8(0x20);
+                while i + 16 <= bytes.len() {
+                    let v = vld1q_u8(bytes.as_ptr().add(i));
+                    let is_upper = vandq_u8(vcgeq_u8(v, upper_a), vcleq_u8(v, upper_z));
+                    let to_lower = vandq_u8(is_upper, case_bit);
+                    let result = vorrq_u8(v, to_lower);
+                    vst1q_u8(out.as_mut_ptr().add(i), result);
+                    i += 16;
+                }
+            }
         }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if bytes.len() >= 16 && std::arch::is_x86_feature_detected!("sse2") {
+            unsafe {
+                use std::arch::x86_64::*;
+                let case_bit = _mm_set1_epi8(0x20);
+                while i + 16 <= bytes.len() {
+                    let v = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
+                    let ge_a = _mm_cmpgt_epi8(v, _mm_set1_epi8(b'A' as i8 - 1));
+                    let le_z = _mm_cmpgt_epi8(_mm_set1_epi8(b'Z' as i8 + 1), v);
+                    let is_upper = _mm_and_si128(ge_a, le_z);
+                    let to_lower = _mm_and_si128(is_upper, case_bit);
+                    let result = _mm_or_si128(v, to_lower);
+                    _mm_storeu_si128(out.as_mut_ptr().add(i) as *mut __m128i, result);
+                    i += 16;
+                }
+            }
+        }
+    }
+    for j in i..bytes.len() {
+        out[j] = if bytes[j].is_ascii_uppercase() {
+            bytes[j].to_ascii_lowercase()
+        } else {
+            bytes[j]
+        };
     }
     out
 }
@@ -22925,33 +23408,123 @@ fn bytes_ascii_capitalize(bytes: &[u8]) -> Vec<u8> {
     if bytes.is_empty() {
         return Vec::new();
     }
-    let mut out = Vec::with_capacity(bytes.len());
-    let first = bytes[0];
-    out.push(if first.is_ascii_lowercase() {
-        first.to_ascii_uppercase()
+    let mut out = vec![0u8; bytes.len()];
+    // First byte: capitalize
+    out[0] = if bytes[0].is_ascii_lowercase() {
+        bytes[0].to_ascii_uppercase()
     } else {
-        first
-    });
-    for &b in &bytes[1..] {
-        out.push(if b.is_ascii_uppercase() {
-            b.to_ascii_lowercase()
+        bytes[0]
+    };
+    // Rest: SIMD-accelerated lowercasing (set bit 5 on uppercase bytes)
+    let rest = &bytes[1..];
+    let mut i = 0usize;
+    #[cfg(target_arch = "aarch64")]
+    {
+        if rest.len() >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                use std::arch::aarch64::*;
+                let upper_a = vdupq_n_u8(b'A');
+                let upper_z = vdupq_n_u8(b'Z');
+                let case_bit = vdupq_n_u8(0x20);
+                while i + 16 <= rest.len() {
+                    let v = vld1q_u8(rest.as_ptr().add(i));
+                    let is_upper = vandq_u8(vcgeq_u8(v, upper_a), vcleq_u8(v, upper_z));
+                    let to_lower = vandq_u8(is_upper, case_bit);
+                    let result = vorrq_u8(v, to_lower);
+                    vst1q_u8(out.as_mut_ptr().add(1 + i), result);
+                    i += 16;
+                }
+            }
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if rest.len() >= 16 && std::arch::is_x86_feature_detected!("sse2") {
+            unsafe {
+                use std::arch::x86_64::*;
+                let case_bit = _mm_set1_epi8(0x20);
+                while i + 16 <= rest.len() {
+                    let v = _mm_loadu_si128(rest.as_ptr().add(i) as *const __m128i);
+                    let ge_a = _mm_cmpgt_epi8(v, _mm_set1_epi8(b'A' as i8 - 1));
+                    let le_z = _mm_cmpgt_epi8(_mm_set1_epi8(b'Z' as i8 + 1), v);
+                    let is_upper = _mm_and_si128(ge_a, le_z);
+                    let to_lower = _mm_and_si128(is_upper, case_bit);
+                    let result = _mm_or_si128(v, to_lower);
+                    _mm_storeu_si128(out.as_mut_ptr().add(1 + i) as *mut __m128i, result);
+                    i += 16;
+                }
+            }
+        }
+    }
+    // Scalar tail
+    for j in i..rest.len() {
+        out[1 + j] = if rest[j].is_ascii_uppercase() {
+            rest[j].to_ascii_lowercase()
         } else {
-            b
-        });
+            rest[j]
+        };
     }
     out
 }
 
 fn bytes_ascii_swapcase(bytes: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bytes.len());
-    for &b in bytes {
-        if b.is_ascii_lowercase() {
-            out.push(b.to_ascii_uppercase());
-        } else if b.is_ascii_uppercase() {
-            out.push(b.to_ascii_lowercase());
-        } else {
-            out.push(b);
+    let mut out = vec![0u8; bytes.len()];
+    let mut i = 0usize;
+    // SIMD fast path: toggle bit 5 on alphabetic bytes (16 bytes at a time)
+    #[cfg(target_arch = "aarch64")]
+    {
+        if bytes.len() >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                use std::arch::aarch64::*;
+                let lower_a = vdupq_n_u8(b'a');
+                let lower_z = vdupq_n_u8(b'z');
+                let upper_a = vdupq_n_u8(b'A');
+                let upper_z = vdupq_n_u8(b'Z');
+                let case_bit = vdupq_n_u8(0x20);
+                while i + 16 <= bytes.len() {
+                    let v = vld1q_u8(bytes.as_ptr().add(i));
+                    let is_lower = vandq_u8(vcgeq_u8(v, lower_a), vcleq_u8(v, lower_z));
+                    let is_upper = vandq_u8(vcgeq_u8(v, upper_a), vcleq_u8(v, upper_z));
+                    let is_alpha = vorrq_u8(is_lower, is_upper);
+                    let flip = vandq_u8(is_alpha, case_bit);
+                    let result = veorq_u8(v, flip);
+                    vst1q_u8(out.as_mut_ptr().add(i), result);
+                    i += 16;
+                }
+            }
         }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if bytes.len() >= 16 && std::arch::is_x86_feature_detected!("sse2") {
+            unsafe {
+                use std::arch::x86_64::*;
+                let case_bit = _mm_set1_epi8(0x20);
+                while i + 16 <= bytes.len() {
+                    let v = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
+                    // Check lower: a <= v <= z (use unsigned saturation trick)
+                    let shifted = _mm_or_si128(v, case_bit); // force to lowercase
+                    let ge_a = _mm_cmpgt_epi8(shifted, _mm_set1_epi8(b'a' as i8 - 1));
+                    let le_z = _mm_cmpgt_epi8(_mm_set1_epi8(b'z' as i8 + 1), shifted);
+                    let is_alpha = _mm_and_si128(ge_a, le_z);
+                    let flip = _mm_and_si128(is_alpha, case_bit);
+                    let result = _mm_xor_si128(v, flip);
+                    _mm_storeu_si128(out.as_mut_ptr().add(i) as *mut __m128i, result);
+                    i += 16;
+                }
+            }
+        }
+    }
+    // Scalar tail
+    for j in i..bytes.len() {
+        let b = bytes[j];
+        out[j] = if b.is_ascii_lowercase() {
+            b.to_ascii_uppercase()
+        } else if b.is_ascii_uppercase() {
+            b.to_ascii_lowercase()
+        } else {
+            b
+        };
     }
     out
 }
@@ -22979,6 +23552,72 @@ fn bytes_ascii_islower(bytes: &[u8]) -> bool {
     if bytes.is_empty() {
         return false;
     }
+    // SIMD fast path: check if any byte is in [A-Z] range (instant false) in bulk
+    #[cfg(target_arch = "aarch64")]
+    {
+        if bytes.len() >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                use std::arch::aarch64::*;
+                let upper_a = vdupq_n_u8(b'A');
+                let upper_z = vdupq_n_u8(b'Z');
+                let lower_a = vdupq_n_u8(b'a');
+                let lower_z = vdupq_n_u8(b'z');
+                let mut has_lower_vec = vdupq_n_u8(0);
+                let mut i = 0usize;
+                while i + 16 <= bytes.len() {
+                    let v = vld1q_u8(bytes.as_ptr().add(i));
+                    let is_upper = vandq_u8(vcgeq_u8(v, upper_a), vcleq_u8(v, upper_z));
+                    if vmaxvq_u8(is_upper) != 0 {
+                        return false;
+                    }
+                    let is_lower = vandq_u8(vcgeq_u8(v, lower_a), vcleq_u8(v, lower_z));
+                    has_lower_vec = vorrq_u8(has_lower_vec, is_lower);
+                    i += 16;
+                }
+                let has_lower_simd = vmaxvq_u8(has_lower_vec) != 0;
+                // Scalar tail
+                let mut has_lower = has_lower_simd;
+                for &b in &bytes[i..] {
+                    if b.is_ascii_uppercase() { return false; }
+                    if b.is_ascii_lowercase() { has_lower = true; }
+                }
+                return has_lower;
+            }
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if bytes.len() >= 16 && std::arch::is_x86_feature_detected!("sse2") {
+            unsafe {
+                use std::arch::x86_64::*;
+                let mut has_lower_any = false;
+                let mut i = 0usize;
+                while i + 16 <= bytes.len() {
+                    let v = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
+                    // Check for uppercase [A-Z]
+                    let ge_a = _mm_cmpgt_epi8(v, _mm_set1_epi8(b'A' as i8 - 1));
+                    let le_z = _mm_cmpgt_epi8(_mm_set1_epi8(b'Z' as i8 + 1), v);
+                    let is_upper = _mm_and_si128(ge_a, le_z);
+                    if _mm_movemask_epi8(is_upper) != 0 {
+                        return false;
+                    }
+                    // Check for lowercase [a-z]
+                    let ge_la = _mm_cmpgt_epi8(v, _mm_set1_epi8(b'a' as i8 - 1));
+                    let le_lz = _mm_cmpgt_epi8(_mm_set1_epi8(b'z' as i8 + 1), v);
+                    let is_lower = _mm_and_si128(ge_la, le_lz);
+                    if _mm_movemask_epi8(is_lower) != 0 {
+                        has_lower_any = true;
+                    }
+                    i += 16;
+                }
+                for &b in &bytes[i..] {
+                    if b.is_ascii_uppercase() { return false; }
+                    if b.is_ascii_lowercase() { has_lower_any = true; }
+                }
+                return has_lower_any;
+            }
+        }
+    }
     let mut has_lower = false;
     for &b in bytes {
         if b.is_ascii_uppercase() {
@@ -22994,6 +23633,69 @@ fn bytes_ascii_islower(bytes: &[u8]) -> bool {
 fn bytes_ascii_isupper(bytes: &[u8]) -> bool {
     if bytes.is_empty() {
         return false;
+    }
+    // SIMD fast path: check if any byte is in [a-z] range (instant false) in bulk
+    #[cfg(target_arch = "aarch64")]
+    {
+        if bytes.len() >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                use std::arch::aarch64::*;
+                let lower_a = vdupq_n_u8(b'a');
+                let lower_z = vdupq_n_u8(b'z');
+                let upper_a = vdupq_n_u8(b'A');
+                let upper_z = vdupq_n_u8(b'Z');
+                let mut has_upper_vec = vdupq_n_u8(0);
+                let mut i = 0usize;
+                while i + 16 <= bytes.len() {
+                    let v = vld1q_u8(bytes.as_ptr().add(i));
+                    let is_lower = vandq_u8(vcgeq_u8(v, lower_a), vcleq_u8(v, lower_z));
+                    if vmaxvq_u8(is_lower) != 0 {
+                        return false;
+                    }
+                    let is_upper = vandq_u8(vcgeq_u8(v, upper_a), vcleq_u8(v, upper_z));
+                    has_upper_vec = vorrq_u8(has_upper_vec, is_upper);
+                    i += 16;
+                }
+                let has_upper_simd = vmaxvq_u8(has_upper_vec) != 0;
+                let mut has_upper = has_upper_simd;
+                for &b in &bytes[i..] {
+                    if b.is_ascii_lowercase() { return false; }
+                    if b.is_ascii_uppercase() { has_upper = true; }
+                }
+                return has_upper;
+            }
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if bytes.len() >= 16 && std::arch::is_x86_feature_detected!("sse2") {
+            unsafe {
+                use std::arch::x86_64::*;
+                let mut has_upper_any = false;
+                let mut i = 0usize;
+                while i + 16 <= bytes.len() {
+                    let v = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
+                    let ge_la = _mm_cmpgt_epi8(v, _mm_set1_epi8(b'a' as i8 - 1));
+                    let le_lz = _mm_cmpgt_epi8(_mm_set1_epi8(b'z' as i8 + 1), v);
+                    let is_lower = _mm_and_si128(ge_la, le_lz);
+                    if _mm_movemask_epi8(is_lower) != 0 {
+                        return false;
+                    }
+                    let ge_a = _mm_cmpgt_epi8(v, _mm_set1_epi8(b'A' as i8 - 1));
+                    let le_z = _mm_cmpgt_epi8(_mm_set1_epi8(b'Z' as i8 + 1), v);
+                    let is_upper = _mm_and_si128(ge_a, le_z);
+                    if _mm_movemask_epi8(is_upper) != 0 {
+                        has_upper_any = true;
+                    }
+                    i += 16;
+                }
+                for &b in &bytes[i..] {
+                    if b.is_ascii_lowercase() { return false; }
+                    if b.is_ascii_uppercase() { has_upper_any = true; }
+                }
+                return has_upper_any;
+            }
+        }
     }
     let mut has_upper = false;
     for &b in bytes {
@@ -41841,9 +42543,7 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                     if l_len != r_len {
                         return false;
                     }
-                    let l_bytes = std::slice::from_raw_parts(bytes_data(lp), l_len);
-                    let r_bytes = std::slice::from_raw_parts(bytes_data(rp), r_len);
-                    return l_bytes == r_bytes;
+                    return simd_bytes_eq(bytes_data(lp), bytes_data(rp), l_len);
                 }
                 if is_set_like_type(ltype) && is_set_like_type(rtype) {
                     let l_elems = set_order(lp);
@@ -41922,9 +42622,7 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                 if l_len != r_len {
                     return false;
                 }
-                let l_bytes = std::slice::from_raw_parts(string_bytes(lp), l_len);
-                let r_bytes = std::slice::from_raw_parts(string_bytes(rp), r_len);
-                return l_bytes == r_bytes;
+                return simd_bytes_eq(string_bytes(lp), string_bytes(rp), l_len);
             }
             if ltype == TYPE_ID_BYTES || ltype == TYPE_ID_BYTEARRAY {
                 let l_len = bytes_len(lp);
@@ -41932,9 +42630,7 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                 if l_len != r_len {
                     return false;
                 }
-                let l_bytes = std::slice::from_raw_parts(bytes_data(lp), l_len);
-                let r_bytes = std::slice::from_raw_parts(bytes_data(rp), r_len);
-                return l_bytes == r_bytes;
+                return simd_bytes_eq(bytes_data(lp), bytes_data(rp), l_len);
             }
             if ltype == TYPE_ID_TUPLE {
                 let l_elems = seq_vec_ref(lp);
@@ -41942,8 +42638,10 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                 if l_elems.len() != r_elems.len() {
                     return false;
                 }
-                for (l_val, r_val) in l_elems.iter().zip(r_elems.iter()) {
-                    if !obj_eq(_py, obj_from_bits(*l_val), obj_from_bits(*r_val)) {
+                // SIMD fast path: skip past identity-equal prefix
+                let first_diff = simd_find_first_mismatch(l_elems, r_elems);
+                for idx in first_diff..l_elems.len() {
+                    if !obj_eq(_py, obj_from_bits(l_elems[idx]), obj_from_bits(r_elems[idx])) {
                         return false;
                     }
                 }
@@ -41986,8 +42684,10 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                 if l_elems.len() != r_elems.len() {
                     return false;
                 }
-                for (l_val, r_val) in l_elems.iter().zip(r_elems.iter()) {
-                    if !obj_eq(_py, obj_from_bits(*l_val), obj_from_bits(*r_val)) {
+                // SIMD fast path: skip past identity-equal prefix
+                let first_diff = simd_find_first_mismatch(l_elems, r_elems);
+                for idx in first_diff..l_elems.len() {
+                    if !obj_eq(_py, obj_from_bits(l_elems[idx]), obj_from_bits(r_elems[idx])) {
                         return false;
                     }
                 }
@@ -42290,12 +42990,14 @@ fn hash_string_bytes(_py: &PyToken<'_>, bytes: &[u8]) -> i64 {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return hash_bytes_with_secret(bytes, secret);
     };
-    let mut max_codepoint = 0u32;
-    for ch in text.chars() {
-        max_codepoint = max_codepoint.max(ch as u32);
-    }
+    // SIMD fast path: if all bytes < 0x80, all codepoints are ASCII (max_codepoint ≤ 0x7F).
+    // Use SIMD to check this in bulk rather than iterating char-by-char.
+    let max_codepoint = simd_max_byte_value(bytes);
     let mut hasher = SipHasher13::new(secret.k0, secret.k1);
-    if max_codepoint <= 0xff {
+    if max_codepoint <= 0x7f {
+        // Pure ASCII: each byte is a codepoint, hash as u8 directly
+        hasher.update(bytes);
+    } else if max_codepoint <= 0xff {
         for ch in text.chars() {
             hasher.update(&[ch as u8]);
         }
@@ -42311,6 +43013,145 @@ fn hash_string_bytes(_py: &PyToken<'_>, bytes: &[u8]) -> i64 {
         }
     }
     fix_hash(hasher.finish() as i64)
+}
+
+/// SIMD-accelerated max byte value scan. Returns the maximum byte value in the slice.
+/// Used to quickly determine string encoding width (ASCII, Latin-1, BMP, full Unicode).
+#[inline]
+fn simd_max_byte_value(bytes: &[u8]) -> u32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if bytes.len() >= 32 && std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { simd_max_byte_avx2(bytes) };
+        }
+        if bytes.len() >= 16 && std::arch::is_x86_feature_detected!("sse2") {
+            return unsafe { simd_max_byte_sse2(bytes) };
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if bytes.len() >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { simd_max_byte_neon(bytes) };
+        }
+    }
+    // Scalar fallback — also handles short strings and decodes actual codepoints
+    let mut max = 0u32;
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        for ch in text.chars() {
+            max = max.max(ch as u32);
+        }
+    } else {
+        for &b in bytes {
+            max = max.max(b as u32);
+        }
+    }
+    max
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn simd_max_byte_sse2(bytes: &[u8]) -> u32 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vmax = _mm_setzero_si128();
+    while i + 16 <= bytes.len() {
+        let v = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
+        vmax = _mm_max_epu8(vmax, v);
+        i += 16;
+    }
+    // Horizontal max: fold 128 bits down to a single max byte
+    let hi64 = _mm_srli_si128(vmax, 8);
+    vmax = _mm_max_epu8(vmax, hi64);
+    let hi32 = _mm_srli_si128(vmax, 4);
+    vmax = _mm_max_epu8(vmax, hi32);
+    let hi16 = _mm_srli_si128(vmax, 2);
+    vmax = _mm_max_epu8(vmax, hi16);
+    let hi8 = _mm_srli_si128(vmax, 1);
+    vmax = _mm_max_epu8(vmax, hi8);
+    let mut max = (_mm_extract_epi8(vmax, 0) & 0xFF) as u32;
+    // Tail bytes
+    for &b in &bytes[i..] {
+        max = max.max(b as u32);
+    }
+    // If all bytes < 0x80, return the byte max directly (it's ASCII, so codepoint == byte)
+    // If any byte >= 0x80, fall back to full codepoint scan since UTF-8 multi-byte chars
+    // could have codepoints > 0xFF
+    if max >= 0x80 {
+        let mut cp_max = 0u32;
+        if let Ok(text) = std::str::from_utf8(bytes) {
+            for ch in text.chars() {
+                cp_max = cp_max.max(ch as u32);
+            }
+        }
+        return cp_max;
+    }
+    max
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn simd_max_byte_avx2(bytes: &[u8]) -> u32 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vmax = _mm256_setzero_si256();
+    while i + 32 <= bytes.len() {
+        let v = _mm256_loadu_si256(bytes.as_ptr().add(i) as *const __m256i);
+        vmax = _mm256_max_epu8(vmax, v);
+        i += 32;
+    }
+    // Fold 256 to 128
+    let lo = _mm256_castsi256_si128(vmax);
+    let hi = _mm256_extracti128_si256(vmax, 1);
+    let mut v128 = _mm_max_epu8(lo, hi);
+    // Fold 128 to single byte
+    let hi64 = _mm_srli_si128(v128, 8);
+    v128 = _mm_max_epu8(v128, hi64);
+    let hi32 = _mm_srli_si128(v128, 4);
+    v128 = _mm_max_epu8(v128, hi32);
+    let hi16 = _mm_srli_si128(v128, 2);
+    v128 = _mm_max_epu8(v128, hi16);
+    let hi8 = _mm_srli_si128(v128, 1);
+    v128 = _mm_max_epu8(v128, hi8);
+    let mut max = (_mm_extract_epi8(v128, 0) & 0xFF) as u32;
+    for &b in &bytes[i..] {
+        max = max.max(b as u32);
+    }
+    if max >= 0x80 {
+        let mut cp_max = 0u32;
+        if let Ok(text) = std::str::from_utf8(bytes) {
+            for ch in text.chars() {
+                cp_max = cp_max.max(ch as u32);
+            }
+        }
+        return cp_max;
+    }
+    max
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn simd_max_byte_neon(bytes: &[u8]) -> u32 {
+    unsafe {
+        use std::arch::aarch64::*;
+        let mut i = 0usize;
+        let mut vmax = vdupq_n_u8(0);
+        while i + 16 <= bytes.len() {
+            let v = vld1q_u8(bytes.as_ptr().add(i));
+            vmax = vmaxq_u8(vmax, v);
+            i += 16;
+        }
+        let mut max = vmaxvq_u8(vmax) as u32;
+        for &b in &bytes[i..] {
+            max = max.max(b as u32);
+        }
+        if max >= 0x80 {
+            let mut cp_max = 0u32;
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                for ch in text.chars() {
+                    cp_max = cp_max.max(ch as u32);
+                }
+            }
+            return cp_max;
+        }
+        max
+    }
 }
 
 fn hash_string(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
@@ -43123,6 +43964,105 @@ pub(crate) fn dict_find_entry(
     }
 }
 
+// ---------------------------------------------------------------------------
+// SIMD-accelerated byte-level equality for string/bytes comparisons.
+// For short strings (< 32 bytes), the compiler-generated memcmp is fast enough.
+// For longer strings, explicit SIMD provides measurable wins especially on
+// Apple Silicon where NEON is always available with no runtime detection cost.
+// ---------------------------------------------------------------------------
+
+/// SIMD byte equality: returns true if `a[..len] == b[..len]`.
+/// Precondition: both pointers are valid for `len` bytes.
+#[inline]
+unsafe fn simd_bytes_eq(a: *const u8, b: *const u8, len: usize) -> bool {
+    unsafe {
+        // Short strings: defer to compiler intrinsic (already very fast)
+        if len < 32 {
+            return std::slice::from_raw_parts(a, len) == std::slice::from_raw_parts(b, len);
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            if std::arch::is_x86_feature_detected!("avx2") {
+                return simd_bytes_eq_avx2(a, b, len);
+            }
+            return simd_bytes_eq_sse2(a, b, len);
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            return simd_bytes_eq_neon(a, b, len);
+        }
+        #[allow(unreachable_code)]
+        {
+            std::slice::from_raw_parts(a, len) == std::slice::from_raw_parts(b, len)
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+unsafe fn simd_bytes_eq_sse2(a: *const u8, b: *const u8, len: usize) -> bool {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    while i + 16 <= len {
+        let va = _mm_loadu_si128(a.add(i) as *const __m128i);
+        let vb = _mm_loadu_si128(b.add(i) as *const __m128i);
+        let cmp = _mm_cmpeq_epi8(va, vb);
+        if _mm_movemask_epi8(cmp) != 0xFFFF {
+            return false;
+        }
+        i += 16;
+    }
+    // Tail: compare remaining bytes
+    std::slice::from_raw_parts(a.add(i), len - i) == std::slice::from_raw_parts(b.add(i), len - i)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+unsafe fn simd_bytes_eq_avx2(a: *const u8, b: *const u8, len: usize) -> bool {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    while i + 32 <= len {
+        let va = _mm256_loadu_si256(a.add(i) as *const __m256i);
+        let vb = _mm256_loadu_si256(b.add(i) as *const __m256i);
+        let cmp = _mm256_cmpeq_epi8(va, vb);
+        if _mm256_movemask_epi8(cmp) != -1i32 {
+            return false;
+        }
+        i += 32;
+    }
+    // SSE2 tail for 16-byte remainder
+    if i + 16 <= len {
+        let va = _mm_loadu_si128(a.add(i) as *const __m128i);
+        let vb = _mm_loadu_si128(b.add(i) as *const __m128i);
+        let cmp = _mm_cmpeq_epi8(va, vb);
+        if _mm_movemask_epi8(cmp) != 0xFFFF {
+            return false;
+        }
+        i += 16;
+    }
+    std::slice::from_raw_parts(a.add(i), len - i) == std::slice::from_raw_parts(b.add(i), len - i)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn simd_bytes_eq_neon(a: *const u8, b: *const u8, len: usize) -> bool {
+    unsafe {
+        use std::arch::aarch64::*;
+        let mut i = 0usize;
+        while i + 16 <= len {
+            let va = vld1q_u8(a.add(i));
+            let vb = vld1q_u8(b.add(i));
+            let cmp = vceqq_u8(va, vb);
+            // vminvq_u8 returns 0xFF if all lanes equal, < 0xFF if any differ
+            if vminvq_u8(cmp) != 0xFF {
+                return false;
+            }
+            i += 16;
+        }
+        std::slice::from_raw_parts(a.add(i), len - i) == std::slice::from_raw_parts(b.add(i), len - i)
+    }
+}
+
 unsafe fn string_bits_eq(a_bits: u64, b_bits: u64) -> Option<bool> {
     unsafe {
         let a_obj = obj_from_bits(a_bits);
@@ -43140,9 +44080,7 @@ unsafe fn string_bits_eq(a_bits: u64, b_bits: u64) -> Option<bool> {
         if a_len != b_len {
             return Some(false);
         }
-        let a_bytes = std::slice::from_raw_parts(string_bytes(a_ptr), a_len);
-        let b_bytes = std::slice::from_raw_parts(string_bytes(b_ptr), b_len);
-        Some(a_bytes == b_bytes)
+        Some(simd_bytes_eq(string_bytes(a_ptr), string_bytes(b_ptr), a_len))
     }
 }
 
