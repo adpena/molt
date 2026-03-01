@@ -7,6 +7,9 @@ import re
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_EMAIL_MESSAGE_AS_STRING = _require_intrinsic(
+    "molt_email_message_as_string", globals()
+)
 
 UNDERSCORE = "_"
 NL = "\n"
@@ -35,7 +38,11 @@ class Generator:
 
     def flatten(self, msg, unixfrom: bool = False, linesep: str | None = None):
         del unixfrom
-        text = str(msg)
+        handle = getattr(msg, "_handle", None)
+        if handle is not None:
+            text = _MOLT_EMAIL_MESSAGE_AS_STRING(handle)
+        else:
+            text = str(msg)
         if linesep is not None:
             text = NLCRE.sub(linesep, text)
         self._fp.write(text)
@@ -44,7 +51,11 @@ class Generator:
 class BytesGenerator(Generator):
     def flatten(self, msg, unixfrom: bool = False, linesep: str | None = None):
         del unixfrom
-        text = str(msg)
+        handle = getattr(msg, "_handle", None)
+        if handle is not None:
+            text = _MOLT_EMAIL_MESSAGE_AS_STRING(handle)
+        else:
+            text = str(msg)
         if linesep is not None:
             text = NLCRE.sub(linesep, text)
         if isinstance(text, str):

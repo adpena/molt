@@ -350,6 +350,270 @@ class Context:
             _MOLT_DECIMAL_DIV(self._handle, a._handle, b._handle)
         )
 
+    def create_decimal_from_float(self, f: float) -> "Decimal":
+        if not isinstance(f, (float, int)):
+            raise TypeError("argument must be int or float")
+        return _decimal_from_handle(_MOLT_DECIMAL_FROM_FLOAT(self._handle, float(f)))
+
+    # ── Context-aware arithmetic ─────────────────────────────────────────
+
+    def abs(self, a: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        return _decimal_from_handle(_MOLT_DECIMAL_ABS(self._handle, a._handle))
+
+    def add(self, a: "Decimal", b: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        b = _coerce(b)
+        return _decimal_from_handle(
+            _MOLT_DECIMAL_ADD(self._handle, a._handle, b._handle)
+        )
+
+    def subtract(self, a: "Decimal", b: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        b = _coerce(b)
+        return _decimal_from_handle(
+            _MOLT_DECIMAL_SUB(self._handle, a._handle, b._handle)
+        )
+
+    def multiply(self, a: "Decimal", b: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        b = _coerce(b)
+        return _decimal_from_handle(
+            _MOLT_DECIMAL_MUL(self._handle, a._handle, b._handle)
+        )
+
+    def divide_int(self, a: "Decimal", b: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        b = _coerce(b)
+        return _decimal_from_handle(
+            _MOLT_DECIMAL_FLOORDIV(self._handle, a._handle, b._handle)
+        )
+
+    def remainder(self, a: "Decimal", b: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        b = _coerce(b)
+        return _decimal_from_handle(
+            _MOLT_DECIMAL_MOD(self._handle, a._handle, b._handle)
+        )
+
+    def divmod(self, a: "Decimal", b: "Decimal") -> tuple["Decimal", "Decimal"]:
+        a = _coerce(a)
+        b = _coerce(b)
+        return (self.divide_int(a, b), self.remainder(a, b))
+
+    def remainder_near(self, a: "Decimal", b: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        b = _coerce(b)
+        return _decimal_from_handle(
+            _MOLT_DECIMAL_REMAINDER_NEAR(self._handle, a._handle, b._handle)
+        )
+
+    def power(self, a: "Decimal", b: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        b = _coerce(b)
+        return _decimal_from_handle(
+            _MOLT_DECIMAL_POW(self._handle, a._handle, b._handle)
+        )
+
+    def minus(self, a: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        return _decimal_from_handle(_MOLT_DECIMAL_NEG(self._handle, a._handle))
+
+    def plus(self, a: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        return _decimal_from_handle(_MOLT_DECIMAL_POS(self._handle, a._handle))
+
+    # ── Context-aware mathematical methods ───────────────────────────────
+
+    def sqrt(self, a: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        return _decimal_from_handle(_MOLT_DECIMAL_SQRT(self._handle, a._handle))
+
+    def exp(self, a: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        return _decimal_from_handle(_MOLT_DECIMAL_EXP(self._handle, a._handle))
+
+    def ln(self, a: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        return _decimal_from_handle(_MOLT_DECIMAL_LN(self._handle, a._handle))
+
+    def log10(self, a: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        return _decimal_from_handle(_MOLT_DECIMAL_LOG10(self._handle, a._handle))
+
+    def fma(self, a: "Decimal", b: "Decimal", c: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        b = _coerce(b)
+        c = _coerce(c)
+        return _decimal_from_handle(
+            _MOLT_DECIMAL_FMA(self._handle, a._handle, b._handle, c._handle)
+        )
+
+    def normalize(self, a: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        return _decimal_from_handle(_MOLT_DECIMAL_NORMALIZE(self._handle, a._handle))
+
+    def quantize(self, a: "Decimal", b: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        b = _coerce(b)
+        return _decimal_from_handle(
+            _MOLT_DECIMAL_QUANTIZE(self._handle, a._handle, b._handle)
+        )
+
+    # ── Context-aware comparison / ordering ──────────────────────────────
+
+    def compare(self, a: "Decimal", b: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        b = _coerce(b)
+        return _decimal_from_handle(
+            _MOLT_DECIMAL_COMPARE(self._handle, a._handle, b._handle)
+        )
+
+    def compare_total(self, a: "Decimal", b: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        b = _coerce(b)
+        return _decimal_from_handle(_MOLT_DECIMAL_COMPARE_TOTAL(a._handle, b._handle))
+
+    def max(self, a: "Decimal", b: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        b = _coerce(b)
+        return _decimal_from_handle(
+            _MOLT_DECIMAL_MAX(self._handle, a._handle, b._handle)
+        )
+
+    def min(self, a: "Decimal", b: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        b = _coerce(b)
+        return _decimal_from_handle(
+            _MOLT_DECIMAL_MIN(self._handle, a._handle, b._handle)
+        )
+
+    # ── Context-aware rounding / integral ────────────────────────────────
+
+    def to_integral_value(self, a: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        return _decimal_from_handle(
+            _MOLT_DECIMAL_TO_INTEGRAL_VALUE(self._handle, a._handle)
+        )
+
+    def to_integral_exact(self, a: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        return _decimal_from_handle(
+            _MOLT_DECIMAL_TO_INTEGRAL_EXACT(self._handle, a._handle)
+        )
+
+    def to_integral(self, a: "Decimal") -> "Decimal":
+        return self.to_integral_value(a)
+
+    # ── Context-aware next / scaleb / number_class ───────────────────────
+
+    def next_minus(self, a: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        return _decimal_from_handle(_MOLT_DECIMAL_NEXT_MINUS(self._handle, a._handle))
+
+    def next_plus(self, a: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        return _decimal_from_handle(_MOLT_DECIMAL_NEXT_PLUS(self._handle, a._handle))
+
+    def scaleb(self, a: "Decimal", b: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        b = _coerce(b)
+        return _decimal_from_handle(
+            _MOLT_DECIMAL_SCALEB(self._handle, a._handle, b._handle)
+        )
+
+    def number_class(self, a: "Decimal") -> str:
+        a = _coerce(a)
+        return str(_MOLT_DECIMAL_NUMBER_CLASS(self._handle, a._handle))
+
+    # ── Context-aware string representations ─────────────────────────────
+
+    def to_eng_string(self, a: "Decimal") -> str:
+        a = _coerce(a)
+        return str(_MOLT_DECIMAL_TO_ENG_STRING(a._handle))
+
+    def to_sci_string(self, a: "Decimal") -> str:
+        a = _coerce(a)
+        return str(_MOLT_DECIMAL_TO_STRING(a._handle))
+
+    # ── Context-aware copy operations ────────────────────────────────────
+
+    def copy_abs(self, a: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        return _decimal_from_handle(_MOLT_DECIMAL_COPY_ABS(a._handle))
+
+    def copy_negate(self, a: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        return _decimal_from_handle(_MOLT_DECIMAL_COPY_NEGATE(a._handle))
+
+    def copy_sign(self, a: "Decimal", b: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        b = _coerce(b)
+        return _decimal_from_handle(_MOLT_DECIMAL_COPY_SIGN(a._handle, b._handle))
+
+    def copy_decimal(self, a: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        return _decimal_from_handle(_MOLT_DECIMAL_CLONE(a._handle))
+
+    def same_quantum(self, a: "Decimal", b: "Decimal") -> bool:
+        a = _coerce(a)
+        b = _coerce(b)
+        return bool(_MOLT_DECIMAL_SAME_QUANTUM(a._handle, b._handle))
+
+    # ── Context-aware predicates ─────────────────────────────────────────
+
+    def is_finite(self, a: "Decimal") -> bool:
+        a = _coerce(a)
+        return bool(_MOLT_DECIMAL_IS_FINITE(a._handle))
+
+    def is_infinite(self, a: "Decimal") -> bool:
+        a = _coerce(a)
+        return bool(_MOLT_DECIMAL_IS_INFINITE(a._handle))
+
+    def is_nan(self, a: "Decimal") -> bool:
+        a = _coerce(a)
+        return bool(_MOLT_DECIMAL_IS_NAN(a._handle))
+
+    def is_normal(self, a: "Decimal") -> bool:
+        a = _coerce(a)
+        return bool(_MOLT_DECIMAL_IS_NORMAL(self._handle, a._handle))
+
+    def is_signed(self, a: "Decimal") -> bool:
+        a = _coerce(a)
+        return bool(_MOLT_DECIMAL_IS_SIGNED(a._handle))
+
+    def is_subnormal(self, a: "Decimal") -> bool:
+        a = _coerce(a)
+        return bool(_MOLT_DECIMAL_IS_SUBNORMAL(self._handle, a._handle))
+
+    def is_zero(self, a: "Decimal") -> bool:
+        a = _coerce(a)
+        return bool(_MOLT_DECIMAL_IS_ZERO(a._handle))
+
+    def is_snan(self, a: "Decimal") -> bool:
+        a = _coerce(a)
+        t = a.as_tuple()
+        return isinstance(t.exponent, str) and t.exponent == "N"
+
+    def is_qnan(self, a: "Decimal") -> bool:
+        a = _coerce(a)
+        t = a.as_tuple()
+        return isinstance(t.exponent, str) and t.exponent == "n"
+
+    def is_canonical(self, a: "Decimal") -> bool:
+        return True
+
+    def canonical(self, a: "Decimal") -> "Decimal":
+        a = _coerce(a)
+        return _decimal_from_handle(_MOLT_DECIMAL_CLONE(a._handle))
+
+    def radix(self) -> "Decimal":
+        return Decimal(10)
+
+    def clear_traps(self) -> None:
+        for code in _SIGNAL_MAP.values():
+            _MOLT_DECIMAL_CONTEXT_SET_TRAP(self._handle, code, False)
+
     def __del__(self) -> None:
         try:
             _MOLT_DECIMAL_CONTEXT_DROP(self._handle)
@@ -786,6 +1050,23 @@ class Decimal:
     def same_quantum(self, other: "Decimal") -> bool:
         other = _coerce(other)
         return bool(_MOLT_DECIMAL_SAME_QUANTUM(self._handle, other._handle))
+
+    # ── Trivial identity methods ─────────────────────────────────────────
+
+    def canonical(self) -> "Decimal":
+        return _decimal_from_handle(_MOLT_DECIMAL_CLONE(self._handle))
+
+    def is_canonical(self) -> bool:
+        return True
+
+    def radix(self) -> "Decimal":
+        return Decimal(10)
+
+    def conjugate(self) -> "Decimal":
+        return _decimal_from_handle(_MOLT_DECIMAL_CLONE(self._handle))
+
+    def to_integral(self) -> "Decimal":
+        return self.to_integral_value()
 
     # ── Internal helpers ──────────────────────────────────────────────────
 

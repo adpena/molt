@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import datetime
-import random
 import re
-import socket
 import time
 import urllib
 
@@ -13,6 +11,22 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 
 _require_intrinsic("molt_capabilities_has", globals())
+
+_MOLT_EMAIL_UTILS_MAKE_MSGID = _require_intrinsic(
+    "molt_email_utils_make_msgid", globals()
+)
+_MOLT_EMAIL_UTILS_GETADDRESSES = _require_intrinsic(
+    "molt_email_utils_getaddresses", globals()
+)
+_MOLT_EMAIL_UTILS_PARSEDATE_TZ = _require_intrinsic(
+    "molt_email_utils_parsedate_tz", globals()
+)
+_MOLT_EMAIL_UTILS_FORMAT_DATETIME = _require_intrinsic(
+    "molt_email_utils_format_datetime", globals()
+)
+_MOLT_EMAIL_UTILS_PARSEDATE_TO_DATETIME = _require_intrinsic(
+    "molt_email_utils_parsedate_to_datetime", globals()
+)
 
 COMMASPACE = ", "
 EMPTYSTRING = ""
@@ -67,10 +81,7 @@ def parseaddr(addr: str, *, strict: bool = True):
 
 def getaddresses(fieldvalues, *, strict: bool = True):
     del strict
-    out = []
-    for value in fieldvalues:
-        out.append(parseaddr(value))
-    return out
+    return _MOLT_EMAIL_UTILS_GETADDRESSES(fieldvalues)
 
 
 def formatdate(timeval=None, localtime: bool = False, usegmt: bool = False) -> str:
@@ -85,41 +96,26 @@ def formatdate(timeval=None, localtime: bool = False, usegmt: bool = False) -> s
 
 def format_datetime(dt: datetime.datetime, usegmt: bool = False) -> str:
     del usegmt
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=datetime.timezone.utc)
-    return dt.strftime("%a, %d %b %Y %H:%M:%S +0000")
+    return _MOLT_EMAIL_UTILS_FORMAT_DATETIME(dt)
 
 
 def make_msgid(idstring=None, domain=None):
-    if domain is None:
-        domain = socket.getfqdn() or "localhost"
-    rand = random.randrange(0, 1_000_000)
-    stamp = int(time.time() * 1_000_000)
-    middle = f".{idstring}" if idstring else ""
-    return f"<{stamp}.{rand}{middle}@{domain}>"
+    return _MOLT_EMAIL_UTILS_MAKE_MSGID(domain)
 
 
 def parsedate(date):
-    try:
-        return time.gmtime(
-            time.mktime(time.strptime(date[:25], "%a, %d %b %Y %H:%M:%S"))
-        )
-    except Exception:
+    parsed = parsedate_tz(date)
+    if parsed is None:
         return None
+    return parsed[:9]
 
 
 def parsedate_tz(date):
-    parsed = parsedate(date)
-    if parsed is None:
-        return None
-    return tuple(parsed[:9]) + (0,)
+    return _MOLT_EMAIL_UTILS_PARSEDATE_TZ(date)
 
 
 def parsedate_to_datetime(data):
-    parsed = parsedate_tz(data)
-    if parsed is None:
-        raise ValueError("Invalid date value or format")
-    return datetime.datetime(*parsed[:6], tzinfo=datetime.timezone.utc)
+    return _MOLT_EMAIL_UTILS_PARSEDATE_TO_DATETIME(data)
 
 
 def mktime_tz(data):
