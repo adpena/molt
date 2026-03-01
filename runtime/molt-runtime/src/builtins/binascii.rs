@@ -139,6 +139,44 @@ fn simd_strip_whitespace(input: &[u8]) -> Vec<u8> {
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
+    {
+        if cfg!(target_feature = "simd128") {
+            unsafe {
+                use std::arch::wasm32::*;
+                let space = u8x16_splat(b' ');
+                let tab = u8x16_splat(b'\t');
+                let nl = u8x16_splat(b'\n');
+                let cr = u8x16_splat(b'\r');
+                let ff = u8x16_splat(0x0C);
+                while i + 16 <= input.len() {
+                    let chunk = v128_load(input.as_ptr().add(i) as *const v128);
+                    let is_ws = v128_or(
+                        v128_or(
+                            v128_or(u8x16_eq(chunk, space), u8x16_eq(chunk, tab)),
+                            u8x16_eq(chunk, nl),
+                        ),
+                        v128_or(u8x16_eq(chunk, cr), u8x16_eq(chunk, ff)),
+                    );
+                    let mask = u8x16_bitmask(is_ws) as u32;
+                    if mask == 0 {
+                        let len = out.len();
+                        out.set_len(len + 16);
+                        v128_store(out.as_mut_ptr().add(len) as *mut v128, chunk);
+                    } else {
+                        for j in 0..16 {
+                            let b = input[i + j];
+                            if !b.is_ascii_whitespace() {
+                                out.push(b);
+                            }
+                        }
+                    }
+                    i += 16;
+                }
+            }
+        }
+    }
+
     // Scalar tail
     while i < input.len() {
         let b = input[i];
@@ -720,6 +758,34 @@ fn qp_encode(input: &[u8]) -> Vec<u8> {
                         let len = out.len();
                         out.set_len(len + 16);
                         _mm_storeu_si128(out.as_mut_ptr().add(len) as *mut __m128i, v);
+                        i += 16;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        if cfg!(target_feature = "simd128") && input.len() >= 16 {
+            unsafe {
+                use std::arch::wasm32::*;
+                let space = u8x16_splat(b' ');
+                let tilde = u8x16_splat(b'~');
+                let eq_char = u8x16_splat(b'=');
+                let nl = u8x16_splat(b'\n');
+                let cr = u8x16_splat(b'\r');
+                while i + 16 <= input.len() {
+                    let v = v128_load(input.as_ptr().add(i) as *const v128);
+                    let is_printable = v128_and(u8x16_ge(v, space), u8x16_le(v, tilde));
+                    let is_not_eq = v128_not(u8x16_eq(v, eq_char));
+                    let safe_print = v128_and(is_printable, is_not_eq);
+                    let passthrough = v128_or(safe_print, v128_or(u8x16_eq(v, nl), u8x16_eq(v, cr)));
+                    if u8x16_bitmask(passthrough) == 0xFFFF {
+                        let len = out.len();
+                        out.set_len(len + 16);
+                        v128_store(out.as_mut_ptr().add(len) as *mut v128, v);
                         i += 16;
                     } else {
                         break;
