@@ -736,6 +736,25 @@ unsafe fn sum_f64_simd_aarch64(values: &[f64]) -> f64 {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+unsafe fn sum_f64_simd_wasm32(values: &[f64]) -> f64 {
+    unsafe {
+        use std::arch::wasm32::*;
+        let mut i = 0usize;
+        let mut acc = f64x2_splat(0.0);
+        while i + 2 <= values.len() {
+            let v = v128_load(values.as_ptr().add(i) as *const v128);
+            acc = f64x2_add(acc, v);
+            i += 2;
+        }
+        let mut sum = f64x2_extract_lane::<0>(acc) + f64x2_extract_lane::<1>(acc);
+        for &v in &values[i..] {
+            sum += v;
+        }
+        sum
+    }
+}
+
 fn sum_f64_simd(values: &[f64]) -> f64 {
     #[cfg(target_arch = "x86_64")]
     {
@@ -750,6 +769,12 @@ fn sum_f64_simd(values: &[f64]) -> f64 {
     {
         if std::arch::is_aarch64_feature_detected!("neon") {
             return unsafe { sum_f64_simd_aarch64(values) };
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        if values.len() >= 2 {
+            return unsafe { sum_f64_simd_wasm32(values) };
         }
     }
     kahan_sum(values)
@@ -826,6 +851,28 @@ unsafe fn sum_sq_diff_f64_simd_aarch64(values: &[f64], mean: f64) -> f64 {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+unsafe fn sum_sq_diff_f64_simd_wasm32(values: &[f64], mean: f64) -> f64 {
+    unsafe {
+        use std::arch::wasm32::*;
+        let mean_v = f64x2_splat(mean);
+        let mut i = 0usize;
+        let mut acc = f64x2_splat(0.0);
+        while i + 2 <= values.len() {
+            let v = v128_load(values.as_ptr().add(i) as *const v128);
+            let d = f64x2_sub(v, mean_v);
+            acc = f64x2_add(acc, f64x2_mul(d, d));
+            i += 2;
+        }
+        let mut sum = f64x2_extract_lane::<0>(acc) + f64x2_extract_lane::<1>(acc);
+        for &v in &values[i..] {
+            let d = v - mean;
+            sum += d * d;
+        }
+        sum
+    }
+}
+
 fn sum_sq_diff_f64_simd(values: &[f64], mean: f64) -> f64 {
     #[cfg(target_arch = "x86_64")]
     {
@@ -840,6 +887,12 @@ fn sum_sq_diff_f64_simd(values: &[f64], mean: f64) -> f64 {
     {
         if std::arch::is_aarch64_feature_detected!("neon") {
             return unsafe { sum_sq_diff_f64_simd_aarch64(values, mean) };
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        if values.len() >= 2 {
+            return unsafe { sum_sq_diff_f64_simd_wasm32(values, mean) };
         }
     }
     kahan_sum_sq_diff(values, mean)
@@ -2337,6 +2390,21 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
                     }
                 }
             }
+            #[cfg(target_arch = "wasm32")]
+            {
+                if n >= 2 {
+                    unsafe {
+                        use std::arch::wasm32::*;
+                        let mut vec_sum = f64x2_splat(0.0);
+                        while i + 2 <= n {
+                            let v = v128_load(vals.as_ptr().add(i) as *const v128);
+                            vec_sum = f64x2_add(vec_sum, f64x2_mul(v, v));
+                            i += 2;
+                        }
+                        sum_sq = f64x2_extract_lane::<0>(vec_sum) + f64x2_extract_lane::<1>(vec_sum);
+                    }
+                }
+            }
             for j in i..n {
                 sum_sq += vals[j] * vals[j];
             }
@@ -2425,6 +2493,23 @@ pub extern "C" fn molt_math_dist(p_bits: u64, q_bits: u64) -> u64 {
                     let mut lanes = [0.0f64; 2];
                     _mm_storeu_pd(lanes.as_mut_ptr(), vec_sum);
                     sum_sq = lanes[0] + lanes[1];
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if n >= 2 {
+                unsafe {
+                    use std::arch::wasm32::*;
+                    let mut vec_sum = f64x2_splat(0.0);
+                    while i + 2 <= n {
+                        let vp = v128_load([p_vals[i], p_vals[i + 1]].as_ptr() as *const v128);
+                        let vq = v128_load([q_vals[i], q_vals[i + 1]].as_ptr() as *const v128);
+                        let diff = f64x2_sub(vp, vq);
+                        vec_sum = f64x2_add(vec_sum, f64x2_mul(diff, diff));
+                        i += 2;
+                    }
+                    sum_sq = f64x2_extract_lane::<0>(vec_sum) + f64x2_extract_lane::<1>(vec_sum);
                 }
             }
         }

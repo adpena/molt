@@ -379,6 +379,34 @@ fn simd_hex_encode(input: &[u8]) -> Vec<u8> {
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            use std::arch::wasm32::*;
+            let hex_lut = i8x16(
+                b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8,
+                b'4' as i8, b'5' as i8, b'6' as i8, b'7' as i8,
+                b'8' as i8, b'9' as i8, b'a' as i8, b'b' as i8,
+                b'c' as i8, b'd' as i8, b'e' as i8, b'f' as i8,
+            );
+            let mask_lo = u8x16_splat(0x0F);
+            while i + 16 <= input.len() {
+                let chunk = v128_load(input.as_ptr().add(i) as *const v128);
+                let hi_nibbles = v128_and(u16x8_shr(chunk, 4), mask_lo);
+                let lo_nibbles = v128_and(chunk, mask_lo);
+                let hi_hex = i8x16_swizzle(hex_lut, hi_nibbles);
+                let lo_hex = i8x16_swizzle(hex_lut, lo_nibbles);
+                let interleaved_lo = i8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(hi_hex, lo_hex);
+                let interleaved_hi = i8x16_shuffle::<8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31>(hi_hex, lo_hex);
+                let len = out.len();
+                out.set_len(len + 32);
+                v128_store(out.as_mut_ptr().add(len) as *mut v128, interleaved_lo);
+                v128_store(out.as_mut_ptr().add(len + 16) as *mut v128, interleaved_hi);
+                i += 16;
+            }
+        }
+    }
+
     // Scalar tail
     const HEX: &[u8; 16] = b"0123456789abcdef";
     while i < input.len() {
@@ -470,6 +498,37 @@ fn simd_hex_decode(input: &[u8]) -> Option<Vec<u8>> {
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            use std::arch::wasm32::*;
+            while i + 32 <= input.len() {
+                let lo_block = v128_load(input.as_ptr().add(i) as *const v128);
+                let hi_block = v128_load(input.as_ptr().add(i + 16) as *const v128);
+                // Deinterleave: separate hi-nibble and lo-nibble chars
+                let hi_nibble_chars = i8x16_shuffle::<0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30>(lo_block, hi_block);
+                let lo_nibble_chars = i8x16_shuffle::<1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31>(lo_block, hi_block);
+                let hi_vals = hex_chars_to_nibbles_wasm32(hi_nibble_chars);
+                let lo_vals = hex_chars_to_nibbles_wasm32(lo_nibble_chars);
+                // Check for 0xFF sentinel
+                let sentinel = u8x16_splat(0xFF);
+                let hi_bad = u8x16_eq(hi_vals, sentinel);
+                let lo_bad = u8x16_eq(lo_vals, sentinel);
+                let any_bad = v128_or(hi_bad, lo_bad);
+                if u8x16_bitmask(any_bad) != 0 {
+                    return None;
+                }
+                let hi_shifted = v128_and(u16x8_shl(hi_vals, 4), u8x16_splat(0xF0));
+                let lo_masked = v128_and(lo_vals, u8x16_splat(0x0F));
+                let result = v128_or(hi_shifted, lo_masked);
+                let len = out.len();
+                out.set_len(len + 16);
+                v128_store(out.as_mut_ptr().add(len) as *mut v128, result);
+                i += 32;
+            }
+        }
+    }
+
     // Scalar tail
     while i < input.len() {
         let hi = hex_nibble(input[i])?;
@@ -478,6 +537,36 @@ fn simd_hex_decode(input: &[u8]) -> Option<Vec<u8>> {
         i += 2;
     }
     Some(out)
+}
+
+/// Wasm32 helper: convert hex ASCII chars to nibble values (0-15),
+/// returning 0xFF for invalid characters.
+#[cfg(target_arch = "wasm32")]
+#[inline(always)]
+unsafe fn hex_chars_to_nibbles_wasm32(chars: std::arch::wasm32::v128) -> std::arch::wasm32::v128 {
+    unsafe {
+        use std::arch::wasm32::*;
+        let zero = u8x16_splat(b'0');
+        let nine = u8x16_splat(b'9');
+        let a_lower = u8x16_splat(b'a');
+        let f_lower = u8x16_splat(b'f');
+        let a_upper = u8x16_splat(b'A');
+        let f_upper = u8x16_splat(b'F');
+        let invalid = u8x16_splat(0xFF);
+
+        let is_digit = v128_and(u8x16_ge(chars, zero), u8x16_le(chars, nine));
+        let digit_val = u8x16_sub(chars, zero);
+
+        let is_lower = v128_and(u8x16_ge(chars, a_lower), u8x16_le(chars, f_lower));
+        let lower_val = u8x16_add(u8x16_sub(chars, a_lower), u8x16_splat(10));
+
+        let is_upper = v128_and(u8x16_ge(chars, a_upper), u8x16_le(chars, f_upper));
+        let upper_val = u8x16_add(u8x16_sub(chars, a_upper), u8x16_splat(10));
+
+        let result = v128_bitselect(digit_val, invalid, is_digit);
+        let result = v128_bitselect(lower_val, result, is_lower);
+        v128_bitselect(upper_val, result, is_upper)
+    }
 }
 
 /// NEON helper: convert hex ASCII chars to nibble values (0-15),
