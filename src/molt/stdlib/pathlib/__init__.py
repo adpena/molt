@@ -570,6 +570,21 @@ class Path:
     def with_stem(self, stem: str) -> Path:
         return self._wrap(_MOLT_PATH_WITH_STEM(self._path, stem))
 
+    def walk(
+        self,
+        top_down: bool = True,
+        on_error: object = None,
+        follow_symlinks: bool = False,
+    ) -> Iterator[tuple[Path, list[str], list[str]]]:
+        capabilities.require("fs.read")
+        for dirpath, dirnames, filenames in _os.walk(
+            str(self._path),
+            topdown=top_down,
+            onerror=on_error,
+            followlinks=follow_symlinks,
+        ):
+            yield Path(dirpath), dirnames, filenames
+
 
 PurePosixPath = Path
 PurePath = Path
