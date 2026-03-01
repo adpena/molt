@@ -67,6 +67,7 @@ _molt_re_negative_lookbehind = (
 
 
 __all__ = [
+    "NOFLAG",
     "ASCII",
     "A",
     "DOTALL",
@@ -81,6 +82,7 @@ __all__ = [
     "U",
     "VERBOSE",
     "X",
+    "RegexFlag",
     "Pattern",
     "Match",
     "compile",
@@ -98,6 +100,7 @@ __all__ = [
 
 # TODO(stdlib-parity, owner:stdlib, milestone:SL2, priority:P1, status:planned): complete native re parity and continue migrating parser/matcher execution into Rust (named-group edge cases, verbose-mode parser details, and full Unicode class/casefold semantics).
 
+NOFLAG = 0
 ASCII = 256
 DOTALL = 16
 IGNORECASE = 2
@@ -113,6 +116,9 @@ M = MULTILINE
 S = DOTALL
 U = UNICODE
 X = VERBOSE
+
+# RegexFlag is an int alias for compatibility with code that references re.RegexFlag
+RegexFlag = int
 
 _META_CHARS = set(".^$*+?{}[]\\|()")
 _SUPPORTED_FLAGS = IGNORECASE | MULTILINE | DOTALL | ASCII | UNICODE | VERBOSE
@@ -590,7 +596,14 @@ class _Parser:
                 }
                 return mapped[esc]
             if esc.isdigit():
-                raise NotImplementedError("backreferences are not supported")
+                # Inside character classes, \N is an octal escape, not a backref
+                digits_oct = [esc]
+                while len(digits_oct) < 3:
+                    nxt = self._peek()
+                    if nxt is None or not ("0" <= nxt <= "7"):
+                        break
+                    digits_oct.append(self._next())
+                return chr(int("".join(digits_oct), 8))
             return esc
         if ch == "[" and self._peek() == ":":
             if self.nested_set_warning_pos is None:
@@ -729,6 +742,9 @@ class Match:
                 value = default
             out[name] = value
         return out
+
+    def expand(self, template: str) -> str:
+        return _expand_replacement(template, self)
 
     def start(self, index: int = 0) -> int:
         span = self._group_span(index)
