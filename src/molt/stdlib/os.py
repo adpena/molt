@@ -114,6 +114,22 @@ _MOLT_OS_PATH_GETMTIME = _require_intrinsic("molt_os_path_getmtime", globals())
 _MOLT_OS_PATH_GETSIZE = _require_intrinsic("molt_os_path_getsize", globals())
 _MOLT_OS_PATH_SAMEFILE = _require_intrinsic("molt_os_path_samefile", globals())
 _MOLT_OS_FDOPEN = _require_intrinsic("molt_os_fdopen", globals())
+_MOLT_OS_SEP = _require_intrinsic("molt_os_sep", globals())
+_MOLT_OS_ALTSEP = _require_intrinsic("molt_os_altsep", globals())
+_MOLT_OS_CURDIR = _require_intrinsic("molt_os_curdir", globals())
+_MOLT_OS_PARDIR = _require_intrinsic("molt_os_pardir", globals())
+_MOLT_OS_EXTSEP = _require_intrinsic("molt_os_extsep", globals())
+_MOLT_OS_PATHSEP = _require_intrinsic("molt_os_pathsep", globals())
+_MOLT_OS_LINESEP = _require_intrinsic("molt_os_linesep", globals())
+_MOLT_OS_LISTDIR_V2 = _require_intrinsic("molt_os_listdir", globals())
+_MOLT_OS_GETCWD_V2 = _require_intrinsic("molt_os_getcwd", globals())
+_MOLT_OS_GETPID_V2 = _require_intrinsic("molt_os_getpid", globals())
+_MOLT_OS_MKDIR_V2 = _require_intrinsic("molt_os_mkdir", globals())
+_MOLT_OS_RMDIR_V2 = _require_intrinsic("molt_os_rmdir", globals())
+_MOLT_OS_CHMOD_V2 = _require_intrinsic("molt_os_chmod", globals())
+_MOLT_OS_SYMLINK_V2 = _require_intrinsic("molt_os_symlink", globals())
+_MOLT_OS_READLINK_V2 = _require_intrinsic("molt_os_readlink", globals())
+_MOLT_PATH_EXPANDVARS = _require_intrinsic("molt_path_expandvars", globals())
 _MOLT_CAP_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
 
 
@@ -230,19 +246,13 @@ __all__ = [
 ]
 
 name = _resolve_os_name()
-if name == "nt":
-    sep = "\\"
-    pathsep = ";"
-    linesep = "\r\n"
-    altsep = "/"
-else:
-    sep = "/"
-    pathsep = ":"
-    linesep = "\n"
-    altsep = None
-curdir = "."
-pardir = ".."
-extsep = "."
+sep = _MOLT_OS_SEP()
+altsep = _MOLT_OS_ALTSEP()
+curdir = _MOLT_OS_CURDIR()
+pardir = _MOLT_OS_PARDIR()
+extsep = _MOLT_OS_EXTSEP()
+pathsep = _MOLT_OS_PATHSEP()
+linesep = _MOLT_OS_LINESEP()
 SEEK_SET = 0
 SEEK_CUR = 1
 SEEK_END = 2
@@ -866,8 +876,7 @@ class _Path:
     @staticmethod
     def expandvars(path: str) -> str:
         _require_cap("env.read")
-        env = environ.copy()
-        return _expect_str(_MOLT_PATH_EXPANDVARS_ENV(path, env), "path_expandvars_env")
+        return _expect_str(_MOLT_PATH_EXPANDVARS(path), "path_expandvars")
 
     @staticmethod
     def abspath(path: str) -> str:
@@ -915,8 +924,7 @@ class _Path:
     @staticmethod
     def rmdir(path: Any) -> None:
         _require_cap("fs.write")
-        intrinsic = _require_callable_intrinsic(_MOLT_PATH_RMDIR, "molt_path_rmdir")
-        intrinsic(path)
+        _MOLT_OS_RMDIR_V2(path)
 
     @staticmethod
     def commonpath(paths: Any) -> str:
@@ -997,8 +1005,7 @@ __path__ = []  # Enable dotted imports like `import os.path`.
 
 def listdir(path: Any = ".") -> list[str]:
     _require_cap("fs.read")
-    intrinsic = _require_callable_intrinsic(_MOLT_PATH_LISTDIR, "molt_path_listdir")
-    res = intrinsic(path)
+    res = _MOLT_OS_LISTDIR_V2(path)
     if not isinstance(res, list):
         raise RuntimeError("os listdir intrinsic returned invalid value")
     if not all(isinstance(entry, str) for entry in res):
@@ -1010,8 +1017,7 @@ environ = _Environ()
 
 
 def getpid() -> int:
-    intrinsic = _require_callable_intrinsic(_MOLT_GETPID, "molt_getpid")
-    return int(intrinsic())
+    return int(_MOLT_OS_GETPID_V2())
 
 
 def urandom(n: Any) -> bytes:
@@ -1022,8 +1028,7 @@ def urandom(n: Any) -> bytes:
 
 def getcwd() -> str:
     _require_cap("fs.read")
-    intrinsic = _require_callable_intrinsic(_MOLT_GETCWD, "molt_getcwd")
-    return intrinsic()
+    return str(_MOLT_OS_GETCWD_V2())
 
 
 def getenv(key: str, default: Any = None) -> Any:
@@ -1053,8 +1058,7 @@ def readlink(path: Any, *, dir_fd: int | None = None) -> str:
     _require_cap("fs.read")
     if dir_fd is not None:
         raise NotImplementedError("os.readlink(dir_fd=...) is not supported")
-    intrinsic = _require_callable_intrinsic(_MOLT_PATH_READLINK, "molt_path_readlink")
-    return _expect_str(intrinsic(path), "path_readlink")
+    return _expect_str(_MOLT_OS_READLINK_V2(path), "readlink")
 
 
 def symlink(
@@ -1067,8 +1071,7 @@ def symlink(
     _require_cap("fs.write")
     if dir_fd is not None:
         raise NotImplementedError("os.symlink(dir_fd=...) is not supported")
-    intrinsic = _require_callable_intrinsic(_MOLT_PATH_SYMLINK, "molt_path_symlink")
-    intrinsic(src, dst, bool(target_is_directory))
+    _MOLT_OS_SYMLINK_V2(src, dst)
 
 
 def rmdir(path: Any) -> None:
@@ -1077,14 +1080,12 @@ def rmdir(path: Any) -> None:
 
 def mkdir(path: Any, mode: int = 0o777) -> None:
     _require_cap("fs.write")
-    intrinsic = _require_callable_intrinsic(_MOLT_PATH_MKDIR, "molt_path_mkdir")
-    intrinsic(path, mode)
+    _MOLT_OS_MKDIR_V2(path, mode)
 
 
 def chmod(path: Any, mode: int) -> None:
     _require_cap("fs.write")
-    intrinsic = _require_callable_intrinsic(_MOLT_PATH_CHMOD, "molt_path_chmod")
-    intrinsic(path, mode)
+    _MOLT_OS_CHMOD_V2(path, mode)
 
 
 def makedirs(name: Any, mode: int = 0o777, exist_ok: bool = False) -> None:
