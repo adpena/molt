@@ -71,3 +71,6 @@ def message_from_binary_file(fp, *args, **kws):
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_EMAIL_MESSAGE_FROM_BYTES = _require_intrinsic(
+    "molt_email_message_from_bytes", globals()
+)
