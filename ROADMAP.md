@@ -66,6 +66,18 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
 ## Stdlib Intrinsics Program (2026-02-28)
 - Canonical plan: [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md).
 
+### Rust-First Stdlib Lowering Sprint (2026-02-28)
+- Completed: `base64` — all 18 functions rewired to existing Rust intrinsics.
+  Removed ~400 lines of pure-Python encode/decode loops.
+- Completed: `random` — new `random_mod.rs` (1457 lines) with full MT engine +
+  21 intrinsics. Python `Random` class is now a thin handle wrapper.
+- Completed: `heapq` — 5 new Rust intrinsics (`heapify_max`, `heappop_max`,
+  `nsmallest`, `nlargest`, `merge`) with proper heap algorithms.
+- Completed: `copy` — wired to `molt_copy_copy`/`molt_copy_deepcopy` intrinsics.
+  Removed ~350 lines of Python dispatch/traversal.
+- Completed: `pprint` — wired to `molt_pprint_pformat`/`molt_pprint_safe_repr`/etc.
+- Completed: `uuid` byte-loop cleanup, `json` dead code removal.
+
 ### Compiler + WASM + Stdlib Hardening Sprint (2026-02-28)
 - Completed: guard_tag_for_hint extended (set/frozenset/intarray type tags).
 - Completed: 6 WASM silent-divergence fixes (os.getppid ENOSYS, HTTP Date UTC,
