@@ -638,6 +638,17 @@ class DirEntry:
     def is_symlink(self) -> bool:
         return self._is_symlink
 
+    def stat(self, *, follow_symlinks: bool = True) -> "stat_result":
+        _require_cap("fs.read")
+        if follow_symlinks:
+            intrinsic = _require_os_intrinsic("molt_os_stat")
+            return _expect_stat_result(intrinsic(self.path), "stat")
+        intrinsic = _require_os_intrinsic("molt_os_lstat")
+        return _expect_stat_result(intrinsic(self.path), "lstat")
+
+    def inode(self) -> int:
+        return self.stat(follow_symlinks=False).st_ino
+
     def __repr__(self) -> str:
         return f"<DirEntry {self.name!r}>"
 

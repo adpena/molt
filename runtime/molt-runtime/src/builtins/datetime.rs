@@ -1700,17 +1700,16 @@ pub extern "C" fn molt_datetime_now_local() -> u64 {
             let secs = now.as_secs() as i64;
             let us = now.subsec_micros() as i64;
             let offset_west = unsafe { crate::molt_time_local_offset_host(secs) };
-            let local_secs = if offset_west == i64::MIN {
-                secs
-            } else {
-                secs.saturating_sub(offset_west)
-            };
+            if offset_west == i64::MIN {
+                return raise_exception::<u64>(
+                    _py,
+                    "OSError",
+                    "localtime failed: timezone information unavailable",
+                );
+            }
+            let local_secs = secs.saturating_sub(offset_west);
             let (y, m, d, h, mi, sec, us_out) = epoch_to_utc_parts(local_secs, us);
-            let utcoff_secs: i64 = if offset_west == i64::MIN {
-                0
-            } else {
-                -offset_west
-            };
+            let utcoff_secs: i64 = -offset_west;
             let _py_ref = _py; // satisfy borrow checker
             let elems = [
                 MoltObject::from_int(y as i64).bits(),
@@ -1829,17 +1828,16 @@ pub extern "C" fn molt_datetime_fromtimestamp_local(ts_bits: u64) -> u64 {
         #[cfg(target_arch = "wasm32")]
         {
             let offset_west = unsafe { crate::molt_time_local_offset_host(secs) };
-            let local_secs = if offset_west == i64::MIN {
-                secs
-            } else {
-                secs.saturating_sub(offset_west)
-            };
+            if offset_west == i64::MIN {
+                return raise_exception::<u64>(
+                    _py,
+                    "OSError",
+                    "localtime failed: timezone information unavailable",
+                );
+            }
+            let local_secs = secs.saturating_sub(offset_west);
             let (y, m, d, h, mi, sec, us_out) = epoch_to_utc_parts(local_secs, us);
-            let utcoff_secs: i64 = if offset_west == i64::MIN {
-                0
-            } else {
-                -offset_west
-            };
+            let utcoff_secs: i64 = -offset_west;
             let elems = [
                 MoltObject::from_int(y as i64).bits(),
                 MoltObject::from_int(m as i64).bits(),
@@ -1921,10 +1919,13 @@ pub extern "C" fn molt_datetime_to_timestamp(
                 let approx = day_secs;
                 let offset_west = unsafe { crate::molt_time_local_offset_host(approx) };
                 if offset_west == i64::MIN {
-                    day_secs
-                } else {
-                    day_secs + offset_west
+                    return raise_exception::<u64>(
+                        _py,
+                        "OSError",
+                        "localtime failed: timezone information unavailable",
+                    );
                 }
+                day_secs + offset_west
             }
         } else if let Some(off) = to_i64(utcoff_obj) {
             // Aware: subtract UTC offset to get UTC epoch
@@ -2007,11 +2008,14 @@ pub extern "C" fn molt_datetime_local_utcoffset() -> u64 {
                 .unwrap_or_default()
                 .as_secs() as i64;
             let offset_west = unsafe { crate::molt_time_local_offset_host(now) };
-            let utcoff = if offset_west == i64::MIN {
-                0
-            } else {
-                -offset_west
-            };
+            if offset_west == i64::MIN {
+                return raise_exception::<u64>(
+                    _py,
+                    "OSError",
+                    "localtime failed: timezone information unavailable",
+                );
+            }
+            let utcoff = -offset_west;
             MoltObject::from_int(utcoff).bits()
         }
     })

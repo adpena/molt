@@ -27,6 +27,7 @@ from _collections import OrderedDict
 
 __all__ = [
     "abc",
+    "ChainMap",
     "Counter",
     "defaultdict",
     "deque",
@@ -98,6 +99,19 @@ _MOLT_DEFAULTDICT_DROP = _require_intrinsic("molt_defaultdict_drop", globals())
 _MOLT_DEFAULTDICT_FACTORY = _require_intrinsic("molt_defaultdict_factory", globals())
 _MOLT_DEFAULTDICT_MISSING = _require_intrinsic("molt_defaultdict_missing", globals())
 _MOLT_DEFAULTDICT_NEW = _require_intrinsic("molt_defaultdict_new", globals())
+
+# --- ChainMap intrinsics ---
+_MOLT_CHAINMAP_CONTAINS = _require_intrinsic("molt_chainmap_contains", globals())
+_MOLT_CHAINMAP_DELITEM = _require_intrinsic("molt_chainmap_delitem", globals())
+_MOLT_CHAINMAP_DROP = _require_intrinsic("molt_chainmap_drop", globals())
+_MOLT_CHAINMAP_GETITEM = _require_intrinsic("molt_chainmap_getitem", globals())
+_MOLT_CHAINMAP_KEYS = _require_intrinsic("molt_chainmap_keys", globals())
+_MOLT_CHAINMAP_LEN = _require_intrinsic("molt_chainmap_len", globals())
+_MOLT_CHAINMAP_MAPS = _require_intrinsic("molt_chainmap_maps", globals())
+_MOLT_CHAINMAP_NEW = _require_intrinsic("molt_chainmap_new", globals())
+_MOLT_CHAINMAP_NEW_CHILD = _require_intrinsic("molt_chainmap_new_child", globals())
+_MOLT_CHAINMAP_PARENTS = _require_intrinsic("molt_chainmap_parents", globals())
+_MOLT_CHAINMAP_SETITEM = _require_intrinsic("molt_chainmap_setitem", globals())
 
 
 # ---------------------------------------------------------------------------
@@ -975,5 +989,159 @@ class defaultdict(dict):
         if handle is not None:
             try:
                 _MOLT_DEFAULTDICT_DROP(handle)
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# ChainMap — intrinsic-backed (handle-based)
+# ---------------------------------------------------------------------------
+# NOTE: isinstance(chain_map, dict) is False. ChainMap uses handle-based
+# storage delegated to Rust intrinsics. The first map in `maps` is the
+# primary map; writes and deletes go there only.
+# ---------------------------------------------------------------------------
+
+
+class _ChainMapIter:
+    """Forward iterator over unique keys of an intrinsic-backed ChainMap."""
+
+    __slots__ = ("_keys", "_index")
+
+    def __init__(self, chain_map: "ChainMap") -> None:
+        self._keys = _MOLT_CHAINMAP_KEYS(chain_map._handle)
+        self._index = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> Any:
+        if self._index >= len(self._keys):
+            raise StopIteration
+        key = self._keys[self._index]
+        self._index += 1
+        return key
+
+
+class ChainMap:
+    __slots__ = ("_handle",)
+
+    def __init__(self, *maps) -> None:
+        if maps:
+            # Validate that all positional args are dicts.
+            for m in maps:
+                if not isinstance(m, dict):
+                    raise TypeError("ChainMap maps must be dicts")
+            self._handle = _MOLT_CHAINMAP_NEW(list(maps))
+        else:
+            # Empty ChainMap: pass None so the intrinsic allocates a fresh
+            # empty primary dict.
+            self._handle = _MOLT_CHAINMAP_NEW(None)
+
+    @classmethod
+    def _from_handle(cls, handle) -> "ChainMap":
+        inst = cls.__new__(cls)
+        inst._handle = handle
+        return inst
+
+    # --- Mapping protocol ---
+
+    def __getitem__(self, key: Any) -> Any:
+        return _MOLT_CHAINMAP_GETITEM(self._handle, key)
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        _MOLT_CHAINMAP_SETITEM(self._handle, key, value)
+
+    def __delitem__(self, key: Any) -> None:
+        _MOLT_CHAINMAP_DELITEM(self._handle, key)
+
+    def __contains__(self, key: Any) -> bool:
+        return bool(_MOLT_CHAINMAP_CONTAINS(self._handle, key))
+
+    def __len__(self) -> int:
+        return int(_MOLT_CHAINMAP_LEN(self._handle))
+
+    def __bool__(self) -> bool:
+        return len(self) > 0
+
+    def __iter__(self):
+        return _ChainMapIter(self)
+
+    # --- Views ---
+
+    def keys(self):
+        return list(_MOLT_CHAINMAP_KEYS(self._handle))
+
+    def values(self) -> list:
+        ks = _MOLT_CHAINMAP_KEYS(self._handle)
+        return [_MOLT_CHAINMAP_GETITEM(self._handle, k) for k in ks]
+
+    def items(self) -> list:
+        ks = _MOLT_CHAINMAP_KEYS(self._handle)
+        return [(k, _MOLT_CHAINMAP_GETITEM(self._handle, k)) for k in ks]
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        if _MOLT_CHAINMAP_CONTAINS(self._handle, key):
+            return _MOLT_CHAINMAP_GETITEM(self._handle, key)
+        return default
+
+    # --- ChainMap-specific API ---
+
+    def new_child(self, m: dict | None = None) -> "ChainMap":
+        """Return a new ChainMap with an optional map prepended."""
+        if m is not None and not isinstance(m, dict):
+            raise TypeError("new_child map must be a dict")
+        new_handle = _MOLT_CHAINMAP_NEW_CHILD(self._handle, m)
+        return ChainMap._from_handle(new_handle)
+
+    @property
+    def parents(self) -> "ChainMap":
+        """Return a new ChainMap containing all maps except the first."""
+        new_handle = _MOLT_CHAINMAP_PARENTS(self._handle)
+        return ChainMap._from_handle(new_handle)
+
+    @property
+    def maps(self) -> list:
+        """Return the list of underlying dict objects."""
+        return list(_MOLT_CHAINMAP_MAPS(self._handle))
+
+    # --- Repr ---
+
+    def __repr__(self) -> str:
+        maps = _MOLT_CHAINMAP_MAPS(self._handle)
+        return f"ChainMap({', '.join(repr(m) for m in maps)})"
+
+    # --- Equality ---
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, ChainMap):
+            if len(self) != len(other):
+                return False
+            for key in self:
+                if key not in other or self[key] != other[key]:
+                    return False
+            return True
+        if isinstance(other, dict):
+            if len(self) != len(other):
+                return False
+            for key in self:
+                if key not in other or self[key] != other[key]:
+                    return False
+            return True
+        return NotImplemented
+
+    def __ne__(self, other: Any) -> bool:
+        result = self.__eq__(other)
+        if result is NotImplemented:
+            return NotImplemented
+        return not result
+
+    def __hash__(self):
+        raise TypeError("unhashable type: 'ChainMap'")
+
+    def __del__(self):
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            try:
+                _MOLT_CHAINMAP_DROP(handle)
             except Exception:
                 pass
