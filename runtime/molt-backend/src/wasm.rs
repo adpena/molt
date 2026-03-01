@@ -557,6 +557,7 @@ impl WasmBackend {
         for func_ir in &mut ir.functions {
             crate::elide_dead_struct_allocs(func_ir);
         }
+        crate::inline_functions(&mut ir);
         let mut func_trampoline_spec: HashMap<String, (usize, bool)> = HashMap::new();
         let mut task_kinds: HashMap<String, TrampolineKind> = HashMap::new();
         let mut task_closure_sizes: HashMap<String, i64> = HashMap::new();
