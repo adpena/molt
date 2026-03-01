@@ -35,6 +35,20 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   `int.to_bytes(length, "big")`, `_bytes_to_hex` with `data.hex()`.
 - Completed: `json` — deleted dead `_walk_circular_markers` and
   `_validate_no_circular_references` pure-Python functions.
+- Completed: `zlib` — wired all 27 `molt_zlib_*` intrinsics. Compress/Decompress
+  classes are thin handle wrappers with `__del__` cleanup. 14 constants bootstrapped
+  from Rust at import time.
+- Completed: `ipaddress` — wired 30 `molt_ipaddress_*` intrinsics. IPv4Address/
+  IPv6Address/IPv4Network use `__slots__ = ("_handle",)` handle pattern. Eliminated
+  `_parse_ipv4`, `_parse_ipv6`, `_compress_ipv6` pure-Python implementations.
+- Completed: `shutil` — wired 9 additional `molt_shutil_*` intrinsics (copy, copy2,
+  copytree, move, disk_usage, get_terminal_size, chown, make_archive, unpack_archive).
+- Completed: `subprocess` — wired 3 convenience intrinsics (`molt_subprocess_run`,
+  `molt_subprocess_check_call`, `molt_subprocess_check_output`).
+- Completed: `enum` — wired all 10 `molt_enum_*` Flag/auto/StrEnum/unique/verify
+  intrinsics. Flag.__or__/__and__/__xor__/__invert__/__contains__ delegate to Rust.
+  Added StrEnum class, @unique decorator, @verify decorator, flag_decompose for
+  Flag iteration, FlagBoundary sentinels (CONFORM/EJECT/KEEP/STRICT/NAMED_FLAGS/UNIQUE).
 
 ## Compiler + WASM + Stdlib Hardening Sprint (2026-02-28)
 - Completed: frontend `_guard_tag_for_hint` extended with `set` (17), `frozenset` (18),
