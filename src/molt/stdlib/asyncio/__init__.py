@@ -6606,8 +6606,153 @@ if _IS_WINDOWS:
     )
 
 
-def staggered_race(*args: Any, **kwargs: Any) -> tuple[tuple[Any, ...], dict[str, Any]]:
-    return args, kwargs
+async def staggered_race(
+    coro_fns: Iterable[Any], delay: float | None
+) -> tuple[Any, int | None, list[Any]]:
+    """Run coroutines with staggered start times and take the first to finish.
+
+    This method takes an iterable of coroutine functions. The first one is
+    started immediately. From then on, whenever the immediately preceding one
+    fails (raises an exception), or when *delay* seconds has passed, the next
+    coroutine is started. This continues until one of the coroutines complete
+    successfully, in which case all others are cancelled, or until all
+    coroutines fail.
+
+    Args:
+        coro_fns: an iterable of coroutine functions, i.e. callables that
+            return a coroutine object when called. Use ``functools.partial`` or
+            lambdas to pass arguments.
+
+        delay: amount of time, in seconds, between starting coroutines. If
+            ``None``, the coroutines will run sequentially.
+
+    Returns:
+        tuple *(winner_result, winner_index, exceptions)* where
+
+        - *winner_result*: the result of the winning coroutine, or ``None``
+          if no coroutines won.
+
+        - *winner_index*: the index of the winning coroutine in
+          ``coro_fns``, or ``None`` if no coroutines won. If the winning
+          coroutine may return None on success, *winner_index* can be used
+          to definitively determine whether any coroutine won.
+
+        - *exceptions*: list of exceptions returned by the coroutines.
+          ``len(exceptions)`` is equal to the number of coroutines actually
+          started, and the order is the same as in ``coro_fns``. The winning
+          coroutine's entry is ``None``.
+    """
+    loop = get_running_loop()
+    enum_coro_fns = enumerate(coro_fns)
+
+    # Use list cells as mutable containers to avoid nonlocal across async
+    # nested function boundaries (Molt compiler constraint).
+    winner_result_cell: list[Any] = [None]
+    winner_index_cell: list[int | None] = [None]
+    exceptions: list[Any] = []
+    running_tasks: set[Task] = set()
+    # Single-element list so task_done callback can read/write it.
+    on_completed_fut_cell: list[Future | None] = [None]
+
+    def task_done(task: Task) -> None:
+        running_tasks.discard(task)
+        on_completed_fut = on_completed_fut_cell[0]
+        if (
+            on_completed_fut is not None
+            and not on_completed_fut.done()
+            and not running_tasks
+        ):
+            on_completed_fut.set_result(None)
+
+        if task.cancelled():
+            return
+
+        exc = task.exception()
+        if exc is not None:
+            # Unhandled exception from run_one_coro itself (programming error).
+            # Surfaced via ExceptionGroup after the loop if __debug__.
+            pass
+
+    async def run_one_coro(ok_to_start: Event, previous_failed: Event | None) -> None:
+        # In eager tasks this waits for the calling task to append this task
+        # to running_tasks; in regular tasks this is a no-op.  See gh-124309.
+        await ok_to_start.wait()
+
+        # Wait for the previous task to finish, or for delay seconds.
+        if previous_failed is not None:
+            if delay is None:
+                await previous_failed.wait()
+            else:
+                try:
+                    await wait_for(previous_failed.wait(), delay)
+                except TimeoutError:
+                    pass
+
+        # Get the next coroutine to run.
+        try:
+            this_index, coro_fn = next(enum_coro_fns)
+        except StopIteration:
+            return
+
+        # Start task that will run the next coroutine.
+        this_failed: Event = Event()
+        next_ok_to_start: Event = Event()
+        next_task: Task = loop.create_task(run_one_coro(next_ok_to_start, this_failed))
+        running_tasks.add(next_task)
+        next_task.add_done_callback(task_done)
+        # next_task has been appended to running_tasks so it is ok to start.
+        next_ok_to_start.set()
+
+        # Prepare place to record this coroutine's exception if it loses.
+        exceptions.append(None)
+
+        try:
+            result = await coro_fn()
+        except (SystemExit, KeyboardInterrupt):
+            raise
+        except BaseException as exc:
+            exceptions[this_index] = exc
+            this_failed.set()  # Kickstart the next coroutine.
+        else:
+            # Store winner's results.
+            winner_index_cell[0] = this_index
+            winner_result_cell[0] = result
+            # Cancel all other tasks.  We deliberately exclude the current task
+            # to avoid the corner case described in https://bugs.python.org/issue30048.
+            current = current_task(loop)
+            for t in running_tasks:
+                if t is not current:
+                    t.cancel()
+
+    propagate_cancellation_error: CancelledError | None = None
+    try:
+        ok_to_start: Event = Event()
+        first_task: Task = loop.create_task(run_one_coro(ok_to_start, None))
+        running_tasks.add(first_task)
+        first_task.add_done_callback(task_done)
+        # first_task has been appended to running_tasks so it is ok to start.
+        ok_to_start.set()
+
+        while running_tasks:
+            fut: Future = loop.create_future()
+            on_completed_fut_cell[0] = fut
+            try:
+                await fut
+            except CancelledError as ex:
+                propagate_cancellation_error = ex
+                for task in running_tasks:
+                    task.cancel(*ex.args)
+            on_completed_fut_cell[0] = None
+
+        if propagate_cancellation_error is not None:
+            raise propagate_cancellation_error
+        return winner_result_cell[0], winner_index_cell[0], exceptions
+    finally:
+        # Molt uses reference counting; explicit del of exceptions/
+        # propagate_cancellation_error is not needed to break cycles.
+        # Clear the future-cell reference so done callbacks stop firing
+        # after staggered_race exits.
+        on_completed_fut_cell[0] = None
 
 
 staggered = _module(
