@@ -25,6 +25,7 @@ _MOLT_ORDEREDDICT_ITEMS = _require_intrinsic("molt_ordereddict_items", globals()
 _MOLT_ORDEREDDICT_MOVE_TO_END = _require_intrinsic(
     "molt_ordereddict_move_to_end", globals()
 )
+_MOLT_ORDEREDDICT_POP = _require_intrinsic("molt_ordereddict_pop", globals())
 _MOLT_ORDEREDDICT_POPITEM = _require_intrinsic("molt_ordereddict_popitem", globals())
 _MOLT_ORDEREDDICT_UPDATE = _require_intrinsic("molt_ordereddict_update", globals())
 _MOLT_ORDEREDDICT_CLEAR = _require_intrinsic("molt_ordereddict_clear", globals())
@@ -144,14 +145,7 @@ class OrderedDict:
         return _MOLT_ORDEREDDICT_POPITEM(self._handle, bool(last))
 
     def pop(self, key, default=_MISSING):
-        try:
-            value = _MOLT_ORDEREDDICT_GETITEM(self._handle, key)
-        except KeyError:
-            if default is _MISSING:
-                raise
-            return default
-        _MOLT_ORDEREDDICT_DELITEM(self._handle, key)
-        return value
+        return _MOLT_ORDEREDDICT_POP(self._handle, key, default)
 
     def setdefault(self, key, default=None):
         try:

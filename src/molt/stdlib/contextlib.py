@@ -69,6 +69,12 @@ _MOLT_CONTEXTLIB_ASYNCGEN_CM_AENTER = _require_intrinsic(
 _MOLT_CONTEXTLIB_ASYNCGEN_CM_AEXIT = _require_intrinsic(
     "molt_contextlib_asyncgen_cm_aexit", globals()
 )
+_MOLT_CONTEXTLIB_ASYNCGEN_ENTER = _require_intrinsic(
+    "molt_contextlib_asyncgen_enter", globals()
+)
+_MOLT_CONTEXTLIB_ASYNCGEN_EXIT = _require_intrinsic(
+    "molt_contextlib_asyncgen_exit", globals()
+)
 _MOLT_CONTEXTLIB_GENERATOR_ENTER = _require_intrinsic(
     "molt_contextlib_generator_enter", globals()
 )
@@ -261,25 +267,27 @@ def contextmanager(
     return helper
 
 
-class _AsyncGeneratorContextManager:
+class _AsyncGeneratorContextManager(AsyncContextDecorator):
     def __init__(
         self, func: Callable[..., Any], args: tuple[Any, ...], kwds: dict[str, Any]
     ):
-        self._molt_handle = _MOLT_CONTEXTLIB_ASYNCGEN_CM_NEW(func, args, kwds)
+        self._func = func
+        self._args = args
+        self._kwds = kwds
+        self._agen = None
 
-    def __del__(self) -> None:
-        try:
-            _MOLT_CONTEXTLIB_ASYNCGEN_CM_DROP(self._molt_handle)
-        except Exception:
-            pass
+    def _recreate_cm(self) -> "_AsyncGeneratorContextManager":
+        return _AsyncGeneratorContextManager(self._func, self._args, self._kwds)
 
     async def __aenter__(self) -> Any:
-        return await _MOLT_CONTEXTLIB_ASYNCGEN_CM_AENTER(self._molt_handle)
+        if self._agen is None:
+            self._agen = self._func(*self._args, **self._kwds)
+        return await _MOLT_CONTEXTLIB_ASYNCGEN_ENTER(self._agen)
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
-        return await _MOLT_CONTEXTLIB_ASYNCGEN_CM_AEXIT(
-            self._molt_handle, exc_type, exc, tb
-        )
+        if self._agen is None:
+            return False
+        return await _MOLT_CONTEXTLIB_ASYNCGEN_EXIT(self._agen, exc_type, exc, tb)
 
 
 def asynccontextmanager(
