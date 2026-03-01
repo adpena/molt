@@ -13,7 +13,30 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   ecosystem interoperability, while preserving Molt vision constraints
   (determinism, explicit capabilities, and no implicit host-Python fallback).
 
-## Rust-First Stdlib Lowering Sprint (2026-02-28)
+## Rust-First Stdlib Lowering Sprint (2026-03-01)
+- Completed: `concurrent.futures` — wired all 17 `molt_concurrent_*` intrinsics.
+  ThreadPoolExecutor and Future now use Rust handle-based pattern. `submit()`,
+  `result()`, `exception()`, `done()`, `cancel()`, `add_done_callback()`,
+  `wait()`, `as_completed()` all delegate to Rust. Replaced 661-line Python
+  reimplementation. Dual-mode Future supports both Rust-backed (from submit) and
+  Python-managed (standalone construction) paths.
+- Completed: `asyncio` event loop RT2 — wired 28 `molt_event_loop_*` intrinsics
+  into _EventLoop class. call_soon/call_later/call_at, add_reader/remove_reader,
+  add_writer/remove_writer, run_once (hot path), time, start/stop, is_running/
+  is_closed/close, debug mode, exception handler, task factory all delegate to
+  Rust-owned event loop handle. _run_once() now executes entirely in Rust.
+- Completed: `asyncio` Queue waiters — wired 6 intrinsics (add_getter/putter,
+  notify_getters/putters, getter_count/putter_count). Eliminated Python-side
+  `_getters`/`_putters` deques that duplicated Rust VecDeque state — fixes
+  potential cross-thread correctness risk (same class of bug as Feb deque fix).
+- Completed: `codecs` StreamReader/StreamWriter — wired 7 `molt_codecs_stream_*`
+  intrinsics. Both classes now use Rust handle-based pattern with __del__ cleanup.
+- Completed: `re` quick wins — wired `molt_re_strip_verbose` (VERBOSE pre-processing
+  eliminates per-character Python overhead) and `molt_re_fullmatch_check` (boundary
+  check). No new Rust code needed.
+- Cleanup: deleted 6 dead `molt_sys_bootstrap_*` intrinsics from manifest (superseded
+  by aggregate `molt_sys_bootstrap_payload`). Regenerated generated.rs + _intrinsics.pyi.
+
 - Completed: `base64` module rewired — all 18 public functions now delegate to
   existing `molt_base64_*` Rust intrinsics in `base64_mod.rs`. Removed ~400 lines
   of pure-Python encode/decode loops.
