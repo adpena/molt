@@ -13,6 +13,36 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   ecosystem interoperability, while preserving Molt vision constraints
   (determinism, explicit capabilities, and no implicit host-Python fallback).
 
+## Compiler + WASM + Stdlib Hardening Sprint (2026-02-28)
+- Completed: frontend `_guard_tag_for_hint` extended with `set` (17), `frozenset` (18),
+  `intarray` (16) type tag mappings for guard emission.
+- Completed: WASM `os.getppid()` now raises `OSError(ENOSYS)` instead of silently
+  returning 0.
+- Completed: WASM HTTP `Date:` header uses Howard Hinnant UTC algorithm instead of
+  hardcoded epoch string.
+- Completed: WASM `datetime.now()`/`fromtimestamp()`/`utcoffset()` now raise `OSError`
+  when host timezone unavailable instead of silent UTC fallback.
+- Completed: WASM `select.select()` breaks immediately instead of spin-looping
+  (prevents host event loop freeze).
+- Completed: WASM `threading.current_thread().ident` returns 1 (main thread) instead
+  of 0.
+- Completed: orphaned `complex_core.rs` deleted (26 handle-based intrinsics
+  incompatible with canonical GC object model; complex type works via
+  ops.rs/numbers.rs/attributes.rs).
+- Completed: `re` engine now supports `\b` (word boundary), `\B` (non-boundary),
+  `\A` (absolute start), `\Z` (absolute end) anchors. `(?:...)` non-capturing groups
+  confirmed already working.
+- Completed: `collections.ChainMap` added with 11 intrinsic bindings — unblocks
+  `string.Template.substitute()`.
+- Completed: `io.SEEK_SET`/`SEEK_CUR`/`SEEK_END` constants added.
+- Completed: `os.DirEntry.stat()` and `inode()` methods added.
+- Completed: `datetime` timedelta arithmetic (abs/truediv/floordiv/mod),
+  `date.fromisocalendar()`, `datetime.combine()` wired.
+- Completed: `typing` additions (`assert_type`, `assert_never`, `is_typeddict`,
+  `LiteralString`, `get_overloads`, `clear_overloads`, `dataclass_transform`).
+- Completed: `pathlib.Path.walk()` via `os.walk` delegation.
+- Completed: `functools.cached_property` descriptor class added.
+
 ## Asyncio & Tkinter Parity Sprint (2026-02-28)
 - Completed: asyncio pipe transports (`connect_read_pipe`/`connect_write_pipe`)
   implemented with 11 new pipe transport Rust intrinsics.
@@ -662,8 +692,8 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   `TypeError`; TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:partial): consider `__matmul__`/`__rmatmul__` fallback for custom types.
 - Roadmap focus: async runtime core (Task/Future scheduler, contextvars, cancellation injection), capability-gated async I/O,
   DB semantics expansion, WASM DB parity, framework adapters, and production hardening (see ROADMAP).
-- Numeric tower: complex supported with 26 runtime intrinsics (complex_core.rs: new/from_str/from_int/from_float,
-  real/imag/conjugate/abs/neg/pos/bool, add/sub/mul/div/pow, eq/ne, repr/hash, scalar ops, drop/to_tuple);
+- Numeric tower: complex supported via canonical NaN-boxed object model (TYPE_ID_COMPLEX with ComplexParts in
+  ops.rs/numbers.rs/attributes.rs; orphaned handle-based complex_core.rs deleted 2026-02-28);
   decimal is Rust intrinsic-backed with full arithmetic operators (add/sub/mul/truediv/floordiv/mod/pow/neg/pos/abs),
   comparisons (eq/lt/le/gt/ge/hash/bool), conversions (int/round/trunc/floor/ceil/from_float/to_eng_string/adjusted/
   as_integer_ratio), math methods (sqrt/ln/log10/exp/fma/max/min/remainder_near/scaleb/next_minus/next_plus/
@@ -1208,7 +1238,8 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): support dataclass inheritance from non-dataclass bases without breaking layout guarantees.) |
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:planned): `datetime` + `zoneinfo` time handling policy.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:planned): `json` parity plan (runtime fast-path + performance tuning + full cls/callback parity).
-- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:planned): `re` engine + deterministic regex semantics.
+- Implemented(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `re` engine supports `\b`/`\B`/`\A`/`\Z` anchors, `(?:...)` non-capturing groups, lookahead/lookbehind; remaining gaps: backreferences, `(?P<name>...)` named groups, `re.VERBOSE` flag.
+  TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `re` backreference + named group support.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P0, status:planned): full asyncio parity (tasks, task groups, streams, subprocess, executors) built on the runtime loop.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): asyncio loop/task API parity).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): extend intrinsic-backed `queue` support beyond `Queue`/`SimpleQueue` core semantics to full parity (`LifoQueue`, `PriorityQueue`, richer API/edge-case parity) and align dependent `logging.handlers` coverage.
@@ -1722,8 +1753,8 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(type-coverage, owner:frontend, milestone:TC1, priority:P1, status:partial): builtin constructors for `tuple`, `dict`, `bytes`, `bytearray`.
 - TODO(type-coverage, owner:frontend, milestone:TC1, priority:P1, status:partial): builtin reductions (`sum/min/max`) and `len` parity.
 - TODO(type-coverage, owner:frontend, milestone:TC1, priority:P1, status:partial): type-hint specialization policy (`--type-hints=check` with runtime guards).
-- Implemented(type-coverage, owner:runtime, milestone:TC2, priority:P1, status:implemented): complex type runtime intrinsics (26 ops in complex_core.rs).
-  TODO(type-coverage, owner:frontend, milestone:TC2, priority:P1, status:partial): complex literal lowering + frontend dispatch to complex_core intrinsics.
+- Implemented(type-coverage, owner:runtime, milestone:TC2, priority:P1, status:implemented): complex type via canonical GC object model (ops.rs/numbers.rs/attributes.rs); orphaned handle-based complex_core.rs deleted.
+  TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:planned): specialized complex IR ops (COMPLEX_ADD, COMPLEX_REAL) for performance; slow-path dispatch works correctly.
 - TODO(type-coverage, owner:frontend, milestone:TC2, priority:P1, status:partial): `int()` keyword arguments (`x`, `base`) parity.
 - TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:missing): async comprehensions (async for/await in comprehensions).
 - TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:missing): lower classes defining `__next__` without `__iter__` without backend panics.
