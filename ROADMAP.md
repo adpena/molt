@@ -72,8 +72,15 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
 - Completed: `re` Phase 1b backtracking NFA match engine — 1,100-line continuation-passing
   engine. Supports all ReNode variants. `molt_re_execute` and `molt_re_finditer_collect`
   now fully implemented. 60/60 tests pass. Fixed strip_verbose VERBOSE flag check.
-- Completed: libmolt C-API Phase 1 — PyList/Dict/Tuple/Iter/type check families.
-  852 new lines in c_api.rs, 27 tests all passing.
+- Completed: libmolt C-API Phase 1+2 — 117 CPython C-API functions, 80 tests passing.
+  Phase 1: PyList/Dict/Tuple/Iter/type check. Phase 2: Object Protocol (Repr/Str/Hash/
+  IsTrue/Not/Type/Length/GetAttr/SetAttr/DelAttr/HasAttr/RichCompare/IsInstance/IsSubclass/
+  CallableCheck), Number/Mapping/Sequence/Set/Bytes/String/Unicode/Exception/RefCount/
+  Conversion/Memory protocols. c_api.rs: 6,561 lines.
+- Completed: `stringprep` module (RFC 3454) — 719-line Rust module, 17 table membership
+  intrinsics, map_table_b3 case folding. 13 unit tests. Intrinsic-backed Python wrapper.
+- Fixed: async generator StopAsyncIteration → RuntimeError (PEP 479 analog).
+  Async generators are fully implemented at all layers (frontend/backend/runtime).
 - Completed: asyncio Barrier rewrite + Semaphore CM + Server methods + Queue enhancements
   + BrokenBarrierError export + __repr__ on all sync primitives. 24 parity gaps closed.
 - Completed: tkinter Toplevel+Wm mixin (P0) + _splitdict fix + Entry.bbox/validate +

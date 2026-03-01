@@ -1,0 +1,11 @@
+# Molt Cargo configuration
+# Enable native CPU features for maximum performance on the build host.
+# This enables full NEON on Apple Silicon (M1/M2/M3/M4) and AVX2/AVX-512
+# on modern x86-64 platforms.
+
+[target.'cfg(not(target_arch = "wasm32"))']
+rustflags = ["-C", "target-cpu=native"]
+
+# WASM targets use a fixed feature set — do NOT set target-cpu=native.
+# The wasm32-unknown-unknown and wasm32-wasi targets use Cranelift's
+# default feature baseline.
