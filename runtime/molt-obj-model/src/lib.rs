@@ -120,10 +120,17 @@ pub fn release_ptr(ptr: *mut u8) -> Option<u64> {
     if ptr.is_null() {
         return None;
     }
-    let addr = ptr.expose_provenance() as u64;
-    let shard = ptr_registry().shard(addr);
-    let mut guard = shard.write().expect("pointer registry lock poisoned");
-    guard.remove(&addr).map(|_| addr)
+    #[cfg(not(debug_assertions))]
+    {
+        Some(ptr as u64)
+    }
+    #[cfg(debug_assertions)]
+    {
+        let addr = ptr.expose_provenance() as u64;
+        let shard = ptr_registry().shard(addr);
+        let mut guard = shard.write().expect("pointer registry lock poisoned");
+        guard.remove(&addr).map(|_| addr)
+    }
 }
 
 pub fn reset_ptr_registry() {
@@ -175,14 +182,26 @@ impl MoltObject {
     }
 
     pub fn from_ptr(ptr: *mut u8) -> Self {
-        let addr = register_ptr(ptr);
-        let high = addr >> 48;
-        debug_assert!(
-            high == 0 || high == 0xffff,
-            "Non-canonical pointer for MoltObject"
-        );
-        let masked = addr & POINTER_MASK;
-        Self(QNAN | TAG_PTR | masked)
+        // In release builds, skip the registry — the NaN-box encoding already
+        // stores the canonical 48-bit address directly. The registry exists
+        // only for provenance safety checking in debug/dev builds.
+        #[cfg(debug_assertions)]
+        {
+            let addr = register_ptr(ptr);
+            let high = addr >> 48;
+            debug_assert!(
+                high == 0 || high == 0xffff,
+                "Non-canonical pointer for MoltObject"
+            );
+            let masked = addr & POINTER_MASK;
+            return Self(QNAN | TAG_PTR | masked);
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let addr = ptr as u64;
+            let masked = addr & POINTER_MASK;
+            Self(QNAN | TAG_PTR | masked)
+        }
     }
 
     pub fn is_float(&self) -> bool {
@@ -229,7 +248,17 @@ impl MoltObject {
         if self.is_ptr() {
             let masked = self.0 & POINTER_MASK;
             let addr = canonical_addr_from_masked(masked);
-            resolve_ptr(addr)
+            // In release builds, bypass the registry — reconstruct the pointer
+            // directly from the NaN-boxed canonical address. The registry lookup
+            // only exists for provenance safety checking in debug/dev builds.
+            #[cfg(not(debug_assertions))]
+            {
+                Some(std::ptr::with_exposed_provenance_mut(addr as usize))
+            }
+            #[cfg(debug_assertions)]
+            {
+                resolve_ptr(addr)
+            }
         } else {
             None
         }
