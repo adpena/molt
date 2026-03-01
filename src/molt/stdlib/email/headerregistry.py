@@ -74,14 +74,7 @@ class Address:
         """The addr_spec (username@domain) portion of the address, quoted
         according to RFC 5322 rules, but with no Content Transfer Encoding.
         """
-        lp = self.username
-        if not parser.DOT_ATOM_ENDS.isdisjoint(lp):
-            lp = parser.quote_string(lp)
-        if self.domain:
-            return lp + "@" + self.domain
-        if not lp:
-            return "<>"
-        return lp
+        return _MOLT_EMAIL_ADDRESS_ADDR_SPEC(self.username, self.domain)
 
     def __repr__(self):
         return "{}(display_name={!r}, username={!r}, domain={!r})".format(
@@ -89,13 +82,7 @@ class Address:
         )
 
     def __str__(self):
-        disp = self.display_name
-        if not parser.SPECIALS.isdisjoint(disp):
-            disp = parser.quote_string(disp)
-        if disp:
-            addr_spec = "" if self.addr_spec == "<>" else self.addr_spec
-            return "{} <{}>".format(disp, addr_spec)
-        return self.addr_spec
+        return _MOLT_EMAIL_ADDRESS_FORMAT(self.display_name, self.username, self.domain)
 
     def __eq__(self, other):
         if not isinstance(other, Address):
@@ -628,3 +615,7 @@ _require_intrinsic("molt_capabilities_has", globals())
 _MOLT_EMAIL_HEADERREGISTRY_VALUE = _require_intrinsic(
     "molt_email_headerregistry_value", globals()
 )
+_MOLT_EMAIL_ADDRESS_ADDR_SPEC = _require_intrinsic(
+    "molt_email_address_addr_spec", globals()
+)
+_MOLT_EMAIL_ADDRESS_FORMAT = _require_intrinsic("molt_email_address_format", globals())
