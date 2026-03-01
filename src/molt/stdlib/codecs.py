@@ -9,6 +9,38 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 _MOLT_CODECS_DECODE = _require_intrinsic("molt_codecs_decode", globals())
 _MOLT_CODECS_ENCODE = _require_intrinsic("molt_codecs_encode", globals())
 _MOLT_CODECS_LOOKUP_NAME = _require_intrinsic("molt_codecs_lookup_name", globals())
+_molt_codecs_normalize_encoding = _require_intrinsic(
+    "molt_codecs_normalize_encoding", globals()
+)
+_molt_codecs_register_error = _require_intrinsic(
+    "molt_codecs_register_error", globals()
+)
+_molt_codecs_lookup_error = _require_intrinsic("molt_codecs_lookup_error", globals())
+_molt_codecs_bom_utf8 = _require_intrinsic("molt_codecs_bom_utf8", globals())
+_molt_codecs_bom_utf16_le = _require_intrinsic("molt_codecs_bom_utf16_le", globals())
+_molt_codecs_bom_utf16_be = _require_intrinsic("molt_codecs_bom_utf16_be", globals())
+_molt_codecs_bom_utf32_le = _require_intrinsic("molt_codecs_bom_utf32_le", globals())
+_molt_codecs_bom_utf32_be = _require_intrinsic("molt_codecs_bom_utf32_be", globals())
+_molt_inc_enc_new = _require_intrinsic("molt_codecs_incremental_encoder_new", globals())
+_molt_inc_enc_encode = _require_intrinsic(
+    "molt_codecs_incremental_encoder_encode", globals()
+)
+_molt_inc_enc_reset = _require_intrinsic(
+    "molt_codecs_incremental_encoder_reset", globals()
+)
+_molt_inc_enc_drop = _require_intrinsic(
+    "molt_codecs_incremental_encoder_drop", globals()
+)
+_molt_inc_dec_new = _require_intrinsic("molt_codecs_incremental_decoder_new", globals())
+_molt_inc_dec_decode = _require_intrinsic(
+    "molt_codecs_incremental_decoder_decode", globals()
+)
+_molt_inc_dec_reset = _require_intrinsic(
+    "molt_codecs_incremental_decoder_reset", globals()
+)
+_molt_inc_dec_drop = _require_intrinsic(
+    "molt_codecs_incremental_decoder_drop", globals()
+)
 
 # Align import-error provenance with uv-managed CPython layouts without
 # importing `glob` (which pulls in `re`/`warnings` during bootstrap).
@@ -26,7 +58,16 @@ if os.path.isdir(_uv_root):
         __file__ = _best_host_codecs
 
 __all__ = [
+    "BOM",
+    "BOM_BE",
+    "BOM_LE",
     "BOM_UTF8",
+    "BOM_UTF16",
+    "BOM_UTF16_BE",
+    "BOM_UTF16_LE",
+    "BOM_UTF32",
+    "BOM_UTF32_BE",
+    "BOM_UTF32_LE",
     "BufferedIncrementalDecoder",
     "BufferedIncrementalEncoder",
     "Codec",
@@ -51,10 +92,12 @@ __all__ = [
     "latin_1_decode",
     "latin_1_encode",
     "lookup",
+    "lookup_error",
     "make_identity_dict",
     "raw_unicode_escape_decode",
     "raw_unicode_escape_encode",
     "register",
+    "register_error",
     "unicode_escape_decode",
     "unicode_escape_encode",
     "utf_16_be_decode",
@@ -77,7 +120,23 @@ __all__ = [
     "utf_8_encode",
 ]
 
-BOM_UTF8 = b"\xef\xbb\xbf"
+import sys as _sys
+
+BOM_UTF8 = bytes(_molt_codecs_bom_utf8())
+BOM_UTF16_LE = bytes(_molt_codecs_bom_utf16_le())
+BOM_UTF16_BE = bytes(_molt_codecs_bom_utf16_be())
+BOM_UTF32_LE = bytes(_molt_codecs_bom_utf32_le())
+BOM_UTF32_BE = bytes(_molt_codecs_bom_utf32_be())
+if _sys.byteorder == "little":
+    BOM = BOM_UTF16 = BOM_UTF16_LE
+    BOM_LE = BOM_UTF16_LE
+    BOM_BE = BOM_UTF16_BE
+    BOM_UTF32 = BOM_UTF32_LE
+else:
+    BOM = BOM_UTF16 = BOM_UTF16_BE
+    BOM_LE = BOM_UTF16_LE
+    BOM_BE = BOM_UTF16_BE
+    BOM_UTF32 = BOM_UTF32_BE
 
 
 def _lookup_builtin_name(encoding: str) -> str | None:
@@ -135,15 +194,25 @@ class Codec:
 
 
 class IncrementalEncoder:
+    _encoding = "utf-8"
+
     def __init__(self, errors="strict"):
         self.errors = errors
+        self._handle = _molt_inc_enc_new(self._encoding, errors)
 
     def encode(self, input, final=False):
-        del final
-        return _MOLT_CODECS_ENCODE(input, "utf-8", self.errors)
+        return _molt_inc_enc_encode(self._handle, input, final)
 
     def reset(self):
-        return None
+        _molt_inc_enc_reset(self._handle)
+
+    def __del__(self):
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            try:
+                _molt_inc_enc_drop(handle)
+            except Exception:
+                pass
 
 
 class BufferedIncrementalEncoder(IncrementalEncoder):
@@ -151,15 +220,25 @@ class BufferedIncrementalEncoder(IncrementalEncoder):
 
 
 class IncrementalDecoder:
+    _encoding = "utf-8"
+
     def __init__(self, errors="strict"):
         self.errors = errors
+        self._handle = _molt_inc_dec_new(self._encoding, errors)
 
     def decode(self, input, final=False):
-        del final
-        return _MOLT_CODECS_DECODE(input, "utf-8", self.errors)
+        return _molt_inc_dec_decode(self._handle, input, final)
 
     def reset(self):
-        return None
+        _molt_inc_dec_reset(self._handle)
+
+    def __del__(self):
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            try:
+                _molt_inc_dec_drop(handle)
+            except Exception:
+                pass
 
 
 class BufferedIncrementalDecoder(IncrementalDecoder):
@@ -334,6 +413,14 @@ def encode(obj: object, encoding: object = "utf-8", errors: object = "strict"):
 
 def decode(obj: object, encoding: object = "utf-8", errors: object = "strict"):
     return _MOLT_CODECS_DECODE(obj, encoding, errors)
+
+
+def register_error(name, error_handler):
+    return _molt_codecs_register_error(name, error_handler)
+
+
+def lookup_error(name):
+    return _molt_codecs_lookup_error(name)
 
 
 def make_identity_dict(rng):
