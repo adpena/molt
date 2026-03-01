@@ -609,24 +609,43 @@ fn uu_encode(input: &[u8]) -> Result<Vec<u8>, &'static str> {
 fn qp_decode(input: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(input.len());
     let mut idx = 0usize;
+    // Use memchr (SIMD-backed) to find '=' markers, bulk-copying safe spans
     while idx < input.len() {
-        if input[idx] == b'=' && idx + 2 < input.len() {
-            if input[idx + 1] == b'\r' && input[idx + 2] == b'\n' {
-                idx += 3;
-                continue;
+        if let Some(eq_pos) = memchr::memchr(b'=', &input[idx..]) {
+            // Bulk copy the safe bytes before the '='
+            if eq_pos > 0 {
+                out.extend_from_slice(&input[idx..idx + eq_pos]);
             }
-            if input[idx + 1] == b'\n' {
+            idx += eq_pos;
+            // Handle the '=' escape
+            if idx + 2 < input.len() {
+                if input[idx + 1] == b'\r' && input[idx + 2] == b'\n' {
+                    idx += 3;
+                    continue;
+                }
+                if input[idx + 1] == b'\n' {
+                    idx += 2;
+                    continue;
+                }
+                if let (Some(a), Some(b)) =
+                    (hex_nibble(input[idx + 1]), hex_nibble(input[idx + 2]))
+                {
+                    out.push((a << 4) | b);
+                    idx += 3;
+                    continue;
+                }
+            } else if idx + 1 < input.len() && input[idx + 1] == b'\n' {
                 idx += 2;
                 continue;
             }
-            if let (Some(a), Some(b)) = (hex_nibble(input[idx + 1]), hex_nibble(input[idx + 2])) {
-                out.push((a << 4) | b);
-                idx += 3;
-                continue;
-            }
+            // Not a valid escape — pass through the '='
+            out.push(input[idx]);
+            idx += 1;
+        } else {
+            // No more '=' in the remainder — bulk copy everything
+            out.extend_from_slice(&input[idx..]);
+            break;
         }
-        out.push(input[idx]);
-        idx += 1;
     }
     out
 }
