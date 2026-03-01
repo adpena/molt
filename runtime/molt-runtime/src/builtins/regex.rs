@@ -1331,14 +1331,14 @@ impl ReParser {
             self.next_ch()?; // consume '?'
             return self.parse_extension_group();
         }
-        // Capturing group.
+        // Capturing group — assign index at open-paren time (CPython order).
+        self.group_count += 1;
+        let idx = self.group_count;
         let node = self.parse_expr()?;
         if self.peek() != Some(')') {
             return Err("missing )".to_string());
         }
         self.next_ch()?;
-        self.group_count += 1;
-        let idx = self.group_count;
         let width = fixed_width(&node, Some(&self.group_widths));
         self.group_widths.insert(idx, width);
         Ok(ReNode::Group {
@@ -1551,6 +1551,10 @@ impl ReParser {
         if self.group_names.contains_key(&name) || self.open_group_names.contains(&name) {
             return Err("redefinition of group name".to_string());
         }
+        // Assign index at open-paren time (CPython order).
+        self.group_count += 1;
+        let idx = self.group_count;
+        self.group_names.insert(name.clone(), idx);
         self.open_group_names.insert(name.clone());
         let parse_result = self.parse_expr();
         let node = match parse_result {
@@ -1567,9 +1571,6 @@ impl ReParser {
             return Err("missing )".to_string());
         }
         self.next_ch()?;
-        self.group_count += 1;
-        let idx = self.group_count;
-        self.group_names.insert(name, idx);
         let width = fixed_width(&node, Some(&self.group_widths));
         self.group_widths.insert(idx, width);
         Ok(ReNode::Group {
@@ -2262,12 +2263,14 @@ fn try_match_inner(node: &ReNode, pos: usize, rest: &[ReNode], state: &mut Match
         } => {
             let old_flags = state.flags;
             state.flags = (state.flags | add_flags) & !clear_flags;
-            // Match inner with rest continuation under scoped flags.
-            // We need to restore flags after matching inner + rest.
-            // Since inner's match flows into rest, we wrap:
-            let result = try_match(inner, pos, rest, state);
+            // Match inner under scoped flags, then restore flags before
+            // matching rest (rest should run under the outer flags).
+            let inner_result = try_match(inner, pos, &[], state);
             state.flags = old_flags;
-            result
+            match inner_result {
+                Some(inner_end) => match_rest(rest, inner_end, state),
+                None => None,
+            }
         }
 
         ReNode::Conditional {
@@ -3669,5 +3672,579 @@ mod tests {
             }
             other => panic!("expected CharClass, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase-1b match engine tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: compile + execute in a given mode.
+    fn do_execute(pattern: &str, flags: i64, text: &str, mode: &str) -> Option<MatchResult> {
+        let compiled = parse_pattern(pattern, flags).unwrap();
+        let text_len = text.chars().count();
+        execute_match(&compiled, text, 0, text_len, mode)
+    }
+
+    /// Helper: compile + execute "match" mode.
+    fn do_match(pattern: &str, text: &str) -> Option<MatchResult> {
+        do_execute(pattern, 0, text, "match")
+    }
+
+    /// Helper: compile + execute "search" mode.
+    fn do_search(pattern: &str, text: &str) -> Option<MatchResult> {
+        do_execute(pattern, 0, text, "search")
+    }
+
+    /// Helper: compile + execute "fullmatch" mode.
+    fn do_fullmatch(pattern: &str, text: &str) -> Option<MatchResult> {
+        do_execute(pattern, 0, text, "fullmatch")
+    }
+
+    // --- Literal matching ---
+
+    #[test]
+    fn test_match_literal() {
+        let m = do_match("hello", "hello world").unwrap();
+        assert_eq!(m.start, 0);
+        assert_eq!(m.end, 5);
+    }
+
+    #[test]
+    fn test_match_literal_no_match() {
+        assert!(do_match("xyz", "hello").is_none());
+    }
+
+    #[test]
+    fn test_search_literal() {
+        let m = do_search("world", "hello world").unwrap();
+        assert_eq!(m.start, 6);
+        assert_eq!(m.end, 11);
+    }
+
+    #[test]
+    fn test_fullmatch_literal() {
+        let m = do_fullmatch("hello", "hello").unwrap();
+        assert_eq!(m.start, 0);
+        assert_eq!(m.end, 5);
+    }
+
+    #[test]
+    fn test_fullmatch_literal_fail() {
+        assert!(do_fullmatch("hello", "hello world").is_none());
+    }
+
+    // --- Any (.) ---
+
+    #[test]
+    fn test_match_any() {
+        let m = do_match(".", "a").unwrap();
+        assert_eq!(m.end, 1);
+    }
+
+    #[test]
+    fn test_match_any_no_newline() {
+        assert!(do_match(".", "\n").is_none());
+    }
+
+    #[test]
+    fn test_match_any_dotall() {
+        let m = do_execute(".", RE_DOTALL, "\n", "match").unwrap();
+        assert_eq!(m.end, 1);
+    }
+
+    // --- Character classes ---
+
+    #[test]
+    fn test_match_charclass() {
+        let m = do_match("[abc]", "b").unwrap();
+        assert_eq!(m.end, 1);
+    }
+
+    #[test]
+    fn test_match_charclass_no_match() {
+        assert!(do_match("[abc]", "d").is_none());
+    }
+
+    #[test]
+    fn test_match_charclass_range() {
+        let m = do_match("[a-z]", "m").unwrap();
+        assert_eq!(m.end, 1);
+    }
+
+    #[test]
+    fn test_match_charclass_range_no_match() {
+        assert!(do_match("[a-z]", "5").is_none());
+    }
+
+    #[test]
+    fn test_match_negated_charclass() {
+        let m = do_match("[^abc]", "d").unwrap();
+        assert_eq!(m.end, 1);
+    }
+
+    #[test]
+    fn test_match_negated_charclass_no_match() {
+        assert!(do_match("[^abc]", "a").is_none());
+    }
+
+    #[test]
+    fn test_match_charclass_digit() {
+        let m = do_match("\\d", "5").unwrap();
+        assert_eq!(m.end, 1);
+    }
+
+    #[test]
+    fn test_match_charclass_word() {
+        let m = do_match("\\w", "a").unwrap();
+        assert_eq!(m.end, 1);
+    }
+
+    #[test]
+    fn test_match_charclass_space() {
+        let m = do_match("\\s", " ").unwrap();
+        assert_eq!(m.end, 1);
+    }
+
+    // --- Anchors ---
+
+    #[test]
+    fn test_match_anchor_start() {
+        let m = do_match("^hello", "hello").unwrap();
+        assert_eq!(m.end, 5);
+    }
+
+    #[test]
+    fn test_search_anchor_start_fails_mid() {
+        assert!(do_search("^world", "hello world").is_none());
+    }
+
+    #[test]
+    fn test_match_anchor_end() {
+        let m = do_fullmatch("hello$", "hello").unwrap();
+        assert_eq!(m.end, 5);
+    }
+
+    #[test]
+    fn test_match_anchor_end_trailing_newline() {
+        // $ matches before a trailing newline.
+        let m = do_match("hello$", "hello\n").unwrap();
+        assert_eq!(m.start, 0);
+        assert_eq!(m.end, 5);
+    }
+
+    #[test]
+    fn test_match_multiline_anchor() {
+        let compiled = parse_pattern("^world", RE_MULTILINE).unwrap();
+        let text = "hello\nworld";
+        let text_len = text.chars().count();
+        let m = execute_match(&compiled, text, 0, text_len, "search").unwrap();
+        assert_eq!(m.start, 6);
+        assert_eq!(m.end, 11);
+    }
+
+    #[test]
+    fn test_match_abs_start() {
+        let m = do_match("\\Ahello", "hello").unwrap();
+        assert_eq!(m.end, 5);
+    }
+
+    #[test]
+    fn test_match_abs_end() {
+        let m = do_fullmatch("hello\\Z", "hello").unwrap();
+        assert_eq!(m.end, 5);
+    }
+
+    #[test]
+    fn test_match_word_boundary() {
+        let m = do_search("\\bhello\\b", "say hello there").unwrap();
+        assert_eq!(m.start, 4);
+        assert_eq!(m.end, 9);
+    }
+
+    // --- Quantifiers ---
+
+    #[test]
+    fn test_match_star() {
+        let m = do_match("a*", "aaa").unwrap();
+        assert_eq!(m.end, 3);
+    }
+
+    #[test]
+    fn test_match_star_zero() {
+        let m = do_match("a*", "bbb").unwrap();
+        assert_eq!(m.end, 0);
+    }
+
+    #[test]
+    fn test_match_plus() {
+        let m = do_match("a+", "aaa").unwrap();
+        assert_eq!(m.end, 3);
+    }
+
+    #[test]
+    fn test_match_plus_fail() {
+        assert!(do_match("a+", "bbb").is_none());
+    }
+
+    #[test]
+    fn test_match_question() {
+        let m = do_match("a?", "a").unwrap();
+        assert_eq!(m.end, 1);
+    }
+
+    #[test]
+    fn test_match_question_zero() {
+        let m = do_match("a?", "b").unwrap();
+        assert_eq!(m.end, 0);
+    }
+
+    #[test]
+    fn test_match_counted() {
+        let m = do_match("a{2,4}", "aaaa").unwrap();
+        assert_eq!(m.end, 4);
+    }
+
+    #[test]
+    fn test_match_counted_exact() {
+        let m = do_match("a{3}", "aaaa").unwrap();
+        assert_eq!(m.end, 3);
+    }
+
+    #[test]
+    fn test_match_counted_fail() {
+        assert!(do_match("a{3}", "aa").is_none());
+    }
+
+    // --- Greedy vs lazy ---
+
+    #[test]
+    fn test_match_greedy_star() {
+        let m = do_match("a.*b", "aXXXb").unwrap();
+        assert_eq!(m.start, 0);
+        assert_eq!(m.end, 5);
+    }
+
+    #[test]
+    fn test_match_greedy_backtrack() {
+        let m = do_match(".*b", "aXXXb").unwrap();
+        assert_eq!(m.end, 5);
+    }
+
+    #[test]
+    fn test_match_lazy_star() {
+        let m = do_match("a.*?b", "aXbXb").unwrap();
+        assert_eq!(m.start, 0);
+        assert_eq!(m.end, 3);
+    }
+
+    // --- Groups ---
+
+    #[test]
+    fn test_match_group() {
+        let m = do_match("(abc)", "abc").unwrap();
+        assert_eq!(m.groups[1], Some((0, 3)));
+    }
+
+    #[test]
+    fn test_match_multiple_groups() {
+        let m = do_match("(a)(b)(c)", "abc").unwrap();
+        assert_eq!(m.groups[1], Some((0, 1)));
+        assert_eq!(m.groups[2], Some((1, 2)));
+        assert_eq!(m.groups[3], Some((2, 3)));
+    }
+
+    #[test]
+    fn test_match_nested_groups() {
+        let m = do_match("((a)b)", "ab").unwrap();
+        assert_eq!(m.groups[1], Some((0, 2)));
+        assert_eq!(m.groups[2], Some((0, 1)));
+    }
+
+    #[test]
+    fn test_match_non_capturing_group() {
+        let m = do_match("(?:abc)", "abc").unwrap();
+        assert_eq!(m.end, 3);
+        // No groups captured.
+        assert_eq!(m.groups.len(), 1); // only slot 0
+    }
+
+    // --- Alternation ---
+
+    #[test]
+    fn test_match_alternation() {
+        let m = do_match("cat|dog", "dog").unwrap();
+        assert_eq!(m.end, 3);
+    }
+
+    #[test]
+    fn test_match_alternation_first() {
+        let m = do_match("cat|dog", "cat").unwrap();
+        assert_eq!(m.end, 3);
+    }
+
+    #[test]
+    fn test_match_alternation_no_match() {
+        assert!(do_match("cat|dog", "fish").is_none());
+    }
+
+    // --- Backreferences ---
+
+    #[test]
+    fn test_match_backref() {
+        let m = do_match("(a)\\1", "aa").unwrap();
+        assert_eq!(m.end, 2);
+    }
+
+    #[test]
+    fn test_match_backref_fail() {
+        assert!(do_match("(a)\\1", "ab").is_none());
+    }
+
+    // --- Lookahead ---
+
+    #[test]
+    fn test_match_positive_lookahead() {
+        let m = do_match("a(?=b)", "ab").unwrap();
+        assert_eq!(m.end, 1); // lookahead doesn't consume
+    }
+
+    #[test]
+    fn test_match_positive_lookahead_fail() {
+        assert!(do_match("a(?=b)", "ac").is_none());
+    }
+
+    #[test]
+    fn test_match_negative_lookahead() {
+        let m = do_match("a(?!b)", "ac").unwrap();
+        assert_eq!(m.end, 1);
+    }
+
+    #[test]
+    fn test_match_negative_lookahead_fail() {
+        assert!(do_match("a(?!b)", "ab").is_none());
+    }
+
+    // --- Lookbehind ---
+
+    #[test]
+    fn test_match_positive_lookbehind() {
+        let compiled = parse_pattern("(?<=a)b", 0).unwrap();
+        let text = "ab";
+        let text_len = text.chars().count();
+        let m = execute_match(&compiled, text, 0, text_len, "search").unwrap();
+        assert_eq!(m.start, 1);
+        assert_eq!(m.end, 2);
+    }
+
+    #[test]
+    fn test_match_negative_lookbehind() {
+        let compiled = parse_pattern("(?<!a)b", 0).unwrap();
+        let text = "cb";
+        let text_len = text.chars().count();
+        let m = execute_match(&compiled, text, 0, text_len, "search").unwrap();
+        assert_eq!(m.start, 1);
+        assert_eq!(m.end, 2);
+    }
+
+    #[test]
+    fn test_match_negative_lookbehind_fail() {
+        let compiled = parse_pattern("(?<!a)b", 0).unwrap();
+        let text = "ab";
+        let text_len = text.chars().count();
+        let m = execute_match(&compiled, text, 0, text_len, "search");
+        assert!(m.is_none());
+    }
+
+    // --- Case insensitive ---
+
+    #[test]
+    fn test_match_ignorecase() {
+        let m = do_execute("hello", RE_IGNORECASE, "HELLO", "match").unwrap();
+        assert_eq!(m.end, 5);
+    }
+
+    #[test]
+    fn test_match_charclass_ignorecase() {
+        let m = do_execute("[a-z]", RE_IGNORECASE, "Z", "match").unwrap();
+        assert_eq!(m.end, 1);
+    }
+
+    // --- Complex patterns ---
+
+    #[test]
+    fn test_match_email_like() {
+        let m = do_search("\\w+@\\w+", "foo@bar").unwrap();
+        assert_eq!(m.start, 0);
+        assert_eq!(m.end, 7);
+    }
+
+    #[test]
+    fn test_match_digits_in_parens() {
+        let m = do_search("\\((\\d+)\\)", "call(42)").unwrap();
+        assert_eq!(m.start, 4);
+        assert_eq!(m.end, 8);
+        assert_eq!(m.groups[1], Some((5, 7)));
+    }
+
+    // --- finditer_collect ---
+
+    #[test]
+    fn test_finditer_collect_basic() {
+        let compiled = parse_pattern("\\d+", 0).unwrap();
+        let text = "a1b22c333d";
+        let text_len = text.chars().count();
+        let mut results = Vec::new();
+        let mut cur = 0;
+        let end = text_len;
+        while cur <= end {
+            match execute_match(&compiled, text, cur, end, "search") {
+                Some(result) => {
+                    let match_end = result.end;
+                    results.push((result.start, result.end));
+                    if match_end == result.start {
+                        cur = result.start + 1;
+                    } else {
+                        cur = match_end;
+                    }
+                }
+                None => break,
+            }
+        }
+        assert_eq!(results, vec![(1, 2), (3, 5), (6, 9)]);
+    }
+
+    #[test]
+    fn test_search_empty_pattern() {
+        let m = do_search("", "abc").unwrap();
+        assert_eq!(m.start, 0);
+        assert_eq!(m.end, 0);
+    }
+
+    #[test]
+    fn test_fullmatch_star() {
+        let m = do_fullmatch("a*", "aaa").unwrap();
+        assert_eq!(m.end, 3);
+    }
+
+    #[test]
+    fn test_fullmatch_star_empty() {
+        let m = do_fullmatch("a*", "").unwrap();
+        assert_eq!(m.end, 0);
+    }
+
+    // --- Scoped flags ---
+
+    #[test]
+    fn test_match_scoped_ignorecase() {
+        let m = do_match("(?i:hello) world", "HELLO world").unwrap();
+        assert_eq!(m.end, 11);
+    }
+
+    #[test]
+    fn test_match_scoped_ignorecase_outside() {
+        assert!(do_match("(?i:hello) WORLD", "HELLO world").is_none());
+    }
+
+    // --- Conditional ---
+
+    #[test]
+    fn test_match_conditional_yes() {
+        let m = do_match("(a)(?(1)b|c)", "ab").unwrap();
+        assert_eq!(m.end, 2);
+    }
+
+    #[test]
+    fn test_match_conditional_no() {
+        let m = do_match("(a)?(?(1)b|c)", "c").unwrap();
+        assert_eq!(m.end, 1);
+    }
+
+    // --- Unicode ---
+
+    #[test]
+    fn test_match_unicode_literal() {
+        let m = do_match("cafe\u{0301}", "cafe\u{0301}").unwrap();
+        assert_eq!(m.end, 5);
+    }
+
+    #[test]
+    fn test_search_unicode() {
+        let m = do_search("\\w+", "hello \u{4e16}\u{754c}").unwrap();
+        assert_eq!(m.start, 0);
+        assert_eq!(m.end, 5);
+    }
+
+    // --- Named groups ---
+
+    #[test]
+    fn test_match_named_group() {
+        let compiled = parse_pattern("(?P<word>\\w+)", 0).unwrap();
+        let text = "hello";
+        let text_len = text.chars().count();
+        let m = execute_match(&compiled, text, 0, text_len, "match").unwrap();
+        assert_eq!(m.groups[1], Some((0, 5)));
+    }
+
+    // --- Named backref ---
+
+    #[test]
+    fn test_match_named_backref() {
+        let compiled = parse_pattern("(?P<w>\\w+) (?P=w)", 0).unwrap();
+        let text = "abc abc";
+        let text_len = text.chars().count();
+        let m = execute_match(&compiled, text, 0, text_len, "match").unwrap();
+        assert_eq!(m.start, 0);
+        assert_eq!(m.end, 7);
+        assert_eq!(m.groups[1], Some((0, 3)));
+    }
+
+    #[test]
+    fn test_match_named_backref_fail() {
+        let compiled = parse_pattern("(?P<w>\\w+) (?P=w)", 0).unwrap();
+        let text = "abc def";
+        let text_len = text.chars().count();
+        let m = execute_match(&compiled, text, 0, text_len, "match");
+        assert!(m.is_none());
+    }
+
+    // --- Greedy backtracking through multiple patterns ---
+
+    #[test]
+    fn test_greedy_backtrack_complex() {
+        let m = do_match(".*(\\d+)", "abc123").unwrap();
+        assert_eq!(m.end, 6);
+        // Greedy .* eats as much as possible, then \d+ needs at least 1 digit.
+        assert_eq!(m.groups[1], Some((5, 6)));
+    }
+
+    #[test]
+    fn test_lazy_captures_more() {
+        let m = do_match(".*?(\\d+)", "abc123").unwrap();
+        assert_eq!(m.end, 6);
+        // Lazy .*? matches "abc", \d+ matches "123".
+        assert_eq!(m.groups[1], Some((3, 6)));
+    }
+
+    // --- Edge cases ---
+
+    #[test]
+    fn test_match_empty_string() {
+        let m = do_match("", "").unwrap();
+        assert_eq!(m.start, 0);
+        assert_eq!(m.end, 0);
+    }
+
+    #[test]
+    fn test_search_empty_string() {
+        let m = do_search("", "").unwrap();
+        assert_eq!(m.start, 0);
+        assert_eq!(m.end, 0);
+    }
+
+    #[test]
+    fn test_match_pos_beyond_text() {
+        let compiled = parse_pattern("a", 0).unwrap();
+        let m = execute_match(&compiled, "a", 5, 5, "match");
+        assert!(m.is_none());
     }
 }
