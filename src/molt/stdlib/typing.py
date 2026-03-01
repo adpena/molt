@@ -75,6 +75,13 @@ __all__ = [
     "overload",
     "runtime_checkable",
     "deprecated",
+    "assert_type",
+    "assert_never",
+    "is_typeddict",
+    "LiteralString",
+    "get_overloads",
+    "clear_overloads",
+    "dataclass_transform",
 ]
 
 _NoneType = type(None)
@@ -979,6 +986,39 @@ def cast(_typ: object, value: object) -> object:
 
 def overload(func):
     return func
+
+
+def assert_type(val, tp, /):
+    return val
+
+
+def assert_never(arg, /):
+    raise AssertionError("Expected code to be unreachable")
+
+
+def is_typeddict(tp, /):
+    return (
+        isinstance(tp, type) and issubclass(tp, dict) and hasattr(tp, "__annotations__")
+    )
+
+
+LiteralString = _SpecialForm("LiteralString")
+
+
+def get_overloads(func):
+    return getattr(func, "__overloads__", [])
+
+
+def clear_overloads():
+    pass
+
+
+def dataclass_transform(**kwargs):
+    def decorator(cls_or_fn):
+        cls_or_fn.__dataclass_transform__ = kwargs
+        return cls_or_fn
+
+    return decorator
 
 
 def override(method):

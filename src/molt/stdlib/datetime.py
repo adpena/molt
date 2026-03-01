@@ -51,6 +51,20 @@ _MOLT_DT_CTIME = _require_intrinsic("molt_datetime_ctime", globals())
 _MOLT_DT_LOCAL_UTCOFFSET = _require_intrinsic(
     "molt_datetime_local_utcoffset", globals()
 )
+_MOLT_TIMEDELTA_ABS = _require_intrinsic("molt_timedelta_abs", globals())
+_MOLT_TIMEDELTA_TRUEDIV_TD = _require_intrinsic("molt_timedelta_truediv_td", globals())
+_MOLT_TIMEDELTA_TRUEDIV_SCALAR = _require_intrinsic(
+    "molt_timedelta_truediv_scalar", globals()
+)
+_MOLT_TIMEDELTA_FLOORDIV_TD = _require_intrinsic(
+    "molt_timedelta_floordiv_td", globals()
+)
+_MOLT_TIMEDELTA_FLOORDIV_SCALAR = _require_intrinsic(
+    "molt_timedelta_floordiv_scalar", globals()
+)
+_MOLT_TIMEDELTA_MOD_TD = _require_intrinsic("molt_timedelta_mod_td", globals())
+_MOLT_DATE_FROMISOCALENDAR = _require_intrinsic("molt_date_fromisocalendar", globals())
+_MOLT_DATETIME_COMBINE = _require_intrinsic("molt_datetime_combine", globals())
 
 __all__ = [
     "MINYEAR",
@@ -194,6 +208,61 @@ class timedelta:
 
     def __neg__(self) -> timedelta:
         return timedelta._from_parts(-self.days, -self.seconds, -self.microseconds)
+
+    def __abs__(self) -> timedelta:
+        d, s, us = _MOLT_TIMEDELTA_ABS(self.days, self.seconds, self.microseconds)
+        return timedelta(days=int(d), seconds=int(s), microseconds=int(us))
+
+    def __truediv__(self, other: object) -> timedelta | float:
+        if isinstance(other, timedelta):
+            return float(
+                _MOLT_TIMEDELTA_TRUEDIV_TD(
+                    self.days,
+                    self.seconds,
+                    self.microseconds,
+                    other.days,
+                    other.seconds,
+                    other.microseconds,
+                )
+            )
+        if isinstance(other, (int, float)):
+            d, s, us = _MOLT_TIMEDELTA_TRUEDIV_SCALAR(
+                self.days, self.seconds, self.microseconds, other
+            )
+            return timedelta(days=int(d), seconds=int(s), microseconds=int(us))
+        return NotImplemented
+
+    def __floordiv__(self, other: object) -> timedelta | int:
+        if isinstance(other, timedelta):
+            return int(
+                _MOLT_TIMEDELTA_FLOORDIV_TD(
+                    self.days,
+                    self.seconds,
+                    self.microseconds,
+                    other.days,
+                    other.seconds,
+                    other.microseconds,
+                )
+            )
+        if isinstance(other, int):
+            d, s, us = _MOLT_TIMEDELTA_FLOORDIV_SCALAR(
+                self.days, self.seconds, self.microseconds, other
+            )
+            return timedelta(days=int(d), seconds=int(s), microseconds=int(us))
+        return NotImplemented
+
+    def __mod__(self, other: object) -> timedelta:
+        if not isinstance(other, timedelta):
+            return NotImplemented
+        d, s, us = _MOLT_TIMEDELTA_MOD_TD(
+            self.days,
+            self.seconds,
+            self.microseconds,
+            other.days,
+            other.seconds,
+            other.microseconds,
+        )
+        return timedelta(days=int(d), seconds=int(s), microseconds=int(us))
 
     def __eq__(self, other: object) -> bool:
         return (
@@ -351,6 +420,11 @@ class date:
     def today(cls) -> date:
         result = _MOLT_DT_NOW_LOCAL()
         return cls(int(result[0]), int(result[1]), int(result[2]))
+
+    @classmethod
+    def fromisocalendar(cls, year: int, week: int, day: int) -> date:
+        y, m, d = _MOLT_DATE_FROMISOCALENDAR(year, week, day)
+        return cls(int(y), int(m), int(d))
 
     def replace(
         self,
@@ -858,6 +932,36 @@ class datetime:
         if tz is not None:
             dt = dt.replace(tzinfo=timezone.utc).astimezone(tz)
         return dt
+
+    @classmethod
+    def combine(
+        cls,
+        date: date,
+        time: time,
+        tzinfo: tzinfo | None = None,
+    ) -> datetime:
+        tz = tzinfo if tzinfo is not None else time.tzinfo
+        result = _MOLT_DATETIME_COMBINE(
+            date.year,
+            date.month,
+            date.day,
+            time.hour,
+            time.minute,
+            time.second,
+            time.microsecond,
+            getattr(time, "fold", 0),
+        )
+        return cls(
+            int(result[0]),
+            int(result[1]),
+            int(result[2]),
+            int(result[3]),
+            int(result[4]),
+            int(result[5]),
+            int(result[6]),
+            tzinfo=tz,
+            fold=int(result[7]),
+        )
 
     def replace(
         self,

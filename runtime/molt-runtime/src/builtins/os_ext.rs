@@ -739,7 +739,9 @@ pub extern "C" fn molt_os_getppid() -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getppid() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_int(0).bits() })
+    crate::with_gil_entry!(_py, {
+        raise_exception::<u64>(_py, "OSError", "[Errno 38] Function not implemented: 'getppid'")
+    })
 }
 
 /// `os.getuid()` → int  (Unix only)

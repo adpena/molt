@@ -3998,6 +3998,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "dataclass": 13,
             "buffer2d": 14,
             "memoryview": 15,
+            "intarray": 16,
+            "set": 17,
+            "frozenset": 18,
         }
         return mapping.get(hint)
 
