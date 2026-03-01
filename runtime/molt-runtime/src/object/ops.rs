@@ -32991,6 +32991,133 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
     })
 }
 
+/// Specialized `in` for set/frozenset containers (hash lookup, no type dispatch).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_set_contains(container_bits: u64, item_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let container = obj_from_bits(container_bits);
+        if let Some(ptr) = container.as_ptr() {
+            unsafe {
+                if !ensure_hashable(_py, item_bits) {
+                    return MoltObject::none().bits();
+                }
+                let order = set_order(ptr);
+                let table = set_table(ptr);
+                let found = set_find_entry(_py, order, table, item_bits);
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_bool(found.is_some()).bits();
+            }
+        }
+        // Fallback for non-pointer (shouldn't happen with correct type hints)
+        molt_contains(container_bits, item_bits)
+    })
+}
+
+/// Specialized `in` for dict containers (hash lookup, no type dispatch).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_dict_contains(container_bits: u64, item_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let container = obj_from_bits(container_bits);
+        if let Some(ptr) = container.as_ptr() {
+            unsafe {
+                if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
+                    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                        return MoltObject::none().bits();
+                    };
+                    if !ensure_hashable(_py, item_bits) {
+                        return MoltObject::none().bits();
+                    }
+                    let order = dict_order(dict_ptr);
+                    let table = dict_table(dict_ptr);
+                    let found = dict_find_entry(_py, order, table, item_bits);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_bool(found.is_some()).bits();
+                }
+            }
+        }
+        molt_contains(container_bits, item_bits)
+    })
+}
+
+/// Specialized `in` for list containers (linear scan, no type dispatch).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_list_contains(container_bits: u64, item_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let container = obj_from_bits(container_bits);
+        if let Some(ptr) = container.as_ptr() {
+            unsafe {
+                let mut idx = 0usize;
+                while let Some(val) = list_elem_at(ptr, idx) {
+                    let elem_bits = val;
+                    inc_ref_bits(_py, elem_bits);
+                    let eq = match eq_bool_from_bits(_py, elem_bits, item_bits) {
+                        Some(val) => val,
+                        None => {
+                            dec_ref_bits(_py, elem_bits);
+                            return MoltObject::none().bits();
+                        }
+                    };
+                    dec_ref_bits(_py, elem_bits);
+                    if eq {
+                        return MoltObject::from_bool(true).bits();
+                    }
+                    idx += 1;
+                }
+                return MoltObject::from_bool(false).bits();
+            }
+        }
+        molt_contains(container_bits, item_bits)
+    })
+}
+
+/// Specialized `in` for str containers (substring search, no type dispatch).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_str_contains(container_bits: u64, item_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let container = obj_from_bits(container_bits);
+        let item = obj_from_bits(item_bits);
+        if let Some(ptr) = container.as_ptr() {
+            unsafe {
+                let Some(item_ptr) = item.as_ptr() else {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        &format!(
+                            "'in <string>' requires string as left operand, not {}",
+                            type_name(_py, item)
+                        ),
+                    );
+                };
+                if object_type_id(item_ptr) != TYPE_ID_STRING {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        &format!(
+                            "'in <string>' requires string as left operand, not {}",
+                            type_name(_py, item)
+                        ),
+                    );
+                }
+                let hay_len = string_len(ptr);
+                let needle_len = string_len(item_ptr);
+                let hay_bytes = std::slice::from_raw_parts(string_bytes(ptr), hay_len);
+                let needle_bytes =
+                    std::slice::from_raw_parts(string_bytes(item_ptr), needle_len);
+                if needle_bytes.is_empty() {
+                    return MoltObject::from_bool(true).bits();
+                }
+                let idx = bytes_find_impl(hay_bytes, needle_bytes);
+                return MoltObject::from_bool(idx >= 0).bits();
+            }
+        }
+        molt_contains(container_bits, item_bits)
+    })
+}
+
 pub(crate) extern "C" fn dict_keys_method(self_bits: u64) -> i64 {
     molt_dict_keys(self_bits) as i64
 }
