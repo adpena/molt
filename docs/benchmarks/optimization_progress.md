@@ -1,6 +1,6 @@
 # Optimization Progress Log
 
-Last updated: 2026-02-25
+Last updated: 2026-03-01
 Canonical plan: `OPTIMIZATIONS_PLAN.md`
 
 ## Purpose
@@ -53,6 +53,7 @@ Canonical plan: `OPTIMIZATIONS_PLAN.md`
 | 2026-02-24 | Wave 0 targeted blocker closure | Closed a linked-WASM regression in builtin import wiring by adding missing `sys_hexversion`/`sys_api_version`/`sys_abiflags`/`sys_implementation_payload` wasm import ids, reran focused linked `bench_bytes_find`, and reran compression differential smoke lanes with RSS/memory-cap constraints. | Complete (targeted gate slice) | `runtime/molt-backend/src/wasm.rs`, `tests/differential/stdlib/{bz2_basic.py,gzip_basic.py,lzma_basic.py,zlib_basic.py}`, command evidence: `bench_bytes_find | 54.3568 | 25822.0 KB` | Continue Wave 0 full refresh bundle (`tools/compile_progress.py`, `tools/bench.py`, full `tools/bench_wasm.py`) before Wave 1 experiment packets. |
 | 2026-02-25 | Wave 0 release-lane triage | Diagnosed release build failures as runtime compile breakage in `_asyncio` scheduler error paths (`raise_exception` signature misuse), patched `runtime/molt-runtime/src/async_rt/scheduler.rs`, and revalidated targeted correctness gates; confirmed compile-throughput tooling still exhibits long-tail release churn and background contention sensitivity. | Partial complete (blocker isolated + patch landed) | `runtime/molt-runtime/src/async_rt/scheduler.rs`, `/Volumes/APDataStore/Molt/compile_progress_20260224T230653Z_wave0/compile_progress.json`, `/Volumes/APDataStore/Molt/bench/results/optimization_progress/2026-02-24_wave0_refresh/bench_native_bytes_find_20260225.json` | Stabilize release compile lane execution contract (lock/daemon/sccache policy), rerun Wave 0 compile refresh, then capture native/wasm benchmark artifacts with `.venv`-backed interpreter to avoid missing `packaging` failures. |
 | 2026-02-27 | Wave 0 harness fix | Fixed benchmark harness interpreter mismatch: `tools/bench.py` and `tools/bench_wasm.py` now invoke Molt builds via `uv run --python 3.12 python3` instead of bare `sys.executable`, resolving the `packaging.markers` import failure in uv-only lanes. Matches the pattern already used in `tools/compile_progress.py`. | Complete (blocker resolved) | `tools/bench.py`, `tools/bench_wasm.py`, `ROADMAP.md`, `docs/benchmarks/optimization_progress.md` | Rerun Wave 0 full refresh bundle with fixed harness and lock fresh artifact bundle before Wave 1 experiment packets. |
+| 2026-03-01 | Stdlib sprint cont'd | Landed re Phase 1 Rust parser (2,586 lines), asyncio staggered_race, tkinter WASM gate, 26 dead intrinsics deleted, 5 singletons wired, bug fixes (Image.__getitem__, ScrolledText, Font, tix, Semaphore dual-state). Deployed agents for re Phase 1b match engine, libmolt C-API Phase 1, asyncio/tkinter parity audits, CPU kernelization design, GPU/MLIR groundwork. | In progress (6 agents deployed) | `runtime/molt-runtime/src/builtins/regex.rs`, `src/molt/stdlib/asyncio/__init__.py`, `src/molt/stdlib/tkinter/__init__.py` | Merge agent results, continue parity and optimization work. |
 
 ## Experiment Template (Use For Each OPT Track)
 

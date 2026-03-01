@@ -63,8 +63,19 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
   - targeted correctness gates are green (`cargo check -p molt-runtime`; `tests/test_tkinter_phase0_wrappers.py` -> `2 passed`).
   - Wave 0 benchmark harness interpreter mismatch (`packaging.markers` missing in uv-only lane) is resolved: `tools/bench.py` and `tools/bench_wasm.py` now invoke Molt builds via `uv run --python 3.12 python3` instead of bare `sys.executable`, matching the pattern already used in `tools/compile_progress.py`. Remaining Wave 0 blocker is release-runtime compile churn; canonical tracking is in `docs/benchmarks/optimization_progress.md`.
 
-## Stdlib Intrinsics Program (2026-02-28)
+## Stdlib Intrinsics Program (2026-03-01)
 - Canonical plan: [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md).
+
+### Rust-First Stdlib Lowering Sprint (2026-03-01)
+- Completed: `re` Phase 1 Rust parser — 2,586-line recursive-descent parser in regex.rs.
+  CompiledPattern + ReNode enum + global handle registry. 4 new intrinsics. Phase 1b
+  match engine in progress.
+- Completed: asyncio staggered_race — full CPython 3.12 implementation replacing stub.
+- Completed: tkinter WASM import gate (emscripten/wasi → ImportError).
+- Cleanup: 26 dead intrinsics deleted, 5 singletons wired, tkinter bug fixes
+  (Image.__getitem__, ScrolledText, Font, tix), asyncio Semaphore dual-state fix.
+- In progress: re Phase 1b match engine, libmolt C-API Phase 1, asyncio/tkinter parity audits.
+- In progress: CPU kernelization loop classifier design, GPU/MLIR groundwork research.
 
 ### Rust-First Stdlib Lowering Sprint (2026-02-28)
 - Completed: `base64` — all 18 functions rewired to existing Rust intrinsics.
