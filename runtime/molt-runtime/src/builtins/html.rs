@@ -133,9 +133,17 @@ impl ParserState {
                 }
             } else {
                 // Collect data up to next '<' or '&'
+                // Use SIMD-backed memchr2 for fast scanning through text data
                 let start = pos;
-                while pos < len && src[pos] != '<' && src[pos] != '&' {
-                    pos += 1;
+                let remaining: String = src[pos..len].iter().collect();
+                let remaining_bytes = remaining.as_bytes();
+                if let Some(offset) = memchr::memchr2(b'<', b'&', remaining_bytes) {
+                    // Convert byte offset back to char offset
+                    let text_prefix = &remaining[..offset];
+                    let char_count = text_prefix.chars().count();
+                    pos += char_count;
+                } else {
+                    pos = len;
                 }
                 let text: String = src[start..pos].iter().collect();
                 if !text.is_empty() {
