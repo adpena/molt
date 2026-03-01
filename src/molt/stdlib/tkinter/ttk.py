@@ -475,6 +475,10 @@ class Combobox(Widget):
             return self.tk.call(self._w, "current")
         return self.tk.call(self._w, "current", newindex)
 
+    def get(self):
+        _require_gui_capability()
+        return self.tk.call(self._w, "get")
+
     def set(self, value):
         _require_gui_capability()
         return self.tk.call(self._w, "set", value)
@@ -602,6 +606,11 @@ class OptionMenu(Menubutton):
 class Panedwindow(Widget):
     _widget_command = "ttk::panedwindow"
 
+    def add(self, child, cnf=None, **kw):
+        _require_gui_capability()
+        opts = _normalize_options(cnf, **kw)
+        return self.tk.call(self._w, "add", child, *opts)
+
     def forget(self, pane):
         _require_gui_capability()
         return self.tk.call(self._w, "forget", pane)
@@ -623,6 +632,10 @@ class Panedwindow(Widget):
             ),
             **kw,
         )
+
+    def panes(self):
+        _require_gui_capability()
+        return self.tk.splitlist(self.tk.call(self._w, "panes"))
 
     def sashpos(self, index, newpos=None):
         _require_gui_capability()
@@ -682,6 +695,10 @@ class Scale(Widget):
         if x is None and y is None:
             return self.tk.call(self._w, "get")
         return self.tk.call(self._w, "get", x, y)
+
+    def set(self, value):
+        _require_gui_capability()
+        return self.tk.call(self._w, "set", value)
 
 
 class LabeledScale(Frame):
@@ -747,6 +764,10 @@ class Sizegrip(Widget):
 
 class Spinbox(Widget):
     _widget_command = "ttk::spinbox"
+
+    def get(self):
+        _require_gui_capability()
+        return self.tk.call(self._w, "get")
 
     def set(self, value):
         _require_gui_capability()
@@ -973,6 +994,20 @@ class Treeview(Widget):
         if item is None:
             return self.tk.splitlist(self.tk.call(self._w, "tag", "has", tagname))
         return self.tk.getboolean(self.tk.call(self._w, "tag", "has", tagname, item))
+
+    def xview(self, *args):
+        _require_gui_capability()
+        result = self.tk.call(self._w, "xview", *args)
+        if args:
+            return result
+        return tuple(self.tk.getdouble(part) for part in self.tk.splitlist(result))
+
+    def yview(self, *args):
+        _require_gui_capability()
+        result = self.tk.call(self._w, "yview", *args)
+        if args:
+            return result
+        return tuple(self.tk.getdouble(part) for part in self.tk.splitlist(result))
 
 
 class Style:
