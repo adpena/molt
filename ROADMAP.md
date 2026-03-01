@@ -86,6 +86,13 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
 - Completed: `enum` — all 10 Flag/auto/StrEnum/unique/verify intrinsics wired.
   Added StrEnum class, @unique/@verify decorators, Flag iteration via flag_decompose,
   FlagBoundary sentinels.
+- Completed: `warnings` — 8 intrinsics wired. Dead inline regex engine eliminated.
+  Fast-path to Rust for common warn/warn_explicit calls.
+- Assessed: `logging` — acceptable Python (class hierarchy is the API). `%`-format
+  already in Rust.
+- Blocker: `string` Template/Formatter needs new Rust intrinsics (~350 lines Python).
+- Blocker: `encodings` punycode/idna/uu_codec need new Rust implementations (~545
+  lines Python total).
 
 ### Compiler + WASM + Stdlib Hardening Sprint (2026-02-28)
 - Completed: guard_tag_for_hint extended (set/frozenset/intarray type tags).
