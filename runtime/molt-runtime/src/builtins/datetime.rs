@@ -11,7 +11,7 @@
 use std::fmt::Write as _;
 
 use crate::{
-    MoltObject, PyToken, alloc_string, alloc_tuple, obj_from_bits, raise_exception,
+    MoltObject, PyToken, alloc_string, alloc_tuple, dec_ref_bits, obj_from_bits, raise_exception,
     string_obj_to_owned, to_f64, to_i64,
 };
 
@@ -2290,4 +2290,342 @@ pub extern "C" fn molt_datetime_validate_time(
             && (0..1_000_000).contains(&us);
         MoltObject::from_bool(valid).bits()
     })
+}
+
+// ─── datetime.combine ───────────────────────────────────────────────────────
+
+/// combine(year, month, day, hour, minute, second, microsecond, fold)
+/// Returns validated 8-tuple for Python wrapper to unpack.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_datetime_combine(
+    y_bits: u64,
+    m_bits: u64,
+    d_bits: u64,
+    h_bits: u64,
+    mi_bits: u64,
+    sec_bits: u64,
+    us_bits: u64,
+    fold_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let y = match unpack_i64(_py, y_bits, "year") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let m = match unpack_i64(_py, m_bits, "month") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let d = match unpack_i64(_py, d_bits, "day") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let h = match unpack_i64(_py, h_bits, "hour") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let mi = match unpack_i64(_py, mi_bits, "minute") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let sec = match unpack_i64(_py, sec_bits, "second") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let us = match unpack_i64(_py, us_bits, "microsecond") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let fold = match unpack_i64(_py, fold_bits, "fold") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        if !(1..=9999).contains(&y) || !(1..=12).contains(&m) {
+            return raise_exception::<u64>(
+                _py,
+                "ValueError",
+                &format!("year {y} or month {m} is out of range"),
+            );
+        }
+        let max_day = days_in_month_impl(y as i32, m as i32) as i64;
+        if d < 1 || d > max_day {
+            return raise_exception::<u64>(
+                _py,
+                "ValueError",
+                &format!("day {d} is out of range for month"),
+            );
+        }
+        if !(0..24).contains(&h)
+            || !(0..60).contains(&mi)
+            || !(0..60).contains(&sec)
+            || !(0..1_000_000).contains(&us)
+        {
+            return raise_exception::<u64>(_py, "ValueError", "time component out of range");
+        }
+        let elems = [
+            MoltObject::from_int(y).bits(),
+            MoltObject::from_int(m).bits(),
+            MoltObject::from_int(d).bits(),
+            MoltObject::from_int(h).bits(),
+            MoltObject::from_int(mi).bits(),
+            MoltObject::from_int(sec).bits(),
+            MoltObject::from_int(us).bits(),
+            MoltObject::from_int(fold).bits(),
+        ];
+        let tuple_ptr = alloc_tuple(_py, &elems);
+        for &e in &elems {
+            dec_ref_bits(_py, e);
+        }
+        if tuple_ptr.is_null() {
+            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
+    })
+}
+
+// ─── date.fromisocalendar ───────────────────────────────────────────────────
+
+/// fromisocalendar(year, week, day) -> (year, month, day) tuple
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_date_fromisocalendar(
+    iso_year_bits: u64,
+    iso_week_bits: u64,
+    iso_day_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let iso_year = match unpack_i64(_py, iso_year_bits, "year") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let iso_week = match unpack_i64(_py, iso_week_bits, "week") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let iso_day = match unpack_i64(_py, iso_day_bits, "day") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        if !(1..=7).contains(&iso_day) {
+            return raise_exception::<u64>(
+                _py,
+                "ValueError",
+                &format!("Invalid day: {iso_day} (range is [1, 7])"),
+            );
+        }
+        let max_week = iso_weeks_in_year(iso_year as i32) as i64;
+        if iso_week < 1 || iso_week > max_week {
+            return raise_exception::<u64>(
+                _py,
+                "ValueError",
+                &format!("Invalid week: {iso_week}"),
+            );
+        }
+        // January 4 is always in ISO week 1
+        let jan4_ordinal = ymd_to_ordinal(iso_year as i32, 1, 4);
+        let jan4_weekday = (jan4_ordinal - 1) % 7; // 0=Mon
+        let week1_monday = jan4_ordinal - jan4_weekday;
+        let ordinal = week1_monday + (iso_week - 1) * 7 + (iso_day - 1);
+        let (y, m, d) = ordinal_to_ymd(ordinal);
+        let elems = [
+            MoltObject::from_int(y as i64).bits(),
+            MoltObject::from_int(m as i64).bits(),
+            MoltObject::from_int(d as i64).bits(),
+        ];
+        let tuple_ptr = alloc_tuple(_py, &elems);
+        for &e in &elems {
+            dec_ref_bits(_py, e);
+        }
+        if tuple_ptr.is_null() {
+            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
+    })
+}
+
+// ─── timedelta arithmetic ───────────────────────────────────────────────────
+
+/// timedelta / scalar (int or float) -> timedelta (days, seconds, us) tuple
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_timedelta_truediv_scalar(
+    days_bits: u64,
+    secs_bits: u64,
+    us_bits: u64,
+    divisor_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let days = match unpack_i64(_py, days_bits, "days") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let secs = match unpack_i64(_py, secs_bits, "seconds") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let us = match unpack_i64(_py, us_bits, "microseconds") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let divisor = to_f64(obj_from_bits(divisor_bits)).unwrap_or(0.0);
+        if divisor == 0.0 {
+            return raise_exception::<u64>(_py, "ZeroDivisionError", "division by zero");
+        }
+        let total_us =
+            (days as f64) * 86_400_000_000.0 + (secs as f64) * 1_000_000.0 + (us as f64);
+        let result_us = (total_us / divisor).round() as i64;
+        let (rd, rs, ru) = normalize_timedelta_us(result_us);
+        timedelta_tuple(_py, rd, rs, ru)
+    })
+}
+
+/// timedelta / timedelta -> float
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_timedelta_truediv_td(
+    a_days: u64,
+    a_secs: u64,
+    a_us: u64,
+    b_days: u64,
+    b_secs: u64,
+    b_us: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let a_total = td_total_us(a_days, a_secs, a_us);
+        let b_total = td_total_us(b_days, b_secs, b_us);
+        if b_total == 0.0 {
+            return raise_exception::<u64>(_py, "ZeroDivisionError", "division by zero");
+        }
+        MoltObject::from_float(a_total / b_total).bits()
+    })
+}
+
+/// timedelta // timedelta -> int
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_timedelta_floordiv_td(
+    a_days: u64,
+    a_secs: u64,
+    a_us: u64,
+    b_days: u64,
+    b_secs: u64,
+    b_us: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let a_total = td_total_us(a_days, a_secs, a_us) as i64;
+        let b_total = td_total_us(b_days, b_secs, b_us) as i64;
+        if b_total == 0 {
+            return raise_exception::<u64>(_py, "ZeroDivisionError", "integer division by zero");
+        }
+        MoltObject::from_int(a_total.div_euclid(b_total)).bits()
+    })
+}
+
+/// timedelta % timedelta -> timedelta (days, seconds, us) tuple
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_timedelta_mod_td(
+    a_days: u64,
+    a_secs: u64,
+    a_us: u64,
+    b_days: u64,
+    b_secs: u64,
+    b_us: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let a_total = td_total_us(a_days, a_secs, a_us) as i64;
+        let b_total = td_total_us(b_days, b_secs, b_us) as i64;
+        if b_total == 0 {
+            return raise_exception::<u64>(
+                _py,
+                "ZeroDivisionError",
+                "integer division or modulo by zero",
+            );
+        }
+        let rem = a_total.rem_euclid(b_total);
+        let (rd, rs, ru) = normalize_timedelta_us(rem);
+        timedelta_tuple(_py, rd, rs, ru)
+    })
+}
+
+/// timedelta // int -> timedelta (days, seconds, us) tuple
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_timedelta_floordiv_scalar(
+    days_bits: u64,
+    secs_bits: u64,
+    us_bits: u64,
+    divisor_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let days = match unpack_i64(_py, days_bits, "days") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let secs = match unpack_i64(_py, secs_bits, "seconds") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let us = match unpack_i64(_py, us_bits, "microseconds") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let divisor = obj_from_bits(divisor_bits).as_int().unwrap_or(0);
+        if divisor == 0 {
+            return raise_exception::<u64>(_py, "ZeroDivisionError", "integer division by zero");
+        }
+        let total_us = days * 86_400_000_000 + secs * 1_000_000 + us;
+        let result_us = total_us.div_euclid(divisor);
+        let (rd, rs, ru) = normalize_timedelta_us(result_us);
+        timedelta_tuple(_py, rd, rs, ru)
+    })
+}
+
+/// abs(timedelta) -> timedelta (days, seconds, us) tuple
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_timedelta_abs(days_bits: u64, secs_bits: u64, us_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let days = match unpack_i64(_py, days_bits, "days") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let secs = match unpack_i64(_py, secs_bits, "seconds") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let us = match unpack_i64(_py, us_bits, "microseconds") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let total_us = (days * 86_400_000_000 + secs * 1_000_000 + us).abs();
+        let (rd, rs, ru) = normalize_timedelta_us(total_us);
+        timedelta_tuple(_py, rd, rs, ru)
+    })
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+fn td_total_us(days_bits: u64, secs_bits: u64, us_bits: u64) -> f64 {
+    let days = obj_from_bits(days_bits).as_int().unwrap_or(0);
+    let secs = obj_from_bits(secs_bits).as_int().unwrap_or(0);
+    let us = obj_from_bits(us_bits).as_int().unwrap_or(0);
+    (days as f64) * 86_400_000_000.0 + (secs as f64) * 1_000_000.0 + (us as f64)
+}
+
+fn normalize_timedelta_us(total_us: i64) -> (i64, i64, i64) {
+    let us = total_us.rem_euclid(1_000_000);
+    let total_secs = (total_us - us) / 1_000_000;
+    let secs = total_secs.rem_euclid(86_400);
+    let days = (total_secs - secs) / 86_400;
+    (days, secs, us)
+}
+
+fn timedelta_tuple(_py: &PyToken<'_>, days: i64, secs: i64, us: i64) -> u64 {
+    let elems = [
+        MoltObject::from_int(days).bits(),
+        MoltObject::from_int(secs).bits(),
+        MoltObject::from_int(us).bits(),
+    ];
+    let tuple_ptr = alloc_tuple(_py, &elems);
+    for &e in &elems {
+        dec_ref_bits(_py, e);
+    }
+    if tuple_ptr.is_null() {
+        return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+    }
+    MoltObject::from_ptr(tuple_ptr).bits()
 }

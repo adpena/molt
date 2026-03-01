@@ -18,6 +18,7 @@ pub(crate) mod codecs;
 pub(crate) mod codecs_ext;
 pub(crate) mod collections_ext;
 pub(crate) mod colorsys;
+pub(crate) mod complex_core;
 pub(crate) mod compression_common;
 pub(crate) mod concurrent;
 pub(crate) mod configparser;
