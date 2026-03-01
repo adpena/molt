@@ -280,6 +280,48 @@ fn b64_decode(input: &[u8], alphabet: &[u8; 64], validate: bool) -> Result<Vec<u
                 }
             }
         }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if input.len() >= 16 {
+                unsafe {
+                    use std::arch::wasm32::*;
+                    let upper_a = u8x16_splat(b'A');
+                    let upper_z = u8x16_splat(b'Z');
+                    let lower_a = u8x16_splat(b'a');
+                    let lower_z = u8x16_splat(b'z');
+                    let digit_0 = u8x16_splat(b'0');
+                    let digit_9 = u8x16_splat(b'9');
+                    let plus = u8x16_splat(b'+');
+                    let slash = u8x16_splat(b'/');
+                    let eq = u8x16_splat(b'=');
+                    while fi + 16 <= input.len() {
+                        let v = v128_load(input.as_ptr().add(fi) as *const v128);
+                        let is_upper = v128_and(u8x16_ge(v, upper_a), u8x16_le(v, upper_z));
+                        let is_lower = v128_and(u8x16_ge(v, lower_a), u8x16_le(v, lower_z));
+                        let is_digit = v128_and(u8x16_ge(v, digit_0), u8x16_le(v, digit_9));
+                        let is_plus = u8x16_eq(v, plus);
+                        let is_slash = u8x16_eq(v, slash);
+                        let is_eq = u8x16_eq(v, eq);
+                        let valid = v128_or(v128_or(v128_or(is_upper, is_lower), v128_or(is_digit, is_plus)), v128_or(is_slash, is_eq));
+                        let mask = u8x16_bitmask(valid);
+                        if mask == 0xFFFF {
+                            let len = filtered_out.len();
+                            filtered_out.set_len(len + 16);
+                            v128_store(filtered_out.as_mut_ptr().add(len) as *mut v128, v);
+                        } else {
+                            let mut valid_bytes = [0u8; 16];
+                            v128_store(valid_bytes.as_mut_ptr() as *mut v128, valid);
+                            for j in 0..16 {
+                                if valid_bytes[j] != 0 {
+                                    filtered_out.push(input[fi + j]);
+                                }
+                            }
+                        }
+                        fi += 16;
+                    }
+                }
+            }
+        }
         // Scalar tail
         for &b in &input[fi..] {
             if table[b as usize].is_some() || b == b'=' {
@@ -539,6 +581,36 @@ fn b16_encode(input: &[u8]) -> Vec<u8> {
                     out.set_len(len + 32);
                     _mm_storeu_si128(out.as_mut_ptr().add(len) as *mut __m128i, interleaved_lo);
                     _mm_storeu_si128(out.as_mut_ptr().add(len + 16) as *mut __m128i, interleaved_hi);
+                    i += 16;
+                }
+            }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        if input.len() >= 16 {
+            unsafe {
+                use std::arch::wasm32::*;
+                let hex_lut = i8x16(
+                    b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8,
+                    b'4' as i8, b'5' as i8, b'6' as i8, b'7' as i8,
+                    b'8' as i8, b'9' as i8, b'A' as i8, b'B' as i8,
+                    b'C' as i8, b'D' as i8, b'E' as i8, b'F' as i8,
+                );
+                let mask_lo = u8x16_splat(0x0F);
+                while i + 16 <= input.len() {
+                    let chunk = v128_load(input.as_ptr().add(i) as *const v128);
+                    let hi_nibbles = v128_and(u16x8_shr(chunk, 4), mask_lo);
+                    let lo_nibbles = v128_and(chunk, mask_lo);
+                    let hi_hex = i8x16_swizzle(hex_lut, hi_nibbles);
+                    let lo_hex = i8x16_swizzle(hex_lut, lo_nibbles);
+                    let interleaved_lo = i8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(hi_hex, lo_hex);
+                    let interleaved_hi = i8x16_shuffle::<8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31>(hi_hex, lo_hex);
+                    let len = out.len();
+                    out.set_len(len + 32);
+                    v128_store(out.as_mut_ptr().add(len) as *mut v128, interleaved_lo);
+                    v128_store(out.as_mut_ptr().add(len + 16) as *mut v128, interleaved_hi);
                     i += 16;
                 }
             }
