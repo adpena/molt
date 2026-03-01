@@ -1,6 +1,6 @@
 # STATUS (Canonical)
 
-Last updated: 2026-02-28
+Last updated: 2026-03-01
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
@@ -17,9 +17,31 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Completed: `re` Phase 1 Rust parser — 2,586-line recursive-descent regex parser in
   `regex.rs` with CompiledPattern, ReNode enum (13 variants), global handle registry.
   4 new intrinsics (`molt_re_compile`, `molt_re_execute`, `molt_re_finditer_collect`,
-  `molt_re_pattern_info`). Execute/finditer stubs for Phase 1b match engine. Supports
-  full Python regex syntax: groups, backreferences, lookahead/lookbehind, character
-  classes, quantifiers, alternation, scoped flags.
+  `molt_re_pattern_info`). Supports full Python regex syntax: groups, backreferences,
+  lookahead/lookbehind, character classes, quantifiers, alternation, scoped flags.
+- Completed: `re` Phase 1b backtracking NFA match engine — 1,100-line continuation-passing
+  engine with `MatchState` + `try_match` recursion. Supports all ReNode variants: literals,
+  character classes, quantifiers (greedy/lazy), groups with capture, backreferences,
+  lookahead/lookbehind, anchors, word boundaries. `molt_re_execute` and
+  `molt_re_finditer_collect` now fully implemented (no longer stubs). 60/60 tests pass.
+  Fixed `strip_verbose` to respect VERBOSE flag.
+- Completed: libmolt C-API Phase 1 — PyList (New/Size/GetItem/SetItem/Append/Check),
+  PyDict (New/SetItem/GetItem/SetItemString/Size/Contains/Check), PyTuple (New/Size/
+  GetItem/SetItem/Check), PyObject_GetIter, PyIter_Next, PyIter_Check, type checks
+  (PyFloat/Long/Unicode/Bool/None_Check). 27 C-API tests, all passing. Total c_api.rs
+  now at 3,870 lines.
+- Completed: asyncio Barrier rewrite (wait returns index 0..parties-1, abort, reset wakes
+  with BrokenBarrierError, parties/n_waiting properties, async context manager),
+  Semaphore __aenter__/__aexit__, Server methods (is_serving, start_serving, serve_forever,
+  get_loop, close_clients, abort_clients), Queue maxsize/__repr__/__class_getitem__,
+  BrokenBarrierError export in locks module, __repr__ on all synchronization primitives.
+- Completed: tkinter Toplevel inherits Wm mixin (P0 blocker), _splitdict return type fix,
+  Entry.bbox/validate, Spinbox.validate, Misc._root/Widget._root, grid_children/
+  place_children aliases, Tk._windowingsystem stored, PhotoImage.data, Menu.entryindex,
+  Font.__del__, ttk Combobox.get, Spinbox.get, Scale.set, Panedwindow.add, Treeview.xview/
+  yview.
+- Intrinsics audit (full subdirectory scan): 2,193 total, 1,838 Python-wired, 355
+  Rust-internal, zero genuinely unwired.
 - Completed: asyncio `staggered_race` — full CPython 3.12-faithful implementation
   replacing stub. Uses mutable list cells instead of nonlocal (Molt compiler constraint),
   try/except instead of contextlib.suppress.
