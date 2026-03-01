@@ -67,6 +67,10 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
 - Canonical plan: [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md).
 
 ### Rust-First Stdlib Lowering Sprint (2026-03-01)
+- Completed: **SIMD Expansion** — 20+ runtime operations with SSE2/AVX2/NEON fast paths.
+  String/bytes equality, lexicographic comparison, sequence comparison, float vector sum,
+  ASCII case conversion, ASCII predicates, hash computation, str.lower/upper, math.dist,
+  math.hypot. +1,133 lines. `.cargo/config.toml` target-cpu=native for Apple Silicon/x86.
 - Completed: `re` Phase 1 Rust parser — 2,586-line recursive-descent parser in regex.rs.
   CompiledPattern + ReNode enum + global handle registry. 4 new intrinsics.
 - Completed: `re` Phase 1b backtracking NFA match engine — 1,100-line continuation-passing

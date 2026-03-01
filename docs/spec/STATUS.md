@@ -14,6 +14,28 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   (determinism, explicit capabilities, and no implicit host-Python fallback).
 
 ## Rust-First Stdlib Lowering Sprint (2026-03-01)
+- Completed: **SIMD Expansion** — 20+ runtime operations now have explicit SSE2/AVX2/NEON
+  fast paths (+1,133 lines across ops.rs and math.rs):
+  - String/bytes equality: `simd_bytes_eq` (16B SSE2, 32B AVX2, 16B NEON) wired into
+    `string_bits_eq`, `molt_string_eq`, `obj_eq` (string/bytes/cross-type paths)
+  - Byte-level lexicographic comparison: `simd_find_first_byte_diff` prefix-skip for
+    `compare_string_bytes` and `compare_bytes_like`
+  - Sequence element comparison: `simd_find_first_mismatch` (2×u64 SSE2, 4×u64 AVX2,
+    2×u64 NEON) wired into `compare_sequence`, `obj_eq` (tuple/list equality)
+  - Float vector sum: `sum_f64_simd_*` (2×f64 SSE2, 4×f64 AVX2, 2×f64 NEON) replaces
+    `sum_floats_scalar` in `molt_vec_sum_float`/`molt_vec_sum_float_trusted`
+  - ASCII case conversion: `bytes_ascii_upper`/`lower`/`swapcase`/`capitalize` all SIMD-
+    accelerated with 16-byte NEON/SSE2 chunks (bit-5 set/clear/toggle)
+  - ASCII predicates: `bytes_ascii_islower`/`isupper` SIMD bulk range checking
+  - Hash computation: `simd_max_byte_value` (SSE2/AVX2/NEON) for ASCII fast path in
+    `hash_string_bytes` — skips char-by-char iteration for pure ASCII
+  - `str.lower()`/`str.upper()`: ASCII fast path delegates to SIMD `bytes_ascii_lower`/
+    `bytes_ascii_upper` instead of `to_lowercase()`/`to_uppercase()` for pure ASCII
+  - `math.dist`: SIMD squared-difference sum (NEON fmaq, AVX2 mul+add, SSE2 mul+add)
+    with sqrt, fallback to iterative hypot for inf/nan
+  - `math.hypot` (multi-arg): SIMD sum-of-squares (NEON fmaq, AVX2/SSE2 mul+add)
+  - `.cargo/config.toml`: `target-cpu=native` for non-WASM targets enables full Apple
+    Silicon NEON and x86-64 AVX2/AVX-512 auto-vectorization
 - Completed: `stringprep` module — new 719-line Rust module (`stringprep.rs`) with all 17
   RFC 3454 table membership intrinsics (a1, b1, c11-c9, d1, d2) as code point range checks,
   `map_table_b3` with 47 exception entries for case folding. 13 unit tests. Intrinsic-backed
