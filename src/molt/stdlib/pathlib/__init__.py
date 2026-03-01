@@ -76,6 +76,11 @@ _MOLT_PATH_AS_URI = _require_intrinsic("molt_path_as_uri", globals())
 _MOLT_PATH_RELATIVE_TO_MANY = _require_intrinsic(
     "molt_path_relative_to_many", globals()
 )
+_MOLT_PATH_CHMOD = _require_intrinsic("molt_path_chmod", globals())
+_MOLT_OS_STAT = _require_intrinsic("molt_os_stat", globals())
+_MOLT_OS_LSTAT = _require_intrinsic("molt_os_lstat", globals())
+_MOLT_OS_RENAME = _require_intrinsic("molt_os_rename", globals())
+_MOLT_OS_REPLACE = _require_intrinsic("molt_os_replace", globals())
 
 
 def _coerce_windows_text(path: str | Path) -> str:
@@ -417,6 +422,42 @@ class Path:
     def rmdir(self) -> None:
         capabilities.require("fs.write")
         _MOLT_PATH_RMDIR(self._path)
+
+    def stat(self) -> _os.stat_result:
+        capabilities.require("fs.read")
+        raw = _MOLT_OS_STAT(self._path)
+        return _os.stat_result(raw)
+
+    def lstat(self) -> _os.stat_result:
+        capabilities.require("fs.read")
+        raw = _MOLT_OS_LSTAT(self._path)
+        return _os.stat_result(raw)
+
+    def touch(self, mode: int = 0o666, exist_ok: bool = True) -> None:
+        capabilities.require("fs.write")
+        if self.exists():
+            if not exist_ok:
+                raise FileExistsError(f"[Errno 17] File exists: {self._path!r}")
+            _MOLT_OS_STAT(self._path)
+            return
+        with self.open("w") as _f:
+            pass
+
+    def rename(self, target: str | Path) -> Path:
+        capabilities.require("fs.write")
+        target_path = self._coerce_part(target)
+        _MOLT_OS_RENAME(self._path, target_path)
+        return Path(target_path)
+
+    def replace(self, target: str | Path) -> Path:
+        capabilities.require("fs.write")
+        target_path = self._coerce_part(target)
+        _MOLT_OS_REPLACE(self._path, target_path)
+        return Path(target_path)
+
+    def chmod(self, mode: int) -> None:
+        capabilities.require("fs.write")
+        _MOLT_PATH_CHMOD(self._path, int(mode))
 
     @property
     def name(self) -> str:
