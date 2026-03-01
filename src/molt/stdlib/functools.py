@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "cache",
+    "cached_property",
     "cmp_to_key",
     "lru_cache",
     "partial",
@@ -106,6 +107,47 @@ def lru_cache(maxsize: Any = 128, typed: bool = False):
 def cache(user_function: Callable[..., Any], /) -> Callable[..., Any]:
     """Simple lightweight unbounded cache.  Sometimes called 'memoize'."""
     return lru_cache(maxsize=None)(user_function)
+
+
+class cached_property:
+    """Descriptor that caches the result of a method call as an instance attribute.
+
+    Equivalent to CPython 3.12+ functools.cached_property.  Thread-safe: the
+    underlying property function may run more than once on concurrent first
+    access, but subsequent accesses return the cached value.
+    """
+
+    def __init__(self, func: Callable[..., Any]) -> None:
+        self.func = func
+        self.attrname: str | None = None
+        self.__doc__ = func.__doc__
+        self.__module__ = getattr(func, "__module__", None)
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        if self.attrname is None:
+            self.attrname = name
+        elif name != self.attrname:
+            raise TypeError(
+                "Cannot assign the same cached_property to two different names "
+                f"({self.attrname!r} and {name!r})."
+            )
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        if instance is None:
+            return self
+        if self.attrname is None:
+            raise TypeError(
+                "Cannot use cached_property instance without calling __set_name__ on it."
+            )
+        try:
+            val = instance.__dict__[self.attrname]
+        except KeyError:
+            val = self.func(instance)
+            instance.__dict__[self.attrname] = val
+        return val
+
+    def __class_getitem__(cls, item: Any) -> Any:
+        return cls
 
 
 # ---------------------------------------------------------------------------
