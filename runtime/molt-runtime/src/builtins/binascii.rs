@@ -441,3 +441,135 @@ pub extern "C" fn molt_binascii_crc_hqx(data_bits: u64, value_bits: u64) -> u64 
         MoltObject::from_int(i64::from(crc as i32)).bits()
     })
 }
+
+// ---------------------------------------------------------------------------
+// UU codec-level intrinsics (full-message framing around per-line primitives)
+// ---------------------------------------------------------------------------
+
+/// `molt_uu_codec_encode(data, filename, mode)` — full UU-encoded message with
+/// begin/end framing.  Reuses the internal `uu_encode` per-line function.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_uu_codec_encode(
+    data_bits: u64,
+    filename_bits: u64,
+    mode_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let raw = match bytes_like_arg(_py, data_bits, "uu_codec_encode") {
+            Ok(v) => v,
+            Err(bits) => return bits,
+        };
+        let filename = match string_obj_to_owned(obj_from_bits(filename_bits)) {
+            Some(s) => s.replace('\n', "\\n").replace('\r', "\\r"),
+            None => "<data>".to_string(),
+        };
+        let mode = to_i64(obj_from_bits(mode_bits)).unwrap_or(0o666) & 0o777;
+
+        let mut out = Vec::with_capacity(raw.len() * 2 + 64);
+        // begin header
+        let header = format!("begin {mode:o} {filename}\n");
+        out.extend_from_slice(header.as_bytes());
+
+        // Encode in 45-byte chunks
+        let mut offset = 0usize;
+        while offset < raw.len() {
+            let end = std::cmp::min(offset + 45, raw.len());
+            let chunk = &raw[offset..end];
+            match uu_encode(chunk) {
+                Ok(encoded) => out.extend_from_slice(&encoded),
+                Err(msg) => return raise_exception::<_>(_py, "ValueError", msg),
+            }
+            offset = end;
+        }
+
+        // Trailer
+        out.extend_from_slice(b" \nend\n");
+
+        alloc_bytes_or_oom(_py, &out, "uu_codec_encode")
+    })
+}
+
+/// `molt_uu_codec_decode(data)` — decode a full UU-encoded message (find begin,
+/// decode lines, expect end).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_uu_codec_decode(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let raw = match bytes_like_arg(_py, data_bits, "uu_codec_decode") {
+            Ok(v) => v,
+            Err(bits) => return bits,
+        };
+
+        // Find start of encoded data — scan for line starting with "begin"
+        let mut pos = 0usize;
+        let mut found_begin = false;
+        loop {
+            if pos >= raw.len() {
+                break;
+            }
+            // Find end of current line
+            let line_end = raw[pos..]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map(|i| pos + i + 1)
+                .unwrap_or(raw.len());
+            let line = &raw[pos..line_end];
+            if line.len() >= 5 && &line[..5] == b"begin" {
+                pos = line_end;
+                found_begin = true;
+                break;
+            }
+            pos = line_end;
+        }
+
+        if !found_begin {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "Missing \"begin\" line in input data",
+            );
+        }
+
+        // Decode lines until "end" or EOF
+        let mut out = Vec::with_capacity(raw.len());
+        let mut found_end = false;
+        loop {
+            if pos >= raw.len() {
+                break;
+            }
+            let line_end = raw[pos..]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map(|i| pos + i + 1)
+                .unwrap_or(raw.len());
+            let line = &raw[pos..line_end];
+            pos = line_end;
+
+            if line == b"end\n" || line == b"end" {
+                found_end = true;
+                break;
+            }
+
+            // Try normal decode; on error, use broken-uuencoder workaround
+            match uu_decode(line) {
+                Ok(decoded) => out.extend_from_slice(&decoded),
+                Err(_) => {
+                    // Workaround for broken uuencoders: use byte-count header
+                    if !line.is_empty() {
+                        let nbytes =
+                            ((((line[0].wrapping_sub(32)) & 63) as usize) * 4 + 5) / 3;
+                        let truncated = &line[..std::cmp::min(nbytes, line.len())];
+                        if let Ok(decoded) = uu_decode(truncated) {
+                            out.extend_from_slice(&decoded);
+                        }
+                    }
+                }
+            }
+        }
+
+        if !found_end {
+            return raise_exception::<_>(_py, "ValueError", "Truncated input data");
+        }
+
+        alloc_bytes_or_oom(_py, &out, "uu_codec_decode")
+    })
+}

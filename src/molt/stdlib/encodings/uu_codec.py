@@ -8,66 +8,24 @@ modified by Jack Jansen and Fredrik Lundh.
 """
 
 import codecs
-import binascii
-from io import BytesIO
+
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_require_intrinsic("molt_capabilities_has", globals())
+_uu_encode = _require_intrinsic("molt_uu_codec_encode", globals())
+_uu_decode = _require_intrinsic("molt_uu_codec_decode", globals())
 
 ### Codec APIs
 
 
 def uu_encode(input, errors="strict", filename="<data>", mode=0o666):
     assert errors == "strict"
-    infile = BytesIO(input)
-    outfile = BytesIO()
-    read = infile.read
-    write = outfile.write
-
-    # Remove newline chars from filename
-    filename = filename.replace("\n", "\\n")
-    filename = filename.replace("\r", "\\r")
-
-    # Encode
-    write(("begin %o %s\n" % (mode & 0o777, filename)).encode("ascii"))
-    chunk = read(45)
-    while chunk:
-        write(binascii.b2a_uu(chunk))
-        chunk = read(45)
-    write(b" \nend\n")
-
-    return (outfile.getvalue(), len(input))
+    return (_uu_encode(input, filename, mode), len(input))
 
 
 def uu_decode(input, errors="strict"):
     assert errors == "strict"
-    infile = BytesIO(input)
-    outfile = BytesIO()
-    readline = infile.readline
-    write = outfile.write
-
-    # Find start of encoded data
-    while 1:
-        s = readline()
-        if not s:
-            raise ValueError('Missing "begin" line in input data')
-        if s[:5] == b"begin":
-            break
-
-    # Decode
-    while True:
-        s = readline()
-        if not s or s == b"end\n":
-            break
-        try:
-            data = binascii.a2b_uu(s)
-        except binascii.Error:
-            # Workaround for broken uuencoders by /Fredrik Lundh
-            nbytes = (((s[0] - 32) & 63) * 4 + 5) // 3
-            data = binascii.a2b_uu(s[:nbytes])
-            # sys.stderr.write("Warning: %s\n" % str(v))
-        write(data)
-    if not s:
-        raise ValueError("Truncated input data")
-
-    return (outfile.getvalue(), len(input))
+    return (_uu_decode(input), len(input))
 
 
 class Codec(codecs.Codec):
@@ -110,8 +68,3 @@ def getregentry():
         streamwriter=StreamWriter,
         _is_text_encoding=False,
     )
-
-
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_require_intrinsic("molt_capabilities_has", globals())
