@@ -88,8 +88,9 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
   FlagBoundary sentinels.
 - Completed: `warnings` — 8 intrinsics wired. Dead inline regex engine eliminated.
   Fast-path to Rust for common warn/warn_explicit calls.
-- Assessed: `logging` — acceptable Python (class hierarchy is the API). `%`-format
-  already in Rust.
+- Completed: `logging` — wired 31 Rust intrinsics (handle-based LogRecord/Formatter/
+  Handler/StreamHandler/Logger). basicConfig, shutdown, level name mapping all delegate
+  to Rust. Python class interfaces preserved for subclassing.
 - Completed: `string` Template/Formatter — 5 new Rust intrinsics (template_scan,
   template_is_valid, template_get_identifiers, formatter_parse, field_name_split).
   Eliminated ~290 lines Python parsing. Formatter._vformat stays as acceptable Python.

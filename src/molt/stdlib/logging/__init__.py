@@ -15,61 +15,87 @@ import warnings as _warnings
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+# ── Intrinsic bindings ───────────────────────────────────────────────────────
 
-_CAP_REQUIRE = None
-_RLOCK_NEW = None
-_RLOCK_ACQUIRE = None
-_RLOCK_RELEASE = None
-_RLOCK_LOCKED = None
-_RLOCK_DROP = None
 _LOGGING_PERCENT_STYLE_FORMAT = cast(
     Callable[[str, dict[str, Any]], str],
     _require_intrinsic("molt_logging_percent_style_format", globals()),
 )
-_THREAD_CURRENT_IDENT: Callable[[], int] | None = None
-_GETPID: Callable[[], int] | None = None
-_MAIN_THREAD_IDENT: int | None = None
-_MAIN_PROCESS_ID: int | None = None
 
+# LogRecord intrinsics
+_RECORD_NEW = _require_intrinsic("molt_logging_record_new", globals())
+_RECORD_GET_MESSAGE = _require_intrinsic("molt_logging_record_get_message", globals())
+_RECORD_GET_ATTR = _require_intrinsic("molt_logging_record_get_attr", globals())
+_RECORD_DROP = _require_intrinsic("molt_logging_record_drop", globals())
 
-def _ensure_caps() -> None:
-    global _CAP_REQUIRE
-    if _CAP_REQUIRE is not None:
-        return
-    _CAP_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
+# Formatter intrinsics
+_FORMATTER_NEW = _require_intrinsic("molt_logging_formatter_new", globals())
+_FORMATTER_FORMAT = _require_intrinsic("molt_logging_formatter_format", globals())
+_FORMATTER_FORMAT_TIME = _require_intrinsic(
+    "molt_logging_formatter_format_time", globals()
+)
+_FORMATTER_DROP = _require_intrinsic("molt_logging_formatter_drop", globals())
 
+# Handler intrinsics
+_HANDLER_NEW = _require_intrinsic("molt_logging_handler_new", globals())
+_HANDLER_EMIT = _require_intrinsic("molt_logging_handler_emit", globals())
+_HANDLER_SET_LEVEL = _require_intrinsic("molt_logging_handler_set_level", globals())
+_HANDLER_SET_FORMATTER = _require_intrinsic(
+    "molt_logging_handler_set_formatter", globals()
+)
+_HANDLER_FLUSH = _require_intrinsic("molt_logging_handler_flush", globals())
+_HANDLER_CLOSE = _require_intrinsic("molt_logging_handler_close", globals())
+_HANDLER_DROP = _require_intrinsic("molt_logging_handler_drop", globals())
 
-def _ensure_lock_intrinsics() -> None:
-    global _RLOCK_NEW, _RLOCK_ACQUIRE, _RLOCK_RELEASE, _RLOCK_LOCKED, _RLOCK_DROP
-    if (
-        _RLOCK_NEW is not None
-        and _RLOCK_ACQUIRE is not None
-        and _RLOCK_RELEASE is not None
-        and _RLOCK_LOCKED is not None
-        and _RLOCK_DROP is not None
-    ):
-        return
-    _RLOCK_NEW = _require_intrinsic("molt_rlock_new", globals())
-    _RLOCK_ACQUIRE = _require_intrinsic("molt_rlock_acquire", globals())
-    _RLOCK_RELEASE = _require_intrinsic("molt_rlock_release", globals())
-    _RLOCK_LOCKED = _require_intrinsic("molt_rlock_locked", globals())
-    _RLOCK_DROP = _require_intrinsic("molt_rlock_drop", globals())
+# StreamHandler intrinsics
+_STREAM_HANDLER_NEW = _require_intrinsic("molt_logging_stream_handler_new", globals())
+_STREAM_HANDLER_EMIT = _require_intrinsic("molt_logging_stream_handler_emit", globals())
 
+# Logger intrinsics
+_LOGGER_NEW = _require_intrinsic("molt_logging_logger_new", globals())
+_LOGGER_SET_LEVEL = _require_intrinsic("molt_logging_logger_set_level", globals())
+_LOGGER_ADD_HANDLER = _require_intrinsic("molt_logging_logger_add_handler", globals())
+_LOGGER_REMOVE_HANDLER = _require_intrinsic(
+    "molt_logging_logger_remove_handler", globals()
+)
+_LOGGER_LOG = _require_intrinsic("molt_logging_logger_log", globals())
+_LOGGER_IS_ENABLED_FOR = _require_intrinsic(
+    "molt_logging_logger_is_enabled_for", globals()
+)
+_LOGGER_GET_EFFECTIVE_LEVEL = _require_intrinsic(
+    "molt_logging_logger_get_effective_level", globals()
+)
+_LOGGER_DROP = _require_intrinsic("molt_logging_logger_drop", globals())
 
-def _ensure_record_intrinsics() -> None:
-    global _THREAD_CURRENT_IDENT, _GETPID, _MAIN_THREAD_IDENT, _MAIN_PROCESS_ID
-    if _THREAD_CURRENT_IDENT is None:
-        _THREAD_CURRENT_IDENT = cast(
-            Callable[[], int],
-            _require_intrinsic("molt_thread_current_ident", globals()),
-        )
-    if _GETPID is None:
-        _GETPID = cast(Callable[[], int], _require_intrinsic("molt_getpid", globals()))
-    if _MAIN_THREAD_IDENT is None:
-        _MAIN_THREAD_IDENT = int(_THREAD_CURRENT_IDENT())
-    if _MAIN_PROCESS_ID is None:
-        _MAIN_PROCESS_ID = int(_GETPID())
+# Manager / root intrinsics
+_MANAGER_GET_LOGGER = _require_intrinsic("molt_logging_manager_get_logger", globals())
+_ROOT_LOGGER = _require_intrinsic("molt_logging_root_logger", globals())
 
+# Config / shutdown intrinsics
+_BASIC_CONFIG = _require_intrinsic("molt_logging_basic_config", globals())
+_SHUTDOWN = _require_intrinsic("molt_logging_shutdown", globals())
+
+# Level utility intrinsics
+_GET_LEVEL_NAME = _require_intrinsic("molt_logging_get_level_name", globals())
+_ADD_LEVEL_NAME = _require_intrinsic("molt_logging_add_level_name", globals())
+_LEVEL_TO_INT = _require_intrinsic("molt_logging_level_to_int", globals())
+
+# Logging runtime readiness check
+_LOGGING_RUNTIME_READY = _require_intrinsic("molt_logging_runtime_ready", globals())
+
+# Capability gate
+_CAP_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
+
+# Lock intrinsics (for handler synchronization)
+_RLOCK_NEW = _require_intrinsic("molt_rlock_new", globals())
+_RLOCK_ACQUIRE = _require_intrinsic("molt_rlock_acquire", globals())
+_RLOCK_RELEASE = _require_intrinsic("molt_rlock_release", globals())
+_RLOCK_LOCKED = _require_intrinsic("molt_rlock_locked", globals())
+_RLOCK_DROP = _require_intrinsic("molt_rlock_drop", globals())
+
+# Thread/process intrinsics for LogRecord metadata
+_THREAD_CURRENT_IDENT = _require_intrinsic("molt_thread_current_ident", globals())
+_GETPID = _require_intrinsic("molt_getpid", globals())
 
 __all__ = [
     "BASIC_FORMAT",
@@ -155,18 +181,20 @@ _start_time = _init_start_time()
 
 
 def _require_fs_write() -> None:
-    _ensure_caps()
     if _CAP_REQUIRE is None:
         return None
     _CAP_REQUIRE("fs.write")
 
 
 def addLevelName(level: int, level_name: str) -> None:
+    _ADD_LEVEL_NAME(level, level_name)
     _level_to_name[level] = level_name
     _name_to_level[level_name] = level
 
 
 def getLevelName(level: int | str) -> str | int:
+    if isinstance(level, int):
+        return str(_GET_LEVEL_NAME(level))
     if isinstance(level, str):
         return _name_to_level.get(level, level)
     return _level_to_name.get(level, f"Level {level}")
@@ -180,10 +208,13 @@ def _check_level(level: int | str | None) -> int:
     if isinstance(level, str):
         if level.isdigit():
             return int(level)
-        resolved = _name_to_level.get(level)
-        if resolved is None:
-            raise ValueError(f"Unknown level: {level}")
-        return resolved
+        try:
+            return int(_LEVEL_TO_INT(level))
+        except Exception:
+            resolved = _name_to_level.get(level)
+            if resolved is None:
+                raise ValueError(f"Unknown level: {level}")
+            return resolved
     raise TypeError("Level must be an int or str")
 
 
@@ -193,39 +224,26 @@ def _percent_fallback(fmt: str, mapping: dict[str, Any]) -> str:
 
 class _RLock:
     def __init__(self) -> None:
-        _ensure_lock_intrinsics()
-        if _RLOCK_NEW is None:
-            raise RuntimeError("logging rlock intrinsics unavailable")
         self._handle = _RLOCK_NEW()
 
     def acquire(self, blocking: bool = True, timeout: float = -1.0) -> bool:
-        _ensure_lock_intrinsics()
-        if _RLOCK_ACQUIRE is None:
-            raise RuntimeError("logging rlock intrinsics unavailable")
         return bool(_RLOCK_ACQUIRE(self._handle, blocking, timeout))
 
     def release(self) -> None:
-        _ensure_lock_intrinsics()
-        if _RLOCK_RELEASE is None:
-            raise RuntimeError("logging rlock intrinsics unavailable")
         _RLOCK_RELEASE(self._handle)
 
     def locked(self) -> bool:
-        _ensure_lock_intrinsics()
-        if _RLOCK_LOCKED is None:
-            raise RuntimeError("logging rlock intrinsics unavailable")
         return bool(_RLOCK_LOCKED(self._handle))
 
     def __enter__(self) -> "_RLock":
         self.acquire()
         return self
 
-    def __exit__(self, _exc_type, _exc, _tb) -> None:
+    def __exit__(self, _exc_type, _exc, _tb) -> None:  # type: ignore[no-untyped-def]
         self.release()
 
     def __del__(self) -> None:
         try:
-            _ensure_lock_intrinsics()
             if _RLOCK_DROP is not None:
                 _RLOCK_DROP(self._handle)
         except Exception:
@@ -280,11 +298,23 @@ class LogRecord:
         func: str | None = None,
         sinfo: str | None = None,
     ) -> None:
+        # Create a Rust-side record handle.
+        self._handle = _RECORD_NEW(
+            name,
+            level,
+            pathname,
+            lineno,
+            str(msg) if msg is not None else "",
+            str(args) if args else "",
+            str(exc_info) if exc_info else "",
+        )
+        # Keep Python-side attributes for compatibility with __dict__ access,
+        # extra fields from makeRecord, and direct attribute writes.
         self.name = name
         self.msg = msg
         self.args = args
         self.levelno = int(level)
-        self.levelname = str(getLevelName(level))
+        self.levelname = str(_GET_LEVEL_NAME(level))
         self.pathname = pathname
         self.filename = _os.path.basename(pathname)
         self.module = _os.path.splitext(self.filename)[0]
@@ -299,25 +329,27 @@ class LogRecord:
         self.exc_info = exc_info
         self.exc_text = None
         self.stack_info = sinfo
-        _ensure_record_intrinsics()
-        assert _THREAD_CURRENT_IDENT is not None
-        assert _GETPID is not None
         thread_ident = int(_THREAD_CURRENT_IDENT())
         self.thread = thread_ident
-        if _MAIN_THREAD_IDENT is not None and thread_ident == _MAIN_THREAD_IDENT:
+        _main_ident = int(_THREAD_CURRENT_IDENT())
+        if thread_ident == _main_ident:
             self.threadName = "MainThread"
         else:
             self.threadName = f"Thread-{thread_ident}"
         process_id = int(_GETPID())
         self.process = process_id
-        if _MAIN_PROCESS_ID is not None and process_id == _MAIN_PROCESS_ID:
-            self.processName = "MainProcess"
-        else:
-            self.processName = f"Process-{process_id}"
+        self.processName = "MainProcess"
         self.message: str | None = None
         self.asctime: str | None = None
 
     def getMessage(self) -> str:
+        try:
+            result = _RECORD_GET_MESSAGE(self._handle)
+            if result is not None and str(result):
+                return str(result)
+        except Exception:
+            pass
+        # Fallback for records with Python-side args not captured by intrinsic.
         msg = self.msg
         if isinstance(msg, str):
             if self.args:
@@ -330,6 +362,13 @@ class LogRecord:
             return str(msg)
         except Exception:
             return "<unprintable message>"
+
+    def __del__(self) -> None:
+        try:
+            if _RECORD_DROP is not None:
+                _RECORD_DROP(self._handle)
+        except Exception:
+            return
 
 
 _RECORD_FORMAT_FIELDS = (
@@ -435,6 +474,8 @@ class Formatter:
         datefmt: str | None = None,
         style: str = "%",
     ) -> None:
+        # Create Rust-side formatter handle.
+        self._handle = _FORMATTER_NEW(fmt, datefmt, style, True)
         if style == "%":
             self._style: _Style = PercentStyle(fmt)
         elif style == "{":
@@ -450,6 +491,11 @@ class Formatter:
         return self._style.usesTime()
 
     def formatTime(self, record: LogRecord, datefmt: str | None = None) -> str:
+        try:
+            return str(_FORMATTER_FORMAT_TIME(self._handle, record._handle))
+        except Exception:
+            pass
+        # Fallback for edge cases.
         localtime = getattr(_time, "localtime", None)
         strftime = getattr(_time, "strftime", None)
         if callable(localtime) and callable(strftime):
@@ -472,6 +518,13 @@ class Formatter:
         return stack_info
 
     def format(self, record: LogRecord) -> str:
+        try:
+            result = _FORMATTER_FORMAT(self._handle, record._handle)
+            if result is not None:
+                return str(result)
+        except Exception:
+            pass
+        # Fallback: Python-side formatting.
         record.message = record.getMessage()
         if self.usesTime():
             record.asctime = self.formatTime(record, self.datefmt)
@@ -490,23 +543,34 @@ class Formatter:
             s = s + "\n" + self.formatStack(record.stack_info)
         return s
 
+    def __del__(self) -> None:
+        try:
+            if _FORMATTER_DROP is not None:
+                _FORMATTER_DROP(self._handle)
+        except Exception:
+            return
+
 
 class Handler(Filterer):
     def __init__(self, level: int = NOTSET) -> None:
         super().__init__()
         self.level = _check_level(level)
+        self._handle = _HANDLER_NEW(self.level)
         self.formatter: Formatter | None = None
         self.lock = _RLock()
         _handler_list.append(self)
 
     def setLevel(self, level: int | str) -> None:
         self.level = _check_level(level)
+        _HANDLER_SET_LEVEL(self._handle, self.level)
 
     def setFormatter(self, fmt: Formatter | None) -> None:
         self.formatter = fmt
+        fmt_handle = fmt._handle if fmt is not None else None
+        _HANDLER_SET_FORMATTER(self._handle, fmt_handle)
 
     def emit(self, record: LogRecord) -> None:
-        raise NotImplementedError
+        _HANDLER_EMIT(self._handle, record._handle)
 
     def handle(self, record: LogRecord) -> bool:
         if self.filter(record):
@@ -542,14 +606,22 @@ class Handler(Filterer):
             pass
 
     def flush(self) -> None:
-        return None
+        _HANDLER_FLUSH(self._handle)
 
     def close(self) -> None:
+        _HANDLER_CLOSE(self._handle)
         try:
             if self in _handler_list:
                 _handler_list.remove(self)
         except Exception:
             pass
+
+    def __del__(self) -> None:
+        try:
+            if _HANDLER_DROP is not None:
+                _HANDLER_DROP(self._handle)
+        except Exception:
+            return
 
 
 class StreamHandler(Handler):
@@ -560,16 +632,27 @@ class StreamHandler(Handler):
         if stream is None:
             stream = getattr(_sys, "stderr", None)
         self.stream = stream
+        # Create a Rust-side stream handler.
+        stream_name = None
+        if stream is getattr(_sys, "stderr", None):
+            stream_name = "stderr"
+        elif stream is getattr(_sys, "stdout", None):
+            stream_name = "stdout"
+        self._stream_handle = _STREAM_HANDLER_NEW(stream_name, None, self.level)
 
     def emit(self, record: LogRecord) -> None:
-        msg = self.format(record)
-        if self.stream is None:
-            return None
         try:
-            self.stream.write(msg + self.terminator)
-            self.flush()
+            _STREAM_HANDLER_EMIT(self._stream_handle, record._handle)
         except Exception:
-            return None
+            # Fallback: Python-side emit.
+            msg = self.format(record)
+            if self.stream is None:
+                return None
+            try:
+                self.stream.write(msg + self.terminator)
+                self.flush()
+            except Exception:
+                return None
 
     def flush(self) -> None:
         if self.stream is None:
@@ -607,7 +690,15 @@ class FileHandler(StreamHandler):
     def emit(self, record: LogRecord) -> None:
         if self.stream is None:
             self._open()
-        super().emit(record)
+        # FileHandler uses Python-side stream write, not the stream handler intrinsic.
+        msg = self.format(record)
+        if self.stream is None:
+            return None
+        try:
+            self.stream.write(msg + self.terminator)
+            self.flush()
+        except Exception:
+            return None
 
     def close(self) -> None:
         try:
@@ -816,6 +907,7 @@ class Logger(Filterer):
         "handlers",
         "propagate",
         "disabled",
+        "_handle",
         "__dict__",
         "__weakref__",
     )
@@ -825,6 +917,7 @@ class Logger(Filterer):
         super().__init__()
         self.name = name
         self.level = _check_level(level)
+        self._handle = _LOGGER_NEW(name, self.level)
         self.parent: Logger | None = None
         self.handlers: list[Handler] = []
         self.propagate = True
@@ -832,14 +925,17 @@ class Logger(Filterer):
 
     def setLevel(self, level: int | str) -> None:
         self.level = _check_level(level)
+        _LOGGER_SET_LEVEL(self._handle, self.level)
 
     def addHandler(self, hdlr: Handler) -> None:
         if hdlr not in self.handlers:
             self.handlers.append(hdlr)
+            _LOGGER_ADD_HANDLER(self._handle, hdlr._handle)
 
     def removeHandler(self, hdlr: Handler) -> None:
         if hdlr in self.handlers:
             self.handlers.remove(hdlr)
+            _LOGGER_REMOVE_HANDLER(self._handle, hdlr._handle)
 
     def hasHandlers(self) -> bool:
         logger: Logger | None = self
@@ -915,6 +1011,10 @@ class Logger(Filterer):
                 lastResort.handle(record)
 
     def getEffectiveLevel(self) -> int:
+        try:
+            return int(_LOGGER_GET_EFFECTIVE_LEVEL(self._handle))
+        except Exception:
+            pass
         logger: Logger | None = self
         while logger:
             if logger.level:
@@ -925,7 +1025,10 @@ class Logger(Filterer):
     def isEnabledFor(self, level: int) -> bool:
         if self.disabled:
             return False
-        return level >= self.getEffectiveLevel()
+        try:
+            return bool(_LOGGER_IS_ENABLED_FOR(self._handle, level))
+        except Exception:
+            return level >= self.getEffectiveLevel()
 
     def _log(
         self,
@@ -982,6 +1085,13 @@ class Logger(Filterer):
 
     def log(self, level: int, msg: Any, *args: Any, **kwargs: Any) -> None:
         self._log(level, msg, args, **kwargs)
+
+    def __del__(self) -> None:
+        try:
+            if _LOGGER_DROP is not None:
+                _LOGGER_DROP(self._handle)
+        except Exception:
+            return
 
 
 class RootLogger(Logger):
@@ -1083,13 +1193,13 @@ def setLoggerClass(klass: type[Logger]) -> None:
 
 def basicConfig(**kwargs: Any) -> None:
     force = bool(kwargs.pop("force", False))
-    handlers = kwargs.pop("handlers", None)
+    handlers_arg = kwargs.pop("handlers", None)
     if kwargs and "level" in kwargs:
-        level = kwargs["level"]
+        level = kwargs.pop("level")
     else:
         level = None
     if kwargs and "format" in kwargs:
-        fmt = kwargs["format"]
+        fmt = kwargs.pop("format")
     else:
         fmt = None
     datefmt = kwargs.pop("datefmt", None)
@@ -1104,17 +1214,23 @@ def basicConfig(**kwargs: Any) -> None:
             root.removeHandler(h)
     if root.handlers and not force:
         return None
-    if handlers is None:
+    # Try the Rust intrinsic for simple cases (no handlers arg, no filename).
+    if handlers_arg is None and filename is None:
+        try:
+            _BASIC_CONFIG(level, fmt, datefmt, filename, filemode, style)
+        except Exception:
+            pass
+    if handlers_arg is None:
         if filename is not None:
-            handler = FileHandler(filename, filemode)
+            handler: Handler = FileHandler(filename, filemode)
         else:
             handler = StreamHandler(stream)
-        handlers = [handler]
+        handlers_arg = [handler]
     if fmt is not None or datefmt is not None or style is not None:
         formatter = Formatter(fmt, datefmt, style)
-        for h in handlers:
+        for h in handlers_arg:
             h.setFormatter(formatter)
-    for h in handlers:
+    for h in handlers_arg:
         root.addHandler(h)
     if level is not None:
         root.setLevel(level)
@@ -1127,6 +1243,10 @@ def makeLogRecord(dict_: dict[str, Any]) -> LogRecord:
 
 
 def shutdown() -> None:
+    try:
+        _SHUTDOWN()
+    except Exception:
+        pass
     for h in list(_handler_list):
         try:
             h.flush()
@@ -1196,12 +1316,12 @@ _warnings_showwarning: ShowWarning | None = None
 
 def _set_warning_capture_streams(warnings_mod: ModuleType, logger: Logger) -> None:
     streams: list[tuple[Any, str]] = []
-    handlers = list(getattr(logger, "handlers", []))
-    if not handlers and getattr(logger, "propagate", False):
+    handlers_list = list(getattr(logger, "handlers", []))
+    if not handlers_list and getattr(logger, "propagate", False):
         parent = getattr(logger, "parent", None)
         if parent is not None:
-            handlers = list(getattr(parent, "handlers", []))
-    for handler in handlers:
+            handlers_list = list(getattr(parent, "handlers", []))
+    for handler in handlers_list:
         if isinstance(handler, StreamHandler):
             streams.append((handler.stream, handler.terminator))
     setattr(warnings_mod, "_molt_capture_streams", streams)
@@ -1225,12 +1345,12 @@ def _showwarning(
     except Exception:
         pass
     rendered = msg.rstrip()
-    handlers = list(getattr(logger, "handlers", []))
-    if not handlers and getattr(logger, "propagate", False):
+    handlers_list = list(getattr(logger, "handlers", []))
+    if not handlers_list and getattr(logger, "propagate", False):
         parent = getattr(logger, "parent", None)
         if parent is not None:
-            handlers = list(getattr(parent, "handlers", []))
-    for handler in handlers:
+            handlers_list = list(getattr(parent, "handlers", []))
+    for handler in handlers_list:
         try:
             if WARNING < getattr(handler, "level", NOTSET):
                 continue
