@@ -28,29 +28,46 @@ def sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
-def extract_artifact_path(build_json: dict) -> str:
-    """Extract the artifact path from build JSON output."""
-    # Try common keys that molt.cli build --json might use
+def extract_artifact_path(build_json: dict, prefer_object: bool = False) -> str:
+    """Extract the artifact path from build JSON output.
+
+    When *prefer_object* is True, prefer the ``.o`` file over the linked binary
+    because the linker (especially on macOS) injects nondeterministic UUIDs.
+    """
+    data = build_json
+    # Unwrap "data" envelope (molt.cli build --json wraps output in data)
+    if "data" in build_json and isinstance(build_json["data"], dict):
+        data = build_json["data"]
+
+    # If prefer_object, try to find the object file first
+    if prefer_object:
+        artifacts = data.get("artifacts", {})
+        if isinstance(artifacts, dict) and "object" in artifacts:
+            return artifacts["object"]
+
+    # Try standard keys
     for key in ("output", "artifact", "binary", "path", "output_path"):
-        if key in build_json:
-            return build_json[key]
-    # Try nested structures
-    if "build" in build_json and isinstance(build_json["build"], dict):
+        if key in data:
+            return data[key]
+    # Try nested under "build"
+    if "build" in data and isinstance(data["build"], dict):
         for key in ("output", "artifact", "binary", "path"):
-            if key in build_json["build"]:
-                return build_json["build"][key]
+            if key in data["build"]:
+                return data["build"][key]
     raise KeyError(
-        f"Cannot find artifact path in build JSON. "
-        f"Available keys: {list(build_json.keys())}"
+        f"Cannot find artifact path in build JSON. Available keys: {list(data.keys())}"
     )
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
+    if len(sys.argv) < 3:
         print(__doc__, file=sys.stderr)
         return 2
 
     path1, path2 = sys.argv[1], sys.argv[2]
+    # --object flag: compare .o files instead of linked binaries to avoid
+    # linker-injected nondeterminism (macOS ld injects random UUIDs)
+    prefer_object = "--object" in sys.argv
 
     try:
         with open(path1) as f:
@@ -62,8 +79,8 @@ def main() -> int:
         return 2
 
     try:
-        artifact1 = extract_artifact_path(build1)
-        artifact2 = extract_artifact_path(build2)
+        artifact1 = extract_artifact_path(build1, prefer_object=prefer_object)
+        artifact2 = extract_artifact_path(build2, prefer_object=prefer_object)
     except KeyError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
