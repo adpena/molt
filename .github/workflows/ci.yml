@@ -145,6 +145,15 @@ jobs:
         if: matrix.python-version == '3.12'
         run: |
           PYTHONPATH=src uv run python tools/check_deterministic_runtime.py --runs 3 examples/hello.py
+      - name: IR structure verification
+        if: matrix.python-version == '3.12'
+        run: |
+          PYTHONPATH=src uv run --python 3.12 python3 -c "
+          from molt.frontend import compile_to_tir
+          import json, sys
+          tir = compile_to_tir(open('examples/hello.py').read())
+          json.dump(tir, sys.stdout)
+          " | uv run python tools/check_ir_structure.py --stdin
       - name: Django offload smoke
         if: matrix.python-version == '3.12'
         run: |

@@ -1136,12 +1136,6 @@ impl SimpleBackend {
         }
     }
 
-    /// Returns a string describing the target ISA triple and flags for build metadata.
-    pub fn target_info(&self) -> String {
-        let isa = self.module.isa();
-        format!("triple={} flags={:?}", isa.triple(), isa.flags())
-    }
-
     fn intern_data_segment(
         module: &mut ObjectModule,
         data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,
