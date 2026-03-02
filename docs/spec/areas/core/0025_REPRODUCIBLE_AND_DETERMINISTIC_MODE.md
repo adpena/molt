@@ -59,6 +59,29 @@ Builds must be reproducible when the deterministic flag is enabled.
 - `time.wall`: allow wall-clock access.
 - `rand.nondeterministic`: allow nondeterministic RNG.
 
+### 4.3 WASM Runtime Determinism
+
+When `MOLT_DETERMINISTIC=1` is set, the WASM host (`molt-wasm-host`) automatically applies:
+
+- **NaN canonicalization**: All NaN payloads are normalized to a canonical form via
+  `cranelift_nan_canonicalization(true)`. This prevents CPU-specific NaN payload
+  differences from producing divergent WASM execution results.
+
+- **Sequential compilation**: `parallel_compilation(false)` ensures the Cranelift
+  JIT produces identical native code regardless of thread scheduling during
+  compilation.
+
+These flags are applied automatically — no manual Node.js/wasmtime flags are needed
+when deterministic mode is on.
+
+#### Limitations
+
+- WASM execution under V8 (Node.js) may still require `--no-wasm-tier-up` and
+  `--liftoff-only` flags for full determinism. These are NOT auto-applied by Molt
+  and must be passed explicitly when using Node.js as the WASM runner.
+- Wasmtime's own tier-up (if enabled) should be disabled separately via
+  `config.strategy(Strategy::Cranelift)` (already the default).
+
 ---
 
 ## 5. Validation

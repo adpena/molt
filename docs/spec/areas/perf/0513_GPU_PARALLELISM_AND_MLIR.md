@@ -99,6 +99,73 @@ Key rule: `poll()` must never block.
 - Before launch: honor cancellation immediately
 - After launch: ignore results and drop (stream-level cancel not guaranteed deterministic)
 
+## Dependency Investigation
+
+### Rust Crates for GPU Pipeline
+
+| Crate | Version | Purpose | Evaluation Status |
+|-------|---------|---------|-------------------|
+| `egg` | 0.9 | E-graph equality saturation for kernel expression optimization | Prototype exists (`molt-backend --features egraphs`) |
+| `mlir-sys` | 0.3+ | Raw MLIR C-API bindings for GPU dialect lowering | Not evaluated — requires LLVM/MLIR build |
+| `inkwell` | 0.5+ | Safe LLVM IR builder (alternative to mlir-sys for NVPTX) | Not evaluated |
+| `cudarc` | 0.12+ | Safe CUDA runtime/driver API bindings | Not evaluated |
+| `vulkano` | 0.34+ | Vulkan compute (cross-vendor GPU alternative) | Not evaluated |
+| `wgpu` | 24+ | WebGPU abstraction (portable, lower performance ceiling) | Not evaluated |
+
+### Evaluation Criteria
+
+1. **Build complexity**: Does it require a full LLVM/MLIR toolchain?
+2. **Determinism**: Can we produce deterministic GPU kernels?
+3. **Platform support**: NVIDIA + AMD + Apple Silicon (Metal)?
+4. **Maintenance burden**: Active upstream, stable API?
+5. **Integration cost**: How much glue code to connect to Molt's TIR?
+
+### Recommended Path
+
+- **Short-term (M-GPU-1, M-GPU-2)**: No GPU dependencies needed — pure CPU work.
+- **Medium-term (M-GPU-3)**: `cudarc` + Arrow C Device Interface for libcudf.
+- **Long-term (M-GPU-4)**: `mlir-sys` or `inkwell` for custom kernel compilation.
+
+## Kernel Subset Whitelist (Formal)
+
+The following TIR operations are eligible for GPU kernel extraction. Operations
+not on this list MUST remain on CPU.
+
+### Allowed in GPU Kernels
+
+| Category | Operations |
+|----------|-----------|
+| **Arithmetic** | `add`, `sub`, `mul`, `div`, `floordiv`, `mod`, `pow` (int/float only) |
+| **Comparison** | `eq`, `ne`, `lt`, `le`, `gt`, `ge` |
+| **Bitwise** | `bit_and`, `bit_or`, `bit_xor`, `bit_not`, `lshift`, `rshift` |
+| **Unary** | `neg`, `abs`, `invert` |
+| **Math** | `sqrt`, `exp`, `log`, `sin`, `cos`, `tan`, `floor`, `ceil`, `round` |
+| **Buffer access** | `load(buffer, index)`, `store(buffer, index, value)` |
+| **Control flow** | `if/else` (predicated), `for_range` (parallel map) |
+| **Constants** | Integer literals, float literals, bool literals |
+| **Variables** | SSA temporaries (scalar, not object) |
+
+### Forbidden in GPU Kernels (Must Stay CPU)
+
+| Category | Reason |
+|----------|--------|
+| Python object allocation | No GC/refcount on GPU |
+| String/bytes operations | Variable-length, heap-allocated |
+| Dict/list/set mutation | Requires GIL-protected runtime |
+| Function calls (non-intrinsic) | No call stack on GPU kernels |
+| Exception raising | No unwinding on GPU |
+| I/O operations | No filesystem/network on GPU |
+| Global state access | No shared mutable state across warps |
+
+### Kernel Classification
+
+A TIR loop is kernel-eligible if:
+1. All operations in the loop body are in the "Allowed" table.
+2. All variables are scalar (int/float/bool) or buffer references.
+3. Loop iteration count is statically known or bounded.
+4. No inter-iteration dependencies (map pattern) OR dependencies are
+   associative/commutative (reduction pattern).
+
 ## WASM Exclusion
 
 GPU paths must be cleanly gated off for `wasm32` targets. GPU capability detection

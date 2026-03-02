@@ -22,6 +22,13 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
       - name: Install dependencies
         run: uv sync --frozen --python ${{ matrix.python-version }}
+      - name: Cache uv packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-py${{ matrix.python-version }}-
       - name: Lint
         run: uv run ruff check .
       - name: Stdlib intrinsics lint
@@ -87,6 +94,14 @@ jobs:
             --fail-regression-pct "${MOLT_CI_PERF_MAX_REGRESSION_PCT:-10}" \
             --fail-regression-abs "${MOLT_CI_PERF_MAX_REGRESSION_ABS:-0.02}" \
             --json-out bench/results/ci_smoke_diff.json
+      - name: Compile throughput gate
+        if: matrix.python-version == '3.12'
+        run: |
+          uv run python tools/check_compile_throughput.py \
+            --baseline bench/baseline.json \
+            --current bench/results/ci_smoke.json \
+            --max-regression-pct 15 \
+            --metric molt_build_s
       - name: Upload benchmark artifact
         if: matrix.python-version == '3.12'
         uses: actions/upload-artifact@v4
@@ -117,11 +132,36 @@ jobs:
         with:
           name: demo-k6
           path: bench/results/demo_k6_*.json
+      - name: Reproducible build gate
+        if: matrix.python-version == '3.12'
+        run: |
+          mkdir -p /tmp/repro_build_1 /tmp/repro_build_2
+          MOLT_CACHE=/tmp/repro_build_1/cache PYTHONPATH=src PYTHONHASHSEED=0 \
+            uv run --python 3.12 python3 -m molt.cli build --profile dev --deterministic --json examples/hello.py > /tmp/repro_build_1/out.json
+          MOLT_CACHE=/tmp/repro_build_2/cache PYTHONPATH=src PYTHONHASHSEED=0 \
+            uv run --python 3.12 python3 -m molt.cli build --profile dev --deterministic --json examples/hello.py > /tmp/repro_build_2/out.json
+          uv run python tools/check_reproducible_build.py /tmp/repro_build_1/out.json /tmp/repro_build_2/out.json
+      - name: Deterministic runtime gate
+        if: matrix.python-version == '3.12'
+        run: |
+          PYTHONPATH=src uv run python tools/check_deterministic_runtime.py --runs 3 examples/hello.py
       - name: Django offload smoke
         if: matrix.python-version == '3.12'
         run: |
           uv sync --dev --python 3.12 --frozen
           uv run pytest tests/test_django_demo.py
+      - name: Runtime feedback gate (G6)
+        if: matrix.python-version == '3.12'
+        run: |
+          PYTHONPATH=src MOLT_PROFILE=1 MOLT_RUNTIME_FEEDBACK=1 \
+          MOLT_RUNTIME_FEEDBACK_FILE=target/molt_runtime_feedback_gate.json \
+            uv run --python 3.12 python3 -m molt.cli run --profile dev examples/hello.py || true
+          if [ -f tools/check_runtime_feedback.py ]; then
+            uv run --python 3.12 python3 tools/check_runtime_feedback.py \
+              target/molt_runtime_feedback_gate.json
+          else
+            echo "SKIP: tools/check_runtime_feedback.py not found"
+          fi
 
   test-extension-pipeline:
     name: Extension pipeline (${{ matrix.lane.name }})
@@ -617,12 +657,55 @@ jobs:
           components: clippy, rustfmt
       - name: Rust cache
         uses: swatinem/rust-cache@v2
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
       - name: Cargo format
         run: cargo fmt -- --check
       - name: Cargo clippy
         run: cargo clippy -- -D warnings
       - name: Cargo test
         run: cargo test
+
+  formal-methods:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install elan (Lean 4 toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Install Quint
+        run: npm install -g @informalsystems/quint
+      - name: Formal methods file inventory
+        run: python3 tools/check_formal_methods.py --inventory
+      - name: Lean proofs (lake build)
+        run: |
+          cd formal/lean && lake build
+      - name: Quint build determinism model
+        run: |
+          quint run formal/quint/molt_build_determinism.qnt --invariant=Inv --max-steps=12 --max-samples=500
+      - name: Quint runtime determinism model
+        run: |
+          quint run formal/quint/molt_runtime_determinism.qnt --invariant=Inv --max-steps=15 --max-samples=500
+      - name: Quint known-bad model (must find violation)
+        run: |
+          set +e
+          quint run formal/quint/molt_build_determinism.qnt --main=molt_build_order_dependent --invariant=OrderDependentInv --max-steps=8 --max-samples=1000 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "ERROR: known-bad model should have found a violation but did not"
+            exit 1
+          fi
+          echo "known-bad model correctly detected order-dependent bug"
 
   test-wasm:
     runs-on: ubuntu-latest

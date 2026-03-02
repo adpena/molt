@@ -46,3 +46,48 @@ Each kernel returns a `(result, ok)` tuple. `ok == false` triggers fallback.
 - Tight loops: >300x over CPython for integer reductions.
 - Memory bandwidth: approach `memcpy` throughput on contiguous byte ops.
 - Regression gates in `tools/bench.py` for vectorization-sensitive workloads.
+
+## E-graph / Equality Saturation Investigation
+
+### Status: Prototype (behind `egraphs` feature flag)
+
+A proof-of-concept integration of the [egg](https://egraphs-good.github.io/)
+e-graph library exists in `runtime/molt-backend/src/egraph_simplify.rs`.
+
+### What are E-graphs?
+
+Equality saturation is a technique that explores all possible rewrites of an
+expression simultaneously, avoiding the phase-ordering problem inherent in
+traditional fixed-point rewrite passes. An e-graph compactly represents an
+exponential number of equivalent expressions and extracts the optimal one
+according to a cost model.
+
+### Potential Use Cases in Molt
+
+1. **Algebraic simplification** — Strength reduction, identity elimination,
+   constant folding for pure expressions in Tier 0.
+2. **Canonicalization** — Normalize expression forms to improve CSE hit rate.
+3. **Vectorization pre-processing** — Identify associative/commutative patterns
+   that enable SIMD lowering.
+
+### Integration Strategy
+
+- **Scope**: Pure expressions only (no side effects, no memory operations).
+- **Placement**: After type inference, before lowering to LIR.
+- **Cost model**: AST size (minimize node count) as initial metric, with
+  extension to latency-based cost for architecture-specific optimization.
+- **Feature-gated**: `cargo build -p molt-backend --features egraphs`
+
+### Key Constraint
+
+E-graph saturation can be expensive for large expressions. The integration
+must enforce:
+- **Node limit**: Cap e-graph size (default: 10,000 nodes).
+- **Time limit**: Cap saturation time (default: 100ms per function).
+- **Scope limit**: Only apply to pure expression subtrees, not full functions.
+
+### References
+
+- egg library: https://egraphs-good.github.io/
+- "egg: Fast and Extensible Equality Saturation" (POPL 2021)
+- "Equality Saturation for Tensor Graph Superoptimization" (MLSys 2021)

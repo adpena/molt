@@ -1,6 +1,6 @@
 use crate::{FunctionIR, OpIR, SimpleIR, TrampolineKind, TrampolineSpec};
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::iter::ExactSizeIterator;
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, CustomSection, DataSection, DataSymbolDefinition,
@@ -58,7 +58,7 @@ struct CompileFuncContext<'a> {
     func_indices: &'a HashMap<String, u32>,
     trampoline_map: &'a HashMap<String, u32>,
     table_base: u32,
-    import_ids: &'a HashMap<String, u32>,
+    import_ids: &'a BTreeMap<String, u32>,
     reloc_enabled: bool,
 }
 
@@ -466,11 +466,13 @@ pub struct WasmBackend {
     data: DataSection,
     tables: TableSection,
     func_count: u32,
-    import_ids: HashMap<String, u32>,
+    // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
+    import_ids: BTreeMap<String, u32>,
     data_offset: u32,
     data_segments: Vec<DataSegmentInfo>,
     data_relocs: Vec<DataRelocSite>,
-    data_segment_cache: HashMap<Vec<u8>, DataSegmentRef>,
+    // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
+    data_segment_cache: BTreeMap<Vec<u8>, DataSegmentRef>,
     molt_main_index: Option<u32>,
 }
 
@@ -503,11 +505,11 @@ impl WasmBackend {
             data: DataSection::new(),
             tables: TableSection::new(),
             func_count: 0,
-            import_ids: HashMap::new(),
+            import_ids: BTreeMap::new(),
             data_offset: wasm_data_base(),
             data_segments: Vec::new(),
             data_relocs: Vec::new(),
-            data_segment_cache: HashMap::new(),
+            data_segment_cache: BTreeMap::new(),
             molt_main_index: None,
         }
     }
@@ -558,9 +560,10 @@ impl WasmBackend {
             crate::elide_dead_struct_allocs(func_ir);
         }
         crate::inline_functions(&mut ir);
-        let mut func_trampoline_spec: HashMap<String, (usize, bool)> = HashMap::new();
-        let mut task_kinds: HashMap<String, TrampolineKind> = HashMap::new();
-        let mut task_closure_sizes: HashMap<String, i64> = HashMap::new();
+        // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
+        let mut func_trampoline_spec: BTreeMap<String, (usize, bool)> = BTreeMap::new();
+        let mut task_kinds: BTreeMap<String, TrampolineKind> = BTreeMap::new();
+        let mut task_closure_sizes: BTreeMap<String, i64> = BTreeMap::new();
         for func_ir in &ir.functions {
             let mut func_obj_names: HashMap<String, String> = HashMap::new();
             let mut const_values: HashMap<String, i64> = HashMap::new();
@@ -658,7 +661,8 @@ impl WasmBackend {
                 }
             }
         }
-        let mut default_trampoline_spec: HashMap<String, (usize, bool)> = HashMap::new();
+        // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
+        let mut default_trampoline_spec: BTreeMap<String, (usize, bool)> = BTreeMap::new();
         for func_ir in &ir.functions {
             let default_has_closure = func_ir
                 .params
@@ -824,7 +828,7 @@ impl WasmBackend {
             .function(std::iter::repeat_n(ValType::I64, 3), std::iter::empty());
 
         let mut import_idx = 0;
-        let mut add_import = |name: &str, ty: u32, ids: &mut HashMap<String, u32>| {
+        let mut add_import = |name: &str, ty: u32, ids: &mut BTreeMap<String, u32>| {
             self.imports
                 .import("molt_runtime", name, EntityType::Function(ty));
             ids.insert(name.to_string(), import_idx);
