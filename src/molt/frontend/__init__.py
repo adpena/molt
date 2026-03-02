@@ -17461,7 +17461,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             return res
                         res = MoltValue(self.next_var(), type_hint="Any")
                         self.emit(
-                            MoltOp(kind="CALL_FUNC", args=[callee] + args, result=res)
+                            MoltOp(
+                                kind="CALL_GUARDED",
+                                args=[callee] + args,
+                                result=res,
+                                metadata={"target": func_symbol},
+                            )
                         )
                         return res
                     args = self._emit_call_args(node.args)
