@@ -14,16 +14,32 @@ Exit codes:
 
 import argparse
 import hashlib
+import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
 
+def _extract_binary(build_json: dict) -> str | None:
+    """Extract the binary path from build JSON, unwrapping data envelope."""
+    data = build_json
+    if "data" in build_json and isinstance(build_json["data"], dict):
+        data = build_json["data"]
+    for key in ("output", "artifact", "binary", "path", "output_path"):
+        if key in data:
+            return data[key]
+    if "build" in data and isinstance(data["build"], dict):
+        for key in ("output", "artifact", "binary", "path"):
+            if key in data["build"]:
+                return data["build"][key]
+    return None
+
+
 def build_program(source: str, profile: str = "dev") -> str:
     """Build a Molt program and return the output binary path."""
     env = os.environ.copy()
-    env["PYTHONPATH"] = "src"
+    env["PYTHONPATH"] = env.get("PYTHONPATH", "src")
     env["PYTHONHASHSEED"] = "0"
     env["MOLT_DETERMINISTIC"] = "1"
 
@@ -40,31 +56,31 @@ def build_program(source: str, profile: str = "dev") -> str:
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if result.returncode != 0:
-        print(f"Build failed:\n{result.stderr}", file=sys.stderr)
+        print(f"Build failed (exit {result.returncode}):", file=sys.stderr)
+        if result.stderr:
+            print(result.stderr[:2000], file=sys.stderr)
         sys.exit(2)
 
-    import json
+    try:
+        build_info = json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        print(f"Build produced invalid JSON: {e}", file=sys.stderr)
+        print(f"stdout (first 500 chars): {result.stdout[:500]}", file=sys.stderr)
+        sys.exit(2)
 
-    build_info = json.loads(result.stdout)
+    binary = _extract_binary(build_info)
+    if binary is None:
+        print(
+            f"Cannot find artifact in build output. Keys: {list(build_info.keys())}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
-    # Extract artifact path (molt.cli wraps output in a "data" envelope)
-    for key in ("output", "artifact", "binary", "path", "output_path"):
-        if key in build_info:
-            return build_info[key]
-    if "data" in build_info and isinstance(build_info["data"], dict):
-        for key in ("output", "artifact", "binary", "path"):
-            if key in build_info["data"]:
-                return build_info["data"][key]
-    if "build" in build_info:
-        for key in ("output", "artifact", "binary", "path"):
-            if key in build_info["build"]:
-                return build_info["build"][key]
+    if not Path(binary).exists():
+        print(f"Binary path from JSON does not exist: {binary}", file=sys.stderr)
+        sys.exit(2)
 
-    print(
-        f"Cannot find artifact in build output: {list(build_info.keys())}",
-        file=sys.stderr,
-    )
-    sys.exit(2)
+    return binary
 
 
 def run_binary(binary: str, run_index: int) -> tuple[str, str]:
