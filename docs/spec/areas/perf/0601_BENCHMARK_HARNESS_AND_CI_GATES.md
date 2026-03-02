@@ -124,3 +124,110 @@ CI must upload:
 - One command can run baseline and offload benchmarks locally.
 - Results are stored and summarized automatically.
 - CI posts a markdown summary and fails on regressions.
+
+---
+
+## 8. PGO (Profile-Guided Optimization) Pipeline
+
+### Overview
+
+PGO can improve the Molt runtime (`molt-runtime`) performance by 5-15% on
+branch-heavy code paths (function dispatch, exception handling, type checking).
+The pipeline has three stages: instrument, profile, optimize.
+
+### Workflow
+
+```bash
+# Stage 1: Instrument — build runtime with profiling instrumentation
+RUSTFLAGS="-Cprofile-generate=/tmp/molt-pgo-data" \
+  cargo build -p molt-runtime --profile release
+
+# Stage 2: Profile — run representative workloads to collect profile data
+# Use the benchmark suite as the training set:
+PYTHONPATH=src uv run --python 3.12 python3 tools/bench.py --json-out /tmp/pgo-bench.json
+# Also run differential test suite for broader coverage:
+MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_TIMEOUT=60 \
+  uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic
+
+# Stage 3: Merge profiles and rebuild
+llvm-profdata merge -o /tmp/molt-pgo-data/merged.profdata /tmp/molt-pgo-data/
+RUSTFLAGS="-Cprofile-use=/tmp/molt-pgo-data/merged.profdata" \
+  cargo build -p molt-runtime --profile release
+```
+
+### Integration with CI
+
+PGO builds are NOT part of the standard CI pipeline due to the two-pass build
+cost. They are intended for:
+
+- **Release builds**: The release workflow can optionally enable PGO via
+  `MOLT_PGO=1` environment variable.
+- **Nightly performance tracking**: A separate nightly job can build PGO-optimized
+  binaries and compare against non-PGO baselines.
+
+### Expected Gains
+
+| Category | Estimated Improvement |
+|----------|---------------------|
+| Function dispatch (call_bind, IC) | 10-15% |
+| Type checking hot paths | 5-10% |
+| String/bytes kernels | 2-5% (already SIMD-optimized) |
+| Collection operations | 5-10% |
+
+### Caveats
+
+- PGO profiles are architecture-specific — profiles from x86-64 cannot be used
+  for aarch64 builds.
+- Profile training set must be representative; skewed profiles can pessimize
+  cold paths.
+- Rust PGO requires LLVM (not Cranelift) — this applies to the runtime
+  compilation, not to Molt-compiled user code.
+
+---
+
+## 9. BOLT (Binary Optimization and Layout Tool)
+
+### Status: Investigation Only
+
+BOLT is a post-link optimizer from the LLVM project that reorders functions and
+basic blocks based on runtime profile data. It operates on the final binary,
+independent of the compiler.
+
+### Relevance to Molt
+
+BOLT could benefit the Molt runtime binary by:
+
+- **Code layout optimization**: Reordering hot functions to minimize iTLB and
+  icache misses.
+- **Hot/cold splitting**: Moving rarely-executed error paths and diagnostics out
+  of hot code regions.
+- **Function reordering**: Placing frequently co-called functions adjacent in
+  memory.
+
+### Estimated Benefit
+
+5-10% improvement on branch-heavy workloads (function dispatch, exception
+handling). Minimal benefit for SIMD-heavy kernels (already cache-friendly).
+
+### Prerequisites
+
+- Linux x86-64 only (BOLT does not support macOS or aarch64 yet).
+- Requires `perf` profile data (LBR-based for best results).
+- Binary must not be fully stripped (needs symbol table for rewriting).
+
+### Integration Plan
+
+Not planned for near-term. BOLT integration would be a post-release optimization:
+
+1. Build `molt-runtime` with `-Clink-arg=-Wl,--emit-relocs` to preserve relocations.
+2. Run representative workload under `perf record -e cycles:u -j any,u`.
+3. Convert perf data: `perf2bolt -p perf.data -o bolt.fdata molt-runtime`.
+4. Optimize: `llvm-bolt molt-runtime -o molt-runtime.bolt -data bolt.fdata -reorder-blocks=ext-tsp -reorder-functions=hfsort`.
+5. Benchmark A/B comparison.
+
+### Decision Criteria
+
+Adopt BOLT if:
+- Measured improvement > 5% on the benchmark suite.
+- Build pipeline complexity is manageable (single additional step).
+- Linux-only limitation is acceptable (macOS/Windows would not benefit).

@@ -1,0 +1,8 @@
+# Opt-in native CPU tuning for local development.
+# Usage: copy to .cargo/config.toml or set CARGO_BUILD_RUSTFLAGS="-C target-cpu=native"
+#
+# WARNING: Binaries built with target-cpu=native are NOT portable across different CPUs.
+# Use the default config for reproducible/portable builds.
+
+[target.'cfg(not(target_arch = "wasm32"))']
+rustflags = ["-C", "target-cpu=native"]

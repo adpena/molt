@@ -327,5 +327,97 @@ A v0.1 Portable ABI is successful when:
 ## 12. Roadmap (WASM evolution)
 - v0.1: single-shot calls, buffer in/out, deterministic-by-default
 - v0.2: streaming frames (for Arrow IPC chunking)
-- v0.3: component model/WIT integration (if justified)
+- v0.3: component model/WIT integration (see §13 migration plan)
 - v1.0: stable ABI with backwards compatibility guarantees
+
+---
+
+## 13. Component Model Migration Plan
+
+### 13.1 Current State (Phase 1 — Complete)
+
+Molt's WASM target currently uses **raw wasmtime imports** via `Linker::func_wrap()`
+calls in `molt-wasm-host`. The intrinsic interface is defined in WIT format at
+`wit/molt-runtime.wit` (622+ intrinsic functions), but this WIT file serves as
+documentation — the actual binding is manual.
+
+**Current wasmtime version:** 41.0.3
+
+### 13.2 Phase 2: Component Model Migration (Planned)
+
+**Target:** wasmtime 42+ (when Component Model API stabilizes)
+
+Migrate from raw `Linker::func_wrap()` imports to Component Model linking:
+
+1. **Split WIT into capability-scoped interfaces:**
+   - `molt:runtime/core` — lifecycle, object model, arithmetic, type system
+   - `molt:runtime/io` — file, socket, process, stream operations
+   - `molt:runtime/codec` — JSON, MsgPack, CBOR, Arrow IPC serialization
+   - `molt:runtime/db` — database query/exec operations
+   - `molt:runtime/async` — futures, promises, tasks, channels
+   - `molt:runtime/collections` — list, dict, set, tuple, heapq
+
+2. **Define a Component Model world:**
+   ```wit
+   world molt-app {
+       import molt:runtime/core;
+       import molt:runtime/collections;
+       // Capability-gated imports (only linked if declared):
+       import molt:runtime/io;
+       import molt:runtime/codec;
+       import molt:runtime/db;
+       import molt:runtime/async;
+       export run: func() -> s32;
+   }
+   ```
+
+3. **Benefits:**
+   - Capability enforcement at link time (not just runtime)
+   - Stable ABI versioning via WIT semantic versioning
+   - Interop with other Component Model toolchains (e.g., `wasm-tools compose`)
+   - Automatic binding generation via `wit-bindgen`
+
+4. **Migration steps:**
+   - [ ] Split `wit/molt-runtime.wit` into per-capability `.wit` files
+   - [ ] Define `molt-app` world in `wit/world.wit`
+   - [ ] Replace `Linker::func_wrap()` calls with `wasmtime::component::Linker`
+   - [ ] Update `molt-backend/src/wasm.rs` to emit Component Model modules
+   - [ ] Validate with `wasm-tools validate --features component-model`
+
+### 13.3 Phase 3: WASI Preview 2 Alignment (Future)
+
+**Target:** After Component Model migration is stable
+
+Replace custom I/O intrinsics with WASI Preview 2 (WASI 0.2) interfaces where
+semantics align:
+
+| Current Molt Intrinsic | WASI P2 Replacement |
+|------------------------|---------------------|
+| `molt_file_read` / `molt_file_write` | `wasi:filesystem/types` |
+| `molt_socket_connect` / `molt_socket_send` | `wasi:sockets/tcp` |
+| `molt_time_now` | `wasi:clocks/wall-clock` |
+| `molt_random_bytes` | `wasi:random/random` |
+| `molt_env_get` | `wasi:cli/environment` |
+| `molt_process_spawn` | `wasi:cli/run` (limited) |
+
+**Molt-specific intrinsics** (no WASI equivalent):
+- Object model operations (NaN-boxing, refcount, GC)
+- Collection operations (list, dict, set internals)
+- Codec operations (MsgPack, CBOR, Arrow)
+- Database operations
+- Async runtime primitives
+
+These will remain as custom `molt:runtime/*` imports alongside WASI interfaces.
+
+### 13.4 Prerequisites
+
+- [ ] wasmtime Component Model API stable (42+)
+- [ ] WASI Preview 2 filesystem/network support mature
+- [ ] Molt's WIT interface stabilized (no breaking changes in 3+ months)
+- [ ] Performance validation: Component Model overhead < 2% vs raw imports
+
+### 13.5 References
+
+- [Bytecode Alliance Component Model docs](https://component-model.bytecodealliance.org/)
+- [WASI Preview 2 specification](https://github.com/WebAssembly/WASI)
+- [wasmtime Component Model guide](https://docs.wasmtime.dev/api/wasmtime/component/)
