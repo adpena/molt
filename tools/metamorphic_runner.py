@@ -88,6 +88,16 @@ class MetamorphicRunner:
                 if key in build_info:
                     binary = build_info[key]
                     break
+            # molt.cli wraps output in a "data" envelope
+            if (
+                binary is None
+                and "data" in build_info
+                and isinstance(build_info["data"], dict)
+            ):
+                for key in ("output", "artifact", "binary", "path"):
+                    if key in build_info["data"]:
+                        binary = build_info["data"][key]
+                        break
             if binary is None and "build" in build_info:
                 for key in ("output", "artifact", "binary", "path"):
                     if key in build_info["build"]:
