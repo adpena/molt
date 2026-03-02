@@ -1,12 +1,107 @@
+#[cfg(not(target_arch = "wasm32"))]
 use std::cell::RefCell;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Mutex, MutexGuard};
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::{GIL_DEPTH, runtime_state_for_gil};
 
+// ---------------------------------------------------------------------------
+// wasm32: single-threaded target — the GIL is always held, all operations
+// are no-ops.  We keep the public types so call-sites compile unchanged.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) struct GilGuard {
+    _marker: (),
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) struct PyToken<'gil> {
+    _guard: &'gil GilGuard,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl GilGuard {
+    #[inline(always)]
+    pub(crate) fn new() -> Self {
+        Self { _marker: () }
+    }
+
+    #[inline(always)]
+    pub(crate) fn token(&self) -> PyToken<'_> {
+        PyToken { _guard: self }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for GilGuard {
+    #[inline(always)]
+    fn drop(&mut self) {
+        // no-op: single-threaded, no lock to release
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) struct GilReleaseGuard {
+    _marker: (),
+}
+
+#[cfg(target_arch = "wasm32")]
+impl GilReleaseGuard {
+    #[inline(always)]
+    pub(crate) fn new() -> Self {
+        Self { _marker: () }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for GilReleaseGuard {
+    #[inline(always)]
+    fn drop(&mut self) {
+        // no-op: single-threaded, no lock to restore
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline(always)]
+pub(crate) fn gil_held() -> bool {
+    // On wasm32 the GIL is logically always held (single-threaded).
+    true
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline(always)]
+pub(crate) fn hold_runtime_gil(_guard: GilGuard) {
+    // no-op
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline(always)]
+pub(crate) fn release_runtime_gil() {
+    // no-op
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn with_gil<F, R>(f: F) -> R
+where
+    F: for<'gil> FnOnce(PyToken<'gil>) -> R,
+{
+    let guard = GilGuard::new();
+    let token = guard.token();
+    f(token)
+}
+
+// ---------------------------------------------------------------------------
+// Non-wasm32: full mutex-based GIL implementation
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_arch = "wasm32"))]
 static PREINIT_GIL: Mutex<()> = Mutex::new(());
 
+#[cfg(not(target_arch = "wasm32"))]
 fn molt_gil() -> &'static Mutex<()> {
     if let Some(state) = runtime_state_for_gil() {
         &state.gil
@@ -15,18 +110,19 @@ fn molt_gil() -> &'static Mutex<()> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct GilGuard {
     _marker: (),
-    #[cfg(not(target_arch = "wasm32"))]
     fallback_guard: Option<MutexGuard<'static, ()>>,
-    #[cfg(not(target_arch = "wasm32"))]
     fallback_depth: bool,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct PyToken<'gil> {
     _guard: &'gil GilGuard,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl GilGuard {
     pub(crate) fn new() -> Self {
         let needs_lock = match GIL_DEPTH.try_with(|depth| {
@@ -54,9 +150,7 @@ impl GilGuard {
         }
         Self {
             _marker: (),
-            #[cfg(not(target_arch = "wasm32"))]
             fallback_guard: None,
-            #[cfg(not(target_arch = "wasm32"))]
             fallback_depth: false,
         }
     }
@@ -65,7 +159,6 @@ impl GilGuard {
         PyToken { _guard: self }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn fallback_new() -> Self {
         let tid = fallback_thread_id();
         let owner = GIL_FALLBACK_OWNER.load(AtomicOrdering::Acquire);
@@ -86,16 +179,11 @@ impl GilGuard {
             fallback_depth: true,
         }
     }
-
-    #[cfg(target_arch = "wasm32")]
-    fn fallback_new() -> Self {
-        Self { _marker: () }
-    }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for GilGuard {
     fn drop(&mut self) {
-        #[cfg(not(target_arch = "wasm32"))]
         if self.fallback_depth {
             let depth = GIL_FALLBACK_DEPTH.fetch_sub(1, AtomicOrdering::AcqRel);
             let next = depth.saturating_sub(1);
@@ -122,11 +210,13 @@ impl Drop for GilGuard {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct GilReleaseGuard {
     depth: usize,
     had_runtime_guard: bool,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl GilReleaseGuard {
     pub(crate) fn new() -> Self {
         let depth = match GIL_DEPTH.try_with(|d| d.get()) {
@@ -163,6 +253,7 @@ impl GilReleaseGuard {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for GilReleaseGuard {
     fn drop(&mut self) {
         if self.depth == 0 {
@@ -185,6 +276,7 @@ impl Drop for GilReleaseGuard {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn gil_held() -> bool {
     match GIL_DEPTH.try_with(|depth| depth.get()) {
         Ok(depth) => depth > 0 || fallback_gil_held(),
@@ -192,17 +284,20 @@ pub(crate) fn gil_held() -> bool {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 thread_local! {
     static GIL_GUARD: RefCell<Option<MutexGuard<'static, ()>>> = const { RefCell::new(None) };
     static RUNTIME_GIL_GUARD: RefCell<Option<GilGuard>> = const { RefCell::new(None) };
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn hold_runtime_gil(guard: GilGuard) {
     RUNTIME_GIL_GUARD.with(|slot| {
         *slot.borrow_mut() = Some(guard);
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn release_runtime_gil() {
     RUNTIME_GIL_GUARD.with(|slot| {
         let _ = slot.borrow_mut().take();
@@ -226,11 +321,6 @@ fn fallback_thread_id() -> u64 {
     value
 }
 
-#[cfg(target_arch = "wasm32")]
-fn fallback_thread_id() -> u64 {
-    1
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 fn fallback_gil_held() -> bool {
     let owner = GIL_FALLBACK_OWNER.load(AtomicOrdering::Acquire);
@@ -241,10 +331,19 @@ fn fallback_gil_held() -> bool {
     owner == fallback_thread_id() && depth > 0
 }
 
-#[cfg(target_arch = "wasm32")]
-fn fallback_gil_held() -> bool {
-    false
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn with_gil<F, R>(f: F) -> R
+where
+    F: for<'gil> FnOnce(PyToken<'gil>) -> R,
+{
+    let guard = GilGuard::new();
+    let token = guard.token();
+    f(token)
 }
+
+// ---------------------------------------------------------------------------
+// gil_assert: available on both targets
+// ---------------------------------------------------------------------------
 
 #[cfg(feature = "molt_debug_gil")]
 pub(crate) fn gil_assert() {
@@ -256,16 +355,11 @@ pub(crate) fn gil_assert() {
     debug_assert!(gil_held(), "GIL required for runtime mutation");
 }
 
-pub(crate) fn with_gil<F, R>(f: F) -> R
-where
-    F: for<'gil> FnOnce(PyToken<'gil>) -> R,
-{
-    let guard = GilGuard::new();
-    let token = guard.token();
-    f(token)
-}
+// ---------------------------------------------------------------------------
+// Tests (non-wasm32 only — they rely on threads and the mutex-based GIL)
+// ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::{GilGuard, gil_held};
     use crate::GIL_DEPTH;
