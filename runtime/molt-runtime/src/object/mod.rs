@@ -586,6 +586,9 @@ pub(crate) unsafe fn header_from_obj_ptr(ptr: *mut u8) -> *mut MoltHeader {
     unsafe { ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader }
 }
 
+// On wasm32 profile_hit is a guaranteed no-op, so inline this function to let
+// the compiler eliminate the entire match body during dead-code elimination.
+#[cfg_attr(target_arch = "wasm32", inline(always))]
 fn profile_alloc_type(_py: &PyToken<'_>, type_id: u32) {
     match type_id {
         TYPE_ID_OBJECT => profile_hit(_py, &ALLOC_OBJECT_COUNT),

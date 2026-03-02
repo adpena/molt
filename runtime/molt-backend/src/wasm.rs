@@ -3055,9 +3055,29 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        func.instruction(&Instruction::LocalGet(lhs));
-                        func.instruction(&Instruction::LocalGet(rhs));
-                        emit_call(func, reloc_enabled, import_ids["add"]);
+                        if op.fast_int.unwrap_or(false) {
+                            let tmp_lhs = locals["__molt_tmp0"];
+                            let tmp_rhs = locals["__molt_tmp1"];
+                            let tmp_raw = locals["__molt_tmp2"];
+                            emit_unbox_int_local(func, lhs, tmp_lhs);
+                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            func.instruction(&Instruction::LocalGet(tmp_lhs));
+                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            func.instruction(&Instruction::I64Add);
+                            func.instruction(&Instruction::LocalSet(tmp_raw));
+                            emit_inline_int_range_check(func, tmp_raw);
+                            func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+                            emit_box_int_from_local(func, tmp_raw);
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            emit_call(func, reloc_enabled, import_ids["add"]);
+                            func.instruction(&Instruction::End);
+                        } else {
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            emit_call(func, reloc_enabled, import_ids["add"]);
+                        }
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -3065,9 +3085,29 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        func.instruction(&Instruction::LocalGet(lhs));
-                        func.instruction(&Instruction::LocalGet(rhs));
-                        emit_call(func, reloc_enabled, import_ids["inplace_add"]);
+                        if op.fast_int.unwrap_or(false) {
+                            let tmp_lhs = locals["__molt_tmp0"];
+                            let tmp_rhs = locals["__molt_tmp1"];
+                            let tmp_raw = locals["__molt_tmp2"];
+                            emit_unbox_int_local(func, lhs, tmp_lhs);
+                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            func.instruction(&Instruction::LocalGet(tmp_lhs));
+                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            func.instruction(&Instruction::I64Add);
+                            func.instruction(&Instruction::LocalSet(tmp_raw));
+                            emit_inline_int_range_check(func, tmp_raw);
+                            func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+                            emit_box_int_from_local(func, tmp_raw);
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            emit_call(func, reloc_enabled, import_ids["inplace_add"]);
+                            func.instruction(&Instruction::End);
+                        } else {
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            emit_call(func, reloc_enabled, import_ids["inplace_add"]);
+                        }
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -3351,9 +3391,29 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        func.instruction(&Instruction::LocalGet(lhs));
-                        func.instruction(&Instruction::LocalGet(rhs));
-                        emit_call(func, reloc_enabled, import_ids["sub"]);
+                        if op.fast_int.unwrap_or(false) {
+                            let tmp_lhs = locals["__molt_tmp0"];
+                            let tmp_rhs = locals["__molt_tmp1"];
+                            let tmp_raw = locals["__molt_tmp2"];
+                            emit_unbox_int_local(func, lhs, tmp_lhs);
+                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            func.instruction(&Instruction::LocalGet(tmp_lhs));
+                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::LocalSet(tmp_raw));
+                            emit_inline_int_range_check(func, tmp_raw);
+                            func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+                            emit_box_int_from_local(func, tmp_raw);
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            emit_call(func, reloc_enabled, import_ids["sub"]);
+                            func.instruction(&Instruction::End);
+                        } else {
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            emit_call(func, reloc_enabled, import_ids["sub"]);
+                        }
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -3361,9 +3421,29 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        func.instruction(&Instruction::LocalGet(lhs));
-                        func.instruction(&Instruction::LocalGet(rhs));
-                        emit_call(func, reloc_enabled, import_ids["mul"]);
+                        if op.fast_int.unwrap_or(false) {
+                            let tmp_lhs = locals["__molt_tmp0"];
+                            let tmp_rhs = locals["__molt_tmp1"];
+                            let tmp_raw = locals["__molt_tmp2"];
+                            emit_unbox_int_local(func, lhs, tmp_lhs);
+                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            func.instruction(&Instruction::LocalGet(tmp_lhs));
+                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            func.instruction(&Instruction::I64Mul);
+                            func.instruction(&Instruction::LocalSet(tmp_raw));
+                            emit_inline_int_range_check(func, tmp_raw);
+                            func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+                            emit_box_int_from_local(func, tmp_raw);
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            emit_call(func, reloc_enabled, import_ids["mul"]);
+                            func.instruction(&Instruction::End);
+                        } else {
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            emit_call(func, reloc_enabled, import_ids["mul"]);
+                        }
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -3371,9 +3451,29 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        func.instruction(&Instruction::LocalGet(lhs));
-                        func.instruction(&Instruction::LocalGet(rhs));
-                        emit_call(func, reloc_enabled, import_ids["inplace_sub"]);
+                        if op.fast_int.unwrap_or(false) {
+                            let tmp_lhs = locals["__molt_tmp0"];
+                            let tmp_rhs = locals["__molt_tmp1"];
+                            let tmp_raw = locals["__molt_tmp2"];
+                            emit_unbox_int_local(func, lhs, tmp_lhs);
+                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            func.instruction(&Instruction::LocalGet(tmp_lhs));
+                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::LocalSet(tmp_raw));
+                            emit_inline_int_range_check(func, tmp_raw);
+                            func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+                            emit_box_int_from_local(func, tmp_raw);
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            emit_call(func, reloc_enabled, import_ids["inplace_sub"]);
+                            func.instruction(&Instruction::End);
+                        } else {
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            emit_call(func, reloc_enabled, import_ids["inplace_sub"]);
+                        }
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -3381,9 +3481,29 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        func.instruction(&Instruction::LocalGet(lhs));
-                        func.instruction(&Instruction::LocalGet(rhs));
-                        emit_call(func, reloc_enabled, import_ids["inplace_mul"]);
+                        if op.fast_int.unwrap_or(false) {
+                            let tmp_lhs = locals["__molt_tmp0"];
+                            let tmp_rhs = locals["__molt_tmp1"];
+                            let tmp_raw = locals["__molt_tmp2"];
+                            emit_unbox_int_local(func, lhs, tmp_lhs);
+                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            func.instruction(&Instruction::LocalGet(tmp_lhs));
+                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            func.instruction(&Instruction::I64Mul);
+                            func.instruction(&Instruction::LocalSet(tmp_raw));
+                            emit_inline_int_range_check(func, tmp_raw);
+                            func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+                            emit_box_int_from_local(func, tmp_raw);
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            emit_call(func, reloc_enabled, import_ids["inplace_mul"]);
+                            func.instruction(&Instruction::End);
+                        } else {
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            emit_call(func, reloc_enabled, import_ids["inplace_mul"]);
+                        }
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
