@@ -619,6 +619,23 @@ def _wheel_version_token(value: str) -> str:
     return cleaned or "0"
 
 
+def _cpu_baseline(target_triple: str | None) -> str:
+    """Return the CPU baseline label for the given target triple.
+
+    When no target-cpu=native is set, Cranelift uses the architecture's
+    generic baseline.  This helper returns a human-readable label for
+    build metadata.
+    """
+    triple = (target_triple or _host_target_triple()).lower()
+    if triple.startswith("x86_64") or triple.startswith("x86-64"):
+        return "x86-64"
+    if triple.startswith("aarch64") or triple.startswith("arm64"):
+        return "aarch64"
+    if triple.startswith("wasm32"):
+        return "wasm32"
+    return "generic"
+
+
 def _extension_binary_suffix(target_triple: str | None = None) -> str:
     target = (target_triple or "").strip().lower()
     if "windows" in target:
@@ -9725,6 +9742,8 @@ def build(
                 "emit": emit_mode,
                 "profile": profile,
                 "native_arch_perf": native_arch_perf_enabled,
+                "cpu_baseline": _cpu_baseline(target_triple),
+                "cranelift_flags": "default",
                 "linked": linked,
                 "require_linked": require_linked,
             }
@@ -9787,6 +9806,8 @@ def build(
                 "emit": emit_mode,
                 "profile": profile,
                 "native_arch_perf": native_arch_perf_enabled,
+                "cpu_baseline": _cpu_baseline(target_triple),
+                "cranelift_flags": "default",
                 "artifacts": {"object": str(output_obj)},
             }
             if diagnostics_payload is not None:
@@ -10173,6 +10194,8 @@ int main(int argc, char** argv) {
                 "emit": emit_mode,
                 "profile": profile,
                 "native_arch_perf": native_arch_perf_enabled,
+                "cpu_baseline": _cpu_baseline(target_triple),
+                "cranelift_flags": "default",
             }
             if diagnostics_payload is not None:
                 data["compile_diagnostics"] = diagnostics_payload
@@ -11676,6 +11699,7 @@ def extension_build(
     molt_abi: str | None = None,
     capabilities: CapabilityInput | None = None,
     deterministic: bool = True,
+    profile: BuildProfile = "release",
     target: str | None = None,
     json_output: bool = False,
     verbose: bool = False,
@@ -11946,7 +11970,8 @@ def extension_build(
     wheel_path = output_root / wheel_name
 
     build_env = os.environ.copy()
-    if deterministic:
+    # Supply-chain: always set SOURCE_DATE_EPOCH for release builds for reproducibility
+    if deterministic or profile == "release":
         build_env.setdefault("SOURCE_DATE_EPOCH", "315532800")
 
     module_rel = Path(
