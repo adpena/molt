@@ -161,17 +161,17 @@ jobs:
         run: |
           set -euo pipefail
           PYTHONPATH=src uv run --python 3.12 python3 tools/check_deterministic_runtime.py --runs 3 examples/hello.py
-      - name: IR structure verification
+      - name: IR structure verification (suite)
         if: matrix.python-version == '3.12'
         continue-on-error: true
         run: |
           set -euo pipefail
-          PYTHONPATH=src uv run --python 3.12 python3 -c "
-          from molt.frontend import compile_to_tir
-          import json, sys
-          tir = compile_to_tir(open('examples/hello.py').read())
-          json.dump(tir, sys.stdout)
-          " | uv run --python 3.12 python3 tools/check_ir_structure.py --stdin
+          PYTHONPATH=src uv run --python 3.12 python3 tools/verify_ir_suite.py \
+            --dir tests/differential/basic --examples --quiet
+      - name: HashMap determinism lint
+        if: matrix.python-version == '3.12'
+        run: |
+          uv run --python 3.12 python3 tools/check_determinism.py
       - name: Django offload smoke
         if: matrix.python-version == '3.12'
         run: |
