@@ -2745,6 +2745,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "imported_modules": self.imported_modules,
             "class_definition_pending": self.class_definition_pending,
             "block_terminated": self.block_terminated,
+            "_module_cache_values": self._module_cache_values,
         }
 
     def _restore_function_state(self, state: dict[str, Any]) -> None:
@@ -2798,6 +2799,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.imported_modules = state["imported_modules"]
         self.class_definition_pending = state["class_definition_pending"]
         self.block_terminated = state["block_terminated"]
+        self._module_cache_values = state["_module_cache_values"]
 
     def visit_Module(self, node: ast.Module) -> None:
         defer = self._module_can_defer_attrs(node)
