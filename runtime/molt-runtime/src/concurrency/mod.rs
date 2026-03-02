@@ -29,9 +29,16 @@ pub(crate) fn current_thread_id() -> u64 {
     1
 }
 
+/// Acquire the GIL and execute `$body` with a `PyToken` bound to `$py`.
+///
+/// On wasm32 `GilGuard::new()` is a zero-cost no-op (single-threaded target),
+/// so this macro compiles down to a direct body invocation with no mutex or
+/// TLS overhead.  On all other targets it acquires the real mutex-based GIL.
 #[macro_export]
 macro_rules! with_gil_entry {
     ($py:ident, $body:block) => {{
+        // GilGuard::new() is cfg-dispatched: a real lock on non-wasm32,
+        // a zero-cost no-op struct on wasm32.
         let _gil_guard = $crate::concurrency::GilGuard::new();
         let $py = _gil_guard.token();
         let $py = &$py;

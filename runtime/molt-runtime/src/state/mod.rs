@@ -10,9 +10,11 @@ pub(crate) use lifecycle::{
     clear_worker_thread_state, runtime_reset_for_init, runtime_teardown, runtime_teardown_isolate,
     touch_tls_guard,
 };
+pub(crate) use metrics::{profile_enabled, profile_hit, profile_hit_unchecked};
+// The extern "C" profiling entrypoints only exist on non-wasm32 targets.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use metrics::{
     molt_profile_enabled, molt_profile_handle_resolve, molt_profile_struct_field_store,
-    profile_enabled, profile_hit, profile_hit_unchecked,
 };
 pub(crate) use recursion::{
     recursion_guard_enter, recursion_guard_exit, recursion_limit_get, recursion_limit_set,
