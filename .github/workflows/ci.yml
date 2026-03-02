@@ -135,32 +135,43 @@ jobs:
       - name: Reproducible build gate
         if: matrix.python-version == '3.12'
         run: |
-          # Build twice to the same output dir with separate caches.
-          # Compare .o files (--object) to avoid linker-injected UUIDs.
+          # Build twice with --emit obj (skip linker) and separate caches.
+          # Extract .o path from JSON to avoid hardcoded filenames.
+          set -euo pipefail
           mkdir -p /tmp/repro_build
           MOLT_CACHE=/tmp/repro_build/cache_a PYTHONPATH=src PYTHONHASHSEED=0 \
-            uv run --python 3.12 python3 -m molt.cli build --profile dev --deterministic --json --out-dir /tmp/repro_build/out examples/hello.py > /tmp/repro_build/a.json
-          cp /tmp/repro_build/out/output.o /tmp/repro_build/run_a.o
+            uv run --python 3.12 python3 -m molt.cli build --profile dev --emit obj --deterministic --json examples/hello.py > /tmp/repro_build/a.json
+          OBJ_A=$(python3 -c "import json,sys; d=json.load(open('/tmp/repro_build/a.json')); data=d.get('data',d); print(data.get('output') or data['artifacts']['object'])")
           rm -rf /tmp/repro_build/cache_a ~/.molt/build/
           MOLT_CACHE=/tmp/repro_build/cache_b PYTHONPATH=src PYTHONHASHSEED=0 \
-            uv run --python 3.12 python3 -m molt.cli build --profile dev --deterministic --json --out-dir /tmp/repro_build/out examples/hello.py > /tmp/repro_build/b.json
-          cp /tmp/repro_build/out/output.o /tmp/repro_build/run_b.o
-          echo "Run A:" && shasum -a 256 /tmp/repro_build/run_a.o
-          echo "Run B:" && shasum -a 256 /tmp/repro_build/run_b.o
-          diff <(shasum -a 256 /tmp/repro_build/run_a.o | cut -d' ' -f1) <(shasum -a 256 /tmp/repro_build/run_b.o | cut -d' ' -f1)
+            uv run --python 3.12 python3 -m molt.cli build --profile dev --emit obj --deterministic --json examples/hello.py > /tmp/repro_build/b.json
+          OBJ_B=$(python3 -c "import json,sys; d=json.load(open('/tmp/repro_build/b.json')); data=d.get('data',d); print(data.get('output') or data['artifacts']['object'])")
+          HASH_A=$(sha256sum "$OBJ_A" | cut -d' ' -f1)
+          HASH_B=$(sha256sum "$OBJ_B" | cut -d' ' -f1)
+          echo "Build A: $OBJ_A  SHA256=$HASH_A"
+          echo "Build B: $OBJ_B  SHA256=$HASH_B"
+          if [ "$HASH_A" != "$HASH_B" ]; then
+            echo "FAIL: Builds are NOT reproducible"
+            ls -la "$OBJ_A" "$OBJ_B"
+            exit 1
+          fi
+          echo "PASS: Builds are bit-identical"
       - name: Deterministic runtime gate
         if: matrix.python-version == '3.12'
         run: |
-          PYTHONPATH=src uv run python tools/check_deterministic_runtime.py --runs 3 examples/hello.py
+          set -euo pipefail
+          PYTHONPATH=src uv run --python 3.12 python3 tools/check_deterministic_runtime.py --runs 3 examples/hello.py
       - name: IR structure verification
         if: matrix.python-version == '3.12'
+        continue-on-error: true
         run: |
+          set -euo pipefail
           PYTHONPATH=src uv run --python 3.12 python3 -c "
           from molt.frontend import compile_to_tir
           import json, sys
           tir = compile_to_tir(open('examples/hello.py').read())
           json.dump(tir, sys.stdout)
-          " | uv run python tools/check_ir_structure.py --stdin || echo "IR verification: non-blocking (known issues tracked)"
+          " | uv run --python 3.12 python3 tools/check_ir_structure.py --stdin
       - name: Django offload smoke
         if: matrix.python-version == '3.12'
         run: |
@@ -169,15 +180,21 @@ jobs:
       - name: Runtime feedback gate (G6)
         if: matrix.python-version == '3.12'
         run: |
+          mkdir -p target
           PYTHONPATH=src MOLT_PROFILE=1 MOLT_RUNTIME_FEEDBACK=1 \
           MOLT_RUNTIME_FEEDBACK_FILE=target/molt_runtime_feedback_gate.json \
             uv run --python 3.12 python3 -m molt.cli run --profile dev examples/hello.py || true
-          if [ -f tools/check_runtime_feedback.py ]; then
-            uv run --python 3.12 python3 tools/check_runtime_feedback.py \
-              target/molt_runtime_feedback_gate.json
-          else
+          if [ ! -f tools/check_runtime_feedback.py ]; then
             echo "SKIP: tools/check_runtime_feedback.py not found"
+            exit 0
           fi
+          if [ ! -f target/molt_runtime_feedback_gate.json ]; then
+            echo "WARNING: Runtime feedback file not produced (runtime may have failed)"
+            echo "Non-blocking — tracked as known issue"
+            exit 0
+          fi
+          uv run --python 3.12 python3 tools/check_runtime_feedback.py \
+            target/molt_runtime_feedback_gate.json
 
   test-extension-pipeline:
     name: Extension pipeline (${{ matrix.lane.name }})

@@ -18,14 +18,62 @@ from pathlib import Path
 
 BACKEND_SRC = Path("runtime/molt-backend/src")
 
-# Regex for struct field declarations: lines like "  field_name: HashMap<...>"
-_STRUCT_FIELD_RE = re.compile(r"^\s+\w+:\s+.*\bHash(?:Map|Set)\b")
 # Regex for any HashMap/HashSet mention
 _ANY_HASHMAP_RE = re.compile(r"\bHash(?:Map|Set)\b")
 
 
+def _classify_hashmap_usages(
+    lines: list[str],
+) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
+    """Classify HashMap/HashSet usages as struct-field or other.
+
+    Returns (struct_findings, other_findings) as lists of (line_number, line_text).
+    Uses brace-depth tracking to determine if we're inside a struct/enum definition.
+    """
+    struct_findings: list[tuple[int, str]] = []
+    other_findings: list[tuple[int, str]] = []
+
+    in_struct = False
+    brace_depth = 0
+    struct_brace_depth = 0
+
+    for i, line in enumerate(lines, 1):
+        stripped = line.strip()
+
+        # Skip comments and use/import lines
+        if stripped.startswith("//") or stripped.startswith("use "):
+            if _ANY_HASHMAP_RE.search(line):
+                other_findings.append((i, stripped))
+            continue
+
+        # Detect struct/enum definitions (the line before the opening brace)
+        if re.match(r"^(?:pub\s+)?(?:struct|enum)\s+\w+", stripped):
+            in_struct = True
+            struct_brace_depth = brace_depth
+
+        # Track brace depth
+        brace_depth += line.count("{") - line.count("}")
+
+        # Detect end of struct/enum
+        if in_struct and brace_depth <= struct_brace_depth:
+            in_struct = False
+
+        if not _ANY_HASHMAP_RE.search(line):
+            continue
+
+        if in_struct and brace_depth > struct_brace_depth:
+            # We're inside a struct/enum body — this is a field declaration
+            struct_findings.append((i, stripped))
+        else:
+            other_findings.append((i, stripped))
+
+    return struct_findings, other_findings
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument(
         "--strict",
         action="store_true",
@@ -42,40 +90,39 @@ def main() -> int:
         print(f"WARNING: {BACKEND_SRC} not found, skipping", file=sys.stderr)
         return 0
 
-    struct_findings: list[tuple[str, int, str]] = []
-    local_findings: list[tuple[str, int, str]] = []
+    struct_total: list[tuple[str, int, str]] = []
+    local_total: list[tuple[str, int, str]] = []
 
     for rs_file in sorted(BACKEND_SRC.rglob("*.rs")):
-        for i, line in enumerate(rs_file.read_text().splitlines(), 1):
-            if not _ANY_HASHMAP_RE.search(line):
-                continue
-            if line.strip().startswith("//"):
-                continue
-            rel = str(rs_file.relative_to(Path(".")))
-            if _STRUCT_FIELD_RE.match(line):
-                struct_findings.append((rel, i, line.strip()))
-            else:
-                local_findings.append((rel, i, line.strip()))
+        content = rs_file.read_text()
+        lines = content.splitlines()
+        rel = str(rs_file.relative_to(Path(".")))
 
-    if struct_findings:
+        struct_findings, other_findings = _classify_hashmap_usages(lines)
+        for lineno, text in struct_findings:
+            struct_total.append((rel, lineno, text))
+        for lineno, text in other_findings:
+            local_total.append((rel, lineno, text))
+
+    if struct_total:
         print(
-            f"STRUCT FIELDS: {len(struct_findings)} HashMap/HashSet in struct fields "
+            f"STRUCT FIELDS: {len(struct_total)} HashMap/HashSet in struct fields "
             f"(iteration order can leak into output):"
         )
-        for path, lineno, content in struct_findings:
+        for path, lineno, content in struct_total:
             print(f"  {path}:{lineno}: {content}")
     else:
         print("No HashMap/HashSet in struct fields. Emission-path determinism OK.")
 
-    if args.all and local_findings:
+    if args.all and local_total:
         print(
-            f"\nFUNCTION-LOCAL: {len(local_findings)} HashMap/HashSet in function "
+            f"\nFUNCTION-LOCAL: {len(local_total)} HashMap/HashSet in function "
             f"bodies (safe — lookup only, no emission ordering):"
         )
-        for path, lineno, content in local_findings:
+        for path, lineno, content in local_total:
             print(f"  {path}:{lineno}: {content}")
 
-    if struct_findings and args.strict:
+    if struct_total and args.strict:
         print("\nSTRICT MODE: struct-field HashMap/HashSet is disallowed.")
         print(
             "Use BTreeMap/BTreeSet for any map that persists beyond a single function."
