@@ -4928,6 +4928,21 @@ def _resolve_cargo_profile_name(
     return profile_name, None
 
 
+def _resolve_wasm_cargo_profile(cargo_profile: str) -> str:
+    """Map cargo profile for WASM targets.
+
+    Uses ``wasm-release`` (thin LTO, 4 codegen-units) instead of ``release``
+    (full LTO, 1 codegen-unit) for dramatically faster WASM compilation with
+    comparable runtime performance.  Override with ``MOLT_WASM_CARGO_PROFILE``.
+    """
+    override = os.environ.get("MOLT_WASM_CARGO_PROFILE", "").strip()
+    if override:
+        return override
+    if cargo_profile == "release":
+        return "wasm-release"
+    return cargo_profile
+
+
 def _native_arch_perf_requested() -> bool:
     profile = os.environ.get("MOLT_PERF_PROFILE", "").strip().lower()
     if profile in {"native-arch", "native_arch", "native"}:
@@ -5773,6 +5788,7 @@ def _ensure_runtime_wasm(
     project_root: Path | None = None,
 ) -> bool:
     root = project_root or Path(__file__).resolve().parents[2]
+    cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     env = os.environ.copy()
     use_legacy_wasm_flags = os.environ.get("MOLT_WASM_LEGACY_LINK_FLAGS") == "1"
     if use_legacy_wasm_flags:
@@ -5836,8 +5852,15 @@ def _ensure_runtime_wasm(
             _append_rustflags(env, flags)
         if os.environ.get("MOLT_WASM_FORCE_CC") == "1":
             _configure_wasm_cc_env(env)
-        env["CARGO_INCREMENTAL"] = "0"
-        if os.environ.get("MOLT_WASM_ALLOW_SCCACHE") == "1":
+        # Enable incremental compilation for dev-fast WASM builds; disable for
+        # release (where LTO makes incremental irrelevant).
+        if cargo_profile in ("dev", "dev-fast"):
+            env.setdefault("CARGO_INCREMENTAL", "1")
+        else:
+            env["CARGO_INCREMENTAL"] = "0"
+        # Enable sccache for WASM builds by default (same as native builds).
+        # Set MOLT_WASM_DISABLE_SCCACHE=1 to opt out.
+        if os.environ.get("MOLT_WASM_DISABLE_SCCACHE") != "1":
             _maybe_enable_sccache(env)
         else:
             env.pop("RUSTC_WRAPPER", None)
@@ -7709,6 +7732,12 @@ def build(
         )
     if require_linked and not linked:
         linked = True
+    # Default to linked mode for WASM targets (10-20% faster runtime, single
+    # module output).  Opt out with MOLT_WASM_LINKED=0.
+    if is_wasm and not linked:
+        wasm_linked_env = os.environ.get("MOLT_WASM_LINKED", "1").strip().lower()
+        if wasm_linked_env not in {"0", "false", "no", "off"}:
+            linked = True
     target_triple = None if target in {"native", "wasm"} else target
     emit_mode = emit or ("wasm" if is_wasm else "bin")
     if emit_mode not in {"bin", "obj", "wasm"}:
@@ -9380,7 +9409,7 @@ def build(
                 return _fail("Backend binary missing", json_output, command="build")
             daemon_socket: Path | None = None
             daemon_ready = False
-            if _backend_daemon_enabled() and not is_wasm:
+            if _backend_daemon_enabled():
                 backend_daemon_config_digest = _backend_daemon_config_digest(
                     molt_root, backend_cargo_profile
                 )

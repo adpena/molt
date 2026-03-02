@@ -29,3 +29,13 @@ opt-level = 2
 lto = "off"
 codegen-units = 128
 strip = false
+
+# WASM-optimized release profile: thin LTO instead of full, more codegen
+# units for faster compilation while still producing well-optimized output.
+[profile.wasm-release]
+inherits = "release"
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+panic = "abort"
+strip = true
