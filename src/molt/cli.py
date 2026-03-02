@@ -9361,6 +9361,9 @@ def build(
                 if "backend_prepare" not in phase_starts:
                     phase_starts["backend_prepare"] = now
             backend_env = os.environ.copy() if is_wasm else None
+            # Supply-chain: pin SOURCE_DATE_EPOCH for deterministic/release builds
+            if deterministic or profile == "release":
+                os.environ.setdefault("SOURCE_DATE_EPOCH", "315532800")
             reloc_requested = is_wasm and (
                 linked or os.environ.get("MOLT_WASM_LINK") == "1"
             )
