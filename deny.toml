@@ -1,0 +1,99 @@
+# cargo-deny configuration for the Molt workspace
+# https://embarkstudios.github.io/cargo-deny/
+#
+# Run:  cargo deny check
+# Lint: cargo deny check licenses advisories bans sources
+
+[graph]
+# Molt targets: native (macOS/Linux/Windows), wasm32
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "wasm32-unknown-unknown",
+    "wasm32-wasip1",
+]
+all-features = true
+
+# --------------------------------------------------------------------------- #
+# Advisories — check the RustSec advisory database for known vulnerabilities
+# --------------------------------------------------------------------------- #
+[advisories]
+# The path to the local advisory database (auto-fetched on first run)
+db-path = "~/.cargo/advisory-db"
+# Update the advisory database on every check
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Treat unmaintained crates as warnings, not errors — many ecosystem crates
+# go through quiet maintenance periods without being abandoned.
+ignore = []
+
+# --------------------------------------------------------------------------- #
+# Licenses — Molt is Apache-2.0; only allow permissive dependency licenses
+# --------------------------------------------------------------------------- #
+[licenses]
+# Confidence threshold for license detection
+confidence-threshold = 0.8
+
+# Permissive licenses allowed for all dependencies
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "Zlib",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "OpenSSL",
+    "0BSD",
+    "CC0-1.0",
+    "Unlicense",
+]
+
+# Copyleft licenses are denied by default (anything not in `allow` is denied).
+# The following are explicitly called out so the intent is clear:
+# GPL-2.0, GPL-3.0, LGPL-2.1, LGPL-3.0, AGPL-3.0 — all denied.
+
+# Some crates dual-license (e.g. MIT OR Apache-2.0). cargo-deny considers a
+# crate acceptable if ANY license in its expression is in `allow`.
+# This is the default behavior and what we want.
+
+# Crate-specific license exceptions for packages whose license metadata
+# cargo-deny cannot always detect cleanly from Cargo.toml alone.
+# ring: ISC-style license (OpenSSL + ISC + MIT components)
+# encoding_rs: (Apache-2.0 OR MIT) AND BSD-3-Clause
+# These are all permissive and compatible with Apache-2.0.
+exceptions = [
+    { allow = ["ISC", "MIT", "OpenSSL"], name = "ring" },
+    { allow = ["Apache-2.0", "MIT", "BSD-3-Clause"], name = "encoding_rs" },
+]
+
+# --------------------------------------------------------------------------- #
+# Bans — control dependency duplication and deny problematic crates
+# --------------------------------------------------------------------------- #
+[bans]
+# Warn on multiple versions of the same crate (don't hard-block yet; the Rust
+# ecosystem frequently has transient version splits during major bumps).
+multiple-versions = "warn"
+
+# Deny wildcard dependencies (version = "*") — these are unpinned and
+# dangerous for reproducible builds.
+wildcards = "deny"
+
+# Allow specific duplicates that are known ecosystem version-split situations.
+# Each entry silences the multiple-versions warning for that crate.
+allow-wildcard-paths = []
+skip = []
+skip-tree = []
+
+# --------------------------------------------------------------------------- #
+# Sources — restrict where crate code may come from
+# --------------------------------------------------------------------------- #
+[sources]
+# Only allow crates from crates.io by default
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

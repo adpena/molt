@@ -77,6 +77,7 @@ _NATIVE_CODEGEN_ENV_KNOBS = (
     "MOLT_BACKEND_LIBCALL_CALL_CONV",
     "MOLT_BACKEND_ENABLE_VERIFIER",
     "MOLT_DISABLE_STRUCT_ELIDE",
+    "MOLT_PORTABLE",
 )
 _WASM_CODEGEN_ENV_KNOBS = (
     "MOLT_WASM_DATA_BASE",
@@ -7186,11 +7187,15 @@ def build(
     module: str | None = None,
     diagnostics: bool | None = None,
     diagnostics_file: str | None = None,
+    portable: bool = False,
 ) -> int:
     if isinstance(profile, bool):
         profile = "release"
     if profile not in {"dev", "release"}:
         return _fail(f"Invalid build profile: {profile}", json_output, command="build")
+    # --portable: force baseline ISA for cross-machine reproducible codegen.
+    if portable:
+        os.environ["MOLT_PORTABLE"] = "1"
     if file_path and module:
         return _fail(
             "Use a file path or --module, not both.", json_output, command="build"
@@ -14263,6 +14268,7 @@ def _completion_script(shell: str) -> str:
             "--no-deterministic",
             "--deterministic-warn",
             "--no-deterministic-warn",
+            "--portable",
             "--trusted",
             "--no-trusted",
             "--capabilities",
@@ -14775,6 +14781,12 @@ def main() -> int:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Warn instead of failing when deterministic lockfile checks fail.",
+    )
+    build_parser.add_argument(
+        "--portable",
+        action="store_true",
+        default=False,
+        help="Use baseline ISA (no host-specific CPU features). Ensures cross-machine reproducible codegen at ~5-15%% runtime cost.",
     )
     build_parser.add_argument(
         "--trusted",
@@ -15790,6 +15802,7 @@ def main() -> int:
             args.module,
             diagnostics,
             diagnostics_file,
+            portable=getattr(args, "portable", False),
         )
     if args.command == "extension":
         if args.extension_command == "build":

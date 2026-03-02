@@ -123,3 +123,60 @@ jobs:
             echo "=== Testing $example ==="
             PYTHONPATH=src uv run --python 3.12 python3 tools/check_deterministic_runtime.py --runs 3 "$example" || true
           done
+
+      - name: IR verification sweep
+        run: |
+          PYTHONPATH=src uv run --python 3.12 python3 tools/verify_ir_suite.py \
+            --dir tests/differential/basic --examples
+        continue-on-error: true
+
+  formal-verification:
+    name: Formal Methods (Quint Verify)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Quint
+        run: npm install -g @informalsystems/quint
+
+      - name: Quint verify — build determinism
+        run: |
+          quint verify formal/quint/molt_build_determinism.qnt \
+            --invariant=Inv --max-steps=10
+        continue-on-error: true
+
+      - name: Quint verify — runtime determinism
+        run: |
+          quint verify formal/quint/molt_runtime_determinism.qnt \
+            --invariant=Inv --max-steps=10
+        continue-on-error: true
+
+      - name: Quint verify — midend pipeline
+        run: |
+          quint verify formal/quint/molt_midend_pipeline.qnt \
+            --invariant=Inv --max-steps=10
+        continue-on-error: true
+
+  supply-chain:
+    name: Supply Chain Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: cargo deny check
+        run: |
+          if [ -f deny.toml ]; then
+            cargo deny check
+          else
+            echo "SKIP: deny.toml not found"
+          fi
