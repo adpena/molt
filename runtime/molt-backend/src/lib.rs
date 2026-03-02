@@ -1102,15 +1102,26 @@ impl SimpleBackend {
         flag_builder
             .set("probestack_strategy", "inline")
             .unwrap();
+        // MOLT_PORTABLE=1 forces baseline ISA (no host-specific features like AVX2).
+        // This ensures reproducible codegen across different machines at the cost of
+        // ~5-15% runtime performance on modern CPUs with advanced features.
+        let portable = env_setting("MOLT_PORTABLE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
         let isa_builder = if let Some(triple) = target {
             isa::lookup_by_name(triple).unwrap_or_else(|msg| {
                 panic!("target {} is not supported: {}", triple, msg);
             })
+        } else if portable {
+            // Baseline ISA: no auto-detected host features. Produces portable
+            // binaries that run on any CPU supporting the base architecture.
+            cranelift_native::builder_with_options(false).unwrap_or_else(|msg| {
+                panic!("host machine is not supported: {}", msg);
+            })
         } else {
-            // Use builder_with_options(true) to auto-detect host CPU features
-            // (AVX2, SSE4.2, BMI2, POPCNT on x86; NEON, AES, CRC on aarch64).
-            // This allows Cranelift to emit feature-specific instructions like
-            // vpmovmskb (AVX2), popcnt, tzcnt, etc. in the generated code.
+            // Auto-detect host CPU features (AVX2, SSE4.2, BMI2, POPCNT on x86;
+            // NEON, AES, CRC on aarch64). Allows Cranelift to emit feature-specific
+            // instructions like vpmovmskb, popcnt, tzcnt, etc.
             cranelift_native::builder_with_options(true).unwrap_or_else(|msg| {
                 panic!("host machine is not supported: {}", msg);
             })
