@@ -1,0 +1,120 @@
+name: Nightly
+
+on:
+  schedule:
+    # Weekly Monday 4am UTC
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+jobs:
+  regrtest:
+    name: CPython Regrtest (G5)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-nightly-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-nightly-
+
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-nightly-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-nightly-
+
+      - name: Install dependencies
+        run: uv sync --python 3.12
+
+      - name: Build Molt runtime
+        run: cargo build -p molt-runtime --release
+
+      - name: Run CPython regrtest (G5)
+        run: |
+          uv run --python 3.12 python3 tools/cpython_regrtest.py \
+            --uv --uv-python 3.12 --uv-prepare \
+            --timeout 600
+        continue-on-error: true
+
+      - name: Upload regrtest results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regrtest-results
+          path: |
+            regrtest_*.log
+            regrtest_*.json
+
+  determinism-sweep:
+    name: Determinism Full Sweep
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-nightly-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-nightly-
+
+      - name: Install dependencies
+        run: uv sync --python 3.12
+
+      - name: Build Molt runtime
+        run: cargo build -p molt-runtime --release
+
+      - name: Reproducible build sweep
+        run: |
+          for example in examples/*.py; do
+            echo "=== Testing $example ==="
+            mkdir -p /tmp/repro_a /tmp/repro_b
+            MOLT_CACHE=/tmp/repro_a/cache PYTHONPATH=src PYTHONHASHSEED=0 \
+              uv run --python 3.12 python3 -m molt.cli build --profile dev --deterministic --json "$example" > /tmp/repro_a/out.json 2>/dev/null || continue
+            MOLT_CACHE=/tmp/repro_b/cache PYTHONPATH=src PYTHONHASHSEED=0 \
+              uv run --python 3.12 python3 -m molt.cli build --profile dev --deterministic --json "$example" > /tmp/repro_b/out.json 2>/dev/null || continue
+            uv run python tools/check_reproducible_build.py /tmp/repro_a/out.json /tmp/repro_b/out.json
+            rm -rf /tmp/repro_a /tmp/repro_b
+          done
+
+      - name: Deterministic runtime sweep
+        run: |
+          for example in examples/*.py; do
+            echo "=== Testing $example ==="
+            PYTHONPATH=src uv run python tools/check_deterministic_runtime.py --runs 3 "$example" || true
+          done

@@ -16,7 +16,7 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
 ## Legend
 - **Status:** Implemented (done), Partial (some semantics missing), Planned (scoped but not started), Missing (no implementation), Divergent (intentional difference from CPython).
 - **Priority:** P0 (blocker), P1 (high), P2 (medium), P3 (lower).
-- **Tier/Milestone:** `TC*` (type coverage), `SL*` (stdlib), `DB*` (database), `DF*` (dataframe/pandas), `LF*` (language features), `RT*` (runtime), `TL*` (tooling), `M*` (syntax milestones).
+- **Tier/Milestone:** `TC*` (type coverage), `SL*` (stdlib), `DB*` (database), `DF*` (dataframe/pandas), `LF*` (language features), `RT*` (runtime), `TL*` (tooling), `M*` (syntax milestones), `M-GPU-*` (GPU acceleration).
 
 ## Strategic North-Star
 - Performance target: parity with or superiority to Codon on tracked benches.
@@ -749,6 +749,19 @@ Sign-off criteria:
 - Step 5 (I/O + web/DB): capability-gated `os`, `sys`, `pathlib`, `logging`, `time`, `selectors`, `socket`, `ssl`; ASGI/WSGI surface, HTTP parsing, and DB client + pooling/transactions (start sqlite3 + minimal async driver), plus deterministic template rendering.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): close remaining `pathlib` parity gaps (glob edge cases, hidden/root_dir semantics, symlink nuances, and broader PurePath/PurePosixPath API surface) after intrinsic splitroot-aware `isabs`/`parts`/`parents` parity work.
 - Cross-framework note: DB IPC payloads and adapters must remain framework-agnostic to support Django/Flask/FastAPI.
+
+## GPU Acceleration Milestones
+
+| Milestone | Description | Prerequisites | Status |
+|-----------|-------------|---------------|--------|
+| **M-GPU-1** | CPU kernelization: TIR loop classifier + KernelIR → scalar/SIMD/threaded CPU execution | TC2 (type coverage), TL2 (tooling) | Planned |
+| **M-GPU-2** | Columnar runtime: MoltTable/MoltColumn backed by Arrow buffers with SIMD kernels | M-GPU-1, DF1 (dataframe tier 1) | Planned |
+| **M-GPU-3** | libcudf backend: Route DataFrame ops to GPU via Arrow C Device Interface interop | M-GPU-2, cudarc evaluation | Planned |
+| **M-GPU-4** | Custom GPU kernels: Compile kernel-eligible TIR loops to NVPTX/AMDGPU via MLIR | M-GPU-3, mlir-sys evaluation | Planned |
+| **M-GPU-5** | Async GPU integration: GpuFuture as first-class Molt future with GIL-release semantics | M-GPU-4, RT3 (async runtime) | Planned |
+
+**Timeline**: No dates assigned. GPU milestones begin after TC2 + SL2 + TL2 are
+complete. M-GPU-1 is the earliest actionable item and has no GPU hardware dependency.
 
 ## TODO Mirror Ledger (Auto-Generated)
 <!-- BEGIN TODO MIRROR LEDGER -->

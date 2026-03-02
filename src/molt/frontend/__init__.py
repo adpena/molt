@@ -35183,7 +35183,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self._finalize_code_ids()
         self._ensure_code_slots_init()
         funcs_json: list[dict[str, Any]] = []
-        for name, data in self.funcs_map.items():
+        # DETERMINISM: sort to ensure stable output regardless of dict insertion order
+        for name, data in sorted(self.funcs_map.items()):
             funcs_json.append(
                 {
                     "name": name,

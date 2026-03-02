@@ -289,6 +289,56 @@ impl MoltObject {
 }
 
 #[cfg(test)]
+mod bit_layout_contract {
+    //! # NaN-Boxing Bit Layout Contract
+    //!
+    //! All `MoltObject` instances encode their type and payload in a single `u64`
+    //! using the NaN-boxing technique.  The 64-bit IEEE 754 double format reserves
+    //! a range of bit patterns for NaN values; Molt repurposes that space to store
+    //! non-float types.
+    //!
+    //! ## Encoding Scheme
+    //!
+    //! | Type        | Bit pattern                                         |
+    //! |-------------|-----------------------------------------------------|
+    //! | **Float**   | Raw `f64` bits.  NaN inputs are canonicalized to     |
+    //! |             | `CANONICAL_NAN_BITS` (`0x7ff0_0000_0000_0001`).      |
+    //! | **Int**     | `QNAN \| TAG_INT \| (sign-extended 47-bit payload)`. |
+    //! |             | Range: `[-(2^46), 2^46 - 1]`.                        |
+    //! | **Bool**    | `QNAN \| TAG_BOOL \| (0 or 1)`.                     |
+    //! | **None**    | `QNAN \| TAG_NONE \| 0`.                            |
+    //! | **Pending** | `QNAN \| TAG_PENDING \| 0`.                         |
+    //! | **Ptr**     | `QNAN \| TAG_PTR \| (48-bit masked address)`.        |
+    //!
+    //! Tag constants occupy bits 48..50 (`TAG_MASK = 0x0007_0000_0000_0000`):
+    //!   - `TAG_INT     = 0x0001_...`
+    //!   - `TAG_BOOL    = 0x0002_...`
+    //!   - `TAG_NONE    = 0x0003_...`
+    //!   - `TAG_PTR     = 0x0004_...`
+    //!   - `TAG_PENDING = 0x0005_...`
+    //!
+    //! ## Float Detection
+    //!
+    //! A value is a float if and only if its QNAN prefix bits are **not** all set:
+    //! `(bits & QNAN) != QNAN`.  This means every non-NaN `f64` is stored verbatim
+    //! and all tagged types (int, bool, none, ptr, pending) are stored in the NaN
+    //! space with QNAN forced on.
+    //!
+    //! ## Cross-Architecture Guarantees
+    //!
+    //! - **NaN canonicalization** ensures deterministic float representation across
+    //!   CPUs.  Any NaN input (signaling, quiet, positive, negative) maps to the
+    //!   single `CANONICAL_NAN_BITS` pattern.
+    //! - **48-bit pointer mask** (`POINTER_MASK = 0x0000_FFFF_FFFF_FFFF`) with
+    //!   sign extension via `canonical_addr_from_masked()` handles canonical
+    //!   addressing on x86-64, where the upper 16 bits must match bit 47.
+    //! - **Integer range** is bounded by the 47-bit inline representation width.
+    //!   Values outside `[-(2^46), 2^46 - 1]` are silently truncated by `from_int`.
+    //!   The sign extension logic in `as_int()` recovers the original value for any
+    //!   input within the valid range.
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

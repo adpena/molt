@@ -6,11 +6,14 @@ use cranelift::prelude::*;
 use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::OnceLock;
 
 pub mod wasm;
+
+#[cfg(feature = "egraphs")]
+pub mod egraph_simplify;
 
 const QNAN: u64 = 0x7ff8_0000_0000_0000;
 const TAG_INT: u64 = 0x0001_0000_0000_0000;
@@ -925,7 +928,7 @@ fn drain_cleanup_entry_tracked(
     cleanup
 }
 
-#[derive(Clone, Copy, Hash, Eq, PartialEq, Debug)]
+#[derive(Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
 pub(crate) enum TrampolineKind {
     Plain,
     Generator,
@@ -933,7 +936,7 @@ pub(crate) enum TrampolineKind {
     AsyncGen,
 }
 
-#[derive(Clone, Hash, Eq, PartialEq)]
+#[derive(Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 struct TrampolineKey {
     name: String,
     arity: usize,
@@ -954,8 +957,10 @@ pub(crate) struct TrampolineSpec {
 pub struct SimpleBackend {
     module: ObjectModule,
     ctx: Context,
-    trampoline_ids: HashMap<TrampolineKey, cranelift_module::FuncId>,
-    data_pool: HashMap<Vec<u8>, cranelift_module::DataId>,
+    // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
+    trampoline_ids: BTreeMap<TrampolineKey, cranelift_module::FuncId>,
+    // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
+    data_pool: BTreeMap<Vec<u8>, cranelift_module::DataId>,
     next_data_id: u64,
 }
 
@@ -1125,15 +1130,21 @@ impl SimpleBackend {
         Self {
             module,
             ctx,
-            trampoline_ids: HashMap::new(),
-            data_pool: HashMap::new(),
+            trampoline_ids: BTreeMap::new(),
+            data_pool: BTreeMap::new(),
             next_data_id: 0,
         }
     }
 
+    /// Returns a string describing the target ISA triple and flags for build metadata.
+    pub fn target_info(&self) -> String {
+        let isa = self.module.isa();
+        format!("triple={} flags={:?}", isa.triple(), isa.flags())
+    }
+
     fn intern_data_segment(
         module: &mut ObjectModule,
-        data_pool: &mut HashMap<Vec<u8>, cranelift_module::DataId>,
+        data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,
         next_data_id: &mut u64,
         bytes: &[u8],
     ) -> cranelift_module::DataId {
@@ -1169,8 +1180,10 @@ impl SimpleBackend {
             .unwrap_or(cfg!(debug_assertions));
         let defined_functions: HashSet<String> =
             ir.functions.iter().map(|func| func.name.clone()).collect();
-        let mut task_kinds: HashMap<String, TrampolineKind> = HashMap::new();
-        let mut task_closure_sizes: HashMap<String, i64> = HashMap::new();
+        // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
+        let mut task_kinds: BTreeMap<String, TrampolineKind> = BTreeMap::new();
+        // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
+        let mut task_closure_sizes: BTreeMap<String, i64> = BTreeMap::new();
         for func_ir in &ir.functions {
             let mut func_obj_names: HashMap<String, String> = HashMap::new();
             let mut const_values: HashMap<String, i64> = HashMap::new();
@@ -1275,7 +1288,7 @@ impl SimpleBackend {
 
     fn ensure_trampoline(
         module: &mut ObjectModule,
-        trampoline_ids: &mut HashMap<TrampolineKey, cranelift_module::FuncId>,
+        trampoline_ids: &mut BTreeMap<TrampolineKey, cranelift_module::FuncId>,
         func_name: &str,
         linkage: Linkage,
         spec: TrampolineSpec,
@@ -1613,8 +1626,8 @@ impl SimpleBackend {
     fn compile_func(
         &mut self,
         func_ir: FunctionIR,
-        task_kinds: &HashMap<String, TrampolineKind>,
-        task_closure_sizes: &HashMap<String, i64>,
+        task_kinds: &BTreeMap<String, TrampolineKind>,
+        task_closure_sizes: &BTreeMap<String, i64>,
         defined_functions: &HashSet<String>,
         emit_traces: bool,
     ) {
