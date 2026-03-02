@@ -47,10 +47,14 @@ def build_program(source: str, profile: str = "dev") -> str:
 
     build_info = json.loads(result.stdout)
 
-    # Extract artifact path
+    # Extract artifact path (molt.cli wraps output in a "data" envelope)
     for key in ("output", "artifact", "binary", "path", "output_path"):
         if key in build_info:
             return build_info[key]
+    if "data" in build_info and isinstance(build_info["data"], dict):
+        for key in ("output", "artifact", "binary", "path"):
+            if key in build_info["data"]:
+                return build_info["data"][key]
     if "build" in build_info:
         for key in ("output", "artifact", "binary", "path"):
             if key in build_info["build"]:
