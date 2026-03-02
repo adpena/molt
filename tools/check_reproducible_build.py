@@ -2,10 +2,14 @@
 """Verify that two independent builds produce bit-identical artifacts.
 
 Usage:
-    python tools/check_reproducible_build.py build1.json build2.json
+    python tools/check_reproducible_build.py [--object] build1.json build2.json
 
 Each JSON file should be the output of `molt.cli build --json`, containing
 an "output" or "artifact" key with the path to the compiled binary.
+
+Flags:
+    --object  Compare .o object files instead of linked binaries.
+              Use this to avoid linker-injected nondeterminism (macOS LC_UUID).
 
 Exit codes:
     0 — builds are reproducible (SHA256 match)
@@ -13,6 +17,7 @@ Exit codes:
     2 — usage error
 """
 
+import argparse
 import hashlib
 import json
 import sys
@@ -39,6 +44,11 @@ def extract_artifact_path(build_json: dict, prefer_object: bool = False) -> str:
     if "data" in build_json and isinstance(build_json["data"], dict):
         data = build_json["data"]
 
+    # Check status field — bail early if build failed
+    status = build_json.get("status") or data.get("status")
+    if status and status != "ok":
+        raise KeyError(f"Build reported non-ok status: {status}")
+
     # If prefer_object, try to find the object file first
     if prefer_object:
         artifacts = data.get("artifacts", {})
@@ -60,27 +70,35 @@ def extract_artifact_path(build_json: dict, prefer_object: bool = False) -> str:
 
 
 def main() -> int:
-    if len(sys.argv) < 3:
-        print(__doc__, file=sys.stderr)
-        return 2
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("build1", help="First build JSON file")
+    parser.add_argument("build2", help="Second build JSON file")
+    parser.add_argument(
+        "--object",
+        action="store_true",
+        help="Compare .o files instead of linked binaries (avoids linker UUID nondeterminism)",
+    )
+    args = parser.parse_args()
 
-    path1, path2 = sys.argv[1], sys.argv[2]
-    # --object flag: compare .o files instead of linked binaries to avoid
-    # linker-injected nondeterminism (macOS ld injects random UUIDs)
-    prefer_object = "--object" in sys.argv
+    for label, path in [("Build 1", args.build1), ("Build 2", args.build2)]:
+        if not Path(path).exists():
+            print(f"ERROR: {label} JSON file not found: {path}", file=sys.stderr)
+            return 2
 
     try:
-        with open(path1) as f:
+        with open(args.build1) as f:
             build1 = json.load(f)
-        with open(path2) as f:
+        with open(args.build2) as f:
             build2 = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+    except json.JSONDecodeError as e:
+        print(f"ERROR: Invalid JSON: {e}", file=sys.stderr)
         return 2
 
     try:
-        artifact1 = extract_artifact_path(build1, prefer_object=prefer_object)
-        artifact2 = extract_artifact_path(build2, prefer_object=prefer_object)
+        artifact1 = extract_artifact_path(build1, prefer_object=args.object)
+        artifact2 = extract_artifact_path(build2, prefer_object=args.object)
     except KeyError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
@@ -95,18 +113,25 @@ def main() -> int:
     hash1 = sha256_file(artifact1)
     hash2 = sha256_file(artifact2)
 
+    size1 = Path(artifact1).stat().st_size
+    size2 = Path(artifact2).stat().st_size
+
     print(f"Build 1: {artifact1}")
-    print(f"  SHA256: {hash1}")
+    print(f"  SHA256: {hash1}  ({size1} bytes)")
     print(f"Build 2: {artifact2}")
-    print(f"  SHA256: {hash2}")
+    print(f"  SHA256: {hash2}  ({size2} bytes)")
 
     if hash1 == hash2:
         print("\nREPRODUCIBLE: Artifacts are bit-identical.")
         return 0
     else:
         print("\nFAILED: Artifacts differ!")
-        print(f"  Size 1: {Path(artifact1).stat().st_size} bytes")
-        print(f"  Size 2: {Path(artifact2).stat().st_size} bytes")
+        if size1 != size2:
+            print(
+                f"  Size differs: {size1} vs {size2} bytes ({abs(size1 - size2)} byte delta)"
+            )
+        else:
+            print(f"  Same size ({size1} bytes) but different content")
         return 1
 
 

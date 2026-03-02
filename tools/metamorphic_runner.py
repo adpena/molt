@@ -12,6 +12,7 @@ Usage as library:
     assert result.equivalent
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -32,6 +33,21 @@ class CompareResult:
     error: str | None = None
 
 
+def _extract_binary(build_json: dict) -> str | None:
+    """Extract the binary path from build JSON, unwrapping data envelope."""
+    data = build_json
+    if "data" in build_json and isinstance(build_json["data"], dict):
+        data = build_json["data"]
+    for key in ("output", "artifact", "binary", "path", "output_path"):
+        if key in data:
+            return data[key]
+    if "build" in data and isinstance(data["build"], dict):
+        for key in ("output", "artifact", "binary", "path"):
+            if key in data["build"]:
+                return data["build"][key]
+    return None
+
+
 class MetamorphicRunner:
     """Compile and run two Python sources, comparing output."""
 
@@ -40,7 +56,7 @@ class MetamorphicRunner:
         self.timeout = timeout
         self.python = sys.executable
         self.env = os.environ.copy()
-        self.env["PYTHONPATH"] = "src"
+        self.env.setdefault("PYTHONPATH", "src")
         self.env["PYTHONHASHSEED"] = "0"
         self.env["MOLT_DETERMINISTIC"] = "1"
 
@@ -75,37 +91,26 @@ class MetamorphicRunner:
             if build_result.returncode != 0:
                 return "", "", f"Build failed for {label}: {build_result.stderr[:500]}"
 
-            # Extract binary path from JSON output
-            import json
-
             try:
                 build_info = json.loads(build_result.stdout)
             except json.JSONDecodeError:
-                return "", "", f"Invalid build JSON for {label}"
+                return (
+                    "",
+                    "",
+                    f"Invalid build JSON for {label}: {build_result.stdout[:200]}",
+                )
 
-            binary = None
-            for key in ("output", "artifact", "binary", "path", "output_path"):
-                if key in build_info:
-                    binary = build_info[key]
-                    break
-            # molt.cli wraps output in a "data" envelope
-            if (
-                binary is None
-                and "data" in build_info
-                and isinstance(build_info["data"], dict)
-            ):
-                for key in ("output", "artifact", "binary", "path"):
-                    if key in build_info["data"]:
-                        binary = build_info["data"][key]
-                        break
-            if binary is None and "build" in build_info:
-                for key in ("output", "artifact", "binary", "path"):
-                    if key in build_info["build"]:
-                        binary = build_info["build"][key]
-                        break
-
+            binary = _extract_binary(build_info)
             if binary is None:
-                return "", "", f"Cannot find binary in build output for {label}"
+                return (
+                    "",
+                    "",
+                    f"Cannot find binary in build output for {label}. "
+                    f"Keys: {list(build_info.keys())}",
+                )
+
+            if not Path(binary).exists():
+                return "", "", f"Binary not found at {binary} for {label}"
 
             # Run
             run_result = subprocess.run(

@@ -101,20 +101,25 @@ jobs:
 
       - name: Reproducible build sweep
         run: |
+          failures=0
           for example in examples/*.py; do
             echo "=== Testing $example ==="
-            mkdir -p /tmp/repro_a /tmp/repro_b
-            MOLT_CACHE=/tmp/repro_a/cache PYTHONPATH=src PYTHONHASHSEED=0 \
-              uv run --python 3.12 python3 -m molt.cli build --profile dev --deterministic --json "$example" > /tmp/repro_a/out.json 2>/dev/null || continue
-            MOLT_CACHE=/tmp/repro_b/cache PYTHONPATH=src PYTHONHASHSEED=0 \
-              uv run --python 3.12 python3 -m molt.cli build --profile dev --deterministic --json "$example" > /tmp/repro_b/out.json 2>/dev/null || continue
-            uv run python tools/check_reproducible_build.py /tmp/repro_a/out.json /tmp/repro_b/out.json
-            rm -rf /tmp/repro_a /tmp/repro_b
+            mkdir -p /tmp/repro_sweep
+            # Use --emit obj to skip linker, separate caches
+            MOLT_CACHE=/tmp/repro_sweep/cache_a PYTHONPATH=src PYTHONHASHSEED=0 \
+              uv run --python 3.12 python3 -m molt.cli build --profile dev --emit obj --deterministic --json "$example" > /tmp/repro_sweep/a.json 2>/dev/null || { echo "SKIP: build failed"; continue; }
+            rm -rf /tmp/repro_sweep/cache_a ~/.molt/build/
+            MOLT_CACHE=/tmp/repro_sweep/cache_b PYTHONPATH=src PYTHONHASHSEED=0 \
+              uv run --python 3.12 python3 -m molt.cli build --profile dev --emit obj --deterministic --json "$example" > /tmp/repro_sweep/b.json 2>/dev/null || { echo "SKIP: build failed"; continue; }
+            uv run --python 3.12 python3 tools/check_reproducible_build.py --object /tmp/repro_sweep/a.json /tmp/repro_sweep/b.json || failures=$((failures + 1))
+            rm -rf /tmp/repro_sweep
           done
+          echo "Reproducible build sweep: $failures failures"
+          [ "$failures" -eq 0 ]
 
       - name: Deterministic runtime sweep
         run: |
           for example in examples/*.py; do
             echo "=== Testing $example ==="
-            PYTHONPATH=src uv run python tools/check_deterministic_runtime.py --runs 3 "$example" || true
+            PYTHONPATH=src uv run --python 3.12 python3 tools/check_deterministic_runtime.py --runs 3 "$example" || true
           done
