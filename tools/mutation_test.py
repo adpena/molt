@@ -286,6 +286,85 @@ class CondFlip(ast.NodeTransformer):
         return node
 
 
+class LogicSwap(ast.NodeTransformer):
+    """Replace boolean operators: ``and`` <-> ``or``."""
+
+    name = "LogicSwap"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.mutations: list[str] = []
+
+    def visit_BoolOp(self, node: ast.BoolOp) -> ast.BoolOp:
+        self.generic_visit(node)
+        if isinstance(node.op, ast.And):
+            self.mutations.append(f"line {node.lineno}: And -> Or")
+            node.op = ast.Or()
+        elif isinstance(node.op, ast.Or):
+            self.mutations.append(f"line {node.lineno}: Or -> And")
+            node.op = ast.And()
+        return node
+
+
+class ContainerEmpty(ast.NodeTransformer):
+    """Replace non-empty list/dict/set literals with empty ones."""
+
+    name = "ContainerEmpty"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.mutations: list[str] = []
+
+    def visit_List(self, node: ast.List) -> ast.List:
+        self.generic_visit(node)
+        if node.elts and isinstance(node.ctx, ast.Load):
+            self.mutations.append(
+                f"line {node.lineno}: emptied list ({len(node.elts)} elts)"
+            )
+            node.elts = []
+        return node
+
+    def visit_Dict(self, node: ast.Dict) -> ast.Dict:
+        self.generic_visit(node)
+        if node.keys:
+            self.mutations.append(
+                f"line {node.lineno}: emptied dict ({len(node.keys)} keys)"
+            )
+            node.keys = []
+            node.values = []
+        return node
+
+    def visit_Set(self, node: ast.Set) -> ast.Set:
+        self.generic_visit(node)
+        # Can't create empty set literal `{}` (that's a dict), so skip
+        # sets with only 1 element to avoid empty set issues.
+        if len(node.elts) > 1:
+            self.mutations.append(f"line {node.lineno}: reduced set to 1 elt")
+            node.elts = [node.elts[0]]
+        return node
+
+
+class AssignDrop(ast.NodeTransformer):
+    """Drop assignment statements (replace with pass)."""
+
+    name = "AssignDrop"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.mutations: list[str] = []
+        self._count = 0
+
+    def visit_Assign(self, node: ast.Assign) -> ast.AST:
+        self.generic_visit(node)
+        # Only drop every other assignment to avoid breaking too much.
+        self._count += 1
+        if self._count % 2 == 0:
+            self.mutations.append(f"line {node.lineno}: dropped assignment")
+            replacement = ast.Pass()
+            return ast.copy_location(replacement, node)
+        return node
+
+
 # All operators in application order.
 ALL_OPERATORS: list[type[ast.NodeTransformer]] = [
     ArithSwap,
@@ -295,6 +374,9 @@ ALL_OPERATORS: list[type[ast.NodeTransformer]] = [
     StringMutate,
     ReturnDrop,
     CondFlip,
+    LogicSwap,
+    ContainerEmpty,
+    AssignDrop,
 ]
 
 
@@ -640,13 +722,16 @@ def main() -> int:
             each mutant with Molt, and checks whether the output changes.
 
             Mutation operators:
-              ArithSwap     Replace + with -, * with //, etc.
-              CompSwap      Replace == with !=, < with >=, etc.
-              ConstPerturb  Change integer literals by +/-1
-              BoolFlip      Replace True with False and vice versa
-              StringMutate  Append/remove characters in string literals
-              ReturnDrop    Remove return statements
-              CondFlip      Negate if-conditions
+              ArithSwap      Replace + with -, * with //, etc.
+              CompSwap       Replace == with !=, < with >=, etc.
+              ConstPerturb   Change integer literals by +/-1
+              BoolFlip       Replace True with False and vice versa
+              StringMutate   Append/remove characters in string literals
+              ReturnDrop     Remove return statements
+              CondFlip       Negate if-conditions
+              LogicSwap      Replace and with or and vice versa
+              ContainerEmpty Empty list/dict literals, reduce set literals
+              AssignDrop     Drop every other assignment statement
         """),
     )
     default_source = str(
