@@ -198,10 +198,23 @@ fn box_ptr_value(builder: &mut FunctionBuilder, val: Value) -> Value {
 }
 
 fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: FuncRef) {
-    // Keep ref-adjust control flow linear. Hidden branch blocks here can invalidate
-    // block-local tracked-value carry if callers do not explicitly propagate tracking.
-    // The runtime ref helpers already no-op for non-pointer boxed values.
-    let _ = builder.ins().call(obj_ref_fn, &[val]);
+    // Inline tag check: only call the runtime for pointer-tagged values.
+    // Non-pointers (int, bool, none, pending) are NaN-boxed inline and
+    // never touch the heap — skip the function call entirely.
+    let masked = builder.ins().band_imm(val, (QNAN | TAG_MASK) as i64);
+    let ptr_tag = builder.ins().iconst(types::I64, (QNAN | TAG_PTR) as i64);
+    let is_ptr = builder
+        .ins()
+        .icmp(IntCC::Equal, masked, ptr_tag);
+    let call_block = builder.create_block();
+    let merge_block = builder.create_block();
+    builder.ins().brif(is_ptr, call_block, &[], merge_block, &[]);
+    builder.switch_to_block(call_block);
+    builder.seal_block(call_block);
+    builder.ins().call(obj_ref_fn, &[val]);
+    builder.ins().jump(merge_block, &[]);
+    builder.switch_to_block(merge_block);
+    builder.seal_block(merge_block);
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
@@ -242,6 +255,12 @@ pub struct OpIR {
     pub task_kind: Option<String>,
     #[serde(default)]
     pub container_type: Option<String>,
+    #[serde(default)]
+    pub stack_eligible: Option<bool>,
+    #[serde(default)]
+    pub fast_float: Option<bool>,
+    #[serde(default)]
+    pub type_hint: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -692,6 +711,9 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
                                 fast_int: None,
                                 task_kind: None,
                                 container_type: None,
+                                stack_eligible: None,
+                                fast_float: None,
+                                type_hint: None,
                             });
                         }
                     }
@@ -12680,20 +12702,37 @@ impl SimpleBackend {
                 }
                 "alloc" => {
                     let size = op.value.unwrap();
-                    let iconst = builder.ins().iconst(types::I64, size);
-
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64)); // Returns object bits
-                    let callee = self
-                        .module
-                        .declare_function("molt_alloc", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[iconst]);
-                    let res = builder.inst_results(call)[0];
                     let out_name = op.out.unwrap();
-                    def_var_named(&mut builder, &vars, out_name, res);
+
+                    if op.stack_eligible.unwrap_or(false) && size > 0 && size <= 4096 {
+                        // Stack allocation: non-escaping object proven by escape analysis.
+                        // Allocate on the stack frame instead of calling molt_alloc.
+                        let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            size as u32,
+                            0,
+                        ));
+                        let addr = builder.ins().stack_addr(types::I64, slot, 0);
+                        // Box the stack address as TAG_PTR.
+                        let tag = builder.ins().iconst(types::I64, (QNAN | TAG_PTR) as i64);
+                        let res = builder.ins().bor(addr, tag);
+                        def_var_named(&mut builder, &vars, out_name, res);
+                    } else {
+                        let iconst = builder.ins().iconst(types::I64, size);
+
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_alloc", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee =
+                            self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[iconst]);
+                        let res = builder.inst_results(call)[0];
+                        def_var_named(&mut builder, &vars, out_name, res);
+                    }
                 }
                 "alloc_class" => {
                     let size = op.value.unwrap();
@@ -13479,7 +13518,12 @@ impl SimpleBackend {
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
+
+                    let site_id_val = stable_ic_site_id(func_ir.name.as_str(), op_idx, "setattr");
+                    let site_id_const = builder.ins().iconst(types::I64, site_id_val as i64);
+
                     let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -13487,12 +13531,12 @@ impl SimpleBackend {
                     sig.returns.push(AbiParam::new(types::I64));
                     let callee = self
                         .module
-                        .declare_function("molt_set_attr_object", Linkage::Import, &sig)
+                        .declare_function("molt_set_attr_object_ic", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
-                        .call(local_callee, &[*obj, attr_ptr, attr_len, *val]);
+                        .call(local_callee, &[*obj, attr_ptr, attr_len, *val, site_id_const]);
                     let res = builder.inst_results(call)[0];
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }

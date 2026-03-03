@@ -41,7 +41,8 @@ theorem absEvalBinOp_sound (op : BinOp) (a b : AbsVal) (va vb : Value)
       simp [absEvalBinOp, hr, AbsVal.concretizes]
     | overdefined =>
       simp [absEvalBinOp, AbsVal.concretizes]
-  | overdefined => simp [absEvalBinOp, AbsVal.concretizes]
+  | overdefined =>
+    cases b <;> simp [absEvalBinOp, AbsVal.concretizes]
 
 /-- Abstract unary op evaluation is sound. -/
 theorem absEvalUnOp_sound (op : UnOp) (a : AbsVal) (va : Value)
@@ -57,58 +58,79 @@ theorem absEvalUnOp_sound (op : UnOp) (a : AbsVal) (va : Value)
     simp [absEvalUnOp, hr, AbsVal.concretizes]
   | overdefined => simp [absEvalUnOp, AbsVal.concretizes]
 
+/-- Helper: absEvalBinOp on two known values reduces to the evalBinOp result. -/
+private theorem absEvalBinOp_known (op : BinOp) (va vb : Value) :
+    absEvalBinOp op (.known va) (.known vb) =
+      match evalBinOp op va vb with
+      | some v => .known v
+      | none => .overdefined := rfl
+
+/-- Helper: absEvalUnOp on a known value reduces to the evalUnOp result. -/
+private theorem absEvalUnOp_known (op : UnOp) (va : Value) :
+    absEvalUnOp op (.known va) =
+      match evalUnOp op va with
+      | some v => .known v
+      | none => .overdefined := rfl
+
+/-- Helper: absEvalBinOp with overdefined first arg, any second. -/
+private theorem absEvalBinOp_overdefined_ne_known (op : BinOp) (b : AbsVal) (v : Value) :
+    absEvalBinOp op .overdefined b ≠ .known v := by
+  cases b <;> simp [absEvalBinOp]
+
+/-- Helper: absEvalBinOp with unknown first arg, any second. -/
+private theorem absEvalBinOp_unknown_ne_known (op : BinOp) (b : AbsVal) (cv : Value) :
+    absEvalBinOp op .unknown b ≠ .known cv := by
+  cases b <;> simp [absEvalBinOp]
+
 /-- Abstract expression evaluation is sound: if the abstract value is known,
     then the concrete evaluation agrees. -/
 theorem absEvalExpr_sound (σ : AbsEnv) (ρ : Env) (e : Expr)
-    (hsound : AbsEnvSound σ ρ) (cv : Value)
-    (ha : absEvalExpr σ e = .known cv) :
-    evalExpr ρ e = some cv := by
+    (hsound : AbsEnvSound σ ρ) :
+    ∀ cv, absEvalExpr σ e = .known cv → evalExpr ρ e = some cv := by
   induction e with
   | val v =>
-    simp [absEvalExpr] at ha
-    simp [evalExpr, ha]
+    intro cv hcv
+    simp [absEvalExpr] at hcv
+    simp [evalExpr, hcv]
   | var x =>
-    simp [absEvalExpr] at ha
-    -- ha : σ x = .known cv
-    -- We need: ρ x = some cv
-    -- From hsound: ρ x = some v → concretizes (σ x) v
-    -- From ha: σ x = .known cv, so concretizes (.known cv) v means cv = v
-    -- But we need to know ρ x is some. If σ x = .known cv and σ is sound,
-    -- it means whenever ρ x has a value, that value is cv.
-    -- However, ρ x could be none. We need to strengthen or use a different approach.
-    -- For soundness of the SCCP *pass*, we need the abstract env to be
-    -- computed from the actual execution, which guarantees ρ x is defined.
+    intro cv hcv
+    simp [absEvalExpr] at hcv
     sorry  -- requires definedness assumption (see note below)
   | bin op a b iha ihb =>
-    simp only [absEvalExpr] at ha
-    -- Need to case-split on absEvalExpr σ a and absEvalExpr σ b
+    intro cv hcv
+    simp only [absEvalExpr] at hcv
     match ha_e : absEvalExpr σ a, hb_e : absEvalExpr σ b with
     | .known va, .known vb =>
-      simp [absEvalBinOp] at ha
+      rw [ha_e, hb_e, absEvalBinOp_known] at hcv
       match hr : evalBinOp op va vb with
       | some vr =>
-        simp [hr] at ha
-        have iha' := iha ha_e
-        have ihb' := ihb hb_e
-        simp [evalExpr, iha', ihb', hr, ha]
-      | none => simp [hr] at ha
-    | .unknown, _ => simp [absEvalBinOp] at ha
-    | _, .unknown => cases absEvalExpr σ a <;> simp [absEvalBinOp] at ha
-    | .overdefined, _ => simp [absEvalBinOp] at ha
-    | .known _, .overdefined => simp [absEvalBinOp] at ha
+        simp [hr] at hcv; subst hcv
+        have ha' := iha va ha_e
+        have hb' := ihb vb hb_e
+        simp [evalExpr, ha', hb', hr]
+      | none => simp [hr] at hcv
+    | .known _, .unknown => rw [ha_e, hb_e] at hcv; simp [absEvalBinOp] at hcv
+    | .known _, .overdefined => rw [ha_e, hb_e] at hcv; simp [absEvalBinOp] at hcv
+    | .unknown, _ =>
+      rw [ha_e] at hcv
+      exact absurd hcv (absEvalBinOp_unknown_ne_known op _ cv)
+    | .overdefined, _ =>
+      rw [ha_e] at hcv
+      exact absurd hcv (absEvalBinOp_overdefined_ne_known op _ cv)
   | un op a iha =>
-    simp only [absEvalExpr] at ha
+    intro cv hcv
+    simp only [absEvalExpr] at hcv
     match ha_e : absEvalExpr σ a with
     | .known va =>
-      simp [absEvalUnOp] at ha
+      rw [ha_e, absEvalUnOp_known] at hcv
       match hr : evalUnOp op va with
       | some vr =>
-        simp [hr] at ha
-        have iha' := iha ha_e
-        simp [evalExpr, iha', hr, ha]
-      | none => simp [hr] at ha
-    | .unknown => simp [absEvalUnOp] at ha
-    | .overdefined => simp [absEvalUnOp] at ha
+        simp [hr] at hcv; subst hcv
+        have ha' := iha va ha_e
+        simp [evalExpr, ha', hr]
+      | none => simp [hr] at hcv
+    | .unknown => rw [ha_e] at hcv; simp [absEvalUnOp] at hcv
+    | .overdefined => rw [ha_e] at hcv; simp [absEvalUnOp] at hcv
 
 /-
   NOTE on the `sorry` in the var case:
@@ -147,14 +169,10 @@ theorem absEnvSound_set (σ : AbsEnv) (ρ : Env) (x : Var) (v : Value) (a : AbsV
     (hconc : AbsVal.concretizes a v) :
     AbsEnvSound (σ.set x a) (ρ.set x v) := by
   intro y w hy
-  simp [AbsEnv.set, Env.set] at *
-  split at hy
-  · -- y = x: hy says some v = some w, so v = w
-    next heq =>
-      simp [heq] at hy
-      subst hy
-      exact hconc
-  · -- y ≠ x: use original soundness
+  by_cases heq : y = x
+  · simp [heq, AbsEnv.set, Env.set] at hy ⊢
+    cases hy; exact hconc
+  · simp [heq, AbsEnv.set, Env.set] at hy ⊢
     exact hsound y w hy
 
 end MoltTIR

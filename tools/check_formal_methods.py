@@ -29,17 +29,44 @@ QUINT_DIR = FORMAL_DIR / "quint"
 EXPECTED_LEAN_FILES = [
     "lakefile.lean",
     "lean-toolchain",
+    # Core
     "MoltTIR/Basic.lean",
     "MoltTIR/Types.lean",
     "MoltTIR/Syntax.lean",
     "MoltTIR/WellFormed.lean",
+    # Semantics
     "MoltTIR/Semantics/State.lean",
     "MoltTIR/Semantics/EvalExpr.lean",
     "MoltTIR/Semantics/ExecBlock.lean",
     "MoltTIR/Semantics/ExecFunc.lean",
     "MoltTIR/Semantics/Determinism.lean",
+    # CFG
+    "MoltTIR/CFG.lean",
+    "MoltTIR/CFG/Loops.lean",
+    # Passes
+    "MoltTIR/Passes/Effects.lean",
     "MoltTIR/Passes/ConstFold.lean",
     "MoltTIR/Passes/ConstFoldCorrect.lean",
+    "MoltTIR/Passes/DCE.lean",
+    "MoltTIR/Passes/DCECorrect.lean",
+    "MoltTIR/Passes/Lattice.lean",
+    "MoltTIR/Passes/SCCP.lean",
+    "MoltTIR/Passes/SCCPCorrect.lean",
+    "MoltTIR/Passes/SCCPMulti.lean",
+    "MoltTIR/Passes/SCCPMultiCorrect.lean",
+    "MoltTIR/Passes/CSE.lean",
+    "MoltTIR/Passes/CSECorrect.lean",
+    "MoltTIR/Passes/LICM.lean",
+    "MoltTIR/Passes/LICMCorrect.lean",
+    "MoltTIR/Passes/Pipeline.lean",
+    # Correctness proofs
+    "MoltTIR/Semantics/BlockCorrect.lean",
+    "MoltTIR/Semantics/FuncCorrect.lean",
+    # Runtime verification
+    "MoltTIR/Runtime/NanBox.lean",
+    "MoltTIR/Runtime/Refcount.lean",
+    "MoltTIR/Runtime/WasmNative.lean",
+    # Tests
     "MoltTIR/Tests/Smoke.lean",
 ]
 
@@ -47,12 +74,14 @@ EXPECTED_LEAN_FILES = [
 EXPECTED_QUINT_FILES = [
     "molt_build_determinism.qnt",
     "molt_runtime_determinism.qnt",
+    "molt_midend_pipeline.qnt",
 ]
 
 # Quint models and their invariants to verify
 QUINT_MODELS = [
     ("molt_build_determinism.qnt", "Inv"),
     ("molt_runtime_determinism.qnt", "Inv"),
+    ("molt_midend_pipeline.qnt", "Inv"),
 ]
 
 

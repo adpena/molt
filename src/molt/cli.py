@@ -14846,6 +14846,15 @@ def main() -> int:
     build_parser.add_argument(
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
+    build_parser.add_argument(
+        "--optimize",
+        choices=["min", "medium", "max"],
+        default=None,
+        help=(
+            "Optimization level: min (fastest compile, least optimization), "
+            "medium (default), max (slowest compile, full optimization)."
+        ),
+    )
 
     extension_parser = subparsers.add_parser(
         "extension",
@@ -15772,6 +15781,13 @@ def main() -> int:
             )
         if not args.file and not args.module:
             return _fail("Missing entry file or module.", args.json, command="build")
+        optimize_level = getattr(args, "optimize", None)
+        if optimize_level == "min":
+            os.environ["MOLT_MIDEND_PROFILE"] = "dev"
+            os.environ["MOLT_MIDEND_FORCED_TIER"] = "C"
+        elif optimize_level == "max":
+            os.environ["MOLT_MIDEND_PROFILE"] = "release"
+            os.environ["MOLT_MIDEND_FORCED_TIER"] = "A"
         return build(
             args.file,
             target,
