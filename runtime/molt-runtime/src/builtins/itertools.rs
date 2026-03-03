@@ -61,6 +61,11 @@ static ZIP_LONGEST_NEXT_FN: AtomicU64 = AtomicU64::new(0);
 
 fn builtin_func_bits(_py: &PyToken<'_>, slot: &AtomicU64, fn_ptr: u64, arity: u64) -> u64 {
     init_atomic_bits(_py, slot, || {
+        if cfg!(target_arch = "wasm32")
+            && std::env::var("MOLT_WASM_BUILTIN_FUNC_DEBUG").as_deref() == Ok("1")
+        {
+            eprintln!("molt wasm builtin_func_bits:itertools fn=0x{fn_ptr:x} arity={arity}");
+        }
         let ptr = alloc_function_obj(_py, fn_ptr, arity);
         if ptr.is_null() {
             MoltObject::none().bits()

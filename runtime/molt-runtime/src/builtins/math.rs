@@ -2401,7 +2401,8 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
                             vec_sum = f64x2_add(vec_sum, f64x2_mul(v, v));
                             i += 2;
                         }
-                        sum_sq = f64x2_extract_lane::<0>(vec_sum) + f64x2_extract_lane::<1>(vec_sum);
+                        sum_sq =
+                            f64x2_extract_lane::<0>(vec_sum) + f64x2_extract_lane::<1>(vec_sum);
                     }
                 }
             }
@@ -2469,8 +2470,12 @@ pub extern "C" fn molt_math_dist(p_bits: u64, q_bits: u64) -> u64 {
                     use std::arch::x86_64::*;
                     let mut vec_sum = _mm256_setzero_pd();
                     while i + 4 <= n {
-                        let vp = _mm256_loadu_pd([p_vals[i], p_vals[i+1], p_vals[i+2], p_vals[i+3]].as_ptr());
-                        let vq = _mm256_loadu_pd([q_vals[i], q_vals[i+1], q_vals[i+2], q_vals[i+3]].as_ptr());
+                        let vp = _mm256_loadu_pd(
+                            [p_vals[i], p_vals[i + 1], p_vals[i + 2], p_vals[i + 3]].as_ptr(),
+                        );
+                        let vq = _mm256_loadu_pd(
+                            [q_vals[i], q_vals[i + 1], q_vals[i + 2], q_vals[i + 3]].as_ptr(),
+                        );
                         let diff = _mm256_sub_pd(vp, vq);
                         vec_sum = _mm256_add_pd(vec_sum, _mm256_mul_pd(diff, diff));
                         i += 4;
@@ -2484,8 +2489,8 @@ pub extern "C" fn molt_math_dist(p_bits: u64, q_bits: u64) -> u64 {
                     use std::arch::x86_64::*;
                     let mut vec_sum = _mm_setzero_pd();
                     while i + 2 <= n {
-                        let vp = _mm_loadu_pd([p_vals[i], p_vals[i+1]].as_ptr());
-                        let vq = _mm_loadu_pd([q_vals[i], q_vals[i+1]].as_ptr());
+                        let vp = _mm_loadu_pd([p_vals[i], p_vals[i + 1]].as_ptr());
+                        let vq = _mm_loadu_pd([q_vals[i], q_vals[i + 1]].as_ptr());
                         let diff = _mm_sub_pd(vp, vq);
                         vec_sum = _mm_add_pd(vec_sum, _mm_mul_pd(diff, diff));
                         i += 2;

@@ -42,6 +42,48 @@ fn normalize_wasm_poll_fn_addr(poll_fn_addr: u64) -> u64 {
     poll_fn_addr
 }
 
+#[cfg(target_arch = "wasm32")]
+#[inline]
+pub(crate) fn wasm_poll_fn_symbol_name(fn_ptr: u64) -> Option<&'static str> {
+    let normalized = normalize_wasm_poll_fn_addr(fn_ptr);
+    let slot = normalized.checked_sub(crate::wasm_table_base())?;
+    match slot {
+        1 => Some("molt_async_sleep"),
+        2 => Some("molt_anext_default_poll"),
+        3 => Some("molt_asyncgen_poll"),
+        4 => Some("molt_promise_poll"),
+        5 => Some("molt_io_wait"),
+        6 => Some("molt_thread_poll"),
+        7 => Some("molt_process_poll"),
+        8 => Some("molt_ws_wait"),
+        9 => Some("molt_asyncio_wait_for_poll"),
+        10 => Some("molt_asyncio_wait_poll"),
+        11 => Some("molt_asyncio_gather_poll"),
+        12 => Some("molt_asyncio_socket_reader_read_poll"),
+        13 => Some("molt_asyncio_socket_reader_readline_poll"),
+        14 => Some("molt_asyncio_stream_reader_read_poll"),
+        15 => Some("molt_asyncio_stream_reader_readline_poll"),
+        16 => Some("molt_asyncio_stream_send_all_poll"),
+        17 => Some("molt_asyncio_sock_recv_poll"),
+        18 => Some("molt_asyncio_sock_connect_poll"),
+        19 => Some("molt_asyncio_sock_accept_poll"),
+        20 => Some("molt_asyncio_sock_recv_into_poll"),
+        21 => Some("molt_asyncio_sock_sendall_poll"),
+        22 => Some("molt_asyncio_sock_recvfrom_poll"),
+        23 => Some("molt_asyncio_sock_recvfrom_into_poll"),
+        24 => Some("molt_asyncio_sock_sendto_poll"),
+        25 => Some("molt_asyncio_timer_handle_poll"),
+        26 => Some("molt_asyncio_fd_watcher_poll"),
+        27 => Some("molt_asyncio_server_accept_loop_poll"),
+        28 => Some("molt_asyncio_ready_runner_poll"),
+        29 => Some("molt_contextlib_asyncgen_enter_poll"),
+        30 => Some("molt_contextlib_asyncgen_exit_poll"),
+        31 => Some("molt_contextlib_async_exitstack_exit_poll"),
+        32 => Some("molt_contextlib_async_exitstack_enter_context_poll"),
+        _ => None,
+    }
+}
+
 #[inline]
 pub(crate) fn async_sleep_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]

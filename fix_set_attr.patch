@@ -1,0 +1,32 @@
+--- runtime/molt-runtime/src/builtins/attributes.rs
++++ runtime/molt-runtime/src/builtins/attributes.rs
+@@ -4826,6 +4826,17 @@
+
+ /// # Safety
+ /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn molt_set_attr_object(
++    obj_bits: u64,
++    attr_name_ptr: *const u8,
++    attr_name_len_bits: u64,
++    val_bits: u64,
++) -> i64 {
++    unsafe {
++        crate::with_gil_entry!(_py, {
++            let attr_name_len = usize_from_bits(attr_name_len_bits);
++            if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
++                return molt_set_attr_generic(ptr, attr_name_ptr, attr_name_len_bits, val_bits);
++            }
++            let obj = obj_from_bits(obj_bits);
++            let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
++            let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
++            attr_error(_py, type_name(_py, obj), attr_name)
++        })
++    }
++}
++
++/// # Safety
++/// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn molt_set_attr_object_ic(
+     obj_bits: u64,

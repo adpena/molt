@@ -38,6 +38,190 @@ const {
 const IS_DB_WORKER = !isMainThread && workerData && workerData.kind === 'molt_db_host';
 const IS_SOCKET_WORKER = !isMainThread && workerData && workerData.kind === 'molt_socket_host';
 
+const AUTO_WASM_NODE_FLAG_SPECS = [
+  { key: '--liftoff-only', arg: '--liftoff-only' },
+  { key: '--no-wasm-tier-up', arg: '--no-wasm-tier-up' },
+  { key: '--no-wasm-dynamic-tiering', arg: '--no-wasm-dynamic-tiering' },
+  { key: '--wasm-num-compilation-tasks', arg: '--wasm-num-compilation-tasks=1' },
+];
+
+const resolveBootstrapWasmPath = () => {
+  const wasmArg = process.argv[2];
+  const wasmEnvPath = process.env.MOLT_WASM_PATH;
+  const explicitWasmPath = wasmArg || wasmEnvPath || null;
+  const localWasm = path.join(__dirname, 'output.wasm');
+  const tempWasm = path.join(os.tmpdir(), 'output.wasm');
+  const candidate =
+    explicitWasmPath || (fs.existsSync(localWasm) ? localWasm : tempWasm);
+  if (!candidate || !fs.existsSync(candidate)) {
+    return null;
+  }
+  return candidate;
+};
+
+const parsePositiveInt = (raw, fallback) => {
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+};
+
+const hasNodeFlag = (argv, key) =>
+  argv.some((arg) => arg === key || arg.startsWith(`${key}=`));
+
+const supportedAutoWasmFlags = () =>
+  AUTO_WASM_NODE_FLAG_SPECS.map((spec) => spec.arg);
+
+const signalExitCode = (signal) => {
+  if (!signal) return null;
+  const sigMap = os.constants && os.constants.signals ? os.constants.signals : null;
+  const sigNum = sigMap ? sigMap[signal] : null;
+  if (!Number.isFinite(sigNum)) {
+    return 1;
+  }
+  return 128 + Number(sigNum);
+};
+
+const killChildTree = (child, signal) => {
+  if (!child || child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+  const sig = signal || 'SIGTERM';
+  if (process.platform !== 'win32' && Number.isFinite(child.pid) && child.pid > 0) {
+    try {
+      process.kill(-child.pid, sig);
+      return;
+    } catch {
+      // Fall through to direct child kill.
+    }
+  }
+  try {
+    child.kill(sig);
+  } catch {
+    // Ignore kill errors to keep shutdown deterministic.
+  }
+};
+
+const maybeReexecWithSafeWasmNodeFlags = () => {
+  if (!isMainThread || IS_DB_WORKER || IS_SOCKET_WORKER) return;
+  if (process.env.MOLT_WASM_NODE_FLAGS_REEXECED === '1') return;
+  if (process.env.MOLT_WASM_AUTO_NODE_FLAGS === '0') return;
+
+  const wasmEntryPath = resolveBootstrapWasmPath();
+  if (!wasmEntryPath) return;
+
+  const minMb = parsePositiveInt(process.env.MOLT_WASM_AUTO_NODE_FLAGS_MIN_MB, 24);
+  const wasmSizeMb = fs.statSync(wasmEntryPath).size / (1024 * 1024);
+  if (wasmSizeMb < minMb) return;
+
+  const desired = supportedAutoWasmFlags();
+  const missing = desired.filter((flag) => !hasNodeFlag(process.execArgv, flag.split('=')[0]));
+  if (!missing.length) return;
+
+  const timeoutMs = parsePositiveInt(
+    process.env.MOLT_WASM_AUTO_NODE_FLAGS_REEXEC_TIMEOUT_MS,
+    15 * 60 * 1000
+  );
+  const termGraceMs = parsePositiveInt(
+    process.env.MOLT_WASM_AUTO_NODE_FLAGS_REEXEC_TERM_GRACE_MS,
+    1000
+  );
+  const child = spawn(process.execPath, [...missing, ...process.execArgv, ...process.argv.slice(1)], {
+    env: { ...process.env, MOLT_WASM_NODE_FLAGS_REEXECED: '1' },
+    stdio: 'inherit',
+    detached: process.platform !== 'win32',
+  });
+  let settled = false;
+  let timeoutTimer = null;
+  let killTimer = null;
+  const signalListeners = new Map();
+
+  const cleanup = () => {
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
+      timeoutTimer = null;
+    }
+    if (killTimer) {
+      clearTimeout(killTimer);
+      killTimer = null;
+    }
+    for (const [sig, handler] of signalListeners.entries()) {
+      process.removeListener(sig, handler);
+    }
+    signalListeners.clear();
+  };
+
+  const finish = (exitCode) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    process.exit(exitCode);
+  };
+
+  const terminateWithEscalation = (reason) => {
+    if (settled) return;
+    if (reason) {
+      console.error(`[molt wasm] ${reason}`);
+    }
+    killChildTree(child, 'SIGTERM');
+    if (killTimer) {
+      clearTimeout(killTimer);
+      killTimer = null;
+    }
+    killTimer = setTimeout(() => {
+      killChildTree(child, 'SIGKILL');
+    }, termGraceMs);
+    if (typeof killTimer.unref === 'function') {
+      killTimer.unref();
+    }
+  };
+
+  const forwardSignals = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'];
+  for (const sig of forwardSignals) {
+    try {
+      const handler = () => {
+        if (settled) return;
+        terminateWithEscalation(`forwarding ${sig} to wasm reexec child`);
+      };
+      signalListeners.set(sig, handler);
+      process.on(sig, handler);
+    } catch {
+      // Some signals are not supported on all platforms.
+    }
+  }
+
+  process.once('exit', () => {
+    if (!settled) {
+      killChildTree(child, 'SIGKILL');
+    }
+    cleanup();
+  });
+
+  child.once('error', (err) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    terminateWithEscalation(`failed to spawn wasm reexec child: ${msg}`);
+    finish(1);
+  });
+  child.once('exit', (code, signal) => {
+    const resolved = typeof code === 'number' ? code : signalExitCode(signal);
+    finish(resolved ?? 1);
+  });
+
+  timeoutTimer = setTimeout(() => {
+    terminateWithEscalation(
+      `wasm reexec child exceeded timeout (${timeoutMs} ms)`
+    );
+  }, timeoutMs);
+  if (typeof timeoutTimer.unref === 'function') {
+    timeoutTimer.unref();
+  }
+  return true;
+};
+
+const AUTO_REEXEC_SUPERVISOR_ACTIVE = maybeReexecWithSafeWasmNodeFlags();
+
 let wasmPath = null;
 let wasmBuffer = null;
 let linkedPath = null;
@@ -51,39 +235,56 @@ let wasi = null;
 let wasiImport = null;
 let wasiExitCode = null;
 let detectedWasmTableBase = null;
-const callIndirectDebug = process.env.MOLT_WASM_CALL_INDIRECT_DEBUG === '1';
-const traceExit = process.env.MOLT_WASM_TRACE_EXIT === '1';
-const traceRun = process.env.MOLT_WASM_TRACE_RUN === '1';
-const traceRunFile = process.env.MOLT_WASM_TRACE_FILE || null;
-const trapOnExit = process.env.MOLT_WASM_TRAP_ON_EXIT === '1';
-const traceOsClose = process.env.MOLT_WASM_TRACE_OS_CLOSE === '1';
-const traceWasiIo = process.env.MOLT_WASM_TRACE_WASI_IO === '1';
-const traceWasiIoStack = process.env.MOLT_WASM_TRACE_WASI_IO_STACK === '1';
-const traceSocketHost = process.env.MOLT_WASM_TRACE_SOCKET_HOST === '1';
-const installTableRefsEnabled = process.env.MOLT_WASM_INSTALL_TABLE_REFS === '1';
-const verifyTableRefsEnabled = process.env.MOLT_WASM_VERIFY_TABLE_REFS === '1';
-const formatTraceError = (err) => {
-  if (err instanceof Error) {
-    return err.stack || err.message || String(err);
-  }
-  if (typeof err === 'symbol') {
-    return String(err);
-  }
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return String(err);
-  }
-};
-const traceMark = (message) => {
-  if (!traceRunFile) return;
-  try {
-    fs.appendFileSync(traceRunFile, `${message}\n`);
-  } catch {
-    // Ignore tracing write errors to keep runtime behavior unchanged.
-  }
-};
 const getWebSocketCtor = () => globalThis.WebSocket || UndiciWebSocket || null;
+
+const isDirectoryPath = (candidate) => {
+  if (!candidate) return false;
+  try {
+    return fs.statSync(candidate).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+const resolveHostTmpDir = (env) => {
+  const candidates = [env.TMPDIR, env.TEMP, env.TMP, os.tmpdir(), process.cwd()];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const resolved = path.resolve(candidate);
+    if (isDirectoryPath(resolved)) {
+      return resolved;
+    }
+  }
+  return path.resolve(process.cwd());
+};
+
+const normalizeWasmTempEnv = (env) => {
+  const hostTmpDir = resolveHostTmpDir(env);
+  env.TMPDIR = '/tmp';
+  env.TEMP = '/tmp';
+  env.TMP = '/tmp';
+  return hostTmpDir;
+};
+
+const buildWasiPreopens = (wasmEntryPath, hostTmpDir) => {
+  const preopens = {};
+  const addPreopen = (guestPath, hostPath) => {
+    if (!guestPath || !hostPath) return;
+    const resolved = path.resolve(hostPath);
+    if (!isDirectoryPath(resolved)) return;
+    preopens[guestPath] = resolved;
+  };
+  const cwd = process.cwd();
+  addPreopen('.', cwd);
+  addPreopen('/', cwd);
+  addPreopen('/tmp', hostTmpDir);
+  addPreopen('/var/tmp', hostTmpDir);
+  addPreopen('/usr/tmp', hostTmpDir);
+  if (wasmEntryPath) {
+    addPreopen('/molt_artifacts', path.dirname(wasmEntryPath));
+  }
+  return preopens;
+};
 
 const ensureWasmLocaleEnv = (env) => {
   if (!env) return;
@@ -170,13 +371,13 @@ const initWasmAssets = () => {
   ) {
     wasmEnv.MOLT_WASM_TABLE_BASE = String(detectedWasmTableBase);
   }
+  const hostTmpDir = normalizeWasmTempEnv(wasmEnv);
   ensureWasmLocaleEnv(wasmEnv);
+  const wasiPreopens = buildWasiPreopens(wasmPath, hostTmpDir);
   wasi = new WASI({
     version: 'preview1',
     env: wasmEnv,
-    preopens: {
-      '.': '.',
-    },
+    preopens: wasiPreopens,
   });
   wasiExitCode = null;
   wasiImport = { ...wasi.wasiImport };
@@ -190,49 +391,8 @@ const initWasmAssets = () => {
         exitCode = 1;
       }
       wasiExitCode = exitCode;
-      traceMark(`proc_exit:${exitCode}`);
-      if (traceExit) {
-        const stack = new Error().stack;
-        console.error(`[molt wasm] wasi proc_exit(${exitCode}) wasm=${wasmPath}`);
-        if (stack) {
-          console.error(stack);
-        }
-      }
-      if (trapOnExit) {
-        throw new Error(`WASI proc_exit(${exitCode})`);
-      }
       return originalProcExit(code);
     };
-  }
-  if (traceWasiIo) {
-    const originalFdClose = wasiImport.fd_close;
-    if (typeof originalFdClose === 'function') {
-      wasiImport.fd_close = (fd) => {
-        const code = originalFdClose(fd);
-        traceMark(`wasi_fd_close:fd=${Number(fd)} code=${Number(code)}`);
-        if (traceWasiIoStack) {
-          const stack = new Error().stack;
-          if (stack) {
-            traceMark(`wasi_fd_close_stack:${stack.replaceAll('\n', '\\n')}`);
-          }
-        }
-        return code;
-      };
-    }
-    const originalFdWrite = wasiImport.fd_write;
-    if (typeof originalFdWrite === 'function') {
-      wasiImport.fd_write = (fd, iovsPtr, iovsLen, nwrittenPtr) => {
-        const code = originalFdWrite(fd, iovsPtr, iovsLen, nwrittenPtr);
-        traceMark(`wasi_fd_write:fd=${Number(fd)} code=${Number(code)}`);
-        if (traceWasiIoStack && Number(code) !== 0) {
-          const stack = new Error().stack;
-          if (stack) {
-            traceMark(`wasi_fd_write_stack:${stack.replaceAll('\n', '\\n')}`);
-          }
-        }
-        return code;
-      };
-    }
   }
 };
 
@@ -1979,24 +2139,10 @@ const socketWorkerMain = () => {
         const { handle, addr } = request;
         const entry = getEntry(handle);
         if (!entry) return { status: -EBADF };
-        if (traceSocketHost) {
-          console.error(
-            `[socket-host] bind handle=${handle} kind=${entry.kind} addr_len=${addr ? addr.length : 0} addr_hex=${Buffer.from(addr || []).toString('hex')}`,
-          );
-        }
         let decoded;
         try {
           decoded = decodeSockaddr(addr);
-          if (traceSocketHost) {
-            console.error(
-              `[socket-host] bind decoded family=${decoded.family} host=${decoded.host} port=${decoded.port}`,
-            );
-          }
         } catch (err) {
-          if (traceSocketHost) {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.error(`[socket-host] bind decode failed: ${msg}`);
-          }
           return { status: -EAFNOSUPPORT };
         }
         if (entry.kind === 'udp') {
@@ -2020,11 +2166,6 @@ const socketWorkerMain = () => {
         const { handle, backlog } = request;
         const entry = getEntry(handle);
         if (!entry) return { status: -EBADF };
-        if (traceSocketHost) {
-          console.error(
-            `[socket-host] listen handle=${handle} kind=${entry.kind} backlog=${backlog}`,
-          );
-        }
         if (entry.kind === 'udp') {
           return { status: -EINVAL };
         }
@@ -3016,15 +3157,7 @@ const socketHostClone = (handle) => {
 const socketHostBind = (handle, addrPtr, addrLen) => {
   if (!wasmMemory) return -ENOSYS;
   const addr = readBytes(addrPtr, addrLen);
-  if (traceSocketHost) {
-    console.error(
-      `[socket-host-main] bind handle=${handle} addr_len=${addrLen} addr_hex=${Buffer.from(addr || []).toString('hex')}`,
-    );
-  }
   const res = socketCall('bind', { handle: Number(handle), addr }, 0);
-  if (traceSocketHost) {
-    console.error(`[socket-host-main] bind status=${res.status}`);
-  }
   return res.status;
 };
 
@@ -3239,9 +3372,6 @@ const socketHostDetach = (handle) => {
 
 const osCloseHost = (fd) => {
   const fdNum = typeof fd === 'bigint' ? Number(fd) : Number(fd);
-  if (traceOsClose) {
-    traceMark(`os_close:${fdNum}`);
-  }
   if (!Number.isFinite(fdNum)) return -EINVAL;
   const res = socketCall('close_detached', { handle: fdNum }, 0);
   if (res.status === 0) return 0;
@@ -4324,66 +4454,6 @@ const buildRuntimeImportDirect = (runtimeInst) => {
   return runtimeImports;
 };
 
-const installTableRefs = (instance, table, label) => {
-  if (!instance || !table) {
-    return;
-  }
-  const refs = [];
-  for (const [name, value] of Object.entries(instance.exports)) {
-    const match = /^__molt_table_ref_(\d+)$/.exec(name);
-    if (!match || typeof value !== 'function') {
-      continue;
-    }
-    refs.push({ index: Number(match[1]), fn: value });
-  }
-  if (refs.length === 0) {
-    return;
-  }
-  refs.sort((a, b) => a.index - b.index);
-  const maxIndex = refs[refs.length - 1].index;
-  if (maxIndex >= table.length) {
-    table.grow(maxIndex + 1 - table.length);
-  }
-  for (const ref of refs) {
-    table.set(ref.index, ref.fn);
-  }
-  if (traceRun) {
-    console.error(`[molt wasm] installed ${refs.length} ${label} table refs`);
-  }
-};
-
-const verifyTableRefs = (instance, table, label) => {
-  if (!instance || !table) {
-    return;
-  }
-  let refs = 0;
-  let mismatches = 0;
-  for (const [name, value] of Object.entries(instance.exports)) {
-    const match = /^__molt_table_ref_(\d+)$/.exec(name);
-    if (!match || typeof value !== 'function') {
-      continue;
-    }
-    refs += 1;
-    const idx = Number(match[1]);
-    const entry = table.get(idx);
-    if (entry !== value) {
-      mismatches += 1;
-      if (traceRun && mismatches <= 16) {
-        const entryName = entry && entry.name ? entry.name : 'unknown';
-        const valueName = value && value.name ? value.name : 'unknown';
-        console.error(
-          `[molt wasm] table-ref mismatch ${label} idx=${idx} expected=${valueName} actual=${entryName}`
-        );
-      }
-    }
-  }
-  if (traceRun || verifyTableRefsEnabled) {
-    console.error(
-      `[molt wasm] table-ref verify ${label}: refs=${refs} mismatches=${mismatches}`
-    );
-  }
-};
-
 const runDirectLink = async () => {
   if (!runtimeBuffer) {
     throw new Error(
@@ -4461,20 +4531,6 @@ const runDirectLink = async () => {
   };
   for (const name of runtimeCallIndirectNames) {
     env[name] = (...args) => {
-      if (callIndirectDebug) {
-        const rawIdx = args[0];
-        const idx = typeof rawIdx === 'bigint' ? Number(rawIdx) : Number(rawIdx);
-        const entry = table ? table.get(idx) : null;
-        const state = entry ? 'set' : 'null';
-        const entryName = entry && entry.name ? entry.name : 'unknown';
-        const entryLen = entry && typeof entry.length === 'number' ? entry.length : 'unknown';
-        const envGet =
-          runtimeInstance && runtimeInstance.exports ? runtimeInstance.exports.molt_env_get : null;
-        const isEnvGet = entry && envGet ? entry === envGet : false;
-        console.error(
-          `[molt wasm] ${name} idx=${idx} entry=${state} name=${entryName} len=${entryLen} env_get=${isEnvGet}`
-        );
-      }
       const fn = callIndirectFns[name];
       if (!fn) {
         throw new Error(`${name} used before output instantiation`);
@@ -4494,9 +4550,6 @@ const runDirectLink = async () => {
     if (typeof setTableBase === 'function') {
       setTableBase(BigInt(detectedWasmTableBase));
     }
-  }
-  if (installTableRefsEnabled) {
-    installTableRefs(runtimeInst, table, 'runtime');
   }
   const outputImportsDirect = traceImports
     ? buildRuntimeImportWrappers()
@@ -4521,18 +4574,8 @@ const runDirectLink = async () => {
     }
     callIndirectFns[name] = fn;
   }
-  if (installTableRefsEnabled) {
-    installTableRefs(outputModule.instance, table, 'output');
-  }
   if (!molt_memory || !molt_table) {
     throw new Error(`${wasmPath} missing molt_memory or molt_table export`);
-  }
-  if (process.env.MOLT_WASM_CALL_INDIRECT_SMOKE === '1') {
-    if (typeof outputModule.instance.exports.molt_call_indirect2 !== 'function') {
-      throw new Error('molt_call_indirect2 export missing for smoke test');
-    }
-    const res = outputModule.instance.exports.molt_call_indirect2(298n, 0n, 0n);
-    console.error(`[molt wasm] call_indirect2 smoke result=${res}`);
   }
   initializeWasiForInstance(runtimeInst, memory);
   runMainWithWasiExit(() => {
@@ -4641,20 +4684,8 @@ const runLinked = async () => {
       setTableBase(BigInt(detectedWasmTableBase));
     }
   }
-  const linkedTable =
-    linkedModule.instance.exports.molt_table ||
-    (importObject.env && importObject.env.__indirect_function_table) ||
-    null;
   if (typeof molt_table_init === 'function') {
     molt_table_init();
-  }
-  // Linked artifacts can still carry table-relocation edge cases on some wasm-ld
-  // versions. Opt-in reinstall helps debug signature-mismatch traps.
-  if (installTableRefsEnabled) {
-    installTableRefs(linkedModule.instance, linkedTable, 'linked');
-  }
-  if (verifyTableRefsEnabled) {
-    verifyTableRefs(linkedModule.instance, linkedTable, 'linked');
   }
   const linkedMemory =
     linkedModule.instance.exports.molt_memory ||
@@ -4671,16 +4702,10 @@ const runLinked = async () => {
 
 const runMain = async () => {
   initWasmAssets();
-  traceMark('runMain:init');
   outputImports = parseWasmImports(wasmBuffer);
   inputHasRuntimeImports = outputImports.funcImports.some(
     (entry) => entry.module === 'molt_runtime'
   );
-  if (traceRun) {
-    console.error(
-      `[molt wasm] runMain wasm=${wasmPath} linked=${linkedPath || 'none'} imports_runtime=${inputHasRuntimeImports}`
-    );
-  }
   if (!inputHasRuntimeImports && !linkedBuffer) {
     linkedPath = wasmPath;
     linkedBuffer = wasmBuffer;
@@ -4729,21 +4754,9 @@ const runMain = async () => {
   // Safety-first policy: default to linked execution. Direct-linking is opt-in
   // and only allowed when the artifact advertises the shared memory/table ABI.
   const runner = useLinked ? runLinked : runDirectLink;
-  traceMark(`runMain:runner:${useLinked ? 'linked' : 'direct'}`);
-  if (traceRun) {
-    console.error(`[molt wasm] runner=${useLinked ? 'linked' : 'direct'}`);
-  }
   try {
     await runner();
-    traceMark('runMain:runner_completed');
-    if (traceRun) {
-      console.error('[molt wasm] runner completed');
-    }
     if (wasiExitCode !== null && wasiExitCode !== 0) {
-      traceMark(`runMain:exit_wasi:${wasiExitCode}`);
-      if (traceRun) {
-        console.error(`[molt wasm] exiting with wasi code ${wasiExitCode}`);
-      }
       return wasiExitCode;
     }
     return 0;
@@ -4752,7 +4765,7 @@ const runMain = async () => {
   }
 };
 
-if (!IS_DB_WORKER && !IS_SOCKET_WORKER) {
+if (!IS_DB_WORKER && !IS_SOCKET_WORKER && !AUTO_REEXEC_SUPERVISOR_ACTIVE) {
   runMain()
     .then((exitCode) => {
       if (exitCode !== 0) {
@@ -4760,24 +4773,11 @@ if (!IS_DB_WORKER && !IS_SOCKET_WORKER) {
       }
     })
     .catch((err) => {
-      traceMark('runMain:catch');
-      traceMark(`runMain:catch_err:${formatTraceError(err).replaceAll('\n', '\\n')}`);
-      if (traceRun) {
-        console.error('[molt wasm] runMain rejected');
-      }
       if (isWasiExitSymbol(err)) {
-        traceMark(`runMain:catch_wasi_symbol:${wasiExitCode === null ? 0 : wasiExitCode}`);
-        if (traceRun) {
-          console.error(
-            `[molt wasm] caught wasi exit symbol, code=${wasiExitCode === null ? 0 : wasiExitCode}`
-          );
-        }
         process.exit(wasiExitCode === null ? 0 : wasiExitCode);
         return;
       }
-      traceMark('runMain:catch_non_wasi');
       console.error(err);
-      traceMark('runMain:exit_1');
       process.exit(1);
     });
 }

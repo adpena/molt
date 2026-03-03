@@ -203,12 +203,12 @@ fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: 
     // never touch the heap — skip the function call entirely.
     let masked = builder.ins().band_imm(val, (QNAN | TAG_MASK) as i64);
     let ptr_tag = builder.ins().iconst(types::I64, (QNAN | TAG_PTR) as i64);
-    let is_ptr = builder
-        .ins()
-        .icmp(IntCC::Equal, masked, ptr_tag);
+    let is_ptr = builder.ins().icmp(IntCC::Equal, masked, ptr_tag);
     let call_block = builder.create_block();
     let merge_block = builder.create_block();
-    builder.ins().brif(is_ptr, call_block, &[], merge_block, &[]);
+    builder
+        .ins()
+        .brif(is_ptr, call_block, &[], merge_block, &[]);
     builder.switch_to_block(call_block);
     builder.seal_block(call_block);
     builder.ins().call(obj_ref_fn, &[val]);
@@ -583,10 +583,9 @@ fn is_inlineable(func: &FunctionIR, defined_functions: &std::collections::HashSe
         match op.kind.as_str() {
             // Control flow that creates complexity for inlining
             "loop_index_start" | "loop_index_end" | "loop_start" | "loop_end"
-            | "for_iter_start" | "for_iter_end" | "while_start" | "while_end"
-            | "try_start" | "try_end" | "except" | "finally"
-            | "yield" | "yield_from" | "await" | "async_for_start"
-            | "ASYNCGEN_NEW" | "GENERATOR_NEW" | "COROUTINE_NEW" => {
+            | "for_iter_start" | "for_iter_end" | "while_start" | "while_end" | "try_start"
+            | "try_end" | "except" | "finally" | "yield" | "yield_from" | "await"
+            | "async_for_start" | "ASYNCGEN_NEW" | "GENERATOR_NEW" | "COROUTINE_NEW" => {
                 return false;
             }
             // Nested internal calls would cause recursive inlining
@@ -677,7 +676,11 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
 
             // Perform inlining: generate unique prefix for all callee variables
             inline_counter += 1;
-            let prefix = format!("_inl{}_{}_", inline_counter, target_name.replace(|c: char| !c.is_alphanumeric(), "_"));
+            let prefix = format!(
+                "_inl{}_{}_",
+                inline_counter,
+                target_name.replace(|c: char| !c.is_alphanumeric(), "_")
+            );
 
             // Build param → arg mapping
             let mut rename_map: std::collections::HashMap<String, String> =
@@ -1090,15 +1093,11 @@ impl SimpleBackend {
         flag_builder.set("enable_alias_analysis", "true").unwrap();
         // Emit CFG metadata in machine code output — enables downstream tools
         // and profilers to reconstruct control-flow graphs from compiled objects.
-        flag_builder
-            .set("machine_code_cfg_info", "true")
-            .unwrap();
+        flag_builder.set("machine_code_cfg_info", "true").unwrap();
         // Use colocated libcalls: our generated code and runtime libcalls live
         // in the same link unit — colocated calls skip GOT/PLT indirection and
         // use direct PC-relative calls instead.
-        flag_builder
-            .set("use_colocated_libcalls", "true")
-            .unwrap();
+        flag_builder.set("use_colocated_libcalls", "true").unwrap();
         // Frame pointers: keep for debug builds (profilers, debuggers need them),
         // omit for release builds to free up a register (rbp/x29).
         flag_builder
@@ -1121,9 +1120,7 @@ impl SimpleBackend {
             .unwrap();
         // Inline stack probing: avoids a function call for stack probes, instead
         // inlining touch instructions — faster for deep recursion.
-        flag_builder
-            .set("probestack_strategy", "inline")
-            .unwrap();
+        flag_builder.set("probestack_strategy", "inline").unwrap();
         // MOLT_PORTABLE=1 forces baseline ISA (no host-specific features like AVX2).
         // This ensures reproducible codegen across different machines at the cost of
         // ~5-15% runtime performance on modern CPUs with advanced features.
@@ -1499,13 +1496,18 @@ impl SimpleBackend {
                     }
                     for idx in 0..arity {
                         let arg_offset = (idx * std::mem::size_of::<u64>()) as i32;
-                        let arg_val =
-                            builder
-                                .ins()
-                                .load(types::I64, MemFlags::trusted(), args_ptr, arg_offset);
-                        builder
-                            .ins()
-                            .store(MemFlags::trusted(), arg_val, obj_ptr, offset + arg_offset);
+                        let arg_val = builder.ins().load(
+                            types::I64,
+                            MemFlags::trusted(),
+                            args_ptr,
+                            arg_offset,
+                        );
+                        builder.ins().store(
+                            MemFlags::trusted(),
+                            arg_val,
+                            obj_ptr,
+                            offset + arg_offset,
+                        );
                         builder.ins().call(local_inc_ref_obj, &[arg_val]);
                     }
                 }
@@ -1613,9 +1615,10 @@ impl SimpleBackend {
                 }
                 for idx in 0..arity {
                     let offset = (idx * std::mem::size_of::<u64>()) as i32;
-                    let arg_val = builder
-                        .ins()
-                        .load(types::I64, MemFlags::trusted(), args_ptr, offset);
+                    let arg_val =
+                        builder
+                            .ins()
+                            .load(types::I64, MemFlags::trusted(), args_ptr, offset);
                     call_args.push(arg_val);
                 }
 
@@ -2079,7 +2082,9 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[ptr, len, out_ptr]);
-                    let boxed = builder.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                    let boxed = builder
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), out_ptr, 0);
 
                     def_var_named(&mut builder, &vars, out_name, boxed);
                 }
@@ -2117,7 +2122,9 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[ptr, len, out_ptr]);
-                    let boxed = builder.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                    let boxed = builder
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), out_ptr, 0);
 
                     def_var_named(&mut builder, &vars, out_name, boxed);
                 }
@@ -7695,7 +7702,10 @@ impl SimpleBackend {
 
                         builder.switch_to_block(ok_block);
                         builder.seal_block(ok_block);
-                        let ok_res = builder.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                        let ok_res =
+                            builder
+                                .ins()
+                                .load(types::I64, MemFlags::trusted(), out_ptr, 0);
                         jump_block(&mut builder, merge_block, &[ok_res]);
 
                         builder.switch_to_block(err_block);
@@ -7775,7 +7785,10 @@ impl SimpleBackend {
 
                         builder.switch_to_block(ok_block);
                         builder.seal_block(ok_block);
-                        let ok_res = builder.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                        let ok_res =
+                            builder
+                                .ins()
+                                .load(types::I64, MemFlags::trusted(), out_ptr, 0);
                         jump_block(&mut builder, merge_block, &[ok_res]);
 
                         builder.switch_to_block(err_block);
@@ -7859,7 +7872,10 @@ impl SimpleBackend {
 
                         builder.switch_to_block(ok_block);
                         builder.seal_block(ok_block);
-                        let ok_res = builder.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                        let ok_res =
+                            builder
+                                .ins()
+                                .load(types::I64, MemFlags::trusted(), out_ptr, 0);
                         jump_block(&mut builder, merge_block, &[ok_res]);
 
                         builder.switch_to_block(err_block);
@@ -8034,9 +8050,12 @@ impl SimpleBackend {
                         builder.ins().call(local_callee, &[self_ptr, offset, res]);
                     }
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
-                    builder
-                        .ins()
-                        .store(MemFlags::trusted(), state_val, self_ptr, HEADER_STATE_OFFSET);
+                    builder.ins().store(
+                        MemFlags::trusted(),
+                        state_val,
+                        self_ptr,
+                        HEADER_STATE_OFFSET,
+                    );
                     if args.len() <= 1 {
                         def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                     }
@@ -8053,9 +8072,12 @@ impl SimpleBackend {
                     let self_ptr = unbox_ptr_value(&mut builder, self_bits);
 
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
-                    builder
-                        .ins()
-                        .store(MemFlags::trusted(), state_val, self_ptr, HEADER_STATE_OFFSET);
+                    builder.ins().store(
+                        MemFlags::trusted(),
+                        state_val,
+                        self_ptr,
+                        HEADER_STATE_OFFSET,
+                    );
 
                     reachable_blocks.insert(master_return_block);
                     if has_ret {
@@ -8126,9 +8148,12 @@ impl SimpleBackend {
 
                     switch_to_block_tracking(&mut builder, ready_path, &mut is_block_filled);
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
-                    builder
-                        .ins()
-                        .store(MemFlags::trusted(), state_val, self_ptr, HEADER_STATE_OFFSET);
+                    builder.ins().store(
+                        MemFlags::trusted(),
+                        state_val,
+                        self_ptr,
+                        HEADER_STATE_OFFSET,
+                    );
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                     reachable_blocks.insert(next_block);
                     jump_block(&mut builder, next_block, &[]);
@@ -8188,9 +8213,12 @@ impl SimpleBackend {
 
                     switch_to_block_tracking(&mut builder, ready_path, &mut is_block_filled);
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
-                    builder
-                        .ins()
-                        .store(MemFlags::trusted(), state_val, self_ptr, HEADER_STATE_OFFSET);
+                    builder.ins().store(
+                        MemFlags::trusted(),
+                        state_val,
+                        self_ptr,
+                        HEADER_STATE_OFFSET,
+                    );
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                     reachable_blocks.insert(next_block);
                     jump_block(&mut builder, next_block, &[]);
@@ -9521,7 +9549,9 @@ impl SimpleBackend {
                     builder.seal_block(func_block);
                     let resolve_call = builder.ins().call(resolve_local, &[*callee_bits]);
                     let func_ptr = builder.inst_results(resolve_call)[0];
-                    let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), func_ptr, 0);
+                    let fn_ptr = builder
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), func_ptr, 0);
                     let matches = builder.ins().icmp(IntCC::Equal, fn_ptr, expected_addr);
                     let then_block = builder.create_block();
                     let else_block = builder.create_block();
@@ -9721,9 +9751,10 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .load(types::I64, MemFlags::trusted(), method_ptr, 0);
-                    let self_bits = builder
-                        .ins()
-                        .load(types::I64, MemFlags::trusted(), method_ptr, 8);
+                    let self_bits =
+                        builder
+                            .ins()
+                            .load(types::I64, MemFlags::trusted(), method_ptr, 8);
                     let bound_resolve = builder.ins().call(resolve_local, &[bound_func_bits]);
                     let bound_func_ptr = builder.inst_results(bound_resolve)[0];
                     let bound_fn_ptr =
@@ -10428,7 +10459,10 @@ impl SimpleBackend {
                     builder.seal_block(func_direct_block);
                     let resolve_call = builder.ins().call(resolve_local, &[*func_bits]);
                     let func_ptr = builder.inst_results(resolve_call)[0];
-                    let func_arity = builder.ins().load(types::I64, MemFlags::trusted(), func_ptr, 8);
+                    let func_arity =
+                        builder
+                            .ins()
+                            .load(types::I64, MemFlags::trusted(), func_ptr, 8);
                     let provided_arity = builder.ins().iconst(types::I64, args.len() as i64);
                     let arity_match = builder.ins().icmp(IntCC::Equal, func_arity, provided_arity);
                     let func_direct_call_block = builder.create_block();
@@ -10503,7 +10537,9 @@ impl SimpleBackend {
 
                     builder.switch_to_block(func_direct_call_block);
                     builder.seal_block(func_direct_call_block);
-                    let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), func_ptr, 0);
+                    let fn_ptr = builder
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), func_ptr, 0);
 
                     let mut sig = self.module.make_signature();
                     for _ in 0..args.len() {
@@ -12727,8 +12763,7 @@ impl SimpleBackend {
                             .module
                             .declare_function("molt_alloc", Linkage::Import, &sig)
                             .unwrap();
-                        let local_callee =
-                            self.module.declare_func_in_func(callee, builder.func);
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[iconst]);
                         let res = builder.inst_results(call)[0];
                         def_var_named(&mut builder, &vars, out_name, res);
@@ -13534,9 +13569,10 @@ impl SimpleBackend {
                         .declare_function("molt_set_attr_object_ic", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder
-                        .ins()
-                        .call(local_callee, &[*obj, attr_ptr, attr_len, *val, site_id_const]);
+                    let call = builder.ins().call(
+                        local_callee,
+                        &[*obj, attr_ptr, attr_len, *val, site_id_const],
+                    );
                     let res = builder.inst_results(call)[0];
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
