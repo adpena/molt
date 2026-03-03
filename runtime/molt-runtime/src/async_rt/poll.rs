@@ -475,11 +475,12 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
         {
             let normalized_poll_fn_addr = normalize_wasm_poll_fn_addr(poll_fn_addr);
             if std::env::var("MOLT_WASM_POLL_DEBUG").as_deref() == Ok("1") {
+                let symbol = wasm_poll_fn_symbol_name(normalized_poll_fn_addr).unwrap_or("other");
                 if normalized_poll_fn_addr == poll_fn_addr {
-                    eprintln!("molt wasm poll: fn=0x{poll_fn_addr:x}");
+                    eprintln!("molt wasm poll: fn=0x{poll_fn_addr:x} kind={symbol}");
                 } else {
                     eprintln!(
-                        "molt wasm poll: fn=0x{poll_fn_addr:x} normalized=0x{normalized_poll_fn_addr:x}"
+                        "molt wasm poll: fn=0x{poll_fn_addr:x} normalized=0x{normalized_poll_fn_addr:x} kind={symbol}"
                     );
                 }
             }
