@@ -364,6 +364,14 @@ const initWasmAssets = () => {
   }
   const tableBaseProbe = linkedBuffer || wasmBuffer;
   detectedWasmTableBase = extractWasmTableBase(tableBaseProbe);
+  if (
+    detectedWasmTableBase === null &&
+    linkedBuffer &&
+    wasmBuffer &&
+    tableBaseProbe !== wasmBuffer
+  ) {
+    detectedWasmTableBase = extractWasmTableBase(wasmBuffer);
+  }
   wasmEnv = { ...process.env };
   if (
     detectedWasmTableBase !== null &&
@@ -4272,6 +4280,33 @@ const parseWasmImports = (buffer) => {
   return { memory, table, funcImports };
 };
 
+const toPositiveTableBase = (value) => {
+  if (typeof value === 'bigint') {
+    if (value <= 0n) return null;
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    return Number(value);
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return null;
+  }
+  const truncated = Math.trunc(value);
+  if (truncated <= 0) {
+    return null;
+  }
+  return truncated;
+};
+
+const readExportedTableBase = (instance) => {
+  if (!instance || !instance.exports) return null;
+  const getter = instance.exports.molt_get_wasm_table_base;
+  if (typeof getter !== 'function') return null;
+  try {
+    return toPositiveTableBase(getter());
+  } catch {
+    return null;
+  }
+};
+
 let outputImports = null;
 let runtimeImportsDesc = null;
 let inputHasRuntimeImports = false;
@@ -4545,12 +4580,6 @@ const runDirectLink = async () => {
   });
   const runtimeInst = runtimeModule.instance;
   runtimeInstance = runtimeInst;
-  if (detectedWasmTableBase !== null) {
-    const setTableBase = runtimeInst.exports.molt_set_wasm_table_base;
-    if (typeof setTableBase === 'function') {
-      setTableBase(BigInt(detectedWasmTableBase));
-    }
-  }
   const outputImportsDirect = traceImports
     ? buildRuntimeImportWrappers()
     : buildRuntimeImportDirect(runtimeInst);
@@ -4564,6 +4593,14 @@ const runDirectLink = async () => {
 
   const { molt_main, molt_memory, molt_table, molt_table_init } =
     outputModule.instance.exports;
+  const directTableBase =
+    readExportedTableBase(outputModule.instance) ?? detectedWasmTableBase;
+  if (directTableBase !== null) {
+    const setTableBase = runtimeInst.exports.molt_set_wasm_table_base;
+    if (typeof setTableBase === 'function') {
+      setTableBase(BigInt(directTableBase));
+    }
+  }
   if (typeof molt_table_init === 'function' && process.env.MOLT_WASM_SKIP_TABLE_INIT !== '1') {
     molt_table_init();
   }
@@ -4597,13 +4634,7 @@ const runLinked = async () => {
   const linkedCallIndirectNames = linkedImports.funcImports
     .filter((entry) => entry.module === 'env' && entry.name.startsWith('molt_call_indirect'))
     .map((entry) => entry.name);
-  if (linkedCallIndirectNames.length) {
-    throw new Error(
-      `Linked wasm still imports ${linkedCallIndirectNames.join(
-        ', '
-      )}; JS call_indirect stubs removed.`,
-    );
-  }
+  const linkedCallIndirectFns = {};
 
   const importObject = {
     wasi_snapshot_preview1: wasiImport,
@@ -4621,6 +4652,15 @@ const runLinked = async () => {
   }
   if (!importObject.env) {
     importObject.env = {};
+  }
+  for (const name of linkedCallIndirectNames) {
+    importObject.env[name] = (...args) => {
+      const fn = linkedCallIndirectFns[name];
+      if (!fn) {
+        throw new Error(`${name} used before linked instance export wiring`);
+      }
+      return fn(...args);
+    };
   }
   importObject.env.molt_db_query_host = dbQueryHost;
   importObject.env.molt_db_exec_host = dbExecHost;
@@ -4678,11 +4718,31 @@ const runLinked = async () => {
   if (typeof molt_main !== 'function') {
     throw new Error('linked wasm missing molt_main export');
   }
-  if (detectedWasmTableBase !== null) {
+  const linkedTableBase =
+    readExportedTableBase(linkedModule.instance) ?? detectedWasmTableBase;
+  if (linkedTableBase !== null) {
     const setTableBase = linkedModule.instance.exports.molt_set_wasm_table_base;
     if (typeof setTableBase === 'function') {
-      setTableBase(BigInt(detectedWasmTableBase));
+      setTableBase(BigInt(linkedTableBase));
     }
+  }
+  for (const name of linkedCallIndirectNames) {
+    let fn = linkedModule.instance.exports[name];
+    if (typeof fn !== 'function') {
+      const mangledMatch = name.match(
+        /^molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA-F]+E$)/,
+      );
+      const plainMatch = name.match(/^molt_call_indirect(\d+)$/);
+      const arityRaw = (mangledMatch && mangledMatch[1]) || (plainMatch && plainMatch[1]);
+      if (arityRaw) {
+        const arity = Number.parseInt(arityRaw, 10);
+        fn = linkedModule.instance.exports[`molt_call_indirect${arity}`];
+      }
+    }
+    if (typeof fn !== 'function') {
+      throw new Error(`${wasmPath} missing ${name} export for linked call_indirect import`);
+    }
+    linkedCallIndirectFns[name] = fn;
   }
   if (typeof molt_table_init === 'function') {
     molt_table_init();

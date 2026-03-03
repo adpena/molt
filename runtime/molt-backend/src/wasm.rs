@@ -2525,6 +2525,16 @@ impl WasmBackend {
             element_section = Some(section);
         }
 
+        // Export the compile-time wasm table base as an explicit ABI surface so
+        // runners can configure runtime poll slot normalization deterministically
+        // without decoding function bodies heuristically.
+        let table_base_getter_index = self.compile_wasm_table_base_getter(table_base);
+        self.exports.export(
+            "molt_get_wasm_table_base",
+            ExportKind::Func,
+            table_base_getter_index,
+        );
+
         let page_size: u64 = 64 * 1024;
         let required_pages = (self.data_offset as u64).div_ceil(page_size);
         let floor_pages = std::env::var("MOLT_WASM_MIN_PAGES")
@@ -2847,6 +2857,18 @@ impl WasmBackend {
             emit_ref_func(&mut func, reloc_enabled, *target_index);
             func.instruction(&Instruction::TableSet(0));
         }
+        func.instruction(&Instruction::End);
+        self.codes.function(&func);
+        func_index
+    }
+
+    fn compile_wasm_table_base_getter(&mut self, table_base: u32) -> u32 {
+        let func_index = self.func_count;
+        // Type 0: () -> i64
+        self.funcs.function(0);
+        self.func_count += 1;
+        let mut func = Function::new_with_locals_types(Vec::new());
+        func.instruction(&Instruction::I64Const(table_base as i64));
         func.instruction(&Instruction::End);
         self.codes.function(&func);
         func_index
