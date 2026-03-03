@@ -42904,6 +42904,11 @@ fn format_with_spec(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inc_ref_obj(bits: u64) {
+    // Fast path: skip GIL acquire for non-pointer values (int, bool, none).
+    // These are inline NaN-boxed and never touch the heap allocator.
+    if !obj_from_bits(bits).is_ptr() {
+        return;
+    }
     crate::with_gil_entry!(_py, {
         if let Some(ptr) = obj_from_bits(bits).as_ptr() {
             unsafe { molt_inc_ref(ptr) };
@@ -42913,6 +42918,10 @@ pub extern "C" fn molt_inc_ref_obj(bits: u64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dec_ref_obj(bits: u64) {
+    // Fast path: skip GIL acquire for non-pointer values (int, bool, none).
+    if !obj_from_bits(bits).is_ptr() {
+        return;
+    }
     crate::with_gil_entry!(_py, {
         if let Some(ptr) = obj_from_bits(bits).as_ptr() {
             unsafe { molt_dec_ref(ptr) };

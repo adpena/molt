@@ -72,7 +72,15 @@ private theorem join_assoc_known (v1 v2 v3 : Value) :
 
 /-- Join is associative. -/
 theorem join_assoc (a b c : AbsVal) : join (join a b) c = join a (join b c) := by
-  cases a <;> cases b <;> cases c <;> first | rfl | simp [join] | exact join_assoc_known ..
+  cases a <;> cases b <;> cases c <;> simp [join]
+  case known.known.unknown v1 v2 =>
+    by_cases h : v1 = v2 <;> simp [h, join]
+  case known.known.overdefined v1 v2 =>
+    by_cases h : v1 = v2 <;> simp [h, join]
+  case overdefined.known.known v1 v2 =>
+    by_cases h : v1 = v2 <;> simp [h, join]
+  case known.known.known v1 v2 v3 =>
+    exact join_assoc_known v1 v2 v3
 
 /-- ≤ is reflexive. -/
 theorem le_refl (a : AbsVal) : a ≤ a := by
