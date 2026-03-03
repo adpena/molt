@@ -894,46 +894,12 @@ def future_discard_from_awaited_by(fut: Any, waiter: Any) -> None:
             fut._asyncio_awaited_by.discard(waiter)
 
 
-def _debug_gather_enabled() -> bool:
-    return _os.getenv("MOLT_DEBUG_GATHER") == "1"
-
-
-_DEBUG_GATHER = _debug_gather_enabled()
-
-
-def _debug_wait_for_enabled() -> bool:
-    return _os.getenv("MOLT_DEBUG_WAIT_FOR") == "1"
-
-
-_DEBUG_WAIT_FOR = _debug_wait_for_enabled()
-
-
-def _debug_tasks_enabled() -> bool:
-    return _os.getenv("MOLT_DEBUG_TASKS") == "1"
-
-
-_DEBUG_TASKS = _debug_tasks_enabled()
-
-
-def _debug_asyncio_promise_enabled() -> bool:
-    return _os.getenv("MOLT_DEBUG_ASYNCIO_PROMISE") == "1"
-
-
-_DEBUG_ASYNCIO_PROMISE = _debug_asyncio_promise_enabled()
-
-
-def _debug_asyncio_exc_enabled() -> bool:
-    return _os.getenv("MOLT_DEBUG_ASYNCIO_EXC") == "1"
-
-
-_DEBUG_ASYNCIO_EXC = _debug_asyncio_exc_enabled()
-
-
-def _debug_asyncio_condition_enabled() -> bool:
-    return _os.getenv("MOLT_DEBUG_ASYNCIO_CONDITION") == "1"
-
-
-_DEBUG_ASYNCIO_CONDITION = _debug_asyncio_condition_enabled()
+_DEBUG_GATHER = False
+_DEBUG_WAIT_FOR = False
+_DEBUG_TASKS = False
+_DEBUG_ASYNCIO_PROMISE = False
+_DEBUG_ASYNCIO_EXC = False
+_DEBUG_ASYNCIO_CONDITION = False
 
 _UNSET = object()
 _PROC_STDIO_INHERIT = 0
@@ -1555,7 +1521,6 @@ molt_asyncio_sock_sendto_new = _intrinsic_require(
 molt_generic_alias_new = _intrinsic_require("molt_generic_alias_new", globals())
 molt_thread_submit = _intrinsic_require("molt_thread_submit", globals())
 molt_asyncio_to_thread = _intrinsic_require("molt_asyncio_to_thread", globals())
-
 _molt_module_new = _intrinsic_require("molt_module_new", globals())
 _molt_function_set_builtin = _intrinsic_require("molt_function_set_builtin", globals())
 _molt_future_cancel_msg = _intrinsic_require("molt_future_cancel_msg", globals())
@@ -6526,7 +6491,6 @@ subprocess = _module(
         "subprocess": _subprocess,
     },
 )
-
 _futures_attrs: dict[str, Any] = {
     "Future": Future,
     "GenericAlias": _types.GenericAlias,

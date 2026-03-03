@@ -58,7 +58,7 @@ use crate::{
 use crate::state::runtime_state::{AsyncGenLocalsEntry, GenLocalsEntry};
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::{is_block_on_task, process_task_state, thread_task_state};
+use crate::{process_task_state, thread_task_state};
 
 fn promise_trace_enabled() -> bool {
     static TRACE: OnceLock<bool> = OnceLock::new();
@@ -100,7 +100,6 @@ fn debug_current_task() -> bool {
 }
 
 const ASYNC_SLEEP_YIELD_SECS: f64 = 0.000_001;
-const ASYNC_SLEEP_YIELD_SENTINEL: f64 = -1.0;
 const ASYNCIO_WAIT_RETURN_ALL_COMPLETED: i64 = 0;
 const ASYNCIO_WAIT_RETURN_FIRST_COMPLETED: i64 = 1;
 const ASYNCIO_WAIT_RETURN_FIRST_EXCEPTION: i64 = 2;
@@ -2148,9 +2147,7 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                     // PEP 479 analog for async generators: StopAsyncIteration
                     // raised inside the body must be converted to RuntimeError.
                     if matches!(kind.as_deref(), Some("StopAsyncIteration")) {
-                        exception_clear_reason_set(
-                            "asyncgen_poll_stop_async_iter_convert",
-                        );
+                        exception_clear_reason_set("asyncgen_poll_stop_async_iter_convert");
                         molt_exception_clear();
                         dec_ref_bits(_py, exc_bits);
                         return raise_exception::<i64>(
@@ -2611,26 +2608,10 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
                     .register_blocking(_py, task_ptr, deadline);
                 return true;
             }
-            #[cfg(target_arch = "wasm32")]
-            {
-                runtime_state(_py)
-                    .sleep_queue()
-                    .register_blocking(_py, task_ptr, deadline);
-                return true;
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                if is_block_on_task(task_ptr) {
-                    runtime_state(_py)
-                        .sleep_queue()
-                        .register_blocking(_py, task_ptr, deadline);
-                } else {
-                    runtime_state(_py)
-                        .sleep_queue()
-                        .register_scheduler(_py, task_ptr, deadline);
-                }
-                return true;
-            }
+            runtime_state(_py)
+                .sleep_queue()
+                .register_scheduler(_py, task_ptr, deadline);
+            return true;
         }
         wake_task_ptr(_py, task_ptr);
         return true;
@@ -2653,26 +2634,10 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
                     .register_blocking(_py, task_ptr, deadline);
                 return true;
             }
-            #[cfg(target_arch = "wasm32")]
-            {
-                runtime_state(_py)
-                    .sleep_queue()
-                    .register_blocking(_py, task_ptr, deadline);
-                return true;
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                if is_block_on_task(task_ptr) {
-                    runtime_state(_py)
-                        .sleep_queue()
-                        .register_blocking(_py, task_ptr, deadline);
-                } else {
-                    runtime_state(_py)
-                        .sleep_queue()
-                        .register_scheduler(_py, task_ptr, deadline);
-                }
-                return true;
-            }
+            runtime_state(_py)
+                .sleep_queue()
+                .register_scheduler(_py, task_ptr, deadline);
+            return true;
         }
         wake_task_ptr(_py, task_ptr);
         return true;
@@ -2684,35 +2649,19 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
             .register_blocking(_py, task_ptr, deadline);
         return true;
     }
-    #[cfg(target_arch = "wasm32")]
-    {
-        runtime_state(_py)
-            .sleep_queue()
-            .register_blocking(_py, task_ptr, deadline);
-        true
+    runtime_state(_py)
+        .sleep_queue()
+        .register_scheduler(_py, task_ptr, deadline);
+    if async_trace_enabled() {
+        let delay = deadline.saturating_duration_since(Instant::now());
+        eprintln!(
+            "molt async trace: sleep_register_request task=0x{:x} deadline_secs={} delay_ms={}",
+            task_ptr as usize,
+            deadline_secs,
+            delay.as_secs_f64() * 1000.0
+        );
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        if is_block_on_task(task_ptr) {
-            runtime_state(_py)
-                .sleep_queue()
-                .register_blocking(_py, task_ptr, deadline);
-        } else {
-            runtime_state(_py)
-                .sleep_queue()
-                .register_scheduler(_py, task_ptr, deadline);
-        }
-        if async_trace_enabled() {
-            let delay = deadline.saturating_duration_since(Instant::now());
-            eprintln!(
-                "molt async trace: sleep_register_request task=0x{:x} deadline_secs={} delay_ms={}",
-                task_ptr as usize,
-                deadline_secs,
-                delay.as_secs_f64() * 1000.0
-            );
-        }
-        true
-    }
+    true
 }
 
 /// # Safety
@@ -4001,7 +3950,7 @@ pub unsafe extern "C" fn molt_async_sleep(obj_bits: u64) -> i64 {
                 let immediate = delay_secs <= 0.0;
                 if payload_len >= 1 {
                     let deadline = if immediate {
-                        ASYNC_SLEEP_YIELD_SENTINEL
+                        crate::monotonic_now_secs(_py) + ASYNC_SLEEP_YIELD_SECS.max(0.0)
                     } else {
                         crate::monotonic_now_secs(_py) + delay_secs
                     };

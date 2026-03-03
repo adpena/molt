@@ -50,6 +50,13 @@ pub(crate) fn builtin_func_bits_with_default(
     default_kind: i64,
 ) -> u64 {
     init_atomic_bits(_py, slot, || {
+        if cfg!(target_arch = "wasm32")
+            && std::env::var("MOLT_WASM_BUILTIN_FUNC_DEBUG").as_deref() == Ok("1")
+        {
+            eprintln!(
+                "molt wasm builtin_func_bits:methods fn=0x{fn_ptr:x} arity={arity} default_kind={default_kind}"
+            );
+        }
         let ptr = alloc_function_obj(_py, fn_ptr, arity);
         if ptr.is_null() {
             MoltObject::none().bits()
@@ -88,6 +95,11 @@ pub(crate) fn builtin_classmethod_bits(
     arity: u64,
 ) -> u64 {
     init_atomic_bits(_py, slot, || {
+        if cfg!(target_arch = "wasm32")
+            && std::env::var("MOLT_WASM_BUILTIN_FUNC_DEBUG").as_deref() == Ok("1")
+        {
+            eprintln!("molt wasm builtin_classmethod_bits:methods fn=0x{fn_ptr:x} arity={arity}");
+        }
         let func_ptr = alloc_function_obj(_py, fn_ptr, arity);
         if func_ptr.is_null() {
             return MoltObject::none().bits();
@@ -122,6 +134,13 @@ pub(crate) fn builtin_classmethod_bits_with_default(
     default_kind: i64,
 ) -> u64 {
     init_atomic_bits(_py, slot, || {
+        if cfg!(target_arch = "wasm32")
+            && std::env::var("MOLT_WASM_BUILTIN_FUNC_DEBUG").as_deref() == Ok("1")
+        {
+            eprintln!(
+                "molt wasm builtin_classmethod_bits:methods fn=0x{fn_ptr:x} arity={arity} default_kind={default_kind}"
+            );
+        }
         let func_ptr = alloc_function_obj(_py, fn_ptr, arity);
         if func_ptr.is_null() {
             return MoltObject::none().bits();

@@ -249,6 +249,8 @@ pub use crate::builtins::shutil::*;
 pub use crate::builtins::signal_ext::*;
 pub use crate::builtins::sitebuiltins::*;
 pub use crate::builtins::ssl::*;
+pub use crate::builtins::string_ext::*;
+pub use crate::builtins::stringprep::*;
 pub(crate) use crate::builtins::strings::{
     bytes_count_impl, bytes_find_impl, bytes_rfind_impl, bytes_strip_range, replace_bytes_impl,
     replace_bytes_impl_limit, replace_string_impl, rsplit_bytes_to_list_maxsplit,
@@ -257,8 +259,6 @@ pub(crate) use crate::builtins::strings::{
     split_bytes_whitespace_to_list_maxsplit, split_string_bytes_to_list_maxsplit,
     split_string_whitespace_to_list_maxsplit, splitlines_bytes_to_list, splitlines_string_to_list,
 };
-pub use crate::builtins::string_ext::*;
-pub use crate::builtins::stringprep::*;
 pub use crate::builtins::structs::*;
 pub use crate::builtins::subprocess_ext::*;
 pub use crate::builtins::sys_ext::*;

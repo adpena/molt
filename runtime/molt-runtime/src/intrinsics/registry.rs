@@ -45,7 +45,7 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
         let Some(fn_ptr) = resolve_symbol(spec.symbol) else {
             panic!("intrinsics registry missing symbol: {}", spec.symbol);
         };
-        let Some(func_bits) = build_intrinsic_func(_py, fn_ptr, spec.arity) else {
+        let Some(func_bits) = build_intrinsic_func(_py, spec.name, fn_ptr, spec.arity) else {
             continue;
         };
         let mut registered = false;
@@ -139,7 +139,12 @@ fn alias_name(name: &str) -> Option<String> {
     Some(alias)
 }
 
-fn build_intrinsic_func(_py: &PyToken<'_>, fn_ptr: u64, arity: u8) -> Option<u64> {
+fn build_intrinsic_func(_py: &PyToken<'_>, name: &str, fn_ptr: u64, arity: u8) -> Option<u64> {
+    if cfg!(target_arch = "wasm32")
+        && std::env::var("MOLT_WASM_INTRINSIC_DEBUG").as_deref() == Ok("1")
+    {
+        eprintln!("molt wasm intrinsic_new: name={name} fn=0x{fn_ptr:x} arity={arity}");
+    }
     let ptr = alloc_function_obj(_py, fn_ptr, arity as u64);
     if ptr.is_null() {
         return None;

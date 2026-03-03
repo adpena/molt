@@ -224,8 +224,7 @@ impl MersenneTwisterRng {
 
     fn twist(&mut self) {
         for i in 0..MT_N {
-            let y = (self.mt[i] & MT_UPPER_MASK)
-                | (self.mt[(i + 1) % MT_N] & MT_LOWER_MASK);
+            let y = (self.mt[i] & MT_UPPER_MASK) | (self.mt[(i + 1) % MT_N] & MT_LOWER_MASK);
             let mut value = self.mt[(i + MT_M) % MT_N] ^ (y >> 1);
             if y & 1 != 0 {
                 value ^= MT_MATRIX_A;
@@ -349,11 +348,7 @@ fn f64_from_bits(_py: &PyToken<'_>, bits: u64, param_name: &str) -> Option<f64> 
         let big = unsafe { bigint_ref(ptr) };
         return Some(big.to_f64().unwrap_or(f64::INFINITY));
     }
-    let _ = raise_exception::<u64>(
-        _py,
-        "TypeError",
-        &format!("{param_name} must be a number"),
-    );
+    let _ = raise_exception::<u64>(_py, "TypeError", &format!("{param_name} must be a number"));
     None
 }
 
@@ -589,11 +584,7 @@ pub extern "C" fn molt_random_getrandbits(handle_bits: u64, k_bits: u64) -> u64 
             );
         }
         if k_i64 > 65_536 {
-            return raise_exception::<u64>(
-                _py,
-                "ValueError",
-                "number of bits must be <= 65536",
-            );
+            return raise_exception::<u64>(_py, "ValueError", "number of bits must be <= 65536");
         }
         let k = k_i64 as u32;
         if k == 0 {
@@ -723,11 +714,7 @@ pub extern "C" fn molt_random_setstate(handle_bits: u64, state_bits: u64) -> u64
 
         let outer_elems = unsafe { seq_vec_ref(state_ptr) };
         if outer_elems.len() < 3 {
-            return raise_exception::<u64>(
-                _py,
-                "ValueError",
-                "state tuple must have 3 elements",
-            );
+            return raise_exception::<u64>(_py, "ValueError", "state tuple must have 3 elements");
         }
 
         // element 1: internalstate tuple (625 elements)
@@ -971,7 +958,11 @@ pub extern "C" fn molt_random_expovariate(handle_bits: u64, lambd_bits: u64) -> 
 
 /// Normal variate using Kinderman-Monahan (CPython random.normalvariate).
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_random_normalvariate(handle_bits: u64, mu_bits: u64, sigma_bits: u64) -> u64 {
+pub extern "C" fn molt_random_normalvariate(
+    handle_bits: u64,
+    mu_bits: u64,
+    sigma_bits: u64,
+) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
@@ -1399,11 +1390,7 @@ pub extern "C" fn molt_random_sample(handle_bits: u64, population_bits: u64, k_b
         }
         let k = k_i64 as usize;
         if k > n {
-            return raise_exception::<u64>(
-                _py,
-                "ValueError",
-                "sample k larger than population",
-            );
+            return raise_exception::<u64>(_py, "ValueError", "sample k larger than population");
         }
 
         let mut reg = RANDOM_REGISTRY.lock().unwrap();

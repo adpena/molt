@@ -57,6 +57,10 @@ struct DataSegmentRef {
 struct CompileFuncContext<'a> {
     func_map: &'a HashMap<String, u32>,
     func_indices: &'a HashMap<String, u32>,
+    // Public/object arity used by table/trampoline resolution.
+    func_arities: &'a HashMap<String, usize>,
+    // Raw wasm signature arity used by direct `call` emission.
+    func_sig_arities: &'a HashMap<String, usize>,
     trampoline_map: &'a HashMap<String, u32>,
     table_base: u32,
     import_ids: &'a BTreeMap<String, u32>,
@@ -82,6 +86,30 @@ impl TypeSectionExt for TypeSection {
     {
         self.ty().function(params, results);
     }
+}
+
+fn resolve_symbol_or_unique_numeric_suffix<T: Copy>(
+    map: &HashMap<String, T>,
+    name: &str,
+) -> Option<T> {
+    if let Some(value) = map.get(name).copied() {
+        return Some(value);
+    }
+    let prefix = format!("{name}_");
+    let mut resolved: Option<T> = None;
+    for (key, value) in map {
+        let Some(suffix) = key.strip_prefix(&prefix) else {
+            continue;
+        };
+        if suffix.is_empty() || !suffix.as_bytes().iter().all(u8::is_ascii_digit) {
+            continue;
+        }
+        if resolved.is_some() {
+            return None;
+        }
+        resolved = Some(*value);
+    }
+    resolved
 }
 
 fn box_int(val: i64) -> i64 {
@@ -933,7 +961,13 @@ impl WasmBackend {
             .function(std::iter::repeat_n(ValType::I64, 3), std::iter::empty());
         // Type 31: (i64, i32, i64, i64, i64) -> i64 (set_attr_object_ic)
         self.types.function(
-            [ValType::I64, ValType::I32, ValType::I64, ValType::I64, ValType::I64],
+            [
+                ValType::I64,
+                ValType::I32,
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+            ],
             std::iter::once(ValType::I64),
         );
 
@@ -1606,8 +1640,8 @@ impl WasmBackend {
         }
 
         let mut user_type_map: HashMap<usize, u32> = HashMap::new();
-        // Types 0-30 are defined above; start new signatures after them.
-        let mut next_type_idx = 31u32;
+        // Keep type indices aligned to the actual number of signatures emitted above.
+        let mut next_type_idx = self.types.len();
         for func_ir in &ir.functions {
             if func_ir.name.ends_with("_poll") {
                 continue;
@@ -2198,18 +2232,26 @@ impl WasmBackend {
         ];
         let mut func_to_table_idx = HashMap::new();
         let mut func_to_index = HashMap::new();
+        let mut func_arities: HashMap<String, usize> = HashMap::new();
+        let mut func_sig_arities: HashMap<String, usize> = HashMap::new();
         func_to_index.insert(
             "molt_runtime_init".to_string(),
             self.import_ids["runtime_init"],
         );
+        func_arities.insert("molt_runtime_init".to_string(), 0);
+        func_sig_arities.insert("molt_runtime_init".to_string(), 0);
         func_to_index.insert(
             "molt_runtime_shutdown".to_string(),
             self.import_ids["runtime_shutdown"],
         );
+        func_arities.insert("molt_runtime_shutdown".to_string(), 0);
+        func_sig_arities.insert("molt_runtime_shutdown".to_string(), 0);
         func_to_index.insert(
             "molt_sys_set_version_info".to_string(),
             self.import_ids["sys_set_version_info"],
         );
+        func_arities.insert("molt_sys_set_version_info".to_string(), 6);
+        func_sig_arities.insert("molt_sys_set_version_info".to_string(), 6);
         func_to_table_idx.insert("molt_async_sleep".to_string(), 1);
         func_to_table_idx.insert("molt_anext_default_poll".to_string(), 2);
         func_to_table_idx.insert("molt_asyncgen_poll".to_string(), 3);
@@ -2245,10 +2287,49 @@ impl WasmBackend {
             "molt_contextlib_async_exitstack_enter_context_poll".to_string(),
             32,
         );
+        for poll_name in [
+            "molt_async_sleep",
+            "molt_anext_default_poll",
+            "molt_asyncgen_poll",
+            "molt_promise_poll",
+            "molt_io_wait",
+            "molt_thread_poll",
+            "molt_process_poll",
+            "molt_ws_wait",
+            "molt_asyncio_wait_for_poll",
+            "molt_asyncio_wait_poll",
+            "molt_asyncio_gather_poll",
+            "molt_asyncio_socket_reader_read_poll",
+            "molt_asyncio_socket_reader_readline_poll",
+            "molt_asyncio_stream_reader_read_poll",
+            "molt_asyncio_stream_reader_readline_poll",
+            "molt_asyncio_stream_send_all_poll",
+            "molt_asyncio_sock_recv_poll",
+            "molt_asyncio_sock_connect_poll",
+            "molt_asyncio_sock_accept_poll",
+            "molt_asyncio_sock_recv_into_poll",
+            "molt_asyncio_sock_sendall_poll",
+            "molt_asyncio_sock_recvfrom_poll",
+            "molt_asyncio_sock_recvfrom_into_poll",
+            "molt_asyncio_sock_sendto_poll",
+            "molt_asyncio_timer_handle_poll",
+            "molt_asyncio_fd_watcher_poll",
+            "molt_asyncio_server_accept_loop_poll",
+            "molt_asyncio_ready_runner_poll",
+            "molt_contextlib_asyncgen_enter_poll",
+            "molt_contextlib_asyncgen_exit_poll",
+            "molt_contextlib_async_exitstack_exit_poll",
+            "molt_contextlib_async_exitstack_enter_context_poll",
+        ] {
+            func_arities.insert(poll_name.to_string(), 1);
+            func_sig_arities.insert(poll_name.to_string(), 1);
+        }
 
-        for (offset, (runtime_name, import_name, _)) in builtin_table_funcs.iter().enumerate() {
+        for (offset, (runtime_name, import_name, arity)) in builtin_table_funcs.iter().enumerate() {
             let idx = (offset as u32) + poll_table_prefix;
             let runtime_key = (*runtime_name).to_string();
+            func_arities.insert(runtime_key.clone(), *arity);
+            func_sig_arities.insert(runtime_key.clone(), *arity);
             func_to_table_idx.insert(runtime_key.clone(), idx);
             if let Some(wrapper_idx) = builtin_wrapper_indices.get(&runtime_key) {
                 func_to_index.insert(runtime_key, *wrapper_idx);
@@ -2275,6 +2356,12 @@ impl WasmBackend {
             let idx = (i as u32) + poll_table_prefix + builtin_table_funcs.len() as u32;
             func_to_table_idx.insert(func_ir.name.clone(), idx);
             func_to_index.insert(func_ir.name.clone(), user_func_start + i as u32);
+            let public_arity = default_trampoline_spec
+                .get(&func_ir.name)
+                .map(|(arity, _)| *arity)
+                .unwrap_or(func_ir.params.len());
+            func_arities.insert(func_ir.name.clone(), public_arity);
+            func_sig_arities.insert(func_ir.name.clone(), func_ir.params.len());
             table_indices.push(user_func_start + i as u32);
         }
         let mut func_to_trampoline_idx = HashMap::new();
@@ -2300,6 +2387,8 @@ impl WasmBackend {
         let compile_ctx = CompileFuncContext {
             func_map: &func_to_table_idx,
             func_indices: &func_to_index,
+            func_arities: &func_arities,
+            func_sig_arities: &func_sig_arities,
             trampoline_map: &func_to_trampoline_idx,
             import_ids: &import_ids,
             reloc_enabled,
@@ -2793,9 +2882,142 @@ impl WasmBackend {
         self.func_count += 1;
         let func_map = ctx.func_map;
         let func_indices = ctx.func_indices;
+        let func_arities = ctx.func_arities;
+        let func_sig_arities = ctx.func_sig_arities;
         let trampoline_map = ctx.trampoline_map;
         let table_base = ctx.table_base;
         let import_ids = ctx.import_ids;
+        let resolve_func_idx = |name: &str, expected_arity: usize| -> u32 {
+            if let Some(idx) = func_indices.get(name).copied() {
+                if func_sig_arities.get(name).copied() == Some(expected_arity) {
+                    return idx;
+                }
+            }
+            if let Some(idx) = import_ids.get(name).copied() {
+                if !func_sig_arities.contains_key(name)
+                    || func_sig_arities.get(name).copied() == Some(expected_arity)
+                {
+                    return idx;
+                }
+            }
+            let prefix = format!("{name}_");
+            let mut match_idx: Option<u32> = None;
+            for (candidate, idx) in func_indices {
+                let Some(suffix) = candidate.strip_prefix(&prefix) else {
+                    continue;
+                };
+                if suffix.is_empty() || !suffix.as_bytes().iter().all(u8::is_ascii_digit) {
+                    continue;
+                }
+                if func_sig_arities.get(candidate).copied() != Some(expected_arity) {
+                    continue;
+                }
+                if match_idx.is_some() {
+                    panic!("call target ambiguous for {name} with arity {expected_arity}");
+                }
+                match_idx = Some(*idx);
+            }
+            match_idx.unwrap_or_else(|| panic!("call target not found: {name}"))
+        };
+        let resolve_table_slot = |name: &str| -> u32 {
+            resolve_symbol_or_unique_numeric_suffix(func_map, name)
+                .unwrap_or_else(|| panic!("table slot missing for function: {name}"))
+        };
+        let resolve_table_slot_with_arity = |name: &str, expected_arity: usize| -> u32 {
+            if let Some(slot) = func_map.get(name).copied() {
+                if func_arities.get(name).copied() == Some(expected_arity) {
+                    return slot;
+                }
+            }
+            let prefix = format!("{name}_");
+            let mut match_slot: Option<u32> = None;
+            for (candidate, slot) in func_map {
+                let Some(suffix) = candidate.strip_prefix(&prefix) else {
+                    continue;
+                };
+                if suffix.is_empty() || !suffix.as_bytes().iter().all(u8::is_ascii_digit) {
+                    continue;
+                }
+                if func_arities.get(candidate).copied() != Some(expected_arity) {
+                    continue;
+                }
+                if match_slot.is_some() {
+                    panic!("table slot ambiguous for {name} with arity {expected_arity}");
+                }
+                match_slot = Some(*slot);
+            }
+            match_slot.unwrap_or_else(|| {
+                panic!("table slot missing for {name} with arity {expected_arity}")
+            })
+        };
+        let resolve_table_slot_with_shape = |name: &str,
+                                             expected_arity: usize,
+                                             expected_sig_arity: usize|
+         -> u32 {
+            if let Some(slot) = func_map.get(name).copied()
+                && func_arities.get(name).copied() == Some(expected_arity)
+                && func_sig_arities.get(name).copied() == Some(expected_sig_arity)
+            {
+                return slot;
+            }
+            let prefix = format!("{name}_");
+            let mut match_slot: Option<u32> = None;
+            for (candidate, slot) in func_map {
+                let Some(suffix) = candidate.strip_prefix(&prefix) else {
+                    continue;
+                };
+                if suffix.is_empty() || !suffix.as_bytes().iter().all(u8::is_ascii_digit) {
+                    continue;
+                }
+                if func_arities.get(candidate).copied() != Some(expected_arity)
+                    || func_sig_arities.get(candidate).copied() != Some(expected_sig_arity)
+                {
+                    continue;
+                }
+                if match_slot.is_some() {
+                    panic!(
+                        "table slot ambiguous for {name} with arity {expected_arity} sig {expected_sig_arity}"
+                    );
+                }
+                match_slot = Some(*slot);
+            }
+            match_slot.unwrap_or_else(|| {
+                    panic!(
+                        "table slot missing for {name} with arity {expected_arity} sig {expected_sig_arity}"
+                    )
+                })
+        };
+        let resolve_trampoline_slot = |name: &str| -> u32 {
+            resolve_symbol_or_unique_numeric_suffix(trampoline_map, name)
+                .unwrap_or_else(|| panic!("trampoline slot missing for function: {name}"))
+        };
+        let resolve_trampoline_slot_with_arity = |name: &str, expected_arity: usize| -> u32 {
+            if let Some(slot) = trampoline_map.get(name).copied() {
+                if func_arities.get(name).copied() == Some(expected_arity) {
+                    return slot;
+                }
+            }
+            let prefix = format!("{name}_");
+            let mut match_slot: Option<u32> = None;
+            for (candidate, slot) in trampoline_map {
+                let Some(suffix) = candidate.strip_prefix(&prefix) else {
+                    continue;
+                };
+                if suffix.is_empty() || !suffix.as_bytes().iter().all(u8::is_ascii_digit) {
+                    continue;
+                }
+                if func_arities.get(candidate).copied() != Some(expected_arity) {
+                    continue;
+                }
+                if match_slot.is_some() {
+                    panic!("trampoline slot ambiguous for {name} with arity {expected_arity}");
+                }
+                match_slot = Some(*slot);
+            }
+            match_slot.unwrap_or_else(|| {
+                panic!("trampoline slot missing for {name} with arity {expected_arity}")
+            })
+        };
         let mut locals = HashMap::new();
         let mut local_count = 0;
         let mut local_types = Vec::new();
@@ -6399,7 +6621,9 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         func.instruction(&Instruction::LocalGet(val));
 
-                        let site_bits = crate::stable_ic_site_id(func_ir.name.as_str(), op_idx, "setattr") as i64;
+                        let site_bits =
+                            crate::stable_ic_site_id(func_ir.name.as_str(), op_idx, "setattr")
+                                as i64;
                         func.instruction(&Instruction::I64Const(site_bits));
 
                         emit_call(func, reloc_enabled, import_ids["set_attr_object_ic"]);
@@ -7103,7 +7327,10 @@ impl WasmBackend {
                     }
                     "call_async" => {
                         let payload_len = op.args.as_ref().map(|args| args.len()).unwrap_or(0);
-                        let table_slot = func_map[op.s_value.as_ref().unwrap()];
+                        // call_async targets task poll entrypoints; the callable table
+                        // signature is always `poll(self)` regardless of payload width.
+                        let table_slot =
+                            resolve_table_slot_with_arity(op.s_value.as_ref().unwrap(), 1);
                         let table_idx = table_base + table_slot;
                         emit_table_index_i64(func, reloc_enabled, table_idx);
                         func.instruction(&Instruction::I64Const((payload_len * 8) as i64));
@@ -7133,9 +7360,7 @@ impl WasmBackend {
                         let target_name = op.s_value.as_ref().unwrap();
                         let args_names = op.args.as_ref().unwrap();
                         let out = locals[op.out.as_ref().unwrap()];
-                        let func_idx = *func_indices
-                            .get(target_name)
-                            .expect("call target not found");
+                        let func_idx = resolve_func_idx(target_name, args_names.len());
                         let bootstrap_call = func_idx == import_ids["runtime_init"];
                         if bootstrap_call {
                             for arg_name in args_names {
@@ -7172,9 +7397,7 @@ impl WasmBackend {
                         let target_name = op.s_value.as_ref().unwrap();
                         let args_names = op.args.as_ref().unwrap();
                         let out = locals[op.out.as_ref().unwrap()];
-                        let func_idx = *func_indices
-                            .get(target_name)
-                            .expect("call_internal target not found");
+                        let func_idx = resolve_func_idx(target_name, args_names.len());
                         for arg_name in args_names {
                             let arg = locals[arg_name];
                             func.instruction(&Instruction::LocalGet(arg));
@@ -7258,10 +7481,34 @@ impl WasmBackend {
                         let callargs_tmp = locals["__molt_tmp0"];
                         let tmp_ptr = locals["__molt_tmp1"];
                         let arity = args_names.len().saturating_sub(1);
-                        let func_idx = *func_indices
-                            .get(target_name)
-                            .expect("call_guarded target not found");
-                        let table_slot = func_map[target_name];
+                        if func_sig_arities.get(target_name).copied() != Some(arity) {
+                            // Guarded direct-call fast path is only valid for exact-arity
+                            // targets; fall back to call_bind_ic when arities diverge.
+                            func.instruction(&Instruction::I64Const(arity as i64));
+                            func.instruction(&Instruction::I64Const(0));
+                            emit_call(func, reloc_enabled, import_ids["callargs_new"]);
+                            func.instruction(&Instruction::LocalSet(callargs_tmp));
+                            for arg_name in &args_names[1..] {
+                                let arg = locals[arg_name];
+                                func.instruction(&Instruction::LocalGet(callargs_tmp));
+                                func.instruction(&Instruction::LocalGet(arg));
+                                emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
+                                func.instruction(&Instruction::Drop);
+                            }
+                            let site_bits = box_int(stable_ic_site_id(
+                                func_ir.name.as_str(),
+                                op_idx,
+                                "call_guarded_arity_mismatch",
+                            ));
+                            func.instruction(&Instruction::I64Const(site_bits));
+                            func.instruction(&Instruction::LocalGet(callee_bits));
+                            func.instruction(&Instruction::LocalGet(callargs_tmp));
+                            emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+                            func.instruction(&Instruction::LocalSet(out));
+                            continue;
+                        }
+                        let func_idx = resolve_func_idx(target_name, arity);
+                        let table_slot = resolve_table_slot_with_arity(target_name, arity);
                         let table_idx = table_base + table_slot;
                         func.instruction(&Instruction::LocalGet(callee_bits));
                         emit_call(func, reloc_enabled, import_ids["is_function_obj"]);
@@ -7363,9 +7610,10 @@ impl WasmBackend {
                     "func_new" => {
                         let func_name = op.s_value.as_ref().unwrap();
                         let arity = op.value.unwrap_or(0);
-                        let table_slot = func_map[func_name];
+                        let table_slot = resolve_table_slot_with_arity(func_name, arity as usize);
                         let table_idx = table_base + table_slot;
-                        let tramp_slot = trampoline_map[func_name];
+                        let tramp_slot =
+                            resolve_trampoline_slot_with_arity(func_name, arity as usize);
                         let tramp_idx = table_base + tramp_slot;
                         emit_table_index_i64(func, reloc_enabled, table_idx);
                         emit_table_index_i64(func, reloc_enabled, tramp_idx);
@@ -7383,9 +7631,10 @@ impl WasmBackend {
                             .and_then(|args| args.first())
                             .expect("func_new_closure expects closure arg");
                         let closure_bits = locals[closure_name];
-                        let table_slot = func_map[func_name];
+                        let table_slot = resolve_table_slot_with_arity(func_name, arity as usize);
                         let table_idx = table_base + table_slot;
-                        let tramp_slot = trampoline_map[func_name];
+                        let tramp_slot =
+                            resolve_trampoline_slot_with_arity(func_name, arity as usize);
                         let tramp_idx = table_base + tramp_slot;
                         emit_table_index_i64(func, reloc_enabled, table_idx);
                         emit_table_index_i64(func, reloc_enabled, tramp_idx);
@@ -7430,7 +7679,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let code_bits = locals[&args[0]];
                         let func_name = op.s_value.as_ref().unwrap();
-                        let table_slot = func_map[func_name];
+                        let table_slot = resolve_table_slot(func_name);
                         let table_idx = table_base + table_slot;
                         emit_table_index_i64(func, reloc_enabled, table_idx);
                         func.instruction(&Instruction::LocalGet(code_bits));
@@ -7442,7 +7691,7 @@ impl WasmBackend {
                         let names_bits = locals[&args[0]];
                         let offsets_bits = locals[&args[1]];
                         let func_name = op.s_value.as_ref().unwrap();
-                        let table_slot = func_map[func_name];
+                        let table_slot = resolve_table_slot(func_name);
                         let table_idx = table_base + table_slot;
                         emit_table_index_i64(func, reloc_enabled, table_idx);
                         func.instruction(&Instruction::LocalGet(names_bits));
@@ -7455,7 +7704,7 @@ impl WasmBackend {
                         let names_bits = locals[&args[0]];
                         let offsets_bits = locals[&args[1]];
                         let func_name = op.s_value.as_ref().unwrap();
-                        let table_slot = func_map[func_name];
+                        let table_slot = resolve_table_slot(func_name);
                         let table_idx = table_base + table_slot;
                         emit_table_index_i64(func, reloc_enabled, table_idx);
                         func.instruction(&Instruction::LocalGet(names_bits));
@@ -7485,9 +7734,14 @@ impl WasmBackend {
                     "builtin_func" => {
                         let func_name = op.s_value.as_ref().unwrap();
                         let arity = op.value.unwrap_or(0);
-                        let table_slot = func_map[func_name];
+                        let table_slot = resolve_table_slot_with_shape(
+                            func_name,
+                            arity as usize,
+                            arity as usize,
+                        );
                         let table_idx = table_base + table_slot;
-                        let tramp_slot = trampoline_map[func_name];
+                        let tramp_slot =
+                            resolve_trampoline_slot_with_arity(func_name, arity as usize);
                         let tramp_idx = table_base + tramp_slot;
                         emit_table_index_i64(func, reloc_enabled, table_idx);
                         emit_table_index_i64(func, reloc_enabled, tramp_idx);
@@ -7746,7 +8000,7 @@ impl WasmBackend {
                             "coroutine" => (TASK_KIND_COROUTINE, 0),
                             _ => panic!("unknown task kind: {task_kind}"),
                         };
-                        let table_slot = func_map[op.s_value.as_ref().unwrap()];
+                        let table_slot = resolve_table_slot(op.s_value.as_ref().unwrap());
                         let table_idx = table_base + table_slot;
                         emit_table_index_i64(func, reloc_enabled, table_idx);
                         func.instruction(&Instruction::I64Const(total));

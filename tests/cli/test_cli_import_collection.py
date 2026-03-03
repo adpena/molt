@@ -529,6 +529,38 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
             "midend": {
                 "promoted_functions": 2,
                 "promotion_source_summary": {"pgo_hot_functions": 2},
+                "pass_hotspots_top": [
+                    {
+                        "module": "pkg.mod",
+                        "function": "hot_fn",
+                        "pass": "sccp_edge_thread",
+                        "ms_total": 10.0,
+                        "ms_p95": 9.0,
+                    },
+                    {
+                        "module": "pkg.mod",
+                        "function": "hot_fn",
+                        "pass": "cse",
+                        "ms_total": 20.0,
+                        "ms_p95": 5.0,
+                    },
+                ],
+                "pass_hotspots_p95_top": [
+                    {
+                        "module": "pkg.mod",
+                        "function": "hot_fn",
+                        "pass": "cse",
+                        "ms_total": 20.0,
+                        "ms_p95": 5.0,
+                    },
+                    {
+                        "module": "pkg.mod",
+                        "function": "hot_fn",
+                        "pass": "sccp_edge_thread",
+                        "ms_total": 10.0,
+                        "ms_p95": 9.0,
+                    },
+                ],
                 "promotion_hotspots_top": [
                     {
                         "module": "pkg.mod",
@@ -553,6 +585,13 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
     assert "- midend.promoted_functions: 2" in stderr
     assert "- midend.promotion_source.pgo_hot_functions: 2" in stderr
     assert "midend.promotion_hotspot.1: pkg.mod::hot_fn B->A" in stderr
+    assert (
+        "midend.hotspot.1: pkg.mod::hot_fn:cse total_ms=20.000 p95_ms=5.000" in stderr
+    )
+    assert (
+        "midend.hotspot_p95.1: pkg.mod::hot_fn:sccp_edge_thread "
+        "p95_ms=9.000 total_ms=10.000" in stderr
+    )
 
 
 def test_module_name_from_path_outside_module_roots_uses_stem(tmp_path: Path) -> None:

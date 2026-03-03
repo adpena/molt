@@ -24,11 +24,7 @@ const DIGITS: &[u8; 36] = b"abcdefghijklmnopqrstuvwxyz0123456789";
 
 /// Bias adaptation function (RFC 3492 §6.1).
 fn adapt(mut delta: u32, num_points: u32, first_time: bool) -> u32 {
-    delta = if first_time {
-        delta / DAMP
-    } else {
-        delta / 2
-    };
+    delta = if first_time { delta / DAMP } else { delta / 2 };
     delta += delta / num_points;
     let mut k = 0u32;
     while delta > ((BASE - TMIN) * TMAX) / 2 {
@@ -164,7 +160,10 @@ fn punycode_decode_impl(input: &[u8], errors: &str) -> Result<String, String> {
     }
 
     // Uppercase the extended part for case-insensitive decoding.
-    let ext_upper: Vec<u8> = extended_part.iter().map(|b| b.to_ascii_uppercase()).collect();
+    let ext_upper: Vec<u8> = extended_part
+        .iter()
+        .map(|b| b.to_ascii_uppercase())
+        .collect();
 
     let mut n = INITIAL_N;
     let mut i = 0u32;
@@ -284,8 +283,8 @@ pub extern "C" fn molt_punycode_decode(data_bits: u64, errors_bits: u64) -> u64 
             }
         };
 
-        let errors_str = string_obj_to_owned(obj_from_bits(errors_bits))
-            .unwrap_or_else(|| "strict".to_string());
+        let errors_str =
+            string_obj_to_owned(obj_from_bits(errors_bits)).unwrap_or_else(|| "strict".to_string());
 
         match punycode_decode_impl(&raw, &errors_str) {
             Ok(decoded) => {

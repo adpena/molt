@@ -153,10 +153,21 @@ fn alloc_loop() -> u64 {
     handle
 }
 
-fn with_loop<F, R>(handle: u64, f: F) -> Option<R>
+#[inline]
+fn decode_loop_handle(handle_bits: u64) -> Option<u64> {
+    let handle_obj = crate::obj_from_bits(handle_bits);
+    let handle = crate::to_i64(handle_obj)?;
+    if handle <= 0 {
+        return None;
+    }
+    Some(handle as u64)
+}
+
+fn with_loop<F, R>(handle_bits: u64, f: F) -> Option<R>
 where
     F: FnOnce(&mut EventLoopState) -> R,
 {
+    let handle = decode_loop_handle(handle_bits)?;
     let mut map = LOOPS.lock().unwrap();
     map.get_mut(&handle).map(f)
 }
@@ -439,12 +450,15 @@ pub extern "C" fn molt_event_loop_remove_writer(_loop_handle: u64, _fd_bits: u64
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_run_once(loop_handle: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let Some(handle) = decode_loop_handle(loop_handle) else {
+            return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
+        };
         let mut callbacks_run: i64 = 0;
 
         // Phase 1: Drain ready queue.
         let ready_batch: Vec<u64> = {
             let mut map = LOOPS.lock().unwrap();
-            let Some(state) = map.get_mut(&loop_handle) else {
+            let Some(state) = map.get_mut(&handle) else {
                 return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
             };
             if state.is_closed() {
@@ -467,7 +481,7 @@ pub extern "C" fn molt_event_loop_run_once(loop_handle: u64) -> u64 {
         // Phase 2: Pop expired timers.
         let now_ns = {
             let map = LOOPS.lock().unwrap();
-            let Some(state) = map.get(&loop_handle) else {
+            let Some(state) = map.get(&handle) else {
                 return MoltObject::from_int(callbacks_run).bits();
             };
             state.monotonic_ns()
@@ -475,7 +489,7 @@ pub extern "C" fn molt_event_loop_run_once(loop_handle: u64) -> u64 {
         loop {
             let entry: Option<TimerEntry> = {
                 let mut map = LOOPS.lock().unwrap();
-                let Some(state) = map.get_mut(&loop_handle) else {
+                let Some(state) = map.get_mut(&handle) else {
                     break;
                 };
                 if let Some(top) = state.timers.peek() {
@@ -494,12 +508,12 @@ pub extern "C" fn molt_event_loop_run_once(loop_handle: u64) -> u64 {
             // Check O(1) cancelled set.
             let is_cancelled = {
                 let map = LOOPS.lock().unwrap();
-                map.get(&loop_handle)
+                map.get(&handle)
                     .is_some_and(|s| s.cancelled_timers.contains(&entry.sequence))
             };
             if is_cancelled {
                 // Remove from cancelled set to prevent unbounded growth.
-                if let Some(state) = LOOPS.lock().unwrap().get_mut(&loop_handle) {
+                if let Some(state) = LOOPS.lock().unwrap().get_mut(&handle) {
                     state.cancelled_timers.remove(&entry.sequence);
                 }
                 dec_ref_bits(_py, entry.callback_bits);
@@ -641,9 +655,12 @@ pub extern "C" fn molt_event_loop_is_closed(loop_handle: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_close(loop_handle: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let Some(handle) = decode_loop_handle(loop_handle) else {
+            return MoltObject::none().bits();
+        };
         let callbacks_to_free: Vec<u64> = {
             let mut map = LOOPS.lock().unwrap();
-            let Some(state) = map.get_mut(&loop_handle) else {
+            let Some(state) = map.get_mut(&handle) else {
                 return MoltObject::none().bits();
             };
             if state.is_closed() {
@@ -683,8 +700,11 @@ pub extern "C" fn molt_event_loop_drop(loop_handle: u64) -> u64 {
     // Close first to ensure proper cleanup.
     molt_event_loop_close(loop_handle);
     crate::with_gil_entry!(_py, {
+        let Some(handle) = decode_loop_handle(loop_handle) else {
+            return MoltObject::none().bits();
+        };
         let mut map = LOOPS.lock().unwrap();
-        map.remove(&loop_handle);
+        map.remove(&handle);
         MoltObject::none().bits()
     })
 }

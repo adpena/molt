@@ -63,13 +63,23 @@ pub(crate) fn dict_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(dict_items_method),
             1,
         )),
-        "get" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.dict_get,
-            fn_addr!(dict_get_method),
-            3,
-            FUNC_DEFAULT_NONE,
-        )),
+        "get" => {
+            if cfg!(target_arch = "wasm32")
+                && std::env::var("MOLT_WASM_DICT_METHOD_DEBUG").as_deref() == Ok("1")
+            {
+                eprintln!(
+                    "molt wasm dict_method:get fn=0x{:x}",
+                    fn_addr!(dict_get_method)
+                );
+            }
+            Some(builtin_func_bits_with_default(
+                _py,
+                &runtime_state(_py).method_cache.dict_get,
+                fn_addr!(dict_get_method),
+                3,
+                FUNC_DEFAULT_NONE,
+            ))
+        }
         "pop" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.dict_pop,
@@ -95,13 +105,23 @@ pub(crate) fn dict_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(dict_popitem_method),
             1,
         )),
-        "setdefault" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.dict_setdefault,
-            fn_addr!(dict_setdefault_method),
-            3,
-            FUNC_DEFAULT_NONE,
-        )),
+        "setdefault" => {
+            if cfg!(target_arch = "wasm32")
+                && std::env::var("MOLT_WASM_DICT_METHOD_DEBUG").as_deref() == Ok("1")
+            {
+                eprintln!(
+                    "molt wasm dict_method:setdefault fn=0x{:x}",
+                    fn_addr!(dict_setdefault_method)
+                );
+            }
+            Some(builtin_func_bits_with_default(
+                _py,
+                &runtime_state(_py).method_cache.dict_setdefault,
+                fn_addr!(dict_setdefault_method),
+                3,
+                FUNC_DEFAULT_NONE,
+            ))
+        }
         "update" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.dict_update,
@@ -109,13 +129,23 @@ pub(crate) fn dict_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             2,
             FUNC_DEFAULT_DICT_UPDATE,
         )),
-        "fromkeys" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.dict_fromkeys,
-            fn_addr!(dict_fromkeys_method),
-            3,
-            FUNC_DEFAULT_NONE,
-        )),
+        "fromkeys" => {
+            if cfg!(target_arch = "wasm32")
+                && std::env::var("MOLT_WASM_DICT_METHOD_DEBUG").as_deref() == Ok("1")
+            {
+                eprintln!(
+                    "molt wasm dict_method:fromkeys fn=0x{:x}",
+                    fn_addr!(dict_fromkeys_method)
+                );
+            }
+            Some(builtin_func_bits_with_default(
+                _py,
+                &runtime_state(_py).method_cache.dict_fromkeys,
+                fn_addr!(dict_fromkeys_method),
+                3,
+                FUNC_DEFAULT_NONE,
+            ))
+        }
         "__getitem__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.dict_getitem,

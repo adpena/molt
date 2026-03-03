@@ -46,10 +46,7 @@ fn scan_identifier(text: &[u8], start: usize) -> Option<(usize, usize)> {
 ///
 /// `template_bits` must be a str, `delimiter_bits` must be a str (usually "$").
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_string_template_scan(
-    template_bits: u64,
-    delimiter_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_string_template_scan(template_bits: u64, delimiter_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(template) = string_obj_to_owned(obj_from_bits(template_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "template must be str");
@@ -84,10 +81,7 @@ pub extern "C" fn molt_string_template_scan(
                 let lit = &text[idx..];
                 let lit_ptr = alloc_string(_py, lit);
                 let none = MoltObject::none().bits();
-                let tup = alloc_tuple(
-                    _py,
-                    &[MoltObject::from_ptr(lit_ptr).bits(), none, none],
-                );
+                let tup = alloc_tuple(_py, &[MoltObject::from_ptr(lit_ptr).bits(), none, none]);
                 segments.push(MoltObject::from_ptr(tup).bits());
                 break;
             };
@@ -101,10 +95,7 @@ pub extern "C" fn molt_string_template_scan(
                 let lit = &text[idx..];
                 let lit_ptr = alloc_string(_py, lit);
                 let none = MoltObject::none().bits();
-                let tup = alloc_tuple(
-                    _py,
-                    &[MoltObject::from_ptr(lit_ptr).bits(), none, none],
-                );
+                let tup = alloc_tuple(_py, &[MoltObject::from_ptr(lit_ptr).bits(), none, none]);
                 segments.push(MoltObject::from_ptr(tup).bits());
                 break;
             }
@@ -115,10 +106,7 @@ pub extern "C" fn molt_string_template_scan(
                 combined.extend_from_slice(delim);
                 let lit_ptr = alloc_string(_py, &combined);
                 let none = MoltObject::none().bits();
-                let tup = alloc_tuple(
-                    _py,
-                    &[MoltObject::from_ptr(lit_ptr).bits(), none, none],
-                );
+                let tup = alloc_tuple(_py, &[MoltObject::from_ptr(lit_ptr).bits(), none, none]);
                 segments.push(MoltObject::from_ptr(tup).bits());
                 idx = after + delim_len;
                 continue;
@@ -127,8 +115,7 @@ pub extern "C" fn molt_string_template_scan(
             // ${name} form.
             if text[after] == b'{' {
                 let brace_start = after + 1;
-                if let Some(brace_end_rel) = text[brace_start..].iter().position(|&b| b == b'}')
-                {
+                if let Some(brace_end_rel) = text[brace_start..].iter().position(|&b| b == b'}') {
                     let brace_end = brace_start + brace_end_rel;
                     let name_bytes = &text[brace_start..brace_end];
                     if !name_bytes.is_empty() && scan_identifier(name_bytes, 0).is_some() {
@@ -153,10 +140,7 @@ pub extern "C" fn molt_string_template_scan(
                 let lit = &text[idx..after];
                 let lit_ptr = alloc_string(_py, lit);
                 let none = MoltObject::none().bits();
-                let tup = alloc_tuple(
-                    _py,
-                    &[MoltObject::from_ptr(lit_ptr).bits(), none, none],
-                );
+                let tup = alloc_tuple(_py, &[MoltObject::from_ptr(lit_ptr).bits(), none, none]);
                 segments.push(MoltObject::from_ptr(tup).bits());
                 idx = after;
                 continue;
@@ -185,10 +169,7 @@ pub extern "C" fn molt_string_template_scan(
             let lit = &text[idx..after];
             let lit_ptr = alloc_string(_py, lit);
             let none = MoltObject::none().bits();
-            let tup = alloc_tuple(
-                _py,
-                &[MoltObject::from_ptr(lit_ptr).bits(), none, none],
-            );
+            let tup = alloc_tuple(_py, &[MoltObject::from_ptr(lit_ptr).bits(), none, none]);
             segments.push(MoltObject::from_ptr(tup).bits());
             idx = after;
         }
@@ -197,10 +178,7 @@ pub extern "C" fn molt_string_template_scan(
             // Empty template.
             let lit_ptr = alloc_string(_py, b"");
             let none = MoltObject::none().bits();
-            let tup = alloc_tuple(
-                _py,
-                &[MoltObject::from_ptr(lit_ptr).bits(), none, none],
-            );
+            let tup = alloc_tuple(_py, &[MoltObject::from_ptr(lit_ptr).bits(), none, none]);
             segments.push(MoltObject::from_ptr(tup).bits());
         }
 
@@ -211,10 +189,7 @@ pub extern "C" fn molt_string_template_scan(
 
 /// Check whether a template string is valid (all $-placeholders are well-formed).
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_string_template_is_valid(
-    template_bits: u64,
-    delimiter_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_string_template_is_valid(template_bits: u64, delimiter_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(template) = string_obj_to_owned(obj_from_bits(template_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "template must be str");
@@ -248,8 +223,7 @@ pub extern "C" fn molt_string_template_is_valid(
             }
             if text[after] == b'{' {
                 let brace_start = after + 1;
-                let Some(brace_end_rel) =
-                    text[brace_start..].iter().position(|&b| b == b'}')
+                let Some(brace_end_rel) = text[brace_start..].iter().position(|&b| b == b'}')
                 else {
                     return MoltObject::from_bool(false).bits();
                 };
@@ -303,7 +277,9 @@ pub extern "C" fn molt_string_template_get_identifiers(
                 .map(|p| p + idx);
             let Some(di) = next_idx else { break };
             let after = di + delim_len;
-            if after > length - 1 { break }
+            if after > length - 1 {
+                break;
+            }
             if text[after..].starts_with(delim) {
                 idx = after + delim_len;
                 continue;
@@ -568,17 +544,17 @@ pub extern "C" fn molt_string_formatter_field_name_split(field_name_bits: u64) -
             end += 1;
         }
         let first_bytes = &text[..end];
-        let first_bits = if first_bytes.iter().all(|b| b.is_ascii_digit()) && !first_bytes.is_empty()
-        {
-            let val: i64 = std::str::from_utf8(first_bytes)
-                .unwrap_or("0")
-                .parse()
-                .unwrap_or(0);
-            MoltObject::from_int(val).bits()
-        } else {
-            let ptr = alloc_string(_py, first_bytes);
-            MoltObject::from_ptr(ptr).bits()
-        };
+        let first_bits =
+            if first_bytes.iter().all(|b| b.is_ascii_digit()) && !first_bytes.is_empty() {
+                let val: i64 = std::str::from_utf8(first_bytes)
+                    .unwrap_or("0")
+                    .parse()
+                    .unwrap_or(0);
+                MoltObject::from_int(val).bits()
+            } else {
+                let ptr = alloc_string(_py, first_bytes);
+                MoltObject::from_ptr(ptr).bits()
+            };
 
         // Parse rest.
         let mut rest_items: Vec<u64> = Vec::new();
@@ -627,10 +603,7 @@ pub extern "C" fn molt_string_formatter_field_name_split(field_name_bits: u64) -
                         let ptr = alloc_string(_py, key_bytes);
                         MoltObject::from_ptr(ptr).bits()
                     };
-                let tup = alloc_tuple(
-                    _py,
-                    &[MoltObject::from_bool(false).bits(), key_bits],
-                );
+                let tup = alloc_tuple(_py, &[MoltObject::from_bool(false).bits(), key_bits]);
                 rest_items.push(MoltObject::from_ptr(tup).bits());
                 idx += 1; // skip ']'
                 continue;

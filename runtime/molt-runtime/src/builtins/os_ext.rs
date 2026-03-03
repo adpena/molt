@@ -708,11 +708,19 @@ pub extern "C" fn molt_os_truncate(_path_bits: u64, _length_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getpid() -> u64 {
     crate::with_gil_entry!(_py, {
-        #[cfg(unix)]
+        #[cfg(target_arch = "wasm32")]
+        {
+            // WASI preview1 `getpid` is unsupported and panics in std/libc.
+            // Use the same host-provided hook as `molt_getpid`.
+            let pid = unsafe { crate::molt_getpid_host() };
+            let pid = if pid < 0 { 0 } else { pid };
+            MoltObject::from_int(pid).bits()
+        }
+        #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
             MoltObject::from_int(unsafe { libc::getpid() } as i64).bits()
         }
-        #[cfg(not(unix))]
+        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
         {
             MoltObject::from_int(std::process::id() as i64).bits()
         }
@@ -740,7 +748,11 @@ pub extern "C" fn molt_os_getppid() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getppid() -> u64 {
     crate::with_gil_entry!(_py, {
-        raise_exception::<u64>(_py, "OSError", "[Errno 38] Function not implemented: 'getppid'")
+        raise_exception::<u64>(
+            _py,
+            "OSError",
+            "[Errno 38] Function not implemented: 'getppid'",
+        )
     })
 }
 
@@ -1749,7 +1761,9 @@ pub extern "C" fn molt_os_sysconf(name_bits: u64) -> u64 {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = name;
-            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "sysconf")
+            // WASM has no host libc sysconf surface; return indeterminate value (-1)
+            // so stdlib probes can degrade gracefully.
+            MoltObject::from_int(-1).bits()
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -1776,8 +1790,25 @@ pub extern "C" fn molt_os_sysconf_names() -> u64 {
     crate::with_gil_entry!(_py, {
         #[cfg(target_arch = "wasm32")]
         {
-            // Return an empty list on WASM — Python side builds dict from it
-            let list_ptr = alloc_list(_py, &[]);
+            let names: &[(&str, i64)] = &[("SC_IOV_MAX", 1)];
+            let mut entries: Vec<u64> = Vec::with_capacity(names.len() * 2);
+            for (name_str, val) in names {
+                let s_ptr = alloc_string(_py, name_str.as_bytes());
+                if s_ptr.is_null() {
+                    for e in &entries {
+                        dec_ref_bits(_py, *e);
+                    }
+                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                }
+                entries.push(MoltObject::from_ptr(s_ptr).bits());
+                entries.push(MoltObject::from_int(*val).bits());
+            }
+            let list_ptr = alloc_list(_py, &entries);
+            for (i, e) in entries.iter().enumerate() {
+                if i % 2 == 0 {
+                    dec_ref_bits(_py, *e);
+                }
+            }
             if list_ptr.is_null() {
                 return raise_exception::<_>(_py, "MemoryError", "out of memory");
             }
@@ -1793,6 +1824,7 @@ pub extern "C" fn molt_os_sysconf_names() -> u64 {
                 ("SC_OPEN_MAX", libc::_SC_OPEN_MAX),
                 ("SC_ARG_MAX", libc::_SC_ARG_MAX),
                 ("SC_CHILD_MAX", libc::_SC_CHILD_MAX),
+                ("SC_IOV_MAX", libc::_SC_IOV_MAX),
                 ("SC_HOST_NAME_MAX", libc::_SC_HOST_NAME_MAX),
                 ("SC_LOGIN_NAME_MAX", libc::_SC_LOGIN_NAME_MAX),
                 ("SC_PHYS_PAGES", libc::_SC_PHYS_PAGES),

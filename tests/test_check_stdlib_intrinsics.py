@@ -468,6 +468,61 @@ def test_stdlib_generic_gap_marker_is_classified_intrinsic_partial(
     assert module_status.get("generic_mod") == "intrinsic-partial"
 
 
+def test_intrinsic_partial_package_hotspots_reported_deterministically(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    module = _load_gate_module()
+    stdlib_root = tmp_path / "stdlib"
+    stdlib_root.mkdir()
+    _seed_intrinsic_package(stdlib_root, "alpha")
+    _seed_intrinsic_module(stdlib_root, "alpha/a1", "VALUE = 1\n")
+    _seed_intrinsic_module(stdlib_root, "alpha/a2", "VALUE = 1\n")
+    _seed_intrinsic_package(stdlib_root, "beta")
+    _seed_intrinsic_module(stdlib_root, "beta/b1", "VALUE = 1\n")
+    _seed_intrinsic_package(stdlib_root, "zeta")
+    _seed_intrinsic_module(stdlib_root, "zeta/z1", "VALUE = 1\n")
+    _seed_intrinsic_module(stdlib_root, "zeta/z2", "VALUE = 1\n")
+    _seed_intrinsic_module(stdlib_root, "gamma", "VALUE = 1\n")
+    report = tmp_path / "report.json"
+
+    _configure_required_top_level(module, monkeypatch, stdlib_root)
+    monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
+    monkeypatch.setattr(module, "AUDIT_DOC", tmp_path / "audit.md")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_stdlib_intrinsics.py",
+            "--update-doc",
+            "--fallback-intrinsic-backed-only",
+            "--json-out",
+            str(report),
+        ],
+    )
+
+    assert module.main() == 0
+    out = capsys.readouterr().out
+
+    assert "intrinsic-partial package hotspots:" in out
+    assert "alpha (3)" in out
+    assert "zeta (3)" in out
+    assert "beta (2)" in out
+    assert "gamma (" not in out
+
+    import json
+
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert (
+        payload.get("intrinsic_partial_package_hotspot_limit")
+        == module.INTRINSIC_PARTIAL_PACKAGE_HOTSPOT_LIMIT
+    )
+    assert payload.get("intrinsic_partial_package_hotspots") == [
+        {"package": "alpha", "count": 3, "modules": ["alpha", "alpha.a1", "alpha.a2"]},
+        {"package": "zeta", "count": 3, "modules": ["zeta", "zeta.z1", "zeta.z2"]},
+        {"package": "beta", "count": 2, "modules": ["beta", "beta.b1"]},
+    ]
+
+
 def test_top_level_union_gate_rejects_missing_entries(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -950,6 +1005,52 @@ def test_full_coverage_attestation_marks_intrinsic_backed(
         entry["module"]: entry["status"] for entry in payload.get("modules", [])
     }
     assert module_status.get("alpha") == "intrinsic-backed"
+    assert payload.get("intrinsic_partial_package_hotspots") == []
+    assert (
+        payload.get("intrinsic_partial_package_hotspot_limit")
+        == module.INTRINSIC_PARTIAL_PACKAGE_HOTSPOT_LIMIT
+    )
+
+
+def test_intrinsic_partial_package_hotspots_not_printed_without_data(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    module = _load_gate_module()
+    stdlib_root = tmp_path / "stdlib"
+    stdlib_root.mkdir()
+    _seed_intrinsic_module(stdlib_root, "alpha", "VALUE = 1\n")
+    ratchet = tmp_path / "ratchet.json"
+    ratchet.write_text('{"max_intrinsic_partial": 0}\n', encoding="utf-8")
+
+    _configure_required_top_level(module, monkeypatch, stdlib_root)
+    monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
+    monkeypatch.setattr(module, "AUDIT_DOC", tmp_path / "audit.md")
+    monkeypatch.setattr(
+        module,
+        "_load_fully_covered_stdlib_modules",
+        lambda _path: frozenset({"alpha"}),
+    )
+    monkeypatch.setattr(
+        module,
+        "_load_full_coverage_required_intrinsics",
+        lambda _path: {"alpha": tuple()},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_stdlib_intrinsics.py",
+            "--update-doc",
+            "--fallback-intrinsic-backed-only",
+            "--intrinsic-partial-ratchet-file",
+            str(ratchet),
+        ],
+    )
+
+    assert module.main() == 0
+    out = capsys.readouterr().out
+    assert "intrinsic-partial package hotspots:" not in out
+    assert "stdlib intrinsics lint: ok" in out
 
 
 def test_full_coverage_intrinsic_contract_requires_module_entry(

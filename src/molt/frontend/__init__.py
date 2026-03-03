@@ -1425,6 +1425,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.loop_layout_guards = []
         self.loop_guard_assumptions = []
         self.active_exceptions = []
+        self._module_cache_values = {}
 
     def _c3_merge(self, seqs: list[list[str]]) -> list[str] | None:
         merged: list[str] = []
@@ -1627,6 +1628,33 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
 
     def emit(self, op: MoltOp) -> None:
+        # Module-cache SSA values are only valid along paths that dominate later
+        # uses. Clear cached aliases at control-flow boundaries so branch-local
+        # MODULE_CACHE_GET temporaries are never reused on sibling paths.
+        if op.kind in {
+            "TRY_START",
+            "TRY_END",
+            "LABEL",
+            "STATE_LABEL",
+            "JUMP",
+            "BR_IF",
+            "IF",
+            "ELSE",
+            "END_IF",
+            "LOOP_START",
+            "LOOP_END",
+            "LOOP_CONTINUE",
+            "LOOP_BREAK",
+            "LOOP_BREAK_IF_TRUE",
+            "LOOP_BREAK_IF_FALSE",
+            "LOOP_INDEX_START",
+            "LOOP_INDEX_NEXT",
+            "STATE_TRANSITION",
+            "STATE_YIELD",
+            "PHI",
+            "ret",
+        }:
+            self._module_cache_values = {}
         if (
             op.kind == "CONST"
             and op.result
@@ -3873,6 +3901,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             kw_default_exprs=[],
             docstring=None,
             module_override=module_override,
+            fn_ptr_symbol=func_symbol,
         )
 
         prev_func = self.current_func_name
@@ -4289,6 +4318,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         is_generator: bool = False,
         is_async_generator: bool = False,
         bind_kind: int | None = None,
+        fn_ptr_symbol: str | None = None,
         poll_fn_symbol: str | None = None,
         emit_code: bool = True,
         varnames: list[str] | None = None,
@@ -4449,7 +4479,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         metadata={"code_id": code_id},
                     )
                 )
-            if poll_fn_symbol is not None:
+            if fn_ptr_symbol is not None:
+                self.emit(
+                    MoltOp(
+                        kind="FN_PTR_CODE_SET",
+                        args=[fn_ptr_symbol, code_val],
+                        result=MoltValue("none"),
+                    )
+                )
+            if poll_fn_symbol is not None and poll_fn_symbol != fn_ptr_symbol:
                 self.emit(
                     MoltOp(
                         kind="FN_PTR_CODE_SET",
@@ -4553,6 +4591,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             kw_default_exprs=[],
             docstring="Return the current module globals.",
             module_override="builtins",
+            fn_ptr_symbol=func_symbol,
         )
         set_builtin = self._emit_builtin_function("_molt_function_set_builtin")
         builtin_res = MoltValue(self.next_var(), type_hint="None")
@@ -4919,6 +4958,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return None
         return module_defaults.get(func_id)
 
+    def _direct_call_target_name(self, module_name: str, func_id: str) -> str:
+        normalized = self._normalize_allowlist_module(module_name)
+        resolved_module = normalized or module_name
+        return f"{self._sanitize_module_name(resolved_module)}__{func_id}"
+
+    def _can_lower_direct_module_call(self, module_name: str, func_id: str) -> bool:
+        normalized = self._normalize_allowlist_module(module_name)
+        resolved_module = normalized or module_name
+        if (
+            resolved_module != self.module_name
+            and resolved_module not in self.known_modules
+        ):
+            return False
+        return self._lookup_func_defaults(resolved_module, func_id) is not None
+
     def _emit_module_attr_get_on(self, module_name: str, name: str) -> MoltValue:
         module_val = self._emit_module_load(module_name)
         name_val = MoltValue(self.next_var(), type_hint="str")
@@ -5150,6 +5204,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         func_id: str,
         args: list[MoltValue],
         node: ast.AST,
+        *,
+        include_kwonly_defaults: bool = True,
     ) -> list[MoltValue] | None:
         info = self._lookup_func_defaults(module_name, func_id)
         if info is None:
@@ -5157,9 +5213,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         total_params = info.get("params")
         defaults = info.get("defaults", [])
         kwonly_count = info.get("kwonly")
+        if not include_kwonly_defaults:
+            defaults = [
+                spec for spec in defaults if not bool(spec.get("kwonly", False))
+            ]
         positional_limit = None
         if total_params is not None and isinstance(kwonly_count, int):
             positional_limit = total_params - kwonly_count
+            if not include_kwonly_defaults:
+                total_params = positional_limit
         func_obj = None
         if total_params is not None:
             missing = total_params - len(args)
@@ -11267,6 +11329,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 kw_default_exprs=[],
                 docstring=ast.get_docstring(item),
                 is_generator=True,
+                fn_ptr_symbol=poll_symbol,
                 varnames=varnames,
             )
             if func_spill is not None:
@@ -11575,6 +11638,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 default_exprs=[],
                 kw_default_exprs=[],
                 docstring=ast.get_docstring(item),
+                fn_ptr_symbol=method_symbol,
                 varnames=varnames,
             )
             if func_spill is not None:
@@ -11944,6 +12008,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     kw_default_exprs=[],
                     docstring=ast.get_docstring(item),
                     is_async_generator=True,
+                    fn_ptr_symbol=wrapper_symbol,
                     poll_fn_symbol=poll_symbol,
                     varnames=varnames,
                 )
@@ -12243,6 +12308,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 kw_default_exprs=[],
                 docstring=ast.get_docstring(item),
                 is_coroutine=True,
+                fn_ptr_symbol=wrapper_symbol,
                 varnames=varnames,
             )
             if func_spill is not None:
@@ -15431,7 +15497,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                     if func_id[:1].isupper():
                         force_bind = True
-                    if needs_bind or force_bind:
+                    if (
+                        needs_bind
+                        or force_bind
+                        or not self._can_lower_direct_module_call(
+                            allowlist_key, func_id
+                        )
+                    ):
                         callee = self.visit(node.func)
                         if callee is None:
                             raise NotImplementedError("Unsupported call target")
@@ -15461,9 +15533,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                         return res
                     res = MoltValue(self.next_var(), type_hint="Any")
-                    target_name = (
-                        f"{self._sanitize_module_name(allowlist_key)}__{func_id}"
-                    )
+                    target_name = self._direct_call_target_name(allowlist_key, func_id)
                     self.emit(
                         MoltOp(kind="CALL", args=[target_name] + args, result=res)
                     )
@@ -17494,19 +17564,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             )
                             return res
                         res = MoltValue(self.next_var(), type_hint="Any")
+                        # Closure functions include an implicit closure payload
+                        # argument in their concrete symbol signature, so guarded
+                        # direct-call metadata can mis-model arity. Keep closure
+                        # calls on CALL_FUNC to preserve runtime dispatch shape.
                         self.emit(
                             MoltOp(
-                                kind="CALL_GUARDED",
+                                kind="CALL_FUNC",
                                 args=[callee] + args,
                                 result=res,
-                                metadata={"target": func_symbol},
                             )
                         )
                         return res
                     args = self._emit_call_args(node.args)
                     if imported_from:
                         args = self._apply_direct_call_defaults(
-                            imported_from, func_id, args, node
+                            imported_from,
+                            func_id,
+                            args,
+                            node,
+                            include_kwonly_defaults=False,
                         )
                         if args is None:
                             callargs = self._emit_call_args_builder(node)
@@ -18100,6 +18177,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         kw_default_exprs=[],
                         docstring=None,
                         module_override="builtins",
+                        fn_ptr_symbol="molt_iter_sentinel",
                     )
                     res = MoltValue(self.next_var(), type_hint="iter")
                     self.emit(
@@ -18697,7 +18775,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     ):
                         target_module = imported_from
                 if target_module is not None:
-                    if needs_bind:
+                    if needs_bind or not self._can_lower_direct_module_call(
+                        target_module, func_id
+                    ):
                         callee = self.visit(node.func)
                         if callee is None:
                             raise NotImplementedError("Unsupported call target")
@@ -18727,9 +18807,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                         return res
                     res = MoltValue(self.next_var(), type_hint="Any")
-                    target_name = (
-                        f"{self._sanitize_module_name(target_module)}__{func_id}"
-                    )
+                    target_name = self._direct_call_target_name(target_module, func_id)
                     self.emit(
                         MoltOp(kind="CALL", args=[target_name] + args, result=res)
                     )
@@ -24113,6 +24191,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 kw_default_exprs=node.args.kw_defaults,
                 docstring=ast.get_docstring(node),
                 is_async_generator=True,
+                fn_ptr_symbol=func_symbol,
                 poll_fn_symbol=poll_func_name,
                 varnames=varnames,
             )
@@ -24400,6 +24479,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             kw_default_exprs=node.args.kw_defaults,
             docstring=ast.get_docstring(node),
             is_coroutine=True,
+            fn_ptr_symbol=func_symbol,
             varnames=varnames,
         )
         if func_spill is not None:
@@ -24606,6 +24686,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 kw_default_exprs=node.args.kw_defaults,
                 docstring=ast.get_docstring(node),
                 is_generator=True,
+                fn_ptr_symbol=poll_func_name,
                 varnames=varnames,
             )
             if func_spill is not None:
@@ -24869,6 +24950,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             default_exprs=node.args.defaults,
             kw_default_exprs=node.args.kw_defaults,
             docstring=ast.get_docstring(node),
+            fn_ptr_symbol=func_symbol,
             varnames=varnames,
         )
         if func_spill is not None:
@@ -25080,6 +25162,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 kw_default_exprs=node.args.kw_defaults,
                 docstring=None,
                 is_generator=True,
+                fn_ptr_symbol=poll_func_name,
                 varnames=varnames,
             )
             if func_spill is not None:
@@ -25291,6 +25374,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             default_exprs=node.args.defaults,
             kw_default_exprs=node.args.kw_defaults,
             docstring=None,
+            fn_ptr_symbol=func_symbol,
             varnames=self._collect_varnames_for_body(
                 posonly_params=posonly_names,
                 pos_or_kw_params=pos_or_kw_names,
@@ -25379,6 +25463,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.exact_locals.pop(bind_name, None)
             if self.current_func_name == "molt_main":
                 self.globals[bind_name] = bound_val
+                self.module_chunk_globals.add(bind_name)
             self._emit_module_attr_set(bind_name, bound_val)
             self.imported_modules[bind_name] = module_name
             if self.current_func_name == "molt_main":
@@ -25467,6 +25552,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.exact_locals.pop(bind_name, None)
             if self.current_func_name == "molt_main":
                 self.globals[bind_name] = attr_val
+                self.module_chunk_globals.add(bind_name)
             self._emit_module_attr_set(bind_name, attr_val)
             if self.known_modules:
                 if submodule_name in self.known_modules:
@@ -35354,6 +35440,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         attempted = 0
         accepted = 0
         ops_saved = 0
+        inlined_targets: dict[str, int] = {}
 
         # Count call sites per target across all functions.
         call_site_counts: dict[str, int] = {}
@@ -35477,24 +35564,49 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
                 accepted += 1
                 ops_saved += 1  # At least saved the CALL_FUNC op.
+                inlined_targets[target] = inlined_targets.get(target, 0) + 1
                 modified = True
 
             if modified:
                 caller_data["ops"] = new_ops
 
-        # Remove fully-inlined callees (no remaining call sites).
-        for fname in list(inlineable):
-            remaining = 0
+        # Remove only functions that were actually inlined and are now unreferenced.
+        # Keep guarded/direct-call and function-object references intact.
+        for fname in list(inlined_targets):
+            referenced = False
             for _cn, cdata in self.funcs_map.items():
                 for op in cdata["ops"]:
+                    if (
+                        op.kind
+                        in {"CALL", "CALL_INTERNAL", "FUNC_NEW", "FUNC_NEW_CLOSURE"}
+                        and op.args
+                        and isinstance(op.args[0], str)
+                        and op.args[0] == fname
+                    ):
+                        referenced = True
+                        break
                     if (
                         op.kind == "CALL_FUNC"
                         and op.args
                         and isinstance(op.args[0], str)
                         and op.args[0] == fname
                     ):
-                        remaining += 1
-            if remaining == 0 and fname in self.funcs_map:
+                        referenced = True
+                        break
+                    if op.kind == "CALL_GUARDED":
+                        target = ""
+                        if op.metadata:
+                            candidate = op.metadata.get("target", "")
+                            if isinstance(candidate, str):
+                                target = candidate
+                        if not target and op.args and isinstance(op.args[0], str):
+                            target = op.args[0]
+                        if target == fname:
+                            referenced = True
+                            break
+                if referenced:
+                    break
+            if not referenced and fname in self.funcs_map:
                 del self.funcs_map[fname]
 
         self.midend_stats["inline_attempted"] = (

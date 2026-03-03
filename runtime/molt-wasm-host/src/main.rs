@@ -164,7 +164,9 @@ fn build_engine() -> Result<Engine> {
     if matches!(env::var("MOLT_DETERMINISTIC").as_deref(), Ok("1")) {
         config.cranelift_nan_canonicalization(true);
         config.parallel_compilation(false);
-        debug_log(|| "deterministic mode: NaN canonicalization and serial compilation enabled".to_string());
+        debug_log(|| {
+            "deterministic mode: NaN canonicalization and serial compilation enabled".to_string()
+        });
     }
     Engine::new(&config)
 }

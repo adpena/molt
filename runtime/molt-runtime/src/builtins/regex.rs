@@ -958,7 +958,10 @@ pub extern "C" fn molt_re_named_backref_advance(
 // * Handle allocation starts at 1 so that 0 can serve as "invalid".
 
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex, atomic::{AtomicI64, Ordering}};
+use std::sync::{
+    LazyLock, Mutex,
+    atomic::{AtomicI64, Ordering},
+};
 
 // ---------------------------------------------------------------------------
 // Re-use the flag constants already defined at the top of this file.
@@ -1299,7 +1302,9 @@ impl ReParser {
         if digits.is_empty() {
             return Err("expected number".to_string());
         }
-        digits.parse::<u64>().map_err(|_| "number overflow".to_string())
+        digits
+            .parse::<u64>()
+            .map_err(|_| "number overflow".to_string())
     }
 
     // -----------------------------------------------------------------------
@@ -1315,9 +1320,7 @@ impl ReParser {
             '(' => self.parse_group(),
             '[' => self.parse_class(),
             '\\' => self.parse_escape(),
-            c if ")*+?{}|".contains(c) => {
-                Err(format!("unexpected character '{c}'"))
-            }
+            c if ")*+?{}|".contains(c) => Err(format!("unexpected character '{c}'")),
             c => Ok(ReNode::Literal(c.to_string())),
         }
     }
@@ -1389,8 +1392,10 @@ impl ReParser {
                             return Err("missing )".to_string());
                         }
                         self.next_ch()?;
-                        let width = fixed_width(&node, Some(&self.group_widths))
-                            .ok_or_else(|| "look-behind requires fixed-width pattern".to_string())?;
+                        let width =
+                            fixed_width(&node, Some(&self.group_widths)).ok_or_else(|| {
+                                "look-behind requires fixed-width pattern".to_string()
+                            })?;
                         Ok(ReNode::Look {
                             node: Box::new(node),
                             behind: true,
@@ -1405,8 +1410,10 @@ impl ReParser {
                             return Err("missing )".to_string());
                         }
                         self.next_ch()?;
-                        let width = fixed_width(&node, Some(&self.group_widths))
-                            .ok_or_else(|| "look-behind requires fixed-width pattern".to_string())?;
+                        let width =
+                            fixed_width(&node, Some(&self.group_widths)).ok_or_else(|| {
+                                "look-behind requires fixed-width pattern".to_string()
+                            })?;
                         Ok(ReNode::Look {
                             node: Box::new(node),
                             behind: true,
@@ -1441,7 +1448,9 @@ impl ReParser {
                     return Err("bad character in group name".to_string());
                 }
                 self.next_ch()?; // consume ')'
-                let group_index = digits.parse::<u32>().map_err(|_| "group index overflow".to_string())?;
+                let group_index = digits
+                    .parse::<u32>()
+                    .map_err(|_| "group index overflow".to_string())?;
                 let yes_node = self.parse_term()?;
                 let no_node = if self.peek() == Some('|') {
                     self.next_ch()?;
@@ -1483,7 +1492,9 @@ impl ReParser {
                         if self.open_group_names.contains(&name) {
                             return Err("cannot refer to an open group".to_string());
                         }
-                        let idx = self.group_names.get(&name)
+                        let idx = self
+                            .group_names
+                            .get(&name)
                             .copied()
                             .ok_or_else(|| format!("unknown group name '{name}'"))?;
                         Ok(ReNode::Backref(idx))
@@ -1497,9 +1508,7 @@ impl ReParser {
                 }
             }
             // Inline flags: (?imsxauL) or (?i:...) or (?-i:...)
-            Some(c) if "imsxaLu-".contains(c) || c == ')' => {
-                self.parse_inline_flags()
-            }
+            Some(c) if "imsxaLu-".contains(c) || c == ')' => self.parse_inline_flags(),
             _ => Err("unknown extension".to_string()),
         }
     }
@@ -1591,7 +1600,10 @@ impl ReParser {
                     self.next_ch()?;
                     seen_minus = true;
                 }
-                Some(c @ ('i' | 'm' | 's' | 'x' | 'a' | 'L' | 'u' | 'I' | 'M' | 'S' | 'X' | 'A' | 'U')) => {
+                Some(
+                    c @ ('i' | 'm' | 's' | 'x' | 'a' | 'L' | 'u' | 'I' | 'M' | 'S' | 'X' | 'A'
+                    | 'U'),
+                ) => {
                     self.next_ch()?;
                     let bit = flag_char_to_bit(c);
                     if seen_minus {
@@ -1664,7 +1676,9 @@ impl ReParser {
                         _ => break,
                     }
                 }
-                let idx = digits.parse::<u32>().map_err(|_| "backref index overflow".to_string())?;
+                let idx = digits
+                    .parse::<u32>()
+                    .map_err(|_| "backref index overflow".to_string())?;
                 Ok(ReNode::Backref(idx))
             }
             'A' => Ok(ReNode::Anchor("start_abs".to_string())),
@@ -1859,9 +1873,7 @@ fn fixed_width(node: &ReNode, group_widths: Option<&HashMap<u32, Option<u64>>>) 
         ReNode::Any => Some(1),
         ReNode::Anchor(_) => Some(0),
         ReNode::CharClass { .. } => Some(1),
-        ReNode::Backref(idx) => {
-            group_widths?.get(idx).copied().flatten()
-        }
+        ReNode::Backref(idx) => group_widths?.get(idx).copied().flatten(),
         ReNode::Group { node, .. } => fixed_width(node, group_widths),
         ReNode::Look { .. } => Some(0),
         ReNode::ScopedFlags { node, .. } => fixed_width(node, group_widths),
@@ -1890,7 +1902,12 @@ fn fixed_width(node: &ReNode, group_widths: Option<&HashMap<u32, Option<u64>>>) 
             }
             Some(first)
         }
-        ReNode::Repeat { node, min_count, max_count, .. } => {
+        ReNode::Repeat {
+            node,
+            min_count,
+            max_count,
+            ..
+        } => {
             let w = fixed_width(node, group_widths)?;
             let max = (*max_count)?;
             if *min_count != max {
@@ -1945,9 +1962,7 @@ pub extern "C" fn molt_re_compile(pattern_bits: u64, flags_bits: u64) -> u64 {
                 re_store_pattern(handle, compiled);
                 MoltObject::from_int(handle).bits()
             }
-            Err(msg) => {
-                raise_exception::<_>(_py, "ValueError", &msg)
-            }
+            Err(msg) => raise_exception::<_>(_py, "ValueError", &msg),
         }
     })
 }
@@ -2082,9 +2097,7 @@ impl MatchState {
     /// Check if a character is a "word" character for \b / \w purposes.
     #[inline]
     fn is_word_char(&self, ch: char) -> bool {
-        ch == '_'
-            || ch.is_ascii_alphanumeric()
-            || (!self.is_ascii() && ch.is_alphabetic())
+        ch == '_' || ch.is_ascii_alphanumeric() || (!self.is_ascii() && ch.is_alphabetic())
     }
 
     /// Compare two characters, respecting IGNORECASE.
@@ -2126,7 +2139,12 @@ fn match_rest(rest: &[ReNode], pos: usize, state: &mut MatchState) -> Option<usi
     try_match(&rest[0], pos, &rest[1..], state)
 }
 
-fn try_match_inner(node: &ReNode, pos: usize, rest: &[ReNode], state: &mut MatchState) -> Option<usize> {
+fn try_match_inner(
+    node: &ReNode,
+    pos: usize,
+    rest: &[ReNode],
+    state: &mut MatchState,
+) -> Option<usize> {
     match node {
         ReNode::Empty => match_rest(rest, pos, state),
 
@@ -2279,8 +2297,7 @@ fn try_match_inner(node: &ReNode, pos: usize, rest: &[ReNode], state: &mut Match
             no,
         } => {
             let idx = *group_index as usize;
-            let group_matched =
-                idx < state.groups.len() && state.groups[idx].is_some();
+            let group_matched = idx < state.groups.len() && state.groups[idx].is_some();
             if group_matched {
                 try_match(yes, pos, rest, state)
             } else {
@@ -2419,7 +2436,12 @@ fn try_match_group_with_continuation(
             }
             None
         }
-        ReNode::Repeat { node: rep_inner, min_count, max_count, greedy } => {
+        ReNode::Repeat {
+            node: rep_inner,
+            min_count,
+            max_count,
+            greedy,
+        } => {
             // For quantifier inner, we need to try each possible repetition
             // count.  Build positions list and try each.
             let min = *min_count as usize;
@@ -2515,21 +2537,14 @@ fn match_anchor(kind: &str, pos: usize, state: &MatchState) -> Option<usize> {
                 return Some(pos);
             }
             // $ also matches before a trailing newline even without MULTILINE.
-            if !state.is_multiline()
-                && pos == state.end - 1
-                && state.chars[pos] == '\n'
-            {
+            if !state.is_multiline() && pos == state.end - 1 && state.chars[pos] == '\n' {
                 return Some(pos);
             }
             None
         }
         "start_abs" => {
             // \A — matches only at the start of the string.
-            if pos == 0 {
-                Some(pos)
-            } else {
-                None
-            }
+            if pos == 0 { Some(pos) } else { None }
         }
         "end_abs" => {
             // \Z — matches only at the end of the string (or before a
@@ -2545,8 +2560,7 @@ fn match_anchor(kind: &str, pos: usize, state: &MatchState) -> Option<usize> {
         "word_boundary" => {
             // \b — word boundary.
             let left_word = pos > 0 && state.is_word_char(state.chars[pos - 1]);
-            let right_word =
-                pos < state.chars.len() && state.is_word_char(state.chars[pos]);
+            let right_word = pos < state.chars.len() && state.is_word_char(state.chars[pos]);
             if left_word != right_word {
                 Some(pos)
             } else {
@@ -2556,8 +2570,7 @@ fn match_anchor(kind: &str, pos: usize, state: &MatchState) -> Option<usize> {
         "word_boundary_not" => {
             // \B — non-word-boundary.
             let left_word = pos > 0 && state.is_word_char(state.chars[pos - 1]);
-            let right_word =
-                pos < state.chars.len() && state.is_word_char(state.chars[pos]);
+            let right_word = pos < state.chars.len() && state.is_word_char(state.chars[pos]);
             if left_word == right_word {
                 Some(pos)
             } else {
@@ -2623,10 +2636,7 @@ fn char_class_matches(
         for cat in categories {
             let cat_match = match cat.as_str() {
                 "d" => ch.is_ascii_digit(),
-                "s" => matches!(
-                    ch,
-                    ' ' | '\t' | '\n' | '\r' | '\u{000C}' | '\u{000B}'
-                ),
+                "s" => matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{000C}' | '\u{000B}'),
                 "w" => {
                     ch == '_'
                         || ch.is_ascii_alphanumeric()
@@ -2840,8 +2850,7 @@ fn execute_match(
     match mode {
         "match" => {
             // Anchored at start (pos), match from pos.
-            let mut state =
-                MatchState::new(text, compiled.flags, compiled.group_count, pos, end);
+            let mut state = MatchState::new(text, compiled.flags, compiled.group_count, pos, end);
             if pos > state.chars.len() || end > state.chars.len() {
                 return None;
             }
@@ -2854,8 +2863,7 @@ fn execute_match(
         }
         "fullmatch" => {
             // Must match the entire text[pos..end].
-            let mut state =
-                MatchState::new(text, compiled.flags, compiled.group_count, pos, end);
+            let mut state = MatchState::new(text, compiled.flags, compiled.group_count, pos, end);
             if pos > state.chars.len() || end > state.chars.len() {
                 return None;
             }
@@ -2877,13 +2885,8 @@ fn execute_match(
                 return None;
             }
             for start in pos..=end {
-                let mut state = MatchState::new(
-                    text,
-                    compiled.flags,
-                    compiled.group_count,
-                    pos,
-                    end,
-                );
+                let mut state =
+                    MatchState::new(text, compiled.flags, compiled.group_count, pos, end);
                 if let Some(end_pos) = try_match(&compiled.root, start, &[], &mut state) {
                     return Some(MatchResult {
                         start,
@@ -3386,7 +3389,12 @@ mod tests {
     fn test_parse_repeat_star() {
         let cp = parse_pattern("a*", 0).unwrap();
         match &cp.root {
-            ReNode::Repeat { min_count, max_count, greedy, .. } => {
+            ReNode::Repeat {
+                min_count,
+                max_count,
+                greedy,
+                ..
+            } => {
                 assert_eq!(*min_count, 0);
                 assert!(max_count.is_none());
                 assert!(*greedy);
@@ -3399,7 +3407,12 @@ mod tests {
     fn test_parse_repeat_lazy() {
         let cp = parse_pattern("a+?", 0).unwrap();
         match &cp.root {
-            ReNode::Repeat { min_count, max_count, greedy, .. } => {
+            ReNode::Repeat {
+                min_count,
+                max_count,
+                greedy,
+                ..
+            } => {
                 assert_eq!(*min_count, 1);
                 assert!(max_count.is_none());
                 assert!(!(*greedy));
@@ -3412,7 +3425,11 @@ mod tests {
     fn test_parse_repeat_counted() {
         let cp = parse_pattern("a{2,5}", 0).unwrap();
         match &cp.root {
-            ReNode::Repeat { min_count, max_count, .. } => {
+            ReNode::Repeat {
+                min_count,
+                max_count,
+                ..
+            } => {
                 assert_eq!(*min_count, 2);
                 assert_eq!(*max_count, Some(5));
             }
@@ -3461,7 +3478,11 @@ mod tests {
     fn test_parse_backslash_d() {
         let cp = parse_pattern("\\d", 0).unwrap();
         match &cp.root {
-            ReNode::CharClass { negated, categories, .. } => {
+            ReNode::CharClass {
+                negated,
+                categories,
+                ..
+            } => {
                 assert!(!negated);
                 assert!(categories.contains(&"d".to_string()));
             }
@@ -3474,7 +3495,11 @@ mod tests {
     fn test_parse_backslash_D() {
         let cp = parse_pattern("\\D", 0).unwrap();
         match &cp.root {
-            ReNode::CharClass { negated, categories, .. } => {
+            ReNode::CharClass {
+                negated,
+                categories,
+                ..
+            } => {
                 assert!(*negated);
                 assert!(categories.contains(&"d".to_string()));
             }
@@ -3486,7 +3511,9 @@ mod tests {
     fn test_parse_lookahead_positive() {
         let cp = parse_pattern("(?=abc)", 0).unwrap();
         match &cp.root {
-            ReNode::Look { behind, positive, .. } => {
+            ReNode::Look {
+                behind, positive, ..
+            } => {
                 assert!(!behind);
                 assert!(*positive);
             }
@@ -3498,7 +3525,9 @@ mod tests {
     fn test_parse_lookahead_negative() {
         let cp = parse_pattern("(?!abc)", 0).unwrap();
         match &cp.root {
-            ReNode::Look { behind, positive, .. } => {
+            ReNode::Look {
+                behind, positive, ..
+            } => {
                 assert!(!behind);
                 assert!(!positive);
             }
@@ -3510,7 +3539,12 @@ mod tests {
     fn test_parse_lookbehind_positive() {
         let cp = parse_pattern("(?<=ab)", 0).unwrap();
         match &cp.root {
-            ReNode::Look { behind, positive, width, .. } => {
+            ReNode::Look {
+                behind,
+                positive,
+                width,
+                ..
+            } => {
                 assert!(*behind);
                 assert!(*positive);
                 assert_eq!(*width, Some(2));
@@ -3523,7 +3557,12 @@ mod tests {
     fn test_parse_lookbehind_negative() {
         let cp = parse_pattern("(?<!ab)", 0).unwrap();
         match &cp.root {
-            ReNode::Look { behind, positive, width, .. } => {
+            ReNode::Look {
+                behind,
+                positive,
+                width,
+                ..
+            } => {
                 assert!(*behind);
                 assert!(!positive);
                 assert_eq!(*width, Some(2));
@@ -3536,7 +3575,11 @@ mod tests {
     fn test_parse_scoped_flags() {
         let cp = parse_pattern("(?i:abc)", 0).unwrap();
         match &cp.root {
-            ReNode::ScopedFlags { add_flags, clear_flags, .. } => {
+            ReNode::ScopedFlags {
+                add_flags,
+                clear_flags,
+                ..
+            } => {
                 assert_eq!(*add_flags & RE_IGNORECASE, RE_IGNORECASE);
                 assert_eq!(*clear_flags, 0);
             }
@@ -3631,7 +3674,10 @@ mod tests {
 
     #[test]
     fn test_fixed_width_literal() {
-        assert_eq!(fixed_width(&ReNode::Literal("hello".to_string()), None), Some(5));
+        assert_eq!(
+            fixed_width(&ReNode::Literal("hello".to_string()), None),
+            Some(5)
+        );
     }
 
     #[test]
@@ -3668,7 +3714,10 @@ mod tests {
         let cp = parse_pattern("[\\101]", 0).unwrap();
         match &cp.root {
             ReNode::CharClass { chars, .. } => {
-                assert!(chars.contains(&"A".to_string()), "expected 'A' in chars, got {chars:?}");
+                assert!(
+                    chars.contains(&"A".to_string()),
+                    "expected 'A' in chars, got {chars:?}"
+                );
             }
             other => panic!("expected CharClass, got {other:?}"),
         }

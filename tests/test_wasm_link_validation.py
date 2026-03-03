@@ -108,3 +108,36 @@ def test_append_table_ref_elements_tolerates_malformed_name_utf8() -> None:
     # Malformed name entries should be ignored, not crash wasm linking.
     result = wasm_link._append_table_ref_elements(malformed)
     assert result is None or isinstance(result, bytes)
+
+
+def _build_custom_section(name: str, payload: bytes = b"") -> tuple[int, bytes]:
+    return (0, wasm_link._write_string(name) + payload)
+
+
+def test_strip_nonsemantic_custom_sections_removes_known_sections() -> None:
+    stripped = wasm_link._strip_nonsemantic_custom_sections(
+        wasm_link._build_sections(
+            [
+                _build_custom_section(".debug_info", b"x"),
+                _build_custom_section("name", b"y"),
+                _build_custom_section("producers", b"z"),
+                _build_custom_section("target_features", b"w"),
+                _build_custom_section("molt.keep", b"keep"),
+            ]
+        )
+    )
+    assert stripped is not None
+    custom_names = wasm_link._collect_custom_names(stripped)
+    assert custom_names == ["molt.keep"]
+
+
+def test_strip_nonsemantic_custom_sections_returns_none_when_no_match() -> None:
+    result = wasm_link._strip_nonsemantic_custom_sections(
+        wasm_link._build_sections(
+            [
+                _build_custom_section("molt.keep"),
+                _build_custom_section("custom.vendor"),
+            ]
+        )
+    )
+    assert result is None
