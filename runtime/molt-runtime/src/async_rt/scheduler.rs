@@ -1697,6 +1697,25 @@ pub(crate) fn await_waiter_clear(_py: &PyToken<'_>, waiter_ptr: *mut u8) {
     }
 }
 
+pub(crate) fn await_waiter_clear_if_waiting_on(
+    _py: &PyToken<'_>,
+    waiter_ptr: *mut u8,
+    awaited_ptr: *mut u8,
+) {
+    if waiter_ptr.is_null() || awaited_ptr.is_null() {
+        return;
+    }
+    let waiter_key = PtrSlot(waiter_ptr);
+    let awaited_key = PtrSlot(awaited_ptr);
+    let should_clear = {
+        let waiting_map = task_waiting_on(_py).lock().unwrap();
+        waiting_map.get(&waiter_key).copied() == Some(awaited_key)
+    };
+    if should_clear {
+        await_waiter_clear(_py, waiter_ptr);
+    }
+}
+
 pub(crate) fn await_waiters_take(_py: &PyToken<'_>, awaited_ptr: *mut u8) -> Vec<PtrSlot> {
     if awaited_ptr.is_null() {
         return Vec::new();

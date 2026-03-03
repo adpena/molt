@@ -114,6 +114,23 @@ def _build_custom_section(name: str, payload: bytes = b"") -> tuple[int, bytes]:
     return (0, wasm_link._write_string(name) + payload)
 
 
+def _attach_function_name(data: bytes, func_idx: int, name: str) -> bytes:
+    write_varuint = wasm_link._write_varuint
+    sections = wasm_link._parse_sections(data)
+    func_name_subsection = bytearray()
+    func_name_subsection.extend(write_varuint(1))
+    func_name_subsection.extend(write_varuint(func_idx))
+    func_name_subsection.extend(wasm_link._write_string(name))
+
+    custom_name_payload = bytearray()
+    custom_name_payload.extend(wasm_link._write_string("name"))
+    custom_name_payload.append(1)
+    custom_name_payload.extend(write_varuint(len(func_name_subsection)))
+    custom_name_payload.extend(func_name_subsection)
+    sections.insert(0, (0, bytes(custom_name_payload)))
+    return wasm_link._build_sections(sections)
+
+
 def test_strip_nonsemantic_custom_sections_removes_known_sections() -> None:
     stripped = wasm_link._strip_nonsemantic_custom_sections(
         wasm_link._build_sections(
@@ -141,3 +158,23 @@ def test_strip_nonsemantic_custom_sections_returns_none_when_no_match() -> None:
         )
     )
     assert result is None
+
+
+def test_extract_call_indirect_mangled_names_is_deterministic() -> None:
+    payload = (
+        b"xxmolt_call_indirect212hbbbbEyy"
+        b"zzmolt_call_indirect111h0123abEww"
+        b"qqmolt_call_indirect212haaaaErr"
+    )
+    names = wasm_link._extract_call_indirect_mangled_names(payload)
+    assert names["molt_call_indirect1"] == "molt_call_indirect111h0123abE"
+    assert names["molt_call_indirect2"] == "molt_call_indirect212haaaaE"
+
+
+def test_find_output_call_indirect_symbol_uses_name_section(tmp_path: Path) -> None:
+    module = _build_minimal_module(wasm_link._write_varuint(0))
+    named = _attach_function_name(module, 0, "molt_call_indirect0")
+    output = tmp_path / "output.wasm"
+    output.write_bytes(named)
+    symbols = wasm_link._find_output_call_indirect_symbol(output)
+    assert symbols["molt_call_indirect0"] == (0, wasm_link.FLAG_BINDING_GLOBAL)
