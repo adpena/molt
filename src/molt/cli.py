@@ -2955,18 +2955,54 @@ def _emit_build_diagnostics(
                     print(f"- midend.degrade_reason.{reason}: {value}", file=sys.stderr)
         hotspots = midend.get("pass_hotspots_top")
         if isinstance(hotspots, list):
-            for idx, item in enumerate(hotspots[:10], start=1):
+            total_ranked_passes: list[tuple[str, str, str, float, float]] = []
+            for item in hotspots[:10]:
                 if not isinstance(item, dict):
                     continue
-                module_name = str(item.get("module", ""))
-                function_name = str(item.get("function", ""))
-                pass_name = str(item.get("pass", ""))
-                total_ms = float(item.get("ms_total", 0.0))
-                p95_ms = float(item.get("ms_p95", 0.0))
+                total_ranked_passes.append(
+                    (
+                        str(item.get("module", "")),
+                        str(item.get("function", "")),
+                        str(item.get("pass", "")),
+                        float(item.get("ms_total", 0.0)),
+                        float(item.get("ms_p95", 0.0)),
+                    )
+                )
+            total_ranked_passes.sort(
+                key=lambda entry: (-entry[3], entry[0], entry[1], entry[2])
+            )
+            for idx, entry in enumerate(total_ranked_passes, start=1):
+                module_name, function_name, pass_name, total_ms, p95_ms = entry
                 print(
                     "- midend.hotspot."
                     f"{idx}: {module_name}::{function_name}:{pass_name} "
                     f"total_ms={total_ms:.3f} p95_ms={p95_ms:.3f}",
+                    file=sys.stderr,
+                )
+        p95_hotspots = midend.get("pass_hotspots_p95_top")
+        if isinstance(p95_hotspots, list):
+            p95_ranked_passes: list[tuple[str, str, str, float, float]] = []
+            for item in p95_hotspots[:10]:
+                if not isinstance(item, dict):
+                    continue
+                p95_ranked_passes.append(
+                    (
+                        str(item.get("module", "")),
+                        str(item.get("function", "")),
+                        str(item.get("pass", "")),
+                        float(item.get("ms_total", 0.0)),
+                        float(item.get("ms_p95", 0.0)),
+                    )
+                )
+            p95_ranked_passes.sort(
+                key=lambda entry: (-entry[4], entry[0], entry[1], entry[2])
+            )
+            for idx, entry in enumerate(p95_ranked_passes, start=1):
+                module_name, function_name, pass_name, total_ms, p95_ms = entry
+                print(
+                    "- midend.hotspot_p95."
+                    f"{idx}: {module_name}::{function_name}:{pass_name} "
+                    f"p95_ms={p95_ms:.3f} total_ms={total_ms:.3f}",
                     file=sys.stderr,
                 )
         function_hotspots = midend.get("function_hotspots_top")
@@ -5931,11 +5967,21 @@ def _ensure_runtime_wasm(
             recovery_target_root = _wasm_runtime_recovery_target_root(
                 _cargo_target_root(root)
             )
+            recovery_env = env
+            wrapper = env.get("RUSTC_WRAPPER", "")
+            if wrapper and Path(wrapper).name == "sccache":
+                recovery_env = env.copy()
+                recovery_env.pop("RUSTC_WRAPPER", None)
+                if not json_output:
+                    print(
+                        "Runtime wasm recovery build: invalid artifact under sccache; retrying without sccache.",
+                        file=sys.stderr,
+                    )
             try:
                 build, recovery_src = _run_runtime_wasm_cargo_build(
                     cmd=cmd,
                     root=root,
-                    env=env,
+                    env=recovery_env,
                     cargo_timeout=cargo_timeout,
                     profile_dir=profile_dir,
                     target_root_override=recovery_target_root,
@@ -5994,7 +6040,7 @@ def _ensure_runtime_wasm(
                     build, fallback_src = _run_runtime_wasm_cargo_build(
                         cmd=fallback_cmd,
                         root=root,
-                        env=env,
+                        env=recovery_env,
                         cargo_timeout=cargo_timeout,
                         profile_dir=fallback_profile_dir,
                         target_root_override=fallback_target_root,

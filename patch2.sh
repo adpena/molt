@@ -1,0 +1,1 @@
+sed -i '' 's/fn ic_tls_insert(site_id: u64, entry: AttrIcEntry) {/fn ic_tls_insert(_py: \&crate::PyToken<'"'"'_>'"'"', site_id: u64, entry: AttrIcEntry) {/g' runtime/molt-runtime/src/builtins/attributes.rs

@@ -21,6 +21,12 @@ FLAG_UNDEFINED = 0x10
 FLAG_EXPORTED = 0x20
 FLAG_EXPLICIT_NAME = 0x40
 FLAG_NO_STRIP = 0x80
+NON_SEMANTIC_CUSTOM_SECTION_NAMES = {
+    "name",
+    "producers",
+    "target_features",
+}
+NON_SEMANTIC_CUSTOM_SECTION_PREFIXES = (".debug_",)
 FLAG_TOKEN_BITS = {
     "BINDING_LOCAL": 0x0,
     "BINDING_GLOBAL": FLAG_BINDING_GLOBAL,
@@ -588,6 +594,32 @@ def _collect_custom_names(data: bytes) -> list[str]:
     return names
 
 
+def _strip_nonsemantic_custom_sections(data: bytes) -> bytes | None:
+    sections = _parse_sections(data)
+    changed = False
+    new_sections: list[tuple[int, bytes]] = []
+    for section_id, payload in sections:
+        if section_id != 0:
+            new_sections.append((section_id, payload))
+            continue
+        try:
+            name, _ = _parse_custom_section(payload)
+        except ValueError:
+            # Keep malformed custom sections untouched so validation can surface
+            # parse issues instead of mutating unknown bytes.
+            new_sections.append((section_id, payload))
+            continue
+        if name in NON_SEMANTIC_CUSTOM_SECTION_NAMES or name.startswith(
+            NON_SEMANTIC_CUSTOM_SECTION_PREFIXES
+        ):
+            changed = True
+            continue
+        new_sections.append((section_id, payload))
+    if not changed:
+        return None
+    return _build_sections(new_sections)
+
+
 def _skip_init_expr(data: bytes, offset: int) -> int:
     while offset < len(data):
         opcode = data[offset]
@@ -945,10 +977,12 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
         return 1
     rewritten_path, temp_dir = rewritten
     rewritten_path = _inject_call_indirect_alias(rewritten_path, runtime, temp_dir)
+    enable_gc_sections = os.environ.get(
+        "MOLT_WASM_LINK_GC_SECTIONS", "1"
+    ).strip().lower() not in {"0", "false", "no", "off"}
     cmd = [
         wasm_ld,
         "--no-entry",
-        "--no-gc-sections",
         "--allow-undefined",
         "--import-table",
         "--export=molt_main",
@@ -960,6 +994,10 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
         str(rewritten_path),
         str(runtime),
     ]
+    if enable_gc_sections:
+        cmd.insert(2, "--gc-sections")
+    else:
+        cmd.insert(2, "--no-gc-sections")
     res = subprocess.run(cmd, capture_output=True, text=True)
     try:
         if res.returncode != 0:
@@ -1002,7 +1040,7 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
                 linked.write_bytes(updated)
                 linked_bytes = updated
         append_table_refs = os.environ.get(
-            "MOLT_WASM_LINK_APPEND_TABLE_REFS", "1"
+            "MOLT_WASM_LINK_APPEND_TABLE_REFS", "0"
         ).strip().lower() not in {"0", "false", "no", "off"}
         if append_table_refs:
             try:
@@ -1021,6 +1059,26 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
         if updated is not None:
             linked.write_bytes(updated)
             linked_bytes = updated
+        strip_custom = os.environ.get(
+            "MOLT_WASM_LINK_STRIP_CUSTOM", "1"
+        ).strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+        if strip_custom:
+            try:
+                updated = _strip_nonsemantic_custom_sections(linked_bytes)
+            except ValueError as exc:
+                print(
+                    f"Failed to strip linked wasm custom sections: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            if updated is not None:
+                linked.write_bytes(updated)
+                linked_bytes = updated
         if not _validate_linked(linked):
             return 1
         return 0

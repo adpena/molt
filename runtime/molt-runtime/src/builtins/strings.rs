@@ -1053,8 +1053,10 @@ fn find_next_ascii_whitespace(hay: &[u8], start: usize) -> Option<usize> {
                 while i + 16 <= hay.len() {
                     let v = vld1q_u8(hay.as_ptr().add(i));
                     let is_ws = vorrq_u8(
-                        vorrq_u8(vorrq_u8(vceqq_u8(v, ws_space), vceqq_u8(v, ws_tab)),
-                                 vorrq_u8(vceqq_u8(v, ws_nl), vceqq_u8(v, ws_cr))),
+                        vorrq_u8(
+                            vorrq_u8(vceqq_u8(v, ws_space), vceqq_u8(v, ws_tab)),
+                            vorrq_u8(vceqq_u8(v, ws_nl), vceqq_u8(v, ws_cr)),
+                        ),
                         vorrq_u8(vceqq_u8(v, ws_vt), vceqq_u8(v, ws_ff)),
                     );
                     if vmaxvq_u8(is_ws) != 0 {
@@ -1158,8 +1160,10 @@ fn skip_ascii_whitespace(hay: &[u8], start: usize) -> usize {
                 while i + 16 <= hay.len() {
                     let v = vld1q_u8(hay.as_ptr().add(i));
                     let is_ws = vorrq_u8(
-                        vorrq_u8(vorrq_u8(vceqq_u8(v, ws_space), vceqq_u8(v, ws_tab)),
-                                 vorrq_u8(vceqq_u8(v, ws_nl), vceqq_u8(v, ws_cr))),
+                        vorrq_u8(
+                            vorrq_u8(vceqq_u8(v, ws_space), vceqq_u8(v, ws_tab)),
+                            vorrq_u8(vceqq_u8(v, ws_nl), vceqq_u8(v, ws_cr)),
+                        ),
                         vorrq_u8(vceqq_u8(v, ws_vt), vceqq_u8(v, ws_ff)),
                     );
                     if vminvq_u8(is_ws) == 0xFF {

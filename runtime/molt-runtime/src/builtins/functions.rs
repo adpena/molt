@@ -1,4 +1,5 @@
 use molt_obj_model::MoltObject;
+#[cfg(not(target_arch = "wasm32"))]
 use rustpython_parser::{Mode as ParseMode, ParseErrorType, ast as pyast, parse as parse_python};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -7743,7 +7744,11 @@ fn http_server_format_gmt_timestamp(timestamp: i64) -> String {
         // Weekday: epoch (1970-01-01) was Thursday (4)
         let total_days = secs / 86400;
         let wday = ((total_days % 7 + 4) % 7) as usize;
-        let month_idx = if m >= 1 && m <= 12 { (m - 1) as usize } else { 0 };
+        let month_idx = if m >= 1 && m <= 12 {
+            (m - 1) as usize
+        } else {
+            0
+        };
         format!(
             "{}, {:02} {} {:04} {:02}:{:02}:{:02} GMT",
             WEEKDAY[wday.min(6)],
@@ -18400,6 +18405,7 @@ pub extern "C" fn molt_compileall_compile_path(
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn compile_error_type(error: &ParseErrorType) -> &'static str {
     if error.is_tab_error() {
         "TabError"
@@ -18410,6 +18416,7 @@ fn compile_error_type(error: &ParseErrorType) -> &'static str {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn codeop_future_flag_for_name(name: &str) -> i64 {
     match name {
         "nested_scopes" => 0x0010,
@@ -18426,6 +18433,7 @@ fn codeop_future_flag_for_name(name: &str) -> i64 {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn codeop_is_docstring_stmt(stmt: &pyast::Stmt) -> bool {
     match stmt {
         pyast::Stmt::Expr(node) => match node.value.as_ref() {
@@ -18436,6 +18444,7 @@ fn codeop_is_docstring_stmt(stmt: &pyast::Stmt) -> bool {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn codeop_future_flags_from_stmts(stmts: &[pyast::Stmt]) -> i64 {
     let mut idx = 0usize;
     if let Some(first) = stmts.first()
@@ -18465,6 +18474,7 @@ fn codeop_future_flags_from_stmts(stmts: &[pyast::Stmt]) -> i64 {
     out
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn codeop_future_flags_from_parsed(parsed: &pyast::Mod) -> i64 {
     match parsed {
         pyast::Mod::Module(module) => codeop_future_flags_from_stmts(&module.body),
@@ -18473,6 +18483,7 @@ fn codeop_future_flags_from_parsed(parsed: &pyast::Mod) -> i64 {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn codeop_stmt_is_compound(stmt: &pyast::Stmt) -> bool {
     matches!(
         stmt,
@@ -18491,6 +18502,7 @@ fn codeop_stmt_is_compound(stmt: &pyast::Stmt) -> bool {
     )
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn codeop_source_incomplete_after_success(source: &str, mode: &str, parsed: &pyast::Mod) -> bool {
     if mode != "single" {
         return false;
@@ -18508,6 +18520,7 @@ fn codeop_source_incomplete_after_success(source: &str, mode: &str, parsed: &pya
     false
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn codeop_source_has_missing_indented_suite(source: &str) -> bool {
     let lines: Vec<&str> = source.split('\n').collect();
     let leading_indent = |line: &str| -> usize {
@@ -18542,6 +18555,7 @@ fn codeop_source_has_missing_indented_suite(source: &str) -> bool {
     false
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn codeop_parse_error_is_incomplete(error: &ParseErrorType, source: &str) -> bool {
     let trimmed = source.trim_end();
     let trailing_backslash_newline = source.ends_with("\\\n") || source.ends_with("\\\r\n");
@@ -18567,6 +18581,7 @@ fn codeop_parse_error_is_incomplete(error: &ParseErrorType, source: &str) -> boo
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 enum CodeopCompileStatus {
     Compiled {
         next_flags: i64,
@@ -18578,6 +18593,7 @@ enum CodeopCompileStatus {
     },
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn codeop_compile_status(
     source: &str,
     filename: &str,
@@ -18662,6 +18678,7 @@ fn codeobj_from_filename_bits(_py: &crate::PyToken<'_>, filename_bits: u64) -> u
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn collect_bound_names_in_target(target: &pyast::Expr, out: &mut HashSet<String>) {
     match target {
         pyast::Expr::Name(node) => {
@@ -18684,6 +18701,7 @@ fn collect_bound_names_in_target(target: &pyast::Expr, out: &mut HashSet<String>
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn collect_import_binding(alias: &pyast::Alias, out: &mut HashSet<String>) {
     if let Some(asname) = alias.asname.as_ref() {
         out.insert(asname.as_str().to_string());
@@ -18696,6 +18714,7 @@ fn collect_import_binding(alias: &pyast::Alias, out: &mut HashSet<String>) {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn collect_arg_bindings(args: &pyast::Arguments, out: &mut HashSet<String>) {
     for arg in &args.posonlyargs {
         out.insert(arg.def.arg.as_str().to_string());
@@ -18714,6 +18733,7 @@ fn collect_arg_bindings(args: &pyast::Arguments, out: &mut HashSet<String>) {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn collect_function_scope_info(
     stmt: &pyast::Stmt,
     local_bindings: &mut HashSet<String>,
@@ -18881,6 +18901,7 @@ fn collect_function_scope_info(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn walk_nested_function_scopes(
     stmts: &[pyast::Stmt],
     enclosing_function_bindings: &[HashSet<String>],
@@ -18947,6 +18968,7 @@ fn walk_nested_function_scopes(
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn validate_control_flow_stmt(
     stmt: &pyast::Stmt,
     in_function: bool,
@@ -19098,6 +19120,7 @@ fn validate_control_flow_stmt(
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn validate_control_flow_stmts(
     stmts: &[pyast::Stmt],
     in_function: bool,
@@ -19109,6 +19132,7 @@ fn validate_control_flow_stmts(
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn validate_function_scope(
     args: &pyast::Arguments,
     body: &[pyast::Stmt],
@@ -19152,6 +19176,7 @@ fn validate_function_scope(
     walk_nested_function_scopes(body, &next_enclosing)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn compile_validate_nonlocal_semantics(parsed: &pyast::Mod) -> Result<(), String> {
     match parsed {
         pyast::Mod::Module(module) => {
@@ -19166,6 +19191,7 @@ fn compile_validate_nonlocal_semantics(parsed: &pyast::Mod) -> Result<(), String
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn compile_validate_source(
     source: &str,
     filename: &str,
@@ -19192,6 +19218,7 @@ fn compile_validate_source(
 }
 
 #[unsafe(no_mangle)]
+#[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn molt_compile_builtin(
     source_bits: u64,
     filename_bits: u64,
@@ -19243,6 +19270,34 @@ pub extern "C" fn molt_compile_builtin(
 }
 
 #[unsafe(no_mangle)]
+#[cfg(target_arch = "wasm32")]
+pub extern "C" fn molt_compile_builtin(
+    source_bits: u64,
+    filename_bits: u64,
+    mode_bits: u64,
+    flags_bits: u64,
+    dont_inherit_bits: u64,
+    optimize_bits: u64,
+) -> u64 {
+    let _ = (
+        source_bits,
+        filename_bits,
+        mode_bits,
+        flags_bits,
+        dont_inherit_bits,
+        optimize_bits,
+    );
+    crate::with_gil_entry!(_py, {
+        raise_exception::<_>(
+            _py,
+            "RuntimeError",
+            "compile() is unsupported on wasm (parser-backed validation disabled)",
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+#[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn molt_codeop_compile(
     source_bits: u64,
     filename_bits: u64,
@@ -19299,6 +19354,32 @@ pub extern "C" fn molt_codeop_compile(
 }
 
 #[unsafe(no_mangle)]
+#[cfg(target_arch = "wasm32")]
+pub extern "C" fn molt_codeop_compile(
+    source_bits: u64,
+    filename_bits: u64,
+    mode_bits: u64,
+    flags_bits: u64,
+    incomplete_input_bits: u64,
+) -> u64 {
+    let _ = (
+        source_bits,
+        filename_bits,
+        mode_bits,
+        flags_bits,
+        incomplete_input_bits,
+    );
+    crate::with_gil_entry!(_py, {
+        raise_exception::<_>(
+            _py,
+            "RuntimeError",
+            "codeop.compile is unsupported on wasm (parser-backed validation disabled)",
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+#[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn molt_codeop_compile_command(
     source_bits: u64,
     filename_bits: u64,
@@ -19414,8 +19495,33 @@ pub extern "C" fn molt_codeop_compile_command(
 }
 
 #[unsafe(no_mangle)]
+#[cfg(target_arch = "wasm32")]
+pub extern "C" fn molt_codeop_compile_command(
+    source_bits: u64,
+    filename_bits: u64,
+    mode_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    let _ = (source_bits, filename_bits, mode_bits, flags_bits);
+    crate::with_gil_entry!(_py, {
+        raise_exception::<_>(
+            _py,
+            "RuntimeError",
+            "codeop.compile_command is unsupported on wasm (parser-backed validation disabled)",
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_func_new(fn_ptr: u64, trampoline_ptr: u64, arity: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        if cfg!(target_arch = "wasm32")
+            && std::env::var("MOLT_WASM_FUNC_NEW_DEBUG").as_deref() == Ok("1")
+        {
+            eprintln!(
+                "molt wasm func_new: fn=0x{fn_ptr:x} tramp=0x{trampoline_ptr:x} arity={arity}"
+            );
+        }
         let ptr = alloc_function_obj(_py, fn_ptr, arity);
         if ptr.is_null() {
             MoltObject::none().bits()
@@ -19431,6 +19537,13 @@ pub extern "C" fn molt_func_new(fn_ptr: u64, trampoline_ptr: u64, arity: u64) ->
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_func_new_builtin(fn_ptr: u64, trampoline_ptr: u64, arity: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        if cfg!(target_arch = "wasm32")
+            && std::env::var("MOLT_WASM_FUNC_NEW_DEBUG").as_deref() == Ok("1")
+        {
+            eprintln!(
+                "molt wasm func_new_builtin: fn=0x{fn_ptr:x} tramp=0x{trampoline_ptr:x} arity={arity}"
+            );
+        }
         let trace = matches!(
             std::env::var("MOLT_TRACE_BUILTIN_FUNC").ok().as_deref(),
             Some("1")
@@ -19476,6 +19589,13 @@ pub extern "C" fn molt_func_new_closure(
     closure_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
+        if cfg!(target_arch = "wasm32")
+            && std::env::var("MOLT_WASM_FUNC_NEW_DEBUG").as_deref() == Ok("1")
+        {
+            eprintln!(
+                "molt wasm func_new_closure: fn=0x{fn_ptr:x} tramp=0x{trampoline_ptr:x} arity={arity} closure=0x{closure_bits:x}"
+            );
+        }
         let ptr = alloc_function_obj(_py, fn_ptr, arity);
         if ptr.is_null() {
             return MoltObject::none().bits();

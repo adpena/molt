@@ -12,10 +12,11 @@ use crate::{
 use crate::MoltObject;
 #[cfg(target_arch = "wasm32")]
 use crate::{
-    molt_call_indirect0, molt_call_indirect1, molt_call_indirect2, molt_call_indirect3,
-    molt_call_indirect4, molt_call_indirect5, molt_call_indirect6, molt_call_indirect7,
-    molt_call_indirect8, molt_call_indirect9, molt_call_indirect10, molt_call_indirect11,
-    molt_call_indirect12, molt_call_indirect13,
+    code_filename_bits, code_firstlineno, code_name_bits, molt_call_indirect0, molt_call_indirect1,
+    molt_call_indirect2, molt_call_indirect3, molt_call_indirect4, molt_call_indirect5,
+    molt_call_indirect6, molt_call_indirect7, molt_call_indirect8, molt_call_indirect9,
+    molt_call_indirect10, molt_call_indirect11, molt_call_indirect12, molt_call_indirect13,
+    ptr_from_bits,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -38,6 +39,21 @@ fn is_void_wasm_call1_target(fn_ptr: u64) -> bool {
         }
     }
     false
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+fn wasm_use_indirect(tramp_ptr: u64) -> bool {
+    tramp_ptr != 0
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+fn wasm_fn_ptr_symbol_name(fn_ptr: u64) -> Option<&'static str> {
+    if let Some(symbol) = crate::async_rt::poll::wasm_poll_fn_symbol_name(fn_ptr) {
+        return Some(symbol);
+    }
+    crate::intrinsics::resolve_symbol_name(fn_ptr)
 }
 
 unsafe fn raise_call_arity_mismatch(
@@ -98,7 +114,7 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     if debug_enabled {
                         eprintln!(
                             "molt wasm call1 indirect2: name={} fn=0x{fn_ptr:x} tramp=0x{tramp_ptr:x}",
@@ -125,7 +141,7 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
         } else {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     if debug_enabled {
                         eprintln!(
                             "molt wasm call1 indirect1: name={} fn=0x{fn_ptr:x} tramp=0x{tramp_ptr:x}",
@@ -264,7 +280,7 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect1(fn_ptr, closure_bits) as u64
                 } else {
                     let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
@@ -279,7 +295,7 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
         } else {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect0(fn_ptr) as u64
                 } else {
                     let func: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr as usize);
@@ -329,7 +345,7 @@ pub(crate) unsafe fn call_function_obj2(
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect3(fn_ptr, closure_bits, arg0_bits, arg1_bits) as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64) -> i64 =
@@ -346,7 +362,7 @@ pub(crate) unsafe fn call_function_obj2(
         } else {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect2(fn_ptr, arg0_bits, arg1_bits) as u64
                 } else {
                     let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
@@ -389,6 +405,48 @@ pub(crate) unsafe fn call_function_obj3(
         let closure_bits = function_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
         let tramp_ptr = function_trampoline_ptr(func_ptr);
+        #[cfg(target_arch = "wasm32")]
+        if std::env::var("MOLT_WASM_CALL_DEBUG").as_deref() == Ok("1") {
+            let debug_name = {
+                let name_bits = function_name_bits(_py, func_ptr);
+                if name_bits != 0 {
+                    string_obj_to_owned(obj_from_bits(name_bits))
+                } else {
+                    None
+                }
+            };
+            let fn_symbol = wasm_fn_ptr_symbol_name(fn_ptr);
+            let mut code_name = String::new();
+            let mut code_file = String::new();
+            let mut code_line = 0_i64;
+            let code_hint = crate::fn_ptr_code_get(_py, fn_ptr);
+            if code_hint != 0 {
+                let code_ptr = ptr_from_bits(code_hint);
+                if !code_ptr.is_null() {
+                    code_name = string_obj_to_owned(obj_from_bits(code_name_bits(code_ptr)))
+                        .unwrap_or_default();
+                    code_file = string_obj_to_owned(obj_from_bits(code_filename_bits(code_ptr)))
+                        .unwrap_or_default();
+                    code_line = code_firstlineno(code_ptr);
+                }
+            }
+            eprintln!(
+                "molt wasm call3 dispatch: name={} symbol={} fn=0x{fn_ptr:x} tramp=0x{tramp_ptr:x} closure=0x{closure_bits:x} arity={arity} code={} file={} line={}",
+                debug_name.as_deref().unwrap_or("<unnamed>"),
+                fn_symbol.unwrap_or("<unknown>"),
+                if code_name.is_empty() {
+                    "<none>"
+                } else {
+                    &code_name
+                },
+                if code_file.is_empty() {
+                    "<none>"
+                } else {
+                    &code_file
+                },
+                code_line,
+            );
+        }
         let code_bits = ensure_function_code_bits(_py, func_ptr);
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
@@ -397,7 +455,7 @@ pub(crate) unsafe fn call_function_obj3(
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect4(fn_ptr, closure_bits, arg0_bits, arg1_bits, arg2_bits)
                         as u64
                 } else {
@@ -415,7 +473,7 @@ pub(crate) unsafe fn call_function_obj3(
         } else {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect3(fn_ptr, arg0_bits, arg1_bits, arg2_bits) as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64) -> i64 =
@@ -469,7 +527,7 @@ pub(crate) unsafe fn call_function_obj4(
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect5(
                         fn_ptr,
                         closure_bits,
@@ -493,7 +551,7 @@ pub(crate) unsafe fn call_function_obj4(
         } else {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect4(fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits) as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64, u64) -> i64 =
@@ -548,7 +606,7 @@ unsafe fn call_function_obj5(
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect6(
                         fn_ptr,
                         closure_bits,
@@ -587,7 +645,7 @@ unsafe fn call_function_obj5(
         } else {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect5(
                         fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits,
                     ) as u64
@@ -646,7 +704,7 @@ unsafe fn call_function_obj6(
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect7(
                         fn_ptr,
                         closure_bits,
@@ -688,7 +746,7 @@ unsafe fn call_function_obj6(
         } else {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect6(
                         fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
                     ) as u64
@@ -752,7 +810,7 @@ unsafe fn call_function_obj7(
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect8(
                         fn_ptr,
                         closure_bits,
@@ -797,7 +855,7 @@ unsafe fn call_function_obj7(
         } else {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect7(
                         fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
                         arg6_bits,
@@ -863,7 +921,7 @@ unsafe fn call_function_obj8(
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect9(
                         fn_ptr,
                         closure_bits,
@@ -911,7 +969,7 @@ unsafe fn call_function_obj8(
         } else {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect8(
                         fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
                         arg6_bits, arg7_bits,
@@ -980,7 +1038,7 @@ unsafe fn call_function_obj9(
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect10(
                         fn_ptr,
                         closure_bits,
@@ -1041,7 +1099,7 @@ unsafe fn call_function_obj9(
         } else {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect9(
                         fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
                         arg6_bits, arg7_bits, arg8_bits,
@@ -1111,7 +1169,7 @@ unsafe fn call_function_obj10(
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect11(
                         fn_ptr,
                         closure_bits,
@@ -1187,7 +1245,7 @@ unsafe fn call_function_obj10(
         } else {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect10(
                         fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
                         arg6_bits, arg7_bits, arg8_bits, arg9_bits,
@@ -1268,7 +1326,7 @@ unsafe fn call_function_obj11(
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect12(
                         fn_ptr,
                         closure_bits,
@@ -1349,7 +1407,7 @@ unsafe fn call_function_obj11(
         } else {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect11(
                         fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
                         arg6_bits, arg7_bits, arg8_bits, arg9_bits, arg10_bits,
@@ -1443,7 +1501,7 @@ unsafe fn call_function_obj12(
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect13(
                         fn_ptr,
                         closure_bits,
@@ -1529,7 +1587,7 @@ unsafe fn call_function_obj12(
         } else {
             #[cfg(target_arch = "wasm32")]
             {
-                if tramp_ptr != 0 {
+                if wasm_use_indirect(tramp_ptr) {
                     molt_call_indirect12(
                         fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
                         arg6_bits, arg7_bits, arg8_bits, arg9_bits, arg10_bits, arg11_bits,

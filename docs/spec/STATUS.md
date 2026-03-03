@@ -1,6 +1,6 @@
 # STATUS (Canonical)
 
-Last updated: 2026-03-01
+Last updated: 2026-03-03
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
@@ -14,6 +14,15 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   (determinism, explicit capabilities, and no implicit host-Python fallback).
 
 ## Rust-First Stdlib Lowering Sprint (2026-03-01)
+- Completed (2026-03-03): wasm dynamic-parse lanes are now explicitly capability-broken
+  by design. `compile()`/`codeop.compile*` and `ast.parse` raise deterministic
+  `RuntimeError` on wasm targets (no host parser fallback). `rustpython-parser`
+  is no longer a wasm dependency in `molt-runtime`.
+- Completed (2026-03-03): `run_wasm.js` now auto-reexecs large wasm runs (default
+  threshold: 24 MB) with conservative Node wasm compiler flags
+  (`--liftoff-only --no-wasm-tier-up --no-wasm-dynamic-tiering --wasm-num-compilation-tasks=1`)
+  to avoid V8 Zone OOM crashes on runtime-heavy linked artifacts. Opt-out:
+  `MOLT_WASM_AUTO_NODE_FLAGS=0`.
 - Completed: **SIMD Expansion** — 20+ runtime operations now have explicit SSE2/AVX2/NEON
   fast paths (+1,133 lines across ops.rs and math.rs):
   - String/bytes equality: `simd_bytes_eq` (16B SSE2, 32B AVX2, 16B NEON) wired into
@@ -2019,7 +2028,6 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(wasm-db-parity, owner:runtime, milestone:DB2, priority:P2, status:planned): ship additional production host adapters (CF Workers) and wasm parity tests that exercise real DB backends with cancellation.
 - TODO(wasm-host, owner:runtime, milestone:RT3, priority:P3, status:planned): component model target support).
 - TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P0, status:partial): expand browser socket coverage (UDP/listen/server sockets) + parity tests.)
-- TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P1, status:partial): capability-enabled runtime-heavy wasm tranche (`/Volumes/APDataStore/Molt/wasm_runtime_heavy_tranche_20260213c/summary.json`) is still blocked (`1/5` pass): `asyncio__asyncio_running_loop_intrinsic.py` event-loop-policy parity mismatch, `asyncio_task_basic.py` table-ref trap in linked wasm runtime, `zipimport_basic.py` zipimport module-lookup parity gap, and `smtplib_basic.py` thread-unavailable wasm limitation. Keep this as a blocker before promoting runtime-heavy cluster completion.
 - TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P1, status:partial): wire local timezone + locale on wasm hosts). (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): deterministic clock policy) |
 - TODO(wasm-parity, owner:runtime, milestone:RT3, priority:P1, status:planned): wasm host parity for the asyncio runtime loop, poller, sockets, and subprocess I/O.
 - TODO(wasm-parity, owner:runtime, milestone:RT3, priority:P2, status:planned): zero-copy string passing for WASM).

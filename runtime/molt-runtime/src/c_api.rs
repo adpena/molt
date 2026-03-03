@@ -2971,7 +2971,11 @@ pub extern "C" fn PyMapping_HasKey(o: u64, key: u64) -> i32 {
             let _ = molt_exception_clear();
             return 0;
         }
-        if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 }
+        if is_truthy(_py, obj_from_bits(res)) {
+            1
+        } else {
+            0
+        }
     })
 }
 
@@ -3023,7 +3027,11 @@ pub extern "C" fn PySequence_Contains(o: u64, value: u64) -> i32 {
             }
             return -1;
         }
-        if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 }
+        if is_truthy(_py, obj_from_bits(res)) {
+            1
+        } else {
+            0
+        }
     })
 }
 
@@ -3470,12 +3478,12 @@ pub extern "C" fn PyObject_DelAttrString(obj: u64, name: *const std::ffi::c_char
 pub extern "C" fn PyObject_RichCompareBool(a: u64, b: u64, op: i32) -> i32 {
     crate::with_gil_entry!(_py, {
         let res = match op {
-            0 => molt_lt(a, b),  // Py_LT
-            1 => molt_le(a, b),  // Py_LE
-            2 => molt_eq(a, b),  // Py_EQ
-            3 => molt_ne(a, b),  // Py_NE
-            4 => molt_gt(a, b),  // Py_GT
-            5 => molt_ge(a, b),  // Py_GE
+            0 => molt_lt(a, b), // Py_LT
+            1 => molt_le(a, b), // Py_LE
+            2 => molt_eq(a, b), // Py_EQ
+            3 => molt_ne(a, b), // Py_NE
+            4 => molt_gt(a, b), // Py_GT
+            5 => molt_ge(a, b), // Py_GE
             _ => {
                 let _ = raise_exception::<u64>(
                     _py,
@@ -3491,7 +3499,11 @@ pub extern "C" fn PyObject_RichCompareBool(a: u64, b: u64, op: i32) -> i32 {
             }
             return -1;
         }
-        let out = if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 };
+        let out = if is_truthy(_py, obj_from_bits(res)) {
+            1
+        } else {
+            0
+        };
         dec_ref_bits(_py, res);
         if exception_pending(_py) { -1 } else { out }
     })
@@ -3536,7 +3548,11 @@ pub extern "C" fn PyCallable_Check(obj: u64) -> i32 {
             let _ = molt_exception_clear();
             return 0;
         }
-        if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 }
+        if is_truthy(_py, obj_from_bits(res)) {
+            1
+        } else {
+            0
+        }
     })
 }
 
@@ -3548,7 +3564,11 @@ pub extern "C" fn PyObject_IsInstance(obj: u64, cls: u64) -> i32 {
         if exception_pending(_py) {
             return -1;
         }
-        if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 }
+        if is_truthy(_py, obj_from_bits(res)) {
+            1
+        } else {
+            0
+        }
     })
 }
 
@@ -3560,7 +3580,11 @@ pub extern "C" fn PyObject_IsSubclass(sub: u64, cls: u64) -> i32 {
         if exception_pending(_py) {
             return -1;
         }
-        if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 }
+        if is_truthy(_py, obj_from_bits(res)) {
+            1
+        } else {
+            0
+        }
     })
 }
 
@@ -3642,7 +3666,11 @@ pub extern "C" fn PySet_Contains(set: u64, key: u64) -> i32 {
         if exception_pending(_py) {
             return -1;
         }
-        if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 }
+        if is_truthy(_py, obj_from_bits(res)) {
+            1
+        } else {
+            0
+        }
     })
 }
 
@@ -3854,12 +3882,7 @@ pub extern "C" fn PyDict_GetItemString(dict: u64, key: *const std::ffi::c_char) 
 pub extern "C" fn PyDict_DelItem(dict: u64, key: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         // Use molt_dict_pop with no default — raises KeyError if missing
-        let res = molt_dict_pop(
-            dict,
-            key,
-            none_bits(),
-            MoltObject::from_bool(false).bits(),
-        );
+        let res = molt_dict_pop(dict, key, none_bits(), MoltObject::from_bool(false).bits());
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -5841,8 +5864,7 @@ mod tests {
             dec_ref_bits(_py, got);
 
             // Missing key should fail.
-            let missing =
-                unsafe { PyMapping_GetItemString(dict, b"nope\0".as_ptr() as *const _) };
+            let missing = unsafe { PyMapping_GetItemString(dict, b"nope\0".as_ptr() as *const _) };
             assert_eq!(missing, 0);
             assert!(exception_pending(_py));
             let _ = molt_exception_clear();
@@ -6053,17 +6075,13 @@ mod tests {
     fn c_api_unicode_from_string() {
         let _ = molt_runtime_init();
         crate::with_gil_entry!(_py, {
-            let str_bits =
-                unsafe { PyUnicode_FromString(b"hello world\0".as_ptr() as *const _) };
+            let str_bits = unsafe { PyUnicode_FromString(b"hello world\0".as_ptr() as *const _) };
             assert_ne!(str_bits, 0);
             assert_eq!(PyUnicode_Check(str_bits), 1);
 
             let utf8_ptr = PyUnicode_AsUTF8(str_bits);
             assert!(!utf8_ptr.is_null());
-            let observed = unsafe {
-                std::ffi::CStr::from_ptr(utf8_ptr)
-                    .to_bytes()
-            };
+            let observed = unsafe { std::ffi::CStr::from_ptr(utf8_ptr).to_bytes() };
             // The string content might not be NUL-terminated in molt's internal
             // storage, so compare the known length.
             let mut out_size: isize = 0;
@@ -6310,12 +6328,12 @@ mod tests {
         let a = MoltObject::from_int(10).bits();
         let b = MoltObject::from_int(20).bits();
 
-        assert_eq!(PyObject_RichCompareBool(a, b, 0), 1);  // 10 < 20
-        assert_eq!(PyObject_RichCompareBool(a, b, 1), 1);  // 10 <= 20
-        assert_eq!(PyObject_RichCompareBool(a, b, 2), 0);  // 10 == 20
-        assert_eq!(PyObject_RichCompareBool(a, b, 3), 1);  // 10 != 20
-        assert_eq!(PyObject_RichCompareBool(a, b, 4), 0);  // 10 > 20
-        assert_eq!(PyObject_RichCompareBool(a, b, 5), 0);  // 10 >= 20
+        assert_eq!(PyObject_RichCompareBool(a, b, 0), 1); // 10 < 20
+        assert_eq!(PyObject_RichCompareBool(a, b, 1), 1); // 10 <= 20
+        assert_eq!(PyObject_RichCompareBool(a, b, 2), 0); // 10 == 20
+        assert_eq!(PyObject_RichCompareBool(a, b, 3), 1); // 10 != 20
+        assert_eq!(PyObject_RichCompareBool(a, b, 4), 0); // 10 > 20
+        assert_eq!(PyObject_RichCompareBool(a, b, 5), 0); // 10 >= 20
 
         // Invalid op
         assert_eq!(PyObject_RichCompareBool(a, b, 99), -1);
@@ -6418,10 +6436,7 @@ mod tests {
             assert_eq!(PyDict_SetItem(dict, k1, v1), 0);
 
             let got = unsafe {
-                PyDict_GetItemString(
-                    dict,
-                    b"hello\0".as_ptr() as *const std::ffi::c_char,
-                )
+                PyDict_GetItemString(dict, b"hello\0".as_ptr() as *const std::ffi::c_char)
             };
             assert_ne!(got, 0);
 
@@ -6486,10 +6501,7 @@ mod tests {
         assert_eq!(PyErr_Occurred(), 0);
 
         unsafe {
-            PyErr_SetString(
-                0,
-                b"test error\0".as_ptr() as *const std::ffi::c_char,
-            );
+            PyErr_SetString(0, b"test error\0".as_ptr() as *const std::ffi::c_char);
         }
         assert_ne!(PyErr_Occurred(), 0);
 
@@ -6557,10 +6569,7 @@ mod tests {
             dec_ref_bits(_py, concat);
 
             let cmp = unsafe {
-                PyUnicode_CompareWithASCIIString(
-                    s,
-                    b"hello\0".as_ptr() as *const std::ffi::c_char,
-                )
+                PyUnicode_CompareWithASCIIString(s, b"hello\0".as_ptr() as *const std::ffi::c_char)
             };
             assert_eq!(cmp, 0);
 

@@ -71,13 +71,23 @@ thread_local! {
 }
 
 #[inline]
-fn ic_tls_lookup(_py: &PyToken<'_>, site_id: u64, class_bits: u64, version: u64) -> Option<AttrIcEntry> {
+fn ic_tls_lookup(
+    _py: &PyToken<'_>,
+    site_id: u64,
+    class_bits: u64,
+    version: u64,
+) -> Option<AttrIcEntry> {
     ATTR_IC_TLS.with(|cache| {
         let cache = cache.borrow();
         let idx = (site_id as usize) & (IC_TLS_SIZE - 1);
         let (stored_id, entry) = cache[idx];
         let current_epoch = ATTR_IC_VM_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
-        if stored_id == site_id && entry.vm_epoch == current_epoch && entry.class_bits == class_bits && entry.version == version && entry.kind != ATTR_IC_KIND_NONE {
+        if stored_id == site_id
+            && entry.vm_epoch == current_epoch
+            && entry.class_bits == class_bits
+            && entry.version == version
+            && entry.kind != ATTR_IC_KIND_NONE
+        {
             Some(entry)
         } else {
             None
@@ -94,11 +104,16 @@ fn ic_tls_insert(_py: &PyToken<'_>, site_id: u64, mut entry: AttrIcEntry) {
         let idx = (site_id as usize) & (IC_TLS_SIZE - 1);
         let old_entry = cache[idx].1;
 
-        if old_entry.vm_epoch == current_epoch && old_entry.name_bits != 0 && old_entry.name_bits != entry.name_bits {
+        if old_entry.vm_epoch == current_epoch
+            && old_entry.name_bits != 0
+            && old_entry.name_bits != entry.name_bits
+        {
             crate::dec_ref_bits(_py, old_entry.name_bits);
         }
 
-        if entry.name_bits != 0 && (old_entry.vm_epoch != current_epoch || old_entry.name_bits != entry.name_bits) {
+        if entry.name_bits != 0
+            && (old_entry.vm_epoch != current_epoch || old_entry.name_bits != entry.name_bits)
+        {
             crate::inc_ref_bits(_py, entry.name_bits);
         }
 
@@ -112,13 +127,23 @@ thread_local! {
 }
 
 #[inline]
-fn ic_store_tls_lookup(_py: &PyToken<'_>, site_id: u64, class_bits: u64, version: u64) -> Option<AttrIcEntry> {
+fn ic_store_tls_lookup(
+    _py: &PyToken<'_>,
+    site_id: u64,
+    class_bits: u64,
+    version: u64,
+) -> Option<AttrIcEntry> {
     ATTR_STORE_IC_TLS.with(|cache| {
         let cache = cache.borrow();
         let idx = (site_id as usize) & (IC_TLS_SIZE - 1);
         let (stored_id, entry) = cache[idx];
         let current_epoch = ATTR_IC_VM_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
-        if stored_id == site_id && entry.vm_epoch == current_epoch && entry.class_bits == class_bits && entry.version == version && entry.kind != ATTR_IC_KIND_NONE {
+        if stored_id == site_id
+            && entry.vm_epoch == current_epoch
+            && entry.class_bits == class_bits
+            && entry.version == version
+            && entry.kind != ATTR_IC_KIND_NONE
+        {
             Some(entry)
         } else {
             None
@@ -135,11 +160,16 @@ fn ic_store_tls_insert(_py: &PyToken<'_>, site_id: u64, mut entry: AttrIcEntry) 
         let idx = (site_id as usize) & (IC_TLS_SIZE - 1);
         let old_entry = cache[idx].1;
 
-        if old_entry.vm_epoch == current_epoch && old_entry.name_bits != 0 && old_entry.name_bits != entry.name_bits {
+        if old_entry.vm_epoch == current_epoch
+            && old_entry.name_bits != 0
+            && old_entry.name_bits != entry.name_bits
+        {
             crate::dec_ref_bits(_py, old_entry.name_bits);
         }
 
-        if entry.name_bits != 0 && (old_entry.vm_epoch != current_epoch || old_entry.name_bits != entry.name_bits) {
+        if entry.name_bits != 0
+            && (old_entry.vm_epoch != current_epoch || old_entry.name_bits != entry.name_bits)
+        {
             crate::inc_ref_bits(_py, entry.name_bits);
         }
 
@@ -4771,7 +4801,9 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                         if dict_bits != 0 {
                             if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
                                 if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                                    if let Some(val_bits) = dict_get_in_place(_py, dict_ptr, entry.name_bits) {
+                                    if let Some(val_bits) =
+                                        dict_get_in_place(_py, dict_ptr, entry.name_bits)
+                                    {
                                         inc_ref_bits(_py, val_bits);
                                         profile_hit_unchecked(&ATTR_SITE_NAME_CACHE_HIT_COUNT);
                                         return val_bits as i64;
@@ -4799,13 +4831,17 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                         if object_type_id(dict_ptr) == TYPE_ID_DICT {
                             if let Some(val_bits) = dict_get_in_place(_py, dict_ptr, name_bits) {
                                 if val_bits == out {
-                                    ic_tls_insert(_py, site_id, AttrIcEntry {
-                                        vm_epoch: 0,
-                                        class_bits,
-                                        version,
-                                        kind: ATTR_IC_KIND_INSTANCE_DICT,
-                                        name_bits,
-                                    });
+                                    ic_tls_insert(
+                                        _py,
+                                        site_id,
+                                        AttrIcEntry {
+                                            vm_epoch: 0,
+                                            class_bits,
+                                            version,
+                                            kind: ATTR_IC_KIND_INSTANCE_DICT,
+                                            name_bits,
+                                        },
+                                    );
                                 }
                             }
                         }
@@ -4943,7 +4979,9 @@ pub unsafe extern "C" fn molt_set_attr_object_ic(
                 return MoltObject::none().bits() as i64;
             };
 
-            let ptr = if let Some(p) = ptr_opt { p } else {
+            let ptr = if let Some(p) = ptr_opt {
+                p
+            } else {
                 dec_ref_bits(_py, name_bits);
                 let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
                 return attr_error(_py, type_name(_py, obj), attr_name);
@@ -4952,7 +4990,8 @@ pub unsafe extern "C" fn molt_set_attr_object_ic(
             // Attempt generic set attr which covers properties/descriptors/dict insertions.
             let out = molt_set_attr_generic(ptr, attr_name_ptr, attr_name_len_bits, val_bits);
 
-            if out == MoltObject::none().bits() as i64 && class_bits != 0 && !exception_pending(_py) {
+            if out == MoltObject::none().bits() as i64 && class_bits != 0 && !exception_pending(_py)
+            {
                 // If it successfully updated, verify it landed in the dict to cache it.
                 // Doing this post-hoc allows us to skip parsing the MRO for descriptors manually,
                 // as long as we confirm it's now a dict entry and the layout version hasn't changed.
@@ -4963,18 +5002,26 @@ pub unsafe extern "C" fn molt_set_attr_object_ic(
                             if let Some(stored_val) = dict_get_in_place(_py, dict_ptr, name_bits) {
                                 if stored_val == val_bits {
                                     // Make sure no new properties were added during execution that bumped the version
-                                    let current_version = if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+                                    let current_version = if let Some(class_ptr) =
+                                        obj_from_bits(class_bits).as_ptr()
+                                    {
                                         class_layout_version_bits(class_ptr)
-                                    } else { 0 };
+                                    } else {
+                                        0
+                                    };
 
                                     if current_version == version {
-                                        ic_store_tls_insert(_py, site_id, AttrIcEntry {
-                                            vm_epoch: 0,
-                                            class_bits,
-                                            version,
-                                            kind: ATTR_IC_KIND_INSTANCE_DICT,
-                                            name_bits,
-                                        });
+                                        ic_store_tls_insert(
+                                            _py,
+                                            site_id,
+                                            AttrIcEntry {
+                                                vm_epoch: 0,
+                                                class_bits,
+                                                version,
+                                                kind: ATTR_IC_KIND_INSTANCE_DICT,
+                                                name_bits,
+                                            },
+                                        );
                                     }
                                 }
                             }
