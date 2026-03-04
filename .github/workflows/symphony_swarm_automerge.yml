@@ -1,0 +1,106 @@
+name: Symphony Swarm Automerge
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  swarm-automerge:
+    if: ${{ github.event.pull_request.draft == false }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate Symphony swarm PRs
+        id: gate
+        uses: actions/github-script@v7
+        env:
+          SWARM_LOGINS: ${{ vars.SYMPHONY_SWARM_GITHUB_LOGINS }}
+          SWARM_BRANCH_PREFIXES: ${{ vars.SYMPHONY_SWARM_BRANCH_PREFIXES }}
+          SWARM_LABELS: ${{ vars.SYMPHONY_SWARM_LABELS }}
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const normalize = (value) =>
+              String(value || "")
+                .split(",")
+                .map((entry) => entry.trim().toLowerCase())
+                .filter((entry) => entry.length > 0);
+
+            const logins = normalize(process.env.SWARM_LOGINS || "adpena,codex[bot],github-actions[bot]");
+            const prefixes = normalize(process.env.SWARM_BRANCH_PREFIXES || "codex/,symphony/,swarm/");
+            const labels = normalize(process.env.SWARM_LABELS || "symphony-swarm,swarm-automerge");
+
+            const author = String(pr.user?.login || "").toLowerCase();
+            const branch = String(pr.head?.ref || "").toLowerCase();
+            const sameRepo = String(pr.head?.repo?.full_name || "") === `${context.repo.owner}/${context.repo.repo}`;
+            const authorMatch = logins.includes(author);
+            const branchMatch = prefixes.some((prefix) => branch.startsWith(prefix));
+            const hasSwarmLabel = (pr.labels || []).some((label) =>
+              labels.includes(String(label?.name || "").toLowerCase())
+            );
+
+            const shouldMerge = sameRepo && (hasSwarmLabel || (authorMatch && branchMatch));
+            core.info(
+              JSON.stringify(
+                {
+                  sameRepo,
+                  author,
+                  authorMatch,
+                  branch,
+                  branchMatch,
+                  hasSwarmLabel,
+                  shouldMerge,
+                },
+                null,
+                2
+              )
+            );
+            core.setOutput("should_merge", shouldMerge ? "true" : "false");
+
+      - name: Auto-approve swarm PR
+        if: ${{ steps.gate.outputs.should_merge == 'true' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              await github.rest.pulls.createReview({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                event: "APPROVE",
+                body: "Auto-approved by Symphony swarm policy.",
+              });
+            } catch (error) {
+              if (error?.status === 422) {
+                core.info("Approval already present or not required.");
+              } else {
+                throw error;
+              }
+            }
+
+      - name: Enable auto-merge (squash)
+        if: ${{ steps.gate.outputs.should_merge == 'true' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            await github.graphql(
+              `
+                mutation EnableAutoMerge($pullRequestId: ID!) {
+                  enablePullRequestAutoMerge(
+                    input: { pullRequestId: $pullRequestId, mergeMethod: SQUASH }
+                  ) {
+                    pullRequest {
+                      number
+                      autoMergeRequest {
+                        enabledAt
+                      }
+                    }
+                  }
+                }
+              `,
+              { pullRequestId: pr.node_id }
+            );
