@@ -417,6 +417,125 @@ pub extern "C" fn molt_list_from_range(start_bits: u64, stop_bits: u64, step_bit
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_list_repeat_range(
+    item_bits: u64,
+    start_bits: u64,
+    stop_bits: u64,
+    step_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let start_type = class_name_for_error(type_of_bits(_py, start_bits));
+        let start_err = format!("'{start_type}' object cannot be interpreted as an integer");
+        let Some(start) = index_bigint_from_obj(_py, start_bits, &start_err) else {
+            return MoltObject::none().bits();
+        };
+        let stop_type = class_name_for_error(type_of_bits(_py, stop_bits));
+        let stop_err = format!("'{stop_type}' object cannot be interpreted as an integer");
+        let Some(stop) = index_bigint_from_obj(_py, stop_bits, &stop_err) else {
+            return MoltObject::none().bits();
+        };
+        let step_type = class_name_for_error(type_of_bits(_py, step_bits));
+        let step_err = format!("'{step_type}' object cannot be interpreted as an integer");
+        let Some(step) = index_bigint_from_obj(_py, step_bits, &step_err) else {
+            return MoltObject::none().bits();
+        };
+        if step.is_zero() {
+            return raise_exception::<_>(_py, "ValueError", "range() arg 3 must not be zero");
+        }
+        let len = range_len_bigint(&start, &stop, &step);
+        if len <= BigInt::from(0) {
+            let out_ptr = alloc_list(_py, &[]);
+            return if out_ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(out_ptr).bits()
+            };
+        }
+        let Some(count_i64) = len.to_i64() else {
+            return raise_exception::<_>(
+                _py,
+                "OverflowError",
+                "cannot fit 'int' into an index-sized integer",
+            );
+        };
+        let out_ptr = alloc_list(_py, &[item_bits]);
+        if out_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let out_bits = MoltObject::from_ptr(out_ptr).bits();
+        if unsafe { !list_repeat_in_place(_py, out_ptr, count_i64) } {
+            dec_ref_bits(_py, out_bits);
+            return MoltObject::none().bits();
+        }
+        out_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_fill_range(
+    obj_bits: u64,
+    start_bits: u64,
+    stop_bits: u64,
+    fill_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(obj_bits);
+        let Some(ptr) = obj.as_ptr() else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "bytearray.fill_range expects bytearray",
+            );
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_BYTEARRAY {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "bytearray.fill_range expects bytearray",
+                );
+            }
+        }
+        let start_type = class_name_for_error(type_of_bits(_py, start_bits));
+        let start_err = format!("'{start_type}' object cannot be interpreted as an integer");
+        let Some(start) = index_i64_with_overflow(_py, start_bits, &start_err, None) else {
+            return MoltObject::none().bits();
+        };
+        let stop_type = class_name_for_error(type_of_bits(_py, stop_bits));
+        let stop_err = format!("'{stop_type}' object cannot be interpreted as an integer");
+        let Some(stop) = index_i64_with_overflow(_py, stop_bits, &stop_err, None) else {
+            return MoltObject::none().bits();
+        };
+        let Some(fill_byte) = bytes_item_to_u8(_py, fill_bits, BytesCtorKind::Bytearray) else {
+            return MoltObject::none().bits();
+        };
+
+        let len = unsafe { bytes_len(ptr) as i64 };
+        let elems = unsafe { bytearray_vec(ptr) };
+
+        // Fast path for canonical counted loops: contiguous in-bounds fill.
+        if start >= 0 && stop >= start && stop <= len {
+            elems[start as usize..stop as usize].fill(fill_byte);
+            return MoltObject::from_int(stop).bits();
+        }
+
+        let mut i = start;
+        while i < stop {
+            let mut idx = i;
+            if idx < 0 {
+                idx += len;
+            }
+            if idx < 0 || idx >= len {
+                return raise_exception::<_>(_py, "IndexError", "bytearray index out of range");
+            }
+            elems[idx as usize] = fill_byte;
+            i += 1;
+        }
+        MoltObject::from_int(i).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_range_count(range_bits: u64, val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let range_obj = obj_from_bits(range_bits);

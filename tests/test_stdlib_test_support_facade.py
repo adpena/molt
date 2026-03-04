@@ -26,11 +26,15 @@ def _load_support_module(name: str):
     )
     assert spec is not None
     assert spec.loader is not None
-    registry = getattr(builtins, "_molt_intrinsics", None)
-    if not isinstance(registry, dict):
-        registry = {}
-        setattr(builtins, "_molt_intrinsics", registry)
-    registry["molt_capabilities_has"] = lambda _name=None: True
+    setattr(builtins, "_molt_runtime", True)
+    setattr(builtins, "_molt_intrinsics_strict", True)
+
+    def _lookup(intrinsic_name: str):
+        if intrinsic_name == "molt_capabilities_has":
+            return lambda _name=None: True
+        return None
+
+    setattr(builtins, "_molt_intrinsic_lookup", _lookup)
     module = importlib.util.module_from_spec(spec)
     module.__dict__["molt_capabilities_has"] = lambda _name=None: True
     sys.modules[name] = module

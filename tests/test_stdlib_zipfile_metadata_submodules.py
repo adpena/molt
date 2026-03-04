@@ -35,10 +35,7 @@ def _ensure_intrinsics_module() -> None:
 
 def _install_intrinsics() -> None:
     _ensure_intrinsics_module()
-    registry = getattr(builtins, "_molt_intrinsics", None)
-    if not isinstance(registry, dict):
-        registry = {}
-        setattr(builtins, "_molt_intrinsics", registry)
+    intrinsics: dict[str, object] = {}
 
     def _deflate_raw(data: bytes, level: int | None):
         compressor = zlib.compressobj(
@@ -233,7 +230,7 @@ def _install_intrinsics() -> None:
             data.extend(u64(offset))
         return u16(0x0001) + u16(len(data)) + data
 
-    registry.update(
+    intrinsics.update(
         {
             "molt_capabilities_has": lambda _name: True,
             "molt_capabilities_trusted": lambda: True,
@@ -250,6 +247,16 @@ def _install_intrinsics() -> None:
             "molt_zipfile_normalize_member_path": _zipfile_normalize_member_path,
         }
     )
+    setattr(builtins, "_molt_runtime", True)
+    setattr(builtins, "_molt_intrinsics_strict", True)
+
+    def _lookup(name: str):
+        value = intrinsics.get(name)
+        if callable(value):
+            return value
+        return None
+
+    setattr(builtins, "_molt_intrinsic_lookup", _lookup)
 
 
 def _load_zipfile_package(name: str):

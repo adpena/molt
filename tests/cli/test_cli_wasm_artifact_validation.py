@@ -93,6 +93,70 @@ def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
     )
 
 
+def test_ensure_runtime_wasm_uses_valid_deps_artifact_before_recovery(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
+    primary_target = tmp_path / "target-primary"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(primary_target))
+    monkeypatch.setattr(
+        cli, "_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint_path",
+        lambda *args, **kwargs: tmp_path / "fingerprint.json",
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+    )
+    monkeypatch.setattr(
+        cli,
+        "_build_lock",
+        lambda *args, **kwargs: contextlib.nullcontext(),
+        raising=True,
+    )
+
+    seen_target_roots: list[Path] = []
+
+    def fake_run(
+        cmd: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        timeout: float | None,
+        check: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, timeout, check, text
+        profile = cmd[5]
+        target_root = Path(env.get("CARGO_TARGET_DIR", str(project_root / "target")))
+        seen_target_roots.append(target_root)
+        src = target_root / "wasm32-wasip1" / profile / "molt_runtime.wasm"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(b"\x00" * 64)
+        deps_src = src.parent / "deps" / "molt_runtime.wasm"
+        deps_src.parent.mkdir(parents=True, exist_ok=True)
+        deps_src.write_bytes(b"\x00asm\x01\x00\x00\x00ok")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run, raising=True)
+
+    assert cli._ensure_runtime_wasm(
+        runtime_wasm,
+        reloc=False,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=5.0,
+        project_root=project_root,
+    )
+    assert cli._is_valid_wasm_binary(runtime_wasm)
+    assert seen_target_roots == [primary_target]
+
+
 def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invalid(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -138,12 +202,7 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
         target_root = Path(env.get("CARGO_TARGET_DIR", str(project_root / "target")))
         seen_profiles.append(profile)
         seen_targets.append(target_root)
-        src = (
-            target_root
-            / "wasm32-wasip1"
-            / ("release-fast" if profile == "release-fast" else "release")
-            / "molt_runtime.wasm"
-        )
+        src = target_root / "wasm32-wasip1" / profile / "molt_runtime.wasm"
         src.parent.mkdir(parents=True, exist_ok=True)
         if profile == "release-fast":
             src.write_bytes(b"\x00asm\x01\x00\x00\x00ok")
@@ -162,6 +221,56 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
         project_root=project_root,
     )
     assert cli._is_valid_wasm_binary(runtime_wasm)
-    assert seen_profiles == ["release", "release", "release-fast"]
+    assert seen_profiles == ["wasm-release", "wasm-release", "release-fast"]
     assert seen_targets[0] == primary_target
     assert seen_targets[1] == cli._wasm_runtime_recovery_target_root(primary_target)
+
+
+def test_configure_wasm_runtime_codegen_flags_uses_aggressive_defaults(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("MOLT_WASM_RUNTIME_TARGET_FEATURES", raising=False)
+    monkeypatch.delenv("MOLT_WASM_RUNTIME_TARGET_FEATURE_MODE", raising=False)
+    monkeypatch.delenv("MOLT_WASM_RUNTIME_TARGET_FEATURES_EXTRA", raising=False)
+    monkeypatch.delenv("MOLT_WASM_RUNTIME_TARGET_CPU", raising=False)
+    monkeypatch.delenv("MOLT_WASM_LEGACY_LINK_FLAGS", raising=False)
+    env: dict[str, str] = {}
+
+    rustflags = cli._configure_wasm_runtime_codegen_flags(env, reloc=False)
+
+    assert env["RUSTFLAGS"] == rustflags
+    target_features = cli._rustflags_codegen_values(rustflags, "target-feature")
+    assert target_features
+    merged = target_features[-1]
+    assert "+simd128" in merged
+    assert "+bulk-memory" in merged
+    assert "+sign-ext" in merged
+    assert "--import-memory" not in rustflags
+
+
+def test_configure_wasm_runtime_codegen_flags_merges_existing_rustflags(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(
+        "MOLT_WASM_RUNTIME_TARGET_FEATURES",
+        "+simd128,+bulk-memory,+sign-ext",
+    )
+    monkeypatch.setenv("MOLT_WASM_RUNTIME_TARGET_FEATURES_EXTRA", "+multivalue")
+    monkeypatch.setenv("MOLT_WASM_RUNTIME_TARGET_CPU", "generic")
+    monkeypatch.delenv("MOLT_WASM_LEGACY_LINK_FLAGS", raising=False)
+    env = {
+        "RUSTFLAGS": (
+            "-C target-feature=+simd128,-bulk-memory -C target-cpu=mvp -C debuginfo=1"
+        )
+    }
+
+    rustflags = cli._configure_wasm_runtime_codegen_flags(env, reloc=False)
+
+    assert env["RUSTFLAGS"] == rustflags
+    target_features = cli._rustflags_codegen_values(rustflags, "target-feature")
+    assert target_features
+    merged = target_features[-1]
+    assert "-bulk-memory" in merged
+    assert "+sign-ext" in merged
+    assert "+multivalue" in merged
+    assert cli._rustflags_codegen_values(rustflags, "target-cpu") == ["mvp"]

@@ -1,5 +1,8 @@
 use molt_backend::wasm::WasmBackend;
-use molt_backend::{SimpleBackend, SimpleIR};
+use molt_backend::{
+    SIMPLE_IR_CONTRACT_NAME, SIMPLE_IR_CONTRACT_VERSION, SimpleBackend, SimpleIR,
+    validate_simple_ir,
+};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -23,6 +26,7 @@ struct DaemonJobRequest {
     output: String,
     cache_key: String,
     function_cache_key: Option<String>,
+    env_overrides: Option<HashMap<String, String>>,
     ir: SimpleIR,
 }
 
@@ -225,6 +229,64 @@ fn daemon_health(
     }
 }
 
+fn ir_contract_missing_allowed() -> bool {
+    matches!(
+        env::var("MOLT_IR_CONTRACT_ALLOW_MISSING")
+            .ok()
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
+}
+
+fn validate_ir_contract_object(ir: &serde_json::Value) -> Result<(), String> {
+    let name_field = ir.get("ir_contract_name");
+    let version_field = ir.get("ir_contract_version");
+    if name_field.is_none() && version_field.is_none() {
+        if ir_contract_missing_allowed() {
+            return Ok(());
+        }
+        return Err(format!(
+            "missing `ir_contract_name`/`ir_contract_version` (expected `{}` v{})",
+            SIMPLE_IR_CONTRACT_NAME, SIMPLE_IR_CONTRACT_VERSION
+        ));
+    }
+    let Some(name) = name_field.and_then(serde_json::Value::as_str) else {
+        return Err("`ir_contract_name` must be a string".to_string());
+    };
+    if name != SIMPLE_IR_CONTRACT_NAME {
+        return Err(format!(
+            "unsupported `ir_contract_name` `{}` (expected `{}`)",
+            name, SIMPLE_IR_CONTRACT_NAME
+        ));
+    }
+    let Some(version) = version_field.and_then(serde_json::Value::as_u64) else {
+        return Err("`ir_contract_version` must be an integer".to_string());
+    };
+    if version != SIMPLE_IR_CONTRACT_VERSION as u64 {
+        return Err(format!(
+            "unsupported `ir_contract_version` {} (expected {})",
+            version, SIMPLE_IR_CONTRACT_VERSION
+        ));
+    }
+    Ok(())
+}
+
+fn validate_daemon_request_ir_contract(request: &serde_json::Value) -> Result<(), String> {
+    let Some(jobs) = request.get("jobs").and_then(serde_json::Value::as_array) else {
+        return Ok(());
+    };
+    for (idx, job) in jobs.iter().enumerate() {
+        let Some(ir) = job.get("ir") else {
+            continue;
+        };
+        validate_ir_contract_object(ir).map_err(|err| format!("jobs[{idx}].ir: {err}"))?;
+    }
+    Ok(())
+}
+
 fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJobResponse {
     let cache_key = job.cache_key.trim().to_string();
     let function_cache_key = job
@@ -283,6 +345,17 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
         }
     }
 
+    if let Err(err) = validate_simple_ir(&job.ir) {
+        return DaemonJobResponse {
+            id: job.id,
+            ok: false,
+            cached: false,
+            cache_tier: None,
+            message: Some(err),
+        };
+    }
+
+    let _env_guard = DaemonEnvOverridesGuard::apply(job.env_overrides.as_ref());
     let output_bytes = if job.is_wasm {
         let backend = WasmBackend::new();
         backend.compile(job.ir)
@@ -314,6 +387,44 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
         cached: false,
         cache_tier: None,
         message: None,
+    }
+}
+
+struct DaemonEnvOverridesGuard {
+    saved: Vec<(String, Option<String>)>,
+}
+
+impl DaemonEnvOverridesGuard {
+    fn apply(overrides: Option<&HashMap<String, String>>) -> Self {
+        let mut saved: Vec<(String, Option<String>)> = Vec::new();
+        if let Some(overrides) = overrides {
+            for (key, value) in overrides {
+                let key = key.trim();
+                if key.is_empty() {
+                    continue;
+                }
+                saved.push((key.to_string(), env::var(key).ok()));
+                unsafe {
+                    env::set_var(key, value);
+                }
+            }
+        }
+        Self { saved }
+    }
+}
+
+impl Drop for DaemonEnvOverridesGuard {
+    fn drop(&mut self) {
+        for (key, previous) in self.saved.drain(..).rev() {
+            match previous {
+                Some(value) => unsafe {
+                    env::set_var(&key, value);
+                },
+                None => unsafe {
+                    env::remove_var(&key);
+                },
+            }
+        }
     }
 }
 
@@ -455,7 +566,7 @@ fn handle_daemon_connection(
         write_daemon_response(stream, &response)?;
         return Ok(());
     }
-    let req: DaemonRequest = match serde_json::from_str(&raw) {
+    let req_json: serde_json::Value = match serde_json::from_str(&raw) {
         Ok(req) => req,
         Err(err) => {
             let response = DaemonResponse {
@@ -463,6 +574,43 @@ fn handle_daemon_connection(
                 pong: false,
                 jobs: Vec::new(),
                 error: Some(format!("invalid request JSON: {err}")),
+                health: Some(daemon_health(
+                    cache,
+                    stats,
+                    started_at,
+                    request_limit_bytes,
+                    max_jobs,
+                )),
+            };
+            write_daemon_response(stream, &response)?;
+            return Ok(());
+        }
+    };
+    if let Err(err) = validate_daemon_request_ir_contract(&req_json) {
+        let response = DaemonResponse {
+            ok: false,
+            pong: false,
+            jobs: Vec::new(),
+            error: Some(format!("invalid IR contract: {err}")),
+            health: Some(daemon_health(
+                cache,
+                stats,
+                started_at,
+                request_limit_bytes,
+                max_jobs,
+            )),
+        };
+        write_daemon_response(stream, &response)?;
+        return Ok(());
+    }
+    let req: DaemonRequest = match serde_json::from_value(req_json) {
+        Ok(req) => req,
+        Err(err) => {
+            let response = DaemonResponse {
+                ok: false,
+                pong: false,
+                jobs: Vec::new(),
+                error: Some(format!("invalid request payload: {err}")),
                 health: Some(daemon_health(
                     cache,
                     stats,
@@ -650,6 +798,17 @@ fn main() -> io::Result<()> {
 
     let mut buffer = String::new();
     io::stdin().read_to_string(&mut buffer)?;
+    let ir_value: serde_json::Value = match serde_json::from_str(&buffer) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("Invalid IR JSON: {err}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(err) = validate_ir_contract_object(&ir_value) {
+        eprintln!("Invalid IR contract: {err}");
+        std::process::exit(1);
+    }
 
     let mut deserializer = serde_json::Deserializer::from_str(&buffer);
     let ir: SimpleIR = match serde_path_to_error::deserialize(&mut deserializer) {
@@ -661,6 +820,10 @@ fn main() -> io::Result<()> {
             std::process::exit(1);
         }
     };
+    if let Err(err) = validate_simple_ir(&ir) {
+        eprintln!("{err}");
+        std::process::exit(1);
+    }
 
     let output_file = output_path.unwrap_or(if is_wasm { "output.wasm" } else { "output.o" });
     let mut file = File::create(output_file)?;

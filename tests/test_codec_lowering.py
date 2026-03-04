@@ -274,6 +274,42 @@ def test_simple_range_listcomp_lowering():
     assert "list_from_range" in kinds
 
 
+def test_simple_range_constant_listcomp_lowering():
+    src = 'x = ["a" for _ in range(5)]'
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "list_repeat_range" in kinds
+
+
+def test_counted_while_name_bound_lowering():
+    src = """
+limit = 5
+i = 0
+total = 0
+while i < limit:
+    total += 1
+    i += 1
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "loop_index_start" in kinds
+    assert "loop_index_next" in kinds
+
+
+def test_counted_while_bytearray_fill_lowering():
+    src = """
+size = 8
+data = bytearray(size)
+i = 0
+while i < size:
+    data[i] = 97
+    i += 1
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "bytearray_fill_range" in kinds
+
+
 def test_dict_increment_lowering():
     src = """
 counts = {}

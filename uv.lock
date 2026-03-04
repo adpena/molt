@@ -383,6 +383,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "click" },
     { name = "packaging" },
+    { name = "pyyaml" },
     { name = "rich" },
     { name = "ty" },
 ]
@@ -422,6 +423,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.1.7" },
     { name = "msgpack", marker = "extra == 'accel'", specifier = ">=1.0.0" },
     { name = "packaging", specifier = ">=25.0" },
+    { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "rich", specifier = ">=13.7.0" },
     { name = "ty", specifier = ">=0.0.8" },
 ]

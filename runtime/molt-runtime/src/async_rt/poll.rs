@@ -1,4 +1,6 @@
 use molt_obj_model::MoltObject;
+#[cfg(target_arch = "wasm32")]
+use std::sync::OnceLock;
 
 use crate::{
     ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, PyToken, exception_context_align_depth,
@@ -42,10 +44,22 @@ fn normalize_wasm_poll_fn_addr(poll_fn_addr: u64) -> u64 {
     poll_fn_addr
 }
 
+#[inline]
+pub(crate) fn canonical_poll_fn_addr(poll_fn_addr: u64) -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        normalize_wasm_poll_fn_addr(poll_fn_addr)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        poll_fn_addr
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 #[inline]
 pub(crate) fn wasm_poll_fn_symbol_name(fn_ptr: u64) -> Option<&'static str> {
-    let normalized = normalize_wasm_poll_fn_addr(fn_ptr);
+    let normalized = canonical_poll_fn_addr(fn_ptr);
     let slot = normalized.checked_sub(crate::wasm_table_base())?;
     match slot {
         1 => Some("molt_async_sleep"),
@@ -82,6 +96,13 @@ pub(crate) fn wasm_poll_fn_symbol_name(fn_ptr: u64) -> Option<&'static str> {
         32 => Some("molt_contextlib_async_exitstack_enter_context_poll"),
         _ => None,
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+fn wasm_poll_debug_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_WASM_POLL_DEBUG").as_deref() == Ok("1"))
 }
 
 #[inline]
@@ -470,29 +491,36 @@ pub(crate) fn asyncio_sock_sendto_poll_fn_addr() -> u64 {
 
 pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr: *mut u8) -> i64 {
     unsafe {
-        let addr = task_ptr.expose_provenance() as u64;
+        // Poll ABI currently passes raw task object pointers to poll entrypoints.
+        // Generated poll prologues dereference [self_ptr - HEADER_STATE_OFFSET] directly.
+        let task_addr = task_ptr.expose_provenance() as u64;
+        #[cfg(target_arch = "wasm32")]
+        let task_bits = MoltObject::from_ptr(task_ptr).bits();
         #[cfg(target_arch = "wasm32")]
         {
-            let normalized_poll_fn_addr = normalize_wasm_poll_fn_addr(poll_fn_addr);
-            if std::env::var("MOLT_WASM_POLL_DEBUG").as_deref() == Ok("1") {
+            let normalized_poll_fn_addr = canonical_poll_fn_addr(poll_fn_addr);
+            if wasm_poll_debug_enabled() {
+                let flags = (*crate::header_from_obj_ptr(task_ptr)).flags;
                 let symbol = wasm_poll_fn_symbol_name(normalized_poll_fn_addr).unwrap_or("other");
                 if normalized_poll_fn_addr == poll_fn_addr {
-                    eprintln!("molt wasm poll: fn=0x{poll_fn_addr:x} kind={symbol}");
+                    eprintln!(
+                        "molt wasm poll: task=0x{task_addr:x} bits=0x{task_bits:x} fn=0x{poll_fn_addr:x} kind={symbol} flags=0x{flags:x}"
+                    );
                 } else {
                     eprintln!(
-                        "molt wasm poll: fn=0x{poll_fn_addr:x} normalized=0x{normalized_poll_fn_addr:x} kind={symbol}"
+                        "molt wasm poll: task=0x{task_addr:x} bits=0x{task_bits:x} fn=0x{poll_fn_addr:x} normalized=0x{normalized_poll_fn_addr:x} kind={symbol} flags=0x{flags:x}"
                     );
                 }
             }
             if normalized_poll_fn_addr < crate::wasm_table_base() {
                 return raise_exception::<i64>(_py, "RuntimeError", "invalid wasm poll function");
             }
-            crate::molt_call_indirect1(normalized_poll_fn_addr, addr)
+            crate::molt_call_indirect1(normalized_poll_fn_addr, task_addr)
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
             let poll_fn: extern "C" fn(u64) -> i64 = std::mem::transmute(poll_fn_addr as usize);
-            poll_fn(addr)
+            poll_fn(task_addr)
         }
     }
 }

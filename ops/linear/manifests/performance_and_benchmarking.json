@@ -1,0 +1,119 @@
+[
+  {
+    "title": "[P1][RT2] SIMD kernels for reductions + scans)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: SIMD kernels for reductions + scans)\nArea: perf\nOwner lane: runtime\nMilestone: RT2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "perf",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:852"
+    }
+  },
+  {
+    "title": "[P1][RT2] Unicode index caches + wider SIMD)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: Unicode index caches + wider SIMD)\nArea: perf\nOwner lane: runtime\nMilestone: RT2\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "perf",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/docs/spec/STATUS.md:1323"
+    }
+  },
+  {
+    "title": "[P1][RT2] float + int mix kernels)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: float + int mix kernels)\nArea: perf\nOwner lane: runtime\nMilestone: RT2\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "perf",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:853"
+    }
+  },
+  {
+    "title": "[P1][RT2] implement sharded/lock-free handle resolution and track lock-sensitive benchmark deltas (attr access, container ops)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: implement sharded/lock-free handle resolution and track lock-sensitive benchmark deltas (attr access, container ops)\nArea: perf\nOwner lane: runtime\nMilestone: RT2\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "perf",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:486"
+    }
+  },
+  {
+    "title": "[P1][RT2] re-enable safe direct-linking by relocating the runtime heap base or enforcing non-overlapping memory layouts to avoid wasm-ld in hot loops",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: re-enable safe direct-linking by relocating the runtime heap base or enforcing non-overlapping memory layouts to avoid wasm-ld in hot loops\nArea: perf\nOwner lane: runtime\nMilestone: RT2\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "perf",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:492"
+    }
+  },
+  {
+    "title": "[P1][RT2] reduce handle-resolution overhead beyond the sharded registry and measure lock-sensitive benchmark deltas (attr access, container ops)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: reduce handle-resolution overhead beyond the sharded registry and measure lock-sensitive benchmark deltas (attr access, container ops)\nArea: perf\nOwner lane: runtime\nMilestone: RT2\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "perf",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:855"
+    }
+  },
+  {
+    "title": "[P1][RT2] reduce handle/registry lock scope and measure lock-sensitive benchmarks)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: reduce handle/registry lock scope and measure lock-sensitive benchmarks)\nArea: perf\nOwner lane: runtime\nMilestone: RT2\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "perf",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:856"
+    }
+  },
+  {
+    "title": "[P1][RT2] reduce startup/import-path dispatch overhead for stdlib-heavy scripts (bind intrinsic-backed imports at lower cost and trim module-init call traffic) so wins translate to short-lived CLI/data scripts as well as long-running services",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: reduce startup/import-path dispatch overhead for stdlib-heavy scripts (bind intrinsic-backed imports at lower cost and trim module-init call traffic) so wins translate to short-lived CLI/data scripts as well as long-running services\nArea: perf\nOwner lane: compiler\nMilestone: RT2\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "perf",
+      "owner": "compiler",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:485"
+    }
+  },
+  {
+    "title": "[P1][RT2] wasm `simd128` kernels for string scans",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: wasm `simd128` kernels for string scans\nArea: perf\nOwner lane: compiler\nMilestone: RT2\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "perf",
+      "owner": "compiler",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:847"
+    }
+  }
+]
