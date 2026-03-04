@@ -14,6 +14,7 @@ pub mod wasm;
 
 #[cfg(feature = "egraphs")]
 pub mod egraph_simplify;
+mod ir_schema;
 
 const QNAN: u64 = 0x7ff8_0000_0000_0000;
 const TAG_INT: u64 = 0x0001_0000_0000_0000;
@@ -35,6 +36,8 @@ const FUNC_DEFAULT_DICT_POP: i64 = 2;
 const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
 const HEADER_SIZE_BYTES: i32 = 40;
 const HEADER_STATE_OFFSET: i32 = -(HEADER_SIZE_BYTES - 16);
+pub const SIMPLE_IR_CONTRACT_NAME: &str = "molt.simple_ir";
+pub const SIMPLE_IR_CONTRACT_VERSION: u32 = 1;
 
 fn find_zero_pred_blocks(func: &Function) -> Vec<Block> {
     let mut preds: HashMap<Block, usize> = HashMap::new();
@@ -261,6 +264,127 @@ pub struct OpIR {
     pub fast_float: Option<bool>,
     #[serde(default)]
     pub type_hint: Option<String>,
+}
+
+fn is_probable_value_token(token: &str) -> bool {
+    if token == "self" || token.starts_with("__molt_") {
+        return true;
+    }
+    let mut chars = token.chars();
+    let Some(prefix) = chars.next() else {
+        return false;
+    };
+    if prefix != 'v' && prefix != 'p' {
+        return false;
+    }
+    let mut saw_digit = false;
+    for ch in chars {
+        if !ch.is_ascii_digit() {
+            return false;
+        }
+        saw_digit = true;
+    }
+    saw_digit
+}
+
+fn should_validate_operand(kind: &str, arg_index: usize) -> bool {
+    // Frontend dict-mutator lowering can reference merge-state dictionary handles
+    // that are materialized through control-flow joins instead of explicit linear
+    // defs in the JSON op stream. Keep backend validation strict for all other
+    // operands while avoiding false positives on these dict receivers.
+    if arg_index == 0 {
+        return !matches!(
+            kind,
+            "dict_set" | "dict_setdefault" | "dict_setdefault_empty_list" | "dict_update_missing"
+        );
+    }
+    true
+}
+
+pub fn validate_simple_ir(ir: &SimpleIR) -> Result<(), String> {
+    let mut errors: Vec<String> = Vec::new();
+    for func in &ir.functions {
+        if func.name.trim().is_empty() {
+            errors.push("function name cannot be empty".to_string());
+        }
+        let mut defined: HashSet<String> = HashSet::new();
+        for param in &func.params {
+            if param == "none" || param.trim().is_empty() {
+                errors.push(format!(
+                    "function `{}` has invalid param name `{}`",
+                    func.name, param
+                ));
+                continue;
+            }
+            defined.insert(param.clone());
+        }
+        for (op_idx, op) in func.ops.iter().enumerate() {
+            if let Err(detail) = ir_schema::validate_required_fields(op) {
+                errors.push(format!(
+                    "function `{}` op#{op_idx} `{}` {detail}",
+                    func.name, op.kind
+                ));
+            }
+            if let Some(out) = &op.out
+                && out != "none"
+            {
+                if out.trim().is_empty() {
+                    errors.push(format!(
+                        "function `{}` op#{op_idx} `{}` has empty output name",
+                        func.name, op.kind
+                    ));
+                } else {
+                    defined.insert(out.clone());
+                }
+            }
+            if errors.len() >= 32 {
+                break;
+            }
+        }
+        if errors.len() >= 32 {
+            break;
+        }
+        for (op_idx, op) in func.ops.iter().enumerate() {
+            if let Some(args) = &op.args {
+                for (arg_index, arg) in args.iter().enumerate() {
+                    if !should_validate_operand(&op.kind, arg_index) {
+                        continue;
+                    }
+                    if arg == "none" {
+                        continue;
+                    }
+                    let should_validate = defined.contains(arg) || is_probable_value_token(arg);
+                    if should_validate && !defined.contains(arg) {
+                        errors.push(format!(
+                            "function `{}` op#{op_idx} `{}` uses undefined value `{}`",
+                            func.name, op.kind, arg
+                        ));
+                    }
+                }
+            }
+            if errors.len() >= 32 {
+                break;
+            }
+        }
+        if errors.len() >= 32 {
+            break;
+        }
+    }
+    if errors.is_empty() {
+        return Ok(());
+    }
+    let mut message = format!(
+        "invalid simple IR ({} error{}):",
+        errors.len(),
+        if errors.len() == 1 { "" } else { "s" }
+    );
+    for error in errors.iter().take(8) {
+        let _ = write!(message, "\n- {error}");
+    }
+    if errors.len() > 8 {
+        let _ = write!(message, "\n- ... {} more", errors.len() - 8);
+    }
+    Err(message)
 }
 
 #[derive(Clone, Copy)]
@@ -1208,6 +1332,8 @@ impl SimpleBackend {
         let mut task_kinds: BTreeMap<String, TrampolineKind> = BTreeMap::new();
         // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
         let mut task_closure_sizes: BTreeMap<String, i64> = BTreeMap::new();
+        // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
+        let mut function_has_closure: BTreeMap<String, bool> = BTreeMap::new();
         for func_ir in &ir.functions {
             let mut func_obj_names: HashMap<String, String> = HashMap::new();
             let mut const_values: HashMap<String, i64> = HashMap::new();
@@ -1232,6 +1358,11 @@ impl SimpleBackend {
                         let Some(name) = op.s_value.as_ref() else {
                             continue;
                         };
+                        let has_closure = op.kind == "func_new_closure";
+                        function_has_closure
+                            .entry(name.clone())
+                            .and_modify(|seen| *seen |= has_closure)
+                            .or_insert(has_closure);
                         if let Some(out) = op.out.as_ref() {
                             func_obj_names.insert(out.clone(), name.clone());
                         }
@@ -1302,6 +1433,7 @@ impl SimpleBackend {
                 func_ir,
                 &task_kinds,
                 &task_closure_sizes,
+                &function_has_closure,
                 &defined_functions,
                 emit_traces,
             );
@@ -1658,6 +1790,7 @@ impl SimpleBackend {
         func_ir: FunctionIR,
         task_kinds: &BTreeMap<String, TrampolineKind>,
         task_closure_sizes: &BTreeMap<String, i64>,
+        function_has_closure: &BTreeMap<String, bool>,
         defined_functions: &HashSet<String>,
         emit_traces: bool,
     ) {
@@ -4440,6 +4573,60 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*start, *stop, *step]);
+                    let res = builder.inst_results(call)[0];
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
+                "list_repeat_range" => {
+                    let args = op.args.as_ref().unwrap();
+                    let item = var_get(&mut builder, &vars, &args[0])
+                        .expect("List-repeat-range item not found");
+                    let start = var_get(&mut builder, &vars, &args[1])
+                        .expect("List-repeat-range start not found");
+                    let stop = var_get(&mut builder, &vars, &args[2])
+                        .expect("List-repeat-range stop not found");
+                    let step = var_get(&mut builder, &vars, &args[3])
+                        .expect("List-repeat-range step not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_list_repeat_range", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*item, *start, *stop, *step]);
+                    let res = builder.inst_results(call)[0];
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
+                "bytearray_fill_range" => {
+                    let args = op.args.as_ref().unwrap();
+                    let target = var_get(&mut builder, &vars, &args[0])
+                        .expect("Bytearray-fill target not found");
+                    let start = var_get(&mut builder, &vars, &args[1])
+                        .expect("Bytearray-fill start not found");
+                    let stop = var_get(&mut builder, &vars, &args[2])
+                        .expect("Bytearray-fill stop not found");
+                    let fill = var_get(&mut builder, &vars, &args[3])
+                        .expect("Bytearray-fill value not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_bytearray_fill_range", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*target, *start, *stop, *fill]);
                     let res = builder.inst_results(call)[0];
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
@@ -8843,6 +9030,13 @@ impl SimpleBackend {
                     if func_name.ends_with("_poll") {
                         func_sig.params.push(AbiParam::new(types::I64));
                     } else {
+                        if function_has_closure
+                            .get(func_name)
+                            .copied()
+                            .unwrap_or(false)
+                        {
+                            func_sig.params.push(AbiParam::new(types::I64));
+                        }
                         let arity = op.value.unwrap_or(0);
                         for _ in 0..arity {
                             func_sig.params.push(AbiParam::new(types::I64));
@@ -9818,48 +10012,6 @@ impl SimpleBackend {
 
                     builder.switch_to_block(bound_closure_block);
                     builder.seal_block(bound_closure_block);
-                    let mut new_sig = self.module.make_signature();
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_new = self
-                        .module
-                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                        .unwrap();
-                    let callargs_new_local =
-                        self.module.declare_func_in_func(callargs_new, builder.func);
-                    let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
-                    let kw_capacity = builder.ins().iconst(types::I64, 0);
-                    let callargs_call = builder
-                        .ins()
-                        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
-                    let callargs_ptr = builder.inst_results(callargs_call)[0];
-                    let mut push_sig = self.module.make_signature();
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_push_pos = self
-                        .module
-                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                        .unwrap();
-                    let callargs_push_local = self
-                        .module
-                        .declare_func_in_func(callargs_push_pos, builder.func);
-                    for arg in &args {
-                        builder
-                            .ins()
-                            .call(callargs_push_local, &[callargs_ptr, *arg]);
-                    }
-                    let mut bind_sig = self.module.make_signature();
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.returns.push(AbiParam::new(types::I64));
-                    let call_bind = self
-                        .module
-                        .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
-                        .unwrap();
-                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
                     let bound_closure_label = format!("{call_site_prefix}_bound_closure");
                     let site_bits = builder.ins().iconst(
                         types::I64,
@@ -9869,10 +10021,87 @@ impl SimpleBackend {
                             bound_closure_label.as_str(),
                         )),
                     );
-                    let bound_call = builder
-                        .ins()
-                        .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
-                    let bound_res = builder.inst_results(bound_call)[0];
+                    let bound_res = if args.len() <= 8 {
+                        let mut bind_sig = self.module.make_signature();
+                        bind_sig.params.push(AbiParam::new(types::I64)); // site_bits
+                        bind_sig.params.push(AbiParam::new(types::I64)); // call_bits
+                        for _ in 0..args.len() {
+                            bind_sig.params.push(AbiParam::new(types::I64)); // positional arg
+                        }
+                        bind_sig.returns.push(AbiParam::new(types::I64));
+                        let bind_name = match args.len() {
+                            0 => "molt_call_bind_pos0_ic",
+                            1 => "molt_call_bind_pos1_ic",
+                            2 => "molt_call_bind_pos2_ic",
+                            3 => "molt_call_bind_pos3_ic",
+                            4 => "molt_call_bind_pos4_ic",
+                            5 => "molt_call_bind_pos5_ic",
+                            6 => "molt_call_bind_pos6_ic",
+                            7 => "molt_call_bind_pos7_ic",
+                            8 => "molt_call_bind_pos8_ic",
+                            _ => unreachable!("call_func fast-call arity must be <= 8"),
+                        };
+                        let call_bind = self
+                            .module
+                            .declare_function(bind_name, Linkage::Import, &bind_sig)
+                            .unwrap();
+                        let call_bind_local =
+                            self.module.declare_func_in_func(call_bind, builder.func);
+                        let mut call_args = Vec::with_capacity(args.len() + 2);
+                        call_args.push(site_bits);
+                        call_args.push(*func_bits);
+                        call_args.extend(args.iter().copied());
+                        let call = builder.ins().call(call_bind_local, &call_args);
+                        builder.inst_results(call)[0]
+                    } else {
+                        let mut new_sig = self.module.make_signature();
+                        new_sig.params.push(AbiParam::new(types::I64));
+                        new_sig.params.push(AbiParam::new(types::I64));
+                        new_sig.returns.push(AbiParam::new(types::I64));
+                        let callargs_new = self
+                            .module
+                            .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
+                            .unwrap();
+                        let callargs_new_local =
+                            self.module.declare_func_in_func(callargs_new, builder.func);
+                        let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
+                        let kw_capacity = builder.ins().iconst(types::I64, 0);
+                        let callargs_call = builder
+                            .ins()
+                            .call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                        let callargs_ptr = builder.inst_results(callargs_call)[0];
+                        let mut push_sig = self.module.make_signature();
+                        push_sig.params.push(AbiParam::new(types::I64));
+                        push_sig.params.push(AbiParam::new(types::I64));
+                        push_sig.returns.push(AbiParam::new(types::I64));
+                        let callargs_push_pos = self
+                            .module
+                            .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
+                            .unwrap();
+                        let callargs_push_local = self
+                            .module
+                            .declare_func_in_func(callargs_push_pos, builder.func);
+                        for arg in &args {
+                            builder
+                                .ins()
+                                .call(callargs_push_local, &[callargs_ptr, *arg]);
+                        }
+                        let mut bind_sig = self.module.make_signature();
+                        bind_sig.params.push(AbiParam::new(types::I64));
+                        bind_sig.params.push(AbiParam::new(types::I64));
+                        bind_sig.params.push(AbiParam::new(types::I64));
+                        bind_sig.returns.push(AbiParam::new(types::I64));
+                        let call_bind = self
+                            .module
+                            .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
+                            .unwrap();
+                        let call_bind_local =
+                            self.module.declare_func_in_func(call_bind, builder.func);
+                        let bound_call = builder
+                            .ins()
+                            .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
+                        builder.inst_results(bound_call)[0]
+                    };
                     jump_block(&mut builder, merge_block, &[bound_res]);
 
                     builder.switch_to_block(bound_direct_block);
@@ -10213,48 +10442,6 @@ impl SimpleBackend {
 
                     builder.switch_to_block(bound_error_block);
                     builder.seal_block(bound_error_block);
-                    let mut new_sig = self.module.make_signature();
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_new = self
-                        .module
-                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                        .unwrap();
-                    let callargs_new_local =
-                        self.module.declare_func_in_func(callargs_new, builder.func);
-                    let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
-                    let kw_capacity = builder.ins().iconst(types::I64, 0);
-                    let callargs_call = builder
-                        .ins()
-                        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
-                    let callargs_ptr = builder.inst_results(callargs_call)[0];
-                    let mut push_sig = self.module.make_signature();
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_push_pos = self
-                        .module
-                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                        .unwrap();
-                    let callargs_push_local = self
-                        .module
-                        .declare_func_in_func(callargs_push_pos, builder.func);
-                    for arg in &args {
-                        builder
-                            .ins()
-                            .call(callargs_push_local, &[callargs_ptr, *arg]);
-                    }
-                    let mut bind_sig = self.module.make_signature();
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.returns.push(AbiParam::new(types::I64));
-                    let call_bind = self
-                        .module
-                        .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
-                        .unwrap();
-                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
                     let bound_error_label = format!("{call_site_prefix}_bound_error");
                     let site_bits = builder.ins().iconst(
                         types::I64,
@@ -10264,10 +10451,87 @@ impl SimpleBackend {
                             bound_error_label.as_str(),
                         )),
                     );
-                    let fallback_call = builder
-                        .ins()
-                        .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
-                    let fallback_res = builder.inst_results(fallback_call)[0];
+                    let fallback_res = if args.len() <= 8 {
+                        let mut bind_sig = self.module.make_signature();
+                        bind_sig.params.push(AbiParam::new(types::I64)); // site_bits
+                        bind_sig.params.push(AbiParam::new(types::I64)); // call_bits
+                        for _ in 0..args.len() {
+                            bind_sig.params.push(AbiParam::new(types::I64)); // positional arg
+                        }
+                        bind_sig.returns.push(AbiParam::new(types::I64));
+                        let bind_name = match args.len() {
+                            0 => "molt_call_bind_pos0_ic",
+                            1 => "molt_call_bind_pos1_ic",
+                            2 => "molt_call_bind_pos2_ic",
+                            3 => "molt_call_bind_pos3_ic",
+                            4 => "molt_call_bind_pos4_ic",
+                            5 => "molt_call_bind_pos5_ic",
+                            6 => "molt_call_bind_pos6_ic",
+                            7 => "molt_call_bind_pos7_ic",
+                            8 => "molt_call_bind_pos8_ic",
+                            _ => unreachable!("call_func fast-call arity must be <= 8"),
+                        };
+                        let call_bind = self
+                            .module
+                            .declare_function(bind_name, Linkage::Import, &bind_sig)
+                            .unwrap();
+                        let call_bind_local =
+                            self.module.declare_func_in_func(call_bind, builder.func);
+                        let mut call_args = Vec::with_capacity(args.len() + 2);
+                        call_args.push(site_bits);
+                        call_args.push(*func_bits);
+                        call_args.extend(args.iter().copied());
+                        let call = builder.ins().call(call_bind_local, &call_args);
+                        builder.inst_results(call)[0]
+                    } else {
+                        let mut new_sig = self.module.make_signature();
+                        new_sig.params.push(AbiParam::new(types::I64));
+                        new_sig.params.push(AbiParam::new(types::I64));
+                        new_sig.returns.push(AbiParam::new(types::I64));
+                        let callargs_new = self
+                            .module
+                            .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
+                            .unwrap();
+                        let callargs_new_local =
+                            self.module.declare_func_in_func(callargs_new, builder.func);
+                        let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
+                        let kw_capacity = builder.ins().iconst(types::I64, 0);
+                        let callargs_call = builder
+                            .ins()
+                            .call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                        let callargs_ptr = builder.inst_results(callargs_call)[0];
+                        let mut push_sig = self.module.make_signature();
+                        push_sig.params.push(AbiParam::new(types::I64));
+                        push_sig.params.push(AbiParam::new(types::I64));
+                        push_sig.returns.push(AbiParam::new(types::I64));
+                        let callargs_push_pos = self
+                            .module
+                            .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
+                            .unwrap();
+                        let callargs_push_local = self
+                            .module
+                            .declare_func_in_func(callargs_push_pos, builder.func);
+                        for arg in &args {
+                            builder
+                                .ins()
+                                .call(callargs_push_local, &[callargs_ptr, *arg]);
+                        }
+                        let mut bind_sig = self.module.make_signature();
+                        bind_sig.params.push(AbiParam::new(types::I64));
+                        bind_sig.params.push(AbiParam::new(types::I64));
+                        bind_sig.params.push(AbiParam::new(types::I64));
+                        bind_sig.returns.push(AbiParam::new(types::I64));
+                        let call_bind = self
+                            .module
+                            .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
+                            .unwrap();
+                        let call_bind_local =
+                            self.module.declare_func_in_func(call_bind, builder.func);
+                        let fallback_call = builder
+                            .ins()
+                            .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
+                        builder.inst_results(fallback_call)[0]
+                    };
                     jump_block(&mut builder, merge_block, &[fallback_res]);
 
                     builder.switch_to_block(non_bound_block);
@@ -10283,48 +10547,6 @@ impl SimpleBackend {
 
                     builder.switch_to_block(fallback_block);
                     builder.seal_block(fallback_block);
-                    let mut new_sig = self.module.make_signature();
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_new = self
-                        .module
-                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                        .unwrap();
-                    let callargs_new_local =
-                        self.module.declare_func_in_func(callargs_new, builder.func);
-                    let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
-                    let kw_capacity = builder.ins().iconst(types::I64, 0);
-                    let callargs_call = builder
-                        .ins()
-                        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
-                    let callargs_ptr = builder.inst_results(callargs_call)[0];
-                    let mut push_sig = self.module.make_signature();
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_push_pos = self
-                        .module
-                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                        .unwrap();
-                    let callargs_push_local = self
-                        .module
-                        .declare_func_in_func(callargs_push_pos, builder.func);
-                    for arg in &args {
-                        builder
-                            .ins()
-                            .call(callargs_push_local, &[callargs_ptr, *arg]);
-                    }
-                    let mut bind_sig = self.module.make_signature();
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.returns.push(AbiParam::new(types::I64));
-                    let call_bind = self
-                        .module
-                        .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
-                        .unwrap();
-                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
                     let nonfunc_fallback_label = format!("{call_site_prefix}_nonfunc_fallback");
                     let site_bits = builder.ins().iconst(
                         types::I64,
@@ -10334,10 +10556,87 @@ impl SimpleBackend {
                             nonfunc_fallback_label.as_str(),
                         )),
                     );
-                    let fallback_call = builder
-                        .ins()
-                        .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
-                    let fallback_res = builder.inst_results(fallback_call)[0];
+                    let fallback_res = if args.len() <= 8 {
+                        let mut bind_sig = self.module.make_signature();
+                        bind_sig.params.push(AbiParam::new(types::I64)); // site_bits
+                        bind_sig.params.push(AbiParam::new(types::I64)); // call_bits
+                        for _ in 0..args.len() {
+                            bind_sig.params.push(AbiParam::new(types::I64)); // positional arg
+                        }
+                        bind_sig.returns.push(AbiParam::new(types::I64));
+                        let bind_name = match args.len() {
+                            0 => "molt_call_bind_pos0_ic",
+                            1 => "molt_call_bind_pos1_ic",
+                            2 => "molt_call_bind_pos2_ic",
+                            3 => "molt_call_bind_pos3_ic",
+                            4 => "molt_call_bind_pos4_ic",
+                            5 => "molt_call_bind_pos5_ic",
+                            6 => "molt_call_bind_pos6_ic",
+                            7 => "molt_call_bind_pos7_ic",
+                            8 => "molt_call_bind_pos8_ic",
+                            _ => unreachable!("call_func fast-call arity must be <= 8"),
+                        };
+                        let call_bind = self
+                            .module
+                            .declare_function(bind_name, Linkage::Import, &bind_sig)
+                            .unwrap();
+                        let call_bind_local =
+                            self.module.declare_func_in_func(call_bind, builder.func);
+                        let mut call_args = Vec::with_capacity(args.len() + 2);
+                        call_args.push(site_bits);
+                        call_args.push(*func_bits);
+                        call_args.extend(args.iter().copied());
+                        let call = builder.ins().call(call_bind_local, &call_args);
+                        builder.inst_results(call)[0]
+                    } else {
+                        let mut new_sig = self.module.make_signature();
+                        new_sig.params.push(AbiParam::new(types::I64));
+                        new_sig.params.push(AbiParam::new(types::I64));
+                        new_sig.returns.push(AbiParam::new(types::I64));
+                        let callargs_new = self
+                            .module
+                            .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
+                            .unwrap();
+                        let callargs_new_local =
+                            self.module.declare_func_in_func(callargs_new, builder.func);
+                        let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
+                        let kw_capacity = builder.ins().iconst(types::I64, 0);
+                        let callargs_call = builder
+                            .ins()
+                            .call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                        let callargs_ptr = builder.inst_results(callargs_call)[0];
+                        let mut push_sig = self.module.make_signature();
+                        push_sig.params.push(AbiParam::new(types::I64));
+                        push_sig.params.push(AbiParam::new(types::I64));
+                        push_sig.returns.push(AbiParam::new(types::I64));
+                        let callargs_push_pos = self
+                            .module
+                            .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
+                            .unwrap();
+                        let callargs_push_local = self
+                            .module
+                            .declare_func_in_func(callargs_push_pos, builder.func);
+                        for arg in &args {
+                            builder
+                                .ins()
+                                .call(callargs_push_local, &[callargs_ptr, *arg]);
+                        }
+                        let mut bind_sig = self.module.make_signature();
+                        bind_sig.params.push(AbiParam::new(types::I64));
+                        bind_sig.params.push(AbiParam::new(types::I64));
+                        bind_sig.params.push(AbiParam::new(types::I64));
+                        bind_sig.returns.push(AbiParam::new(types::I64));
+                        let call_bind = self
+                            .module
+                            .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
+                            .unwrap();
+                        let call_bind_local =
+                            self.module.declare_func_in_func(call_bind, builder.func);
+                        let fallback_call = builder
+                            .ins()
+                            .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
+                        builder.inst_results(fallback_call)[0]
+                    };
                     jump_block(&mut builder, merge_block, &[fallback_res]);
 
                     builder.switch_to_block(func_block);
@@ -10398,48 +10697,6 @@ impl SimpleBackend {
 
                     builder.switch_to_block(func_closure_block);
                     builder.seal_block(func_closure_block);
-                    let mut new_sig = self.module.make_signature();
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_new = self
-                        .module
-                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                        .unwrap();
-                    let callargs_new_local =
-                        self.module.declare_func_in_func(callargs_new, builder.func);
-                    let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
-                    let kw_capacity = builder.ins().iconst(types::I64, 0);
-                    let callargs_call = builder
-                        .ins()
-                        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
-                    let callargs_ptr = builder.inst_results(callargs_call)[0];
-                    let mut push_sig = self.module.make_signature();
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_push_pos = self
-                        .module
-                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                        .unwrap();
-                    let callargs_push_local = self
-                        .module
-                        .declare_func_in_func(callargs_push_pos, builder.func);
-                    for arg in &args {
-                        builder
-                            .ins()
-                            .call(callargs_push_local, &[callargs_ptr, *arg]);
-                    }
-                    let mut bind_sig = self.module.make_signature();
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.returns.push(AbiParam::new(types::I64));
-                    let call_bind = self
-                        .module
-                        .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
-                        .unwrap();
-                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
                     let closure_label = format!("{call_site_prefix}_closure");
                     let site_bits = builder.ins().iconst(
                         types::I64,
@@ -10449,10 +10706,87 @@ impl SimpleBackend {
                             closure_label.as_str(),
                         )),
                     );
-                    let closure_call = builder
-                        .ins()
-                        .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
-                    let closure_res = builder.inst_results(closure_call)[0];
+                    let closure_res = if args.len() <= 8 {
+                        let mut bind_sig = self.module.make_signature();
+                        bind_sig.params.push(AbiParam::new(types::I64)); // site_bits
+                        bind_sig.params.push(AbiParam::new(types::I64)); // call_bits
+                        for _ in 0..args.len() {
+                            bind_sig.params.push(AbiParam::new(types::I64)); // positional arg
+                        }
+                        bind_sig.returns.push(AbiParam::new(types::I64));
+                        let bind_name = match args.len() {
+                            0 => "molt_call_bind_pos0_ic",
+                            1 => "molt_call_bind_pos1_ic",
+                            2 => "molt_call_bind_pos2_ic",
+                            3 => "molt_call_bind_pos3_ic",
+                            4 => "molt_call_bind_pos4_ic",
+                            5 => "molt_call_bind_pos5_ic",
+                            6 => "molt_call_bind_pos6_ic",
+                            7 => "molt_call_bind_pos7_ic",
+                            8 => "molt_call_bind_pos8_ic",
+                            _ => unreachable!("call_func fast-call arity must be <= 8"),
+                        };
+                        let call_bind = self
+                            .module
+                            .declare_function(bind_name, Linkage::Import, &bind_sig)
+                            .unwrap();
+                        let call_bind_local =
+                            self.module.declare_func_in_func(call_bind, builder.func);
+                        let mut call_args = Vec::with_capacity(args.len() + 2);
+                        call_args.push(site_bits);
+                        call_args.push(*func_bits);
+                        call_args.extend(args.iter().copied());
+                        let call = builder.ins().call(call_bind_local, &call_args);
+                        builder.inst_results(call)[0]
+                    } else {
+                        let mut new_sig = self.module.make_signature();
+                        new_sig.params.push(AbiParam::new(types::I64));
+                        new_sig.params.push(AbiParam::new(types::I64));
+                        new_sig.returns.push(AbiParam::new(types::I64));
+                        let callargs_new = self
+                            .module
+                            .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
+                            .unwrap();
+                        let callargs_new_local =
+                            self.module.declare_func_in_func(callargs_new, builder.func);
+                        let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
+                        let kw_capacity = builder.ins().iconst(types::I64, 0);
+                        let callargs_call = builder
+                            .ins()
+                            .call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                        let callargs_ptr = builder.inst_results(callargs_call)[0];
+                        let mut push_sig = self.module.make_signature();
+                        push_sig.params.push(AbiParam::new(types::I64));
+                        push_sig.params.push(AbiParam::new(types::I64));
+                        push_sig.returns.push(AbiParam::new(types::I64));
+                        let callargs_push_pos = self
+                            .module
+                            .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
+                            .unwrap();
+                        let callargs_push_local = self
+                            .module
+                            .declare_func_in_func(callargs_push_pos, builder.func);
+                        for arg in &args {
+                            builder
+                                .ins()
+                                .call(callargs_push_local, &[callargs_ptr, *arg]);
+                        }
+                        let mut bind_sig = self.module.make_signature();
+                        bind_sig.params.push(AbiParam::new(types::I64));
+                        bind_sig.params.push(AbiParam::new(types::I64));
+                        bind_sig.params.push(AbiParam::new(types::I64));
+                        bind_sig.returns.push(AbiParam::new(types::I64));
+                        let call_bind = self
+                            .module
+                            .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
+                            .unwrap();
+                        let call_bind_local =
+                            self.module.declare_func_in_func(call_bind, builder.func);
+                        let closure_call = builder
+                            .ins()
+                            .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
+                        builder.inst_results(closure_call)[0]
+                    };
                     jump_block(&mut builder, merge_block, &[closure_res]);
 
                     builder.switch_to_block(func_direct_block);
@@ -10478,48 +10812,6 @@ impl SimpleBackend {
 
                     builder.switch_to_block(func_bind_block);
                     builder.seal_block(func_bind_block);
-                    let mut new_sig = self.module.make_signature();
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_new = self
-                        .module
-                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                        .unwrap();
-                    let callargs_new_local =
-                        self.module.declare_func_in_func(callargs_new, builder.func);
-                    let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
-                    let kw_capacity = builder.ins().iconst(types::I64, 0);
-                    let callargs_call = builder
-                        .ins()
-                        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
-                    let callargs_ptr = builder.inst_results(callargs_call)[0];
-                    let mut push_sig = self.module.make_signature();
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_push_pos = self
-                        .module
-                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                        .unwrap();
-                    let callargs_push_local = self
-                        .module
-                        .declare_func_in_func(callargs_push_pos, builder.func);
-                    for arg in &args {
-                        builder
-                            .ins()
-                            .call(callargs_push_local, &[callargs_ptr, *arg]);
-                    }
-                    let mut bind_sig = self.module.make_signature();
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.returns.push(AbiParam::new(types::I64));
-                    let call_bind = self
-                        .module
-                        .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
-                        .unwrap();
-                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
                     let bind_label = format!("{call_site_prefix}_bind");
                     let site_bits = builder.ins().iconst(
                         types::I64,
@@ -10529,10 +10821,87 @@ impl SimpleBackend {
                             bind_label.as_str(),
                         )),
                     );
-                    let bind_call = builder
-                        .ins()
-                        .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
-                    let bind_res = builder.inst_results(bind_call)[0];
+                    let bind_res = if args.len() <= 8 {
+                        let mut bind_sig = self.module.make_signature();
+                        bind_sig.params.push(AbiParam::new(types::I64)); // site_bits
+                        bind_sig.params.push(AbiParam::new(types::I64)); // call_bits
+                        for _ in 0..args.len() {
+                            bind_sig.params.push(AbiParam::new(types::I64)); // positional arg
+                        }
+                        bind_sig.returns.push(AbiParam::new(types::I64));
+                        let bind_name = match args.len() {
+                            0 => "molt_call_bind_pos0_ic",
+                            1 => "molt_call_bind_pos1_ic",
+                            2 => "molt_call_bind_pos2_ic",
+                            3 => "molt_call_bind_pos3_ic",
+                            4 => "molt_call_bind_pos4_ic",
+                            5 => "molt_call_bind_pos5_ic",
+                            6 => "molt_call_bind_pos6_ic",
+                            7 => "molt_call_bind_pos7_ic",
+                            8 => "molt_call_bind_pos8_ic",
+                            _ => unreachable!("call_func fast-call arity must be <= 8"),
+                        };
+                        let call_bind = self
+                            .module
+                            .declare_function(bind_name, Linkage::Import, &bind_sig)
+                            .unwrap();
+                        let call_bind_local =
+                            self.module.declare_func_in_func(call_bind, builder.func);
+                        let mut call_args = Vec::with_capacity(args.len() + 2);
+                        call_args.push(site_bits);
+                        call_args.push(*func_bits);
+                        call_args.extend(args.iter().copied());
+                        let call = builder.ins().call(call_bind_local, &call_args);
+                        builder.inst_results(call)[0]
+                    } else {
+                        let mut new_sig = self.module.make_signature();
+                        new_sig.params.push(AbiParam::new(types::I64));
+                        new_sig.params.push(AbiParam::new(types::I64));
+                        new_sig.returns.push(AbiParam::new(types::I64));
+                        let callargs_new = self
+                            .module
+                            .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
+                            .unwrap();
+                        let callargs_new_local =
+                            self.module.declare_func_in_func(callargs_new, builder.func);
+                        let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
+                        let kw_capacity = builder.ins().iconst(types::I64, 0);
+                        let callargs_call = builder
+                            .ins()
+                            .call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                        let callargs_ptr = builder.inst_results(callargs_call)[0];
+                        let mut push_sig = self.module.make_signature();
+                        push_sig.params.push(AbiParam::new(types::I64));
+                        push_sig.params.push(AbiParam::new(types::I64));
+                        push_sig.returns.push(AbiParam::new(types::I64));
+                        let callargs_push_pos = self
+                            .module
+                            .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
+                            .unwrap();
+                        let callargs_push_local = self
+                            .module
+                            .declare_func_in_func(callargs_push_pos, builder.func);
+                        for arg in &args {
+                            builder
+                                .ins()
+                                .call(callargs_push_local, &[callargs_ptr, *arg]);
+                        }
+                        let mut bind_sig = self.module.make_signature();
+                        bind_sig.params.push(AbiParam::new(types::I64));
+                        bind_sig.params.push(AbiParam::new(types::I64));
+                        bind_sig.params.push(AbiParam::new(types::I64));
+                        bind_sig.returns.push(AbiParam::new(types::I64));
+                        let call_bind = self
+                            .module
+                            .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
+                            .unwrap();
+                        let call_bind_local =
+                            self.module.declare_func_in_func(call_bind, builder.func);
+                        let bind_call = builder
+                            .ins()
+                            .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
+                        builder.inst_results(bind_call)[0]
+                    };
                     jump_block(&mut builder, merge_block, &[bind_res]);
 
                     builder.switch_to_block(func_direct_call_block);
@@ -10587,40 +10956,6 @@ impl SimpleBackend {
                     for name in &args_names[1..] {
                         args.push(*var_get(&mut builder, &vars, name).expect("Arg not found"));
                     }
-                    let mut new_sig = self.module.make_signature();
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_new = self
-                        .module
-                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                        .unwrap();
-                    let callargs_new_local =
-                        self.module.declare_func_in_func(callargs_new, builder.func);
-                    let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
-                    let kw_capacity = builder.ins().iconst(types::I64, 0);
-                    let callargs_call = builder
-                        .ins()
-                        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
-                    let callargs_ptr = builder.inst_results(callargs_call)[0];
-
-                    let mut push_sig = self.module.make_signature();
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_push_pos = self
-                        .module
-                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                        .unwrap();
-                    let callargs_push_local = self
-                        .module
-                        .declare_func_in_func(callargs_push_pos, builder.func);
-                    for arg in &args {
-                        builder
-                            .ins()
-                            .call(callargs_push_local, &[callargs_ptr, *arg]);
-                    }
-
                     let bridge_lane = op.s_value.as_deref() == Some("bridge");
                     let call_site_label = if bridge_lane {
                         "invoke_ffi_bridge"
@@ -10638,23 +10973,93 @@ impl SimpleBackend {
                     let require_bridge_cap = builder
                         .ins()
                         .iconst(types::I64, box_bool(if bridge_lane { 1 } else { 0 }));
+                    let res = if args.len() <= 8 {
+                        let mut invoke_sig = self.module.make_signature();
+                        invoke_sig.params.push(AbiParam::new(types::I64)); // site_bits
+                        invoke_sig.params.push(AbiParam::new(types::I64)); // call_bits
+                        for _ in 0..args.len() {
+                            invoke_sig.params.push(AbiParam::new(types::I64)); // positional arg
+                        }
+                        invoke_sig.params.push(AbiParam::new(types::I64)); // require_bridge_cap_bits
+                        invoke_sig.returns.push(AbiParam::new(types::I64));
+                        let invoke_name = match args.len() {
+                            0 => "molt_invoke_ffi_pos0_ic",
+                            1 => "molt_invoke_ffi_pos1_ic",
+                            2 => "molt_invoke_ffi_pos2_ic",
+                            3 => "molt_invoke_ffi_pos3_ic",
+                            4 => "molt_invoke_ffi_pos4_ic",
+                            5 => "molt_invoke_ffi_pos5_ic",
+                            6 => "molt_invoke_ffi_pos6_ic",
+                            7 => "molt_invoke_ffi_pos7_ic",
+                            8 => "molt_invoke_ffi_pos8_ic",
+                            _ => unreachable!("invoke_ffi fast-call arity must be <= 8"),
+                        };
+                        let invoke_fn = self
+                            .module
+                            .declare_function(invoke_name, Linkage::Import, &invoke_sig)
+                            .unwrap();
+                        let invoke_local =
+                            self.module.declare_func_in_func(invoke_fn, builder.func);
+                        let mut invoke_args = Vec::with_capacity(args.len() + 3);
+                        invoke_args.push(site_bits);
+                        invoke_args.push(*func_bits);
+                        invoke_args.extend(args.iter().copied());
+                        invoke_args.push(require_bridge_cap);
+                        let invoke_call = builder.ins().call(invoke_local, &invoke_args);
+                        builder.inst_results(invoke_call)[0]
+                    } else {
+                        let mut new_sig = self.module.make_signature();
+                        new_sig.params.push(AbiParam::new(types::I64));
+                        new_sig.params.push(AbiParam::new(types::I64));
+                        new_sig.returns.push(AbiParam::new(types::I64));
+                        let callargs_new = self
+                            .module
+                            .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
+                            .unwrap();
+                        let callargs_new_local =
+                            self.module.declare_func_in_func(callargs_new, builder.func);
+                        let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
+                        let kw_capacity = builder.ins().iconst(types::I64, 0);
+                        let callargs_call = builder
+                            .ins()
+                            .call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                        let callargs_ptr = builder.inst_results(callargs_call)[0];
 
-                    let mut invoke_sig = self.module.make_signature();
-                    invoke_sig.params.push(AbiParam::new(types::I64));
-                    invoke_sig.params.push(AbiParam::new(types::I64));
-                    invoke_sig.params.push(AbiParam::new(types::I64));
-                    invoke_sig.params.push(AbiParam::new(types::I64));
-                    invoke_sig.returns.push(AbiParam::new(types::I64));
-                    let invoke_fn = self
-                        .module
-                        .declare_function("molt_invoke_ffi_ic", Linkage::Import, &invoke_sig)
-                        .unwrap();
-                    let invoke_local = self.module.declare_func_in_func(invoke_fn, builder.func);
-                    let invoke_call = builder.ins().call(
-                        invoke_local,
-                        &[site_bits, *func_bits, callargs_ptr, require_bridge_cap],
-                    );
-                    let res = builder.inst_results(invoke_call)[0];
+                        let mut push_sig = self.module.make_signature();
+                        push_sig.params.push(AbiParam::new(types::I64));
+                        push_sig.params.push(AbiParam::new(types::I64));
+                        push_sig.returns.push(AbiParam::new(types::I64));
+                        let callargs_push_pos = self
+                            .module
+                            .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
+                            .unwrap();
+                        let callargs_push_local = self
+                            .module
+                            .declare_func_in_func(callargs_push_pos, builder.func);
+                        for arg in &args {
+                            builder
+                                .ins()
+                                .call(callargs_push_local, &[callargs_ptr, *arg]);
+                        }
+
+                        let mut invoke_sig = self.module.make_signature();
+                        invoke_sig.params.push(AbiParam::new(types::I64));
+                        invoke_sig.params.push(AbiParam::new(types::I64));
+                        invoke_sig.params.push(AbiParam::new(types::I64));
+                        invoke_sig.params.push(AbiParam::new(types::I64));
+                        invoke_sig.returns.push(AbiParam::new(types::I64));
+                        let invoke_fn = self
+                            .module
+                            .declare_function("molt_invoke_ffi_ic", Linkage::Import, &invoke_sig)
+                            .unwrap();
+                        let invoke_local =
+                            self.module.declare_func_in_func(invoke_fn, builder.func);
+                        let invoke_call = builder.ins().call(
+                            invoke_local,
+                            &[site_bits, *func_bits, callargs_ptr, require_bridge_cap],
+                        );
+                        builder.inst_results(invoke_call)[0]
+                    };
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "call_bind" | "call_indirect" => {
@@ -10736,48 +11141,6 @@ impl SimpleBackend {
                         extra_args
                             .push(*var_get(&mut builder, &vars, name).expect("Arg not found"));
                     }
-                    let mut new_sig = self.module.make_signature();
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_new = self
-                        .module
-                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                        .unwrap();
-                    let callargs_new_local =
-                        self.module.declare_func_in_func(callargs_new, builder.func);
-                    let pos_capacity = builder.ins().iconst(types::I64, extra_args.len() as i64);
-                    let kw_capacity = builder.ins().iconst(types::I64, 0);
-                    let callargs_call = builder
-                        .ins()
-                        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
-                    let callargs_ptr = builder.inst_results(callargs_call)[0];
-                    let mut push_sig = self.module.make_signature();
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_push_pos = self
-                        .module
-                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                        .unwrap();
-                    let callargs_push_local = self
-                        .module
-                        .declare_func_in_func(callargs_push_pos, builder.func);
-                    for arg in &extra_args {
-                        builder
-                            .ins()
-                            .call(callargs_push_local, &[callargs_ptr, *arg]);
-                    }
-                    let mut bind_sig = self.module.make_signature();
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.returns.push(AbiParam::new(types::I64));
-                    let call_bind = self
-                        .module
-                        .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
-                        .unwrap();
-                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
                     let site_bits = builder.ins().iconst(
                         types::I64,
                         box_int(stable_ic_site_id(
@@ -10786,10 +11149,88 @@ impl SimpleBackend {
                             "call_method",
                         )),
                     );
-                    let call = builder
-                        .ins()
-                        .call(call_bind_local, &[site_bits, *method_bits, callargs_ptr]);
-                    let res = builder.inst_results(call)[0];
+                    let res = if extra_args.len() <= 8 {
+                        let mut bind_sig = self.module.make_signature();
+                        bind_sig.params.push(AbiParam::new(types::I64)); // site_bits
+                        bind_sig.params.push(AbiParam::new(types::I64)); // call_bits
+                        for _ in 0..extra_args.len() {
+                            bind_sig.params.push(AbiParam::new(types::I64)); // positional arg
+                        }
+                        bind_sig.returns.push(AbiParam::new(types::I64));
+                        let bind_name = match extra_args.len() {
+                            0 => "molt_call_bind_pos0_ic",
+                            1 => "molt_call_bind_pos1_ic",
+                            2 => "molt_call_bind_pos2_ic",
+                            3 => "molt_call_bind_pos3_ic",
+                            4 => "molt_call_bind_pos4_ic",
+                            5 => "molt_call_bind_pos5_ic",
+                            6 => "molt_call_bind_pos6_ic",
+                            7 => "molt_call_bind_pos7_ic",
+                            8 => "molt_call_bind_pos8_ic",
+                            _ => unreachable!("call_method fast-call arity must be <= 8"),
+                        };
+                        let call_bind = self
+                            .module
+                            .declare_function(bind_name, Linkage::Import, &bind_sig)
+                            .unwrap();
+                        let call_bind_local =
+                            self.module.declare_func_in_func(call_bind, builder.func);
+                        let mut call_args = Vec::with_capacity(extra_args.len() + 2);
+                        call_args.push(site_bits);
+                        call_args.push(*method_bits);
+                        call_args.extend(extra_args.iter().copied());
+                        let call = builder.ins().call(call_bind_local, &call_args);
+                        builder.inst_results(call)[0]
+                    } else {
+                        let mut new_sig = self.module.make_signature();
+                        new_sig.params.push(AbiParam::new(types::I64));
+                        new_sig.params.push(AbiParam::new(types::I64));
+                        new_sig.returns.push(AbiParam::new(types::I64));
+                        let callargs_new = self
+                            .module
+                            .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
+                            .unwrap();
+                        let callargs_new_local =
+                            self.module.declare_func_in_func(callargs_new, builder.func);
+                        let pos_capacity =
+                            builder.ins().iconst(types::I64, extra_args.len() as i64);
+                        let kw_capacity = builder.ins().iconst(types::I64, 0);
+                        let callargs_call = builder
+                            .ins()
+                            .call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                        let callargs_ptr = builder.inst_results(callargs_call)[0];
+                        let mut push_sig = self.module.make_signature();
+                        push_sig.params.push(AbiParam::new(types::I64));
+                        push_sig.params.push(AbiParam::new(types::I64));
+                        push_sig.returns.push(AbiParam::new(types::I64));
+                        let callargs_push_pos = self
+                            .module
+                            .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
+                            .unwrap();
+                        let callargs_push_local = self
+                            .module
+                            .declare_func_in_func(callargs_push_pos, builder.func);
+                        for arg in &extra_args {
+                            builder
+                                .ins()
+                                .call(callargs_push_local, &[callargs_ptr, *arg]);
+                        }
+                        let mut bind_sig = self.module.make_signature();
+                        bind_sig.params.push(AbiParam::new(types::I64));
+                        bind_sig.params.push(AbiParam::new(types::I64));
+                        bind_sig.params.push(AbiParam::new(types::I64));
+                        bind_sig.returns.push(AbiParam::new(types::I64));
+                        let call_bind = self
+                            .module
+                            .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
+                            .unwrap();
+                        let call_bind_local =
+                            self.module.declare_func_in_func(call_bind, builder.func);
+                        let call = builder
+                            .ins()
+                            .call(call_bind_local, &[site_bits, *method_bits, callargs_ptr]);
+                        builder.inst_results(call)[0]
+                    };
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "module_new" => {

@@ -1,0 +1,42 @@
+[
+  {
+    "project": "Compiler & Frontend",
+    "path": "ops/linear/manifests/compiler_and_frontend.json",
+    "count": 20
+  },
+  {
+    "project": "Offload & Data Ecosystem",
+    "path": "ops/linear/manifests/offload_and_data_ecosystem.json",
+    "count": 8
+  },
+  {
+    "project": "Performance & Benchmarking",
+    "path": "ops/linear/manifests/performance_and_benchmarking.json",
+    "count": 9
+  },
+  {
+    "project": "Runtime & Intrinsics",
+    "path": "ops/linear/manifests/runtime_and_intrinsics.json",
+    "count": 127
+  },
+  {
+    "project": "Security & Supply Chain",
+    "path": "ops/linear/manifests/security_and_supply_chain.json",
+    "count": 1
+  },
+  {
+    "project": "Testing & Differential",
+    "path": "ops/linear/manifests/testing_and_differential.json",
+    "count": 2
+  },
+  {
+    "project": "Tooling & DevEx",
+    "path": "ops/linear/manifests/tooling_and_devex.json",
+    "count": 3
+  },
+  {
+    "project": "WASM Parity",
+    "path": "ops/linear/manifests/wasm_parity.json",
+    "count": 10
+  }
+]

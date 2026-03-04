@@ -38,7 +38,7 @@ const {
 const IS_DB_WORKER = !isMainThread && workerData && workerData.kind === 'molt_db_host';
 const IS_SOCKET_WORKER = !isMainThread && workerData && workerData.kind === 'molt_socket_host';
 
-const AUTO_WASM_NODE_FLAG_SPECS = [
+const DETERMINISTIC_WASM_NODE_FLAG_SPECS = [
   { key: '--liftoff-only', arg: '--liftoff-only' },
   { key: '--no-wasm-tier-up', arg: '--no-wasm-tier-up' },
   { key: '--no-wasm-dynamic-tiering', arg: '--no-wasm-dynamic-tiering' },
@@ -71,8 +71,43 @@ const parsePositiveInt = (raw, fallback) => {
 const hasNodeFlag = (argv, key) =>
   argv.some((arg) => arg === key || arg.startsWith(`${key}=`));
 
-const supportedAutoWasmFlags = () =>
-  AUTO_WASM_NODE_FLAG_SPECS.map((spec) => spec.arg);
+const resolveWasmNodeMode = () => {
+  const rawMode = (process.env.MOLT_WASM_NODE_MODE || '').trim().toLowerCase();
+  if (rawMode) {
+    if (
+      rawMode === 'deterministic' ||
+      rawMode === 'stable' ||
+      rawMode === 'repro'
+    ) {
+      return 'deterministic';
+    }
+    if (
+      rawMode === 'throughput' ||
+      rawMode === 'perf' ||
+      rawMode === 'performance'
+    ) {
+      return 'throughput';
+    }
+    if (rawMode === 'off' || rawMode === 'disabled' || rawMode === 'none') {
+      return 'off';
+    }
+  }
+  const legacyToggle = (process.env.MOLT_WASM_AUTO_NODE_FLAGS || '')
+    .trim()
+    .toLowerCase();
+  if (legacyToggle === '1' || legacyToggle === 'true' || legacyToggle === 'yes') {
+    return 'deterministic';
+  }
+  if (legacyToggle === '0' || legacyToggle === 'false' || legacyToggle === 'no') {
+    return 'off';
+  }
+  return 'throughput';
+};
+
+const supportedAutoWasmFlags = (mode) =>
+  mode === 'deterministic'
+    ? DETERMINISTIC_WASM_NODE_FLAG_SPECS.map((spec) => spec.arg)
+    : [];
 
 const signalExitCode = (signal) => {
   if (!signal) return null;
@@ -107,16 +142,18 @@ const killChildTree = (child, signal) => {
 const maybeReexecWithSafeWasmNodeFlags = () => {
   if (!isMainThread || IS_DB_WORKER || IS_SOCKET_WORKER) return;
   if (process.env.MOLT_WASM_NODE_FLAGS_REEXECED === '1') return;
-  if (process.env.MOLT_WASM_AUTO_NODE_FLAGS === '0') return;
+  const mode = resolveWasmNodeMode();
+  if (mode !== 'deterministic') return;
 
   const wasmEntryPath = resolveBootstrapWasmPath();
   if (!wasmEntryPath) return;
 
-  const minMb = parsePositiveInt(process.env.MOLT_WASM_AUTO_NODE_FLAGS_MIN_MB, 24);
+  // Deterministic mode reexec uses conservative Node flags for stable timings.
+  const minMb = parsePositiveInt(process.env.MOLT_WASM_AUTO_NODE_FLAGS_MIN_MB, 8);
   const wasmSizeMb = fs.statSync(wasmEntryPath).size / (1024 * 1024);
   if (wasmSizeMb < minMb) return;
 
-  const desired = supportedAutoWasmFlags();
+  const desired = supportedAutoWasmFlags(mode);
   const missing = desired.filter((flag) => !hasNodeFlag(process.execArgv, flag.split('=')[0]));
   if (!missing.length) return;
 
@@ -337,6 +374,9 @@ const initWasmAssets = () => {
     throw new Error('WASM path not found (arg, MOLT_WASM_PATH, ./output.wasm, or temp output.wasm)');
   }
   wasmBuffer = fs.readFileSync(wasmPath);
+  if (!isWasmBinary(wasmBuffer)) {
+    throw new Error(`Invalid wasm binary at ${wasmPath}`);
+  }
   const linkedEnvPath = process.env.MOLT_WASM_LINKED_PATH;
   const defaultLinkedPath = path.join(__dirname, 'output_linked.wasm');
   const explicitLinkedPath = (() => {
@@ -361,6 +401,15 @@ const initWasmAssets = () => {
     linkedBuffer = wasmBuffer;
   } else if (linkedPath && fs.existsSync(linkedPath)) {
     linkedBuffer = fs.readFileSync(linkedPath);
+  }
+  if (linkedBuffer && !isWasmBinary(linkedBuffer)) {
+    const msg = `Ignoring invalid linked wasm at ${linkedPath}; expected wasm magic header.`;
+    if (process.env.MOLT_WASM_STRICT_LINKED === '1') {
+      throw new Error(msg);
+    }
+    console.warn(msg);
+    linkedPath = null;
+    linkedBuffer = null;
   }
   const tableBaseProbe = linkedBuffer || wasmBuffer;
   detectedWasmTableBase = extractWasmTableBase(tableBaseProbe);
@@ -4232,6 +4281,9 @@ const parseWasmImports = (buffer) => {
   if (bytes.length < 8) {
     throw new Error('Invalid wasm binary');
   }
+  if (!isWasmBinary(bytes)) {
+    throw new Error('Invalid wasm header');
+  }
   let offset = 8;
   let memory = null;
   let table = null;
@@ -4278,6 +4330,22 @@ const parseWasmImports = (buffer) => {
     }
   }
   return { memory, table, funcImports };
+};
+
+const isWasmBinary = (buffer) => {
+  if (!buffer) return false;
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  return (
+    bytes.length >= 8 &&
+    bytes[0] === 0x00 &&
+    bytes[1] === 0x61 &&
+    bytes[2] === 0x73 &&
+    bytes[3] === 0x6d &&
+    bytes[4] === 0x01 &&
+    bytes[5] === 0x00 &&
+    bytes[6] === 0x00 &&
+    bytes[7] === 0x00
+  );
 };
 
 const toPositiveTableBase = (value) => {

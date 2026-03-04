@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 
 def _load_wasm_link():
     root = Path(__file__).resolve().parents[1]
@@ -178,3 +180,24 @@ def test_find_output_call_indirect_symbol_uses_name_section(tmp_path: Path) -> N
     output.write_bytes(named)
     symbols = wasm_link._find_output_call_indirect_symbol(output)
     assert symbols["molt_call_indirect0"] == (0, wasm_link.FLAG_BINDING_GLOBAL)
+
+
+def test_should_stage_link_output_locally_auto_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MOLT_WASM_LINK_OUTPUT_MODE", raising=False)
+    assert wasm_link._should_stage_link_output_locally(
+        Path("/Volumes/APDataStore/Molt/out.wasm")
+    )
+    assert not wasm_link._should_stage_link_output_locally(Path("/tmp/out.wasm"))
+
+
+def test_should_stage_link_output_locally_respects_mode_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_WASM_LINK_OUTPUT_MODE", "target")
+    assert not wasm_link._should_stage_link_output_locally(
+        Path("/Volumes/APDataStore/Molt/out.wasm")
+    )
+    monkeypatch.setenv("MOLT_WASM_LINK_OUTPUT_MODE", "local")
+    assert wasm_link._should_stage_link_output_locally(Path("/tmp/out.wasm"))

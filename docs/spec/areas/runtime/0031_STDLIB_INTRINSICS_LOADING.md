@@ -8,8 +8,15 @@ requirements for correctness, performance, and determinism. It is the canonical
 checklist for new or modified stdlib shims.
 
 ## Loader Contract
-- Resolve intrinsics through `src/molt/stdlib/_intrinsics.py` only.
-- Resolution order is module `globals()` first, then `builtins._molt_intrinsics`.
+- Resolve intrinsics through the canonical `_intrinsics.py` contract (top-level
+  `src/_intrinsics.py` and stdlib mirror `src/molt/stdlib/_intrinsics.py` must
+  stay behaviorally identical).
+- Canonical resolution order is:
+  1. runtime helper `_molt_intrinsic_lookup(name)` (runtime-owned)
+- Loader must not import `builtins` while resolving intrinsics; use only
+  caller/loader module state so bootstrap behavior stays deterministic.
+- `namespace` arguments are API-compatibility only; loaders must not treat
+  namespace bindings as intrinsic truth.
 - Do not create alternative registries, hidden loaders, or import-time side
   effects that bypass the canonical loader.
 

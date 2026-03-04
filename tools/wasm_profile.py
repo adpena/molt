@@ -6,7 +6,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-import bench_wasm
+try:
+    import bench_wasm
+except ModuleNotFoundError:  # pragma: no cover - exercised in test imports
+    from tools import bench_wasm
 
 
 def _resolve_bench(spec: str) -> str:
@@ -31,18 +34,24 @@ def _run_node_profile(
     cmd = [
         node_bin,
         "--no-warnings",
-        "--no-wasm-tier-up",
-        "--no-wasm-dynamic-tiering",
-        "--wasm-num-compilation-tasks=1",
         "--cpu-prof",
         f"--cpu-prof-dir={out_dir}",
         f"--cpu-prof-name={name}",
     ]
+    if os.environ.get("MOLT_WASM_NODE_DETERMINISTIC") == "1":
+        cmd.extend(
+            [
+                "--no-wasm-tier-up",
+                "--no-wasm-dynamic-tiering",
+                "--wasm-num-compilation-tasks=1",
+            ]
+        )
     if interval_us is not None:
         cmd.append(f"--cpu-prof-interval={interval_us}")
     cmd.append("run_wasm.js")
     env = env.copy()
     env.setdefault("NODE_NO_WARNINGS", "1")
+    env.setdefault("MOLT_WASM_NODE_MODE", "throughput")
     try:
         res = subprocess.run(cmd, env=env, capture_output=True, text=True)
     except OSError as exc:
@@ -97,17 +106,36 @@ def main() -> None:
     if args.linked:
         os.environ["MOLT_WASM_LINK"] = "1"
 
-    if not bench_wasm.build_runtime_wasm(reloc=False, output=bench_wasm.RUNTIME_WASM):
+    if not bench_wasm.build_runtime_wasm(
+        reloc=False,
+        output=bench_wasm.RUNTIME_WASM,
+        cargo_profile="release",
+        tty=False,
+        log=None,
+    ):
         sys.exit(1)
     if args.linked and not bench_wasm.build_runtime_wasm(
-        reloc=True, output=bench_wasm.RUNTIME_WASM_RELOC
+        reloc=True,
+        output=bench_wasm.RUNTIME_WASM_RELOC,
+        cargo_profile="release",
+        tty=False,
+        log=None,
     ):
         print(
             "Relocatable runtime build failed; falling back to non-linked wasm runs.",
             file=sys.stderr,
         )
 
-    wasm_binary = bench_wasm.prepare_wasm_binary(bench)
+    wasm_binary = bench_wasm.prepare_wasm_binary(
+        bench,
+        require_linked=False,
+        build_profile="release",
+        build_timeout_s=300.0,
+        use_cache=True,
+        tty=False,
+        log=None,
+        keep_temp=False,
+    )
     if wasm_binary is None:
         sys.exit(1)
 

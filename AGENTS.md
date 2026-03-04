@@ -165,6 +165,34 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - [docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md](docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md): determinism/security enforcement checklist.
 - [docs/OPERATIONS.md](docs/OPERATIONS.md): remote access, logging, benchmarks, progress reports, and multi-agent workflow.
 - [docs/BENCHMARKING.md](docs/BENCHMARKING.md): benchmarking overview.
+- [docs/ORCHESTRATION.md](docs/ORCHESTRATION.md): canonical Orchestration entrypoint (scope, architecture, run flow).
+- [docs/SYMPHONY_HUMAN_ROLE.md](docs/SYMPHONY_HUMAN_ROLE.md): canonical human authority/escalation model.
+- [docs/SYMPHONY_OPERATOR_PLAYBOOK.md](docs/SYMPHONY_OPERATOR_PLAYBOOK.md): operator runbook for Orchestration execution.
+
+## Orchestration Orchestration Foundation (Non-Negotiable)
+- Use `docs/ORCHESTRATION.md` as the canonical Orchestration map; treat `docs/SYMPHONY_HUMAN_ROLE.md` + `docs/SYMPHONY_OPERATOR_PLAYBOOK.md` as the execution/decision contract.
+- Human remains the final authority for priority tradeoffs, acceptance decisions, and blocker escalation. Agents execute; humans approve closure.
+- Escalate immediately on missing intrinsics, parity/perf regressions, conflicting compatibility claims, or determinism/security gate failures.
+- Preferred Orchestration tool-call flow:
+  1. `symphony_state`: read/update orchestration state before and after dispatch.
+  2. `linear_graphql`: fetch/normalize/create/update issue data with canonical metadata (`area/owner/milestone/priority/status`).
+  3. `molt_code_search`: gather code/docs context and impacted surfaces before edits.
+  4. `molt_cli`: execute builds/tests/bench runs using external-volume env defaults.
+  5. `molt_formal_check`: run Lean/Quint checks when orchestration-risk changes are present.
+
+## Orchestration Formalization Integration (Lean + Quint)
+- For risky orchestration changes (`src/molt/orchestration/**`, `tools/symphony_*.py`, workflow/dispatch/state transitions), run Lean + bounded Quint in normal turns:
+  - `cd formal/lean && lake build`
+  - `quint run formal/quint/molt_build_determinism.qnt --invariant=Inv --max-steps=10`
+- Before major merges that change scheduling/retry/state-machine behavior, run full Quint verification:
+  - `quint verify formal/quint/molt_build_determinism.qnt --invariant=Inv`
+- Default policy: bounded checks for fast iteration; full `verify` is required before high-impact orchestration merges.
+
+## Python Invocation Policy (Non-Negotiable)
+- For repository Python commands, use `uv run --python 3.12 python3 ...` by default (or `--python 3.13/3.14` only when that lane is explicitly required).
+- Avoid raw host `python3` invocation unless the command is explicitly documented as a bootstrap/host exception.
+- This policy is mandatory for Orchestration tooling too (for example: `PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_run.py WORKFLOW.md --once`).
+- Prioritize and co-optimize: performance, correctness, developer experience, cross-platform parity, native/wasm parity, and Rust-first lowering.
 
 ## Build, Test, and Development Commands
 - `cargo build --release --package molt-runtime`: build the Rust runtime used by compiled binaries.
