@@ -292,6 +292,32 @@ fn emit_float_cmp_inline(func: &mut Function, lhs: u32, rhs: u32, f64_cmp: Instr
     emit_box_bool_from_i32(func);
 }
 
+fn op_may_raise_for_exception_poll(kind: &str) -> bool {
+    !matches!(
+        kind,
+        // Pure immediate/local-control operations cannot introduce a fresh pending exception.
+        "const"
+            | "const_bool"
+            | "const_float"
+            | "const_none"
+            | "box"
+            | "unbox"
+            | "cast"
+            | "widen"
+            | "identity_alias"
+            | "loop_index_next"
+            | "label"
+            | "state_label"
+            | "jump"
+            | "loop_break"
+            | "loop_continue"
+            | "loop_start"
+            | "loop_end"
+            | "try_start"
+            | "try_end"
+    )
+}
+
 fn is_stateful_dispatch_terminator(kind: &str) -> bool {
     matches!(
         kind,
@@ -970,6 +996,21 @@ impl WasmBackend {
             ],
             std::iter::once(ValType::I64),
         );
+        // Type 32: (i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64
+        self.types.function(
+            std::iter::repeat_n(ValType::I64, 9),
+            std::iter::once(ValType::I64),
+        );
+        // Type 33: (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64
+        self.types.function(
+            std::iter::repeat_n(ValType::I64, 10),
+            std::iter::once(ValType::I64),
+        );
+        // Type 34: (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64
+        self.types.function(
+            std::iter::repeat_n(ValType::I64, 11),
+            std::iter::once(ValType::I64),
+        );
 
         let mut import_idx = 0;
         let mut add_import = |name: &str, ty: u32, ids: &mut BTreeMap<String, u32>| {
@@ -1352,12 +1393,32 @@ impl WasmBackend {
         add_import("callargs_expand_kwstar", 3, &mut self.import_ids);
         add_import("call_bind", 3, &mut self.import_ids);
         add_import("call_bind_ic", 5, &mut self.import_ids);
+        add_import("call_bind_pos0_ic", 3, &mut self.import_ids);
+        add_import("call_bind_pos1_ic", 5, &mut self.import_ids);
+        add_import("call_bind_pos2_ic", 7, &mut self.import_ids);
+        add_import("call_bind_pos3_ic", 12, &mut self.import_ids);
+        add_import("call_bind_pos4_ic", 9, &mut self.import_ids);
+        add_import("call_bind_pos5_ic", 10, &mut self.import_ids);
+        add_import("call_bind_pos6_ic", 28, &mut self.import_ids);
+        add_import("call_bind_pos7_ic", 32, &mut self.import_ids);
+        add_import("call_bind_pos8_ic", 33, &mut self.import_ids);
         add_import("call_indirect_ic", 5, &mut self.import_ids);
         add_import("invoke_ffi_ic", 7, &mut self.import_ids);
+        add_import("invoke_ffi_pos0_ic", 5, &mut self.import_ids);
+        add_import("invoke_ffi_pos1_ic", 7, &mut self.import_ids);
+        add_import("invoke_ffi_pos2_ic", 12, &mut self.import_ids);
+        add_import("invoke_ffi_pos3_ic", 9, &mut self.import_ids);
+        add_import("invoke_ffi_pos4_ic", 10, &mut self.import_ids);
+        add_import("invoke_ffi_pos5_ic", 28, &mut self.import_ids);
+        add_import("invoke_ffi_pos6_ic", 32, &mut self.import_ids);
+        add_import("invoke_ffi_pos7_ic", 33, &mut self.import_ids);
+        add_import("invoke_ffi_pos8_ic", 34, &mut self.import_ids);
         add_import("slice", 5, &mut self.import_ids);
         add_import("slice_new", 5, &mut self.import_ids);
         add_import("range_new", 5, &mut self.import_ids);
         add_import("list_from_range", 5, &mut self.import_ids);
+        add_import("list_repeat_range", 7, &mut self.import_ids);
+        add_import("bytearray_fill_range", 7, &mut self.import_ids);
         add_import("list_builder_new", 2, &mut self.import_ids);
         add_import("list_builder_append", 6, &mut self.import_ids);
         add_import("list_builder_finish", 2, &mut self.import_ids);
@@ -1568,7 +1629,7 @@ impl WasmBackend {
         add_import("exceptiongroup_match", 3, &mut self.import_ids);
         add_import("exceptiongroup_combine", 2, &mut self.import_ids);
         add_import("exception_clear", 0, &mut self.import_ids);
-        add_import("exception_pending", 0, &mut self.import_ids);
+        add_import("exception_pending_fast", 0, &mut self.import_ids);
         add_import("exception_kind", 2, &mut self.import_ids);
         add_import("exception_class", 2, &mut self.import_ids);
         add_import("exception_message", 2, &mut self.import_ids);
@@ -3282,8 +3343,12 @@ impl WasmBackend {
                             label_stack: &mut Vec<i64>,
                             label_depths: &mut HashMap<i64, usize>,
                             base_idx: usize| {
+            let mut exception_poll_needed = false;
             for (rel_idx, op) in ops.iter().enumerate() {
                 let op_idx = base_idx + rel_idx;
+                if op.kind != "check_exception" {
+                    exception_poll_needed |= op_may_raise_for_exception_poll(op.kind.as_str());
+                }
                 match op.kind.as_str() {
                     "const" => {
                         let val = op.value.unwrap();
@@ -4922,6 +4987,34 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(stop));
                         func.instruction(&Instruction::LocalGet(step));
                         emit_call(func, reloc_enabled, import_ids["list_from_range"]);
+                        func.instruction(&Instruction::LocalSet(out));
+                    }
+                    "list_repeat_range" => {
+                        let args = op.args.as_ref().unwrap();
+                        let out = locals[op.out.as_ref().unwrap()];
+                        let item = locals[&args[0]];
+                        let start = locals[&args[1]];
+                        let stop = locals[&args[2]];
+                        let step = locals[&args[3]];
+                        func.instruction(&Instruction::LocalGet(item));
+                        func.instruction(&Instruction::LocalGet(start));
+                        func.instruction(&Instruction::LocalGet(stop));
+                        func.instruction(&Instruction::LocalGet(step));
+                        emit_call(func, reloc_enabled, import_ids["list_repeat_range"]);
+                        func.instruction(&Instruction::LocalSet(out));
+                    }
+                    "bytearray_fill_range" => {
+                        let args = op.args.as_ref().unwrap();
+                        let out = locals[op.out.as_ref().unwrap()];
+                        let target = locals[&args[0]];
+                        let start = locals[&args[1]];
+                        let stop = locals[&args[2]];
+                        let fill = locals[&args[3]];
+                        func.instruction(&Instruction::LocalGet(target));
+                        func.instruction(&Instruction::LocalGet(start));
+                        func.instruction(&Instruction::LocalGet(stop));
+                        func.instruction(&Instruction::LocalGet(fill));
+                        emit_call(func, reloc_enabled, import_ids["bytearray_fill_range"]);
                         func.instruction(&Instruction::LocalSet(out));
                     }
                     "tuple_new" => {
@@ -7506,26 +7599,48 @@ impl WasmBackend {
                         if func_sig_arities.get(target_name).copied() != Some(arity) {
                             // Guarded direct-call fast path is only valid for exact-arity
                             // targets; fall back to call_bind_ic when arities diverge.
-                            func.instruction(&Instruction::I64Const(arity as i64));
-                            func.instruction(&Instruction::I64Const(0));
-                            emit_call(func, reloc_enabled, import_ids["callargs_new"]);
-                            func.instruction(&Instruction::LocalSet(callargs_tmp));
-                            for arg_name in &args_names[1..] {
-                                let arg = locals[arg_name];
-                                func.instruction(&Instruction::LocalGet(callargs_tmp));
-                                func.instruction(&Instruction::LocalGet(arg));
-                                emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
-                                func.instruction(&Instruction::Drop);
-                            }
                             let site_bits = box_int(stable_ic_site_id(
                                 func_ir.name.as_str(),
                                 op_idx,
                                 "call_guarded_arity_mismatch",
                             ));
-                            func.instruction(&Instruction::I64Const(site_bits));
-                            func.instruction(&Instruction::LocalGet(callee_bits));
-                            func.instruction(&Instruction::LocalGet(callargs_tmp));
-                            emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+                            if arity <= 8 {
+                                func.instruction(&Instruction::I64Const(site_bits));
+                                func.instruction(&Instruction::LocalGet(callee_bits));
+                                for arg_name in &args_names[1..] {
+                                    let arg = locals[arg_name];
+                                    func.instruction(&Instruction::LocalGet(arg));
+                                }
+                                let import_name = match arity {
+                                    0 => "call_bind_pos0_ic",
+                                    1 => "call_bind_pos1_ic",
+                                    2 => "call_bind_pos2_ic",
+                                    3 => "call_bind_pos3_ic",
+                                    4 => "call_bind_pos4_ic",
+                                    5 => "call_bind_pos5_ic",
+                                    6 => "call_bind_pos6_ic",
+                                    7 => "call_bind_pos7_ic",
+                                    8 => "call_bind_pos8_ic",
+                                    _ => unreachable!("call_guarded fast-call arity must be <= 8"),
+                                };
+                                emit_call(func, reloc_enabled, import_ids[import_name]);
+                            } else {
+                                func.instruction(&Instruction::I64Const(arity as i64));
+                                func.instruction(&Instruction::I64Const(0));
+                                emit_call(func, reloc_enabled, import_ids["callargs_new"]);
+                                func.instruction(&Instruction::LocalSet(callargs_tmp));
+                                for arg_name in &args_names[1..] {
+                                    let arg = locals[arg_name];
+                                    func.instruction(&Instruction::LocalGet(callargs_tmp));
+                                    func.instruction(&Instruction::LocalGet(arg));
+                                    emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
+                                    func.instruction(&Instruction::Drop);
+                                }
+                                func.instruction(&Instruction::I64Const(site_bits));
+                                func.instruction(&Instruction::LocalGet(callee_bits));
+                                func.instruction(&Instruction::LocalGet(callargs_tmp));
+                                emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+                            }
                             func.instruction(&Instruction::LocalSet(out));
                             continue;
                         }
@@ -7581,51 +7696,95 @@ impl WasmBackend {
 
                         // slow path: function object does not match expected target
                         func.instruction(&Instruction::Else);
-                        func.instruction(&Instruction::I64Const(arity as i64));
-                        func.instruction(&Instruction::I64Const(0));
-                        emit_call(func, reloc_enabled, import_ids["callargs_new"]);
-                        func.instruction(&Instruction::LocalSet(callargs_tmp));
-                        for arg_name in &args_names[1..] {
-                            let arg = locals[arg_name];
-                            func.instruction(&Instruction::LocalGet(callargs_tmp));
-                            func.instruction(&Instruction::LocalGet(arg));
-                            emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
-                            func.instruction(&Instruction::Drop);
-                        }
                         let site_bits = box_int(stable_ic_site_id(
                             func_ir.name.as_str(),
                             op_idx,
                             "call_guarded_slow_match_miss",
                         ));
-                        func.instruction(&Instruction::I64Const(site_bits));
-                        func.instruction(&Instruction::LocalGet(callee_bits));
-                        func.instruction(&Instruction::LocalGet(callargs_tmp));
-                        emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+                        if arity <= 8 {
+                            func.instruction(&Instruction::I64Const(site_bits));
+                            func.instruction(&Instruction::LocalGet(callee_bits));
+                            for arg_name in &args_names[1..] {
+                                let arg = locals[arg_name];
+                                func.instruction(&Instruction::LocalGet(arg));
+                            }
+                            let import_name = match arity {
+                                0 => "call_bind_pos0_ic",
+                                1 => "call_bind_pos1_ic",
+                                2 => "call_bind_pos2_ic",
+                                3 => "call_bind_pos3_ic",
+                                4 => "call_bind_pos4_ic",
+                                5 => "call_bind_pos5_ic",
+                                6 => "call_bind_pos6_ic",
+                                7 => "call_bind_pos7_ic",
+                                8 => "call_bind_pos8_ic",
+                                _ => unreachable!("call_guarded fast-call arity must be <= 8"),
+                            };
+                            emit_call(func, reloc_enabled, import_ids[import_name]);
+                        } else {
+                            func.instruction(&Instruction::I64Const(arity as i64));
+                            func.instruction(&Instruction::I64Const(0));
+                            emit_call(func, reloc_enabled, import_ids["callargs_new"]);
+                            func.instruction(&Instruction::LocalSet(callargs_tmp));
+                            for arg_name in &args_names[1..] {
+                                let arg = locals[arg_name];
+                                func.instruction(&Instruction::LocalGet(callargs_tmp));
+                                func.instruction(&Instruction::LocalGet(arg));
+                                emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
+                                func.instruction(&Instruction::Drop);
+                            }
+                            func.instruction(&Instruction::I64Const(site_bits));
+                            func.instruction(&Instruction::LocalGet(callee_bits));
+                            func.instruction(&Instruction::LocalGet(callargs_tmp));
+                            emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+                        }
                         func.instruction(&Instruction::LocalSet(out));
                         func.instruction(&Instruction::End);
 
                         // not a function object: fallback to call_bind
                         func.instruction(&Instruction::Else);
-                        func.instruction(&Instruction::I64Const(arity as i64));
-                        func.instruction(&Instruction::I64Const(0));
-                        emit_call(func, reloc_enabled, import_ids["callargs_new"]);
-                        func.instruction(&Instruction::LocalSet(callargs_tmp));
-                        for arg_name in &args_names[1..] {
-                            let arg = locals[arg_name];
-                            func.instruction(&Instruction::LocalGet(callargs_tmp));
-                            func.instruction(&Instruction::LocalGet(arg));
-                            emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
-                            func.instruction(&Instruction::Drop);
-                        }
                         let site_bits = box_int(stable_ic_site_id(
                             func_ir.name.as_str(),
                             op_idx,
                             "call_guarded_nonfunc",
                         ));
-                        func.instruction(&Instruction::I64Const(site_bits));
-                        func.instruction(&Instruction::LocalGet(callee_bits));
-                        func.instruction(&Instruction::LocalGet(callargs_tmp));
-                        emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+                        if arity <= 8 {
+                            func.instruction(&Instruction::I64Const(site_bits));
+                            func.instruction(&Instruction::LocalGet(callee_bits));
+                            for arg_name in &args_names[1..] {
+                                let arg = locals[arg_name];
+                                func.instruction(&Instruction::LocalGet(arg));
+                            }
+                            let import_name = match arity {
+                                0 => "call_bind_pos0_ic",
+                                1 => "call_bind_pos1_ic",
+                                2 => "call_bind_pos2_ic",
+                                3 => "call_bind_pos3_ic",
+                                4 => "call_bind_pos4_ic",
+                                5 => "call_bind_pos5_ic",
+                                6 => "call_bind_pos6_ic",
+                                7 => "call_bind_pos7_ic",
+                                8 => "call_bind_pos8_ic",
+                                _ => unreachable!("call_guarded fast-call arity must be <= 8"),
+                            };
+                            emit_call(func, reloc_enabled, import_ids[import_name]);
+                        } else {
+                            func.instruction(&Instruction::I64Const(arity as i64));
+                            func.instruction(&Instruction::I64Const(0));
+                            emit_call(func, reloc_enabled, import_ids["callargs_new"]);
+                            func.instruction(&Instruction::LocalSet(callargs_tmp));
+                            for arg_name in &args_names[1..] {
+                                let arg = locals[arg_name];
+                                func.instruction(&Instruction::LocalGet(callargs_tmp));
+                                func.instruction(&Instruction::LocalGet(arg));
+                                emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
+                                func.instruction(&Instruction::Drop);
+                            }
+                            func.instruction(&Instruction::I64Const(site_bits));
+                            func.instruction(&Instruction::LocalGet(callee_bits));
+                            func.instruction(&Instruction::LocalGet(callargs_tmp));
+                            emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+                        }
                         func.instruction(&Instruction::LocalSet(out));
                         func.instruction(&Instruction::End);
                     }
@@ -7801,19 +7960,7 @@ impl WasmBackend {
                         let args_names = op.args.as_ref().unwrap();
                         let func_bits = locals[&args_names[0]];
                         let out = locals[op.out.as_ref().unwrap()];
-                        let callargs_tmp = locals["__molt_tmp0"];
                         let arity = args_names.len().saturating_sub(1);
-                        func.instruction(&Instruction::I64Const(arity as i64));
-                        func.instruction(&Instruction::I64Const(0));
-                        emit_call(func, reloc_enabled, import_ids["callargs_new"]);
-                        func.instruction(&Instruction::LocalSet(callargs_tmp));
-                        for arg_name in &args_names[1..] {
-                            let arg = locals[arg_name];
-                            func.instruction(&Instruction::LocalGet(callargs_tmp));
-                            func.instruction(&Instruction::LocalGet(arg));
-                            emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
-                            func.instruction(&Instruction::Drop);
-                        }
                         let invoke_bridge_lane =
                             op.kind == "invoke_ffi" && op.s_value.as_deref() == Some("bridge");
                         let call_site_label = if op.kind == "invoke_ffi" {
@@ -7830,15 +7977,71 @@ impl WasmBackend {
                             op_idx,
                             call_site_label,
                         ));
-                        func.instruction(&Instruction::I64Const(site_bits));
-                        func.instruction(&Instruction::LocalGet(func_bits));
-                        func.instruction(&Instruction::LocalGet(callargs_tmp));
-                        if op.kind == "invoke_ffi" {
-                            let require_bridge_cap = if invoke_bridge_lane { 1 } else { 0 };
-                            func.instruction(&Instruction::I64Const(box_bool(require_bridge_cap)));
-                            emit_call(func, reloc_enabled, import_ids["invoke_ffi_ic"]);
+                        if arity <= 8 {
+                            func.instruction(&Instruction::I64Const(site_bits));
+                            func.instruction(&Instruction::LocalGet(func_bits));
+                            for arg_name in &args_names[1..] {
+                                let arg = locals[arg_name];
+                                func.instruction(&Instruction::LocalGet(arg));
+                            }
+                            if op.kind == "invoke_ffi" {
+                                let require_bridge_cap = if invoke_bridge_lane { 1 } else { 0 };
+                                func.instruction(&Instruction::I64Const(box_bool(
+                                    require_bridge_cap,
+                                )));
+                                let import_name = match arity {
+                                    0 => "invoke_ffi_pos0_ic",
+                                    1 => "invoke_ffi_pos1_ic",
+                                    2 => "invoke_ffi_pos2_ic",
+                                    3 => "invoke_ffi_pos3_ic",
+                                    4 => "invoke_ffi_pos4_ic",
+                                    5 => "invoke_ffi_pos5_ic",
+                                    6 => "invoke_ffi_pos6_ic",
+                                    7 => "invoke_ffi_pos7_ic",
+                                    8 => "invoke_ffi_pos8_ic",
+                                    _ => unreachable!("invoke_ffi fast-call arity must be <= 8"),
+                                };
+                                emit_call(func, reloc_enabled, import_ids[import_name]);
+                            } else {
+                                let import_name = match arity {
+                                    0 => "call_bind_pos0_ic",
+                                    1 => "call_bind_pos1_ic",
+                                    2 => "call_bind_pos2_ic",
+                                    3 => "call_bind_pos3_ic",
+                                    4 => "call_bind_pos4_ic",
+                                    5 => "call_bind_pos5_ic",
+                                    6 => "call_bind_pos6_ic",
+                                    7 => "call_bind_pos7_ic",
+                                    8 => "call_bind_pos8_ic",
+                                    _ => unreachable!("call_func fast-call arity must be <= 8"),
+                                };
+                                emit_call(func, reloc_enabled, import_ids[import_name]);
+                            }
                         } else {
-                            emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+                            let callargs_tmp = locals["__molt_tmp0"];
+                            func.instruction(&Instruction::I64Const(arity as i64));
+                            func.instruction(&Instruction::I64Const(0));
+                            emit_call(func, reloc_enabled, import_ids["callargs_new"]);
+                            func.instruction(&Instruction::LocalSet(callargs_tmp));
+                            for arg_name in &args_names[1..] {
+                                let arg = locals[arg_name];
+                                func.instruction(&Instruction::LocalGet(callargs_tmp));
+                                func.instruction(&Instruction::LocalGet(arg));
+                                emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
+                                func.instruction(&Instruction::Drop);
+                            }
+                            func.instruction(&Instruction::I64Const(site_bits));
+                            func.instruction(&Instruction::LocalGet(func_bits));
+                            func.instruction(&Instruction::LocalGet(callargs_tmp));
+                            if op.kind == "invoke_ffi" {
+                                let require_bridge_cap = if invoke_bridge_lane { 1 } else { 0 };
+                                func.instruction(&Instruction::I64Const(box_bool(
+                                    require_bridge_cap,
+                                )));
+                                emit_call(func, reloc_enabled, import_ids["invoke_ffi_ic"]);
+                            } else {
+                                emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+                            }
                         }
                         func.instruction(&Instruction::LocalSet(out));
                     }
@@ -7871,28 +8074,50 @@ impl WasmBackend {
                         let args_names = op.args.as_ref().unwrap();
                         let method_bits = locals[&args_names[0]];
                         let out = locals[op.out.as_ref().unwrap()];
-                        let callargs_tmp = locals["__molt_tmp0"];
                         let arity = args_names.len().saturating_sub(1);
-                        func.instruction(&Instruction::I64Const(arity as i64));
-                        func.instruction(&Instruction::I64Const(0));
-                        emit_call(func, reloc_enabled, import_ids["callargs_new"]);
-                        func.instruction(&Instruction::LocalSet(callargs_tmp));
-                        for arg_name in &args_names[1..] {
-                            let arg = locals[arg_name];
-                            func.instruction(&Instruction::LocalGet(callargs_tmp));
-                            func.instruction(&Instruction::LocalGet(arg));
-                            emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
-                            func.instruction(&Instruction::Drop);
-                        }
                         let site_bits = box_int(stable_ic_site_id(
                             func_ir.name.as_str(),
                             op_idx,
                             "call_method",
                         ));
-                        func.instruction(&Instruction::I64Const(site_bits));
-                        func.instruction(&Instruction::LocalGet(method_bits));
-                        func.instruction(&Instruction::LocalGet(callargs_tmp));
-                        emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+                        if arity <= 8 {
+                            func.instruction(&Instruction::I64Const(site_bits));
+                            func.instruction(&Instruction::LocalGet(method_bits));
+                            for arg_name in &args_names[1..] {
+                                let arg = locals[arg_name];
+                                func.instruction(&Instruction::LocalGet(arg));
+                            }
+                            let import_name = match arity {
+                                0 => "call_bind_pos0_ic",
+                                1 => "call_bind_pos1_ic",
+                                2 => "call_bind_pos2_ic",
+                                3 => "call_bind_pos3_ic",
+                                4 => "call_bind_pos4_ic",
+                                5 => "call_bind_pos5_ic",
+                                6 => "call_bind_pos6_ic",
+                                7 => "call_bind_pos7_ic",
+                                8 => "call_bind_pos8_ic",
+                                _ => unreachable!("call_method fast-call arity must be <= 8"),
+                            };
+                            emit_call(func, reloc_enabled, import_ids[import_name]);
+                        } else {
+                            let callargs_tmp = locals["__molt_tmp0"];
+                            func.instruction(&Instruction::I64Const(arity as i64));
+                            func.instruction(&Instruction::I64Const(0));
+                            emit_call(func, reloc_enabled, import_ids["callargs_new"]);
+                            func.instruction(&Instruction::LocalSet(callargs_tmp));
+                            for arg_name in &args_names[1..] {
+                                let arg = locals[arg_name];
+                                func.instruction(&Instruction::LocalGet(callargs_tmp));
+                                func.instruction(&Instruction::LocalGet(arg));
+                                emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
+                                func.instruction(&Instruction::Drop);
+                            }
+                            func.instruction(&Instruction::I64Const(site_bits));
+                            func.instruction(&Instruction::LocalGet(method_bits));
+                            func.instruction(&Instruction::LocalGet(callargs_tmp));
+                            emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+                        }
                         func.instruction(&Instruction::LocalSet(out));
                     }
                     "chan_new" => {
@@ -8541,11 +8766,18 @@ impl WasmBackend {
                     }
                     "check_exception" => {
                         if let Some(&try_index) = try_stack.last() {
-                            emit_call(func, reloc_enabled, import_ids["exception_pending"]);
-                            func.instruction(&Instruction::I64Const(0));
-                            func.instruction(&Instruction::I64Ne);
-                            let depth = control_stack.len().saturating_sub(1 + try_index);
-                            func.instruction(&Instruction::BrIf(depth as u32));
+                            if exception_poll_needed {
+                                emit_call(
+                                    func,
+                                    reloc_enabled,
+                                    import_ids["exception_pending_fast"],
+                                );
+                                func.instruction(&Instruction::I64Const(0));
+                                func.instruction(&Instruction::I64Ne);
+                                let depth = control_stack.len().saturating_sub(1 + try_index);
+                                func.instruction(&Instruction::BrIf(depth as u32));
+                            }
+                            exception_poll_needed = false;
                         }
                     }
                     _ => {}
@@ -9188,7 +9420,7 @@ impl WasmBackend {
                             };
                             let target_block = target_idx;
                             let next_block = idx + 1;
-                            emit_call(func, reloc_enabled, import_ids["exception_pending"]);
+                            emit_call(func, reloc_enabled, import_ids["exception_pending_fast"]);
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Empty));
@@ -9603,7 +9835,7 @@ impl WasmBackend {
                             };
                             let target_block = target_idx;
                             let next_block = idx + 1;
-                            emit_call(func, reloc_enabled, import_ids["exception_pending"]);
+                            emit_call(func, reloc_enabled, import_ids["exception_pending_fast"]);
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Empty));

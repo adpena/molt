@@ -1,0 +1,235 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import statistics
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+
+DEFAULT_EXT_ROOT = Path("/Volumes/APDataStore/Molt")
+DEFAULT_ENV_FILE = Path("ops/linear/runtime/symphony.env")
+
+
+@dataclass(slots=True)
+class Sample:
+    mode: str
+    iteration: int
+    returncode: int
+    duration_s: float
+    stdout_tail: str
+    stderr_tail: str
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Benchmark Symphony launcher modes (python, molt-run, molt-bin) "
+            "to identify the best execution path."
+        )
+    )
+    parser.add_argument("workflow_path", nargs="?", default="WORKFLOW.md")
+    parser.add_argument(
+        "--env-file",
+        default=str(DEFAULT_ENV_FILE),
+        help="Runtime env file used by tools/symphony_run.py.",
+    )
+    parser.add_argument(
+        "--modes",
+        default="python,molt-run,molt-bin",
+        help="Comma-separated execution modes.",
+    )
+    parser.add_argument("--iterations", type=int, default=3)
+    parser.add_argument("--molt-profile", choices=["dev", "release"], default="dev")
+    parser.add_argument(
+        "--rebuild-each-run",
+        action="store_true",
+        help="Force rebuild for molt-bin on each sample.",
+    )
+    parser.add_argument(
+        "--output-json",
+        default=None,
+        help="Optional JSON output path.",
+    )
+    return parser
+
+
+def _parse_modes(raw: str) -> list[str]:
+    allowed = {"python", "molt-run", "molt-bin"}
+    result: list[str] = []
+    for part in raw.split(","):
+        mode = part.strip()
+        if not mode:
+            continue
+        if mode not in allowed:
+            raise RuntimeError(f"Unsupported mode: {mode}")
+        if mode not in result:
+            result.append(mode)
+    if not result:
+        raise RuntimeError("No valid modes provided")
+    return result
+
+
+def _ext_env_defaults(env: dict[str, str], ext_root: Path) -> None:
+    env.setdefault("MOLT_EXT_ROOT", str(ext_root))
+    env.setdefault("CARGO_TARGET_DIR", str(ext_root / "cargo-target"))
+    env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
+    env.setdefault("MOLT_CACHE", str(ext_root / "molt_cache"))
+    env.setdefault("MOLT_DIFF_ROOT", str(ext_root / "diff"))
+    env.setdefault("MOLT_DIFF_TMPDIR", str(ext_root / "tmp"))
+    env.setdefault("UV_CACHE_DIR", str(ext_root / "uv-cache"))
+    env.setdefault("MOLT_BACKEND_DAEMON_SOCKET_DIR", "/tmp/molt_backend_sockets")
+    env.setdefault("TMPDIR", str(ext_root / "tmp"))
+    env.setdefault("PYTHONPATH", "src")
+
+
+def _run_once(
+    *,
+    mode: str,
+    workflow_path: str,
+    env_file: str,
+    molt_profile: str,
+    rebuild_binary: bool,
+    env: dict[str, str],
+) -> Sample:
+    cmd = [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python3",
+        "tools/symphony_run.py",
+        workflow_path,
+        "--env-file",
+        env_file,
+        "--once",
+        "--exec-mode",
+        mode,
+        "--molt-profile",
+        molt_profile,
+    ]
+    if rebuild_binary and mode == "molt-bin":
+        cmd.append("--rebuild-binary")
+
+    started = time.perf_counter()
+    proc = subprocess.run(cmd, check=False, env=env, capture_output=True, text=True)
+    duration_s = max(time.perf_counter() - started, 0.0)
+    return Sample(
+        mode=mode,
+        iteration=0,
+        returncode=int(proc.returncode),
+        duration_s=duration_s,
+        stdout_tail=(proc.stdout or "")[-2000:],
+        stderr_tail=(proc.stderr or "")[-2000:],
+    )
+
+
+def _summary(samples: list[Sample]) -> dict[str, Any]:
+    grouped: dict[str, list[Sample]] = {}
+    for sample in samples:
+        grouped.setdefault(sample.mode, []).append(sample)
+
+    report: dict[str, Any] = {}
+    for mode, rows in grouped.items():
+        durations = [item.duration_s for item in rows]
+        failures = sum(1 for item in rows if item.returncode != 0)
+        report[mode] = {
+            "samples": len(rows),
+            "failures": failures,
+            "min_s": round(min(durations), 4),
+            "max_s": round(max(durations), 4),
+            "avg_s": round(statistics.fmean(durations), 4),
+            "p95_s": round(_p95(durations), 4),
+        }
+    return report
+
+
+def _p95(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    idx = max(int(round((len(ordered) - 1) * 0.95)), 0)
+    return ordered[idx]
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    modes = _parse_modes(args.modes)
+    ext_root = Path(os.environ.get("MOLT_EXT_ROOT", str(DEFAULT_EXT_ROOT))).expanduser()
+    if not ext_root.exists():
+        raise RuntimeError(f"External root not mounted: {ext_root}")
+
+    env = os.environ.copy()
+    _ext_env_defaults(env, ext_root)
+    if not shutil.which("uv"):
+        raise RuntimeError("uv is required for symphony_perf")
+
+    samples: list[Sample] = []
+    for mode in modes:
+        for idx in range(max(args.iterations, 1)):
+            sample = _run_once(
+                mode=mode,
+                workflow_path=args.workflow_path,
+                env_file=str(args.env_file),
+                molt_profile=args.molt_profile,
+                rebuild_binary=bool(args.rebuild_each_run),
+                env=env,
+            )
+            sample.iteration = idx + 1
+            samples.append(sample)
+            print(
+                f"{mode} iter={sample.iteration} rc={sample.returncode} "
+                f"duration_s={sample.duration_s:.3f}"
+            )
+
+    summary = _summary(samples)
+    print(json.dumps(summary, indent=2))
+
+    output_path: Path | None = None
+    if args.output_json:
+        output_path = Path(args.output_json).expanduser()
+    else:
+        stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        output_path = ext_root / "logs" / "symphony" / f"symphony_perf_{stamp}.json"
+    if output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(
+                {
+                    "generated_at": datetime.now(UTC)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                    "workflow_path": args.workflow_path,
+                    "modes": modes,
+                    "iterations": int(args.iterations),
+                    "summary": summary,
+                    "samples": [
+                        {
+                            "mode": s.mode,
+                            "iteration": s.iteration,
+                            "returncode": s.returncode,
+                            "duration_s": round(s.duration_s, 6),
+                            "stdout_tail": s.stdout_tail,
+                            "stderr_tail": s.stderr_tail,
+                        }
+                        for s in samples
+                    ],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        print(f"wrote {output_path}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

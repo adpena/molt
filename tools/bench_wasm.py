@@ -92,6 +92,15 @@ _RUNTIME_ROOT = _wasm_runtime_root()
 RUNTIME_WASM = _RUNTIME_ROOT / "molt_runtime.wasm"
 RUNTIME_WASM_RELOC = _RUNTIME_ROOT / "molt_runtime_reloc.wasm"
 WASM_LD = shutil.which("wasm-ld")
+WASM_RUNTIME_TARGET_FEATURE_MODE_ENV = "MOLT_WASM_RUNTIME_TARGET_FEATURE_MODE"
+WASM_RUNTIME_TARGET_FEATURES_ENV = "MOLT_WASM_RUNTIME_TARGET_FEATURES"
+WASM_RUNTIME_TARGET_FEATURES_EXTRA_ENV = "MOLT_WASM_RUNTIME_TARGET_FEATURES_EXTRA"
+WASM_RUNTIME_TARGET_CPU_ENV = "MOLT_WASM_RUNTIME_TARGET_CPU"
+WASM_RUNTIME_TARGET_FEATURES_BASELINE = "+simd128"
+WASM_RUNTIME_TARGET_FEATURES_AGGRESSIVE = (
+    "+simd128,+bulk-memory,+mutable-globals,"
+    "+nontrapping-fptoint,+sign-ext,+reference-types,+multivalue"
+)
 _LINK_WARNED = False
 _LINK_DISABLED = False
 _LAST_BUILD_FAILURE_DETAIL: str | None = None
@@ -581,6 +590,8 @@ def _write_build_timeout_diag(
                 "MOLT_BUILD_STATE_DIR",
                 "MOLT_BUILD_LOCK_TIMEOUT",
                 "MOLT_FRONTEND_PHASE_TIMEOUT",
+                "MOLT_WASM_BUILD_TIMEOUT_SEC",
+                "MOLT_WASM_BENCH_NO_CACHE",
                 "MOLT_MIDEND_FAIL_OPEN",
                 "MOLT_MIDEND_MAX_ROUNDS",
                 "MOLT_SCCP_MAX_ITERS",
@@ -729,32 +740,188 @@ def _append_rustflags(env: dict[str, str], flags: str) -> None:
     env["RUSTFLAGS"] = joined
 
 
+def _rustflags_codegen_values(rustflags: str, key: str) -> list[str]:
+    try:
+        tokens = shlex.split(rustflags)
+    except ValueError:
+        tokens = rustflags.split()
+    values: list[str] = []
+    index = 0
+    key_prefix = f"{key}="
+    while index < len(tokens):
+        token = tokens[index]
+        arg: str | None = None
+        if token == "-C":
+            if index + 1 < len(tokens):
+                arg = tokens[index + 1]
+            index += 2
+        else:
+            if token.startswith("-C"):
+                arg = token[2:]
+            index += 1
+        if arg is None:
+            continue
+        if arg.startswith(key_prefix):
+            value = arg[len(key_prefix) :].strip()
+            if value:
+                values.append(value)
+    return values
+
+
+def _rustflags_without_codegen_key(rustflags: str, key: str) -> str:
+    try:
+        tokens = shlex.split(rustflags)
+    except ValueError:
+        tokens = rustflags.split()
+    key_prefix = f"{key}="
+    kept: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "-C":
+            if index + 1 >= len(tokens):
+                kept.append(token)
+                index += 1
+                continue
+            arg = tokens[index + 1]
+            if arg.startswith(key_prefix):
+                index += 2
+                continue
+            kept.append(token)
+            kept.append(arg)
+            index += 2
+            continue
+        if token.startswith("-C") and token[2:].startswith(key_prefix):
+            index += 1
+            continue
+        kept.append(token)
+        index += 1
+    return " ".join(kept)
+
+
+def _parse_wasm_target_feature_spec(spec: str) -> list[tuple[str, str]]:
+    items: list[tuple[str, str]] = []
+    for raw in spec.split(","):
+        token = raw.strip()
+        if not token:
+            continue
+        sign = "+"
+        if token[0] in "+-":
+            sign = token[0]
+            token = token[1:].strip()
+        if token:
+            items.append((token, sign))
+    return items
+
+
+def _merge_wasm_target_feature_specs(*specs: str) -> str:
+    order: list[str] = []
+    signs: dict[str, str] = {}
+    for spec in specs:
+        if not spec:
+            continue
+        for feature, sign in _parse_wasm_target_feature_spec(spec):
+            if feature not in signs:
+                order.append(feature)
+            signs[feature] = sign
+    return ",".join(f"{signs[name]}{name}" for name in order)
+
+
+def _wasm_runtime_target_features_default() -> str:
+    mode = os.environ.get(WASM_RUNTIME_TARGET_FEATURE_MODE_ENV, "").strip().lower()
+    if mode in {"off", "none"}:
+        return ""
+    if mode in {"baseline", "safe"}:
+        return WASM_RUNTIME_TARGET_FEATURES_BASELINE
+    return WASM_RUNTIME_TARGET_FEATURES_AGGRESSIVE
+
+
+def _resolve_wasm_cargo_profile(cargo_profile: str) -> str:
+    override = os.environ.get("MOLT_WASM_CARGO_PROFILE", "").strip()
+    if override:
+        return override
+    if cargo_profile == "release":
+        return "wasm-release"
+    return cargo_profile
+
+
+def _cargo_profile_dir(cargo_profile: str) -> str:
+    return "debug" if cargo_profile == "dev" else cargo_profile
+
+
+def _configure_wasm_runtime_codegen_flags(env: dict[str, str], *, reloc: bool) -> None:
+    use_legacy_wasm_flags = os.environ.get("MOLT_WASM_LEGACY_LINK_FLAGS") == "1"
+    if use_legacy_wasm_flags:
+        if reloc:
+            base_flags = (
+                "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
+                " -C relocation-model=pic"
+            )
+        else:
+            base_flags = (
+                "-C link-arg=--import-memory -C link-arg=--import-table"
+                " -C link-arg=--growable-table"
+            )
+    else:
+        base_flags = (
+            "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
+            " -C relocation-model=pic"
+            if reloc
+            else ""
+        )
+    if base_flags:
+        _append_rustflags(env, base_flags)
+
+    rustflags = env.get("RUSTFLAGS", "").strip()
+    target_features = os.environ.get(WASM_RUNTIME_TARGET_FEATURES_ENV, "").strip()
+    if not target_features:
+        target_features = _wasm_runtime_target_features_default()
+    target_features_extra = os.environ.get(
+        WASM_RUNTIME_TARGET_FEATURES_EXTRA_ENV, ""
+    ).strip()
+    existing_target_features = _rustflags_codegen_values(rustflags, "target-feature")
+    rustflags = _rustflags_without_codegen_key(rustflags, "target-feature")
+    merged_target_features = _merge_wasm_target_feature_specs(
+        target_features,
+        target_features_extra,
+        *existing_target_features,
+    )
+    if merged_target_features:
+        rustflags = f"{rustflags} -C target-feature={merged_target_features}".strip()
+
+    target_cpu = os.environ.get(WASM_RUNTIME_TARGET_CPU_ENV, "").strip()
+    if target_cpu:
+        existing_target_cpu = _rustflags_codegen_values(rustflags, "target-cpu")
+        if not existing_target_cpu:
+            rustflags = f"{rustflags} -C target-cpu={target_cpu}".strip()
+    if rustflags:
+        env["RUSTFLAGS"] = rustflags
+
+
 def build_runtime_wasm(
-    *, reloc: bool, output: Path, tty: bool, log: TextIO | None
+    *,
+    reloc: bool,
+    output: Path,
+    cargo_profile: str,
+    tty: bool,
+    log: TextIO | None,
 ) -> bool:
     runtime_build_timeout = _parse_env_float(
         "MOLT_WASM_RUNTIME_BUILD_TIMEOUT_SEC", default=300.0
     )
+    cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
+    profile_dir = _cargo_profile_dir(cargo_profile)
     env = os.environ.copy()
     target_root = _cargo_target_root()
     if os.environ.get("MOLT_WASM_RUNTIME_FORCE_LOCAL_TARGET") == "1":
         target_root = _repo_root() / "target"
     env["CARGO_TARGET_DIR"] = str(target_root)
-    if reloc:
-        base_flags = (
-            "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
-            " -C relocation-model=pic"
-        )
-    else:
-        base_flags = (
-            "-C link-arg=--import-memory -C link-arg=--import-table"
-            " -C link-arg=--growable-table"
-        )
-    _append_rustflags(env, base_flags)
+    _configure_wasm_runtime_codegen_flags(env, reloc=reloc)
     build_cmd = [
         "cargo",
         "build",
-        "--release",
+        "--profile",
+        cargo_profile,
         "--package",
         "molt-runtime",
         "--target",
@@ -782,7 +949,11 @@ def build_runtime_wasm(
         else:
             print("WASM runtime build failed.", file=sys.stderr)
         return False
-    src = target_root / "wasm32-wasip1" / "release" / "molt_runtime.wasm"
+    src = target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
+    if (not src.exists() or not _is_valid_wasm(src)) and src.parent.name != "deps":
+        deps_src = src.parent / "deps" / src.name
+        if deps_src.exists() and _is_valid_wasm(deps_src):
+            src = deps_src
     if not src.exists():
         print("WASM runtime build succeeded but artifact is missing.", file=sys.stderr)
         return False
@@ -892,6 +1063,7 @@ def _link_wasm(
     env: dict[str, str],
     input_path: Path,
     *,
+    cargo_profile: str,
     require_linked: bool,
     log: TextIO | None,
 ) -> Path | None:
@@ -925,7 +1097,11 @@ def _link_wasm(
             file=sys.stderr,
         )
         if not build_runtime_wasm(
-            reloc=runtime_reloc, output=runtime_path, tty=False, log=log
+            reloc=runtime_reloc,
+            output=runtime_path,
+            cargo_profile=cargo_profile,
+            tty=False,
+            log=log,
         ):
             if require_linked:
                 print("Linked output is required; aborting.", file=sys.stderr)
@@ -984,19 +1160,22 @@ def _build_wasm_output(
     output_path: Path,
     script: str,
     *,
+    build_profile: str,
+    build_timeout_s: float,
+    use_cache: bool,
     tty: bool,
     log: TextIO | None,
 ) -> float | None:
     global _LAST_BUILD_FAILURE_DETAIL
     _LAST_BUILD_FAILURE_DETAIL = None
-    build_timeout_s = _parse_env_float("MOLT_WASM_BUILD_TIMEOUT_SEC", default=90.0)
     extra_args = MOLT_ARGS_BY_BENCH.get(script, [])
     build_cmd = [
         *python_cmd,
         "-m",
         "molt.cli",
         "build",
-        "--no-cache",
+        "--profile",
+        build_profile,
         "--target",
         "wasm",
         "--out-dir",
@@ -1004,6 +1183,8 @@ def _build_wasm_output(
         *extra_args,
         script,
     ]
+    if not use_cache:
+        build_cmd.insert(build_cmd.index("--target"), "--no-cache")
     start = time.perf_counter()
     build_res = _run_cmd(
         build_cmd,
@@ -1166,6 +1347,9 @@ def prepare_wasm_binary(
     script: str,
     *,
     require_linked: bool,
+    build_profile: str,
+    build_timeout_s: float,
+    use_cache: bool,
     tty: bool,
     log: TextIO | None,
     keep_temp: bool,
@@ -1199,7 +1383,17 @@ def prepare_wasm_binary(
         if table_base is not None:
             env["MOLT_WASM_TABLE_BASE"] = str(table_base)
 
-    build_s = _build_wasm_output(python_cmd, env, output_path, script, tty=tty, log=log)
+    build_s = _build_wasm_output(
+        python_cmd,
+        env,
+        output_path,
+        script,
+        build_profile=build_profile,
+        build_timeout_s=build_timeout_s,
+        use_cache=use_cache,
+        tty=tty,
+        log=log,
+    )
     if build_s is None:
         if _LAST_BUILD_FAILURE_DETAIL is None:
             _LAST_BUILD_FAILURE_DETAIL = "wasm_build_failed"
@@ -1208,7 +1402,13 @@ def prepare_wasm_binary(
         return None
 
     linked = (
-        _link_wasm(env, output_path, require_linked=require_linked, log=log)
+        _link_wasm(
+            env,
+            output_path,
+            cargo_profile=build_profile,
+            require_linked=require_linked,
+            log=log,
+        )
         if want_linked
         else None
     )
@@ -1235,6 +1435,9 @@ def prepare_wasm_binary(
             env,
             output_path,
             script,
+            build_profile=build_profile,
+            build_timeout_s=build_timeout_s,
+            use_cache=use_cache,
             tty=tty,
             log=log,
         )
@@ -1365,19 +1568,21 @@ def _resolve_runner(
     tty: bool,
     log: TextIO | None,
     node_max_old_space_mb: int | None,
+    node_allow_tiering: bool,
 ) -> list[str]:
     if runner == "node":
         cmd = [resolve_node_binary()]
-        # Keep Node wasm execution deterministic and avoid post-run V8 tiering/OOM
-        # incidents seen on large linked modules.
-        cmd.extend(
-            [
-                "--no-warnings",
-                "--no-wasm-tier-up",
-                "--no-wasm-dynamic-tiering",
-                "--wasm-num-compilation-tasks=1",
-            ]
-        )
+        cmd.append("--no-warnings")
+        # Deterministic mode disables tiering and parallel compile tasks to
+        # reduce run-to-run variance. Throughput mode leaves V8 defaults on.
+        if not node_allow_tiering:
+            cmd.extend(
+                [
+                    "--no-wasm-tier-up",
+                    "--no-wasm-dynamic-tiering",
+                    "--wasm-num-compilation-tasks=1",
+                ]
+            )
         if node_max_old_space_mb is not None:
             cmd.append(f"--max-old-space-size={node_max_old_space_mb}")
         extra_options = os.environ.get("MOLT_WASM_NODE_OPTIONS")
@@ -1459,6 +1664,9 @@ def bench_results(
     super_run: bool,
     *,
     require_linked: bool,
+    build_profile: str,
+    build_timeout_s: float,
+    use_cache: bool,
     runner_cmd: list[str],
     runner_name: str,
     control_runner_cmd: list[str] | None,
@@ -1484,6 +1692,9 @@ def bench_results(
             wasm_binary = prepare_wasm_binary(
                 script,
                 require_linked=require_linked,
+                build_profile=build_profile,
+                build_timeout_s=build_timeout_s,
+                use_cache=use_cache,
                 tty=tty,
                 log=log,
                 keep_temp=keep_temp,
@@ -1590,6 +1801,29 @@ def main() -> None:
     parser.add_argument("--json-out", type=Path, default=None)
     parser.add_argument("--samples", type=int, default=None)
     parser.add_argument(
+        "--build-profile",
+        choices=["dev", "release"],
+        default=os.environ.get("MOLT_WASM_BUILD_PROFILE", "release"),
+        help="Molt build profile for wasm benchmark compiles (default: release).",
+    )
+    parser.add_argument(
+        "--build-timeout-sec",
+        type=float,
+        default=None,
+        help=(
+            "Per-benchmark wasm compile timeout in seconds "
+            "(also honors MOLT_WASM_BUILD_TIMEOUT_SEC; default: 300)."
+        ),
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help=(
+            "Disable Molt build cache during wasm benchmark compiles "
+            "(also honors MOLT_WASM_BENCH_NO_CACHE=1)."
+        ),
+    )
+    parser.add_argument(
         "--bench",
         action="append",
         default=None,
@@ -1620,6 +1854,23 @@ def main() -> None:
         help=(
             "Pass --max-old-space-size=<MB> to node runner "
             "(also honors MOLT_WASM_NODE_MAX_OLD_SPACE_MB)."
+        ),
+    )
+    parser.add_argument(
+        "--node-allow-tiering",
+        action="store_true",
+        help=(
+            "Allow V8 wasm tiering/parallel compile (throughput mode); "
+            "kept as a compatibility alias for the default behavior."
+        ),
+    )
+    parser.add_argument(
+        "--node-deterministic",
+        action="store_true",
+        help=(
+            "Disable tiering/parallel wasm compile for deterministic runs "
+            "(also honors MOLT_WASM_NODE_DETERMINISTIC=1 or "
+            "MOLT_WASM_NODE_ALLOW_TIERING=0)."
         ),
     )
     parser.add_argument(
@@ -1676,12 +1927,44 @@ def main() -> None:
         args.node_max_old_space_mb = env_node_max_old_space_mb
     elif args.node_max_old_space_mb <= 0:
         parser.error("--node-max-old-space-mb must be > 0")
+    node_allow_tiering = True
+    allow_tiering_raw = os.environ.get("MOLT_WASM_NODE_ALLOW_TIERING", "").strip()
+    if allow_tiering_raw:
+        allow_value = allow_tiering_raw.lower()
+        if allow_value in {"0", "false", "no", "off"}:
+            node_allow_tiering = False
+        elif allow_value in {"1", "true", "yes", "on"}:
+            node_allow_tiering = True
+    deterministic_raw = os.environ.get("MOLT_WASM_NODE_DETERMINISTIC", "").strip()
+    if deterministic_raw.lower() in {"1", "true", "yes", "on"}:
+        node_allow_tiering = False
+    if args.node_deterministic:
+        node_allow_tiering = False
+    if args.node_allow_tiering:
+        node_allow_tiering = True
+    os.environ.setdefault(
+        "MOLT_WASM_NODE_MODE",
+        "throughput" if node_allow_tiering else "deterministic",
+    )
     if args.control_runner == args.runner:
         parser.error("--control-runner must differ from --runner (or be 'none')")
     if args.require_linked and args.allow_unlinked:
         parser.error("--allow-unlinked cannot be combined with --require-linked")
     if args.require_linked:
         args.linked = True
+    env_build_timeout = _parse_env_float("MOLT_WASM_BUILD_TIMEOUT_SEC", default=300.0)
+    if args.build_timeout_sec is None:
+        args.build_timeout_sec = env_build_timeout
+    elif args.build_timeout_sec <= 0:
+        parser.error("--build-timeout-sec must be > 0")
+    env_no_cache = os.environ.get("MOLT_WASM_BENCH_NO_CACHE") == "1"
+    use_cache = not (args.no_cache or env_no_cache)
+    if use_cache:
+        os.environ.pop("MOLT_WASM_BENCH_NO_CACHE", None)
+    else:
+        os.environ["MOLT_WASM_BENCH_NO_CACHE"] = "1"
+    if args.build_timeout_sec is not None:
+        os.environ["MOLT_WASM_BUILD_TIMEOUT_SEC"] = f"{args.build_timeout_sec:g}"
 
     if args.linked or args.require_linked:
         os.environ["MOLT_WASM_LINK"] = "1"
@@ -1711,6 +1994,7 @@ def main() -> None:
         tty=use_tty,
         log=log_file,
         node_max_old_space_mb=args.node_max_old_space_mb,
+        node_allow_tiering=node_allow_tiering,
     )
     control_runner_name: str | None = None
     control_runner_cmd: list[str] | None = None
@@ -1721,6 +2005,7 @@ def main() -> None:
             tty=use_tty,
             log=log_file,
             node_max_old_space_mb=args.node_max_old_space_mb,
+            node_allow_tiering=node_allow_tiering,
         )
     runtime_policy = _runtime_rebuild_policy()
     shared_runtime_invalid = not _is_valid_wasm(RUNTIME_WASM)
@@ -1747,7 +2032,11 @@ def main() -> None:
             if log_file is not None:
                 _log_write(log_file, f"# {msg}\n")
         if not build_runtime_wasm(
-            reloc=False, output=RUNTIME_WASM, tty=use_tty, log=log_file
+            reloc=False,
+            output=RUNTIME_WASM,
+            cargo_profile=args.build_profile,
+            tty=use_tty,
+            log=log_file,
         ):
             if log_file is not None:
                 log_file.close()
@@ -1785,7 +2074,11 @@ def main() -> None:
                 if log_file is not None:
                     _log_write(log_file, f"# {msg}\n")
             if not build_runtime_wasm(
-                reloc=True, output=RUNTIME_WASM_RELOC, tty=use_tty, log=log_file
+                reloc=True,
+                output=RUNTIME_WASM_RELOC,
+                cargo_profile=args.build_profile,
+                tty=use_tty,
+                log=log_file,
             ):
                 if args.require_linked:
                     print(
@@ -1856,6 +2149,9 @@ def main() -> None:
             warmup,
             args.super,
             require_linked=args.require_linked,
+            build_profile=args.build_profile,
+            build_timeout_s=args.build_timeout_sec,
+            use_cache=use_cache,
             runner_cmd=runner_cmd,
             runner_name=args.runner,
             control_runner_cmd=control_runner_cmd,
@@ -1883,6 +2179,9 @@ def main() -> None:
         "runner": args.runner,
         "control_runner": control_runner_name,
         "node_max_old_space_mb": args.node_max_old_space_mb,
+        "build_profile": args.build_profile,
+        "build_timeout_sec": args.build_timeout_sec,
+        "cache_enabled": use_cache,
         "super_run": args.super,
         "samples": samples,
         "warmup": warmup,

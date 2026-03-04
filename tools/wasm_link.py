@@ -67,6 +67,24 @@ def _read_wasm_bytes_with_retry(
     return data
 
 
+def _should_stage_link_output_locally(linked: Path) -> bool:
+    mode = os.environ.get("MOLT_WASM_LINK_OUTPUT_MODE", "auto").strip().lower()
+    if mode in {"0", "false", "no", "off", "direct", "target"}:
+        return False
+    if mode in {"1", "true", "yes", "on", "local"}:
+        return True
+    # Auto mode: writing large wasm-ld outputs directly to some external volumes
+    # can yield corrupted all-zero artifacts; stage on local tmp and copy verified
+    # bytes to the requested destination.
+    return linked.is_absolute() and str(linked).startswith("/Volumes/")
+
+
+def _local_staged_link_path(linked: Path) -> Path:
+    root = Path(os.environ.get("MOLT_WASM_LINK_LOCAL_TMPDIR", "/tmp")).expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"molt-wasm-link-{os.getpid()}-{time.time_ns()}-{linked.name}"
+
+
 def _find_tool(names: list[str]) -> str | None:
     for name in names:
         path = shutil.which(name)
@@ -1150,6 +1168,11 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
     enable_gc_sections = os.environ.get(
         "MOLT_WASM_LINK_GC_SECTIONS", "1"
     ).strip().lower() not in {"0", "false", "no", "off"}
+    staged_linked = (
+        _local_staged_link_path(linked)
+        if _should_stage_link_output_locally(linked)
+        else linked
+    )
     cmd = [
         wasm_ld,
         "--no-entry",
@@ -1161,7 +1184,7 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
         "--export-if-defined=molt_set_wasm_table_base",
         "--export-if-defined=molt_get_wasm_table_base",
         "-o",
-        str(linked),
+        str(staged_linked),
         str(rewritten_path),
         str(runtime_link_path),
     ]
@@ -1176,17 +1199,20 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
             if err:
                 print(err, file=sys.stderr)
             return res.returncode
-        if not linked.exists():
+        if not staged_linked.exists():
             print(
-                f"wasm-ld exited successfully but produced no linked output: {linked}",
+                "wasm-ld exited successfully but produced no linked output: "
+                f"{staged_linked}",
                 file=sys.stderr,
             )
             return 1
-        linked_bytes = _read_wasm_bytes_with_retry(linked)
+        linked_bytes = _read_wasm_bytes_with_retry(
+            staged_linked, attempts=32, delay_sec=0.1
+        )
         if not _is_wasm_binary(linked_bytes):
             print(
                 "wasm-ld produced non-wasm linked output "
-                f"({linked}, size={len(linked_bytes)} bytes)",
+                f"({staged_linked}, size={len(linked_bytes)} bytes)",
                 file=sys.stderr,
             )
             return 1
@@ -1198,7 +1224,7 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
                 print(f"Failed to rewrite linked table min: {exc}", file=sys.stderr)
                 return 1
             if updated is not None:
-                linked.write_bytes(updated)
+                staged_linked.write_bytes(updated)
                 linked_bytes = updated
         output_memory_min = _memory_import_min(output.read_bytes())
         if output_memory_min is not None:
@@ -1208,7 +1234,7 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
                 print(f"Failed to rewrite linked memory min: {exc}", file=sys.stderr)
                 return 1
             if updated is not None:
-                linked.write_bytes(updated)
+                staged_linked.write_bytes(updated)
                 linked_bytes = updated
         append_table_refs = os.environ.get(
             "MOLT_WASM_LINK_APPEND_TABLE_REFS", "0"
@@ -1220,7 +1246,7 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
                 print(f"Failed to append table ref elements: {exc}", file=sys.stderr)
                 return 1
             if updated is not None:
-                linked.write_bytes(updated)
+                staged_linked.write_bytes(updated)
                 linked_bytes = updated
         try:
             updated = _ensure_table_export(linked_bytes)
@@ -1228,7 +1254,7 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
             print(f"Failed to ensure table export: {exc}", file=sys.stderr)
             return 1
         if updated is not None:
-            linked.write_bytes(updated)
+            staged_linked.write_bytes(updated)
             linked_bytes = updated
         strip_custom = os.environ.get(
             "MOLT_WASM_LINK_STRIP_CUSTOM", "1"
@@ -1248,12 +1274,27 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
                 )
                 return 1
             if updated is not None:
-                linked.write_bytes(updated)
+                staged_linked.write_bytes(updated)
                 linked_bytes = updated
-        if not _validate_linked(linked):
+        if not _validate_linked(staged_linked):
             return 1
+        if staged_linked != linked:
+            linked.write_bytes(linked_bytes)
+            copied = _read_wasm_bytes_with_retry(linked, attempts=16, delay_sec=0.05)
+            if not _is_wasm_binary(copied):
+                print(
+                    "Linked wasm copy to destination is invalid "
+                    f"({linked}, size={len(copied)} bytes)",
+                    file=sys.stderr,
+                )
+                return 1
         return 0
     finally:
+        if staged_linked != linked:
+            try:
+                staged_linked.unlink(missing_ok=True)
+            except OSError:
+                pass
         temp_dir.cleanup()
 
 

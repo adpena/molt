@@ -18,11 +18,17 @@ def _load_tempfile_module(name: str):
         if key == name or key.startswith(f"{name}."):
             sys.modules.pop(key, None)
 
-    registry = getattr(builtins, "_molt_intrinsics", None)
-    if not isinstance(registry, dict):
-        registry = {}
-        setattr(builtins, "_molt_intrinsics", registry)
-    registry["molt_path_join"] = os.path.join
+    intrinsics = {"molt_path_join": os.path.join}
+    setattr(builtins, "_molt_runtime", True)
+    setattr(builtins, "_molt_intrinsics_strict", True)
+
+    def _lookup(intrinsic_name: str):
+        value = intrinsics.get(intrinsic_name)
+        if callable(value):
+            return value
+        return None
+
+    setattr(builtins, "_molt_intrinsic_lookup", _lookup)
 
     spec = importlib.util.spec_from_file_location(name, TEMPFILE_MODULE)
     assert spec is not None

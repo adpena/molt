@@ -1,6 +1,6 @@
 # STATUS (Canonical)
 
-Last updated: 2026-03-03
+Last updated: 2026-03-04
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
@@ -18,11 +18,12 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   by design. `compile()`/`codeop.compile*` and `ast.parse` raise deterministic
   `RuntimeError` on wasm targets (no host parser fallback). `rustpython-parser`
   is no longer a wasm dependency in `molt-runtime`.
-- Completed (2026-03-03): `run_wasm.js` now auto-reexecs large wasm runs (default
-  threshold: 24 MB) with conservative Node wasm compiler flags
+- Completed (2026-03-04): `run_wasm.js` now defaults to throughput mode (no
+  auto-reexec conservative wasm flags). Deterministic mode is explicit via
+  `MOLT_WASM_NODE_MODE=deterministic` (or legacy `MOLT_WASM_AUTO_NODE_FLAGS=1`),
+  which applies conservative Node wasm compiler flags
   (`--liftoff-only --no-wasm-tier-up --no-wasm-dynamic-tiering --wasm-num-compilation-tasks=1`)
-  to avoid V8 Zone OOM crashes on runtime-heavy linked artifacts. Opt-out:
-  `MOLT_WASM_AUTO_NODE_FLAGS=0`.
+  for reproducible timing/debug lanes.
 - Completed: **SIMD Expansion** — 20+ runtime operations now have explicit SSE2/AVX2/NEON
   fast paths (+1,133 lines across ops.rs and math.rs):
   - String/bytes equality: `simd_bytes_eq` (16B SSE2, 32B AVX2, 16B NEON) wired into
@@ -1175,6 +1176,19 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 ## Tooling + Verification
 - CI enforces lint, type checks, Rust fmt/clippy, differential tests, and perf
   smoke gates.
+- CI perf smoke lane runs `tools/bench.py --smoke --no-pypy`, then
+  `tools/bench_diff.py` thresholds (`molt_cpython_ratio`, `molt_time_s`,
+  `molt_build_s`) plus `tools/check_compile_throughput.py --metric molt_build_s`.
+- `tools/check_compile_throughput.py` now fails by default when selected metrics
+  are missing or benchmark keys do not align; use
+  `--allow-missing-metrics` only when overlap-only comparison is intended.
+- CI determinism gates include reproducible object-build hashing (`molt build
+  --emit obj --deterministic` twice), runtime determinism checks
+  (`tools/check_deterministic_runtime.py --runs 3`), and strict HashMap
+  determinism lint (`tools/check_determinism.py --strict`).
+- CI strict intrinsic closure continues to run
+  `tools/check_stdlib_intrinsics.py --critical-allowlist`, including strict-root
+  fallback anti-pattern blocking.
 - Trusted mode is available via `MOLT_TRUSTED=1` (disables capability checks for
   trusted native deployments).
 - CLI commands now cover `run`, `test`, `diff`, `bench`, `profile`, `lint`,

@@ -26,6 +26,10 @@
 //! All callbacks are u64 NaN-boxed Molt callable bits. The event loop invokes them
 //! via `call_callable0` / `call_callable1` without leaving the Rust runtime.
 
+use crate::{
+    MoltObject, call_callable0, dec_ref_bits, exception_pending, inc_ref_bits, monotonic_now_secs,
+    raise_exception,
+};
 use std::cmp::Ordering as CmpOrdering;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 #[cfg(not(target_arch = "wasm32"))]
@@ -33,11 +37,6 @@ use std::sync::atomic::AtomicI64;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
-
-use crate::{
-    MoltObject, call_callable0, dec_ref_bits, exception_pending, inc_ref_bits, monotonic_now_secs,
-    raise_exception,
-};
 
 // --- State constants ---
 const STATE_IDLE: u8 = 0;

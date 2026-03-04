@@ -1,4 +1,7 @@
 .venv/
+.env
+.env.*
+!.env.example
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -19,6 +22,17 @@ target/
 *.dll
 *.rlib
 *.d
+WORKFLOW.local.md
+ops/linear/runtime/*
+!ops/linear/runtime/
+!ops/linear/runtime/.gitkeep
+!ops/linear/runtime/*.env.example
+ops/linear/runtime/*.env
+ops/linear/runtime/*.secret*
+ops/linear/import_reports/
+ops/linear/*.local.json
+ops/linear/*.secret*
+ops/linear/*.secrets*
 hello_molt
 *_molt
 *_molt.exe
@@ -43,5 +57,6 @@ packaging/out/
 !/GEMINI.md
 !/OPTIMIZATIONS_PLAN.md
 !/ROADMAP.md
+!/WORKFLOW.md
 !/docs/**/*.md
 !/packaging/**/*.md

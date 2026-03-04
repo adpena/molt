@@ -67,13 +67,37 @@ def test_resolve_runner_node_enforces_stable_wasm_flags(
     monkeypatch.setattr(bench_wasm, "resolve_node_binary", lambda: "/usr/bin/node")
     monkeypatch.delenv("MOLT_WASM_NODE_OPTIONS", raising=False)
     cmd = bench_wasm._resolve_runner(
-        "node", tty=False, log=None, node_max_old_space_mb=None
+        "node",
+        tty=False,
+        log=None,
+        node_max_old_space_mb=None,
+        node_allow_tiering=False,
     )
     assert cmd[0] == "/usr/bin/node"
     assert "--no-warnings" in cmd
     assert "--no-wasm-tier-up" in cmd
     assert "--no-wasm-dynamic-tiering" in cmd
     assert "--wasm-num-compilation-tasks=1" in cmd
+    assert cmd[-1] == "run_wasm.js"
+
+
+def test_resolve_runner_node_allows_tiering_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(bench_wasm, "resolve_node_binary", lambda: "/usr/bin/node")
+    monkeypatch.delenv("MOLT_WASM_NODE_OPTIONS", raising=False)
+    cmd = bench_wasm._resolve_runner(
+        "node",
+        tty=False,
+        log=None,
+        node_max_old_space_mb=None,
+        node_allow_tiering=True,
+    )
+    assert cmd[0] == "/usr/bin/node"
+    assert "--no-warnings" in cmd
+    assert "--no-wasm-tier-up" not in cmd
+    assert "--no-wasm-dynamic-tiering" not in cmd
+    assert "--wasm-num-compilation-tasks=1" not in cmd
     assert cmd[-1] == "run_wasm.js"
 
 
@@ -97,10 +121,13 @@ def test_prepare_wasm_binary_sets_linked_table_base(
         output_path: Path,
         _script: str,
         *,
+        build_profile: str,
+        build_timeout_s: float,
+        use_cache: bool,
         tty: bool,
         log,
     ) -> float:
-        del tty, log
+        del build_profile, build_timeout_s, use_cache, tty, log
         captured_env.update(env)
         output_path.write_bytes(b"\x00asm")
         return 0.01
@@ -109,10 +136,11 @@ def test_prepare_wasm_binary_sets_linked_table_base(
         _env: dict[str, str],
         input_path: Path,
         *,
+        cargo_profile: str,
         require_linked: bool,
         log,
     ) -> Path:
-        del require_linked, log
+        del cargo_profile, require_linked, log
         linked = input_path.with_name("output_linked.wasm")
         linked.write_bytes(b"\x00asm")
         return linked
@@ -123,6 +151,9 @@ def test_prepare_wasm_binary_sets_linked_table_base(
     wasm = bench_wasm.prepare_wasm_binary(
         "tests/benchmarks/bench_sum.py",
         require_linked=False,
+        build_profile="release",
+        build_timeout_s=300.0,
+        use_cache=True,
         tty=False,
         log=None,
         keep_temp=False,

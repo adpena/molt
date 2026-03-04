@@ -1,0 +1,106 @@
+[
+  {
+    "title": "[P1][DB1] SQLite demo path before Postgres)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: SQLite demo path before Postgres)\nArea: db\nOwner lane: runtime\nMilestone: DB1\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "db",
+      "owner": "runtime",
+      "milestone": "DB1",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:808"
+    }
+  },
+  {
+    "title": "[P1][DF1] nullable dtype missing-data semantics)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: nullable dtype missing-data semantics)\nArea: dataframe\nOwner lane: runtime\nMilestone: DF1\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "dataframe",
+      "owner": "runtime",
+      "milestone": "DF1",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:801"
+    }
+  },
+  {
+    "title": "[P1][SL1] Django test-client coverage + retry policy) `molt_accel` ships as an optional dependency group (`pip install .[accel]`) with a packaged default exports manifest so the decorator can fall back to `molt-worker` in PATH when `MOLT_WORKER_CMD` is unset. A demo app scaffold lives in `demo/`",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: Django test-client coverage + retry policy) `molt_accel` ships as an optional dependency group (`pip install .[accel]`) with a packaged default exports manifest so the decorator can fall back to `molt-worker` in PATH when `MOLT_WORKER_CMD` is unset. A demo app scaffold lives in `demo/`\nArea: offload\nOwner lane: runtime\nMilestone: SL1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "offload",
+      "owner": "runtime",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:835"
+    }
+  },
+  {
+    "title": "[P1][SL1] compile entrypoints into molt_worker",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: compile entrypoints into molt_worker\nArea: offload\nOwner lane: runtime\nMilestone: SL1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "offload",
+      "owner": "runtime",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:836"
+    }
+  },
+  {
+    "title": "[P1][SL1] compiled handler coverage beyond demo exports.)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: compiled handler coverage beyond demo exports.)\nArea: offload\nOwner lane: runtime\nMilestone: SL1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "offload",
+      "owner": "runtime",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:837"
+    }
+  },
+  {
+    "title": "[P1][SL1] finalize accel retry/backoff + non-demo handler coverage.)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: finalize accel retry/backoff + non-demo handler coverage.)\nArea: offload\nOwner lane: runtime\nMilestone: SL1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "offload",
+      "owner": "runtime",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/docs/spec/STATUS.md:1304"
+    }
+  },
+  {
+    "title": "[P1][SL1] propagate cancellation into real DB tasks; extend compiled handlers beyond demo coverage",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: propagate cancellation into real DB tasks; extend compiled handlers beyond demo coverage\nArea: offload\nOwner lane: runtime\nMilestone: SL1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "offload",
+      "owner": "runtime",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:705"
+    }
+  },
+  {
+    "title": "[P1][SL2] add a Phase 1 in-process fast path for precompiled endpoint exports (startup-loaded ABI, no runtime compilation) while preserving worker IPC semantics for capability gating, cancellation, and error mapping",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: add a Phase 1 in-process fast path for precompiled endpoint exports (startup-loaded ABI, no runtime compilation) while preserving worker IPC semantics for capability gating, cancellation, and error mapping\nArea: offload\nOwner lane: runtime\nMilestone: SL2\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "offload",
+      "owner": "runtime",
+      "milestone": "SL2",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:706"
+    }
+  }
+]

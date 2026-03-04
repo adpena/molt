@@ -1,0 +1,1653 @@
+[
+  {
+    "title": "[P0][RT2] Rust event loop + I/O poller with cancellation propagation and deterministic scheduling guarantees; expose as asyncio core",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: Rust event loop + I/O poller with cancellation propagation and deterministic scheduling guarantees; expose as asyncio core\nArea: async-runtime\nOwner lane: runtime\nMilestone: RT2\nStatus tag: planned",
+    "priority": 1,
+    "metadata": {
+      "area": "async-runtime",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P0",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/docs/spec/STATUS.md:1243"
+    }
+  },
+  {
+    "title": "[P0][RT2] Rust event loop + I/O poller with cancellation propagation and deterministic scheduling guarantees; expose as asyncio core. Pipe transports (`connect_read_pipe`/`connect_write_pipe`) now implemented with 11 new intrinsics; 42 new Rust intrinsics for Future/Event/Lock/Semaphore/Queue state machines landed; WASM capability gating for 6 I/O operations complete; Transport/Protocol base classes added; 3.13/3.14 version-specific APIs gated",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: Rust event loop + I/O poller with cancellation propagation and deterministic scheduling guarantees; expose as asyncio core. Pipe transports (`connect_read_pipe`/`connect_write_pipe`) now implemented with 11 new intrinsics; 42 new Rust intrinsics for Future/Event/Lock/Semaphore/Queue state machines landed; WASM capability gating for 6 I/O operations complete; Transport/Protocol base classes added; 3.13/3.14 version-specific APIs gated\nArea: async-runtime\nOwner lane: runtime\nMilestone: RT2\nStatus tag: partial",
+    "priority": 1,
+    "metadata": {
+      "area": "async-runtime",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P0",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:467"
+    }
+  },
+  {
+    "title": "[P0][SL1] migrate all Python stdlib modules to Rust intrinsics-only implementations (Python files may only be thin intrinsic-forwarding wrappers); compiled binaries must reject Python-only stdlib modules. See docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: migrate all Python stdlib modules to Rust intrinsics-only implementations (Python files may only be thin intrinsic-forwarding wrappers); compiled binaries must reject Python-only stdlib modules. See docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: missing",
+    "priority": 1,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL1",
+      "priority": "P0",
+      "status": "missing",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:965"
+    }
+  },
+  {
+    "title": "[P0][SL1] replace Python stdlib modules with Rust intrinsics-only implementations (thin wrappers only); compiled binaries must reject Python-only stdlib modules. See `docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace Python stdlib modules with Rust intrinsics-only implementations (thin wrappers only); compiled binaries must reject Python-only stdlib modules. See `docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: missing",
+    "priority": 1,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL1",
+      "priority": "P0",
+      "status": "missing",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:966"
+    }
+  },
+  {
+    "title": "[P0][SL1] replace Python-only stdlib modules with Rust intrinsics and remove Python implementations; see the audit lists above",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace Python-only stdlib modules with Rust intrinsics and remove Python implementations; see the audit lists above\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: missing",
+    "priority": 1,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL1",
+      "priority": "P0",
+      "status": "missing",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:967"
+    }
+  },
+  {
+    "title": "[P0][SL2] complete concurrency substrate lowering in strict order (`socket`/`select`/`selectors` -> `threading` -> `asyncio`) with intrinsic-only compiled semantics in native + wasm",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: complete concurrency substrate lowering in strict order (`socket`/`select`/`selectors` -> `threading` -> `asyncio`) with intrinsic-only compiled semantics in native + wasm\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: partial",
+    "priority": 1,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL2",
+      "priority": "P0",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:987"
+    }
+  },
+  {
+    "title": "[P0][SL3] full asyncio parity (tasks, task groups, streams, subprocess, executors) built on the runtime loop. Pipe transports, synchronization primitives, and version-gated APIs now implemented; remaining: full executor semantics and advanced loop APIs",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: full asyncio parity (tasks, task groups, streams, subprocess, executors) built on the runtime loop. Pipe transports, synchronization primitives, and version-gated APIs now implemented; remaining: full executor semantics and advanced loop APIs\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: partial",
+    "priority": 1,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P0",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:468"
+    }
+  },
+  {
+    "title": "[P1][LF1] contextlib.contextmanager` lowering and generator-based manager support",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: contextlib.contextmanager` lowering and generator-based manager support\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: LF1\nStatus tag: missing",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "LF1",
+      "priority": "P1",
+      "status": "missing",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:962"
+    }
+  },
+  {
+    "title": "[P1][RT2] async I/O cancellation propagation.)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: async I/O cancellation propagation.)\nArea: async-runtime\nOwner lane: runtime\nMilestone: RT2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "async-runtime",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:770"
+    }
+  },
+  {
+    "title": "[P1][RT2] cancellation injection on await)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: cancellation injection on await)\nArea: async-runtime\nOwner lane: runtime\nMilestone: RT2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "async-runtime",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/docs/spec/STATUS.md:1244"
+    }
+  },
+  {
+    "title": "[P1][RT2] define per-runtime GIL strategy and runtime instance ownership model)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: define per-runtime GIL strategy and runtime instance ownership model)\nArea: runtime\nOwner lane: runtime\nMilestone: RT2\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "runtime",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:875"
+    }
+  },
+  {
+    "title": "[P1][RT2] define the per-runtime GIL strategy, runtime instance ownership model, and allowed cross-thread object sharing rules (see docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: define the per-runtime GIL strategy, runtime instance ownership model, and allowed cross-thread object sharing rules (see docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md)\nArea: runtime\nOwner lane: runtime\nMilestone: RT2\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "runtime",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:469"
+    }
+  },
+  {
+    "title": "[P1][RT2] define the per-runtime GIL strategy, runtime instance ownership model, and the allowed cross-thread object sharing rules",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: define the per-runtime GIL strategy, runtime instance ownership model, and the allowed cross-thread object sharing rules\nArea: runtime\nOwner lane: runtime\nMilestone: RT2\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "runtime",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:876"
+    }
+  },
+  {
+    "title": "[P1][RT2] enforce borrow/release lifetime invariants for `BORROW`/`RELEASE` with safety checks and parity coverage",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: enforce borrow/release lifetime invariants for `BORROW`/`RELEASE` with safety checks and parity coverage\nArea: runtime\nOwner lane: runtime\nMilestone: RT2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "runtime",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:406"
+    }
+  },
+  {
+    "title": "[P1][RT2] enforce explicit LIR ownership invariants for `INC_REF`/`DEC_REF` across frontend/backend with differential parity evidence",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: enforce explicit LIR ownership invariants for `INC_REF`/`DEC_REF` across frontend/backend with differential parity evidence\nArea: runtime\nOwner lane: runtime\nMilestone: RT2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "runtime",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:405"
+    }
+  },
+  {
+    "title": "[P1][RT2] task groups/wait/shield + I/O cancellation + hardening.)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: task groups/wait/shield + I/O cancellation + hardening.)\nArea: async-runtime\nOwner lane: runtime\nMilestone: RT2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "async-runtime",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:771"
+    }
+  },
+  {
+    "title": "[P1][RT2] thread PyToken through runtime mutation entrypoints)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: thread PyToken through runtime mutation entrypoints)\nArea: runtime\nOwner lane: runtime\nMilestone: RT2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "runtime",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:873"
+    }
+  },
+  {
+    "title": "[P1][RT2] wasm async iteration/scheduler parity",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: wasm async iteration/scheduler parity\nArea: async-runtime\nOwner lane: runtime\nMilestone: RT2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "async-runtime",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:773"
+    }
+  },
+  {
+    "title": "[P1][RT3] Fork/forkserver currently map to spawn semantics; implement true fork support",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: Fork/forkserver currently map to spawn semantics; implement true fork support\nArea: runtime\nOwner lane: runtime\nMilestone: RT3\nStatus tag: divergent",
+    "priority": 2,
+    "metadata": {
+      "area": "runtime",
+      "owner": "runtime",
+      "milestone": "RT3",
+      "priority": "P1",
+      "status": "divergent",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:660"
+    }
+  },
+  {
+    "title": "[P1][RT3] implement true fork support) |",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: implement true fork support) |\nArea: runtime\nOwner lane: runtime\nMilestone: RT3\nStatus tag: divergent",
+    "priority": 2,
+    "metadata": {
+      "area": "runtime",
+      "owner": "runtime",
+      "milestone": "RT3",
+      "priority": "P1",
+      "status": "divergent",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:879"
+    }
+  },
+  {
+    "title": "[P1][RT3] parallel runtime tier with isolated heaps/actors and explicit message passing; shared-memory parallelism only via opt-in safe types.)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: parallel runtime tier with isolated heaps/actors and explicit message passing; shared-memory parallelism only via opt-in safe types.)\nArea: async-runtime\nOwner lane: runtime\nMilestone: RT3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "async-runtime",
+      "owner": "runtime",
+      "milestone": "RT3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:776"
+    }
+  },
+  {
+    "title": "[P1][RT3] parallel runtime tier with isolated heaps/actors, explicit message passing, and capability-gated shared-memory primitives",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: parallel runtime tier with isolated heaps/actors, explicit message passing, and capability-gated shared-memory primitives\nArea: runtime\nOwner lane: runtime\nMilestone: RT3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "runtime",
+      "owner": "runtime",
+      "milestone": "RT3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:471"
+    }
+  },
+  {
+    "title": "[P1][SL1] collections` (`deque`, `Counter`, `defaultdict`) parity",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: collections` (`deque`, `Counter`, `defaultdict`) parity\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:978"
+    }
+  },
+  {
+    "title": "[P1][SL1] collections` runtime `deque` type + O(1) ops + view parity",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: collections` runtime `deque` type + O(1) ops + view parity\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:979"
+    }
+  },
+  {
+    "title": "[P1][SL1] continue tightening math determinism policy coverage and platform notes",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: continue tightening math determinism policy coverage and platform notes\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1130"
+    }
+  },
+  {
+    "title": "[P1][SL1] fill `builtins` module attribute coverage.)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: fill `builtins` module attribute coverage.)\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/docs/spec/STATUS.md:1432"
+    }
+  },
+  {
+    "title": "[P1][SL1] fill out remaining `math` intrinsics (determinism policy)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: fill out remaining `math` intrinsics (determinism policy)\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:974"
+    }
+  },
+  {
+    "title": "[P1][SL1] finish `open`/file object parity (broader codecs + full error handlers, text-mode seek/tell cookies, Windows fileno/isatty) with differential + wasm coverage",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: finish `open`/file object parity (broader codecs + full error handlers, text-mode seek/tell cookies, Windows fileno/isatty) with differential + wasm coverage\nArea: stdlib-compat\nOwner lane: runtime\nMilestone: SL1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "runtime",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:902"
+    }
+  },
+  {
+    "title": "[P1][SL1] finish file/open parity per ROADMAP checklist + tests, with native/wasm lockstep.)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: finish file/open parity per ROADMAP checklist + tests, with native/wasm lockstep.)\nArea: stdlib-compat\nOwner lane: runtime\nMilestone: SL1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "runtime",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:903"
+    }
+  },
+  {
+    "title": "[P1][SL1] finish remaining `math` intrinsics (determinism policy); predicates, `sqrt`, `trunc`/`floor`/`ceil`, `fabs`/`copysign`, `fmod`/`modf`/`frexp`/`ldexp`, `isclose`, `prod`/`fsum`, `gcd`/`lcm`, `factorial`/`comb`/`perm`, `degrees`/`radians`, `hypot`/`dist`, `isqrt`/`nextafter`/`ulp`, `tan`/`asin`/`atan`/`atan2`, `sinh`/`cosh`/`tanh`, `asinh`/`acosh`/`atanh`, `log`/`log2`/`log10`/`log1p`, `exp`/`expm1`, `fma`/`remainder`, and `gamma`/`lgamma`/`erf`/`erfc` are now wired in Rust",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: finish remaining `math` intrinsics (determinism policy); predicates, `sqrt`, `trunc`/`floor`/`ceil`, `fabs`/`copysign`, `fmod`/`modf`/`frexp`/`ldexp`, `isclose`, `prod`/`fsum`, `gcd`/`lcm`, `factorial`/`comb`/`perm`, `degrees`/`radians`, `hypot`/`dist`, `isqrt`/`nextafter`/`ulp`, `tan`/`asin`/`atan`/`atan2`, `sinh`/`cosh`/`tanh`, `asinh`/`acosh`/`atanh`, `log`/`log2`/`log10`/`log1p`, `exp`/`expm1`, `fma`/`remainder`, and `gamma`/`lgamma`/`erf`/`erfc` are now wired in Rust\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:681"
+    }
+  },
+  {
+    "title": "[P1][SL1] full `open`/file object parity (modes/buffering/text/encoding/newline/fileno/seek/tell/iter/context manager) with differential + wasm coverage",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: full `open`/file object parity (modes/buffering/text/encoding/newline/fileno/seek/tell/iter/context manager) with differential + wasm coverage\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: missing",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "missing",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:970"
+    }
+  },
+  {
+    "title": "[P1][SL1] functools` fast paths (`lru_cache`, `partial`, `reduce`)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: functools` fast paths (`lru_cache`, `partial`, `reduce`)\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:980"
+    }
+  },
+  {
+    "title": "[P1][SL1] implement full struct format/alignment parity.)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: implement full struct format/alignment parity.)\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:975"
+    }
+  },
+  {
+    "title": "[P1][SL1] itertools` + `operator` core-adjacent intrinsics",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: itertools` + `operator` core-adjacent intrinsics\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:981"
+    }
+  },
+  {
+    "title": "[P1][SL1] math` intrinsics + float determinism policy (non-transcendentals covered; trig/log/exp parity pending)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: math` intrinsics + float determinism policy (non-transcendentals covered; trig/log/exp parity pending)\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:971"
+    }
+  },
+  {
+    "title": "[P1][SL1] math` shim covers constants, predicates, `trunc`/`floor`/`ceil`, `fabs`/`copysign`/`fmod`/`modf`, `frexp`/`ldexp`, `isclose`, `prod`/`fsum`, `gcd`/`lcm`, `factorial`/`comb`/`perm`, `degrees`/`radians`, `hypot`, and `sqrt`; Rust intrinsics cover predicates (`isfinite`/`isinf`/`isnan`), `sqrt`, `trunc`/`floor`/`ceil`, `fabs`/`copysign`, `fmod`/`modf`/`frexp`/`ldexp`, `isclose`, `prod`/`fsum`, `gcd`/`lcm`, `factorial`/`comb`/`perm`, `degrees`/`radians`, `hypot`/`dist`, `isqrt`/`nextafter`/`ulp`, `tan`/`asin`/`atan`/`atan2`, `sinh`/`cosh`/`tanh`, `asinh`/`acosh`/`atanh`, `log`/`log2`/`log10`/`log1p`, `exp`/`expm1`, `fma`/`remainder`, and `gamma`/`lgamma`/`erf`/`erfc`; remaining: determinism policy",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: math` shim covers constants, predicates, `trunc`/`floor`/`ceil`, `fabs`/`copysign`/`fmod`/`modf`, `frexp`/`ldexp`, `isclose`, `prod`/`fsum`, `gcd`/`lcm`, `factorial`/`comb`/`perm`, `degrees`/`radians`, `hypot`, and `sqrt`; Rust intrinsics cover predicates (`isfinite`/`isinf`/`isnan`), `sqrt`, `trunc`/`floor`/`ceil`, `fabs`/`copysign`, `fmod`/`modf`/`frexp`/`ldexp`, `isclose`, `prod`/`fsum`, `gcd`/`lcm`, `factorial`/`comb`/`perm`, `degrees`/`radians`, `hypot`/`dist`, `isqrt`/`nextafter`/`ulp`, `tan`/`asin`/`atan`/`atan2`, `sinh`/`cosh`/`tanh`, `asinh`/`acosh`/`atanh`, `log`/`log2`/`log10`/`log1p`, `exp`/`expm1`, `fma`/`remainder`, and `gamma`/`lgamma`/`erf`/`erfc`; remaining: determinism policy\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:972"
+    }
+  },
+  {
+    "title": "[P1][SL1] operator intrinsics + runtime deque + `re`/`datetime` parity.)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: operator intrinsics + runtime deque + `re`/`datetime` parity.)\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:976"
+    }
+  },
+  {
+    "title": "[P1][SL1] remove `typing` fallback ABC scaffolding and lower protocol/ABC bootstrap helpers into Rust intrinsics-only paths",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: remove `typing` fallback ABC scaffolding and lower protocol/ABC bootstrap helpers into Rust intrinsics-only paths\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:977"
+    }
+  },
+  {
+    "title": "[P1][SL1] struct` alignment + full format table parity",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: struct` alignment + full format table parity\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:973"
+    }
+  },
+  {
+    "title": "[P1][SL2] advance native `re` engine to full syntax/flags/groups; native engine covers core syntax (literals, `.`, classes/ranges, groups/alternation, greedy + non-greedy quantifiers) and `IGNORECASE`/`MULTILINE`/`DOTALL`; advanced features/flags raise `NotImplementedError` (no host fallback)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: advance native `re` engine to full syntax/flags/groups; native engine covers core syntax (literals, `.`, classes/ranges, groups/alternation, greedy + non-greedy quantifiers) and `IGNORECASE`/`MULTILINE`/`DOTALL`; advanced features/flags raise `NotImplementedError` (no host fallback)\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:991"
+    }
+  },
+  {
+    "title": "[P1][SL2] advance native `re` engine to full syntax/flags/groups; native engine supports literals, `.`, char classes/ranges (`\\\\d`/`\\\\w`/`\\\\s`), groups/alternation, greedy + non-greedy quantifiers, and `IGNORECASE`/`MULTILINE`/`DOTALL` flags. Matcher hot paths for literal/any/char-class advancement, char/range/category checks, anchors, backreference/group-presence resolution, scoped-flag math, group capture/value materialization, and replacement expansion are intrinsic-backed; remaining advanced features/flags still raise `NotImplementedError` (no host fallback)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: advance native `re` engine to full syntax/flags/groups; native engine supports literals, `.`, char classes/ranges (`\\\\d`/`\\\\w`/`\\\\s`), groups/alternation, greedy + non-greedy quantifiers, and `IGNORECASE`/`MULTILINE`/`DOTALL` flags. Matcher hot paths for literal/any/char-class advancement, char/range/category checks, anchors, backreference/group-presence resolution, scoped-flag math, group capture/value materialization, and replacement expansion are intrinsic-backed; remaining advanced features/flags still raise `NotImplementedError` (no host fallback)\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:992"
+    }
+  },
+  {
+    "title": "[P1][SL2] complete Decimal arithmetic + formatting",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: complete Decimal arithmetic + formatting\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:994"
+    }
+  },
+  {
+    "title": "[P1][SL2] complete asyncio transport/runtime parity after intrinsic capability gates (full SSL transport semantics, Unix-socket behavior parity across native/wasm, and child-watcher behavior depth on supported hosts)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: complete asyncio transport/runtime parity after intrinsic capability gates (full SSL transport semantics, Unix-socket behavior parity across native/wasm, and child-watcher behavior depth on supported hosts)\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:998"
+    }
+  },
+  {
+    "title": "[P1][SL2] complete native re parity and continue migrating parser/matcher execution into Rust (remaining lookaround variants, named-group edge cases, verbose-mode parser details, and full Unicode class/casefold semantics)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: complete native re parity and continue migrating parser/matcher execution into Rust (remaining lookaround variants, named-group edge cases, verbose-mode parser details, and full Unicode class/casefold semantics)\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL2",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1131"
+    }
+  },
+  {
+    "title": "[P1][SL2] continue `re` parser/matcher lowering into Rust intrinsics; literal/any/char-class advancement, char/range/category matching, anchor/backref/scoped-flag matcher nodes, group capture/value materialization, and replacement expansion are intrinsic-backed, while remaining lookaround variants, verbose parser edge cases, and full Unicode class/casefold parity are pending",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: continue `re` parser/matcher lowering into Rust intrinsics; literal/any/char-class advancement, char/range/category matching, anchor/backref/scoped-flag matcher nodes, group capture/value materialization, and replacement expansion are intrinsic-backed, while remaining lookaround variants, verbose parser edge cases, and full Unicode class/casefold parity are pending\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:666"
+    }
+  },
+  {
+    "title": "[P1][SL2] continue expanding socket parity (remaining option/error nuance, ancillary edge semantics, and broader platform-specific constant coverage)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: continue expanding socket parity (remaining option/error nuance, ancillary edge semantics, and broader platform-specific constant coverage)\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL2",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1132"
+    }
+  },
+  {
+    "title": "[P1][SL2] continue full json parity work (JSONDecodeError formatting nuances, cls hooks, and additional runtime fast paths)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: continue full json parity work (JSONDecodeError formatting nuances, cls hooks, and additional runtime fast paths)\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:999"
+    }
+  },
+  {
+    "title": "[P1][SL2] finish `json` parity plan (performance tuning + full cls/callback parity) and add a runtime fast-path parser for dynamic strings",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: finish `json` parity plan (performance tuning + full cls/callback parity) and add a runtime fast-path parser for dynamic strings\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1000"
+    }
+  },
+  {
+    "title": "[P1][SL2] finish asyncio transport feature coverage after intrinsic capability gates (remaining native/wasm TLS edge parity and complete child-watcher behavior on supported hosts)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: finish asyncio transport feature coverage after intrinsic capability gates (remaining native/wasm TLS edge parity and complete child-watcher behavior on supported hosts)\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1001"
+    }
+  },
+  {
+    "title": "[P1][SL2] fixture partial marker. \"",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: fixture partial marker. \"\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1002"
+    }
+  },
+  {
+    "title": "[P1][SL2] gc` module API + runtime cycle collector hook",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: gc` module API + runtime cycle collector hook\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:988"
+    }
+  },
+  {
+    "title": "[P1][SL2] gc` module exposes only minimal toggles/collect; wire to runtime cycle collector and implement full API",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: gc` module exposes only minimal toggles/collect; wire to runtime cycle collector and implement full API\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:989"
+    }
+  },
+  {
+    "title": "[P1][SL2] implement full gc module API + runtime cycle collector hook.) |",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: implement full gc module API + runtime cycle collector hook.) |\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1003"
+    }
+  },
+  {
+    "title": "[P1][SL2] json` shim parity (Encoder/Decoder classes, JSONDecodeError details, runtime fast-path parser)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: json` shim parity (Encoder/Decoder classes, JSONDecodeError details, runtime fast-path parser)\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:665"
+    }
+  },
+  {
+    "title": "[P1][SL2] lower SMTP client transport and protocol handling into Rust intrinsics and add STARTTLS/auth/LMTP parity",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: lower SMTP client transport and protocol handling into Rust intrinsics and add STARTTLS/auth/LMTP parity\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1004"
+    }
+  },
+  {
+    "title": "[P1][SL2] lower shelve persistence + dbm backends into Rust intrinsics and match CPython backend selection semantics",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: lower shelve persistence + dbm backends into Rust intrinsics and match CPython backend selection semantics\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1005"
+    }
+  },
+  {
+    "title": "[P1][SL3] advance `tkinter.commondialog` from intrinsic-backed command wiring to full CPython parity",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: advance `tkinter.commondialog` from intrinsic-backed command wiring to full CPython parity\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1419"
+    }
+  },
+  {
+    "title": "[P1][SL3] advance `tkinter.dialog` from intrinsic-backed command wiring to full CPython parity",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: advance `tkinter.dialog` from intrinsic-backed command wiring to full CPython parity\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1421"
+    }
+  },
+  {
+    "title": "[P1][SL3] advance `tkinter.filedialog` from intrinsic-backed command wiring to full CPython parity",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: advance `tkinter.filedialog` from intrinsic-backed command wiring to full CPython parity\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1423"
+    }
+  },
+  {
+    "title": "[P1][SL3] advance `tkinter.messagebox` from intrinsic-backed command wiring to full CPython parity",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: advance `tkinter.messagebox` from intrinsic-backed command wiring to full CPython parity\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1425"
+    }
+  },
+  {
+    "title": "[P1][SL3] advance `tkinter.simpledialog` from intrinsic-backed command wiring to full CPython parity",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: advance `tkinter.simpledialog` from intrinsic-backed command wiring to full CPython parity\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1427"
+    }
+  },
+  {
+    "title": "[P1][SL3] asyncio loop/task API parity)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: asyncio loop/task API parity)\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/docs/spec/STATUS.md:1482"
+    }
+  },
+  {
+    "title": "[P1][SL3] asyncio loop/task APIs + task groups + I/O adapters + executor semantics.)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: asyncio loop/task APIs + task groups + I/O adapters + executor semantics.)\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1028"
+    }
+  },
+  {
+    "title": "[P1][SL3] asyncio.tools re-exports graph introspection functions from asyncio; full parity pending deeper runtime integration",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: asyncio.tools re-exports graph introspection functions from asyncio; full parity pending deeper runtime integration\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1237"
+    }
+  },
+  {
+    "title": "[P1][SL3] asyncio.windows_events provides ProactorEventLoop, IocpProactor, and policy re-exports; platform-gated for win32",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: asyncio.windows_events provides ProactorEventLoop, IocpProactor, and policy re-exports; platform-gated for win32\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1238"
+    }
+  },
+  {
+    "title": "[P1][SL3] asyncio.windows_utils provides PipeHandle/pipe/Popen wrappers; overlapped I/O semantics are simplified",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: asyncio.windows_utils provides PipeHandle/pipe/Popen wrappers; overlapped I/O semantics are simplified\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1239"
+    }
+  },
+  {
+    "title": "[P1][SL3] complete socket/select/selectors parity (OS-specific flags, fd inheritance, error mapping, cancellation) and align with asyncio adapters",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: complete socket/select/selectors parity (OS-specific flags, fd inheritance, error mapping, cancellation) and align with asyncio adapters\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1029"
+    }
+  },
+  {
+    "title": "[P1][SL3] extend intrinsic-backed `queue` support beyond `Queue`/`SimpleQueue` core semantics to full parity (`LifoQueue`, `PriorityQueue`, richer API/edge-case parity) and align dependent `logging.handlers` coverage",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: extend intrinsic-backed `queue` support beyond `Queue`/`SimpleQueue` core semantics to full parity (`LifoQueue`, `PriorityQueue`, richer API/edge-case parity) and align dependent `logging.handlers` coverage\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1030"
+    }
+  },
+  {
+    "title": "[P1][SL3] finish remaining PEP 695 metadata work (alias metadata/TypeAliasType) and broaden type-parameter default coverage beyond current TypeVar path where required",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: finish remaining PEP 695 metadata work (alias metadata/TypeAliasType) and broaden type-parameter default coverage beyond current TypeVar path where required\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1031"
+    }
+  },
+  {
+    "title": "[P1][SL3] implement full PEP 695 type params (bounds/constraints/defaults, ParamSpec/TypeVarTuple, alias metadata)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: implement full PEP 695 type params (bounds/constraints/defaults, ParamSpec/TypeVarTuple, alias metadata)\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:520"
+    }
+  },
+  {
+    "title": "[P1][SL3] move csv parser/writer hot paths to dedicated Rust intrinsics while preserving CPython parity",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: move csv parser/writer hot paths to dedicated Rust intrinsics while preserving CPython parity\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-compat",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1032"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_aix_support` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_aix_support` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1136"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_android_support` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_android_support` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1137"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_apple_support` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_apple_support` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1138"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_ast_unparse` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_ast_unparse` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1139"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_ast` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_ast` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1140"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_blake2` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_blake2` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1141"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_colorize` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_colorize` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1142"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_compat_pickle` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_compat_pickle` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1143"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_compression` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_compression` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1144"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_contextvars` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_contextvars` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1145"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_crypt` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_crypt` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1146"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_csv` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_csv` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1147"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_ctypes` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_ctypes` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1148"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_curses_panel` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_curses_panel` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1149"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_curses` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_curses` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1150"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_datetime` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_datetime` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1151"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_dbm` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_dbm` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1152"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_decimal` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_decimal` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1153"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_elementtree` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_elementtree` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1154"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_functools` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_functools` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1155"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_gdbm` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_gdbm` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1156"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_hashlib` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_hashlib` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1157"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_heapq` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_heapq` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1158"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_hmac` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_hmac` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1159"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_imp` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_imp` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1160"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_interpchannels` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_interpchannels` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1161"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_interpqueues` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_interpqueues` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1162"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_interpreters` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_interpreters` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1163"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_io` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_io` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1164"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_ios_support` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_ios_support` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1165"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_locale` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_locale` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1166"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_lsprof` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_lsprof` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1167"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_lzma` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_lzma` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1168"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_markupbase` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_markupbase` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1169"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_md5` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_md5` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1170"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_msi` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_msi` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1171"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_osx_support` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_osx_support` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1172"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_overlapped` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_overlapped` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1173"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_posixshmem` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_posixshmem` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1174"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_py_warnings` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_py_warnings` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1175"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_pydatetime` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_pydatetime` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1176"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_pydecimal` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_pydecimal` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1177"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_pyio` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_pyio` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1178"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_pylong` top-level stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_pylong` top-level stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1179"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_pyrepl.__main__` module stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_pyrepl.__main__` module stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1180"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_pyrepl._minimal_curses` module stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_pyrepl._minimal_curses` module stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1181"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_pyrepl._module_completer` module stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_pyrepl._module_completer` module stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1182"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_pyrepl._threading_handler` module stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_pyrepl._threading_handler` module stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1183"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_pyrepl.base_eventqueue` module stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_pyrepl.base_eventqueue` module stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1184"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_pyrepl.commands` module stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_pyrepl.commands` module stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1185"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_pyrepl.completing_reader` module stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_pyrepl.completing_reader` module stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1186"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_pyrepl.console` module stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_pyrepl.console` module stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1187"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_pyrepl.curses` module stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_pyrepl.curses` module stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1188"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_pyrepl.fancy_termios` module stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_pyrepl.fancy_termios` module stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1189"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_pyrepl.historical_reader` module stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_pyrepl.historical_reader` module stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1190"
+    }
+  },
+  {
+    "title": "[P1][SL3] replace `_pyrepl.input` module stub with full intrinsic-backed lowering",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: replace `_pyrepl.input` module stub with full intrinsic-backed lowering\nArea: stdlib-parity\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "stdlib-parity",
+      "owner": "stdlib",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1191"
+    }
+  }
+]

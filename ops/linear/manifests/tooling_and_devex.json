@@ -1,0 +1,41 @@
+[
+  {
+    "title": "[P1][SL3] HTTP/ASGI runtime + DB driver parity.)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: HTTP/ASGI runtime + DB driver parity.)\nArea: http-runtime\nOwner lane: runtime\nMilestone: SL3\nStatus tag: missing",
+    "priority": 2,
+    "metadata": {
+      "area": "http-runtime",
+      "owner": "runtime",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "missing",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:819"
+    }
+  },
+  {
+    "title": "[P1][SL3] Implement the remaining `libmolt` C-API v0 surface per `0214` and keep this matrix aligned with real coverage",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: Implement the remaining `libmolt` C-API v0 surface per `0214` and keep this matrix aligned with real coverage\nArea: c-api\nOwner lane: runtime\nMilestone: SL3\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "c-api",
+      "owner": "runtime",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:777"
+    }
+  },
+  {
+    "title": "[P1][SL3] implement `molt extension build` with `libmolt` headers + ABI tagging (cross-target target-triple wiring + CI dry-run matrix lanes landed for `linux native`, `linux cross-aarch64-gnu`, `linux cross-musl`, `macos native`, and `windows native`; broader linker/sysroot hardening pending)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: implement `molt extension build` with `libmolt` headers + ABI tagging (cross-target target-triple wiring + CI dry-run matrix lanes landed for `linux native`, `linux cross-aarch64-gnu`, `linux cross-musl`, `macos native`, and `windows native`; broader linker/sysroot hardening pending)\nArea: tooling\nOwner lane: tooling\nMilestone: SL3\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "tooling",
+      "owner": "tooling",
+      "milestone": "SL3",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1520"
+    }
+  }
+]

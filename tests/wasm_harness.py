@@ -9242,6 +9242,67 @@ BASE_IMPORTS = """\
     }
     return listFromArray(out);
   },
+  list_repeat_range: (itemBits, startBits, stopBits, stepBits) => {
+    const startErr = `'${typeName(startBits)}' object cannot be interpreted as an integer`;
+    const stopErr = `'${typeName(stopBits)}' object cannot be interpreted as an integer`;
+    const stepErr = `'${typeName(stepBits)}' object cannot be interpreted as an integer`;
+    const start = indexBigIntFromBits(startBits, startErr);
+    if (start === null) return boxNone();
+    const stop = indexBigIntFromBits(stopBits, stopErr);
+    if (stop === null) return boxNone();
+    const step = indexBigIntFromBits(stepBits, stepErr);
+    if (step === null) return boxNone();
+    if (step === 0n) {
+      throw new Error('ValueError: range() arg 3 must not be zero');
+    }
+    let len = 0n;
+    if (step > 0n) {
+      if (start < stop) {
+        len = ((stop - start - 1n) / step) + 1n;
+      }
+    } else if (start > stop) {
+      const stepAbs = -step;
+      len = ((start - stop - 1n) / stepAbs) + 1n;
+    }
+    if (len <= 0n) {
+      return listFromArray([]);
+    }
+    if (len > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error("OverflowError: cannot fit 'int' into an index-sized integer");
+    }
+    const count = Number(len);
+    const out = new Array(count);
+    out.fill(itemBits);
+    return listFromArray(out);
+  },
+  bytearray_fill_range: (objBits, startBits, stopBits, fillBits) => {
+    const obj = getBytearray(objBits);
+    if (!obj) {
+      throw new Error('TypeError: bytearray.fill_range expects bytearray');
+    }
+    const startErr = `'${typeName(startBits)}' object cannot be interpreted as an integer`;
+    const stopErr = `'${typeName(stopBits)}' object cannot be interpreted as an integer`;
+    const start = indexBigIntFromBits(startBits, startErr);
+    if (start === null) return boxNone();
+    const stop = indexBigIntFromBits(stopBits, stopErr);
+    if (stop === null) return boxNone();
+    const fill = byteFromBits(fillBits);
+    if (fill === null) return boxNone();
+    const len = BigInt(obj.data.length);
+    let idx = start;
+    while (idx < stop) {
+      let target = idx;
+      if (target < 0n) {
+        target += len;
+      }
+      if (target < 0n || target >= len) {
+        throw new Error('IndexError: bytearray index out of range');
+      }
+      obj.data[Number(target)] = fill;
+      idx += 1n;
+    }
+    return boxIntOrBigint(idx);
+  },
   list_builder_new: () => boxPtr({ type: 'list_builder', items: [] }),
   list_builder_append: (builder, val) => {
     const obj = getObj(builder);
