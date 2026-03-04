@@ -1,0 +1,28 @@
+[
+  {
+    "title": "[P1][SL1] expand codec parity coverage for",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: expand codec parity coverage for\nArea: tests\nOwner lane: runtime\nMilestone: SL1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "tests",
+      "owner": "runtime",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1513"
+    }
+  },
+  {
+    "title": "[P1][SL1] expand native+wasm codec parity coverage for binary/floats/large ints/tagged values + deeper container shapes",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: expand native+wasm codec parity coverage for binary/floats/large ints/tagged values + deeper container shapes\nArea: tests\nOwner lane: runtime\nMilestone: SL1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "tests",
+      "owner": "runtime",
+      "milestone": "SL1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:684"
+    }
+  }
+]

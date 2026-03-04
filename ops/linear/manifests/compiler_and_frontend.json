@@ -1,0 +1,262 @@
+[
+  {
+    "title": "[P0][LF2] add per-pass wall-time telemetry (`attempted`/`accepted`/`rejected`/`degraded`, `ms_total`, `ms_p95`) plus top-offender diagnostics by module/function/pass (frontend per-pass timing/counters + hotspot rendering are landed; CLI/JSON sink wiring remains)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: add per-pass wall-time telemetry (`attempted`/`accepted`/`rejected`/`degraded`, `ms_total`, `ms_p95`) plus top-offender diagnostics by module/function/pass (frontend per-pass timing/counters + hotspot rendering are landed; CLI/JSON sink wiring remains)\nArea: compiler\nOwner lane: compiler\nMilestone: LF2\nStatus tag: partial",
+    "priority": 1,
+    "metadata": {
+      "area": "compiler",
+      "owner": "compiler",
+      "milestone": "LF2",
+      "priority": "P0",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:431"
+    }
+  },
+  {
+    "title": "[P0][LF2] add tiered optimization policy (Tier A entry/hot functions, Tier B normal user functions, Tier C heavy stdlib/dependency functions) with deterministic classification and override knobs (baseline deterministic classifier + env overrides are landed; telemetry-driven hotness promotion remains)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: add tiered optimization policy (Tier A entry/hot functions, Tier B normal user functions, Tier C heavy stdlib/dependency functions) with deterministic classification and override knobs (baseline deterministic classifier + env overrides are landed; telemetry-driven hotness promotion remains)\nArea: compiler\nOwner lane: compiler\nMilestone: LF2\nStatus tag: partial",
+    "priority": 1,
+    "metadata": {
+      "area": "compiler",
+      "owner": "compiler",
+      "milestone": "LF2",
+      "priority": "P0",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:429"
+    }
+  },
+  {
+    "title": "[P0][LF2] complete `CALL_INDIRECT` hardening with broader deopt reason telemetry (dedicated runtime lane, noncallable differential probe, CI-enforced probe execution/failure-queue linkage, and runtime-feedback counter `deopt_reasons.call_indirect_noncallable` are landed)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: complete `CALL_INDIRECT` hardening with broader deopt reason telemetry (dedicated runtime lane, noncallable differential probe, CI-enforced probe execution/failure-queue linkage, and runtime-feedback counter `deopt_reasons.call_indirect_noncallable` are landed)\nArea: compiler\nOwner lane: compiler\nMilestone: LF2\nStatus tag: partial",
+    "priority": 1,
+    "metadata": {
+      "area": "compiler",
+      "owner": "compiler",
+      "milestone": "LF2",
+      "priority": "P0",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:401"
+    }
+  },
+  {
+    "title": "[P0][LF2] complete `INVOKE_FFI` hardening with broader deopt reason telemetry (bridge-lane marker, runtime capability gate, negative capability differential probe, CI-enforced probe execution/failure-queue linkage, and runtime-feedback counter `deopt_reasons.invoke_ffi_bridge_capability_denied` are landed)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: complete `INVOKE_FFI` hardening with broader deopt reason telemetry (bridge-lane marker, runtime capability gate, negative capability differential probe, CI-enforced probe execution/failure-queue linkage, and runtime-feedback counter `deopt_reasons.invoke_ffi_bridge_capability_denied` are landed)\nArea: compiler\nOwner lane: compiler\nMilestone: LF2\nStatus tag: partial",
+    "priority": 1,
+    "metadata": {
+      "area": "compiler",
+      "owner": "compiler",
+      "milestone": "LF2",
+      "priority": "P0",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:402"
+    }
+  },
+  {
+    "title": "[P0][LF2] enforce per-function mid-end wall-time budgets with an automatic degrade ladder that disables expensive transforms before correctness gates and records degrade reasons (budget/degrade ladder is landed in fixed-point loop; heuristic tuning + diagnostics surfacing remains)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: enforce per-function mid-end wall-time budgets with an automatic degrade ladder that disables expensive transforms before correctness gates and records degrade reasons (budget/degrade ladder is landed in fixed-point loop; heuristic tuning + diagnostics surfacing remains)\nArea: compiler\nOwner lane: compiler\nMilestone: LF2\nStatus tag: partial",
+    "priority": 1,
+    "metadata": {
+      "area": "compiler",
+      "owner": "compiler",
+      "milestone": "LF2",
+      "priority": "P0",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:430"
+    }
+  },
+  {
+    "title": "[P0][LF2] harden `GUARD_DICT_SHAPE` invalidation/deopt semantics + coverage (runtime-feedback aggregate counter `deopt_reasons.guard_dict_shape_layout_mismatch` and per-reason breakdown counters are landed)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: harden `GUARD_DICT_SHAPE` invalidation/deopt semantics + coverage (runtime-feedback aggregate counter `deopt_reasons.guard_dict_shape_layout_mismatch` and per-reason breakdown counters are landed)\nArea: compiler\nOwner lane: compiler\nMilestone: LF2\nStatus tag: partial",
+    "priority": 1,
+    "metadata": {
+      "area": "compiler",
+      "owner": "compiler",
+      "milestone": "LF2",
+      "priority": "P0",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:404"
+    }
+  },
+  {
+    "title": "[P0][LF2] harden `GUARD_TAG` specialization/deopt semantics + coverage (runtime-feedback counter `deopt_reasons.guard_tag_type_mismatch` is landed)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: harden `GUARD_TAG` specialization/deopt semantics + coverage (runtime-feedback counter `deopt_reasons.guard_tag_type_mismatch` is landed)\nArea: compiler\nOwner lane: compiler\nMilestone: LF2\nStatus tag: partial",
+    "priority": 1,
+    "metadata": {
+      "area": "compiler",
+      "owner": "compiler",
+      "milestone": "LF2",
+      "priority": "P0",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:403"
+    }
+  },
+  {
+    "title": "[P0][LF2] ship profile-gated mid-end policy matrix (`dev` correctness-first cheap opts; `release` full fixed-point) with deterministic pass ordering and explicit diagnostics (CLI->frontend profile plumbing is landed; diagnostics sink expansion remains)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: ship profile-gated mid-end policy matrix (`dev` correctness-first cheap opts; `release` full fixed-point) with deterministic pass ordering and explicit diagnostics (CLI->frontend profile plumbing is landed; diagnostics sink expansion remains)\nArea: compiler\nOwner lane: compiler\nMilestone: LF2\nStatus tag: partial",
+    "priority": 1,
+    "metadata": {
+      "area": "compiler",
+      "owner": "compiler",
+      "milestone": "LF2",
+      "priority": "P0",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:428"
+    }
+  },
+  {
+    "title": "[P0][TC1] audit negative-indexing parity across indexable types + add differential coverage for error messages",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: audit negative-indexing parity across indexable types + add differential coverage for error messages\nArea: semantics\nOwner lane: runtime\nMilestone: TC1\nStatus tag: planned",
+    "priority": 1,
+    "metadata": {
+      "area": "semantics",
+      "owner": "runtime",
+      "milestone": "TC1",
+      "priority": "P0",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:889"
+    }
+  },
+  {
+    "title": "[P0][TC2] fix async lowering/back-end verifier for `asyncio.gather` poll paths \u2014 native backend now inserts pending/ready blocks in dominance-compatible order with all target blocks registered before branch emission; WASM backend pre-stores the pending return value before the If block so the conditional body has a clean stack profile",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: fix async lowering/back-end verifier for `asyncio.gather` poll paths \u2014 native backend now inserts pending/ready blocks in dominance-compatible order with all target blocks registered before branch emission; WASM backend pre-stores the pending return value before the If block so the conditional body has a clean stack profile\nArea: compiler\nOwner lane: compiler\nMilestone: TC2\nStatus tag: implemented",
+    "priority": 1,
+    "metadata": {
+      "area": "compiler",
+      "owner": "compiler",
+      "milestone": "TC2",
+      "priority": "P0",
+      "status": "implemented",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:554"
+    }
+  },
+  {
+    "title": "[P0][TL2] root-cause and fix stdlib mid-end miscompiles that can route missing values into runtime lookups/call sites; keep this hard safety gate until canonicalized stdlib lowering is proven stable (user-code MISSING-value fixes landed; stdlib gate remains active)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: root-cause and fix stdlib mid-end miscompiles that can route missing values into runtime lookups/call sites; keep this hard safety gate until canonicalized stdlib lowering is proven stable (user-code MISSING-value fixes landed; stdlib gate remains active)\nArea: compiler\nOwner lane: compiler\nMilestone: TL2\nStatus tag: partial",
+    "priority": 1,
+    "metadata": {
+      "area": "compiler",
+      "owner": "compiler",
+      "milestone": "TL2",
+      "priority": "P0",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:797"
+    }
+  },
+  {
+    "title": "[P0][TL2] root-cause/fix dev-profile mid-end miscompiles before re-enabling by default (SCCP/DCE/verifier hardening landed; dev-profile gate removed \u2014 mid-end enabled by default for all profiles)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: root-cause/fix dev-profile mid-end miscompiles before re-enabling by default (SCCP/DCE/verifier hardening landed; dev-profile gate removed \u2014 mid-end enabled by default for all profiles)\nArea: compiler\nOwner lane: compiler\nMilestone: TL2\nStatus tag: implemented",
+    "priority": 1,
+    "metadata": {
+      "area": "compiler",
+      "owner": "compiler",
+      "milestone": "TL2",
+      "priority": "P0",
+      "status": "implemented",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:798"
+    }
+  },
+  {
+    "title": "[P0][TL2] root-cause/fix mid-end miscompiles feeding missing values into runtime lookup/call sites (SCCP treats MISSING as non-propagatable via _SCCP_MISSING sentinel, DCE protects MISSING ops from elimination, definite-assignment verifier tracks MISSING definitions explicitly; dev-profile gate removed \u2014 mid-end runs for both dev and release profiles; stdlib gate remains until canonicalized stdlib lowering is proven stable)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: root-cause/fix mid-end miscompiles feeding missing values into runtime lookup/call sites (SCCP treats MISSING as non-propagatable via _SCCP_MISSING sentinel, DCE protects MISSING ops from elimination, definite-assignment verifier tracks MISSING definitions explicitly; dev-profile gate removed \u2014 mid-end runs for both dev and release profiles; stdlib gate remains until canonicalized stdlib lowering is proven stable)\nArea: compiler\nOwner lane: compiler\nMilestone: TL2\nStatus tag: implemented",
+    "priority": 1,
+    "metadata": {
+      "area": "compiler",
+      "owner": "compiler",
+      "milestone": "TL2",
+      "priority": "P0",
+      "status": "implemented",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:432"
+    }
+  },
+  {
+    "title": "[P1][LF1] exception objects + last-exception plumbing. |",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: exception objects + last-exception plumbing. |\nArea: semantics\nOwner lane: runtime\nMilestone: LF1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "semantics",
+      "owner": "runtime",
+      "milestone": "LF1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:887"
+    }
+  },
+  {
+    "title": "[P1][LF1] exception propagation + suppression semantics for context manager exit paths",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: exception propagation + suppression semantics for context manager exit paths\nArea: semantics\nOwner lane: runtime\nMilestone: LF1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "semantics",
+      "owner": "runtime",
+      "milestone": "LF1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:888"
+    }
+  },
+  {
+    "title": "[P1][LF1] with` lowering for async/multi-context managers + try/finally lowering in IR",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: with` lowering for async/multi-context managers + try/finally lowering in IR\nArea: syntax\nOwner lane: frontend\nMilestone: LF1\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "syntax",
+      "owner": "frontend",
+      "milestone": "LF1",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1509"
+    }
+  },
+  {
+    "title": "[P1][LF2] extend loop/try edge threading beyond current executable-edge + conservative loop-marker rewrites into full loop-end and exceptional-handler CFG rewrites with dominance/post-dominance preservation",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: extend loop/try edge threading beyond current executable-edge + conservative loop-marker rewrites into full loop-end and exceptional-handler CFG rewrites with dominance/post-dominance preservation\nArea: compiler\nOwner lane: compiler\nMilestone: LF2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "compiler",
+      "owner": "compiler",
+      "milestone": "LF2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:410"
+    }
+  },
+  {
+    "title": "[P1][LF2] extend sparse SCCP beyond current arithmetic/boolean/comparison/type-of coverage into broader heap/call-specialization families and a stronger loop-bound solver for cross-iteration constant reasoning",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: extend sparse SCCP beyond current arithmetic/boolean/comparison/type-of coverage into broader heap/call-specialization families and a stronger loop-bound solver for cross-iteration constant reasoning\nArea: compiler\nOwner lane: compiler\nMilestone: LF2\nStatus tag: partial",
+    "priority": 2,
+    "metadata": {
+      "area": "compiler",
+      "owner": "compiler",
+      "milestone": "LF2",
+      "priority": "P1",
+      "status": "partial",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:409"
+    }
+  },
+  {
+    "title": "[P1][LF2] method-binding safety pass (guard/deopt on method lookup + cache invalidation rules for call binding)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: method-binding safety pass (guard/deopt on method lookup + cache invalidation rules for call binding)\nArea: compiler\nOwner lane: compiler\nMilestone: LF2\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "compiler",
+      "owner": "compiler",
+      "milestone": "LF2",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:794"
+    }
+  },
+  {
+    "title": "[P1][LF3] migrate hot mid-end kernels (CFG build, SCCP lattice transfer, dominator/liveness) to Rust with Python orchestration preserved for policy control",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: migrate hot mid-end kernels (CFG build, SCCP lattice transfer, dominator/liveness) to Rust with Python orchestration preserved for policy control\nArea: compiler\nOwner lane: compiler\nMilestone: LF3\nStatus tag: planned",
+    "priority": 2,
+    "metadata": {
+      "area": "compiler",
+      "owner": "compiler",
+      "milestone": "LF3",
+      "priority": "P1",
+      "status": "planned",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:435"
+    }
+  }
+]

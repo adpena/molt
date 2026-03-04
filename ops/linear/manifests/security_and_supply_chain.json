@@ -1,0 +1,15 @@
+[
+  {
+    "title": "[P1][RT2] memory/CPU quota enforcement for native binaries)",
+    "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: memory/CPU quota enforcement for native binaries)\nArea: security\nOwner lane: runtime\nMilestone: RT2\nStatus tag: missing",
+    "priority": 2,
+    "metadata": {
+      "area": "security",
+      "owner": "runtime",
+      "milestone": "RT2",
+      "priority": "P1",
+      "status": "missing",
+      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:883"
+    }
+  }
+]

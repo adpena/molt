@@ -8,12 +8,14 @@ requires-python = ">=3.12, <3.15"
 dependencies = [
     "click>=8.1.7",
     "packaging>=25.0",
+    "PyYAML>=6.0.2",
     "rich>=13.7.0",
     "ty>=0.0.8",
 ]
 
 [project.scripts]
 molt = "molt.cli:main"
+molt-orchestration = "molt.orchestration_removed.__main__:main"
 
 [tool.uv]
 managed = true

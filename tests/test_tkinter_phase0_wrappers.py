@@ -116,6 +116,9 @@ builtins._molt_intrinsics = {"molt_capabilities_has": lambda _name=None: True,
     "molt_tk_splitlist": lambda value: tuple(value) if isinstance(value, (list, tuple)) else tuple(str(value).split()),
     "molt_tk_errorinfo_append": lambda _app=None, _text=None: None,
     "molt_tk_bind_script_remove_command": lambda _script=None, _command_name=None: _script,
+    "molt_tk_normalize_option": lambda name: str(name) if str(name).startswith("-") else f"-{name}",
+    "molt_tk_normalize_delay_ms": lambda value: int(value),
+    "molt_tk_convert_stringval": lambda value: int(value) if isinstance(value, str) and value.lstrip("-").isdigit() else (float(value) if isinstance(value, str) and any(ch in value for ch in (".", "e", "E")) else value),
     "molt_tk_event_subst_parse": lambda _widget=None, event_args=(): tuple(event_args),
     "molt_tk_commondialog_show": lambda _app=None, _master=None, _command=None, _options=None: _runtime_unavailable("molt_tk_commondialog_show"),
     "molt_tk_messagebox_show": lambda _app=None, _master=None, _options=None: _runtime_unavailable("molt_tk_messagebox_show"),
@@ -123,6 +126,63 @@ builtins._molt_intrinsics = {"molt_capabilities_has": lambda _name=None: True,
     "molt_tk_dialog_show": lambda _app=None, _master=None, _title=None, _text=None, _bitmap=None, _default=None, _strings=None: _runtime_unavailable("molt_tk_dialog_show"),
     "molt_tk_simpledialog_query": lambda _app=None, _parent=None, _title=None, _prompt=None, _initial=None, _kind=None, _min=None, _max=None: _runtime_unavailable("molt_tk_simpledialog_query"),
 }
+builtins._molt_intrinsics.setdefault(
+    "molt_generic_alias_new",
+    lambda origin, params=(): _host_types.GenericAlias(origin, tuple(params)),
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_typing_type_param",
+    lambda ctor, name: ctor(name),
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_tk_after_info",
+    lambda _app=None, _token=None: (),
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_tk_trace_clear",
+    lambda _app=None, _name=None: None,
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_tk_widget_bind_callback_register",
+    lambda _app=None, _target=None, _sequence=None, _fn=None, _add=None: "::__molt_widget_bind_stub",
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_tk_widget_bind_callback_unregister",
+    lambda _app=None, _target=None, _sequence=None, _command=None: None,
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_tk_text_tag_bind_callback_register",
+    lambda _app=None, _path=None, _tag=None, _sequence=None, _fn=None: "::__molt_text_tag_bind_stub",
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_tk_text_tag_bind_callback_unregister",
+    lambda _app=None, _path=None, _tag=None, _sequence=None, _command=None: None,
+)
+def _fallback_intrinsic(name):
+    if name == "molt_future_features":
+        return lambda: []
+    if name == "molt_generic_alias_new":
+        return lambda origin, params=(): _host_types.GenericAlias(origin, tuple(params))
+    if name == "molt_typing_type_param":
+        return lambda ctor, param_name: ctor(param_name)
+    if name.endswith("_filters_get"):
+        return lambda: ()
+    if "formatwarning" in name:
+        return lambda *args, **kwargs: ""
+    return lambda *args, **kwargs: None
+
+
+def _intrinsic_lookup(name):
+    value = builtins._molt_intrinsics.get(name)
+    if callable(value):
+        return value
+    if isinstance(name, str) and name.startswith("molt_"):
+        return _fallback_intrinsic(name)
+    return None
+
+builtins._molt_intrinsic_lookup = _intrinsic_lookup
+builtins._molt_runtime = True
+builtins._molt_intrinsics_strict = True
 
 MODULES = [
     "tkinter.__main__",
@@ -723,6 +783,9 @@ builtins._molt_intrinsics = {
     "molt_tk_splitlist": _tk_splitlist,
     "molt_tk_errorinfo_append": _tk_errorinfo_append,
     "molt_tk_bind_script_remove_command": lambda _script=None, _command_name=None: _script,
+    "molt_tk_normalize_option": lambda name: str(name) if str(name).startswith("-") else f"-{name}",
+    "molt_tk_normalize_delay_ms": lambda value: int(value),
+    "molt_tk_convert_stringval": lambda value: int(value) if isinstance(value, str) and value.lstrip("-").isdigit() else (float(value) if isinstance(value, str) and any(ch in value for ch in (".", "e", "E")) else value),
     "molt_tk_event_subst_parse": _tk_event_subst_parse,
     "molt_tk_commondialog_show": _tk_commondialog_show,
     "molt_tk_messagebox_show": _tk_messagebox_show,
@@ -730,6 +793,63 @@ builtins._molt_intrinsics = {
     "molt_tk_dialog_show": _tk_dialog_show,
     "molt_tk_simpledialog_query": _tk_simpledialog_query,
 }
+builtins._molt_intrinsics.setdefault(
+    "molt_generic_alias_new",
+    lambda origin, params=(): _host_types.GenericAlias(origin, tuple(params)),
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_typing_type_param",
+    lambda ctor, name: ctor(name),
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_tk_after_info",
+    lambda _app=None, _token=None: (),
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_tk_trace_clear",
+    lambda _app=None, _name=None: None,
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_tk_widget_bind_callback_register",
+    lambda _app=None, _target=None, _sequence=None, _fn=None, _add=None: "::__molt_widget_bind_stub",
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_tk_widget_bind_callback_unregister",
+    lambda _app=None, _target=None, _sequence=None, _command=None: None,
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_tk_text_tag_bind_callback_register",
+    lambda _app=None, _path=None, _tag=None, _sequence=None, _fn=None: "::__molt_text_tag_bind_stub",
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_tk_text_tag_bind_callback_unregister",
+    lambda _app=None, _path=None, _tag=None, _sequence=None, _command=None: None,
+)
+def _fallback_intrinsic(name):
+    if name == "molt_future_features":
+        return lambda: []
+    if name == "molt_generic_alias_new":
+        return lambda origin, params=(): _host_types.GenericAlias(origin, tuple(params))
+    if name == "molt_typing_type_param":
+        return lambda ctor, param_name: ctor(param_name)
+    if name.endswith("_filters_get"):
+        return lambda: ()
+    if "formatwarning" in name:
+        return lambda *args, **kwargs: ""
+    return lambda *args, **kwargs: None
+
+
+def _intrinsic_lookup(name):
+    value = builtins._molt_intrinsics.get(name)
+    if callable(value):
+        return value
+    if isinstance(name, str) and name.startswith("molt_"):
+        return _fallback_intrinsic(name)
+    return None
+
+builtins._molt_intrinsic_lookup = _intrinsic_lookup
+builtins._molt_runtime = True
+builtins._molt_intrinsics_strict = True
 
 import _tkinter
 import tkinter
@@ -1770,6 +1890,9 @@ builtins._molt_intrinsics = {
     "molt_tk_splitlist": _tk_splitlist,
     "molt_tk_errorinfo_append": _tk_errorinfo_append,
     "molt_tk_bind_script_remove_command": lambda _script=None, _command_name=None: _script,
+    "molt_tk_normalize_option": lambda name: str(name) if str(name).startswith("-") else f"-{name}",
+    "molt_tk_normalize_delay_ms": lambda value: int(value),
+    "molt_tk_convert_stringval": lambda value: int(value) if isinstance(value, str) and value.lstrip("-").isdigit() else (float(value) if isinstance(value, str) and any(ch in value for ch in (".", "e", "E")) else value),
     "molt_tk_event_subst_parse": _tk_event_subst_parse,
     "molt_tk_commondialog_show": lambda _app=None, _master=None, _command=None, _options=None: "",
     "molt_tk_messagebox_show": lambda _app=None, _master=None, _options=None: "",
@@ -1777,6 +1900,63 @@ builtins._molt_intrinsics = {
     "molt_tk_dialog_show": lambda _app=None, _master=None, _title=None, _text=None, _bitmap=None, _default=None, _strings=None: 0,
     "molt_tk_simpledialog_query": lambda _app=None, _parent=None, _title=None, _prompt=None, _initial=None, _kind=None, _min=None, _max=None: "",
 }
+builtins._molt_intrinsics.setdefault(
+    "molt_generic_alias_new",
+    lambda origin, params=(): _host_types.GenericAlias(origin, tuple(params)),
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_typing_type_param",
+    lambda ctor, name: ctor(name),
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_tk_after_info",
+    lambda _app=None, _token=None: (),
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_tk_trace_clear",
+    lambda _app=None, _name=None: None,
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_tk_widget_bind_callback_register",
+    lambda _app=None, _target=None, _sequence=None, _fn=None, _add=None: "::__molt_widget_bind_stub",
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_tk_widget_bind_callback_unregister",
+    lambda _app=None, _target=None, _sequence=None, _command=None: None,
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_tk_text_tag_bind_callback_register",
+    lambda _app=None, _path=None, _tag=None, _sequence=None, _fn=None: "::__molt_text_tag_bind_stub",
+)
+builtins._molt_intrinsics.setdefault(
+    "molt_tk_text_tag_bind_callback_unregister",
+    lambda _app=None, _path=None, _tag=None, _sequence=None, _command=None: None,
+)
+def _fallback_intrinsic(name):
+    if name == "molt_future_features":
+        return lambda: []
+    if name == "molt_generic_alias_new":
+        return lambda origin, params=(): _host_types.GenericAlias(origin, tuple(params))
+    if name == "molt_typing_type_param":
+        return lambda ctor, param_name: ctor(param_name)
+    if name.endswith("_filters_get"):
+        return lambda: ()
+    if "formatwarning" in name:
+        return lambda *args, **kwargs: ""
+    return lambda *args, **kwargs: None
+
+
+def _intrinsic_lookup(name):
+    value = builtins._molt_intrinsics.get(name)
+    if callable(value):
+        return value
+    if isinstance(name, str) and name.startswith("molt_"):
+        return _fallback_intrinsic(name)
+    return None
+
+builtins._molt_intrinsic_lookup = _intrinsic_lookup
+builtins._molt_runtime = True
+builtins._molt_intrinsics_strict = True
 
 import tkinter
 import tkinter.ttk as ttk

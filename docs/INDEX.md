@@ -19,6 +19,11 @@ Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
 ## Workspace Guides
 - Examples: [examples/README.md](../examples/README.md)
 - Demo app and offload workflow: [demo/README.md](../demo/README.md)
+- Orchestration orchestration setup: [docs/ORCHESTRATION.md](docs/ORCHESTRATION.md)
+- Orchestration canonical alignment ledger: [docs/SYMPHONY_CANONICAL_ALIGNMENT.md](docs/SYMPHONY_CANONICAL_ALIGNMENT.md)
+- Orchestration human role: [docs/SYMPHONY_HUMAN_ROLE.md](docs/SYMPHONY_HUMAN_ROLE.md)
+- Orchestration operator playbook: [docs/SYMPHONY_OPERATOR_PLAYBOOK.md](docs/SYMPHONY_OPERATOR_PLAYBOOK.md)
+- Linear workspace bootstrap: [docs/LINEAR_WORKSPACE_BOOTSTRAP.md](docs/LINEAR_WORKSPACE_BOOTSTRAP.md)
 - Benchmark harnesses: [bench/README.md](../bench/README.md), [bench/friends/README.md](../bench/friends/README.md)
 - Packaging/release guides: [packaging/README.md](../packaging/README.md), [packaging/templates/linux/README.md](../packaging/templates/linux/README.md)
 

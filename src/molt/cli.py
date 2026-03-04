@@ -37,7 +37,11 @@ from typing import Any, Iterable, Literal, Mapping, MutableMapping, NamedTuple, 
 from packaging.markers import InvalidMarker, Marker
 from packaging.requirements import InvalidRequirement, Requirement
 from molt.compat import CompatibilityError
-from molt.frontend import SimpleTIRGenerator
+from molt.frontend import (
+    SIMPLE_IR_CONTRACT_NAME,
+    SIMPLE_IR_CONTRACT_VERSION,
+    SimpleTIRGenerator,
+)
 from molt.type_facts import (
     collect_type_facts_from_paths,
     load_type_facts,
@@ -84,6 +88,15 @@ _WASM_CODEGEN_ENV_KNOBS = (
     "MOLT_WASM_MIN_PAGES",
     "MOLT_WASM_LINK",
     "MOLT_WASM_TABLE_BASE",
+)
+_WASM_RUNTIME_TARGET_FEATURE_MODE_ENV = "MOLT_WASM_RUNTIME_TARGET_FEATURE_MODE"
+_WASM_RUNTIME_TARGET_FEATURES_ENV = "MOLT_WASM_RUNTIME_TARGET_FEATURES"
+_WASM_RUNTIME_TARGET_FEATURES_EXTRA_ENV = "MOLT_WASM_RUNTIME_TARGET_FEATURES_EXTRA"
+_WASM_RUNTIME_TARGET_CPU_ENV = "MOLT_WASM_RUNTIME_TARGET_CPU"
+_WASM_RUNTIME_TARGET_FEATURES_BASELINE = "+simd128"
+_WASM_RUNTIME_TARGET_FEATURES_AGGRESSIVE = (
+    "+simd128,+bulk-memory,+mutable-globals,"
+    "+nontrapping-fptoint,+sign-ext,+reference-types,+multivalue"
 )
 CAPABILITY_PROFILES: dict[str, list[str]] = {
     "core": [],
@@ -2713,6 +2726,8 @@ def _ensure_core_stdlib_modules(
     module_graph: dict[str, Path], stdlib_root: Path
 ) -> None:
     for name in (
+        "_intrinsics",
+        "_sitebuiltins",
         "builtins",
         "sys",
         "types",
@@ -5095,7 +5110,7 @@ def _backend_daemon_max_jobs() -> int:
     return _BACKEND_DAEMON_DEFAULT_MAX_JOBS
 
 
-def _backend_daemon_start_timeout(default: float = 5.0) -> float:
+def _backend_daemon_start_timeout(default: float = 90.0) -> float:
     raw = os.environ.get("MOLT_BACKEND_DAEMON_START_TIMEOUT", "").strip()
     if not raw:
         return default
@@ -5108,11 +5123,56 @@ def _backend_daemon_start_timeout(default: float = 5.0) -> float:
     return default
 
 
+def _backend_daemon_default_socket_dir_candidates() -> list[Path]:
+    temp_dir = Path(tempfile.gettempdir()) / "molt-backend-daemon"
+    if os.name == "nt":
+        return [temp_dir]
+    local_tmp_dir = Path("/tmp") / "molt-backend-daemon"
+    if local_tmp_dir == temp_dir:
+        return [local_tmp_dir]
+    return [local_tmp_dir, temp_dir]
+
+
+def _backend_daemon_socket_dir_supports_unix(path: Path) -> bool:
+    if os.name == "nt":
+        return True
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+    probe = path / f".moltbd-probe-{os.getpid()}-{time.monotonic_ns()}.sock"
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.bind(str(probe))
+    except OSError:
+        return False
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+    return True
+
+
+def _backend_daemon_default_socket_dir() -> Path:
+    candidates = _backend_daemon_default_socket_dir_candidates()
+    if os.name == "nt":
+        return candidates[0]
+    for candidate in candidates:
+        if _backend_daemon_socket_dir_supports_unix(candidate):
+            return candidate
+    return candidates[0]
+
+
 def _backend_daemon_socket_dir(project_root: Path) -> Path:
     # Unix sockets can fail on some external/shared volumes (e.g. exFAT).
-    # Keep sockets on a local socket-capable path by default.
-    default_dir = Path(tempfile.gettempdir()) / "molt-backend-daemon"
-    socket_dir = _resolve_env_path("MOLT_BACKEND_DAEMON_SOCKET_DIR", default_dir)
+    # Keep sockets on a local socket-capable path by default, independent
+    # from TMPDIR when it points to a non-socket filesystem.
+    explicit_dir = os.environ.get("MOLT_BACKEND_DAEMON_SOCKET_DIR", "").strip()
+    if explicit_dir:
+        socket_dir = _resolve_env_path("MOLT_BACKEND_DAEMON_SOCKET_DIR", Path())
+    else:
+        socket_dir = _backend_daemon_default_socket_dir()
     socket_dir.mkdir(parents=True, exist_ok=True)
     return socket_dir
 
@@ -5468,19 +5528,21 @@ def _compile_with_backend_daemon(
     cache_key: str | None,
     function_cache_key: str | None,
     config_digest: str | None,
+    env_overrides: dict[str, str] | None,
     timeout: float | None,
 ) -> _BackendDaemonCompileResult:
-    jobs: list[dict[str, Any]] = [
-        {
-            "id": "job0",
-            "is_wasm": is_wasm,
-            "target_triple": target_triple,
-            "output": str(backend_output),
-            "cache_key": cache_key or "",
-            "function_cache_key": function_cache_key or "",
-            "ir": ir,
-        }
-    ]
+    job_payload: dict[str, Any] = {
+        "id": "job0",
+        "is_wasm": is_wasm,
+        "target_triple": target_triple,
+        "output": str(backend_output),
+        "cache_key": cache_key or "",
+        "function_cache_key": function_cache_key or "",
+        "ir": ir,
+    }
+    if env_overrides:
+        job_payload["env_overrides"] = env_overrides
+    jobs: list[dict[str, Any]] = [job_payload]
     if len(jobs) > _backend_daemon_max_jobs():
         return _BackendDaemonCompileResult(
             False,
@@ -5759,6 +5821,157 @@ def _append_rustflags(env: MutableMapping[str, str], flags: str) -> None:
     env["RUSTFLAGS"] = joined
 
 
+def _rustflags_codegen_values(rustflags: str, key: str) -> list[str]:
+    try:
+        tokens = shlex.split(rustflags)
+    except ValueError:
+        tokens = rustflags.split()
+    values: list[str] = []
+    index = 0
+    key_prefix = f"{key}="
+    while index < len(tokens):
+        token = tokens[index]
+        arg: str | None = None
+        if token == "-C":
+            if index + 1 < len(tokens):
+                arg = tokens[index + 1]
+            index += 2
+        else:
+            if token.startswith("-C"):
+                arg = token[2:]
+            index += 1
+        if arg is None:
+            continue
+        if arg.startswith(key_prefix):
+            value = arg[len(key_prefix) :].strip()
+            if value:
+                values.append(value)
+    return values
+
+
+def _rustflags_without_codegen_key(rustflags: str, key: str) -> str:
+    try:
+        tokens = shlex.split(rustflags)
+    except ValueError:
+        tokens = rustflags.split()
+    key_prefix = f"{key}="
+    kept: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "-C":
+            if index + 1 >= len(tokens):
+                kept.append(token)
+                index += 1
+                continue
+            arg = tokens[index + 1]
+            if arg.startswith(key_prefix):
+                index += 2
+                continue
+            kept.append(token)
+            kept.append(arg)
+            index += 2
+            continue
+        if token.startswith("-C") and token[2:].startswith(key_prefix):
+            index += 1
+            continue
+        kept.append(token)
+        index += 1
+    return " ".join(kept)
+
+
+def _parse_wasm_target_feature_spec(spec: str) -> list[tuple[str, str]]:
+    items: list[tuple[str, str]] = []
+    for raw in spec.split(","):
+        token = raw.strip()
+        if not token:
+            continue
+        sign = "+"
+        if token[0] in "+-":
+            sign = token[0]
+            token = token[1:].strip()
+        if token:
+            items.append((token, sign))
+    return items
+
+
+def _merge_wasm_target_feature_specs(*specs: str) -> str:
+    order: list[str] = []
+    signs: dict[str, str] = {}
+    for spec in specs:
+        if not spec:
+            continue
+        for feature, sign in _parse_wasm_target_feature_spec(spec):
+            if feature not in signs:
+                order.append(feature)
+            signs[feature] = sign
+    return ",".join(f"{signs[name]}{name}" for name in order)
+
+
+def _wasm_runtime_target_features_default() -> str:
+    mode = os.environ.get(_WASM_RUNTIME_TARGET_FEATURE_MODE_ENV, "").strip().lower()
+    if mode in {"off", "none"}:
+        return ""
+    if mode in {"baseline", "safe"}:
+        return _WASM_RUNTIME_TARGET_FEATURES_BASELINE
+    return _WASM_RUNTIME_TARGET_FEATURES_AGGRESSIVE
+
+
+def _configure_wasm_runtime_codegen_flags(
+    env: MutableMapping[str, str], *, reloc: bool
+) -> str:
+    use_legacy_wasm_flags = os.environ.get("MOLT_WASM_LEGACY_LINK_FLAGS") == "1"
+    if use_legacy_wasm_flags:
+        if reloc:
+            flags = (
+                "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
+                " -C relocation-model=pic"
+            )
+        else:
+            flags = (
+                "-C link-arg=--import-memory -C link-arg=--import-table"
+                " -C link-arg=--growable-table"
+            )
+    else:
+        flags = (
+            "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
+            " -C relocation-model=pic"
+            if reloc
+            else ""
+        )
+
+    rustflags = env.get("RUSTFLAGS", "").strip()
+    if flags:
+        rustflags = f"{rustflags} {flags}".strip()
+
+    target_features = os.environ.get(_WASM_RUNTIME_TARGET_FEATURES_ENV, "").strip()
+    if not target_features:
+        target_features = _wasm_runtime_target_features_default()
+    target_features_extra = os.environ.get(
+        _WASM_RUNTIME_TARGET_FEATURES_EXTRA_ENV, ""
+    ).strip()
+
+    existing_target_features = _rustflags_codegen_values(rustflags, "target-feature")
+    rustflags = _rustflags_without_codegen_key(rustflags, "target-feature")
+    merged_target_features = _merge_wasm_target_feature_specs(
+        target_features,
+        target_features_extra,
+        *existing_target_features,
+    )
+    if merged_target_features:
+        rustflags = f"{rustflags} -C target-feature={merged_target_features}".strip()
+
+    target_cpu = os.environ.get(_WASM_RUNTIME_TARGET_CPU_ENV, "").strip()
+    if target_cpu:
+        existing_target_cpu = _rustflags_codegen_values(rustflags, "target-cpu")
+        if not existing_target_cpu:
+            rustflags = f"{rustflags} -C target-cpu={target_cpu}".strip()
+
+    if rustflags:
+        env["RUSTFLAGS"] = rustflags
+    return rustflags
+
+
 def _configure_wasm_cc_env(env: dict[str, str]) -> None:
     if env.get("CC_wasm32-wasip1") or env.get("CC_wasm32_wasip1"):
         return
@@ -5829,6 +6042,12 @@ def _run_runtime_wasm_cargo_build(
             check=False,
             text=True,
         )
+    if (
+        not src.exists() or not _is_valid_wasm_binary(src)
+    ) and src.parent.name != "deps":
+        deps_src = src.parent / "deps" / src.name
+        if deps_src.exists() and _is_valid_wasm_binary(deps_src):
+            src = deps_src
     return build, src
 
 
@@ -5844,34 +6063,7 @@ def _ensure_runtime_wasm(
     root = project_root or Path(__file__).resolve().parents[2]
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     env = os.environ.copy()
-    use_legacy_wasm_flags = os.environ.get("MOLT_WASM_LEGACY_LINK_FLAGS") == "1"
-    if use_legacy_wasm_flags:
-        if reloc:
-            flags = (
-                "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
-                " -C relocation-model=pic"
-            )
-        else:
-            flags = (
-                "-C link-arg=--import-memory -C link-arg=--import-table"
-                " -C link-arg=--growable-table"
-            )
-    else:
-        flags = (
-            "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
-            " -C relocation-model=pic"
-            if reloc
-            else ""
-        )
-    rustflags = env.get("RUSTFLAGS", "").strip()
-    if flags:
-        rustflags = f"{rustflags} {flags}".strip()
-    # Enable WASM SIMD (128-bit) for vectorized string/bytes operations.
-    # All modern WASM runtimes support simd128: Node.js >=16, wasmtime,
-    # Chrome/Firefox/Safari since 2021. This dramatically speeds up
-    # string search, hex encode, base64, and whitespace scanning.
-    if "-C target-feature" not in rustflags:
-        rustflags = f"{rustflags} -C target-feature=+simd128".strip()
+    rustflags = _configure_wasm_runtime_codegen_flags(env, reloc=reloc)
     fingerprint = _runtime_fingerprint(
         root,
         cargo_profile=cargo_profile,
@@ -5902,8 +6094,6 @@ def _ensure_runtime_wasm(
             )
         if not json_output:
             print("Runtime sources changed; rebuilding runtime...")
-        if flags:
-            _append_rustflags(env, flags)
         if os.environ.get("MOLT_WASM_FORCE_CC") == "1":
             _configure_wasm_cc_env(env)
         # Enable incremental compilation for dev-fast WASM builds; disable for
@@ -6012,7 +6202,7 @@ def _ensure_runtime_wasm(
                     "MOLT_WASM_RUNTIME_FALLBACK_PROFILE", "release-fast"
                 ).strip()
                 can_try_fallback_profile = (
-                    cargo_profile == "release"
+                    cargo_profile in {"release", "wasm-release"}
                     and fallback_profile
                     and fallback_profile != cargo_profile
                     and _CARGO_PROFILE_NAME_RE.match(fallback_profile) is not None
@@ -7226,7 +7416,7 @@ def build(
     emit: EmitMode | None = None,
     out_dir: str | None = None,
     profile: BuildProfile = "release",
-    linked: bool = False,
+    linked: bool | None = None,
     linked_output: str | None = None,
     require_linked: bool = False,
     respect_pythonpath: bool = False,
@@ -7786,26 +7976,28 @@ def build(
             json_output,
             command="build",
         )
-    if linked_output and not linked and not require_linked:
+    if linked_output and linked is not True and not require_linked:
         return _fail(
             "--linked-output requires --linked",
             json_output,
             command="build",
         )
-    if linked and not is_wasm:
+    if linked is True and not is_wasm:
         return _fail(
             "Linked output is only supported for wasm targets",
             json_output,
             command="build",
         )
-    if require_linked and not linked:
+    if require_linked and linked is not True:
         linked = True
     # Default to linked mode for WASM targets (10-20% faster runtime, single
     # module output).  Opt out with MOLT_WASM_LINKED=0.
-    if is_wasm and not linked:
+    if is_wasm and linked is None:
         wasm_linked_env = os.environ.get("MOLT_WASM_LINKED", "1").strip().lower()
         if wasm_linked_env not in {"0", "false", "no", "off"}:
             linked = True
+    if linked is None:
+        linked = False
     target_triple = None if target in {"native", "wasm"} else target
     emit_mode = emit or ("wasm" if is_wasm else "bin")
     if emit_mode not in {"bin", "obj", "wasm"}:
@@ -9197,7 +9389,11 @@ def build(
     functions.append(
         {"name": "molt_isolate_import", "params": ["p0"], "ops": import_ops}
     )
-    ir = {"functions": functions}
+    ir = {
+        "ir_contract_name": SIMPLE_IR_CONTRACT_NAME,
+        "ir_contract_version": SIMPLE_IR_CONTRACT_VERSION,
+        "functions": functions,
+    }
     if pgo_profile_summary is not None:
         ir["profile"] = {
             "version": pgo_profile_summary.version,
@@ -9467,6 +9663,21 @@ def build(
                             )
             if reloc_requested and backend_env is not None:
                 backend_env["MOLT_WASM_LINK"] = "1"
+            daemon_env_overrides: dict[str, str] | None = None
+            if is_wasm and backend_env is not None:
+                env_keys = (
+                    "MOLT_WASM_LINK",
+                    "MOLT_WASM_DATA_BASE",
+                    "MOLT_WASM_TABLE_BASE",
+                    "MOLT_WASM_MIN_PAGES",
+                )
+                daemon_env_overrides = {
+                    key: value
+                    for key in env_keys
+                    if (value := backend_env.get(key)) is not None
+                }
+                if not daemon_env_overrides:
+                    daemon_env_overrides = None
             backend_bin = _backend_bin_path(molt_root, backend_cargo_profile)
             if not _ensure_backend_binary(
                 backend_bin,
@@ -9552,6 +9763,7 @@ def build(
                         cache_key=cache_key,
                         function_cache_key=function_cache_key,
                         config_digest=backend_daemon_config_digest,
+                        env_overrides=daemon_env_overrides,
                         timeout=backend_timeout,
                     )
                     backend_compiled = daemon_compile.ok
@@ -9603,6 +9815,7 @@ def build(
                                 cache_key=cache_key,
                                 function_cache_key=function_cache_key,
                                 config_digest=backend_daemon_config_digest,
+                                env_overrides=daemon_env_overrides,
                                 timeout=backend_timeout,
                             )
                             backend_compiled = daemon_compile.ok
@@ -11029,7 +11242,7 @@ def _internal_batch_build_server(
                         type_facts_path=params.get("type_facts"),
                         pgo_profile=params.get("pgo_profile"),
                         output=params.get("output"),
-                        json_output=False,
+                        json_output=bool(params.get("json_output", False)),
                         verbose=bool(params.get("verbose", False)),
                         deterministic=bool(params.get("deterministic", True)),
                         deterministic_warn=bool(
@@ -15774,7 +15987,15 @@ def main() -> int:
             trusted = _coerce_bool(build_cfg.get("trusted"), False)
         linked = args.linked
         if linked is None:
-            linked = _coerce_bool(build_cfg.get("linked"), False)
+            linked_cfg: Any = None
+            if "linked" in build_cfg:
+                linked_cfg = build_cfg.get("linked")
+            elif "wasm_linked" in build_cfg:
+                linked_cfg = build_cfg.get("wasm_linked")
+            elif "wasm-linked" in build_cfg:
+                linked_cfg = build_cfg.get("wasm-linked")
+            if linked_cfg is not None:
+                linked = _coerce_bool(linked_cfg, False)
         cache = (
             args.cache
             if args.cache is not None

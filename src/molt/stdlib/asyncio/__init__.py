@@ -850,7 +850,11 @@ class Future:
         return self.result()
 
     def __await__(self) -> Any:
-        async def _wrapped() -> Any:
+        promise = self._molt_promise
+        if promise is None:
+            raise RuntimeError("asyncio intrinsic not available: promise_new")
+
+        async def _molt_future_await_promise() -> Any:
             waiter = None
             if _EXPOSE_GRAPH:
                 waiter = _task_registry_current()
@@ -859,12 +863,12 @@ class Future:
             try:
                 if _DEBUG_ASYNCIO_PROMISE:
                     _debug_write("asyncio_promise_await")
-                return await self._molt_promise
+                return await promise
             finally:
                 if _EXPOSE_GRAPH and isinstance(waiter, Future):
                     future_discard_from_awaited_by(self, waiter)
 
-        return _wrapped().__await__()
+        return _molt_future_await_promise().__await__()
 
     def __repr__(self) -> str:
         if molt_asyncio_future_cancelled(self._fut_handle):
@@ -2105,31 +2109,7 @@ class Task(Future):
         return f"<Task {self._name} {state}>"
 
     def __await__(self) -> Any:
-        if molt_asyncio_future_done(self._fut_handle):
-            return self._wait().__await__()
-        waiter = Future()
-
-        def _transfer(done: Future) -> None:
-            if waiter.done():
-                return
-            try:
-                if _asyncio_future_transfer(done, waiter):
-                    return
-                if hasattr(done, "cancelled") and done.cancelled():
-                    cancel_msg = getattr(done, "_cancel_message", None)
-                    waiter.cancel(cancel_msg)
-                    return
-                exc = done.exception()
-                if exc is not None:
-                    waiter.set_exception(exc)
-                    return
-                waiter.set_result(done.result())
-            except BaseException as exc:
-                if not waiter.done():
-                    waiter.set_exception(exc)
-
-        self.add_done_callback(lambda _fut: _transfer(_fut))
-        return waiter.__await__()
+        return Future.__await__(self)
 
 
 class Event:
@@ -3896,8 +3876,13 @@ class _EventLoop(AbstractEventLoop):
                     finally:
                         _restore_token_id(prev_token_id)
                 else:
-                    result = molt_block_on(fut._wait())
-                    _debug_exc_state("run_until_complete_after_wait")
+                    promise = fut._molt_promise
+                    if promise is None:
+                        raise RuntimeError(
+                            "asyncio intrinsic not available: promise_new"
+                        )
+                    result = molt_block_on(promise)
+                    _debug_exc_state("run_until_complete_after_promise")
             else:
                 fut = Task(future, loop=self, _spawn_runner=False)
                 prev_token_id = _swap_current_token(fut._token)

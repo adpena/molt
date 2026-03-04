@@ -3008,6 +3008,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_intrinsic_lookup",
+        symbol: "molt_intrinsic_lookup",
+        arity: 1,
+    },
+    IntrinsicSpec {
         name: "molt_env_get",
         symbol: "molt_env_get",
         arity: 2,
@@ -12330,6 +12335,7 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_getcwd" => Some(crate::molt_getcwd as *const () as usize as u64),
         "molt_getpid" => Some(crate::molt_getpid as *const () as usize as u64),
         "molt_signal_raise" => Some(crate::molt_signal_raise as *const () as usize as u64),
+        "molt_intrinsic_lookup" => Some(crate::molt_intrinsic_lookup as *const () as usize as u64),
         "molt_env_get" => Some(crate::molt_env_get as *const () as usize as u64),
         "molt_env_snapshot" => Some(crate::molt_env_snapshot as *const () as usize as u64),
         "molt_env_set" => Some(crate::molt_env_set as *const () as usize as u64),
