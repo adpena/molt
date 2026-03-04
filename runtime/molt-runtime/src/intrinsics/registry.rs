@@ -5,10 +5,14 @@ use crate::{
     function_set_trampoline_ptr, inc_ref_bits, module_dict_bits, obj_from_bits,
     object_set_class_bits, object_type_id,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const REGISTRY_NAME: &str = "_molt_intrinsics";
 const STRICT_FLAG: &str = "_molt_intrinsics_strict";
 const RUNTIME_FLAG: &str = "_molt_runtime";
+const LOOKUP_HELPER_NAME: &str = "_molt_intrinsic_lookup";
+
+static INTRINSICS_REGISTRY_BITS: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
     if module_ptr.is_null() {
@@ -25,7 +29,9 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
         _ => return,
     };
 
-    if registry_installed(_py, dict_ptr) {
+    if let Some(existing_registry_bits) = registry_bits_in_builtins_dict(_py, dict_ptr) {
+        INTRINSICS_REGISTRY_BITS.store(existing_registry_bits, Ordering::Release);
+        install_lookup_helper(_py, dict_ptr);
         return;
     }
 
@@ -38,6 +44,8 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
         dec_ref_bits(_py, registry_bits);
         return;
     }
+    INTRINSICS_REGISTRY_BITS.store(registry_bits, Ordering::Release);
+    install_lookup_helper(_py, dict_ptr);
     set_dict_bool(_py, dict_ptr, STRICT_FLAG, true);
     set_dict_bool(_py, dict_ptr, RUNTIME_FLAG, true);
 
@@ -66,21 +74,50 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
     dec_ref_bits(_py, registry_bits);
 }
 
-fn registry_installed(_py: &PyToken<'_>, dict_ptr: *mut u8) -> bool {
+fn registry_bits_in_builtins_dict(_py: &PyToken<'_>, dict_ptr: *mut u8) -> Option<u64> {
     let key_ptr = alloc_string(_py, REGISTRY_NAME.as_bytes());
     if key_ptr.is_null() {
-        return false;
+        return None;
     }
     let key_bits = MoltObject::from_ptr(key_ptr).bits();
     let existing = unsafe { dict_get_in_place(_py, dict_ptr, key_bits) };
     dec_ref_bits(_py, key_bits);
-    let Some(bits) = existing else {
-        return false;
-    };
+    let bits = existing?;
     match obj_from_bits(bits).as_ptr() {
-        Some(ptr) => unsafe { object_type_id(ptr) == TYPE_ID_DICT },
-        None => false,
+        Some(ptr) if unsafe { object_type_id(ptr) == TYPE_ID_DICT } => Some(bits),
+        _ => None,
     }
+}
+
+fn install_lookup_helper(_py: &PyToken<'_>, builtins_dict_ptr: *mut u8) {
+    let helper_fn_ptr = molt_intrinsic_lookup as *const () as usize as u64;
+    let Some(helper_bits) = build_intrinsic_func(_py, "molt_intrinsic_lookup", helper_fn_ptr, 1)
+    else {
+        return;
+    };
+    let _ = set_dict_entry(_py, builtins_dict_ptr, LOOKUP_HELPER_NAME, helper_bits);
+    dec_ref_bits(_py, helper_bits);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_intrinsic_lookup(name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let registry_bits = INTRINSICS_REGISTRY_BITS.load(Ordering::Acquire);
+        if registry_bits == 0 {
+            return MoltObject::none().bits();
+        }
+        let Some(registry_ptr) = obj_from_bits(registry_bits).as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        if unsafe { object_type_id(registry_ptr) } != TYPE_ID_DICT {
+            return MoltObject::none().bits();
+        }
+        let Some(value_bits) = (unsafe { dict_get_in_place(_py, registry_ptr, name_bits) }) else {
+            return MoltObject::none().bits();
+        };
+        inc_ref_bits(_py, value_bits);
+        value_bits
+    })
 }
 
 fn set_dict_entry(_py: &PyToken<'_>, dict_ptr: *mut u8, name: &str, value_bits: u64) -> bool {

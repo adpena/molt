@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import builtins as _builtins
+from molt import intrinsics as _intrinsics
 
 TYPE_CHECKING = False
 
@@ -32,17 +32,9 @@ def _parse_caps(raw: str) -> set[str]:
 
 
 def _load_intrinsic(name: str) -> Callable[..., Any]:
-    value = globals().get(name)
+    value = _intrinsics.require(name, globals())
     if callable(value):
         return value
-    direct = getattr(_builtins, name, None)
-    if callable(direct):
-        return direct
-    reg = getattr(_builtins, "_molt_intrinsics", None)
-    if isinstance(reg, dict):
-        value = reg.get(name)
-        if callable(value):
-            return value
     raise RuntimeError(f"{name} intrinsic unavailable")
 
 

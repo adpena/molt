@@ -30,6 +30,9 @@ from molt.type_facts import normalize_type_hint
 if TYPE_CHECKING:
     from molt.type_facts import TypeFacts
 
+SIMPLE_IR_CONTRACT_NAME = "molt.simple_ir"
+SIMPLE_IR_CONTRACT_VERSION = 1
+
 
 @dataclass
 class MoltValue:
@@ -4479,11 +4482,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         metadata={"code_id": code_id},
                     )
                 )
+            fn_ptr_arity = (
+                len(posonly_params)
+                + len(pos_or_kw_params)
+                + len(kwonly_params)
+                + (1 if vararg is not None else 0)
+                + (1 if varkw is not None else 0)
+            )
             if fn_ptr_symbol is not None:
                 self.emit(
                     MoltOp(
                         kind="FN_PTR_CODE_SET",
                         args=[fn_ptr_symbol, code_val],
+                        metadata={"arity": fn_ptr_arity},
                         result=MoltValue("none"),
                     )
                 )
@@ -4492,6 +4503,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     MoltOp(
                         kind="FN_PTR_CODE_SET",
                         args=[poll_fn_symbol, code_val],
+                        metadata={"arity": fn_ptr_arity},
                         result=MoltValue("none"),
                     )
                 )
@@ -8310,6 +8322,41 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="LIST_FROM_RANGE", args=[start, stop, step], result=res))
         return res
 
+    def _emit_range_list_repeat(
+        self, item: MoltValue, start: MoltValue, stop: MoltValue, step: MoltValue
+    ) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint="list")
+        self.emit(
+            MoltOp(
+                kind="LIST_REPEAT_RANGE",
+                args=[item, start, stop, step],
+                result=res,
+            )
+        )
+        if item.type_hint in {"int", "float", "str", "bytes", "bytearray", "bool"}:
+            if self.current_func_name == "molt_main":
+                self.global_elem_hints[res.name] = item.type_hint
+            else:
+                self.container_elem_hints[res.name] = item.type_hint
+        return res
+
+    def _emit_bytearray_fill_range(
+        self,
+        target: MoltValue,
+        start: MoltValue,
+        stop: MoltValue,
+        fill_byte: MoltValue,
+    ) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint="int")
+        self.emit(
+            MoltOp(
+                kind="BYTEARRAY_FILL_RANGE",
+                args=[target, start, stop, fill_byte],
+                result=res,
+            )
+        )
+        return res
+
     def _match_simple_range_list_comp(
         self, node: ast.ListComp
     ) -> tuple[MoltValue, MoltValue, MoltValue] | None:
@@ -8327,6 +8374,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return None
         start, stop, step, _ = parsed
         return start, stop, step
+
+    def _match_simple_range_constant_list_comp(
+        self, node: ast.ListComp
+    ) -> tuple[MoltValue, MoltValue, MoltValue, MoltValue] | None:
+        if len(node.generators) != 1:
+            return None
+        comp = node.generators[0]
+        if comp.is_async or comp.ifs:
+            return None
+        if not isinstance(comp.target, ast.Name):
+            return None
+        parsed = self._parse_range_call(comp.iter)
+        if parsed is None:
+            return None
+        if not isinstance(node.elt, ast.Constant):
+            return None
+        item = self.visit(node.elt)
+        if item is None:
+            return None
+        start, stop, step, _ = parsed
+        return item, start, stop, step
 
     def _emit_list_from_iter(self, iterable: MoltValue) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="list")
@@ -9405,6 +9473,78 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return None
         return index_name, bound.value, node.body[:-1]
 
+    def _match_counted_while_name_bound(
+        self, node: ast.While
+    ) -> tuple[str, MoltValue, list[ast.stmt]] | None:
+        if node.orelse:
+            return None
+        if not isinstance(node.test, ast.Compare):
+            return None
+        if len(node.test.ops) != 1 or not isinstance(node.test.ops[0], ast.Lt):
+            return None
+        if not isinstance(node.test.left, ast.Name):
+            return None
+        if len(node.test.comparators) != 1:
+            return None
+        bound_expr = node.test.comparators[0]
+        if not isinstance(bound_expr, ast.Name):
+            return None
+        if not node.body:
+            return None
+        index_name = node.test.left.id
+        incr_stmt = node.body[-1]
+        if not self._is_unit_increment(incr_stmt, index_name):
+            return None
+        body = node.body[:-1]
+        assigned = self._collect_assigned_names(body)
+        if index_name in assigned or bound_expr.id in assigned:
+            return None
+        bound_val = self._load_local_value(bound_expr.id)
+        if bound_val is None:
+            return None
+        return index_name, bound_val, body
+
+    def _try_emit_counted_while_bytearray_fill(
+        self, index_name: str, bound: int | MoltValue, body: list[ast.stmt]
+    ) -> bool:
+        if len(body) != 1:
+            return False
+        stmt = body[0]
+        if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
+            return False
+        target = stmt.targets[0]
+        if not isinstance(target, ast.Subscript):
+            return False
+        if not isinstance(target.value, ast.Name):
+            return False
+        target_container = self._load_local_value(target.value.id)
+        if target_container is None or target_container.type_hint != "bytearray":
+            return False
+        index_expr = target.slice
+        if not isinstance(index_expr, ast.Name) or index_expr.id != index_name:
+            return False
+        if not (
+            isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, int)
+        ):
+            return False
+        fill_byte = self.visit(stmt.value)
+        if fill_byte is None:
+            return False
+        start = self._load_local_value(index_name)
+        if start is None:
+            start = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=start))
+        if isinstance(bound, MoltValue):
+            stop = bound
+        else:
+            stop = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[bound], result=stop))
+        final_index = self._emit_bytearray_fill_range(
+            target_container, start, stop, fill_byte
+        )
+        self._store_local_value(index_name, final_index)
+        return True
+
     def _match_counted_while_sum(
         self, index_name: str, body: list[ast.stmt]
     ) -> str | None:
@@ -9547,7 +9687,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return False
 
     def _emit_counted_while(
-        self, index_name: str, bound: int, body: list[ast.stmt]
+        self, index_name: str, bound: int | MoltValue, body: list[ast.stmt]
     ) -> None:
         start = self._load_local_value(index_name)
         if start is None:
@@ -9555,8 +9695,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="CONST", args=[0], result=start))
         one = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[1], result=one))
-        stop = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[bound], result=stop))
+        if isinstance(bound, MoltValue):
+            stop = bound
+        else:
+            stop = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[bound], result=stop))
         guard_map = self._emit_hoisted_loop_guards(body)
         self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
         idx = MoltValue(self.next_var(), type_hint="int")
@@ -10290,6 +10433,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if simple_range is not None:
                 start, stop, step = simple_range
                 return self._emit_range_list(start, stop, step)
+            simple_range_repeat = self._match_simple_range_constant_list_comp(node)
+            if simple_range_repeat is not None:
+                item, start, stop, step = simple_range_repeat
+                return self._emit_range_list_repeat(item, start, stop, step)
         genexp = ast.GeneratorExp(elt=node.elt, generators=node.generators)
         gen_val = self.visit(genexp)
         if gen_val is None:
@@ -22429,10 +22576,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.emit(MoltOp(kind="CONST", args=[final_index], result=idx_res))
                     self._store_local_value(index_name, idx_res)
                     return None
+            if self._try_emit_counted_while_bytearray_fill(index_name, bound, body):
+                return None
             assigned = self._collect_assigned_names(node.body)
             for name in sorted(assigned):
                 self._box_local(name)
             self._emit_counted_while(index_name, bound, body)
+            return None
+        counted_name_bound = (
+            None
+            if break_name is not None
+            else self._match_counted_while_name_bound(node)
+        )
+        if counted_name_bound is not None and not self.is_async():
+            index_name, bound_val, body = counted_name_bound
+            if self._try_emit_counted_while_bytearray_fill(index_name, bound_val, body):
+                return None
+            assigned = self._collect_assigned_names(node.body)
+            for name in sorted(assigned):
+                self._box_local(name)
+            self._emit_counted_while(index_name, bound_val, body)
             return None
         assigned = self._collect_assigned_names(node.body)
         assigned |= self._collect_namedexpr_names(node.test)
@@ -26970,10 +27133,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             elif op.kind == "FN_PTR_CODE_SET":
                 func_name, code_val = op.args
+                arity = 0
+                if op.metadata and "arity" in op.metadata:
+                    arity = int(op.metadata["arity"])
                 json_ops.append(
                     {
                         "kind": "fn_ptr_code_set",
                         "s_value": func_name,
+                        "value": arity,
                         "args": [code_val.name],
                     }
                 )
@@ -28108,6 +28275,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "list_from_range",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "LIST_REPEAT_RANGE":
+                json_ops.append(
+                    {
+                        "kind": "list_repeat_range",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "BYTEARRAY_FILL_RANGE":
+                json_ops.append(
+                    {
+                        "kind": "bytearray_fill_range",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }
@@ -29872,6 +30055,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 allow_hot_promotion=False,
             )
 
+        # Comprehension lowering emits synthetic generator helper functions
+        # (`__genexpr_`, `__listcomp_`, etc.). Keep them on the conservative
+        # tier until release-lane optimizer regressions are fully eliminated.
+        if (
+            "__genexpr_" in function_name
+            or "__listcomp_" in function_name
+            or "__setcomp_" in function_name
+            or "__dictcomp_" in function_name
+        ):
+            return MidendTierClassification(
+                tier="C",
+                source="comprehension_safety_default",
+                allow_hot_promotion=False,
+            )
+
         module_name = self.module_name or ""
         tier_a_prefixes = self._midend_csv_tokens(
             os.getenv("MOLT_MIDEND_TIER_A_MODULE_PREFIXES", "")
@@ -30473,6 +30671,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "SET_ATTR",
             "STORE_INDEX",
             "SET_INDEX",
+            "BYTEARRAY_FILL_RANGE",
             "LIST_APPEND",
             "LIST_EXTEND",
             "LIST_POP",
@@ -30678,6 +30877,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "LIST_REVERSE",
         }:
             return {"list", "indexable"}
+        if op.kind == "BYTEARRAY_FILL_RANGE":
+            return {"indexable"}
         if op.kind in {
             "STORE_ATTR",
             "SET_ATTR",
@@ -31715,6 +31916,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if isinstance(value, MoltValue):
             out.add(value.name)
             return
+        if isinstance(value, str):
+            if self._looks_like_value_name_token(value):
+                out.add(value)
+            return
         if isinstance(value, list):
             for item in value:
                 self._collect_arg_value_names(item, out)
@@ -31727,6 +31932,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             for key, item in value.items():
                 self._collect_arg_value_names(key, out)
                 self._collect_arg_value_names(item, out)
+
+    @staticmethod
+    def _looks_like_value_name_token(value: str) -> bool:
+        if value in {"none", "True", "False"}:
+            return False
+        if value == "self":
+            return True
+        if value.startswith("v") and value[1:].isdigit():
+            return True
+        return value.startswith("__molt_")
 
     def _compute_block_use_def(self, ops: list[MoltOp]) -> tuple[set[str], set[str]]:
         use: set[str] = set()
@@ -31765,12 +31980,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return missing
 
     def _infer_predefined_value_names(self, ops: list[MoltOp]) -> set[str]:
-        used: set[str] = set()
-        for op in ops:
-            for arg in op.args:
-                self._collect_arg_value_names(arg, used)
-        defined = self._collect_defined_value_names(ops)
-        return used - defined
+        # Predefined values must be limited to true function-entry bindings
+        # (params/closure params). Inferring from `used - defined` can hide
+        # optimizer-introduced undefined-value bugs and let invalid IR pass.
+        function_info = self.funcs_map.get(self._active_midend_function_name)
+        if not function_info:
+            return set()
+        params = function_info.get("params", [])
+        return {
+            name for name in params if isinstance(name, str) and name and name != "none"
+        }
 
     def _verify_definite_assignment_in_ops(
         self,
@@ -31878,11 +32097,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         continue
                     def_idx = definition_index.get(name)
                     if def_idx is None:
-                        # Value is used but has no definition at all — if it
-                        # was originally a MISSING sentinel that got removed,
-                        # flag this as a failure.
-                        if name in missing_value_defs:
-                            failures.append((op_idx, op.kind, name))
+                        # Any non-predefined value used without a definition
+                        # is invalid IR, regardless of provenance.
+                        failures.append((op_idx, op.kind, name))
                         continue
                     def_block = definition_block[name]
                     if def_block not in cfg.dominators.get(block_id, set()):
@@ -35236,7 +35453,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             add_degrade_event(
                 "fixed_point_round_cap",
                 "fixed_point_exit",
-                "accept_last_verified_round",
+                "fallback_to_pre_midend_ops",
                 value=max_rounds,
             )
             degraded = True
@@ -35253,6 +35470,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "midend deterministic fixed-point failed to converge within "
                     f"{max_rounds} rounds for {self._active_midend_function_name}"
                 )
+            rewritten_ops = validated_ops
 
         if enable_idempotence_probe:
             probe_ops = rewritten_ops
@@ -35271,13 +35489,28 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if probe_ops != rewritten_ops:
                 self.midend_stats["fixed_point_fail_fast"] += 1
                 if not hard_fail_on_non_convergence:
-                    add_degrade_event(
-                        "idempotence_probe_mismatch",
-                        "idempotence_probe",
-                        "accept_probe_ops",
-                    )
                     degraded = True
-                    rewritten_ops = probe_ops
+                    probe_predefined = self._infer_predefined_value_names(probe_ops)
+                    probe_failures = self._verify_definite_assignment_in_ops(
+                        probe_ops,
+                        predefined_value_names=probe_predefined,
+                    )
+                    if probe_failures:
+                        add_degrade_event(
+                            "idempotence_probe_invalid_ir",
+                            "idempotence_probe",
+                            "retain_last_verified_round",
+                            value={"failure_count": len(probe_failures)},
+                        )
+                        self.midend_stats["invalid_unbound_rollback"] += 1
+                        self.midend_stats["invalid_unbound_uses"] += len(probe_failures)
+                    else:
+                        add_degrade_event(
+                            "idempotence_probe_mismatch",
+                            "idempotence_probe",
+                            "accept_probe_ops",
+                        )
+                        rewritten_ops = probe_ops
                 else:
                     self._record_midend_policy_outcome(
                         policy=policy,
@@ -35290,6 +35523,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "midend idempotence check failed after convergence for "
                         f"{self._active_midend_function_name}"
                     )
+
+        final_predefined = self._infer_predefined_value_names(rewritten_ops)
+        final_missing_uses = self._find_unbound_value_uses(
+            rewritten_ops, params=tuple(final_predefined)
+        )
+        if final_missing_uses:
+            add_degrade_event(
+                "final_unbound_values",
+                "midend_exit",
+                "fallback_to_pre_midend_ops",
+                value={"failure_count": len(final_missing_uses)},
+            )
+            degraded = True
+            self.midend_stats["invalid_unbound_rollback"] += 1
+            self.midend_stats["invalid_unbound_uses"] += len(final_missing_uses)
+            rewritten_ops = validated_ops
 
         self.midend_stats["sccp_branch_prunes"] += total_branch_prunes
         self.midend_stats["loop_edge_thread_prunes"] += (
@@ -35394,6 +35643,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         safe_ops = self._canonicalize_control_aware_ops_impl(
             ops, allow_cross_block_const_dedupe=False
         )
+        safe_failures = self._verify_definite_assignment_in_ops(
+            safe_ops, predefined_value_names=predefined
+        )
+        if safe_failures:
+            self.midend_stats["invalid_unbound_rollback"] += 1
+            self.midend_stats["invalid_unbound_uses"] += len(safe_failures)
+            return ops
         return safe_ops
 
     def _coalesce_check_exception_ops(self, ops: list[MoltOp]) -> list[MoltOp]:
@@ -35887,7 +36143,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 break
         self._maybe_report_midend_stats()
-        return {"functions": funcs_json}
+        return {
+            "ir_contract_name": SIMPLE_IR_CONTRACT_NAME,
+            "ir_contract_version": SIMPLE_IR_CONTRACT_VERSION,
+            "functions": funcs_json,
+        }
 
 
 def compile_to_tir(

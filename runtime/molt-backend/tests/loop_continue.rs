@@ -12,6 +12,10 @@ fn op(kind: &str) -> OpIR {
         out: None,
         fast_int: None,
         task_kind: None,
+        container_type: None,
+        stack_eligible: None,
+        fast_float: None,
+        type_hint: None,
     }
 }
 

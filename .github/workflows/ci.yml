@@ -41,6 +41,9 @@ jobs:
         run: uv run python tools/check_core_lane_lowering.py --manifest tests/differential/basic/CORE_TESTS.txt
       - name: Molt IR inventory + semantic lane gate
         run: uv run python tools/check_molt_ir_ops.py
+      - name: Dynamic execution policy gate
+        if: matrix.python-version == '3.12'
+        run: uv run --python 3.12 python3 tools/check_dynamic_policy.py
       - name: Type check
         run: uv run ty check src
       - name: Verified subset manifest
@@ -171,7 +174,7 @@ jobs:
       - name: HashMap determinism lint
         if: matrix.python-version == '3.12'
         run: |
-          uv run --python 3.12 python3 tools/check_determinism.py
+          uv run --python 3.12 python3 tools/check_determinism.py --strict
       - name: Django offload smoke
         if: matrix.python-version == '3.12'
         run: |
@@ -180,18 +183,18 @@ jobs:
       - name: Runtime feedback gate (G6)
         if: matrix.python-version == '3.12'
         run: |
+          set -euo pipefail
           mkdir -p target
           PYTHONPATH=src MOLT_PROFILE=1 MOLT_RUNTIME_FEEDBACK=1 \
           MOLT_RUNTIME_FEEDBACK_FILE=target/molt_runtime_feedback_gate.json \
-            uv run --python 3.12 python3 -m molt.cli run --profile dev examples/hello.py || true
+            uv run --python 3.12 python3 -m molt.cli run --profile dev examples/hello.py
           if [ ! -f tools/check_runtime_feedback.py ]; then
-            echo "SKIP: tools/check_runtime_feedback.py not found"
-            exit 0
+            echo "FAIL: tools/check_runtime_feedback.py not found"
+            exit 1
           fi
           if [ ! -f target/molt_runtime_feedback_gate.json ]; then
-            echo "WARNING: Runtime feedback file not produced (runtime may have failed)"
-            echo "Non-blocking — tracked as known issue"
-            exit 0
+            echo "FAIL: Runtime feedback file not produced"
+            exit 1
           fi
           uv run --python 3.12 python3 tools/check_runtime_feedback.py \
             target/molt_runtime_feedback_gate.json

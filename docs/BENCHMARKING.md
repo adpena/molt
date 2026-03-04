@@ -17,6 +17,15 @@ If you build standalone WASM artifacts for perf validation, use
 `uv run --python 3.12 python3 -m molt.cli build --target wasm --require-linked`
 to ensure only linked output is produced.
 Use `tools/bench_wasm.py --require-linked` to fail fast when linking is unavailable.
+WASM harness compiles also support `--build-profile {dev,release}` (default:
+`release`) and `--build-timeout-sec <seconds>` for bounded compile lanes.
+For runner policy, `tools/bench_wasm.py` defaults to throughput mode (V8 tiering
+and parallel compile enabled). Use `--node-deterministic` (or
+`MOLT_WASM_NODE_DETERMINISTIC=1`) to force deterministic Node flags
+(`--no-wasm-tier-up`, `--no-wasm-dynamic-tiering`,
+`--wasm-num-compilation-tasks=1`).
+Note: with the current per-sample process-spawn harness, tiering can inflate
+short benchmark timings because each sample repays JIT startup.
 For targeted wasm failure triage, use benchmark filtering plus control-runner checks:
 
 ```bash
@@ -39,25 +48,29 @@ It also records wasm import-surface metrics per benchmark
 
 ```bash
 # Basic run
-uv run --python 3.14 python3 tools/bench.py
+uv run --python 3.12 python3 tools/bench.py
 
 # One-off script (CLI wrapper or direct harness)
 molt bench --script path/to/script.py
-uv run --python 3.14 python3 tools/bench.py --script path/to/script.py
+uv run --python 3.12 python3 tools/bench.py --script path/to/script.py
 
 # Record results to JSON (standard for PRs)
-uv run --python 3.14 python3 tools/bench.py --json-out bench/results/my_change.json
+uv run --python 3.12 python3 tools/bench.py --json-out bench/results/my_change.json
 
 # Isolated dynamic-builtin micro-slices (not part of core KPI suite)
-uv run --python 3.14 python3 tools/bench.py --dynamic-builtin-only \
+uv run --python 3.12 python3 tools/bench.py --dynamic-builtin-only \
   --json-out bench/results/dynamic_builtins.json
 
 # Increase warmup runs (default: 1, or 0 for --smoke)
-uv run --python 3.14 python3 tools/bench.py --warmup 2
+uv run --python 3.12 python3 tools/bench.py --warmup 2
 
-# Comparison vs CPython
-uv run --python 3.14 python3 tools/bench.py --compare cpython
+# Keep only CPython + Codon lanes
+uv run --python 3.12 python3 tools/bench.py --no-pypy --no-nuitka --no-pyodide
 ```
+
+Notes:
+- `tools/bench.py` does not expose `--compare`; lane selection is via `--no-cpython/--no-pypy/--no-codon/--no-nuitka/--no-pyodide`.
+- Molt artifacts in `tools/bench.py` are built through `molt.cli build` and support `--build-profile {dev,release}` (default: `dev`) and `--build-timeout-sec <seconds>`.
 
 ## Native Baselines (Optional)
 
@@ -83,7 +96,7 @@ linked output when using `--linked`), generate the
 combined report:
 
 ```bash
-uv run --python 3.14 python3 tools/bench_report.py
+uv run --python 3.12 python3 tools/bench_report.py
 ```
 
 This writes `docs/benchmarks/bench_summary.md` by default. Commit the report alongside
@@ -180,6 +193,16 @@ We enforce strict "Performance Gates" in CI. If a PR causes a regression beyond 
 | Matrix/Buffer | 5% | `matmul`, buffer access |
 | General Loops | 10% | CSV parsing, deep loops |
 
+CI perf/throughput gate wiring (native smoke lane):
+- `tools/bench.py --smoke --no-pypy --baseline bench/baseline.json --max-regression 0.10`
+- `tools/bench_diff.py` threshold gate on `molt_cpython_ratio`, `molt_time_s`, and `molt_build_s`
+- `tools/check_compile_throughput.py --metric molt_build_s --max-regression-pct 15`
+
+`tools/check_compile_throughput.py` default missing-metric behavior:
+- If the selected metric is missing in baseline/current JSON, or benchmark keys do not align, it fails by default (exit `1`).
+- Use `--allow-missing-metrics` to downgrade these to warnings and compare only overlap.
+- If there are no common benchmark names after overlap filtering, it warns and exits `0`.
+
 ## Lock-Sensitive Benchmarks
 
 When changing the GIL, pointer registry, handle resolution, scheduler locks, or
@@ -247,7 +270,7 @@ For production-grade native benchmark runs, enable the native-arch profile:
 
 ```bash
 MOLT_PERF_PROFILE=native-arch \
-uv run --python 3.14 python3 tools/bench.py --compare codon
+uv run --python 3.12 python3 tools/bench.py --no-pypy --no-nuitka --no-pyodide
 ```
 
 Equivalent toggle: `MOLT_NATIVE_ARCH_PERF=1`.

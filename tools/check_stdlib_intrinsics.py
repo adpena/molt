@@ -799,13 +799,13 @@ def _scan_file(path: Path) -> tuple[list[str], tuple[str, ...], str, bool]:
 
     if not is_registry_file and "_molt_intrinsics" in code_text:
         errors.append(
-            "Direct access to _molt_intrinsics is forbidden; use stdlib/_intrinsics.py."
+            "Direct access to _molt_intrinsics is forbidden; use _intrinsics.py loader APIs."
         )
 
     has_intrinsics_import = bool(INTRINSICS_IMPORT_RE.search(text))
     if FORBIDDEN_MOLT_INTRINSICS_RE.search(text):
         errors.append(
-            "Importing molt.intrinsics in stdlib is forbidden; use stdlib/_intrinsics.py."
+            "Importing molt.intrinsics in stdlib is forbidden; use _intrinsics.py loader APIs."
         )
 
     if not is_registry_file:
