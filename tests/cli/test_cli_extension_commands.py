@@ -4,6 +4,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -89,6 +90,52 @@ def _write_extension_scan_project(project_root: Path) -> None:
                 "[tool.molt.extension]",
                 'module = "demoext"',
                 'sources = ["src/demoext.c"]',
+                'capabilities = ["fs.read"]',
+                'molt_c_api_version = "1"',
+                "",
+            ]
+        )
+    )
+
+
+def _write_extension_scan_directory_project(project_root: Path) -> None:
+    src_dir = project_root / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "alpha.c").write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "int alpha(void) {",
+                "    (void)PyLong_FromLong;",
+                "    (void)PyObject_Vectorcall;",
+                "    return 0;",
+                "}",
+                "",
+            ]
+        )
+    )
+    (src_dir / "beta.c").write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "int beta(void) {",
+                "    (void)PyObject_Vectorcall;",
+                "    return 0;",
+                "}",
+                "",
+            ]
+        )
+    )
+    (project_root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "scan-dir-ext"',
+                'version = "0.1.0"',
+                "",
+                "[tool.molt.extension]",
+                'module = "demoext"',
+                'sources = ["src"]',
                 'capabilities = ["fs.read"]',
                 'molt_c_api_version = "1"',
                 "",
@@ -250,6 +297,103 @@ def test_extension_scan_fail_on_missing_returns_error(tmp_path: Path, capsys) ->
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "error"
     assert "PyObject_Vectorcall" in payload["data"]["missing_symbols"]
+
+
+def test_extension_scan_supports_directory_sources(tmp_path: Path, capsys) -> None:
+    project_root = tmp_path / "scanproj_dir"
+    project_root.mkdir()
+    _write_extension_scan_directory_project(project_root)
+
+    rc = cli.extension_scan(
+        project=str(project_root),
+        fail_on_missing=True,
+        json_output=True,
+        verbose=False,
+    )
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    data = payload["data"]
+    assert data["source_count"] == 2
+    assert data["missing_symbol_frequency"]["PyObject_Vectorcall"] == 2
+    assert data["top_missing_symbols"][0] == {
+        "symbol": "PyObject_Vectorcall",
+        "file_count": 2,
+    }
+    assert data["coverage_ratio"] < 1.0
+
+
+def test_extension_scan_supports_tar_archive_sources(
+    tmp_path: Path, capsys
+) -> None:
+    archive_path = tmp_path / "demoext.tar.gz"
+    archive_source = tmp_path / "demoext.c"
+    archive_source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "int demo(void) {",
+                "    (void)PyLong_FromLong;",
+                "    (void)PyObject_Vectorcall;",
+                "    return 0;",
+                "}",
+                "",
+            ]
+        )
+    )
+    with tarfile.open(archive_path, "w:gz") as tf:
+        tf.add(archive_source, arcname="pkg/demoext.c")
+
+    rc = cli.extension_scan(
+        project=str(tmp_path),
+        sources=[str(archive_path)],
+        fail_on_missing=True,
+        json_output=True,
+        verbose=False,
+    )
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    data = payload["data"]
+    archive_label = f"{archive_path}!pkg/demoext.c"
+    assert data["source_count"] == 1
+    assert "PyLong_FromLong" in data["supported_symbols"]
+    assert "PyObject_Vectorcall" in data["missing_symbols"]
+    assert data["missing_symbol_frequency"]["PyObject_Vectorcall"] == 1
+    assert archive_label in data["required_by_file"]
+
+
+def test_extension_scan_supports_zip_archive_sources(
+    tmp_path: Path, capsys
+) -> None:
+    archive_path = tmp_path / "demoext.zip"
+    source_text = "\n".join(
+        [
+            "#include <Python.h>",
+            "int demo(void) {",
+            "    (void)PyLong_FromLong;",
+            "    return 0;",
+            "}",
+            "",
+        ]
+    )
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("pkg/demoext.c", source_text)
+
+    rc = cli.extension_scan(
+        project=str(tmp_path),
+        sources=[str(archive_path)],
+        fail_on_missing=True,
+        json_output=True,
+        verbose=False,
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    data = payload["data"]
+    archive_label = f"{archive_path}!pkg/demoext.c"
+    assert data["source_count"] == 1
+    assert data["missing_symbols"] == []
+    assert archive_label in data["required_by_file"]
+    assert data["coverage_ratio"] == 1.0
 
 
 def test_extension_scan_numpy_surface_symbols_supported(tmp_path: Path, capsys) -> None:
