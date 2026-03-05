@@ -27,7 +27,7 @@ typedef void (PyUFunc_MaskedStridedInnerLoopFunc)(
     char *maskptr,
     npy_intp mask_stride,
     npy_intp count,
-    void *innerloopdata
+    NpyAuxData *innerloopdata
 );
 
 struct _tagPyUFuncObject;
@@ -105,8 +105,6 @@ static inline int PyUFunc_ImportUFuncAPI(void) {
     return 0;
 }
 
-#define PyUFunc_FromFuncAndData(...) _molt_numpy_unavailable_obj("PyUFunc_FromFuncAndData")
-#define PyUFunc_FromFuncAndDataAndSignature(...) _molt_numpy_unavailable_obj("PyUFunc_FromFuncAndDataAndSignature")
 #define PyUFunc_FromFuncAndDataAndSignatureAndIdentity(...) _molt_numpy_unavailable_obj("PyUFunc_FromFuncAndDataAndSignatureAndIdentity")
 #define PyUFunc_RegisterLoopForType(...) _molt_numpy_unavailable_i32("PyUFunc_RegisterLoopForType")
 #define PyUFunc_RegisterLoopForDescr(...) _molt_numpy_unavailable_i32("PyUFunc_RegisterLoopForDescr")
@@ -117,8 +115,6 @@ static inline int PyUFunc_ImportUFuncAPI(void) {
 #define PyUFunc_AddWrappingLoop(...) _molt_numpy_unavailable_i32("PyUFunc_AddWrappingLoop")
 #define PyUFunc_DefaultTypeResolver(...) _molt_numpy_unavailable_i32("PyUFunc_DefaultTypeResolver")
 #define PyUFunc_ValidateCasting(...) _molt_numpy_unavailable_i32("PyUFunc_ValidateCasting")
-#define PyArrayMethod_TranslateGivenDescriptors(...) _molt_numpy_unavailable_i32("PyArrayMethod_TranslateGivenDescriptors")
-#define PyArrayMethod_TranslateLoopDescriptors(...) _molt_numpy_unavailable_i32("PyArrayMethod_TranslateLoopDescriptors")
 
 static inline int PyUFunc_GiveFloatingpointErrors(const char *name, int fpe_errors) {
     (void)name;
