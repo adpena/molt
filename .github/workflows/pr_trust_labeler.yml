@@ -1,0 +1,114 @@
+name: PR Trust Labeler
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+jobs:
+  label-pr-trust:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply trusted/untrusted labels from author chain policy
+        uses: actions/github-script@v7
+        env:
+          TRUSTED_LOGINS: ${{ vars.MOLT_TRUSTED_PR_AUTHORS }}
+          TRUSTED_LABEL: ${{ vars.MOLT_TRUSTED_PR_LABEL }}
+          UNTRUSTED_LABEL: ${{ vars.MOLT_UNTRUSTED_PR_LABEL }}
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const normalize = (value) =>
+              String(value || "")
+                .split(",")
+                .map((entry) => entry.trim().toLowerCase())
+                .filter((entry) => entry.length > 0);
+
+            const allow = normalize(process.env.TRUSTED_LOGINS || "adpena,orchestration");
+            const trustedLabel = String(process.env.TRUSTED_LABEL || "trusted-pr").trim();
+            const untrustedLabel = String(process.env.UNTRUSTED_LABEL || "untrusted-pr").trim();
+            const matches = (candidate) =>
+              allow.some((token) => String(candidate || "").toLowerCase().includes(token));
+
+            const sameRepo =
+              String(pr.head?.repo?.full_name || "") ===
+              `${context.repo.owner}/${context.repo.repo}`;
+            const prAuthor = String(pr.user?.login || "").toLowerCase();
+            const prAuthorAllowed = matches(prAuthor);
+
+            const commits = await github.paginate(github.rest.pulls.listCommits, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+
+            const blockedCommits = [];
+            for (const commit of commits) {
+              const fields = [
+                commit.author?.login,
+                commit.commit?.author?.name,
+                commit.commit?.author?.email,
+                commit.commit?.committer?.name,
+                commit.commit?.committer?.email,
+              ].filter(Boolean);
+              const trusted = fields.some((field) => matches(field));
+              if (!trusted) {
+                blockedCommits.push(String(commit.sha || "").slice(0, 12));
+              }
+            }
+
+            const trusted = sameRepo && prAuthorAllowed && blockedCommits.length === 0;
+            const targetLabel = trusted ? trustedLabel : untrustedLabel;
+            const removeLabel = trusted ? untrustedLabel : trustedLabel;
+            const currentLabels = (pr.labels || []).map((label) =>
+              String(label?.name || "").trim()
+            );
+            const hasTarget = currentLabels.includes(targetLabel);
+            const hasRemove = currentLabels.includes(removeLabel);
+
+            core.info(
+              JSON.stringify(
+                {
+                  allow,
+                  pr: pr.number,
+                  trusted,
+                  targetLabel,
+                  removeLabel,
+                  sameRepo,
+                  prAuthor,
+                  prAuthorAllowed,
+                  blockedCommits,
+                },
+                null,
+                2
+              )
+            );
+
+            if (!hasTarget) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                labels: [targetLabel],
+              });
+            }
+
+            if (hasRemove) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  name: removeLabel,
+                });
+              } catch (error) {
+                if (error?.status !== 404) {
+                  throw error;
+                }
+              }
+            }
