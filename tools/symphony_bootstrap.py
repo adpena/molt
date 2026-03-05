@@ -320,6 +320,9 @@ def _sync_env_defaults(
         str(ext_root / "logs" / "symphony" / "durable_memory"),
     )
     merged.setdefault("MOLT_SYMPHONY_DURABLE_SYNC_SECONDS", "180")
+    merged.setdefault("MOLT_SYMPHONY_DSPY_ENABLE", "0")
+    merged.setdefault("MOLT_SYMPHONY_DSPY_MODEL", "openai/gpt-4.1-mini")
+    merged.setdefault("MOLT_SYMPHONY_DSPY_API_KEY_ENV", "OPENAI_API_KEY")
     preferred_quint_fallback = _default_quint_node_fallback()
     current_quint_fallback = str(merged.get("MOLT_QUINT_NODE_FALLBACK") or "").strip()
     if not current_quint_fallback or current_quint_fallback in {
@@ -578,6 +581,7 @@ def main(argv: list[str] | None = None) -> int:
             "LINEAR_API_KEY is still required in env file for direct GraphQL tracker access.",
             "lin CLI API key store is auto-seeded from LINEAR_API_KEY when lin is installed.",
             "If mcp_linear.auth_state is missing, run: codex mcp login linear",
+            "Optional DSPy routing is controlled by MOLT_SYMPHONY_DSPY_* env keys.",
         ],
     }
     print(json.dumps(output, indent=2, sort_keys=True))
