@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
+import pytest
+
 import tools.linear_hygiene as linear_hygiene
 
 
@@ -57,3 +62,31 @@ def test_infer_seed_metadata_fills_missing_source_from_manifest() -> None:
     assert metadata["source"] == "ROADMAP.md:123"
     assert metadata["priority"] == "P1"
     assert metadata["owner"] == "runtime"
+
+
+def test_run_formal_suite_warns_on_runtime_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "ok": False,
+        "checks": {
+            "quint": {"diagnostics": {"runtime_mismatch_detected": True}, "errors": []}
+        },
+    }
+    monkeypatch.setattr(
+        linear_hygiene.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=1,
+            stdout=json.dumps(payload),
+            stderr="",
+        ),
+    )
+    result = linear_hygiene._run_formal_suite("quint")
+    assert result["status"] == "warn"
+    assert "--quint" in result["command"]
+
+
+def test_run_formal_suite_rejects_invalid_mode() -> None:
+    with pytest.raises(RuntimeError):
+        linear_hygiene._run_formal_suite("invalid")
