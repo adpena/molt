@@ -50,6 +50,9 @@ static inline npy_intp _molt_pyarray_size(const PyArrayObject *array_obj) {
 #define PyArray_CDoubleDType PyArray_PyComplexDType
 #define PyArray_CLongDoubleDType PyArray_PyComplexDType
 #define PyArray_DefaultIntDType PyArray_PyLongDType
+#define PyArray_DoubleDType PyArray_PyFloatDType
+#define PyArray_DatetimeDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("object"))
+#define PyArray_FloatAbstractDType PyArray_PyFloatDType
 #define PyArray_Check(op) PyObject_TypeCheck((PyObject *)(op), &PyArray_Type)
 #define PyArray_CheckExact(op) PyObject_TypeCheck((PyObject *)(op), &PyArray_Type)
 #define PyArray_DescrCheck(op) PyObject_TypeCheck((PyObject *)(op), &PyArrayDescr_Type)
@@ -160,6 +163,10 @@ static inline int PyArray_IsScalar(PyObject *obj, PyTypeObject *cls) {
 
 #define PyArray_CheckScalar(obj) PyArray_IsScalar((obj), &PyGenericArrType_Type)
 #define PyArray_CheckAnyScalar(obj) (PyArray_CheckScalar((obj)) || PyBool_Check(obj) || PyLong_Check(obj) || PyFloat_Check(obj) || PyComplex_Check(obj) || PyBytes_Check(obj) || PyUnicode_Check(obj))
+
+static inline int PyArray_CheckAnyScalarExact(PyObject *obj) {
+    return PyArray_CheckAnyScalar(obj);
+}
 
 static inline PyArray_ArrFuncs *PyDataType_GetArrFuncs(const PyArray_Descr *descr) {
     (void)descr;
@@ -277,6 +284,111 @@ static inline int PyArray_BoolConverter(PyObject *obj, npy_bool *out) {
 
 static inline PyArray_DTypeMeta *PyArray_DTypeFromTypeNum(int typenum) {
     return _molt_numpy_dtype_from_typenum(typenum);
+}
+
+static inline int PyArray_AsTypeCopyConverter(
+    PyObject *obj,
+    NPY_ASTYPECOPYMODE *copyflag
+) {
+    if (copyflag == NULL) {
+        PyErr_SetString(PyExc_TypeError, "copyflag output pointer must not be NULL");
+        return 0;
+    }
+    if (obj == NULL || obj == Py_None) {
+        *copyflag = NPY_AS_TYPE_COPY_IF_NEEDED;
+        return 1;
+    }
+    if (PyLong_Check(obj)) {
+        *copyflag = (NPY_ASTYPECOPYMODE)PyLong_AsLongLong(obj);
+        return PyErr_Occurred() == NULL;
+    }
+    if (PyObject_IsTrue(obj) > 0) {
+        *copyflag = NPY_AS_TYPE_COPY_ALWAYS;
+        return 1;
+    }
+    if (PyErr_Occurred() != NULL) {
+        return 0;
+    }
+    *copyflag = NPY_AS_TYPE_COPY_IF_NEEDED;
+    return 1;
+}
+
+static inline int PyArray_DeviceConverterOptional(
+    PyObject *object,
+    NPY_DEVICE *device
+) {
+    if (device == NULL) {
+        PyErr_SetString(PyExc_TypeError, "device output pointer must not be NULL");
+        return 0;
+    }
+    if (object == NULL || object == Py_None) {
+        *device = NPY_DEVICE_CPU;
+        return 1;
+    }
+    if (!PyLong_Check(object)) {
+        PyErr_SetString(PyExc_TypeError, "device must be an integer or None");
+        return 0;
+    }
+    *device = (NPY_DEVICE)PyLong_AsLongLong(object);
+    return PyErr_Occurred() == NULL;
+}
+
+static inline int PyArray_Converter(PyObject *object, PyObject **address) {
+    if (address == NULL) {
+        PyErr_SetString(PyExc_TypeError, "address output pointer must not be NULL");
+        return NPY_FAIL;
+    }
+    if (object != NULL && PyArray_Check(object)) {
+        *address = object;
+        Py_INCREF(object);
+        return NPY_SUCCEED;
+    }
+    *address = PyArray_EnsureAnyArray(object);
+    return *address != NULL ? NPY_SUCCEED : NPY_FAIL;
+}
+
+static inline int PyArray_CorrelatemodeConverter(
+    PyObject *object,
+    NPY_CORRELATEMODE *val
+) {
+    const char *text;
+    if (val == NULL) {
+        PyErr_SetString(PyExc_TypeError, "mode output pointer must not be NULL");
+        return NPY_FAIL;
+    }
+    if (PyUnicode_Check(object)) {
+        text = PyUnicode_AsUTF8(object);
+        if (text == NULL) {
+            return NPY_FAIL;
+        }
+        if (strcmp(text, "valid") == 0) {
+            *val = NPY_VALID;
+            return NPY_SUCCEED;
+        }
+        if (strcmp(text, "same") == 0) {
+            *val = NPY_SAME;
+            return NPY_SUCCEED;
+        }
+        if (strcmp(text, "full") == 0) {
+            *val = NPY_FULL;
+            return NPY_SUCCEED;
+        }
+        PyErr_SetString(PyExc_ValueError, "mode must be one of 'valid', 'same', or 'full'");
+        return NPY_FAIL;
+    }
+    if (!PyLong_Check(object)) {
+        PyErr_SetString(PyExc_TypeError, "convolve/correlate mode not understood");
+        return NPY_FAIL;
+    }
+    *val = (NPY_CORRELATEMODE)PyLong_AsLongLong(object);
+    if (PyErr_Occurred() != NULL) {
+        return NPY_FAIL;
+    }
+    if (*val < NPY_VALID || *val > NPY_FULL) {
+        PyErr_SetString(PyExc_ValueError, "integer convolve/correlate mode must be 0, 1, or 2");
+        return NPY_FAIL;
+    }
+    return NPY_SUCCEED;
 }
 
 static inline int PyArray_OrderConverter(PyObject *obj, NPY_ORDER *order_out) {
@@ -625,6 +737,23 @@ static inline PyObject *PyArray_FromAny(
     return obj;
 }
 
+static inline PyObject *PyArray_FromAny_int(
+    PyObject *op,
+    PyArray_Descr *in_descr,
+    PyArray_DTypeMeta *in_DType,
+    int min_depth,
+    int max_depth,
+    int flags,
+    PyObject *context,
+    int *was_scalar
+) {
+    (void)in_DType;
+    if (was_scalar != NULL) {
+        *was_scalar = PyArray_CheckAnyScalar(op) ? 1 : 0;
+    }
+    return PyArray_FromAny(op, in_descr, min_depth, max_depth, flags, context);
+}
+
 static inline PyObject *PyArray_FromInterface(PyObject *obj) {
     return PyArray_EnsureAnyArray(obj);
 }
@@ -693,6 +822,30 @@ static inline PyObject *PyArray_FromArray(
     }
     Py_INCREF((PyObject *)array_obj);
     return (PyObject *)array_obj;
+}
+
+static inline PyObject *PyArray_FromArrayAttr_int(
+    PyObject *op,
+    PyArray_Descr *descr,
+    int copy,
+    int *was_copied_by__array__
+) {
+    (void)descr;
+    (void)copy;
+    if (was_copied_by__array__ != NULL) {
+        *was_copied_by__array__ = 0;
+    }
+    return PyArray_EnsureAnyArray(op);
+}
+
+static inline PyObject *PyArray_FromArrayAttr(
+    PyObject *op,
+    PyArray_Descr *typecode,
+    PyObject *context
+) {
+    (void)typecode;
+    (void)context;
+    return PyArray_EnsureAnyArray(op);
 }
 
 static inline PyObject *PyArray_Return(PyArrayObject *array_obj) {
@@ -775,6 +928,17 @@ static inline PyObject *PyArray_Empty(
     (void)descr;
     (void)is_fortran;
     return _molt_numpy_unavailable_obj("PyArray_Empty");
+}
+
+static inline PyObject *PyArray_Empty_int(
+    int nd,
+    npy_intp const *dims,
+    PyArray_Descr *descr,
+    PyArray_DTypeMeta *dtype,
+    int is_f_order
+) {
+    (void)dtype;
+    return PyArray_Empty(nd, dims, descr, is_f_order);
 }
 
 #define PyArray_EMPTY(nd, dims, typenum, isfortran) \
@@ -916,6 +1080,46 @@ static inline int PyArray_DescrConverter(PyObject *obj, PyArray_Descr **out) {
 
 static inline int PyArray_DescrConverter2(PyObject *obj, PyArray_Descr **out) {
     return PyArray_DescrConverter(obj, out);
+}
+
+static inline int PyArray_DTypeOrDescrConverterRequired(
+    PyObject *obj,
+    npy_dtype_info *dt_info
+) {
+    if (dt_info == NULL) {
+        PyErr_SetString(PyExc_TypeError, "dtype info output pointer must not be NULL");
+        return 0;
+    }
+    dt_info->dtype = NULL;
+    dt_info->descr = NULL;
+    if (obj == NULL) {
+        PyErr_SetString(PyExc_TypeError, "dtype or descriptor must not be NULL");
+        return 0;
+    }
+    if (PyArray_DescrCheck(obj)) {
+        dt_info->descr = (PyArray_Descr *)obj;
+        Py_INCREF(obj);
+        dt_info->dtype = PyArray_DTypeFromTypeNum(dt_info->descr->type_num);
+        return 1;
+    }
+    dt_info->descr = PyArray_DescrFromTypeObject(obj);
+    if (dt_info->descr == NULL) {
+        return 0;
+    }
+    dt_info->dtype = PyArray_DTypeFromTypeNum(dt_info->descr->type_num);
+    return 1;
+}
+
+static inline PyArray_Descr *PyArray_DTypeFromObjectStringDiscovery(
+    PyObject *obj,
+    PyArray_Descr *last_dtype,
+    int string_type
+) {
+    (void)string_type;
+    if (last_dtype != NULL) {
+        return PyArray_DescrNew(last_dtype);
+    }
+    return PyArray_DescrFromScalar(obj);
 }
 
 static inline PyArray_Descr *PyArray_DescrNewByteorder(
@@ -1347,6 +1551,41 @@ static inline PyObject *PyArray_Ravel(PyArrayObject *array_obj, NPY_ORDER order)
     return PyArray_View(array_obj, NULL, NULL);
 }
 
+static inline npy_bool PyArray_EquivTypenums(int left, int right) {
+    return left == right;
+}
+
+static inline PyObject *PyArray_Flatten(PyArrayObject *a, NPY_ORDER order) {
+    return PyArray_Ravel(a, order);
+}
+
+static inline PyArray_DTypeMeta *PyArray_CommonDType(
+    PyArray_DTypeMeta *dtype1,
+    PyArray_DTypeMeta *dtype2
+) {
+    if (dtype1 == NULL || dtype2 == NULL) {
+        PyErr_SetString(PyExc_TypeError, "dtype pointers must not be NULL");
+        return NULL;
+    }
+    if (dtype1 == dtype2) {
+        Py_INCREF((PyObject *)dtype1);
+        return dtype1;
+    }
+    return (PyArray_DTypeMeta *)_molt_numpy_unavailable_obj("PyArray_CommonDType");
+}
+
+static inline PyArray_Descr *PyArray_CastToDTypeAndPromoteDescriptors(
+    npy_intp ndescr,
+    PyArray_Descr *descrs[],
+    PyArray_DTypeMeta *DType
+) {
+    (void)ndescr;
+    (void)descrs;
+    (void)DType;
+    return (PyArray_Descr *)_molt_numpy_unavailable_obj(
+        "PyArray_CastToDTypeAndPromoteDescriptors");
+}
+
 static inline PyObject *PyArray_Any(
     PyArrayObject *self,
     int axis,
@@ -1356,6 +1595,116 @@ static inline PyObject *PyArray_Any(
     (void)axis;
     (void)out;
     return _molt_numpy_unavailable_obj("PyArray_Any");
+}
+
+static inline PyObject *PyArray_CumSum(
+    PyArrayObject *self,
+    int axis,
+    int rtype,
+    PyArrayObject *out
+) {
+    (void)self;
+    (void)axis;
+    (void)rtype;
+    (void)out;
+    return _molt_numpy_unavailable_obj("PyArray_CumSum");
+}
+
+static inline PyObject *PyArray_CumProd(
+    PyArrayObject *self,
+    int axis,
+    int rtype,
+    PyArrayObject *out
+) {
+    (void)self;
+    (void)axis;
+    (void)rtype;
+    (void)out;
+    return _molt_numpy_unavailable_obj("PyArray_CumProd");
+}
+
+static inline PyObject *PyArray_GenericAccumulateFunction(
+    PyArrayObject *m1,
+    PyObject *op,
+    int axis,
+    int rtype,
+    PyArrayObject *out
+) {
+    (void)m1;
+    (void)op;
+    (void)axis;
+    (void)rtype;
+    (void)out;
+    return _molt_numpy_unavailable_obj("PyArray_GenericAccumulateFunction");
+}
+
+static inline PyObject *PyArray_Diagonal(
+    PyArrayObject *self,
+    int offset,
+    int axis1,
+    int axis2
+) {
+    (void)self;
+    (void)offset;
+    (void)axis1;
+    (void)axis2;
+    return _molt_numpy_unavailable_obj("PyArray_Diagonal");
+}
+
+static inline PyObject *PyArray_CheckFromAny_int(
+    PyObject *op,
+    PyArray_Descr *in_descr,
+    PyArray_DTypeMeta *in_DType,
+    int min_depth,
+    int max_depth,
+    int requirements,
+    PyObject *context
+) {
+    (void)in_DType;
+    return PyArray_CheckFromAny(
+        op, in_descr, min_depth, max_depth, requirements, context);
+}
+
+static inline int PyArray_ClearArray(PyArrayObject *arr) {
+    (void)arr;
+    return _molt_numpy_unavailable_i32("PyArray_ClearArray");
+}
+
+static inline int PyArray_ConvertMultiAxis(
+    PyObject *axis_in,
+    int ndim,
+    npy_bool *out_axis_flags
+) {
+    (void)axis_in;
+    (void)ndim;
+    (void)out_axis_flags;
+    return _molt_numpy_unavailable_i32("PyArray_ConvertMultiAxis");
+}
+
+static inline int PyArray_AssignZero(
+    PyArrayObject *dst,
+    PyArrayObject *wheremask
+) {
+    (void)dst;
+    (void)wheremask;
+    return _molt_numpy_unavailable_i32("PyArray_AssignZero");
+}
+
+static inline int PyArray_CopyAsFlat(
+    PyArrayObject *dst,
+    PyArrayObject *src,
+    NPY_ORDER order
+) {
+    (void)dst;
+    (void)src;
+    (void)order;
+    return _molt_numpy_unavailable_i32("PyArray_CopyAsFlat");
+}
+
+static inline int PyArray_AssignFromCache(PyArrayObject *self, void *cache) {
+    (void)self;
+    (void)cache;
+    return _molt_numpy_unavailable_i32("PyArray_AssignFromCache");
 }
 static inline double PyArray_GetPriority(PyObject *obj, double default_priority) {
     (void)obj;
