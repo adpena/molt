@@ -141,6 +141,10 @@ def _sync_env_defaults(
     if repo_url:
         merged.setdefault("MOLT_SOURCE_REPO_URL", repo_url)
 
+    merged.setdefault("MOLT_SYMPHONY_SYNC_REMOTE", "origin")
+    merged.setdefault("MOLT_SYMPHONY_SYNC_BRANCH", "main")
+    merged.setdefault("MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS", "adpena,symphony")
+
     if os.environ.get("LINEAR_API_KEY"):
         merged.setdefault("LINEAR_API_KEY", os.environ["LINEAR_API_KEY"])
 

@@ -138,6 +138,61 @@ def test_workspace_root_containment(tmp_path: Path) -> None:
         manager.ensure_workspace_cwd(Path("/tmp"))
 
 
+def test_run_before_run_ignores_git_sync_conflict(tmp_path: Path) -> None:
+    root = tmp_path / "ws"
+    config = build_runtime_config(
+        _workflow(
+            tmp_path,
+            {
+                "tracker": {
+                    "kind": "linear",
+                    "api_key": "token",
+                    "project_slug": "proj",
+                },
+                "workspace": {"root": str(root)},
+                "hooks": {
+                    "before_run": (
+                        'echo "error: Your local changes to the following files would be '
+                        'overwritten by merge" 1>&2; exit 1'
+                    )
+                },
+            },
+        )
+    )
+    manager = WorkspaceManager(config.workspace, config.hooks)
+    workspace = manager.create_for_issue("MT-11")
+
+    # Git-sync conflict should be ignored to avoid retry flicker loops.
+    manager.run_before_run(workspace.path)
+
+
+def test_run_before_run_raises_for_non_git_conflict_hook_failure(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "ws"
+    config = build_runtime_config(
+        _workflow(
+            tmp_path,
+            {
+                "tracker": {
+                    "kind": "linear",
+                    "api_key": "token",
+                    "project_slug": "proj",
+                },
+                "workspace": {"root": str(root)},
+                "hooks": {
+                    "before_run": 'echo "unexpected hook failure" 1>&2; exit 1',
+                },
+            },
+        )
+    )
+    manager = WorkspaceManager(config.workspace, config.hooks)
+    workspace = manager.create_for_issue("MT-12")
+
+    with pytest.raises(WorkspaceError):
+        manager.run_before_run(workspace.path)
+
+
 def test_tracker_project_slug_supports_comma_separated_values(tmp_path: Path) -> None:
     workflow = _workflow(
         tmp_path,

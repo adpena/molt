@@ -326,6 +326,11 @@ class OrchestratorState:
     codex_rate_limits: dict[str, Any] | None = None
     profiling: ProfilingStats = field(default_factory=ProfilingStats)
     manual_actions: list[dict[str, Any]] = field(default_factory=list)
+    suspension_kind: str | None = None
+    suspension_message: str | None = None
+    suspension_since_utc: datetime | None = None
+    suspension_resume_at_monotonic: float | None = None
+    suspension_auto_resume: bool = False
 
 
 def now_utc() -> datetime:

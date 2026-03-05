@@ -1,0 +1,113 @@
+name: PR Trust Gate
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  trusted-author-chain:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.pull_request.draft == false }}
+    steps:
+      - name: Enforce trusted PR author and commit chain
+        uses: actions/github-script@v7
+        env:
+          TRUSTED_LOGINS: ${{ vars.MOLT_TRUSTED_PR_AUTHORS }}
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const normalize = (value) =>
+              String(value || "")
+                .split(",")
+                .map((entry) => entry.trim().toLowerCase())
+                .filter((entry) => entry.length > 0);
+
+            const allow = normalize(process.env.TRUSTED_LOGINS || "adpena,symphony");
+            const matches = (candidate) =>
+              allow.some((token) => String(candidate || "").toLowerCase().includes(token));
+
+            const sameRepo =
+              String(pr.head?.repo?.full_name || "") ===
+              `${context.repo.owner}/${context.repo.repo}`;
+            const prAuthor = String(pr.user?.login || "").toLowerCase();
+            const prAuthorAllowed = matches(prAuthor);
+
+            const commits = await github.paginate(github.rest.pulls.listCommits, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+
+            const blockedCommits = [];
+            for (const commit of commits) {
+              const fields = [
+                commit.author?.login,
+                commit.commit?.author?.name,
+                commit.commit?.author?.email,
+                commit.commit?.committer?.name,
+                commit.commit?.committer?.email,
+              ].filter(Boolean);
+              const trusted = fields.some((field) => matches(field));
+              if (!trusted) {
+                blockedCommits.push({
+                  sha: String(commit.sha || "").slice(0, 12),
+                  author_login: commit.author?.login || null,
+                  author_name: commit.commit?.author?.name || null,
+                  author_email: commit.commit?.author?.email || null,
+                });
+              }
+            }
+
+            const commitsTrusted = blockedCommits.length === 0;
+            const pass = sameRepo && prAuthorAllowed && commitsTrusted;
+            core.info(
+              JSON.stringify(
+                {
+                  allow,
+                  sameRepo,
+                  prAuthor,
+                  prAuthorAllowed,
+                  commitsCount: commits.length,
+                  commitsTrusted,
+                  blockedCommits,
+                  pass,
+                },
+                null,
+                2
+              )
+            );
+
+            if (pass) {
+              return;
+            }
+
+            const helpfulMessage = [
+              "Thanks for the contribution. This repository is currently in a restricted trust mode.",
+              "",
+              "- PRs must originate from this repository (no forks).",
+              `- PR author and all commit authors must match trusted identities: ${allow.join(", ") || "adpena, symphony"}.`,
+              "",
+              "This PR has been closed automatically for now.",
+              "If this was expected, open a new PR from the trusted machine/identity and we can re-run the gate.",
+            ].join("\\n");
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body: helpfulMessage,
+            });
+
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              state: "closed",
+            });
+
+            core.setFailed("PR failed trust gate and was auto-closed.");

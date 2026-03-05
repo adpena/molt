@@ -677,7 +677,6 @@ _DASHBOARD_HTML = """<!doctype html>
         background: var(--danger-soft);
         border-radius: 10px;
         padding: 10px;
-        animation: fade-in 220ms ease-out;
       }
       .attention-item .head {
         display: flex;
@@ -824,7 +823,6 @@ _DASHBOARD_HTML = """<!doctype html>
       .event {
         border-bottom: 1px solid #2f2f2f;
         padding: 8px 0;
-        animation: fade-in 180ms ease-out;
       }
       .event:last-child {
         border-bottom: 0;
@@ -895,6 +893,60 @@ _DASHBOARD_HTML = """<!doctype html>
       .trace-summary {
         padding: 10px 16px;
         border-bottom: 1px solid #2b2b2b;
+        display: grid;
+        gap: 10px;
+      }
+      .trace-status-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .trace-status-pill {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 3px 10px;
+        font-size: 0.78rem;
+        font-weight: 700;
+        border: 1px solid #3b3b3b;
+        background: #161616;
+      }
+      .trace-status-pill.status-running {
+        border-color: #2f7f67;
+        background: rgba(27, 72, 58, 0.35);
+        color: #9fe6cb;
+      }
+      .trace-status-pill.status-retrying {
+        border-color: #7f6b3e;
+        background: rgba(84, 66, 30, 0.35);
+        color: #f4d39f;
+      }
+      .trace-status-pill.status-blocked {
+        border-color: #7f4a4a;
+        background: rgba(89, 40, 40, 0.35);
+        color: #f0b2b2;
+      }
+      .trace-summary-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(142px, 1fr));
+        gap: 8px;
+      }
+      .trace-stat {
+        border: 1px solid #2f2f2f;
+        border-radius: 9px;
+        background: #0d0d0d;
+        padding: 7px 8px;
+      }
+      .trace-stat .label {
+        color: var(--ink-soft);
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .trace-stat .value {
+        margin-top: 4px;
+        font-size: 0.82rem;
       }
       .trace-stream {
         padding: 10px 16px 16px;
@@ -906,14 +958,40 @@ _DASHBOARD_HTML = """<!doctype html>
       }
       .trace-event {
         border: 1px solid #2f2f2f;
+        border-left: 3px solid #444444;
         border-radius: 10px;
         background: #0f0f0f;
         padding: 8px 9px;
+      }
+      .trace-event.ok {
+        border-left-color: #3b8f74;
+      }
+      .trace-event.warn {
+        border-left-color: #8f7642;
+      }
+      .trace-event.danger {
+        border-left-color: #8f4a4a;
+      }
+      .trace-event.info {
+        border-left-color: #446a8f;
       }
       .trace-event .head {
         display: flex;
         justify-content: space-between;
         gap: 8px;
+      }
+      .trace-event .event-tags {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .trace-event .event-type {
+        border: 1px solid #333333;
+        border-radius: 999px;
+        padding: 2px 7px;
+        font-size: 0.69rem;
+        color: var(--ink-soft);
       }
       .trace-event .event-name {
         font-size: 0.8rem;
@@ -1222,7 +1300,7 @@ _DASHBOARD_HTML = """<!doctype html>
               <button id="trace-close-btn" type="button" class="secondary">Close</button>
             </div>
           </div>
-          <div id="trace-summary" class="trace-summary mono">No trace selected.</div>
+          <div id="trace-summary" class="trace-summary">No trace selected.</div>
           <div class="trace-stream">
             <div id="trace-events" class="trace-events">
               <div class="empty">Click an issue/agent pill to open live trace.</div>
@@ -1288,8 +1366,11 @@ _DASHBOARD_HTML = """<!doctype html>
       let dragPaneId = "";
       let latestState = {};
       const localActionStatus = new Map();
+      const pendingRetries = new Set();
       let traceIssueIdentifier = "";
       let tracePollTimer = null;
+      let traceFetchSerial = 0;
+      let latestGeneratedAt = "";
 
       function toObject(value) {
         return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -1790,26 +1871,34 @@ _DASHBOARD_HTML = """<!doctype html>
           .map((itemValue) => {
             const item = toObject(itemValue);
             const issueId = String(item.issue_identifier || item.issue_id || "unknown");
+            const isSystem = issueId.toUpperCase() === "SYSTEM";
             const running = toObject(runningByIssue.get(issueId));
             const retry = toObject(retryByIssue.get(issueId));
             const issueUrl = String(item.issue_url || running.url || retry.url || "");
             const issueLink = issueUrl
               ? `<a href="${escapeHtml(issueUrl)}" target="_blank" rel="noreferrer">Open Linear</a>`
               : "";
-            const inspectLink = `<a href="/api/v1/${encodeURIComponent(issueId)}" target="_blank" rel="noreferrer">Inspect JSON</a>`;
-            const traceButton = `<button type="button" class="agent-ref" data-agent-issue="${escapeHtml(
-              issueId
-            )}">Trace</button>`;
+            const inspectLink = isSystem
+              ? ""
+              : `<a href="/api/v1/${encodeURIComponent(issueId)}" target="_blank" rel="noreferrer">Inspect JSON</a>`;
+            const traceButton = isSystem
+              ? ""
+              : `<button type="button" class="agent-ref" data-agent-issue="${escapeHtml(
+                  issueId
+                )}">Trace</button>`;
             const localStatus = localActionStatus.get(issueId);
             const latestAction = toObject(latestActionByIssue.get(issueId));
+            const pending = pendingRetries.has(issueId);
             const statusText = localStatus
               ? `${localStatus.status} · ${localStatus.message}`
               : latestAction.action
                 ? `${latestAction.action}: ${latestAction.status || "updated"}`
                 : "";
-            const retryNowButton = `<button type="button" data-action="retry-now" data-issue="${escapeHtml(
-              issueId
-            )}">Retry now</button>`;
+            const retryNowButton = isSystem
+              ? ""
+              : `<button type="button" data-action="retry-now" data-issue="${escapeHtml(
+                  issueId
+                )}" ${pending ? "disabled" : ""}>${pending ? "Retrying..." : "Retry now"}</button>`;
             const extraSummary = [
               running.state ? `state: ${running.state}` : "",
               retry.attempt ? `retry attempt: ${retry.attempt}` : "",
@@ -1820,9 +1909,13 @@ _DASHBOARD_HTML = """<!doctype html>
             return `
               <div class="attention-item">
                 <div class="head">
-                  <button type="button" class="agent-ref mono" data-agent-issue="${escapeHtml(
-                    issueId
-                  )}">${escapeHtml(issueId)}</button>
+                  ${
+                    isSystem
+                      ? `<span class="mono">${escapeHtml(issueId)}</span>`
+                      : `<button type="button" class="agent-ref mono" data-agent-issue="${escapeHtml(
+                          issueId
+                        )}">${escapeHtml(issueId)}</button>`
+                  }
                   <span class="badge warn">${escapeHtml(item.kind || "attention")}</span>
                 </div>
                 <div class="msg">${escapeHtml(item.message || "")}</div>
@@ -2140,6 +2233,13 @@ _DASHBOARD_HTML = """<!doctype html>
 
       function renderState(state) {
         const safeState = toObject(state);
+        const generatedAt = String(safeState.generated_at || "");
+        if (generatedAt && latestGeneratedAt && generatedAt < latestGeneratedAt) {
+          return;
+        }
+        if (generatedAt) {
+          latestGeneratedAt = generatedAt;
+        }
         latestState = safeState;
         applyDashboardView();
         renderKpis(safeState);
@@ -2176,6 +2276,7 @@ _DASHBOARD_HTML = """<!doctype html>
 
       async function triggerRetryNow(issueIdentifier) {
         if (!issueIdentifier) return;
+        pendingRetries.add(issueIdentifier);
         localActionStatus.set(issueIdentifier, {
           status: "pending",
           message: "Submitting retry request...",
@@ -2203,9 +2304,13 @@ _DASHBOARD_HTML = """<!doctype html>
             message: payload.message || "Retry request accepted.",
             at: new Date().toISOString(),
           });
+          setStreamStatus("Retry request queued", "live");
           await fetchState();
         } catch (_err) {
           setStreamStatus("Retry-now action failed", "warn");
+        } finally {
+          pendingRetries.delete(issueIdentifier);
+          renderAttention(latestState);
         }
       }
 
@@ -2255,9 +2360,39 @@ _DASHBOARD_HTML = """<!doctype html>
         traceModal.classList.remove("open");
         traceModal.setAttribute("aria-hidden", "true");
         traceSubtitle.textContent = "Select an agent to inspect.";
-        traceSummary.textContent = "No trace selected.";
+        traceSummary.innerHTML = '<div class="empty">No trace selected.</div>';
         traceEvents.innerHTML =
           '<div class="empty">Click an issue/agent pill to open live trace.</div>';
+      }
+
+      function traceEventTone(eventName) {
+        const name = String(eventName || "").toLowerCase();
+        if (
+          name.includes("failed") ||
+          name.includes("error") ||
+          name.includes("cancel") ||
+          name.includes("timeout")
+        ) {
+          return "danger";
+        }
+        if (name.includes("token") || name.includes("rate") || name.includes("usage")) {
+          return "info";
+        }
+        if (name.includes("retry") || name.includes("input_required")) {
+          return "warn";
+        }
+        if (name.includes("complete") || name.includes("started")) {
+          return "ok";
+        }
+        return "warn";
+      }
+
+      function traceStatusClass(status) {
+        const norm = String(status || "unknown").toLowerCase();
+        if (norm.includes("run")) return "status-running";
+        if (norm.includes("retry")) return "status-retrying";
+        if (norm.includes("block") || norm.includes("fail")) return "status-blocked";
+        return "";
       }
 
       function renderTraceIssue(payloadValue) {
@@ -2268,22 +2403,52 @@ _DASHBOARD_HTML = """<!doctype html>
         const retry = toObject(payload.retry);
         const recent = toArray(payload.recent_events).slice().reverse().slice(0, 80);
         traceSubtitle.textContent = `${payload.issue_identifier || traceIssueIdentifier} · ${status}`;
-        traceSummary.textContent = JSON.stringify(
-          {
-            status,
-            turns: running.turn_count || 0,
-            state: running.state || null,
-            role: running.worker_role || null,
-            worker: running.worker_name || null,
-            session_id: running.session_id || null,
-            last_event: running.last_event || null,
-            retry_attempt: attempts.current_retry_attempt || null,
-            retry_due_in_seconds: retry.due_in_seconds || null,
-            last_error: payload.last_error || null,
-          },
-          null,
-          2
-        );
+        const statusClass = traceStatusClass(status);
+        traceSummary.innerHTML = `
+          <div class="trace-status-row">
+            <span class="trace-status-pill ${statusClass}">${escapeHtml(status)}</span>
+            <span class="meta">${escapeHtml(relTime(payload.generated_at || payload.updated_at || null))}</span>
+          </div>
+          <div class="trace-summary-grid">
+            <div class="trace-stat">
+              <div class="label">Issue State</div>
+              <div class="value">${escapeHtml(running.state || "n/a")}</div>
+            </div>
+            <div class="trace-stat">
+              <div class="label">Turns</div>
+              <div class="value">${formatNumber(running.turn_count || 0)}</div>
+            </div>
+            <div class="trace-stat">
+              <div class="label">Role</div>
+              <div class="value">${escapeHtml(running.worker_role || "n/a")}</div>
+            </div>
+            <div class="trace-stat">
+              <div class="label">Retry Attempt</div>
+              <div class="value">${escapeHtml(
+                attempts.current_retry_attempt != null
+                  ? String(attempts.current_retry_attempt)
+                  : "n/a"
+              )}</div>
+            </div>
+            <div class="trace-stat">
+              <div class="label">Retry Due</div>
+              <div class="value">${escapeHtml(
+                retry.due_in_seconds != null ? `${retry.due_in_seconds}s` : "n/a"
+              )}</div>
+            </div>
+            <div class="trace-stat">
+              <div class="label">Last Event</div>
+              <div class="value">${escapeHtml(running.last_event || "n/a")}</div>
+            </div>
+          </div>
+          ${
+            payload.last_error
+              ? `<div class="event-detail"><strong>Last error:</strong> ${escapeHtml(
+                  String(payload.last_error)
+                )}</div>`
+              : ""
+          }
+        `;
         if (!recent.length) {
           traceEvents.innerHTML =
             '<div class="empty">No trace events yet for this agent.</div>';
@@ -2292,10 +2457,14 @@ _DASHBOARD_HTML = """<!doctype html>
         traceEvents.innerHTML = recent
           .map((eventValue) => {
             const event = toObject(eventValue);
+            const tone = traceEventTone(event.event || "");
             return `
-              <article class="trace-event">
+              <article class="trace-event ${tone}">
                 <div class="head">
-                  <div class="event-name mono">${escapeHtml(event.event || "event")}</div>
+                  <div class="event-tags">
+                    <div class="event-name mono">${escapeHtml(event.event || "event")}</div>
+                    <span class="event-type">${escapeHtml(tone)}</span>
+                  </div>
                   <div class="meta">${escapeHtml(relTime(event.at))}</div>
                 </div>
                 <div class="event-body">${escapeHtml(event.message || "")}</div>
@@ -2312,15 +2481,30 @@ _DASHBOARD_HTML = """<!doctype html>
 
       async function fetchTraceIssue() {
         if (!traceIssueIdentifier) return;
+        const expectedIssue = traceIssueIdentifier;
+        const serial = ++traceFetchSerial;
         try {
-          const resp = await fetch(`/api/v1/${encodeURIComponent(traceIssueIdentifier)}`);
+          const resp = await fetch(`/api/v1/${encodeURIComponent(expectedIssue)}`);
+          if (serial !== traceFetchSerial || expectedIssue !== traceIssueIdentifier) {
+            return;
+          }
           if (!resp.ok) {
+            traceSummary.innerHTML =
+              '<div class="empty">Trace metadata unavailable for this issue.</div>';
             traceEvents.innerHTML = `<div class="empty">Trace not available (${resp.status}).</div>`;
             return;
           }
           const payload = await resp.json();
+          if (serial !== traceFetchSerial || expectedIssue !== traceIssueIdentifier) {
+            return;
+          }
           renderTraceIssue(payload);
         } catch (_err) {
+          if (serial !== traceFetchSerial || expectedIssue !== traceIssueIdentifier) {
+            return;
+          }
+          traceSummary.innerHTML =
+            '<div class="empty">Trace metadata fetch failed.</div>';
           traceEvents.innerHTML = '<div class="empty">Trace fetch failed.</div>';
         }
       }
@@ -2332,6 +2516,7 @@ _DASHBOARD_HTML = """<!doctype html>
         traceModal.classList.add("open");
         traceModal.setAttribute("aria-hidden", "false");
         traceSubtitle.textContent = `${issue} · loading`;
+        traceSummary.innerHTML = '<div class="empty">Loading trace summary...</div>';
         traceEvents.innerHTML = '<div class="empty">Loading live trace...</div>';
         fetchTraceIssue();
         stopTracePolling();
@@ -2435,10 +2620,7 @@ _DASHBOARD_HTML = """<!doctype html>
         const button = target.closest("button[data-action='retry-now']");
         if (!(button instanceof HTMLButtonElement)) return;
         const issueIdentifier = String(button.dataset.issue || "");
-        button.disabled = true;
-        triggerRetryNow(issueIdentifier).finally(() => {
-          button.disabled = false;
-        });
+        triggerRetryNow(issueIdentifier);
       });
       document.addEventListener("click", (event) => {
         const target = event.target;

@@ -41,4 +41,7 @@ def test_sync_env_defaults_fills_external_paths(monkeypatch, tmp_path: Path) -> 
     assert summary["missing_required"] == ["LINEAR_API_KEY"]
     assert loaded["MOLT_LINEAR_PROJECT_SLUG"] == "molt-project"
     assert loaded["MOLT_SOURCE_REPO_URL"] == "git@github.com:org/molt.git"
+    assert loaded["MOLT_SYMPHONY_SYNC_REMOTE"] == "origin"
+    assert loaded["MOLT_SYMPHONY_SYNC_BRANCH"] == "main"
+    assert loaded["MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS"] == "adpena,symphony"
     assert loaded["MOLT_EXT_ROOT"] == str(ext_root)

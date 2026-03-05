@@ -22,9 +22,7 @@ hooks:
   after_create: |
     git clone --depth 1 "$MOLT_SOURCE_REPO_URL" .
   before_run: |
-    git fetch --all --prune
-    git checkout main
-    git pull --ff-only origin main
+    bash tools/symphony_git_sync.sh
   after_run: |
     git status --short
   timeout_ms: 120000
