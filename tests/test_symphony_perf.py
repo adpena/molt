@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import tools.symphony_perf as symphony_perf
 
@@ -84,3 +85,19 @@ def test_summarize_dashboard_state_samples_counts_200_and_304() -> None:
     assert summary["errors"] == 1
     assert summary["etag_seen"] == 2
     assert summary["avg_latency_ms"] is not None
+
+
+def test_hash_bench_python_and_helper() -> None:
+    payload = b"abcdef" * 64
+    python_report = symphony_perf._bench_python_hash(payload=payload, iterations=10)
+    assert python_report["mode"] == "python_blake2s"
+    assert python_report["iterations"] == 10
+    helper_cmd = f"{sys.executable} tools/symphony_state_hasher.py"
+    helper_report = symphony_perf._bench_helper_hash(
+        payload=payload,
+        iterations=5,
+        helper_cmd=helper_cmd,
+    )
+    assert helper_report["mode"] == "helper_stdio"
+    assert helper_report["iterations"] == 5
+    assert "error" not in helper_report
