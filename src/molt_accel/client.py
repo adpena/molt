@@ -257,8 +257,14 @@ class MoltClient:
         after_recv: Hook | None = None,
         metrics_hook: Hook | None = None,
         cancel_check: CancelCheck | None = None,
+        retry_on_timeout: bool = False,
+        retry_on_busy: bool = False,
+        retry_backoff_ms: int = 0,
+        retry_backoff_max_ms: int = 0,
     ) -> Any:
         attempts = 0
+        backoff_ms = max(0, retry_backoff_ms)
+        backoff_cap_ms = max(backoff_ms, retry_backoff_max_ms)
         while True:
             try:
                 return self._call_once(
@@ -272,15 +278,23 @@ class MoltClient:
                     metrics_hook=metrics_hook,
                     cancel_check=cancel_check,
                 )
-            except MoltWorkerUnavailable:
+            except (MoltWorkerUnavailable, MoltTimeout, MoltBusy) as exc:
+                retryable = isinstance(exc, MoltWorkerUnavailable) or (
+                    retry_on_timeout and isinstance(exc, MoltTimeout)
+                ) or (retry_on_busy and isinstance(exc, MoltBusy))
                 if (
                     not idempotent
+                    or not retryable
                     or not self._restart_on_failure
                     or attempts >= self._max_restarts
                 ):
                     raise
                 attempts += 1
                 self.close()
+                if backoff_ms > 0:
+                    time.sleep(backoff_ms / 1000.0)
+                    if backoff_cap_ms > 0:
+                        backoff_ms = min(backoff_cap_ms, backoff_ms * 2)
 
     def _call_once(
         self,
@@ -474,6 +488,10 @@ class MoltClientPool:
         after_recv: Hook | None = None,
         metrics_hook: Hook | None = None,
         cancel_check: CancelCheck | None = None,
+        retry_on_timeout: bool = False,
+        retry_on_busy: bool = False,
+        retry_backoff_ms: int = 0,
+        retry_backoff_max_ms: int = 0,
     ) -> Any:
         with self._lock:
             client = self._clients[self._next_index]
@@ -489,6 +507,10 @@ class MoltClientPool:
             after_recv=after_recv,
             metrics_hook=metrics_hook,
             cancel_check=cancel_check,
+            retry_on_timeout=retry_on_timeout,
+            retry_on_busy=retry_on_busy,
+            retry_backoff_ms=retry_backoff_ms,
+            retry_backoff_max_ms=retry_backoff_max_ms,
         )
 
     def ping(self, timeout_ms: int = 100) -> float:

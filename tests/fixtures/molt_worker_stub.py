@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 from molt_accel.codec import (
     decode_message,
@@ -14,6 +15,25 @@ from molt_accel.framing import read_frame, write_frame
 
 WIRE = os.environ.get("MOLT_WIRE") or None
 LIST_ITEMS_CODEC_OUT = os.environ.get("MOLT_STUB_LIST_ITEMS_CODEC_OUT")
+FAIL_ONCE_ENTRY = os.environ.get("MOLT_STUB_FAIL_ONCE_ENTRY")
+FAIL_ONCE_SENTINEL = os.environ.get("MOLT_STUB_FAIL_ONCE_SENTINEL")
+_FAILED_ONCE = False
+
+
+def _maybe_fail_once(entry: str) -> None:
+    global _FAILED_ONCE
+    if not FAIL_ONCE_ENTRY or entry != FAIL_ONCE_ENTRY:
+        return
+    if FAIL_ONCE_SENTINEL:
+        marker = Path(FAIL_ONCE_SENTINEL)
+        if marker.exists():
+            return
+        marker.write_text("1", encoding="utf-8")
+    elif _FAILED_ONCE:
+        return
+    _FAILED_ONCE = True
+    # Simulate abrupt worker death so the client restart path is exercised.
+    raise SystemExit(89)
 
 
 def main() -> None:
@@ -27,6 +47,8 @@ def main() -> None:
         message = decode_message(frame, WIRE or "json")
         request_id = message.get("request_id", 0)
         entry = message.get("entry")
+        if isinstance(entry, str):
+            _maybe_fail_once(entry)
         codec = message.get("codec", "raw")
         payload = message.get("payload", b"")
         status = "Ok"
