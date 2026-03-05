@@ -33,6 +33,7 @@ def _worker_cmd() -> str:
 def _setup_worker_env() -> None:
     os.environ["MOLT_WORKER_CMD"] = _worker_cmd()
     os.environ["MOLT_WIRE"] = "json"
+    os.environ["MOLT_ACCEL_CLIENT_MODE"] = "per_request"
     os.environ["MOLT_STUB_LIST_ITEMS_CODEC_OUT"] = "json"
     # Ensure molt_accel is importable by the stub worker.
     root = Path(__file__).resolve().parents[1]
@@ -108,3 +109,23 @@ def test_demo_offload_table_body() -> None:
     payload = resp.json()
     assert payload["rows"] == 123
     assert "sample" in payload
+
+
+def test_demo_offload_retry_once_on_worker_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup_django()
+    _setup_worker_env()
+    from django.test import Client
+
+    sentinel = tmp_path / "fail_once.marker"
+    monkeypatch.setenv("MOLT_STUB_FAIL_ONCE_ENTRY", "list_items")
+    monkeypatch.setenv("MOLT_STUB_FAIL_ONCE_SENTINEL", str(sentinel))
+
+    client = Client()
+    resp = client.get("/offload/?user_id=7&limit=5")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert "counts" in payload and "items" in payload
+    assert sentinel.exists()

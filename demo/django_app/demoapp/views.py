@@ -246,6 +246,10 @@ def baseline_items(request: Any) -> JsonResponse:
     entry="list_items",
     codec="msgpack",
     timeout_ms=250,
+    idempotent=True,
+    retry_on_timeout=True,
+    retry_backoff_ms=10,
+    retry_backoff_max_ms=80,
     metrics_hook=_metrics_hook("list_items"),
     decode_response=False,
     response_factory=raw_json_response_factory,
@@ -277,6 +281,10 @@ def compute_view(request: Any) -> JsonResponse:
     entry="compute",
     codec="msgpack",
     timeout_ms=250,
+    idempotent=True,
+    retry_on_timeout=True,
+    retry_backoff_ms=10,
+    retry_backoff_max_ms=80,
     payload_builder=build_compute_payload,
     metrics_hook=_metrics_hook("compute"),
 )
@@ -310,7 +318,14 @@ def offload_table(request: Any) -> JsonResponse:
 
 
 @molt_offload(
-    entry="health", codec="json", timeout_ms=100, metrics_hook=_metrics_hook("health")
+    entry="health",
+    codec="json",
+    timeout_ms=100,
+    idempotent=True,
+    retry_on_timeout=True,
+    retry_backoff_ms=10,
+    retry_backoff_max_ms=80,
+    metrics_hook=_metrics_hook("health"),
 )
 def health_view(request: Any) -> JsonResponse:
     return JsonResponse({"ok": True}, status=200)

@@ -66,6 +66,29 @@ _SHARED_CLIENT: MoltClient | MoltClientPool | None = None
 _SHARED_CLIENT_LOCK = threading.Lock()
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _env_non_negative_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return max(0, default)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return max(0, default)
+    return max(0, value)
+
+
 def _pool_size_from_env() -> int:
     raw = os.environ.get("MOLT_ACCEL_POOL_SIZE")
     if raw is None or raw == "":
@@ -166,6 +189,10 @@ def molt_offload(
     after_recv: Hook | None = None,
     metrics_hook: Hook | None = None,
     cancel_check: Callable[[Any], bool] | None = None,
+    retry_on_timeout: bool | None = None,
+    retry_on_busy: bool | None = None,
+    retry_backoff_ms: int | None = None,
+    retry_backoff_max_ms: int | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorate a handler to offload the core work to a Molt worker."""
 
@@ -185,6 +212,28 @@ def molt_offload(
                 poll_cancel = _poll_cancel
             else:
                 poll_cancel = _auto_cancel_check(request)
+            resolved_retry_on_timeout = (
+                _env_bool("MOLT_ACCEL_RETRY_ON_TIMEOUT", False)
+                if retry_on_timeout is None
+                else retry_on_timeout
+            )
+            resolved_retry_on_busy = (
+                _env_bool("MOLT_ACCEL_RETRY_ON_BUSY", False)
+                if retry_on_busy is None
+                else retry_on_busy
+            )
+            resolved_retry_backoff_ms = (
+                _env_non_negative_int("MOLT_ACCEL_RETRY_BACKOFF_MS", 0)
+                if retry_backoff_ms is None
+                else max(0, retry_backoff_ms)
+            )
+            resolved_retry_backoff_max_ms = (
+                _env_non_negative_int(
+                    "MOLT_ACCEL_RETRY_BACKOFF_MAX_MS", resolved_retry_backoff_ms
+                )
+                if retry_backoff_max_ms is None
+                else max(0, retry_backoff_max_ms)
+            )
             try:
                 active_client, close_after = _resolve_client(client, client_mode)
                 payload = build_payload(request, *args[1:], **kwargs)
@@ -199,6 +248,10 @@ def molt_offload(
                     after_recv=after_recv,
                     metrics_hook=metrics_hook,
                     cancel_check=poll_cancel,
+                    retry_on_timeout=resolved_retry_on_timeout,
+                    retry_on_busy=resolved_retry_on_busy,
+                    retry_backoff_ms=resolved_retry_backoff_ms,
+                    retry_backoff_max_ms=resolved_retry_backoff_max_ms,
                 )
                 return build_response(result, 200)
             except MoltAccelError as exc:

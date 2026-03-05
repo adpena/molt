@@ -9,7 +9,7 @@ import pytest
 
 from molt_accel.client import MoltClient, MoltClientPool
 from molt_accel.codec import decode_payload, encode_payload
-from molt_accel.errors import MoltCancelled, MoltInvalidInput
+from molt_accel.errors import MoltBusy, MoltCancelled, MoltInvalidInput, MoltTimeout
 
 
 def _worker_cmd() -> list[str]:
@@ -87,6 +87,85 @@ def test_client_cancel_check() -> None:
             cancel_check=lambda: True,
         )
     client.close()
+
+
+def test_client_retry_on_timeout_with_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
+    calls = {"count": 0}
+    close_count = {"count": 0}
+    sleeps: list[float] = []
+
+    def fake_call_once(**_kwargs: object) -> dict[str, bool]:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise MoltTimeout("slow")
+        return {"ok": True}
+
+    def fake_close() -> None:
+        close_count["count"] += 1
+
+    monkeypatch.setattr(client, "_call_once", fake_call_once)
+    monkeypatch.setattr(client, "close", fake_close)
+    monkeypatch.setattr("molt_accel.client.time.sleep", sleeps.append)
+
+    result = client.call(
+        entry="echo",
+        payload={"ok": True},
+        codec="json",
+        timeout_ms=500,
+        idempotent=True,
+        retry_on_timeout=True,
+        retry_backoff_ms=7,
+        retry_backoff_max_ms=20,
+    )
+    assert result == {"ok": True}
+    assert calls["count"] == 2
+    assert close_count["count"] == 1
+    assert sleeps == [0.007]
+
+
+def test_client_retry_on_busy_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
+    calls = {"count": 0}
+
+    def fake_call_once(**_kwargs: object) -> dict[str, bool]:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise MoltBusy("busy")
+        return {"ok": True}
+
+    monkeypatch.setattr(client, "_call_once", fake_call_once)
+    monkeypatch.setattr(client, "close", lambda: None)
+
+    result = client.call(
+        entry="echo",
+        payload={"ok": True},
+        codec="json",
+        timeout_ms=500,
+        idempotent=True,
+        retry_on_busy=True,
+    )
+    assert result == {"ok": True}
+    assert calls["count"] == 2
+
+
+def test_client_timeout_not_retried_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
+
+    def fake_call_once(**_kwargs: object) -> dict[str, bool]:
+        raise MoltTimeout("slow")
+
+    monkeypatch.setattr(client, "_call_once", fake_call_once)
+    with pytest.raises(MoltTimeout):
+        client.call(
+            entry="echo",
+            payload={"ok": True},
+            codec="json",
+            timeout_ms=500,
+            idempotent=True,
+        )
 
 
 def test_client_decode_response_false() -> None:
