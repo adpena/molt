@@ -58,6 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional JSON output path.",
     )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=600,
+        help="Per-sample timeout for tools/symphony_run.py execution.",
+    )
     return parser
 
 
@@ -98,6 +104,7 @@ def _run_once(
     molt_profile: str,
     rebuild_binary: bool,
     env: dict[str, str],
+    timeout_seconds: int,
 ) -> Sample:
     cmd = [
         "uv",
@@ -119,16 +126,34 @@ def _run_once(
         cmd.append("--rebuild-binary")
 
     started = time.perf_counter()
-    proc = subprocess.run(cmd, check=False, env=env, capture_output=True, text=True)
-    duration_s = max(time.perf_counter() - started, 0.0)
-    return Sample(
-        mode=mode,
-        iteration=0,
-        returncode=int(proc.returncode),
-        duration_s=duration_s,
-        stdout_tail=(proc.stdout or "")[-2000:],
-        stderr_tail=(proc.stderr or "")[-2000:],
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            check=False,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=max(int(timeout_seconds), 1),
+        )
+        duration_s = max(time.perf_counter() - started, 0.0)
+        return Sample(
+            mode=mode,
+            iteration=0,
+            returncode=int(proc.returncode),
+            duration_s=duration_s,
+            stdout_tail=(proc.stdout or "")[-2000:],
+            stderr_tail=(proc.stderr or "")[-2000:],
+        )
+    except subprocess.TimeoutExpired as exc:
+        duration_s = max(time.perf_counter() - started, 0.0)
+        return Sample(
+            mode=mode,
+            iteration=0,
+            returncode=-1,
+            duration_s=duration_s,
+            stdout_tail=(exc.stdout or "")[-2000:],
+            stderr_tail=(exc.stderr or "timeout")[-2000:],
+        )
 
 
 def _summary(samples: list[Sample]) -> dict[str, Any]:
@@ -138,16 +163,33 @@ def _summary(samples: list[Sample]) -> dict[str, Any]:
 
     report: dict[str, Any] = {}
     for mode, rows in grouped.items():
-        durations = [item.duration_s for item in rows]
+        success_rows = [item for item in rows if item.returncode == 0]
+        durations = [item.duration_s for item in success_rows]
         failures = sum(1 for item in rows if item.returncode != 0)
-        report[mode] = {
+        entry: dict[str, Any] = {
             "samples": len(rows),
+            "successes": len(success_rows),
             "failures": failures,
-            "min_s": round(min(durations), 4),
-            "max_s": round(max(durations), 4),
-            "avg_s": round(statistics.fmean(durations), 4),
-            "p95_s": round(_p95(durations), 4),
         }
+        if durations:
+            entry.update(
+                {
+                    "min_s": round(min(durations), 4),
+                    "max_s": round(max(durations), 4),
+                    "avg_s": round(statistics.fmean(durations), 4),
+                    "p95_s": round(_p95(durations), 4),
+                }
+            )
+        else:
+            entry.update(
+                {
+                    "min_s": None,
+                    "max_s": None,
+                    "avg_s": None,
+                    "p95_s": None,
+                }
+            )
+        report[mode] = entry
     return report
 
 
@@ -181,6 +223,7 @@ def main(argv: list[str] | None = None) -> int:
                 molt_profile=args.molt_profile,
                 rebuild_binary=bool(args.rebuild_each_run),
                 env=env,
+                timeout_seconds=args.timeout_seconds,
             )
             sample.iteration = idx + 1
             samples.append(sample)
@@ -228,7 +271,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"wrote {output_path}")
 
-    return 0
+    any_failure = any(sample.returncode != 0 for sample in samples)
+    return 2 if any_failure else 0
 
 
 if __name__ == "__main__":

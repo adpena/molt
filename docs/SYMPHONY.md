@@ -24,6 +24,7 @@ Human operator contract:
 - Linear tracker adapter (candidate fetch, state refresh, terminal-state startup cleanup)
 - Orchestrator state machine (dispatch, claims, retries, backoff, reconciliation)
 - Built-in profiling telemetry (turn latency, dispatch latency, retry backoff, loop/event hotspots, CPU/RSS high-water)
+- Durable telemetry memory on external volume (`events.jsonl` + optional `events.duckdb` / `events.parquet`)
 - Per-issue workspace lifecycle with safety checks and workflow hooks
 - Codex app-server JSON-line client (`initialize`, `thread/start`, `turn/start`)
 - Agent tool-call registry:
@@ -49,6 +50,7 @@ Human operator contract:
   - OpenAI-style dark mode by default
   - top-level view tabs (`Overview`, `Interventions`, `Agents`, `Performance`, `All Panels`)
   - intervention action center with one-click retry + tool launcher panel
+  - live concurrency tuning via `set_max_concurrent_agents` in the tool launcher
 
 - Agent role orchestration:
   - role tags can be inferred from Linear labels like `role:triage` or `swarm:formalizer`
@@ -121,3 +123,6 @@ This writes a JSON report under `/Volumes/APDataStore/Molt/logs/symphony/` by de
 - Missing Codex auth / input-required states now activate a system suspension (`auth_required`) with human prompt text; Symphony retries automatically after the configured resume delay.
 - Dashboard/API state payload now includes `profiling` and `runtime.exec_mode` fields.
 - Dashboard/API state payload includes `agent_panes`, runtime role pool settings, token throughput (`codex_totals.tokens_per_second`), and suspension metadata (`suspension`).
+- `symphony_state` tool defaults to compact payload mode for lower token burn; use `{ "detail": "full" }` when agents need full raw state.
+- Codex event profiling counters are cardinality-bounded (`MOLT_SYMPHONY_MAX_CODEX_EVENT_COUNTERS`, default `64`) to avoid unbounded metric growth.
+- Durable memory files are external-volume first (`MOLT_SYMPHONY_DURABLE_MEMORY=1`), with auto-materialization into DuckDB/Parquet when `duckdb` is available.
