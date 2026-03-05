@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import os
+import select
+import shlex
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -40,14 +45,98 @@ class _QuietThreadingHTTPServer(ThreadingHTTPServer):
 
 
 @dataclass(slots=True)
+class _ExternalStateHasher:
+    command: list[str]
+    timeout_seconds: float
+    _proc: subprocess.Popen[str] | None = field(default=None, init=False)
+    _lock: Lock = field(default_factory=Lock, init=False)
+    _enabled: bool = field(default=True, init=False)
+
+    def _ensure_started(self) -> bool:
+        if not self._enabled:
+            return False
+        if self._proc is not None and self._proc.poll() is None:
+            return True
+        try:
+            self._proc = subprocess.Popen(
+                self.command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                bufsize=1,
+            )
+        except OSError:
+            self._enabled = False
+            self._proc = None
+            return False
+        return True
+
+    def hash(self, payload_bytes: bytes) -> str | None:
+        payload_b64 = base64.b64encode(payload_bytes).decode("ascii")
+        with self._lock:
+            if not self._ensure_started():
+                return None
+            proc = self._proc
+            if proc is None or proc.stdin is None or proc.stdout is None:
+                self._enabled = False
+                return None
+            try:
+                proc.stdin.write(payload_b64 + "\n")
+                proc.stdin.flush()
+                if os.name != "nt":
+                    ready, _, _ = select.select(
+                        [proc.stdout], [], [], self.timeout_seconds
+                    )
+                    if not ready:
+                        self._close_locked(disable=True)
+                        return None
+                line = proc.stdout.readline()
+            except OSError:
+                self._close_locked(disable=True)
+                return None
+        etag = line.strip()
+        if etag.startswith('W/"') and etag.endswith('"') and len(etag) >= 6:
+            return etag
+        return None
+
+    def close(self, *, disable: bool = False) -> None:
+        with self._lock:
+            self._close_locked(disable=disable)
+
+    def _close_locked(self, *, disable: bool = False) -> None:
+        if disable:
+            self._enabled = False
+        proc = self._proc
+        self._proc = None
+        if proc is None:
+            return
+        try:
+            proc.terminate()
+        except OSError:
+            return
+        try:
+            proc.wait(timeout=0.5)
+        except (subprocess.TimeoutExpired, OSError):
+            try:
+                proc.kill()
+            except OSError:
+                return
+
+
+@dataclass(slots=True)
 class DashboardServer:
     provider: StateProvider
     port: int
     _server: _QuietThreadingHTTPServer | None = field(default=None, init=False)
     _thread: Thread | None = field(default=None, init=False)
+    _state_hasher: _ExternalStateHasher | None = field(default=None, init=False)
 
     def start(self) -> int:
         provider = self.provider
+        state_hasher = _state_hasher_from_env()
+        self._state_hasher = state_hasher
         state_cache_lock = Lock()
         state_cache_ttl_seconds = 0.25
         state_cache: dict[str, Any] = {
@@ -82,7 +171,7 @@ class DashboardServer:
                     return payload_cached, encoded_cached, etag_cached
             payload = provider.snapshot_state()
             encoded = _encode_json_bytes(payload)
-            etag = _state_etag_for_payload(encoded)
+            etag = _state_etag_for_payload(encoded, hasher=state_hasher)
             with state_cache_lock:
                 state_cache["captured_at_monotonic"] = now_mono
                 state_cache["payload"] = payload
@@ -329,6 +418,9 @@ class DashboardServer:
         return int(server.server_port)
 
     def stop(self) -> None:
+        if self._state_hasher is not None:
+            self._state_hasher.close()
+            self._state_hasher = None
         if self._server is not None:
             self._server.shutdown()
             self._server.server_close()
@@ -352,9 +444,38 @@ def _encode_json_bytes(payload: dict[str, Any]) -> bytes:
     return json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
 
 
-def _state_etag_for_payload(payload_bytes: bytes) -> str:
+def _state_etag_for_payload(
+    payload_bytes: bytes, *, hasher: _ExternalStateHasher | None = None
+) -> str:
+    if hasher is not None:
+        external = hasher.hash(payload_bytes)
+        if external is not None:
+            return external
     digest = hashlib.blake2s(payload_bytes, digest_size=8).hexdigest()
     return f'W/"{digest}"'
+
+
+def _state_hasher_from_env() -> _ExternalStateHasher | None:
+    raw = str(os.environ.get("MOLT_SYMPHONY_STATE_HASH_HELPER", "")).strip()
+    if not raw:
+        return None
+    try:
+        command = shlex.split(raw)
+    except ValueError:
+        return None
+    if not command:
+        return None
+    if "--stdio" not in command:
+        command.append("--stdio")
+    timeout_ms_raw = str(
+        os.environ.get("MOLT_SYMPHONY_STATE_HASH_HELPER_TIMEOUT_MS", "150")
+    ).strip()
+    try:
+        timeout_ms = int(timeout_ms_raw)
+    except ValueError:
+        timeout_ms = 150
+    timeout_seconds = max(timeout_ms, 10) / 1000.0
+    return _ExternalStateHasher(command=command, timeout_seconds=timeout_seconds)
 
 
 def _coerce_limit_param(query: str, *, default: int) -> int:
@@ -2606,46 +2727,41 @@ _DASHBOARD_HTML = """<!doctype html>
       function renderToolLauncher(state) {
         const issues = new Map();
 
-        toArray(state.attention).forEach(item => {
+        const processItem = (item) => {
           const obj = toObject(item);
           const id = String(obj.issue_identifier || obj.issue_id || "");
-          if (id && id !== "SYSTEM") {
-            const kind = obj.kind || "alert";
-            const title = obj.title ? ` "${obj.title}"` : "";
-            const msg = obj.message || "Needs intervention";
-            issues.set(id, `Attention: [${kind}]${title} - ${msg}`);
-          }
-        });
+          if (!id || id === "SYSTEM") return;
 
-        toArray(state.running).forEach(item => {
-          const obj = toObject(item);
-          const id = String(obj.issue_identifier || obj.issue_id || "");
-          if (id && !issues.has(id)) {
+          let context = "";
+          if (obj.kind) {
+            context = `Attention: [${obj.kind}] - ${obj.message || "Needs intervention"}`;
+          } else if (obj.worker_role || obj.role) {
             const role = obj.role || obj.worker_role || "worker";
             const st = obj.state || obj.status || "active";
-            const title = obj.title ? ` "${obj.title}"` : "";
             const turns = obj.turn_count || obj.turns || 0;
             const event = obj.last_event || obj.event || "processing";
-            issues.set(id, `Running: [${role}]${title} - state=${st} · turns=${turns} · event=${event}`);
-          }
-        });
-
-        toArray(state.retrying).forEach(item => {
-          const obj = toObject(item);
-          const id = String(obj.issue_identifier || obj.issue_id || "");
-          if (id && !issues.has(id)) {
+            context = `Running: [${role}] state=${st} · turns=${turns} · event=${event}`;
+          } else if (obj.due_at) {
             const attempt = obj.attempt || 1;
-            const title = obj.title ? ` "${obj.title}"` : "";
             const err = obj.error || obj.message || "unknown error";
-            issues.set(id, `Retrying:${title} attempt=${attempt} · error=${err}`);
+            context = `Retrying: attempt=${attempt} · error=${err}`;
           }
-        });
+
+          issues.set(id, { title: obj.title || "", context });
+        };
+
+        toArray(state.attention).forEach(processItem);
+        toArray(state.running).forEach(processItem);
+        toArray(state.retrying).forEach(processItem);
 
         const datalist = document.getElementById("tool-issue-datalist");
         if (!datalist) return;
 
         datalist.innerHTML = Array.from(issues.entries())
-          .map(([id, desc]) => `<option value="${escapeHtml(id)}">${escapeHtml(desc)}</option>`)
+          .map(([id, info]) => {
+            const label = info.title ? `${id} - ${info.title}` : id;
+            return `<option value="${escapeHtml(label)}">${escapeHtml(info.context)}</option>`;
+          })
           .join("");
       }
 
@@ -2878,7 +2994,7 @@ _DASHBOARD_HTML = """<!doctype html>
       }
 
       function renderRateLimits(state) {
-        const limits = state.rate_limits;
+        const limits = toObject(state.rate_limits);
         const runtime = toObject(state.runtime);
         const status = describeRateLimitState(state);
         const cadence = status.cadence;
@@ -2918,41 +3034,43 @@ _DASHBOARD_HTML = """<!doctype html>
             </div>
           </div>
         `;
-        if (!limits) {
-          rateWrap.innerHTML =
-            summaryHtml + '<div class="empty">No rate limit payload received yet.</div>';
-          return;
-        }
-        if (Array.isArray(limits)) {
-          rateWrap.innerHTML = `${summaryHtml}<pre class="mono" style="margin:0;white-space:pre-wrap;">${escapeHtml(
-            JSON.stringify(limits, null, 2)
-          )}</pre>`;
-          return;
-        }
-        if (typeof limits !== "object") {
-          rateWrap.innerHTML = `${summaryHtml}<div class="empty mono">${escapeHtml(
-            limits
-          )}</div>`;
-          return;
-        }
-        const entries = Object.entries(toObject(limits));
+        const entries = Object.entries(limits);
         if (!entries.length) {
-          rateWrap.innerHTML = `${summaryHtml}<div class="empty">Rate limit payload is empty.</div>`;
+          rateWrap.innerHTML = summaryHtml + '<div class="empty">No rate limit telemetry recorded.</div>';
           return;
         }
-        rateWrap.innerHTML = `${summaryHtml}<div class="kv-list">${entries
-          .slice(0, 16)
-          .map(
-            ([key, value]) => `
+        const rows = entries
+          .map(([key, value]) => {
+            let valStr = "";
+            if (typeof value === 'object' && value !== null) {
+              const obj = toObject(value);
+              if (obj.usedPercent != null) valStr += `${obj.usedPercent}% used`;
+              if (obj.resetsAt != null || obj.resetAt != null) {
+                const r = obj.resetsAt || obj.resetAt;
+                if (valStr) valStr += " | ";
+                valStr += `resets ${relTime(r)}`;
+              }
+              if (obj.hasCredits != null) {
+                if (valStr) valStr += " | ";
+                valStr += `credits: ${obj.hasCredits}`;
+              }
+              if (obj.balance != null) {
+                if (valStr) valStr += " | ";
+                valStr += `balance: ${obj.balance}`;
+              }
+              if (!valStr) valStr = JSON.stringify(obj);
+            } else {
+              valStr = String(value);
+            }
+            return `
               <div class="kv-item">
                 <div class="key mono">${escapeHtml(key)}</div>
-                <div class="value mono">${escapeHtml(
-                  typeof value === "object" ? JSON.stringify(value) : String(value)
-                )}</div>
+                <div class="value mono">${escapeHtml(valStr)}</div>
               </div>
-            `
-          )
-          .join("")}</div>`;
+            `;
+          })
+          .join("");
+        rateWrap.innerHTML = summaryHtml + `<div class="kv-list" style="margin-top: 12px">${rows}</div>`;
       }
 
       function renderKpis(state) {
@@ -3246,7 +3364,10 @@ _DASHBOARD_HTML = """<!doctype html>
 
       async function runDashboardTool() {
         const tool = String(toolSelect?.value || "").trim();
-        const issueIdentifier = String(toolIssueInput?.value || "").trim();
+        let issueIdentifier = String(toolIssueInput?.value || "").trim();
+        if (issueIdentifier.includes(" - ")) {
+          issueIdentifier = issueIdentifier.split(" - ")[0].trim();
+        }
         if (!tool) return;
         if (toolRunButton) {
           toolRunButton.disabled = true;

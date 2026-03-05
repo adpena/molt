@@ -112,6 +112,24 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_perf.py WORKFLOW.md \
   --dashboard-url http://127.0.0.1:8089 --api-samples 80 --api-interval-ms 250
 ```
 
+Optional hasher A/B micro-benchmark (Python vs helper process):
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_perf.py WORKFLOW.md \
+  --hash-bench-iterations 2000 --hash-bench-bytes 65536 \
+  --hash-helper-cmd "/usr/bin/python3 tools/symphony_state_hasher.py"
+```
+
+Compile the helper with Molt (release + max optimization) and wire it:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build \
+  --profile release --optimize max \
+  --output /Volumes/APDataStore/Molt/bin/symphony_state_hasher_molt \
+  tools/symphony_state_hasher.py
+export MOLT_SYMPHONY_STATE_HASH_HELPER="/Volumes/APDataStore/Molt/bin/symphony_state_hasher_molt"
+```
+
 ## Security + Secret Hygiene
 
 - Keep secrets in environment variables only.
@@ -137,6 +155,7 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_perf.py WORKFLOW.md \
 - Dashboard HTTP now uses a short shared snapshot cache for `/api/v1/state` and `/api/v1/stream` to reduce duplicate serialization under concurrent readers.
 - `/api/v1/stream` now emits `state` events only when the serialized snapshot changes (plus heartbeats), reducing UI churn and endpoint pressure.
 - Fallback polling now uses adaptive backoff (error/not-modified aware) to avoid endpoint thrash while preserving realtime responsiveness.
+- Optional state-hash helper integration (`MOLT_SYMPHONY_STATE_HASH_HELPER`) supports a compiled-Molt helper binary (`tools/symphony_state_hasher.py`) with transparent fallback to Python hashing.
 - `symphony_state` defaults to compact payload mode with short TTL caching for lower token burn; use `{ "detail": "full" }` when agents need full raw state.
 - `symphony_state` also supports `{ "detail": "telemetry" }` for agent-native, token-efficient MCP telemetry.
 - Codex event profiling counters are cardinality-bounded (`MOLT_SYMPHONY_MAX_CODEX_EVENT_COUNTERS`, default `64`) to avoid unbounded metric growth.

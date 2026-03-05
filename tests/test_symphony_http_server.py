@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import sys
 import urllib.error
 import urllib.request
 from typing import Any
@@ -331,5 +332,42 @@ def test_refresh_invalidates_state_snapshot_cache() -> None:
 
         assert first_payload["generated_at"] != second_payload["generated_at"]
         assert provider.state_calls == 2
+    finally:
+        server.stop()
+
+
+def test_state_endpoint_supports_external_hasher_helper(monkeypatch: object) -> None:
+    provider = _Provider()
+    helper_cmd = f"{sys.executable} tools/symphony_state_hasher.py"
+    monkeypatch.setenv("MOLT_SYMPHONY_STATE_HASH_HELPER", helper_cmd)
+    server = DashboardServer(provider=provider, port=0)
+    port = server.start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+        conn.request("GET", "/api/v1/state")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        etag = resp.getheader("ETag") or ""
+        assert etag.startswith('W/"')
+        _ = resp.read()
+        conn.close()
+    finally:
+        server.stop()
+
+
+def test_state_endpoint_falls_back_when_helper_is_invalid(monkeypatch: object) -> None:
+    provider = _Provider()
+    monkeypatch.setenv("MOLT_SYMPHONY_STATE_HASH_HELPER", "nonexistent-helper-cmd")
+    server = DashboardServer(provider=provider, port=0)
+    port = server.start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+        conn.request("GET", "/api/v1/state")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        etag = resp.getheader("ETag") or ""
+        assert etag.startswith('W/"')
+        _ = resp.read()
+        conn.close()
     finally:
         server.stop()
