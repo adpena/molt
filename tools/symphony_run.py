@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -140,6 +141,50 @@ def _has_respect_pythonpath_flag(args: list[str]) -> bool:
     )
 
 
+def _ensure_dashboard_security_defaults(
+    *, env: dict[str, str], ext_root: Path, port: int | None
+) -> None:
+    env.setdefault("MOLT_SYMPHONY_ENFORCE_ORIGIN", "1")
+    env.setdefault("MOLT_SYMPHONY_REQUIRE_CSRF_HEADER", "1")
+    env.setdefault("MOLT_SYMPHONY_MAX_HTTP_CONNECTIONS", "96")
+    env.setdefault("MOLT_SYMPHONY_MAX_STREAM_CLIENTS", "16")
+    env.setdefault("MOLT_SYMPHONY_STREAM_MAX_AGE_SECONDS", "300")
+    env.setdefault("MOLT_SYMPHONY_EVENT_QUEUE_MAX", "8192")
+    env.setdefault("MOLT_SYMPHONY_EVENT_QUEUE_DROP_LOG_INTERVAL", "250")
+
+    token = (
+        str(env.get("MOLT_SYMPHONY_API_TOKEN") or "").strip()
+        or str(env.get("MOLT_SYMPHONY_DASHBOARD_TOKEN") or "").strip()
+    )
+    if not token:
+        token_file = Path(
+            str(
+                env.get("MOLT_SYMPHONY_API_TOKEN_FILE")
+                or (ext_root / "logs" / "symphony" / "secrets" / "dashboard_api_token")
+            )
+        ).expanduser()
+        if not token_file.is_absolute():
+            token_file = (Path.cwd() / token_file).resolve()
+        token_file.parent.mkdir(parents=True, exist_ok=True)
+        if token_file.exists():
+            token = token_file.read_text(encoding="utf-8").strip()
+        if not token:
+            token = secrets.token_urlsafe(32)
+            token_file.write_text(token + "\n", encoding="utf-8")
+        try:
+            token_file.chmod(0o600)
+        except OSError:
+            pass
+        env["MOLT_SYMPHONY_API_TOKEN_FILE"] = str(token_file)
+    env["MOLT_SYMPHONY_API_TOKEN"] = token
+    env.setdefault("MOLT_SYMPHONY_DASHBOARD_TOKEN", token)
+    if port is not None:
+        env.setdefault(
+            "MOLT_SYMPHONY_ALLOWED_ORIGINS",
+            f"http://127.0.0.1:{port},http://localhost:{port}",
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -194,6 +239,7 @@ def main(argv: list[str] | None = None) -> int:
     env.setdefault("MOLT_SYMPHONY_SYNC_REMOTE", "origin")
     env.setdefault("MOLT_SYMPHONY_SYNC_BRANCH", "main")
     env.setdefault("MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS", "adpena,symphony")
+    _ensure_dashboard_security_defaults(env=env, ext_root=ext_root, port=args.port)
 
     if not env.get("MOLT_LINEAR_PROJECT_SLUG"):
         raise RuntimeError(
