@@ -46,9 +46,64 @@ typedef PyObject *(*PyCFunctionWithKeywords)(PyObject *, PyObject *, PyObject *)
 typedef PyObject *(*getter)(PyObject *, void *);
 typedef int (*setter)(PyObject *, PyObject *, void *);
 typedef Py_ssize_t (*lenfunc)(PyObject *);
+typedef PyObject *(*unaryfunc)(PyObject *);
 typedef PyObject *(*binaryfunc)(PyObject *, PyObject *);
+typedef PyObject *(*ternaryfunc)(PyObject *, PyObject *, PyObject *);
 typedef int (*objobjargproc)(PyObject *, PyObject *, PyObject *);
 typedef int (*objobjproc)(PyObject *, PyObject *);
+typedef int (*inquiry)(PyObject *);
+
+typedef void *PyThread_type_lock;
+typedef long long PY_TIMEOUT_T;
+
+typedef enum PyLockStatus {
+    PY_LOCK_FAILURE = 0,
+    PY_LOCK_ACQUIRED = 1,
+    PY_LOCK_INTR
+} PyLockStatus;
+
+typedef struct PyMutex {
+    PyThread_type_lock _molt_lock;
+} PyMutex;
+
+typedef struct PyNumberMethods {
+    binaryfunc nb_add;
+    binaryfunc nb_subtract;
+    binaryfunc nb_multiply;
+    binaryfunc nb_remainder;
+    binaryfunc nb_divmod;
+    ternaryfunc nb_power;
+    unaryfunc nb_negative;
+    unaryfunc nb_positive;
+    unaryfunc nb_absolute;
+    inquiry nb_bool;
+    unaryfunc nb_invert;
+    binaryfunc nb_lshift;
+    binaryfunc nb_rshift;
+    binaryfunc nb_and;
+    binaryfunc nb_xor;
+    binaryfunc nb_or;
+    unaryfunc nb_int;
+    void *nb_reserved;
+    unaryfunc nb_float;
+    binaryfunc nb_inplace_add;
+    binaryfunc nb_inplace_subtract;
+    binaryfunc nb_inplace_multiply;
+    binaryfunc nb_inplace_remainder;
+    ternaryfunc nb_inplace_power;
+    binaryfunc nb_inplace_lshift;
+    binaryfunc nb_inplace_rshift;
+    binaryfunc nb_inplace_and;
+    binaryfunc nb_inplace_xor;
+    binaryfunc nb_inplace_or;
+    binaryfunc nb_floor_divide;
+    binaryfunc nb_true_divide;
+    binaryfunc nb_inplace_floor_divide;
+    binaryfunc nb_inplace_true_divide;
+    unaryfunc nb_index;
+    binaryfunc nb_matrix_multiply;
+    binaryfunc nb_inplace_matrix_multiply;
+} PyNumberMethods;
 
 typedef struct PyMappingMethods {
     lenfunc mp_length;
@@ -181,6 +236,8 @@ static inline void *PyCapsule_Import(const char *name, int no_block);
 static inline PyObject *PyObject_GetAttrString(PyObject *obj, const char *name);
 static inline int PyObject_SetAttrString(PyObject *obj, const char *name, PyObject *value);
 static inline PyObject *PyObject_CallObject(PyObject *callable, PyObject *args);
+static inline PyObject *PyObject_Vectorcall(
+    PyObject *callable, PyObject *const *args, size_t nargsf, PyObject *kwnames);
 static inline PyThreadState *PyThreadState_Get(void);
 static inline PyGILState_STATE PyGILState_Ensure(void);
 static inline void PyGILState_Release(PyGILState_STATE state);
@@ -247,12 +304,22 @@ static inline void PyGILState_Release(PyGILState_STATE state);
 
 #define Py_GIL_DISABLED 0
 #define Py_MOD_GIL_NOT_USED 1
+#define Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED 0
 #define Py_mod_exec 2
 #define Py_mod_gil 3
+#define Py_mod_multiple_interpreters 3
+
+#define PyBUF_SIMPLE 0
+#define PyBUF_WRITABLE 0x0001
+#define WAIT_LOCK 1
+#define NOWAIT_LOCK 0
+#define PY_TIMEOUT_MAX LLONG_MAX
 
 #ifndef Py_LIMITED_API
 #define Py_LIMITED_API 0x030C0000
 #endif
+
+#define PY_VECTORCALL_ARGUMENTS_OFFSET ((size_t)1 << (8 * sizeof(size_t) - 1))
 
 #ifndef PyAPI_FUNC
 #define PyAPI_FUNC(RTYPE) RTYPE
@@ -525,6 +592,69 @@ static inline void PyGILState_Release(PyGILState_STATE state) {
     }
 }
 
+static inline PyThread_type_lock PyThread_allocate_lock(void) {
+    return calloc(1, sizeof(int));
+}
+
+static inline void PyThread_free_lock(PyThread_type_lock lock) {
+    free(lock);
+}
+
+static inline int PyThread_acquire_lock(PyThread_type_lock lock, int waitflag) {
+    int *state = (int *)lock;
+    if (state == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "PyThread lock must not be NULL");
+        return 0;
+    }
+    if (*state == 0) {
+        *state = 1;
+        return 1;
+    }
+    if (waitflag == NOWAIT_LOCK) {
+        return 0;
+    }
+    PyErr_SetString(
+        PyExc_RuntimeError,
+        "blocking PyThread locks are not yet implemented in Molt's C-API layer");
+    return 0;
+}
+
+static inline PyLockStatus PyThread_acquire_lock_timed(
+    PyThread_type_lock lock,
+    PY_TIMEOUT_T microseconds,
+    int intr_flag
+) {
+    (void)microseconds;
+    (void)intr_flag;
+    return PyThread_acquire_lock(lock, NOWAIT_LOCK) ? PY_LOCK_ACQUIRED : PY_LOCK_FAILURE;
+}
+
+static inline void PyThread_release_lock(PyThread_type_lock lock) {
+    int *state = (int *)lock;
+    if (state != NULL) {
+        *state = 0;
+    }
+}
+
+static inline void PyMutex_Lock(PyMutex *mutex) {
+    if (mutex == NULL) {
+        return;
+    }
+    if (mutex->_molt_lock == NULL) {
+        mutex->_molt_lock = PyThread_allocate_lock();
+        if (mutex->_molt_lock == NULL) {
+            return;
+        }
+    }
+    (void)PyThread_acquire_lock(mutex->_molt_lock, WAIT_LOCK);
+}
+
+static inline void PyMutex_Unlock(PyMutex *mutex) {
+    if (mutex != NULL && mutex->_molt_lock != NULL) {
+        PyThread_release_lock(mutex->_molt_lock);
+    }
+}
+
 static inline void Py_IncRef(PyObject *obj) {
     if (obj != NULL) {
         molt_handle_incref(_molt_py_handle(obj));
@@ -568,6 +698,11 @@ static inline void Py_DecRef(PyObject *obj) {
         PyObject *_molt_tmp = (PyObject *)(dst);                                   \
         (dst) = (src);                                                              \
         Py_XDECREF(_molt_tmp);                                                      \
+    } while (0)
+#define Py_VISIT(op)                                                                \
+    do {                                                                           \
+        if ((op) != NULL) {                                                        \
+        }                                                                          \
     } while (0)
 
 #define Py_None _molt_pyobject_from_handle(molt_none())
@@ -690,6 +825,13 @@ static inline int PyErr_ExceptionMatches(PyObject *exc) {
         return 0;
     }
     return molt_err_matches(_molt_py_handle(exc));
+}
+
+static inline int PyErr_GivenExceptionMatches(PyObject *given, PyObject *expected) {
+    if (given == NULL || expected == NULL) {
+        return 0;
+    }
+    return molt_object_equal(_molt_py_handle(given), _molt_py_handle(expected));
 }
 
 static inline void PyErr_SetString(PyObject *exc, const char *message) {
@@ -2278,6 +2420,17 @@ static inline long long PyLong_AsLongLongAndOverflow(PyObject *obj, int *overflo
     return PyLong_AsLongLong(obj);
 }
 
+static inline long PyLong_AsLongAndOverflow(PyObject *obj, int *overflow) {
+    if (overflow != NULL) {
+        *overflow = 0;
+    }
+    return (long)PyLong_AsLongLong(obj);
+}
+
+static inline Py_ssize_t PyLong_AsSsize_t(PyObject *obj) {
+    return (Py_ssize_t)PyLong_AsLongLong(obj);
+}
+
 static inline PyObject *PyFloat_FromDouble(double value) {
     return _molt_pyobject_from_result(molt_float_from_f64(value));
 }
@@ -2310,6 +2463,19 @@ static inline PyObject *PyNumber_FloorDivide(PyObject *a, PyObject *b) {
 
 static inline PyObject *PyNumber_Long(PyObject *obj) {
     return _molt_pyobject_from_result(molt_number_long(_molt_py_handle(obj)));
+}
+
+static inline Py_ssize_t PyNumber_AsSsize_t(PyObject *obj, PyObject *exc) {
+    PyObject *index_value;
+    Py_ssize_t result;
+    (void)exc;
+    index_value = PyNumber_Long(obj);
+    if (index_value == NULL) {
+        return -1;
+    }
+    result = PyLong_AsSsize_t(index_value);
+    Py_DECREF(index_value);
+    return result;
 }
 
 static inline Py_ssize_t PySequence_Size(PyObject *seq) {
@@ -2390,6 +2556,15 @@ static inline int PyDict_SetItem(PyObject *dict, PyObject *key, PyObject *value)
 
 static inline int PyDict_SetItemString(PyObject *dict, const char *key, PyObject *value) {
     return PyMapping_SetItemString(dict, key, value);
+}
+
+static inline int PyDict_DelItem(PyObject *dict, PyObject *key) {
+    (void)dict;
+    (void)key;
+    PyErr_SetString(
+        PyExc_RuntimeError,
+        "PyDict_DelItem is not yet implemented in Molt's Python.h compatibility layer");
+    return -1;
 }
 
 static inline PyObject *PyDict_GetItem(PyObject *dict, PyObject *key) {
@@ -2479,6 +2654,33 @@ static inline PyObject *PyUnicode_FromString(const char *value) {
     return _molt_pyobject_from_handle(bits);
 }
 
+static inline PyObject *PyUnicode_Concat(PyObject *left, PyObject *right) {
+    const char *left_text;
+    const char *right_text;
+    Py_ssize_t left_len = 0;
+    Py_ssize_t right_len = 0;
+    char *buf;
+    MoltHandle bits;
+    left_text = PyUnicode_AsUTF8AndSize(left, &left_len);
+    if (left_text == NULL) {
+        return NULL;
+    }
+    right_text = PyUnicode_AsUTF8AndSize(right, &right_len);
+    if (right_text == NULL) {
+        return NULL;
+    }
+    buf = (char *)malloc((size_t)(left_len + right_len + 1));
+    if (buf == NULL) {
+        return NULL;
+    }
+    memcpy(buf, left_text, (size_t)left_len);
+    memcpy(buf + left_len, right_text, (size_t)right_len);
+    buf[left_len + right_len] = '\0';
+    bits = molt_string_from((const uint8_t *)buf, (uint64_t)(left_len + right_len));
+    free(buf);
+    return _molt_pyobject_from_result(bits);
+}
+
 static inline const char *PyUnicode_AsUTF8AndSize(PyObject *value, Py_ssize_t *size_out) {
     uint64_t len = 0;
     const uint8_t *ptr = molt_string_as_ptr(_molt_py_handle(value), &len);
@@ -2503,6 +2705,30 @@ static inline Py_ssize_t PyUnicode_GetLength(PyObject *value) {
     return len;
 }
 
+static inline int PyUnicode_Compare(PyObject *left, PyObject *right) {
+    const char *left_text;
+    const char *right_text;
+    Py_ssize_t left_len = 0;
+    Py_ssize_t right_len = 0;
+    int cmp;
+    left_text = PyUnicode_AsUTF8AndSize(left, &left_len);
+    if (left_text == NULL) {
+        return -1;
+    }
+    right_text = PyUnicode_AsUTF8AndSize(right, &right_len);
+    if (right_text == NULL) {
+        return -1;
+    }
+    cmp = memcmp(left_text, right_text, (size_t)(left_len < right_len ? left_len : right_len));
+    if (cmp != 0) {
+        return cmp < 0 ? -1 : 1;
+    }
+    if (left_len == right_len) {
+        return 0;
+    }
+    return left_len < right_len ? -1 : 1;
+}
+
 static inline PyObject *PyUnicode_AsUTF8String(PyObject *value) {
     const char *text;
     Py_ssize_t len = 0;
@@ -2518,6 +2744,8 @@ static inline PyObject *PyUnicode_AsASCIIString(PyObject *value) {
 }
 
 #define PyUnicode_4BYTE_KIND 4
+#define Py_UNICODE_ISSPACE(ch) \
+    ((ch) == ' ' || (ch) == '\t' || (ch) == '\n' || (ch) == '\r' || (ch) == '\f' || (ch) == '\v')
 
 static inline PyObject *PyBytes_FromStringAndSize(const char *value, Py_ssize_t size) {
     if (value == NULL && size > 0) {
@@ -2731,6 +2959,14 @@ static inline PyObject *PyList_GetItem(PyObject *list, Py_ssize_t index) {
     return result;
 }
 
+static inline PyObject *PyList_GetItemRef(PyObject *list, Py_ssize_t index) {
+    PyObject *item = PyList_GetItem(list, index);
+    if (item != NULL) {
+        Py_INCREF(item);
+    }
+    return item;
+}
+
 static inline int PyList_SetItem(PyObject *list, Py_ssize_t index, PyObject *value) {
     MoltHandle key = molt_int_from_i64((int64_t)index);
     int rc;
@@ -2847,6 +3083,52 @@ static inline PyObject *PyTuple_Pack(Py_ssize_t n, ...) {
 #define PyTuple_GET_ITEM(op, index) PyTuple_GetItem((PyObject *)(op), (index))
 #define PyTuple_SET_ITEM(op, index, value)                                         \
     PyTuple_SetItem((PyObject *)(op), (index), (PyObject *)(value))
+
+static inline size_t PyVectorcall_NARGS(size_t nargsf) {
+    return nargsf & ~PY_VECTORCALL_ARGUMENTS_OFFSET;
+}
+
+static inline PyObject *PyObject_Vectorcall(
+    PyObject *callable,
+    PyObject *const *args,
+    size_t nargsf,
+    PyObject *kwnames
+) {
+    Py_ssize_t nargs = (Py_ssize_t)PyVectorcall_NARGS(nargsf);
+    PyObject *call_args;
+    PyObject *result;
+    Py_ssize_t i;
+    if (kwnames != NULL && PyTuple_Size(kwnames) != 0) {
+        PyErr_SetString(
+            PyExc_RuntimeError,
+            "PyObject_Vectorcall keyword arguments are not yet implemented in Molt's C-API layer");
+        return NULL;
+    }
+    if (nargs == 0) {
+        return PyObject_CallObject(callable, NULL);
+    }
+    call_args = PyTuple_New(nargs);
+    if (call_args == NULL) {
+        return NULL;
+    }
+    for (i = 0; i < nargs; i++) {
+        PyObject *item = args != NULL ? args[i] : NULL;
+        if (item == NULL) {
+            Py_DECREF(call_args);
+            PyErr_SetString(PyExc_TypeError, "PyObject_Vectorcall received NULL positional arg");
+            return NULL;
+        }
+        Py_INCREF(item);
+        if (PyTuple_SetItem(call_args, i, item) < 0) {
+            Py_DECREF(item);
+            Py_DECREF(call_args);
+            return NULL;
+        }
+    }
+    result = PyObject_CallObject(callable, call_args);
+    Py_DECREF(call_args);
+    return result;
+}
 
 #define PyList_GET_SIZE(op) PyList_Size((PyObject *)(op))
 #define PyList_GET_ITEM(op, index) PyList_GetItem((PyObject *)(op), (index))
@@ -3067,8 +3349,11 @@ static inline PyTypeObject *_molt_builtin_type_object_borrowed(const char *name)
 #define PyBytes_Type (*_molt_builtin_type_object_borrowed("bytes"))
 #define PyUnicode_Type (*_molt_builtin_type_object_borrowed("str"))
 #define PyComplex_Type (*_molt_builtin_type_object_borrowed("complex"))
+#define PyTuple_Type (*_molt_builtin_type_object_borrowed("tuple"))
+#define PyType_Type (*_molt_builtin_type_object_borrowed("type"))
 #define PySet_Type (*_molt_builtin_type_object_borrowed("set"))
 #define PyFrozenSet_Type (*_molt_builtin_type_object_borrowed("frozenset"))
+#define PyUnicode_GET_LENGTH(op) PyUnicode_GetLength((PyObject *)(op))
 #define PyFloat_AS_DOUBLE(op) PyFloat_AsDouble((PyObject *)(op))
 
 static inline int PyObject_TypeCheck(PyObject *ob, PyTypeObject *type) {
@@ -3078,6 +3363,8 @@ static inline int PyObject_TypeCheck(PyObject *ob, PyTypeObject *type) {
     return _molt_pyarg_object_matches_type(
         _molt_py_handle(ob), _molt_py_handle((PyObject *)type));
 }
+
+#define PyType_Check(op) PyObject_TypeCheck((PyObject *)(op), &PyType_Type)
 
 static inline int PyTuple_Check(PyObject *obj) {
     MoltHandle tuple_bits = _molt_builtin_type_handle_cached("tuple");
@@ -3101,6 +3388,10 @@ static inline int PyDict_Check(PyObject *obj) {
         return 0;
     }
     return _molt_pyarg_object_matches_type(_molt_py_handle(obj), dict_bits);
+}
+
+static inline int PyDict_CheckExact(PyObject *obj) {
+    return PyDict_Check(obj);
 }
 
 static inline int PyUnicode_Check(PyObject *obj) {

@@ -73,6 +73,7 @@ def _write_extension_scan_project(project_root: Path) -> None:
                 "    (void)PyIter_Next;",
                 "    (void)PyOS_string_to_double;",
                 "    (void)PyObject_Vectorcall;",
+                "    (void)PyObject_CallFinalizerFromDealloc;",
                 "    return value;",
                 "}",
                 "",
@@ -107,7 +108,7 @@ def _write_extension_scan_directory_project(project_root: Path) -> None:
                 "#include <Python.h>",
                 "int alpha(void) {",
                 "    (void)PyLong_FromLong;",
-                "    (void)PyObject_Vectorcall;",
+                "    (void)PyObject_CallFinalizerFromDealloc;",
                 "    return 0;",
                 "}",
                 "",
@@ -119,7 +120,7 @@ def _write_extension_scan_directory_project(project_root: Path) -> None:
             [
                 "#include <Python.h>",
                 "int beta(void) {",
-                "    (void)PyObject_Vectorcall;",
+                "    (void)PyObject_CallFinalizerFromDealloc;",
                 "    return 0;",
                 "}",
                 "",
@@ -278,7 +279,8 @@ def test_extension_scan_reports_missing_symbols_without_gate(
     assert "PyIter_Check" in data["supported_symbols"]
     assert "PyIter_Next" in data["supported_symbols"]
     assert "PyOS_string_to_double" in data["supported_symbols"]
-    assert "PyObject_Vectorcall" in data["missing_symbols"]
+    assert "PyObject_Vectorcall" in data["supported_symbols"]
+    assert "PyObject_CallFinalizerFromDealloc" in data["missing_symbols"]
     assert "PyLong_FromLong" in data["supported_symbols"]
 
 
@@ -296,7 +298,7 @@ def test_extension_scan_fail_on_missing_returns_error(tmp_path: Path, capsys) ->
     assert rc == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "error"
-    assert "PyObject_Vectorcall" in payload["data"]["missing_symbols"]
+    assert "PyObject_CallFinalizerFromDealloc" in payload["data"]["missing_symbols"]
 
 
 def test_extension_scan_supports_directory_sources(tmp_path: Path, capsys) -> None:
@@ -315,9 +317,9 @@ def test_extension_scan_supports_directory_sources(tmp_path: Path, capsys) -> No
     assert payload["status"] == "error"
     data = payload["data"]
     assert data["source_count"] == 2
-    assert data["missing_symbol_frequency"]["PyObject_Vectorcall"] == 2
+    assert data["missing_symbol_frequency"]["PyObject_CallFinalizerFromDealloc"] == 2
     assert data["top_missing_symbols"][0] == {
-        "symbol": "PyObject_Vectorcall",
+        "symbol": "PyObject_CallFinalizerFromDealloc",
         "file_count": 2,
     }
     assert data["coverage_ratio"] < 1.0
@@ -334,7 +336,7 @@ def test_extension_scan_supports_tar_archive_sources(
                 "#include <Python.h>",
                 "int demo(void) {",
                 "    (void)PyLong_FromLong;",
-                "    (void)PyObject_Vectorcall;",
+                "    (void)PyObject_CallFinalizerFromDealloc;",
                 "    return 0;",
                 "}",
                 "",
@@ -357,8 +359,8 @@ def test_extension_scan_supports_tar_archive_sources(
     archive_label = f"{archive_path}!pkg/demoext.c"
     assert data["source_count"] == 1
     assert "PyLong_FromLong" in data["supported_symbols"]
-    assert "PyObject_Vectorcall" in data["missing_symbols"]
-    assert data["missing_symbol_frequency"]["PyObject_Vectorcall"] == 1
+    assert "PyObject_CallFinalizerFromDealloc" in data["missing_symbols"]
+    assert data["missing_symbol_frequency"]["PyObject_CallFinalizerFromDealloc"] == 1
     assert archive_label in data["required_by_file"]
 
 
@@ -415,7 +417,7 @@ def test_extension_scan_ignores_locally_defined_py_symbols(
                 "int demo(void) {",
                 "    (void)PyLocalMacro;",
                 "    (void)PyLocalHelper;",
-                "    (void)PyObject_Vectorcall;",
+                "    (void)PyObject_CallFinalizerFromDealloc;",
                 "    return 0;",
                 "}",
                 "",
@@ -448,7 +450,7 @@ def test_extension_scan_ignores_locally_defined_py_symbols(
     assert rc == 1
     payload = json.loads(capsys.readouterr().out)
     data = payload["data"]
-    assert "PyObject_Vectorcall" in data["missing_symbols"]
+    assert "PyObject_CallFinalizerFromDealloc" in data["missing_symbols"]
     assert "PyLocalMacro" not in data["missing_symbols"]
     assert "PyLocalHelper" not in data["missing_symbols"]
     local_defs = data["locally_defined_by_file"][str(source_path)]
@@ -1106,8 +1108,10 @@ def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
                 "    PyObject *dims_tuple = PyArray_IntTupleFromIntp(PyArray_NDIM(arr), PyArray_DIMS(arr));",
                 "    int writeback = PyArray_ResolveWritebackIfCopy(arr);",
                 "    int is_aligned = PyArray_ISALIGNED(arr);",
+                "    int is_bool = PyArray_ISBOOL(arr);",
                 "    int is_integer = PyArray_ISINTEGER(arr);",
                 "    int is_object = PyArray_ISOBJECT(arr);",
+                "    int is_byteswapped = PyArray_ISBYTESWAPPED(arr);",
                 "    int is_writeable = PyArray_ISWRITEABLE(arr);",
                 "    int one_segment = PyArray_ISONESEGMENT(arr);",
                 "    PyObject *base = PyArray_BASE(arr);",
@@ -1121,10 +1125,14 @@ def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
                 "    PyArray_DTypeMeta *object_dtype = PyArray_ObjectDType;",
                 "    PyArray_DTypeMeta *complex_dtype = PyArray_PyComplexDType;",
                 "    PyArray_DTypeMeta *default_int_dtype = PyArray_DefaultIntDType;",
+                "    PyArray_DTypeMeta *int_abstract_dtype = PyArray_IntAbstractDType;",
                 "    NPY_ORDER order = NPY_CORDER;",
                 "    int order_ok = PyArray_OrderConverter(Py_None, &order);",
+                "    npy_intp array_size = PyArray_Size(obj);",
+                "    PyObject *int_from_intp = PyArray_PyIntFromIntp(7);",
                 "    npy_bool can_cast_type = PyArray_CanCastTypeTo(descr, scalar_descr, NPY_SAFE_CASTING);",
                 "    npy_bool can_cast_arr = PyArray_CanCastArrayTo(arr, descr, NPY_SAFE_CASTING);",
+                "    int can_cast_safe = PyArray_CanCastSafely(NPY_INT, NPY_LONG);",
                 "    PyObject *new_like = PyArray_NewLikeArray(arr, NPY_KEEPORDER, descr, 0);",
                 "    PyObject *view2 = PyArray_View(arr, descr, NULL);",
                 "    PyObject *transposed = PyArray_Transpose(arr, NULL);",
@@ -1136,6 +1144,7 @@ def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
                 "    npy_intp view_offset = 0;",
                 "    npy_intp safe_cast = PyArray_SafeCast(descr, scalar_descr, &view_offset, NPY_SAFE_CASTING, 1);",
                 "    PyObject *scalar = PyArray_Scalar(NULL, descr, obj);",
+                "    PyObject *scalar2 = PyArray_ToScalar(NULL, arr);",
                 "    PyObject *tuple_items[1] = {obj};",
                 "    PyObject *items_tuple = PyArray_TupleFromItems(1, tuple_items, 1);",
                 "    PyArray_UpdateFlags(arr, NPY_ARRAY_ALIGNED | NPY_ARRAY_NOTSWAPPED);",
@@ -1147,14 +1156,23 @@ def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
                 "    PyObject *fields = PyDataType_FIELDS(descr);",
                 "    int is_unsized = PyDataType_ISUNSIZED(descr);",
                 "    int is_legacy = PyDataType_ISLEGACY(descr);",
+                "    int dtype_not_swapped = PyDataType_ISNOTSWAPPED(descr);",
                 "    npy_intp *shape = PyArray_SHAPE(arr);",
                 "    PyArray_ArrayDescr array_descr = {descr, NULL};",
                 "    PyArray_Chunk chunk = {0};",
+                "    PyArrayMapIterObject map_iter = {0};",
                 "    PyArray_StringDTypeObject string_dtype_obj = {0};",
+                "    PyArray_GetItemFunc *get_item = NULL;",
                 "    PyArrayMethod_GetTraverseLoop *get_traverse = NULL;",
+                "    PyArrayMethod_GetMaskedStridedLoop *get_masked = NULL;",
+                "    PyArrayMethod_ResolveDescriptors *resolve_descrs = NULL;",
+                "    PyArrayMethod_PromoterFunction *promoter = NULL;",
                 "    NPY_ARRAYMETHOD_FLAGS method_flags = NPY_METH_REQUIRES_PYAPI;",
                 "    int combined_flags = PyArrayMethod_COMBINED_FLAGS(method_flags, NPY_METH_SUPPORTS_UNALIGNED);",
+                "    int minimal_flags = PyArrayMethod_MINIMAL_FLAGS;",
+                "    PyArrayMethod_SortParameters sort_params = {0};",
                 "    PyTypeObject *method_type = &PyArrayMethod_Type;",
+                "    PyTypeObject *bound_method_type = &PyBoundArrayMethod_Type;",
                 "    PyUFuncGenericFunction generic_fn = NULL;",
                 "    PyTypeObject *ufunc_type = &PyUFunc_Type;",
                 "    int ufunc_none = PyUFunc_None;",
@@ -1163,6 +1181,55 @@ def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
                 "    (void)PyArray_AddCastingImplementation_FromSpec;",
                 "    (void)PyArrayMethod_FromSpec_int;",
                 "    (void)PyUFunc_AddLoop;",
+                "    (void)PyUFunc_AddLoopFromSpec_int;",
+                "    (void)PyArray_ImportNumPyAPI;",
+                "    int pybuf_simple = PyBUF_SIMPLE;",
+                "    int pybuf_writable = PyBUF_WRITABLE;",
+                "    int mod_multi = Py_mod_multiple_interpreters;",
+                "    size_t vector_nargs = PyVectorcall_NARGS(1);",
+                "    PyThread_type_lock lock = NULL;",
+                "    PyMutex mutex = {0};",
+                "    PyLockStatus lock_status = PY_LOCK_FAILURE;",
+                "    PyTypeObject *tuple_type = &PyTuple_Type;",
+                "    PyTypeObject *type_type = &PyType_Type;",
+                "    PyNumberMethods numbers = {0};",
+                "    int overflow = 0;",
+                "    long long_val = PyLong_AsLongAndOverflow(PyLong_FromLong(1), &overflow);",
+                "    Py_ssize_t ssize_val = PyLong_AsSsize_t(PyLong_FromLong(2));",
+                "    Py_ssize_t number_ssize = PyNumber_AsSsize_t(PyLong_FromLong(3), NULL);",
+                "    PyObject *unicode_concat = PyUnicode_Concat(PyUnicode_FromString(\"a\"), PyUnicode_FromString(\"b\"));",
+                "    int unicode_cmp = PyUnicode_Compare(PyUnicode_FromString(\"a\"), PyUnicode_FromString(\"b\"));",
+                "    Py_ssize_t unicode_len = PyUnicode_GET_LENGTH(PyUnicode_FromString(\"abc\"));",
+                "    int unicode_space = Py_UNICODE_ISSPACE(' ');",
+                "    int dict_exact = PyDict_CheckExact(PyDict_New());",
+                "    int err_match = PyErr_GivenExceptionMatches(PyExc_TypeError, PyExc_TypeError);",
+                "    int type_check = PyType_Check((PyObject *)&PyType_Type);",
+                "    int multi_interp_not_supported = Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED;",
+                "    PyUFunc_LoopSlot loop_slot = {0};",
+                "    (void)PyObject_Vectorcall;",
+                "    (void)PyThread_allocate_lock;",
+                "    (void)PyThread_free_lock;",
+                "    (void)PyThread_acquire_lock;",
+                "    (void)PyThread_acquire_lock_timed;",
+                "    (void)PyThread_release_lock;",
+                "    (void)PyMutex_Lock;",
+                "    (void)PyMutex_Unlock;",
+                "    (void)PyDict_DelItem;",
+                "    (void)PyList_GetItemRef;",
+                "    (void)PyArray_CopyObject;",
+                "    (void)PyArray_PromoteDTypeSequence;",
+                "    (void)PyArray_GenericBinaryFunction;",
+                "    (void)PyArray_GenericReduceFunction;",
+                "    (void)PyArray_GetCastingImpl;",
+                "    (void)PyArray_CastDescrToDType;",
+                "    (void)PyArray_AssignRawScalar;",
+                "    (void)PyArray_GetStridedCopyFn;",
+                "    (void)PyArray_CastRawArrays;",
+                "    (void)PyArray_PrepareTwoRawArrayIter;",
+                "    (void)PyArray_LookupSpecial;",
+                "    (void)PyArray_LookupSpecial_OnInstance;",
+                "    (void)PyUFunc_FromFuncAndData;",
+                "    (void)PyUFunc_FromFuncAndDataAndSignature;",
                 "    import_array1(-1);",
                 "    if (descr != NULL) {",
                 "        PyMem_Free(descr);",
@@ -1188,8 +1255,10 @@ def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
                 "    (void)dims_tuple;",
                 "    (void)writeback;",
                 "    (void)is_aligned;",
+                "    (void)is_bool;",
                 "    (void)is_integer;",
                 "    (void)is_object;",
+                "    (void)is_byteswapped;",
                 "    (void)is_writeable;",
                 "    (void)one_segment;",
                 "    (void)base;",
@@ -1203,10 +1272,14 @@ def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
                 "    (void)object_dtype;",
                 "    (void)complex_dtype;",
                 "    (void)default_int_dtype;",
+                "    (void)int_abstract_dtype;",
                 "    (void)order;",
                 "    (void)order_ok;",
+                "    (void)array_size;",
+                "    (void)int_from_intp;",
                 "    (void)can_cast_type;",
                 "    (void)can_cast_arr;",
+                "    (void)can_cast_safe;",
                 "    (void)new_like;",
                 "    (void)view2;",
                 "    (void)transposed;",
@@ -1217,6 +1290,7 @@ def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
                 "    (void)view_offset;",
                 "    (void)safe_cast;",
                 "    (void)scalar;",
+                "    (void)scalar2;",
                 "    (void)items_tuple;",
                 "    (void)long_dtype;",
                 "    (void)float_dtype;",
@@ -1226,18 +1300,49 @@ def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
                 "    (void)fields;",
                 "    (void)is_unsized;",
                 "    (void)is_legacy;",
+                "    (void)dtype_not_swapped;",
                 "    (void)shape;",
                 "    (void)array_descr;",
                 "    (void)chunk;",
+                "    (void)map_iter;",
                 "    (void)string_dtype_obj;",
+                "    (void)get_item;",
                 "    (void)get_traverse;",
+                "    (void)get_masked;",
+                "    (void)resolve_descrs;",
+                "    (void)promoter;",
                 "    (void)combined_flags;",
+                "    (void)minimal_flags;",
+                "    (void)sort_params;",
                 "    (void)method_type;",
+                "    (void)bound_method_type;",
                 "    (void)has_c;",
                 "    (void)has_f;",
                 "    (void)generic_fn;",
                 "    (void)ufunc_type;",
                 "    (void)ufunc_none;",
+                "    (void)pybuf_simple;",
+                "    (void)pybuf_writable;",
+                "    (void)mod_multi;",
+                "    (void)vector_nargs;",
+                "    (void)lock;",
+                "    (void)mutex;",
+                "    (void)lock_status;",
+                "    (void)tuple_type;",
+                "    (void)type_type;",
+                "    (void)numbers;",
+                "    (void)long_val;",
+                "    (void)ssize_val;",
+                "    (void)number_ssize;",
+                "    (void)unicode_concat;",
+                "    (void)unicode_cmp;",
+                "    (void)unicode_len;",
+                "    (void)unicode_space;",
+                "    (void)dict_exact;",
+                "    (void)err_match;",
+                "    (void)type_check;",
+                "    (void)multi_interp_not_supported;",
+                "    (void)loop_slot;",
                 "    (void)fp_errors;",
                 "    return (int)(nd + size + is_int + is_scalar + is_datetime);",
                 "}",
