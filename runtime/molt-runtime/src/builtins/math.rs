@@ -11,11 +11,11 @@ use crate::{
     molt_iter_next, molt_mul, molt_sorted_builtin, obj_from_bits, object_type_id, raise_exception,
     raise_not_iterable, runtime_state, seq_vec_ref, string_bytes, string_len, to_i64, type_of_bits,
 };
-use digest::Digest;
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use sha2::Sha512;
+use sha2::digest::Digest;
 
 #[derive(Debug)]
 enum RealValue {

@@ -82,6 +82,7 @@ def test_symphony_run_main_uses_env_file_and_launches(
     assert env["MOLT_SYMPHONY_SYNC_REMOTE"] == "origin"
     assert env["MOLT_SYMPHONY_SYNC_BRANCH"] == "main"
     assert env["MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS"] == "adpena,symphony"
+    assert env["MOLT_QUINT_NODE_FALLBACK"] == "npx -y node@22"
     assert env["MOLT_SYMPHONY_ENFORCE_ORIGIN"] == "1"
     assert env["MOLT_SYMPHONY_REQUIRE_CSRF_HEADER"] == "1"
     assert env["MOLT_SYMPHONY_EVENT_QUEUE_MAX"] == "8192"

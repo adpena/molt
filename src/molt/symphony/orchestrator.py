@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import queue
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -2464,25 +2466,27 @@ class SymphonyOrchestrator:
             )
         if suite == "quint-run":
             return _run_tool_command(
-                [
-                    "quint",
-                    "run",
-                    spec_path,
-                    f"--invariant={invariant}",
-                    f"--max-steps={max_steps}",
-                ],
+                _quint_command_with_fallback(
+                    [
+                        "run",
+                        spec_path,
+                        f"--invariant={invariant}",
+                        f"--max-steps={max_steps}",
+                    ]
+                ),
                 cwd=workspace_path,
                 max_output_chars=max_output_chars,
                 timeout_seconds=600,
             )
         if suite == "quint-verify":
             return _run_tool_command(
-                [
-                    "quint",
-                    "verify",
-                    spec_path,
-                    f"--invariant={invariant}",
-                ],
+                _quint_command_with_fallback(
+                    [
+                        "verify",
+                        spec_path,
+                        f"--invariant={invariant}",
+                    ]
+                ),
                 cwd=workspace_path,
                 max_output_chars=max_output_chars,
                 timeout_seconds=900,
@@ -2812,6 +2816,23 @@ def _coerce_positive_int(value: Any, *, default: int) -> int:
 
 def _python_runner_args() -> list[str]:
     return ["uv", "run", "--python", "3.12", "python3"]
+
+
+def _quint_command_with_fallback(args: list[str]) -> list[str]:
+    raw = str(os.environ.get("MOLT_QUINT_NODE_FALLBACK", "")).strip()
+    if not raw:
+        return ["quint", *args]
+    try:
+        prefix = [part for part in shlex.split(raw) if part]
+    except ValueError:
+        return ["quint", *args]
+    if not prefix:
+        return ["quint", *args]
+    launcher = prefix[0]
+    if shutil.which(launcher) is None and not Path(launcher).exists():
+        return ["quint", *args]
+    quint_bin = shutil.which("quint") or "quint"
+    return [*prefix, quint_bin, *args]
 
 
 def _run_tool_command(

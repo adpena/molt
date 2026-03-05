@@ -260,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
     env.setdefault("MOLT_SYMPHONY_SYNC_REMOTE", "origin")
     env.setdefault("MOLT_SYMPHONY_SYNC_BRANCH", "main")
     env.setdefault("MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS", "adpena,symphony")
+    env.setdefault("MOLT_QUINT_NODE_FALLBACK", "npx -y node@22")
     _ensure_dashboard_security_defaults(env=env, ext_root=ext_root, port=args.port)
 
     if not env.get("MOLT_LINEAR_PROJECT_SLUG"):
