@@ -21,7 +21,11 @@ from threading import BoundedSemaphore, Lock, Thread
 from typing import Any, Callable, Protocol
 from urllib.parse import parse_qs, unquote, urlparse, urlsplit
 
-from .dashboard_assets import DASHBOARD_HTML, fetch_dashboard_asset
+from .dashboard_assets import (
+    DASHBOARD_HTML,
+    fetch_dashboard_asset,
+    fetch_dashboard_kernel_wasm_asset,
+)
 from .observability_presenter import (
     load_security_events_summary,
     project_state_payload,
@@ -720,6 +724,8 @@ class DashboardServer:
                 return (
                     path == "/"
                     or path == "/dashboard.css"
+                    or path == "/dashboard-kernel-bridge.js"
+                    or path == "/dashboard-kernel.wasm"
                     or path == "/dashboard.js"
                     or path == "/api/v1/state"
                     or path == "/api/v1/durable"
@@ -779,6 +785,37 @@ class DashboardServer:
                         body=static_asset.body,
                         cache_control="public, max-age=300, immutable",
                         etag=static_asset.etag,
+                    )
+                    return
+                if path == "/dashboard-kernel.wasm":
+                    wasm_asset = fetch_dashboard_kernel_wasm_asset()
+                    if wasm_asset is None:
+                        self._write_json(
+                            HTTPStatus.NOT_FOUND,
+                            {
+                                "error": {
+                                    "code": "wasm_kernel_unavailable",
+                                    "message": (
+                                        "Dashboard WASM kernel not found; set "
+                                        "MOLT_SYMPHONY_DASHBOARD_KERNEL_WASM_PATH "
+                                        "or build tools/symphony_dashboard_wasm.py output."
+                                    ),
+                                }
+                            },
+                        )
+                        return
+                    if self.headers.get("If-None-Match") == wasm_asset.etag:
+                        self._write_not_modified(
+                            cache_control="public, max-age=60",
+                            etag=wasm_asset.etag,
+                            include_frame_options=False,
+                        )
+                        return
+                    self._write_static_asset(
+                        content_type=wasm_asset.content_type,
+                        body=wasm_asset.body,
+                        cache_control="public, max-age=60",
+                        etag=wasm_asset.etag,
                     )
                     return
 

@@ -253,6 +253,7 @@ def test_dashboard_contains_realtime_ui() -> None:
         assert status == 200
         assert "Molt Symphony Control" in body
         assert '<link rel="stylesheet" href="/dashboard.css" />' in body
+        assert '<script src="/dashboard-kernel-bridge.js"></script>' in body
         assert '<script src="/dashboard.js"></script>' in body
         assert "Health & Throughput KPIs" in body
         assert "Human Action Queue" in body
@@ -319,6 +320,29 @@ def test_dashboard_static_assets_are_served() -> None:
         ) == "interest-cohort=()"
         assert exc_info.value.read() == b""
         with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/dashboard-kernel-bridge.js", timeout=5.0
+        ) as resp:
+            bridge_js = resp.read().decode("utf-8")
+            assert int(resp.status) == 200
+            assert "application/javascript" in (resp.headers.get("Content-Type") or "")
+            assert (
+                resp.headers.get("Cache-Control") or ""
+            ) == "public, max-age=300, immutable"
+            bridge_etag = resp.headers.get("ETag")
+            assert bridge_etag
+            assert "__MOLT_SYMPHONY_KERNEL__" in bridge_js
+            assert "loadWasmKernel" in bridge_js
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/dashboard-kernel-bridge.js",
+            method="GET",
+            headers={"If-None-Match": str(bridge_etag)},
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(req, timeout=5.0)
+        assert exc_info.value.code == 304
+        assert (exc_info.value.headers.get("ETag") or "") == str(bridge_etag)
+        assert exc_info.value.read() == b""
+        with urllib.request.urlopen(
             f"http://127.0.0.1:{port}/dashboard.js", timeout=5.0
         ) as resp:
             js = resp.read().decode("utf-8")
@@ -349,6 +373,26 @@ def test_dashboard_static_assets_are_served() -> None:
             exc_info.value.headers.get("Permissions-Policy") or ""
         ) == "interest-cohort=()"
         assert exc_info.value.read() == b""
+    finally:
+        server.stop()
+
+
+def test_dashboard_kernel_wasm_returns_not_found_when_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    missing = tmp_path / "missing_dashboard_kernel.wasm"
+    monkeypatch.setenv("MOLT_SYMPHONY_DASHBOARD_KERNEL_WASM_PATH", str(missing))
+    provider = _Provider()
+    server = DashboardServer(provider=provider, port=0)
+    port = server.start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/dashboard-kernel.wasm", timeout=5.0
+            )
+        payload = json.loads(exc_info.value.read().decode("utf-8"))
+        assert exc_info.value.code == 404
+        assert payload["error"]["code"] == "wasm_kernel_unavailable"
     finally:
         server.stop()
 
