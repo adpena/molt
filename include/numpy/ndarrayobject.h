@@ -36,6 +36,20 @@ static inline npy_intp _molt_pyarray_size(const PyArrayObject *array_obj) {
     return size;
 }
 
+#define PyArray_BoolDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("bool"))
+#define PyArray_PyLongDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("int"))
+#define PyArray_PyFloatDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("float"))
+#define PyArray_StringDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("str"))
+#define PyArray_IntpDType PyArray_PyLongDType
+#define PyArray_UIntpDType PyArray_PyLongDType
+#define PyArray_BytesDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("bytes"))
+#define PyArray_UnicodeDType PyArray_StringDType
+#define PyArray_ObjectDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("object"))
+#define PyArray_PyComplexDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("complex"))
+#define PyArray_CFloatDType PyArray_PyComplexDType
+#define PyArray_CDoubleDType PyArray_PyComplexDType
+#define PyArray_CLongDoubleDType PyArray_PyComplexDType
+#define PyArray_DefaultIntDType PyArray_PyLongDType
 #define PyArray_Check(op) PyObject_TypeCheck((PyObject *)(op), &PyArray_Type)
 #define PyArray_CheckExact(op) PyObject_TypeCheck((PyObject *)(op), &PyArray_Type)
 #define PyArray_DescrCheck(op) PyObject_TypeCheck((PyObject *)(op), &PyArrayDescr_Type)
@@ -445,6 +459,12 @@ static inline int PyArray_CastScalarToCtype(
     (void)ctypeptr;
     (void)outcode;
     return _molt_numpy_unavailable_i32("PyArray_CastScalarToCtype");
+}
+
+static inline int PyArray_BufferConverter(PyObject *obj, PyArray_Chunk *buf) {
+    (void)obj;
+    (void)buf;
+    return _molt_numpy_unavailable_i32("PyArray_BufferConverter");
 }
 
 static inline int PyArray_CompareLists(
@@ -1327,6 +1347,16 @@ static inline PyObject *PyArray_Ravel(PyArrayObject *array_obj, NPY_ORDER order)
     return PyArray_View(array_obj, NULL, NULL);
 }
 
+static inline PyObject *PyArray_Any(
+    PyArrayObject *self,
+    int axis,
+    PyArrayObject *out
+) {
+    (void)self;
+    (void)axis;
+    (void)out;
+    return _molt_numpy_unavailable_obj("PyArray_Any");
+}
 static inline double PyArray_GetPriority(PyObject *obj, double default_priority) {
     (void)obj;
     return default_priority;

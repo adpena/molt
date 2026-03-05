@@ -110,7 +110,6 @@ static inline int PyUFunc_ImportUFuncAPI(void) {
 #define PyUFunc_RegisterLoopForDescr(...) _molt_numpy_unavailable_i32("PyUFunc_RegisterLoopForDescr")
 #define PyUFunc_ReplaceLoopBySignature(...) _molt_numpy_unavailable_i32("PyUFunc_ReplaceLoopBySignature")
 #define PyUFunc_AddLoopFromSpec(...) _molt_numpy_unavailable_i32("PyUFunc_AddLoopFromSpec")
-#define PyUFunc_AddLoopsFromSpecs(...) _molt_numpy_unavailable_i32("PyUFunc_AddLoopsFromSpecs")
 #define PyUFunc_AddPromoter(...) _molt_numpy_unavailable_i32("PyUFunc_AddPromoter")
 #define PyUFunc_AddWrappingLoop(...) _molt_numpy_unavailable_i32("PyUFunc_AddWrappingLoop")
 #define PyUFunc_DefaultTypeResolver(...) _molt_numpy_unavailable_i32("PyUFunc_DefaultTypeResolver")
@@ -146,6 +145,14 @@ static inline int PyUFunc_AddLoopFromSpec_int(
     PyErr_SetString(
         PyExc_RuntimeError,
         "PyUFunc_AddLoopFromSpec_int is not yet implemented in Molt's NumPy compatibility layer");
+    return -1;
+}
+
+static inline int PyUFunc_AddLoopsFromSpecs(PyUFunc_LoopSlot *slots) {
+    (void)slots;
+    PyErr_SetString(
+        PyExc_RuntimeError,
+        "PyUFunc_AddLoopsFromSpecs is not yet implemented in Molt's NumPy compatibility layer");
     return -1;
 }
 
