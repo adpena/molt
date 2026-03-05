@@ -15,6 +15,7 @@ _GIT_SYNC_CONFLICT_PATTERNS = (
     "would be overwritten by merge",
     "would be overwritten by checkout",
     "please commit your changes or stash them before you merge",
+    "tools/symphony_git_sync.sh: no such file or directory",
 )
 
 
