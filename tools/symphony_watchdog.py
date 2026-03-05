@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import shlex
 import subprocess
@@ -9,7 +10,12 @@ import sys
 import time
 from pathlib import Path
 from urllib.error import URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
+
+try:
+    import tools.symphony_launchd as symphony_launchd
+except ImportError:  # pragma: no cover - script execution path.
+    import symphony_launchd  # type: ignore[no-redef]
 
 
 DEFAULT_PATTERNS = (
@@ -21,6 +27,8 @@ DEFAULT_PATTERNS = (
     "tools/symphony_watchdog.py",
     "tools/symphony_launchd.py",
 )
+DEFAULT_EXT_ROOT = Path("/Volumes/APDataStore/Molt")
+DEFAULT_SYMPHONY_PARENT_ROOT = Path("/Volumes/APDataStore/symphony")
 
 
 def _utc_now_iso() -> str:
@@ -91,6 +99,68 @@ def _bool_value(value: str | None, *, default: bool) -> bool:
     return default
 
 
+def _path_from_env(
+    env_values: dict[str, str],
+    key: str,
+    *,
+    default: Path,
+    fallback_env_key: str | None = None,
+) -> Path:
+    raw = str(env_values.get(key) or "").strip()
+    if not raw and fallback_env_key:
+        raw = str(os.environ.get(fallback_env_key) or "").strip()
+    return Path(raw or str(default)).expanduser()
+
+
+def _external_roots_available(
+    *, ext_root: Path, symphony_parent_root: Path
+) -> tuple[bool, tuple[Path, ...]]:
+    missing = tuple(
+        path
+        for path in (ext_root, symphony_parent_root)
+        if not (path.exists() and path.is_dir())
+    )
+    return (not missing, missing)
+
+
+def _load_api_token(env_values: dict[str, str]) -> str | None:
+    for key in ("MOLT_SYMPHONY_API_TOKEN", "MOLT_SYMPHONY_DASHBOARD_TOKEN"):
+        candidate_token = str(
+            env_values.get(key) or os.environ.get(key) or ""
+        ).strip()
+        if candidate_token:
+            return candidate_token
+    token_file_raw = str(
+        env_values.get("MOLT_SYMPHONY_API_TOKEN_FILE")
+        or os.environ.get("MOLT_SYMPHONY_API_TOKEN_FILE")
+        or ""
+    ).strip()
+    if not token_file_raw:
+        return None
+    token_file = Path(token_file_raw).expanduser()
+    try:
+        candidate_token = token_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return candidate_token or None
+
+
+def _dashboard_endpoint_url(state_url: str, endpoint_path: str) -> str:
+    base = state_url.strip().rstrip("/")
+    for suffix in ("/api/v1/state", "/api/v1/activity", "/api/v1/health"):
+        if base.endswith(suffix):
+            return base[: -len(suffix)] + endpoint_path
+    return base + endpoint_path
+
+
+def _activity_url_from_state_url(state_url: str) -> str:
+    return _dashboard_endpoint_url(state_url, "/api/v1/activity")
+
+
+def _health_url_from_state_url(state_url: str) -> str:
+    return _dashboard_endpoint_url(state_url, "/api/v1/health")
+
+
 def _default_perf_command(
     *,
     repo_root: Path,
@@ -99,9 +169,7 @@ def _default_perf_command(
     ext_root: Path,
     env_values: dict[str, str],
 ) -> list[str]:
-    base_url = state_url.strip()
-    if base_url.endswith("/api/v1/state"):
-        base_url = base_url[: -len("/api/v1/state")]
+    base_url = _dashboard_endpoint_url(state_url, "")
     report_dir = str(
         env_values.get("MOLT_SYMPHONY_PERF_GUARD_REPORTS_DIR")
         or (ext_root / "logs" / "symphony")
@@ -178,45 +246,90 @@ def _default_perf_command(
 
 
 def _launchd_target(service_label: str) -> str:
-    uid = os.getuid()
-    return f"gui/{uid}/{service_label}"
+    return symphony_launchd.launchd_target(service_label)
 
 
-def _restart_service(service_label: str) -> None:
+def _launchd_snapshot(service_label: str) -> dict[str, object]:
+    try:
+        info = symphony_launchd.inspect_service(service_label)
+    except Exception as exc:
+        return {
+            "loaded": False,
+            "state": None,
+            "active_count": None,
+            "last_exit_code": None,
+            "last_exit_detail": None,
+            "error": str(exc),
+        }
+    return {
+        "loaded": bool(info.loaded),
+        "state": info.state,
+        "active_count": info.active_count,
+        "last_exit_code": info.last_exit_code,
+        "last_exit_detail": info.last_exit_detail,
+        "plist_exists": info.plist_exists,
+        "plist_path": str(info.plist_path),
+    }
+
+
+def _restart_service(service_label: str) -> bool:
     target = _launchd_target(service_label)
-    proc = subprocess.run(
-        ["launchctl", "kickstart", "-k", target],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
+    ok = symphony_launchd.restart_service(service_label)
+    if not ok:
+        snapshot = _launchd_snapshot(service_label)
         _log(
             "WARNING",
             "watchdog_restart_failed",
             target=target,
-            returncode=proc.returncode,
-            stderr=proc.stderr.strip(),
+            state=snapshot.get("state"),
+            active_count=snapshot.get("active_count"),
+            last_exit_code=snapshot.get("last_exit_code"),
+            last_exit_detail=snapshot.get("last_exit_detail"),
+            error=snapshot.get("error"),
         )
-        return
+        return False
     _log("INFO", "watchdog_restarted_service", target=target)
+    return True
 
 
-def _read_state_counts(state_url: str, timeout_seconds: float) -> dict[str, int] | None:
+def _read_json_payload(
+    url: str,
+    timeout_seconds: float,
+    *,
+    auth_token: str | None = None,
+) -> dict[str, object] | None:
     try:
-        with urlopen(state_url, timeout=max(timeout_seconds, 0.5)) as resp:
+        headers: dict[str, str] = {}
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        request = Request(url, headers=headers, method="GET")
+        with urlopen(request, timeout=max(timeout_seconds, 0.5)) as resp:
             if int(getattr(resp, "status", 200)) != 200:
                 return None
             raw = resp.read().decode("utf-8")
     except (OSError, URLError):
         return None
     try:
-        import json
-
         payload = json.loads(raw)
     except Exception:
         return None
-    if not isinstance(payload, dict):
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def _read_activity_counts(
+    activity_url: str,
+    timeout_seconds: float,
+    *,
+    auth_token: str | None = None,
+) -> dict[str, int] | None:
+    payload = _read_json_payload(
+        activity_url,
+        timeout_seconds,
+        auth_token=auth_token,
+    )
+    if payload is None:
         return None
     counts = payload.get("counts")
     if not isinstance(counts, dict):
@@ -226,15 +339,87 @@ def _read_state_counts(state_url: str, timeout_seconds: float) -> dict[str, int]
     return {"running": max(running, 0), "retrying": max(retrying, 0)}
 
 
-def _service_is_busy(state_url: str, timeout_seconds: float) -> tuple[bool | None, str]:
-    counts = _read_state_counts(state_url, timeout_seconds)
+def _probe_health_endpoint(
+    health_url: str,
+    timeout_seconds: float,
+    *,
+    auth_token: str | None = None,
+) -> bool:
+    try:
+        headers: dict[str, str] = {}
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        request = Request(health_url, headers=headers, method="GET")
+        with urlopen(request, timeout=max(timeout_seconds, 0.5)) as resp:
+            return int(getattr(resp, "status", 200)) == 200
+    except (OSError, URLError):
+        return False
+
+
+def _service_is_busy(
+    activity_url: str,
+    timeout_seconds: float,
+    *,
+    auth_token: str | None = None,
+) -> tuple[bool | None, str]:
+    counts = _read_activity_counts(
+        activity_url,
+        timeout_seconds,
+        auth_token=auth_token,
+    )
     if counts is None:
-        return None, "state_unavailable"
+        return None, "activity_unavailable"
     running = int(counts.get("running", 0))
     retrying = int(counts.get("retrying", 0))
     busy = running > 0 or retrying > 0
     detail = f"running={running} retrying={retrying}"
     return busy, detail
+
+
+def _service_health_snapshot(
+    service_label: str,
+    health_url: str,
+    timeout_seconds: float,
+    *,
+    auth_token: str | None = None,
+) -> dict[str, object]:
+    if _probe_health_endpoint(health_url, timeout_seconds, auth_token=auth_token):
+        return {
+            "healthy": True,
+            "reason": "health_ok",
+            "detail": "health_endpoint_200",
+            "loaded": True,
+            "active_count": 1,
+        }
+    snapshot = _launchd_snapshot(service_label)
+    loaded = bool(snapshot.get("loaded"))
+    active_count = snapshot.get("active_count")
+    state = snapshot.get("state")
+    last_exit_code = snapshot.get("last_exit_code")
+    last_exit_detail = snapshot.get("last_exit_detail")
+    if not loaded:
+        return {
+            **snapshot,
+            "healthy": False,
+            "reason": "launchd_unloaded",
+            "detail": str(snapshot.get("error") or "launchd service not loaded"),
+        }
+    if isinstance(active_count, int) and active_count > 0:
+        return {
+            **snapshot,
+            "healthy": False,
+            "reason": "state_unavailable_active",
+            "detail": f"state={state} active_count={active_count}",
+        }
+    return {
+        **snapshot,
+        "healthy": False,
+        "reason": "launchd_inactive",
+        "detail": (
+            f"state={state} active_count={active_count} "
+            f"last_exit_code={last_exit_code} last_exit_detail={last_exit_detail}"
+        ),
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -279,6 +464,36 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="Additional glob patterns relative to repo root",
+    )
+    parser.add_argument(
+        "--health-check",
+        action="store_true",
+        default=True,
+        help="Enable health-based self-heal probes (default: enabled).",
+    )
+    parser.add_argument(
+        "--no-health-check",
+        dest="health_check",
+        action="store_false",
+        help="Disable health-based self-heal probes.",
+    )
+    parser.add_argument(
+        "--health-interval-ms",
+        type=int,
+        default=10_000,
+        help="Interval between health probes.",
+    )
+    parser.add_argument(
+        "--health-startup-grace-ms",
+        type=int,
+        default=90_000,
+        help="Grace period after startup or repair before health restarts begin.",
+    )
+    parser.add_argument(
+        "--health-failure-threshold",
+        type=int,
+        default=3,
+        help="Consecutive unhealthy probes required before restart.",
     )
     parser.add_argument(
         "--perf-check",
@@ -331,17 +546,27 @@ def main(argv: list[str] | None = None) -> int:
     if not env_file.is_absolute():
         env_file = (repo_root / env_file).resolve()
     env_values = _load_env_file(env_file)
-    ext_root = Path(
-        str(env_values.get("MOLT_EXT_ROOT") or os.environ.get("MOLT_EXT_ROOT") or "")
-    ).expanduser()
-    if not ext_root:
-        ext_root = Path("/Volumes/APDataStore/Molt")
+    ext_root = _path_from_env(
+        env_values,
+        "MOLT_EXT_ROOT",
+        default=DEFAULT_EXT_ROOT,
+        fallback_env_key="MOLT_EXT_ROOT",
+    )
+    symphony_parent_root = _path_from_env(
+        env_values,
+        "MOLT_SYMPHONY_PARENT_ROOT",
+        default=DEFAULT_SYMPHONY_PARENT_ROOT,
+        fallback_env_key="MOLT_SYMPHONY_PARENT_ROOT",
+    )
     patterns = tuple(DEFAULT_PATTERNS) + tuple(args.pattern)
 
     interval_s = max(int(args.interval_ms), 250) / 1000.0
     quiet_s = max(int(args.quiet_ms), 250) / 1000.0
     cooldown_s = max(int(args.cooldown_ms), 250) / 1000.0
     defer_log_interval_s = max(int(args.defer_log_interval_ms), 500) / 1000.0
+    health_interval_s = max(int(args.health_interval_ms), 1_000) / 1000.0
+    health_startup_grace_s = max(int(args.health_startup_grace_ms), 5_000) / 1000.0
+    health_failure_threshold = max(int(args.health_failure_threshold), 1)
     perf_interval_s = max(int(args.perf_interval_ms), 60_000) / 1000.0
     perf_timeout_s = max(int(args.perf_timeout_ms), 5_000) / 1000.0
 
@@ -350,6 +575,16 @@ def main(argv: list[str] | None = None) -> int:
     last_restart_at = 0.0
     last_defer_log_at = 0.0
     last_defer_reason = ""
+    last_external_roots_log_at = 0.0
+
+    health_enabled = bool(args.health_check)
+    health_failure_count = 0
+    health_grace_until = time.monotonic() + health_startup_grace_s
+    next_health_due_at = time.monotonic() if health_enabled else float("inf")
+    api_token = _load_api_token(env_values)
+    activity_url = _activity_url_from_state_url(args.state_url)
+    health_url = _health_url_from_state_url(args.state_url)
+
     perf_enabled_env = _bool_value(
         env_values.get("MOLT_SYMPHONY_PERF_GUARD"),
         default=bool(args.perf_check),
@@ -368,6 +603,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     next_perf_due_at = time.monotonic() if perf_enabled else float("inf")
     perf_runs = 0
+
     _log(
         "INFO",
         "watchdog_started",
@@ -377,12 +613,90 @@ def main(argv: list[str] | None = None) -> int:
         interval_ms=int(interval_s * 1000),
         quiet_ms=int(quiet_s * 1000),
         cooldown_ms=int(cooldown_s * 1000),
+        health_enabled=health_enabled,
+        health_interval_ms=int(health_interval_s * 1000),
+        health_startup_grace_ms=int(health_startup_grace_s * 1000),
+        health_failure_threshold=health_failure_threshold,
         defer_log_interval_ms=int(defer_log_interval_s * 1000),
         perf_enabled=perf_enabled,
         perf_interval_ms=int(perf_interval_s * 1000),
         target=_launchd_target(args.service_label),
+        activity_url=activity_url,
+        health_url=health_url,
     )
     state_timeout_s = max(int(args.state_timeout_ms), 100) / 1000.0
+
+    def _roots_ready(now: float) -> bool:
+        nonlocal last_external_roots_log_at
+        ready, missing = _external_roots_available(
+            ext_root=ext_root,
+            symphony_parent_root=symphony_parent_root,
+        )
+        if ready:
+            return True
+        if (
+            last_external_roots_log_at == 0.0
+            or now - last_external_roots_log_at >= defer_log_interval_s
+        ):
+            _log(
+                "WARNING",
+                "watchdog_external_roots_missing",
+                missing=",".join(str(path) for path in missing),
+            )
+            last_external_roots_log_at = now
+        return False
+
+    def _maybe_run_health_check(now: float) -> None:
+        nonlocal next_health_due_at, health_failure_count, health_grace_until
+        nonlocal last_restart_at
+        if not health_enabled:
+            return
+        if now < next_health_due_at:
+            return
+        next_health_due_at = now + health_interval_s
+        if not _roots_ready(now):
+            health_failure_count = 0
+            return
+        snapshot = _service_health_snapshot(
+            args.service_label,
+            health_url,
+            state_timeout_s,
+            auth_token=api_token,
+        )
+        if bool(snapshot.get("healthy")):
+            if health_failure_count:
+                _log("INFO", "watchdog_health_recovered", detail=snapshot.get("detail"))
+            health_failure_count = 0
+            return
+        if now < health_grace_until:
+            _log(
+                "INFO",
+                "watchdog_health_in_startup_grace",
+                reason=snapshot.get("reason"),
+                detail=snapshot.get("detail"),
+            )
+            return
+        health_failure_count += 1
+        _log(
+            "WARNING",
+            "watchdog_health_probe_failed",
+            consecutive_failures=health_failure_count,
+            threshold=health_failure_threshold,
+            reason=snapshot.get("reason"),
+            detail=snapshot.get("detail"),
+            state=snapshot.get("state"),
+            active_count=snapshot.get("active_count"),
+            last_exit_code=snapshot.get("last_exit_code"),
+            last_exit_detail=snapshot.get("last_exit_detail"),
+        )
+        if health_failure_count < health_failure_threshold:
+            return
+        if now - last_restart_at < cooldown_s:
+            return
+        if _restart_service(args.service_label):
+            last_restart_at = now
+            health_failure_count = 0
+            health_grace_until = now + health_startup_grace_s
 
     def _maybe_run_perf_guard(now: float) -> None:
         nonlocal next_perf_due_at, perf_runs
@@ -390,8 +704,15 @@ def main(argv: list[str] | None = None) -> int:
             return
         if now < next_perf_due_at:
             return
+        if not _roots_ready(now):
+            next_perf_due_at = now + min(perf_interval_s / 8.0, 600.0)
+            return
         if bool(args.perf_defer_when_busy):
-            busy, detail = _service_is_busy(args.state_url, state_timeout_s)
+            busy, detail = _service_is_busy(
+                activity_url,
+                state_timeout_s,
+                auth_token=api_token,
+            )
             if busy is True:
                 _log("INFO", "watchdog_perf_deferred_busy", detail=detail)
                 next_perf_due_at = now + min(perf_interval_s / 8.0, 600.0)
@@ -399,7 +720,7 @@ def main(argv: list[str] | None = None) -> int:
             if busy is None:
                 _log(
                     "WARNING",
-                    "watchdog_perf_deferred_state_probe_failed",
+                    "watchdog_perf_deferred_activity_probe_failed",
                     detail=detail,
                 )
                 next_perf_due_at = now + min(perf_interval_s / 8.0, 600.0)
@@ -412,6 +733,8 @@ def main(argv: list[str] | None = None) -> int:
         perf_env = os.environ.copy()
         perf_env.setdefault("MOLT_EXT_ROOT", str(ext_root))
         perf_env.setdefault("PYTHONPATH", "src")
+        if api_token:
+            perf_env.setdefault("MOLT_SYMPHONY_API_TOKEN", api_token)
         started = time.perf_counter()
         try:
             proc = subprocess.run(
@@ -447,6 +770,7 @@ def main(argv: list[str] | None = None) -> int:
         time.sleep(interval_s)
         current = _fingerprint(repo_root, patterns)
         now = time.monotonic()
+        _maybe_run_health_check(now)
         _maybe_run_perf_guard(now)
         if current != previous:
             previous = current
@@ -461,7 +785,11 @@ def main(argv: list[str] | None = None) -> int:
         if now - last_restart_at < cooldown_s:
             continue
         if bool(args.restart_when_idle):
-            busy, detail = _service_is_busy(args.state_url, state_timeout_s)
+            busy, detail = _service_is_busy(
+                activity_url,
+                state_timeout_s,
+                auth_token=api_token,
+            )
             if busy is True:
                 reason = f"busy:{detail}"
                 if (reason != last_defer_reason) or (
@@ -471,30 +799,32 @@ def main(argv: list[str] | None = None) -> int:
                         "INFO",
                         "watchdog_restart_deferred_busy",
                         detail=detail,
-                        state_url=args.state_url,
+                        activity_url=activity_url,
                     )
                     last_defer_log_at = now
                     last_defer_reason = reason
                 continue
             if busy is None:
-                reason = f"state_unavailable:{detail}"
+                reason = f"activity_unavailable:{detail}"
                 if (reason != last_defer_reason) or (
                     now - last_defer_log_at >= defer_log_interval_s
                 ):
                     _log(
                         "WARNING",
-                        "watchdog_state_probe_failed",
+                        "watchdog_activity_probe_failed",
                         detail=detail,
-                        state_url=args.state_url,
+                        activity_url=activity_url,
                     )
                     last_defer_log_at = now
                     last_defer_reason = reason
                 continue
 
-        _restart_service(args.service_label)
-        last_restart_at = now
-        pending_change_at = None
-        last_defer_reason = ""
+        if _restart_service(args.service_label):
+            last_restart_at = now
+            health_failure_count = 0
+            health_grace_until = now + health_startup_grace_s
+            pending_change_at = None
+            last_defer_reason = ""
 
 
 if __name__ == "__main__":

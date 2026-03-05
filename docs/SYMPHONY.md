@@ -50,6 +50,7 @@ Canonical storage layout:
   - `molt-bin`
 - Optional HTTP observability endpoints:
   - `/`
+  - `/api/v1/activity`
   - `/api/v1/state`
   - `/api/v1/durable` (durable telemetry summary + recent historical events)
   - `/api/v1/stream` (Server-Sent Events realtime state feed)
@@ -78,12 +79,13 @@ Canonical storage layout:
 - `src/molt/symphony/dashboard_assets.py`: embedded dashboard static assets + precomputed weak ETags
 - `WORKFLOW.md`: repository-owned workflow contract
 - `tools/symphony_bootstrap.py`: one-command setup for MCP/env/launchd
-- `tools/symphony_run.py`: launch helper with external-volume checks
+- `tools/symphony_run.py`: launch helper with external-volume checks and optional wait-for-mount startup behavior for launchd
 - `tools/symphony_git_sync.sh`: best-effort workspace git sync with author allowlist gating
 - `tools/symphony_launchd.py`: launchd lifecycle helper for Symphony + watchdog
-- `tools/symphony_watchdog.py`: file-watch daemon that auto-restarts Symphony service on changes
+- `tools/symphony_watchdog.py`: file-watch daemon that auto-restarts Symphony service on changes and repairs unhealthy launchd jobs via authenticated health probes
 - `tools/symphony_dlq.py`: inspect and replay recursive-loop dead-letter items
 - `tools/symphony_taste_memory.py`: inspect and distill recursive learning memory
+- `tools/symphony_tool_promotion.py`: distill recurring successful actions into explicit tool-promotion candidates
 
 ## Quick start
 
@@ -115,7 +117,15 @@ For scripted Linear operations, use `tools/linear_workspace.py` as the canonical
 3. Open dashboard:
 
 - [http://127.0.0.1:8089/](http://127.0.0.1:8089/)
+- [http://127.0.0.1:8089/api/v1/activity](http://127.0.0.1:8089/api/v1/activity)
+- [http://127.0.0.1:8089/api/v1/health](http://127.0.0.1:8089/api/v1/health)
 - [http://127.0.0.1:8089/api/v1/stream](http://127.0.0.1:8089/api/v1/stream)
+
+Launchd hardening details:
+- launchd control-plane stdout/stderr now live under `~/Library/Logs/Molt/symphony-launchd/` so the jobs can start even when the external volume is temporarily absent
+- the main service waits for the canonical external roots instead of crash-looping on missing mounts
+- watchdog health repair uses the authenticated lightweight `/api/v1/health` endpoint instead of the heavier `/api/v1/state` payload
+- watchdog busy/perf deferral now uses the authenticated lightweight `/api/v1/activity` endpoint instead of polling full state projections
 
 4. Compare runtime modes (self-improvement perf loop):
 
@@ -259,6 +269,9 @@ Outputs are written under:
 - `/Volumes/APDataStore/symphony/molt/logs/readiness/latest.md`
 - `/Volumes/APDataStore/symphony/molt/logs/readiness/next_tranche.json`
 - `/Volumes/APDataStore/symphony/molt/logs/readiness/next_tranche.md`
+- `sections.dlq_health` reports replay backlog and recurring unresolved fingerprints
+- `sections.tool_promotion` reports latest candidate and ready-candidate counts
+- top-level `improvement_issue_sync` emits a dry-run or applied Linear issue sync plan for DLQ backlog and promotion-ready candidates
 
 ### Recursive Loop Runner
 
@@ -290,6 +303,10 @@ Recursive-loop self-improvement surfaces:
 - taste-memory events: `/Volumes/APDataStore/symphony/molt/state/taste_memory/events.jsonl`
 - taste-memory distillations:
   `/Volumes/APDataStore/symphony/molt/state/taste_memory/distillations/`
+- tool-promotion events:
+  `/Volumes/APDataStore/symphony/molt/state/tool_promotion/events.jsonl`
+- tool-promotion distillations:
+  `/Volumes/APDataStore/symphony/molt/state/tool_promotion/distillations/`
 - optional typed hook command: `MOLT_SYMPHONY_LOOP_HOOK_CMD`
 
 DLQ inspection/replay:
@@ -299,10 +316,36 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_dlq.py summary --limi
 PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_dlq.py replay --fingerprint <id> --dry-run
 ```
 
+The DLQ summary now includes replay health:
+- `open_failure_count`
+- `recurring_open_fingerprints`
+- `replay_success_count`
+- `replay_failure_count`
+- `recommended_replay_target`
+
 Taste-memory distillation:
 
 ```bash
 PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_taste_memory.py distill --limit 50
+```
+
+Tool-promotion distillation:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_tool_promotion.py distill --limit 200 --min-success-count 3
+```
+
+Ready candidates now also emit reviewable manifest files under the tool-promotion
+state root (`.../state/tool_promotion/manifests/`).
+
+Optional Linear improvement issue sync planning is part of readiness by default,
+and can be applied explicitly:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py \
+  --team Moltlang \
+  --sync-improvement-issues \
+  --improvement-issue-project "Tooling & DevEx"
 ```
 
 The audit covers Linear workspace hygiene, manifest quality, docs/tooling coverage,
