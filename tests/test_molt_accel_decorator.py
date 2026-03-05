@@ -78,7 +78,9 @@ def test_molt_offload_env_retry_policy(monkeypatch) -> None:
     monkeypatch.setenv("MOLT_ACCEL_RETRY_BACKOFF_MS", "9")
     monkeypatch.setenv("MOLT_ACCEL_RETRY_BACKOFF_MAX_MS", "21")
 
-    @molt_offload(entry="list_items", codec="json", client=FakeClient(), idempotent=True)
+    @molt_offload(
+        entry="list_items", codec="json", client=FakeClient(), idempotent=True
+    )
     def handler(request):
         return {"fallback": True}
 

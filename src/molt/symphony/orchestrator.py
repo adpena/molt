@@ -55,6 +55,11 @@ from .models import (
     WorkflowDefinition,
     now_utc,
 )
+from .paths import (
+    resolve_molt_ext_root,
+    symphony_durable_root,
+    symphony_perf_reports_dir,
+)
 from .profiling import profiled
 from .template import render_prompt
 from .workflow import load_workflow, maybe_reload_workflow
@@ -176,15 +181,8 @@ class SymphonyOrchestrator:
             8,
         )
         self._last_profiling_checkpoint_monotonic = 0.0
-        ext_root = Path(
-            os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt")
-        ).expanduser()
-        self._perf_reports_dir = Path(
-            os.environ.get(
-                "MOLT_SYMPHONY_PERF_GUARD_REPORTS_DIR",
-                str(ext_root / "logs" / "symphony"),
-            )
-        ).expanduser()
+        ext_root = resolve_molt_ext_root()
+        self._perf_reports_dir = symphony_perf_reports_dir()
         self._perf_verdict_path = Path(
             os.environ.get(
                 "MOLT_SYMPHONY_PERF_VERDICT_FILE",
@@ -214,12 +212,7 @@ class SymphonyOrchestrator:
         durable_enabled = str(
             os.environ.get("MOLT_SYMPHONY_DURABLE_MEMORY", "1")
         ).strip().lower() not in {"0", "false", "no", "off"}
-        durable_root = Path(
-            os.environ.get(
-                "MOLT_SYMPHONY_DURABLE_ROOT",
-                str(ext_root / "logs" / "symphony" / "durable_memory"),
-            )
-        ).expanduser()
+        durable_root = symphony_durable_root()
         self._durable_memory: DurableMemoryStore | None = None
         if durable_enabled and ext_root.exists():
             self._durable_memory = DurableMemoryStore(
@@ -1683,6 +1676,17 @@ class SymphonyOrchestrator:
                 },
             )
 
+        perf_guard_runtime = runtime_payload.get("perf_guard")
+        perf_guard_map = (
+            perf_guard_runtime if isinstance(perf_guard_runtime, dict) else {}
+        )
+        operator_briefing = _build_operator_briefing(
+            attention=unique_attention,
+            running_count=len(running_rows),
+            retry_count=len(retry_rows),
+            perf_guard=perf_guard_map,
+            suspension=suspension_payload,
+        )
         recent_events.sort(key=lambda row: str(row.get("at") or ""), reverse=True)
         recent_events = recent_events[:30]
         agent_panes.sort(
@@ -1713,6 +1717,7 @@ class SymphonyOrchestrator:
             "recent_events": recent_events,
             "manual_actions": manual_actions,
             "attention": unique_attention,
+            "operator_briefing": operator_briefing,
             "needs_human_attention": bool(unique_attention),
             "suspension": suspension_payload,
             "profiling": profiling_snapshot,
@@ -1723,15 +1728,7 @@ class SymphonyOrchestrator:
     def snapshot_durable_memory(self, limit: int = 120) -> dict[str, Any]:
         store = self._durable_memory
         if store is None:
-            ext_root = Path(
-                os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt")
-            ).expanduser()
-            durable_root = Path(
-                os.environ.get(
-                    "MOLT_SYMPHONY_DURABLE_ROOT",
-                    str(ext_root / "logs" / "symphony" / "durable_memory"),
-                )
-            ).expanduser()
+            durable_root = symphony_durable_root()
             return {
                 "enabled": False,
                 "root": str(durable_root),
@@ -3236,10 +3233,9 @@ class SymphonyOrchestrator:
             for row in list(profiling_compare.get("optimizations") or [])[:4]
             if isinstance(row, dict)
         ]
-        profiling_trends = (
-            profiling_compare.get("trends")
-            if isinstance(profiling_compare.get("trends"), dict)
-            else {}
+        profiling_trends_raw = profiling_compare.get("trends")
+        profiling_trends: dict[str, Any] = (
+            profiling_trends_raw if isinstance(profiling_trends_raw, dict) else {}
         )
         trend_points = [
             row
@@ -3264,6 +3260,7 @@ class SymphonyOrchestrator:
             "rate_limits": state.get("rate_limits"),
             "needs_human_attention": state.get("needs_human_attention"),
             "suspension": state.get("suspension"),
+            "operator_briefing": state.get("operator_briefing"),
             "attention": attention,
             "running": running,
             "retrying": retrying,
@@ -3325,6 +3322,7 @@ class SymphonyOrchestrator:
                 "dashboard_profile": runtime.get("dashboard_profile"),
             },
             "suspension": suspension,
+            "operator_briefing": state.get("operator_briefing"),
             "profiling": {
                 "hotspots": [
                     row
@@ -4207,6 +4205,136 @@ def _path_signature(path: Path) -> tuple[int, int]:
 def _repo_root_path() -> Path:
     # src/molt/symphony/orchestrator.py -> repo root
     return Path(__file__).resolve().parents[3]
+
+
+def _build_operator_briefing(
+    *,
+    attention: list[dict[str, Any]],
+    running_count: int,
+    retry_count: int,
+    perf_guard: dict[str, Any],
+    suspension: dict[str, Any] | None,
+) -> dict[str, Any]:
+    items = [row for row in attention if isinstance(row, dict)]
+    top_items = [
+        {
+            "issue_identifier": str(row.get("issue_identifier") or "SYSTEM"),
+            "kind": str(row.get("kind") or "attention"),
+            "message": str(row.get("message") or ""),
+            "suggested_action": str(row.get("suggested_action") or ""),
+        }
+        for row in items[:3]
+    ]
+    summary = (
+        f"{running_count} running · {retry_count} retrying · {len(items)} attention"
+    )
+    default = {
+        "severity": "ok",
+        "headline": "System stable",
+        "summary": summary,
+        "actions": [
+            {
+                "label": "Refresh cycle",
+                "kind": "tool",
+                "tool": "refresh_cycle",
+                "issue_identifier": None,
+            }
+        ],
+        "top_items": top_items,
+    }
+
+    verdict = perf_guard.get("verdict")
+    verdict_map = verdict if isinstance(verdict, dict) else {}
+    verdict_status = str(verdict_map.get("status") or "").strip().lower()
+    if verdict_status in {"breach", "run_failed"}:
+        breaches_count = int(verdict_map.get("breaches_count") or 0)
+        return {
+            "severity": "danger" if verdict_status == "breach" else "warn",
+            "headline": "Performance guard needs intervention",
+            "summary": (
+                f"{summary} · verdict={verdict_status} · breaches={breaches_count}"
+            ),
+            "actions": [
+                {
+                    "label": "Run perf guard",
+                    "kind": "tool",
+                    "tool": "run_perf_guard",
+                    "issue_identifier": None,
+                },
+                {
+                    "label": "Refresh cycle",
+                    "kind": "tool",
+                    "tool": "refresh_cycle",
+                    "issue_identifier": None,
+                },
+            ],
+            "top_items": top_items,
+        }
+
+    if isinstance(suspension, dict) and bool(suspension.get("active")):
+        kind = str(suspension.get("kind") or "paused")
+        due_in = suspension.get("due_in_seconds")
+        due_text = (
+            f"auto-resume in {_format_duration_brief(int(float(due_in)))}"
+            if due_in is not None
+            else "auto-resume pending"
+        )
+        return {
+            "severity": "warn",
+            "headline": f"Service paused: {kind}",
+            "summary": f"{summary} · {due_text}",
+            "actions": [
+                {
+                    "label": "Refresh cycle",
+                    "kind": "tool",
+                    "tool": "refresh_cycle",
+                    "issue_identifier": None,
+                }
+            ],
+            "top_items": top_items,
+        }
+
+    if items:
+        first = items[0]
+        issue_identifier = str(first.get("issue_identifier") or "SYSTEM")
+        actions: list[dict[str, Any]] = []
+        if issue_identifier != "SYSTEM":
+            actions.append(
+                {
+                    "label": f"Inspect {issue_identifier}",
+                    "kind": "tool",
+                    "tool": "inspect_issue",
+                    "issue_identifier": issue_identifier,
+                }
+            )
+            actions.append(
+                {
+                    "label": f"Retry {issue_identifier}",
+                    "kind": "tool",
+                    "tool": "retry_now",
+                    "issue_identifier": issue_identifier,
+                }
+            )
+        actions.append(
+            {
+                "label": "Refresh cycle",
+                "kind": "tool",
+                "tool": "refresh_cycle",
+                "issue_identifier": None,
+            }
+        )
+        return {
+            "severity": "warn",
+            "headline": "Human intervention recommended",
+            "summary": (
+                f"{summary} · top item {issue_identifier}: "
+                f"{str(first.get('kind') or 'attention')}"
+            ),
+            "actions": actions[:3],
+            "top_items": top_items,
+        }
+
+    return default
 
 
 def _dispatch_sort_key(issue: Issue) -> tuple[int, float, str]:

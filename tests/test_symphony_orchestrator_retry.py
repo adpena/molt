@@ -405,6 +405,9 @@ def test_snapshot_state_surfaces_system_suspension_attention() -> None:
     assert attention
     assert attention[0]["issue_identifier"] == "SYSTEM"
     assert attention[0]["kind"] == "auth_required"
+    briefing = snapshot["operator_briefing"]
+    assert briefing["headline"].startswith("Service paused:")
+    assert briefing["actions"][0]["tool"] == "refresh_cycle"
 
 
 def test_snapshot_state_surfaces_perf_guard_breach_attention(tmp_path) -> None:
@@ -426,6 +429,9 @@ def test_snapshot_state_surfaces_perf_guard_breach_attention(tmp_path) -> None:
     )
     perf_guard = snapshot["runtime"]["perf_guard"]
     assert perf_guard["verdict"]["status"] == "breach"
+    briefing = snapshot["operator_briefing"]
+    assert briefing["headline"] == "Performance guard needs intervention"
+    assert briefing["actions"][0]["tool"] == "run_perf_guard"
 
 
 def test_on_worker_exit_turn_input_required_sets_auth_pause() -> None:

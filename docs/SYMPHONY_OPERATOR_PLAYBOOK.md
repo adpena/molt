@@ -93,13 +93,13 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py \
 
 Artifacts are written to:
 
-- `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.json`
-- `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.md`
-- `/Volumes/APDataStore/Molt/logs/symphony/readiness/next_tranche.json`
-- `/Volumes/APDataStore/Molt/logs/symphony/readiness/next_tranche.md`
-- `/Volumes/APDataStore/Molt/logs/symphony/readiness/history/baseline_*.json`
-- `/Volumes/APDataStore/Molt/logs/symphony/metrics/harness_baseline_latest.md`
-- `/Volumes/APDataStore/Molt/logs/symphony/metrics/harness_timeseries.csv`
+- `/Volumes/APDataStore/symphony/molt/logs/readiness/latest.json`
+- `/Volumes/APDataStore/symphony/molt/logs/readiness/latest.md`
+- `/Volumes/APDataStore/symphony/molt/logs/readiness/next_tranche.json`
+- `/Volumes/APDataStore/symphony/molt/logs/readiness/next_tranche.md`
+- `/Volumes/APDataStore/symphony/molt/logs/readiness/history/baseline_*.json`
+- `/Volumes/APDataStore/symphony/molt/logs/metrics/harness_baseline_latest.md`
+- `/Volumes/APDataStore/symphony/molt/logs/metrics/harness_timeseries.csv`
 - `/Volumes/APDataStore/Molt/tmp/symphony_harness_trend_7d.json` (optional trend export)
 
 Use this report to drive cleanup of malformed Linear issues, metadata gaps,
@@ -155,6 +155,44 @@ Generate rolling harness trend deltas (operator quick-read):
 PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_harness_trend.py \
   --days 7 \
   --json-out /Volumes/APDataStore/Molt/tmp/symphony_harness_trend_7d.json
+```
+
+Run an end-to-end recursive cycle bundle (recommended for unattended lanes):
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_recursive_loop.py --quick
+```
+
+For full strict-autonomy + perf lane and deterministic next-tranche execution:
+
+```bash
+PYTHONPATH=src uv run --group dev --python 3.12 python3 tools/symphony_recursive_loop.py \
+  --formal-suite all \
+  --run-perf-guard \
+  --execute-next-tranche
+```
+
+Cycle artifacts are written under:
+
+- `/Volumes/APDataStore/symphony/molt/logs/recursive_loop/<timestamp>-cycleXX/summary.json`
+- `/Volumes/APDataStore/symphony/molt/logs/recursive_loop/<timestamp>-cycleXX/summary.md`
+
+Inspect recursive-loop dead letters:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_dlq.py summary --limit 20
+```
+
+Dry-run replay for a specific dead-letter fingerprint:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_dlq.py replay --fingerprint <id> --dry-run
+```
+
+Distill recent taste memory:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_taste_memory.py distill --limit 50
 ```
 
 Optional DSPy routing knobs for `linear_hygiene`:

@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from molt.symphony.paths import symphony_metrics_dir
+
 
 def _parse_iso(value: str) -> datetime:
     raw = value.strip()
@@ -142,7 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ext-root",
         default="/Volumes/APDataStore/Molt",
-        help="External root containing logs/symphony/metrics.",
+        help="Build external root; metrics default to Symphony log root when --csv is unset.",
     )
     parser.add_argument(
         "--csv",
@@ -169,11 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         Path(str(args.csv)).expanduser().resolve()
         if args.csv
         else (
-            Path(str(args.ext_root)).expanduser().resolve()
-            / "logs"
-            / "symphony"
-            / "metrics"
-            / "harness_timeseries.csv"
+            symphony_metrics_dir() / "harness_timeseries.csv"
         )
     )
     if not csv_path.exists():

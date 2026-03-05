@@ -202,8 +202,8 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --
 
 This emits:
 
-- `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.json`
-- `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.md`
+- `/Volumes/APDataStore/symphony/molt/logs/readiness/latest.json`
+- `/Volumes/APDataStore/symphony/molt/logs/readiness/latest.md`
 
 The audit checks Linear hygiene, manifest quality, launchd/watchdog wiring,
 durable memory readability, required docs/tooling coverage, and harness

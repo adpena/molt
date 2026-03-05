@@ -565,6 +565,50 @@ def test_collect_findings_reports_dspy_not_ready_warn() -> None:
     assert codes["dspy_routing_not_ready"]["severity"] == "warn"
 
 
+def test_audit_storage_layout_passes_for_canonical_project_store(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / "symphony.env"
+    env_file.write_text(
+        (
+            "MOLT_SYMPHONY_PARENT_ROOT=/Volumes/APDataStore/symphony\n"
+            "MOLT_SYMPHONY_PROJECT_KEY=molt\n"
+            "MOLT_SYMPHONY_STORE_ROOT=/Volumes/APDataStore/symphony/molt\n"
+            "MOLT_SYMPHONY_LOG_ROOT=/Volumes/APDataStore/symphony/molt/logs\n"
+            "MOLT_SYMPHONY_STATE_ROOT=/Volumes/APDataStore/symphony/molt/state\n"
+            "MOLT_SYMPHONY_WORKSPACE_ROOT=/Volumes/APDataStore/symphony/molt/sessions/workspaces\n"
+            "MOLT_SYMPHONY_DURABLE_ROOT=/Volumes/APDataStore/symphony/molt/state/durable_memory\n"
+            "MOLT_SYMPHONY_API_TOKEN_FILE=/Volumes/APDataStore/symphony/molt/state/secrets/dashboard_api_token\n"
+            "MOLT_SYMPHONY_SECURITY_EVENTS_FILE=/Volumes/APDataStore/symphony/molt/logs/security/events.jsonl\n"
+        ),
+        encoding="utf-8",
+    )
+    result = readiness_audit._audit_storage_layout(env_file)
+    assert result["status"] == "pass"
+    assert result["violations"] == []
+
+
+def test_audit_storage_layout_fails_for_cross_project_root(tmp_path: Path) -> None:
+    env_file = tmp_path / "symphony.env"
+    env_file.write_text(
+        (
+            "MOLT_SYMPHONY_PARENT_ROOT=/Volumes/APDataStore/symphony\n"
+            "MOLT_SYMPHONY_PROJECT_KEY=molt\n"
+            "MOLT_SYMPHONY_STORE_ROOT=/Volumes/APDataStore/vertigo\n"
+            "MOLT_SYMPHONY_LOG_ROOT=/Volumes/APDataStore/vertigo/logs/symphony\n"
+            "MOLT_SYMPHONY_STATE_ROOT=/Volumes/APDataStore/vertigo/state/symphony\n"
+            "MOLT_SYMPHONY_WORKSPACE_ROOT=/Volumes/APDataStore/vertigo/sessions/symphony-workspaces\n"
+            "MOLT_SYMPHONY_DURABLE_ROOT=/Volumes/APDataStore/vertigo/state/symphony/durable_memory\n"
+            "MOLT_SYMPHONY_API_TOKEN_FILE=/Volumes/APDataStore/vertigo/state/symphony/secrets/dashboard_api_token\n"
+            "MOLT_SYMPHONY_SECURITY_EVENTS_FILE=/Volumes/APDataStore/vertigo/logs/symphony/security/events.jsonl\n"
+        ),
+        encoding="utf-8",
+    )
+    result = readiness_audit._audit_storage_layout(env_file)
+    assert result["status"] == "fail"
+    assert "store_under_parent" in result["violations"]
+
+
 def _sample_report(
     *,
     generated_at: str = "2026-03-05T13:17:18.842231Z",
@@ -639,11 +683,16 @@ def test_apply_durable_growth_gate_emits_info_without_baseline() -> None:
 
 def test_persist_harness_metrics_appends_and_dedupes(tmp_path: Path) -> None:
     ext_root = tmp_path / "ext"
+    path_env = {"MOLT_SYMPHONY_STORE_ROOT": str(ext_root / "symphony" / "molt")}
     report = _sample_report(generated_at="2026-03-05T13:17:18.842231Z")
-    readiness_audit._persist_harness_metrics(ext_root, report, retention_days=90)
-    readiness_audit._persist_harness_metrics(ext_root, report, retention_days=90)
+    readiness_audit._persist_harness_metrics(
+        ext_root, report, retention_days=90, path_env=path_env
+    )
+    readiness_audit._persist_harness_metrics(
+        ext_root, report, retention_days=90, path_env=path_env
+    )
 
-    csv_path = ext_root / "logs" / "symphony" / "metrics" / "harness_timeseries.csv"
+    csv_path = ext_root / "symphony" / "molt" / "logs" / "metrics" / "harness_timeseries.csv"
     lines = csv_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 2  # header + one unique row
     assert "2026-03-05T13:17:18.842231Z" in lines[1]
@@ -653,12 +702,14 @@ def test_persist_harness_metrics_appends_and_dedupes(tmp_path: Path) -> None:
         overall_status="warn",
         formal_mode="inventory",
     )
-    readiness_audit._persist_harness_metrics(ext_root, second, retention_days=90)
+    readiness_audit._persist_harness_metrics(
+        ext_root, second, retention_days=90, path_env=path_env
+    )
     lines = csv_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 3
     assert "2026-03-05T17:15:56.868769Z" in lines[2]
 
-    history = ext_root / "logs" / "symphony" / "readiness" / "history"
+    history = ext_root / "symphony" / "molt" / "logs" / "readiness" / "history"
     baselines = sorted(history.glob("baseline_*.json"))
     assert len(baselines) == 2
 

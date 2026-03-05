@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ConfigValidationError
+from .paths import resolve_molt_ext_root, symphony_workspace_root
 from .models import (
     AgentConfig,
     CodexConfig,
@@ -286,16 +287,20 @@ def _coerce_path(value: Any, default: str) -> Path:
 
 
 def _default_workspace_root() -> str:
-    # Prefer explicit overrides and the external root to avoid local-disk churn.
+    # Default Symphony workspaces into the Vertigo session tree so the
+    # long-lived orchestrator state does not compete with compiler artifacts.
     explicit = _resolve_env_token(
         os.environ.get("MOLT_SYMPHONY_WORKSPACE_ROOT")
     ) or _resolve_env_token(os.environ.get("MOLT_WORKSPACE_ROOT"))
     if explicit:
         return explicit
+    configured_root = symphony_workspace_root()
+    if str(configured_root):
+        return str(configured_root)
 
-    ext_root = _resolve_env_token(os.environ.get("MOLT_EXT_ROOT"))
-    if ext_root:
-        return str(Path(ext_root).expanduser() / "symphony_workspaces")
+    ext_root = resolve_molt_ext_root()
+    if str(ext_root):
+        return str(ext_root / "symphony_workspaces")
 
     # Fall back to TMPDIR or system temp when available.
     env_tmp = _resolve_env_token(os.environ.get("TMPDIR"))

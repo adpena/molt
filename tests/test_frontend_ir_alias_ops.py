@@ -246,3 +246,37 @@ def f(n: int) -> int:
     assert "loop_carry_update" in kinds
     if "loop_index_start" not in kinds:
         assert kinds.count("loop_carry_init") >= 2
+
+
+def test_counted_while_with_nested_loop_assignment_skips_carry_contract() -> None:
+    source = """
+def f(n: int) -> int:
+    total: int = 0
+    i: int = 0
+    while i < n:
+        j: int = 0
+        while j < 2:
+            total = total + 1
+            j = j + 1
+        i = i + 1
+    return total
+"""
+    ir = compile_to_tir(source, type_hint_policy="trust", fallback_policy="bridge")
+    fn = next(
+        entry
+        for entry in ir["functions"]
+        if entry["name"] == "__main____f" or entry["name"].endswith("____f")
+    )
+    ops = list(fn["ops"])
+    outer_loop_start = next(
+        idx
+        for idx, op in enumerate(ops)
+        if op["kind"] == "loop_start"
+    )
+    outer_loop_break = next(
+        idx
+        for idx, op in enumerate(ops)
+        if idx > outer_loop_start and op["kind"] == "loop_break_if_false"
+    )
+    outer_slice = ops[outer_loop_start:outer_loop_break]
+    assert all(op["kind"] != "loop_carry_init" for op in outer_slice)

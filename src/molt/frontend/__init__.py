@@ -9789,6 +9789,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     int_inited.add(stmt.target.id)
         return int_inited
 
+    @staticmethod
+    def _names_assigned_in_nested_loops(body: list[ast.stmt]) -> set[str]:
+        """Collect variable names assigned inside nested while/for loops."""
+        nested: set[str] = set()
+        for stmt in body:
+            if isinstance(stmt, (ast.While, ast.For)):
+                for node in ast.walk(stmt):
+                    if isinstance(node, ast.Assign):
+                        for t in node.targets:
+                            if isinstance(t, ast.Name):
+                                nested.add(t.id)
+                    elif isinstance(node, ast.AugAssign):
+                        if isinstance(node.target, ast.Name):
+                            nested.add(node.target.id)
+        return nested
+
     def _infer_int_carry_structural(
         self,
         assigned: set[str],
@@ -9803,9 +9819,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         1. It was initialized with an int literal before the while loop
         2. Every assignment to it in the loop body is pure int arithmetic
            involving only int constants, the index variable, or other candidates.
+        3. It is NOT assigned inside a nested while/for loop (nested carry
+           vars require multi-level block param threading not yet supported).
         """
         closure_captured = getattr(self, "closure_locals", set())
         int_inited = self._find_int_initialized_vars(while_node)
+        nested_assigned = self._names_assigned_in_nested_loops(body)
         # First pass: find candidates with known int pre-loop values
         potential: set[str] = set()
         for name in sorted(assigned):
@@ -9816,6 +9835,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if name in self.free_vars or name in closure_captured:
                 continue
             if name in self.del_targets:
+                continue
+            if name in nested_assigned:
                 continue
             if name in int_inited:
                 potential.add(name)
@@ -9882,6 +9903,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         int arithmetic in the loop body.
         """
         closure_captured = getattr(self, "closure_locals", set())
+        nested_assigned = (
+            self._names_assigned_in_nested_loops(body) if body is not None else set()
+        )
         candidates: set[str] = set()
         # Path 1: trusted type hints
         if self._hints_enabled() and self.type_hint_policy == "trust":
@@ -9893,6 +9917,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if name in self.free_vars or name in closure_captured:
                     continue
                 if name in self.del_targets:
+                    continue
+                if name in nested_assigned:
                     continue
                 hint = self.explicit_type_hints.get(name)
                 if hint == "int":
@@ -14215,8 +14241,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="LIST_NEW", args=[init], result=res_cell))
                 self.emit(MoltOp(kind="IF", args=[matches], result=MoltValue("none")))
                 direct_res = MoltValue(self.next_var(), type_hint=res_hint)
+                direct_call_kind = (
+                    "CALL_INTERNAL"
+                    if func_symbol in self.funcs_map
+                    else "CALL"
+                )
                 self.emit(
-                    MoltOp(kind="CALL", args=[func_symbol] + args, result=direct_res)
+                    MoltOp(kind=direct_call_kind, args=[func_symbol] + args, result=direct_res)
                 )
                 self.emit(
                     MoltOp(
@@ -14246,7 +14277,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="INDEX", args=[res_cell, zero], result=res))
                 return res
             res = MoltValue(self.next_var(), type_hint=res_hint)
-            self.emit(MoltOp(kind="CALL", args=[func_symbol] + args, result=res))
+            # Use CALL_INTERNAL for calls to functions defined in this module —
+            # skips recursion guard and trace overhead for direct calls.
+            call_kind = (
+                "CALL_INTERNAL"
+                if func_symbol in self.funcs_map
+                else "CALL"
+            )
+            self.emit(MoltOp(kind=call_kind, args=[func_symbol] + args, result=res))
             return res
         callargs = self._emit_call_args_builder(node)
         res = MoltValue(self.next_var(), type_hint=res_hint)
