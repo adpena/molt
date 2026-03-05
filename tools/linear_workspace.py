@@ -182,6 +182,24 @@ query IssueById($id: String!) {
 }
 """.strip()
 
+QUERY_ISSUE_COMMENTS = """
+query IssueComments($id: String!, $first: Int!, $after: String) {
+  issue(id: $id) {
+    id
+    identifier
+    comments(first: $first, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        id
+        body
+        createdAt
+        updatedAt
+      }
+    }
+  }
+}
+""".strip()
+
 MUTATION_ISSUE_CREATE = """
 mutation IssueCreate($input: IssueCreateInput!) {
   issueCreate(input: $input) {
@@ -628,6 +646,19 @@ def _resolve_issue_id(team_id: str, issue_ref: str) -> str:
     raise RuntimeError(f"issue not found in team: {issue_ref}")
 
 
+def _resolve_issue(team_id: str, issue_ref: str) -> dict[str, Any]:
+    issue_id = _resolve_issue_id(team_id, issue_ref)
+    data = graphql(QUERY_ISSUE_BY_ID, {"id": issue_id})
+    issue = data.get("issue")
+    if isinstance(issue, dict):
+        return issue
+    for row in _fetch_issues(team_id, None):
+        row_id = str(row.get("id") or "").strip()
+        if row_id == issue_id:
+            return row
+    raise RuntimeError(f"issue resolution failed: {issue_ref}")
+
+
 def _sync_manifest(
     *,
     team: str,
@@ -725,6 +756,13 @@ def cmd_create_issue(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_get_issue(args: argparse.Namespace) -> int:
+    team_id = _resolve_team_id(args.team)
+    issue = _resolve_issue(team_id, args.issue)
+    print(json.dumps(issue, indent=2, sort_keys=True))
+    return 0
+
+
 def cmd_update_issue(args: argparse.Namespace) -> int:
     team_id = _resolve_team_id(args.team)
     issue_id = _resolve_issue_id(team_id, args.issue)
@@ -753,6 +791,54 @@ def cmd_update_issue(args: argparse.Namespace) -> int:
     if not result.get("success"):
         raise RuntimeError("issueUpdate returned success=false")
     print(json.dumps(result["issue"], indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_list_comments(args: argparse.Namespace) -> int:
+    team_id = _resolve_team_id(args.team)
+    issue_id = _resolve_issue_id(team_id, args.issue)
+    first = max(1, min(int(args.page_size), 250))
+    remaining = max(1, int(args.limit))
+
+    comments: list[dict[str, Any]] = []
+    after: str | None = None
+    while True:
+        data = graphql(
+            QUERY_ISSUE_COMMENTS,
+            {
+                "id": issue_id,
+                "first": min(first, remaining),
+                "after": after,
+            },
+        )
+        issue = data.get("issue")
+        if not isinstance(issue, dict):
+            raise RuntimeError("issue not found when listing comments")
+        block = issue.get("comments")
+        if not isinstance(block, dict):
+            raise RuntimeError("issue comments payload missing")
+
+        nodes = block.get("nodes")
+        if isinstance(nodes, list):
+            for node in nodes:
+                if isinstance(node, dict):
+                    comments.append(node)
+                    remaining -= 1
+                    if remaining <= 0:
+                        break
+        if remaining <= 0:
+            break
+
+        page_info = block.get("pageInfo") or {}
+        has_next = bool(page_info.get("hasNextPage"))
+        if not has_next:
+            break
+        end_cursor = page_info.get("endCursor")
+        if not isinstance(end_cursor, str) or not end_cursor:
+            break
+        after = end_cursor
+
+    print(json.dumps(comments, indent=2, sort_keys=True))
     return 0
 
 
@@ -895,6 +981,13 @@ def build_parser() -> argparse.ArgumentParser:
     list_issues.add_argument("--active-only", action="store_true")
     list_issues.set_defaults(func=cmd_list_issues)
 
+    get_issue = sub.add_parser("get-issue", help="Fetch one issue by id/identifier")
+    get_issue.add_argument("--team", required=True, help="Team id/key/name")
+    get_issue.add_argument(
+        "--issue", required=True, help="Issue id or identifier (for example MOL-123)"
+    )
+    get_issue.set_defaults(func=cmd_get_issue)
+
     create = sub.add_parser("create-issue", help="Create one issue")
     create.add_argument("--team", required=True, help="Team id/key/name")
     create.add_argument("--project", default=None, help="Project id/slug/name")
@@ -918,6 +1011,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Workflow state name (for example In Progress, Done, Canceled)",
     )
     update.set_defaults(func=cmd_update_issue)
+
+    comments = sub.add_parser(
+        "list-comments", help="List issue comments by id/identifier"
+    )
+    comments.add_argument("--team", required=True, help="Team id/key/name")
+    comments.add_argument(
+        "--issue", required=True, help="Issue id or identifier (for example MOL-123)"
+    )
+    comments.add_argument(
+        "--limit", type=int, default=200, help="Maximum comments to return"
+    )
+    comments.add_argument(
+        "--page-size", type=int, default=100, help="Page size for GraphQL pagination"
+    )
+    comments.set_defaults(func=cmd_list_comments)
 
     comment = sub.add_parser(
         "comment-issue", help="Create one comment on an issue by id/identifier"

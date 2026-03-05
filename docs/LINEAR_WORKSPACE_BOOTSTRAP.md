@@ -68,6 +68,8 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/linear_workspace.py whoami
 PYTHONPATH=src uv run --python 3.12 python3 tools/linear_workspace.py list-projects --team <team-key-or-name>
 PYTHONPATH=src uv run --python 3.12 python3 tools/linear_workspace.py list-states --team <team-key-or-name>
 PYTHONPATH=src uv run --python 3.12 python3 tools/linear_workspace.py list-issues --team <team-key-or-name>
+PYTHONPATH=src uv run --python 3.12 python3 tools/linear_workspace.py get-issue --team <team-key-or-name> --issue MOL-123
+PYTHONPATH=src uv run --python 3.12 python3 tools/linear_workspace.py list-comments --team <team-key-or-name> --issue MOL-123
 ```
 
 Direct non-interactive issue operations:
@@ -214,7 +216,7 @@ For full formalization signal in readiness:
 PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --team Moltlang --strict-autonomy --fail-on warn --formal-suite all
 ```
 
-To repair manifests/issues + bootstrap labels/routing in one pass:
+To repair manifests/issues + ensure project assignment + bootstrap labels/routing in one pass:
 
 ```bash
 PYTHONPATH=src uv run --python 3.12 python3 tools/linear_hygiene.py full-pass --team Moltlang --apply --formal-suite all
