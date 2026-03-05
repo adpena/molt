@@ -98,7 +98,10 @@ def _guard_root(env: Mapping[str, str]) -> Path:
     ext_root = env.get("MOLT_EXT_ROOT")
     if ext_root:
         return (
-            Path(ext_root).expanduser() / "cargo-target" / ".molt_state" / "compile_guard"
+            Path(ext_root).expanduser()
+            / "cargo-target"
+            / ".molt_state"
+            / "compile_guard"
         )
     target_root = env.get("CARGO_TARGET_DIR")
     if target_root:
@@ -180,7 +183,9 @@ def _max_active_procs_from_env(env: Mapping[str, str], *, max_slots: int) -> int
     )
 
 
-def _try_acquire_slot(lock_root: Path, *, max_slots: int) -> tuple[int, Path, TextIO] | None:
+def _try_acquire_slot(
+    lock_root: Path, *, max_slots: int
+) -> tuple[int, Path, TextIO] | None:
     if os.name != "posix" or fcntl is None:
         return None
     lock_root.mkdir(parents=True, exist_ok=True)
@@ -251,9 +256,7 @@ def acquire_compile_slot(
 
         reasons: list[str] = []
         if active_builds is not None and active_builds >= max_active_procs:
-            reasons.append(
-                f"active_builds={active_builds} >= limit={max_active_procs}"
-            )
+            reasons.append(f"active_builds={active_builds} >= limit={max_active_procs}")
         if load_1m is not None and max_load > 0.0 and load_1m >= max_load:
             reasons.append(f"load1={load_1m:.2f} >= limit={max_load:.2f}")
 

@@ -9,6 +9,11 @@ import sys
 import time
 from pathlib import Path
 
+try:
+    from . import compile_governor
+except ImportError:  # pragma: no cover - script execution path.
+    import compile_governor  # type: ignore[no-redef]
+
 
 DEFAULT_EXT_ROOT = "/Volumes/APDataStore/Molt"
 DEFAULT_ENV_FILE = Path("ops/linear/runtime/symphony.env")
@@ -260,6 +265,10 @@ def main(argv: list[str] | None = None) -> int:
     env.setdefault("MOLT_CACHE", str(ext_root / "molt_cache"))
     env.setdefault("MOLT_DIFF_ROOT", str(ext_root / "diff"))
     env.setdefault("MOLT_DIFF_TMPDIR", str(ext_root / "tmp"))
+    env.setdefault(
+        "MOLT_COMPILE_GUARD_DIR",
+        str(ext_root / "cargo-target" / ".molt_state" / "compile_guard"),
+    )
     env.setdefault("MOLT_APALACHE_WORK_DIR", str(ext_root / "tmp" / "apalache"))
     env.setdefault("UV_CACHE_DIR", str(ext_root / "uv-cache"))
     env.setdefault("MOLT_BACKEND_DAEMON_SOCKET_DIR", "/tmp/molt_backend_sockets")
@@ -353,7 +362,8 @@ def main(argv: list[str] | None = None) -> int:
         cmd.append("--")
         cmd.extend(runtime_args)
         start = time.perf_counter()
-        proc = subprocess.run(cmd, env=env, check=False)
+        with compile_governor.compile_slot(env=env, label="symphony_run:molt-run"):
+            proc = subprocess.run(cmd, env=env, check=False)
         if args.timing:
             duration = max(time.perf_counter() - start, 0.0)
             print(f"symphony_run.mode={mode} run_s={duration:.3f}", file=sys.stderr)
@@ -385,7 +395,11 @@ def main(argv: list[str] | None = None) -> int:
             *build_args,
         ]
         build_start = time.perf_counter()
-        build_proc = subprocess.run(build_cmd, env=env, check=False)
+        with compile_governor.compile_slot(
+            env=env,
+            label="symphony_run:molt-bin-build",
+        ):
+            build_proc = subprocess.run(build_cmd, env=env, check=False)
         build_seconds = max(time.perf_counter() - build_start, 0.0)
         if build_proc.returncode != 0:
             if args.timing:

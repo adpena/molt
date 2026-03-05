@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,20 @@ import pytest
 
 import tools.symphony_launchd as symphony_launchd
 import tools.symphony_run as symphony_run
+
+
+@pytest.fixture(autouse=True)
+def _stub_compile_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    @contextlib.contextmanager
+    def _noop_slot(*, env, label, log=None):  # type: ignore[no-untyped-def]
+        del env, label, log
+        yield SimpleNamespace(slot_index=0, waited_seconds=0.0)
+
+    monkeypatch.setattr(
+        symphony_run.compile_governor,
+        "compile_slot",
+        _noop_slot,
+    )
 
 
 def test_symphony_run_load_env_file_parses_key_values(tmp_path: Path) -> None:

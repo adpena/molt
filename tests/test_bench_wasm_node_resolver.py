@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import tools.bench_wasm as bench_wasm
+
+
+@pytest.fixture(autouse=True)
+def _stub_compile_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    @contextlib.contextmanager
+    def _noop_slot(*, env, label, log=None):  # type: ignore[no-untyped-def]
+        del env, label, log
+        yield SimpleNamespace(slot_index=0, waited_seconds=0.0)
+
+    monkeypatch.setattr(bench_wasm, "_compile_slot", _noop_slot)
 
 
 def _reset_cache(monkeypatch: pytest.MonkeyPatch) -> None:
