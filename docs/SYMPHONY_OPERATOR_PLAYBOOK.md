@@ -110,8 +110,13 @@ Use `tools/linear_hygiene.py` to continuously clean/taxonomize Linear and keep
 swarm routing labels current:
 
 ```bash
-PYTHONPATH=src uv run --python 3.12 python3 tools/linear_hygiene.py full-pass --team Moltlang --apply --formal-suite all
+PYTHONPATH=src uv run --group dev --python 3.12 python3 tools/linear_hygiene.py full-pass --team Moltlang --apply --formal-suite all
 ```
+
+Optional DSPy routing knobs for `linear_hygiene`:
+- `MOLT_SYMPHONY_DSPY_ENABLE=1`
+- `MOLT_SYMPHONY_DSPY_MODEL=<provider/model>`
+- `MOLT_SYMPHONY_DSPY_API_KEY_ENV=<env-var-name>` (defaults to `OPENAI_API_KEY`)
 
 ## 6. Daily Operator Workflow
 

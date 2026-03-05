@@ -621,6 +621,7 @@ def _dspy_runtime_status() -> dict[str, Any]:
         "model_configured": model_configured,
         "api_key_present": api_key_present,
         "api_key_source": api_key_source,
+        "api_key_env": api_key_source,
         "api_key": api_key,
         "ready": ready,
         "reason": reason,

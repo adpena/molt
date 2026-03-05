@@ -59,7 +59,7 @@ Symphony keeps observability and intervention surfaces always-on:
 ### 5) Entropy cleanup loop
 
 Harness health requires recurring doc gardening and entropy cleanup:
-- Linear hygiene loop: `tools/linear_hygiene.py full-pass --apply`
+- Linear hygiene loop: `uv run --group dev --python 3.12 python3 tools/linear_hygiene.py full-pass --apply`
 - readiness loop: `tools/symphony_readiness_audit.py`
 - doc sync loop: update `docs/spec/STATUS.md` + `ROADMAP.md` when behavior/scope move
 
@@ -89,4 +89,3 @@ Symphony maximizes execution autonomy, but the human remains accountable for:
 
 Reference:
 - `docs/SYMPHONY_HUMAN_ROLE.md`
-

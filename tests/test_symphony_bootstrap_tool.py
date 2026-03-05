@@ -73,6 +73,9 @@ def test_sync_env_defaults_fills_external_paths(monkeypatch, tmp_path: Path) -> 
         ext_root / "logs" / "symphony" / "durable_memory"
     )
     assert loaded["MOLT_SYMPHONY_DURABLE_SYNC_SECONDS"] == "180"
+    assert loaded["MOLT_SYMPHONY_DSPY_ENABLE"] == "0"
+    assert loaded["MOLT_SYMPHONY_DSPY_MODEL"] == "openai/gpt-4.1-mini"
+    assert loaded["MOLT_SYMPHONY_DSPY_API_KEY_ENV"] == "OPENAI_API_KEY"
     assert (
         loaded["MOLT_QUINT_NODE_FALLBACK"]
         == symphony_bootstrap._default_quint_node_fallback()
