@@ -75,6 +75,7 @@ STRICT_AUTONOMY_FAIL_CODES = {
     "linear_titles_malformed",
     "linear_no_active_flow",
 }
+FORMAL_SUITE_MODES = ("off", "inventory", "lean", "quint", "all")
 
 QUERY_LABELS = """
 query LabelsByTeam($teamId: ID!) {
@@ -645,6 +646,119 @@ def _audit_lin_cli_compat(env_file: Path) -> dict[str, Any]:
     }
 
 
+def _formal_suite_command(mode: str) -> list[str]:
+    mode_key = mode.strip().lower()
+    command = [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python3",
+        "tools/check_formal_methods.py",
+        "--json-only",
+    ]
+    if mode_key == "inventory":
+        command.append("--inventory")
+    elif mode_key == "lean":
+        command.append("--lean")
+    elif mode_key == "quint":
+        command.append("--quint")
+    return command
+
+
+def _formal_suite_has_toolchain_mismatch(payload: dict[str, Any]) -> bool:
+    checks = payload.get("checks")
+    if not isinstance(checks, dict):
+        return False
+    quint = checks.get("quint")
+    if not isinstance(quint, dict):
+        return False
+    diagnostics = quint.get("diagnostics")
+    if isinstance(diagnostics, dict) and bool(diagnostics.get("runtime_mismatch_detected")):
+        return True
+    errors = quint.get("errors")
+    if not isinstance(errors, list):
+        return False
+    return any("quint_runtime_toolchain_mismatch" in str(item) for item in errors)
+
+
+def _audit_formal_suite(repo_root: Path, mode: str) -> dict[str, Any]:
+    mode_key = mode.strip().lower()
+    if mode_key == "off":
+        return {
+            "status": "info",
+            "mode": mode_key,
+            "reason": "disabled",
+            "command": [],
+            "returncode": 0,
+            "report": None,
+        }
+    if mode_key not in FORMAL_SUITE_MODES:
+        return {
+            "status": "fail",
+            "mode": mode_key,
+            "reason": "invalid_mode",
+            "command": [],
+            "returncode": 1,
+            "report": None,
+        }
+
+    command = _formal_suite_command(mode_key)
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=repo_root,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
+    except Exception as exc:
+        return {
+            "status": "fail",
+            "mode": mode_key,
+            "reason": "execution_failed",
+            "command": command,
+            "returncode": 1,
+            "error": str(exc),
+            "report": None,
+        }
+
+    report: dict[str, Any] | None = None
+    stdout = (proc.stdout or "").strip()
+    if stdout:
+        try:
+            parsed = json.loads(stdout)
+            if isinstance(parsed, dict):
+                report = parsed
+        except Exception:
+            report = None
+
+    status = "pass"
+    reason = "ok"
+    if report is None:
+        status = "fail"
+        reason = "invalid_report"
+    elif not bool(report.get("ok")):
+        if _formal_suite_has_toolchain_mismatch(report):
+            status = "warn"
+            reason = "toolchain_mismatch"
+        else:
+            status = "fail"
+            reason = "gate_failed"
+
+    return {
+        "status": status,
+        "mode": mode_key,
+        "reason": reason,
+        "command": command,
+        "returncode": int(proc.returncode),
+        "stdout_tail": stdout[-2000:],
+        "stderr_tail": (proc.stderr or "").strip()[-2000:],
+        "report": report,
+    }
+
+
 def _audit_env_and_volume(
     *,
     env_file: Path,
@@ -922,6 +1036,43 @@ def _collect_findings(report: dict[str, Any]) -> list[dict[str, Any]]:
             message="lin CLI compatibility probe reported warnings.",
             details=cli_compat,
         )
+
+    formal = report["sections"]["formal_suite"]
+    if formal.get("status") == "fail":
+        _record_finding(
+            findings,
+            severity="fail",
+            code="formal_suite_failed",
+            message="Formalization suite gate failed.",
+            details={
+                "mode": formal.get("mode"),
+                "reason": formal.get("reason"),
+                "returncode": formal.get("returncode"),
+            },
+        )
+    elif formal.get("status") == "warn":
+        _record_finding(
+            findings,
+            severity="warn",
+            code="formal_suite_toolchain_mismatch",
+            message=(
+                "Formalization suite reported toolchain mismatch (likely Node/Quint "
+                "runtime incompatibility); verification signal is degraded."
+            ),
+            details={
+                "mode": formal.get("mode"),
+                "reason": formal.get("reason"),
+                "returncode": formal.get("returncode"),
+            },
+        )
+    elif formal.get("status") == "pass":
+        _record_finding(
+            findings,
+            severity="info",
+            code="formal_suite_pass",
+            message="Formalization suite check passed for current mode.",
+            details={"mode": formal.get("mode")},
+        )
     return findings
 
 
@@ -991,6 +1142,7 @@ def run_audit(
     ext_root: Path,
     durable_root: Path,
     strict_autonomy: bool,
+    formal_suite_mode: str = "inventory",
 ) -> dict[str, Any]:
     api_key = _resolve_linear_api_key(env_file)  # secret-guard: allow
     with _temporary_linear_api_key(api_key):
@@ -1008,6 +1160,7 @@ def run_audit(
             "manifest_index": _audit_manifest_index(index_path),
             "linear_workspace": linear_workspace_section,
             "linear_cli_compat": linear_cli_compat_section,
+            "formal_suite": _audit_formal_suite(repo_root, formal_suite_mode),
         },
     }
     findings = _collect_findings(report)
@@ -1063,6 +1216,15 @@ def build_parser() -> argparse.ArgumentParser:
             "to failures."
         ),
     )
+    parser.add_argument(
+        "--formal-suite",
+        choices=list(FORMAL_SUITE_MODES),
+        default="inventory",
+        help=(
+            "Formalization suite mode for readiness signal. "
+            "Use all/lean/quint for deeper checks; off disables this section."
+        ),
+    )
     return parser
 
 
@@ -1082,6 +1244,7 @@ def main(argv: list[str] | None = None) -> int:
         ext_root=ext_root,
         durable_root=durable_root,
         strict_autonomy=bool(args.strict_autonomy),
+        formal_suite_mode=str(args.formal_suite),
     )
 
     readiness_root = ext_root / "logs" / "symphony" / "readiness"

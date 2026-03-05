@@ -97,11 +97,17 @@ For autonomy hard-gating (CI/nightly), run:
 PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --team Moltlang --strict-autonomy --fail-on warn
 ```
 
+For full formalization signal (inventory + Lean + Quint), run:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --team Moltlang --strict-autonomy --fail-on warn --formal-suite all
+```
+
 Use `tools/linear_hygiene.py` to continuously clean/taxonomize Linear and keep
 swarm routing labels current:
 
 ```bash
-PYTHONPATH=src uv run --python 3.12 python3 tools/linear_hygiene.py full-pass --team Moltlang --apply --run-formal-inventory
+PYTHONPATH=src uv run --python 3.12 python3 tools/linear_hygiene.py full-pass --team Moltlang --apply --formal-suite all
 ```
 
 ## 6. Daily Operator Workflow
@@ -166,6 +172,8 @@ Escalate immediately when:
 - Before major merges that alter dispatch/scheduling/retry/state-machine behavior, require:
   - `quint verify formal/quint/molt_build_determinism.qnt --invariant=Inv`
 - Default policy: bounded checks in normal turns, full verify before major merges.
+- If Quint fails on Node `>=25` with ESM/CJS loader errors, set:
+  - `export MOLT_QUINT_NODE_FALLBACK='npx -y node@22'`
 
 ## 13. Canonical Symphony Compliance
 
