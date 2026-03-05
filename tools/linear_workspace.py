@@ -4,6 +4,8 @@ import argparse
 import asyncio
 import json
 import os
+import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -125,6 +127,7 @@ query IssuesByProject($teamId: ID!, $projectId: ID!, $first: Int!, $after: Strin
     nodes {
       id
       identifier
+      branchName
       title
       description
       state { id name type }
@@ -152,6 +155,7 @@ query IssuesByTeam($teamId: ID!, $first: Int!, $after: String) {
     nodes {
       id
       identifier
+      branchName
       title
       description
       state { id name type }
@@ -170,6 +174,7 @@ query IssueById($id: String!) {
   issue(id: $id) {
     id
     identifier
+    branchName
     title
     description
     state { id name type }
@@ -763,6 +768,107 @@ def cmd_get_issue(args: argparse.Namespace) -> int:
     return 0
 
 
+def _slugify_branch_part(text: str) -> str:
+    lowered = text.strip().lower()
+    lowered = re.sub(r"[^a-z0-9]+", "-", lowered)
+    lowered = re.sub(r"-{2,}", "-", lowered)
+    return lowered.strip("-")
+
+
+def _issue_branch_name(issue: dict[str, Any]) -> str:
+    branch_name = str(issue.get("branchName") or "").strip()
+    if branch_name:
+        return branch_name
+    identifier = str(issue.get("identifier") or "").strip().lower()
+    if not identifier:
+        raise RuntimeError("issue missing identifier for branch naming")
+    title = str(issue.get("title") or "").strip()
+    slug = _slugify_branch_part(title)[:48] if title else ""
+    if slug:
+        return f"{identifier}/{slug}"
+    return identifier
+
+
+def _git_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, check=False, capture_output=True, text=True)
+
+
+def _git_branch_exists_local(branch: str) -> bool:
+    proc = _git_run(["git", "rev-parse", "--verify", "--quiet", branch])
+    return proc.returncode == 0
+
+
+def _git_branch_exists_remote(remote: str, branch: str) -> bool:
+    proc = _git_run(["git", "ls-remote", "--heads", remote, branch])
+    return proc.returncode == 0 and bool((proc.stdout or "").strip())
+
+
+def _git_checkout_local(branch: str) -> None:
+    proc = _git_run(["git", "checkout", branch])
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or f"git checkout {branch} failed")
+
+
+def _git_checkout_tracking(remote: str, branch: str) -> None:
+    proc = _git_run(["git", "checkout", "-t", f"{remote}/{branch}"])
+    if proc.returncode != 0:
+        raise RuntimeError(
+            proc.stderr.strip() or f"git checkout -t {remote}/{branch} failed"
+        )
+
+
+def _git_checkout_new(branch: str) -> None:
+    proc = _git_run(["git", "checkout", "-b", branch])
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or f"git checkout -b {branch} failed")
+
+
+def cmd_checkout_branch(args: argparse.Namespace) -> int:
+    team_id = _resolve_team_id(args.team)
+    issue = _resolve_issue(team_id, args.issue)
+    branch = str(args.branch or "").strip() or _issue_branch_name(issue)
+    remote = str(args.remote or "origin").strip() or "origin"
+    create_if_missing = bool(args.create_if_missing)
+
+    local_exists = _git_branch_exists_local(branch)
+    remote_exists = _git_branch_exists_remote(remote, branch)
+
+    action = "none"
+    if local_exists:
+        action = "checkout_local"
+        if not args.dry_run:
+            _git_checkout_local(branch)
+    elif remote_exists:
+        action = "checkout_tracking"
+        if not args.dry_run:
+            _git_checkout_tracking(remote, branch)
+    elif create_if_missing:
+        action = "checkout_new"
+        if not args.dry_run:
+            _git_checkout_new(branch)
+    else:
+        raise RuntimeError(
+            f"branch not found locally/remotely: {branch} (remote={remote}); pass --create-if-missing to create it"
+        )
+
+    print(
+        json.dumps(
+            {
+                "issue": str(issue.get("identifier") or ""),
+                "branch": branch,
+                "remote": remote,
+                "local_exists": local_exists,
+                "remote_exists": remote_exists,
+                "action": action,
+                "dry_run": bool(args.dry_run),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def cmd_update_issue(args: argparse.Namespace) -> int:
     team_id = _resolve_team_id(args.team)
     issue_id = _resolve_issue_id(team_id, args.issue)
@@ -987,6 +1093,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--issue", required=True, help="Issue id or identifier (for example MOL-123)"
     )
     get_issue.set_defaults(func=cmd_get_issue)
+
+    checkout = sub.add_parser(
+        "checkout-branch",
+        help="Checkout issue branch from Linear issue metadata (local/remote/create)",
+    )
+    checkout.add_argument("--team", required=True, help="Team id/key/name")
+    checkout.add_argument(
+        "--issue", required=True, help="Issue id or identifier (for example MOL-123)"
+    )
+    checkout.add_argument(
+        "--branch",
+        default=None,
+        help="Override branch name (defaults to issue.branchName or derived identifier/title slug)",
+    )
+    checkout.add_argument(
+        "--remote",
+        default="origin",
+        help="Remote used for tracking lookup (default: origin)",
+    )
+    checkout.add_argument("--create-if-missing", action="store_true")
+    checkout.add_argument("--dry-run", action="store_true")
+    checkout.set_defaults(func=cmd_checkout_branch)
 
     create = sub.add_parser("create-issue", help="Create one issue")
     create.add_argument("--team", required=True, help="Team id/key/name")
