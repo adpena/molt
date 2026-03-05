@@ -277,16 +277,17 @@ Run the full Linear hygiene pass (manifest title repair, seeded metadata backfil
 label taxonomy bootstrap, role-label routing, and active-flow promotion):
 
 ```bash
-PYTHONPATH=src uv run --python 3.12 python3 tools/linear_hygiene.py full-pass --team Moltlang --apply --formal-suite all
+PYTHONPATH=src uv run --group dev --python 3.12 python3 tools/linear_hygiene.py full-pass --team Moltlang --apply --formal-suite all
 ```
 
 `tools/linear_hygiene.py` supports optional DSPy-assisted role routing.
 Set:
 
-- `uv run --python 3.12 pip install pydantic dspy-ai`
+- `uv sync --group dev --python 3.12`
 - `MOLT_SYMPHONY_DSPY_ENABLE=1`
 - `MOLT_SYMPHONY_DSPY_MODEL=<provider/model>`
-- `OPENAI_API_KEY=<token>`
+- `MOLT_SYMPHONY_DSPY_API_KEY_ENV=<env-var-name>` (defaults to `OPENAI_API_KEY`)
+- `<env-var-name>=<token>`
 
 When DSPy is not configured, deterministic heuristics are used and all outputs
 remain valid for swarm routing (`role:*` labels consumed by Symphony).
