@@ -578,7 +578,8 @@ def _resolve_dspy_api_key() -> tuple[str, str]:
     if inline:
         return inline, DSPY_API_KEY_INLINE_ENV
     env_name = (
-        str(os.environ.get(DSPY_API_KEY_ENV_ENV) or "").strip() or DSPY_DEFAULT_API_KEY_ENV
+        str(os.environ.get(DSPY_API_KEY_ENV_ENV) or "").strip()
+        or DSPY_DEFAULT_API_KEY_ENV
     )
     value = str(os.environ.get(env_name) or "").strip()
     return value, env_name

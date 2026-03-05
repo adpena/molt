@@ -2934,15 +2934,16 @@ impl WasmBackend {
         let import_ids = ctx.import_ids;
         let resolve_func_idx = |name: &str, expected_arity: usize| -> u32 {
             if let Some(idx) = func_indices.get(name).copied()
-                && func_sig_arities.get(name).copied() == Some(expected_arity) {
-                    return idx;
-                }
+                && func_sig_arities.get(name).copied() == Some(expected_arity)
+            {
+                return idx;
+            }
             if let Some(idx) = import_ids.get(name).copied()
                 && (!func_sig_arities.contains_key(name)
                     || func_sig_arities.get(name).copied() == Some(expected_arity))
-                {
-                    return idx;
-                }
+            {
+                return idx;
+            }
             let prefix = format!("{name}_");
             let mut match_idx: Option<u32> = None;
             for (candidate, idx) in func_indices {
@@ -2968,9 +2969,10 @@ impl WasmBackend {
         };
         let resolve_table_slot_with_arity = |name: &str, expected_arity: usize| -> u32 {
             if let Some(slot) = func_map.get(name).copied()
-                && func_arities.get(name).copied() == Some(expected_arity) {
-                    return slot;
-                }
+                && func_arities.get(name).copied() == Some(expected_arity)
+            {
+                return slot;
+            }
             let prefix = format!("{name}_");
             let mut match_slot: Option<u32> = None;
             for (candidate, slot) in func_map {
@@ -3031,9 +3033,10 @@ impl WasmBackend {
         };
         let resolve_trampoline_slot_with_arity = |name: &str, expected_arity: usize| -> u32 {
             if let Some(slot) = trampoline_map.get(name).copied()
-                && func_arities.get(name).copied() == Some(expected_arity) {
-                    return slot;
-                }
+                && func_arities.get(name).copied() == Some(expected_arity)
+            {
+                return slot;
+            }
             let prefix = format!("{name}_");
             let mut match_slot: Option<u32> = None;
             for (candidate, slot) in trampoline_map {
