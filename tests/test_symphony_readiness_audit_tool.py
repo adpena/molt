@@ -683,8 +683,12 @@ def test_prune_baseline_history_removes_old_files(tmp_path: Path) -> None:
     history.mkdir(parents=True, exist_ok=True)
     old_payload = {"captured_at": "2024-01-01T00:00:00Z"}
     new_payload = {"captured_at": "2026-03-05T00:00:00Z"}
-    (history / "baseline_old.json").write_text(json.dumps(old_payload), encoding="utf-8")
-    (history / "baseline_new.json").write_text(json.dumps(new_payload), encoding="utf-8")
+    (history / "baseline_old.json").write_text(
+        json.dumps(old_payload), encoding="utf-8"
+    )
+    (history / "baseline_new.json").write_text(
+        json.dumps(new_payload), encoding="utf-8"
+    )
     removed = readiness_audit._prune_baseline_history(history, retention_days=30)
     assert removed >= 1
     assert not (history / "baseline_old.json").exists()
@@ -808,7 +812,9 @@ def test_as_markdown_includes_next_tranche_actions() -> None:
         "generated_at": "2026-03-05T12:00:00Z",
         "overall_status": "pass",
         "sections": {"environment": {"status": "pass"}},
-        "findings": [{"severity": "info", "code": "readiness_trend_stable", "message": "stable"}],
+        "findings": [
+            {"severity": "info", "code": "readiness_trend_stable", "message": "stable"}
+        ],
         "next_tranche": {
             "actions": [
                 {

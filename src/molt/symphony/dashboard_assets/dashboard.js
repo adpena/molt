@@ -177,6 +177,37 @@
         return `${Math.floor(sec / 3600)}h`;
       }
 
+      function buildSparklineSvg(values, {
+        width = 220,
+        height = 58,
+        stroke = "#e8e8e8",
+      } = {}) {
+        const points = toArray(values)
+          .map((value) => toNumber(value, NaN))
+          .filter((value) => Number.isFinite(value));
+        if (!points.length) {
+          return '<div class="empty tiny">No trend data yet.</div>';
+        }
+        const min = Math.min(...points);
+        const max = Math.max(...points);
+        const span = max - min || 1;
+        const lastIndex = Math.max(points.length - 1, 1);
+        const polyline = points
+          .map((value, idx) => {
+            const x = (idx / lastIndex) * width;
+            const y = height - ((value - min) / span) * height;
+            return `${x.toFixed(2)},${y.toFixed(2)}`;
+          })
+          .join(" ");
+        const fill = `${polyline} ${width},${height} 0,${height}`;
+        return `
+          <svg class="sparkline" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="trend">
+            <polygon class="sparkline-fill" points="${fill}"></polygon>
+            <polyline class="sparkline-line" points="${polyline}" style="stroke:${escapeHtml(stroke)};"></polyline>
+          </svg>
+        `;
+      }
+
       function withAuthPath(path) {
         if (!authToken) return path;
         const url = new URL(path, window.location.origin);
@@ -878,6 +909,7 @@
             const item = toObject(itemValue);
             const issueId = String(item.issue_identifier || item.issue_id || "unknown");
             const isSystem = issueId.toUpperCase() === "SYSTEM";
+            const kind = String(item.kind || "");
             const running = toObject(runningByIssue.get(issueId));
             const retry = toObject(retryByIssue.get(issueId));
             const issueUrl = String(item.issue_url || running.url || retry.url || "");
@@ -907,6 +939,10 @@
               : `<button type="button" data-action="retry-now" data-issue="${escapeHtml(
                   issueId
                 )}" ${pending ? "disabled" : ""}>${pending ? "Retrying..." : "Retry now"}</button>`;
+            const perfGuardButton =
+              isSystem && kind.startsWith("perf_guard")
+                ? '<button type="button" data-action="run-tool" data-tool="run_perf_guard">Run perf guard</button>'
+                : "";
             const extraSummary = [
               running.state ? `state: ${running.state}` : "",
               retry.attempt ? `retry attempt: ${retry.attempt}` : "",
@@ -935,6 +971,7 @@
                   ${inspectLink}
                   ${traceButton}
                   ${retryNowButton}
+                  ${perfGuardButton}
                 </div>
               </div>
             `;
@@ -1283,12 +1320,25 @@
         const regressions = toArray(compare.regressions);
         const improvements = toArray(compare.improvements);
         const optimizations = toArray(compare.optimizations);
+        const trends = toObject(compare.trends);
+        const trendPoints = toArray(trends.points);
         const baselineSamples = toNumber(compare.baseline_checkpoint_samples, 0);
-        if (!hotspotRows.length && !regressions.length && !optimizations.length) {
+        if (
+          !hotspotRows.length &&
+          !regressions.length &&
+          !optimizations.length &&
+          !trendPoints.length
+        ) {
           profilingWrap.innerHTML =
             '<div class="empty">No profiling hotspot telemetry available yet.</div>';
           return;
         }
+        const rssValues = trendPoints.map((rowValue) =>
+          toNumber(toObject(rowValue).rss_high_water_kb, 0)
+        );
+        const queueValues = trendPoints.map((rowValue) =>
+          toNumber(toObject(rowValue).queue_depth_peak, 0)
+        );
         const summary = `
           <div class="profiling-summary">
             <span class="badge ${regressions.length ? "danger" : "ok"}">${formatNumber(
@@ -1352,6 +1402,13 @@
                       <div class="meta">${escapeHtml(reason)} | samples ${formatNumber(
                         row.samples
                       )}</div>
+                      ${
+                        row.profile_tool
+                          ? `<div class="profiling-tools"><button type="button" class="secondary tool-trigger" data-tool="${escapeHtml(
+                              String(row.profile_tool)
+                            )}">Run perf guard</button></div>`
+                          : ""
+                      }
                     </div>
                   `;
                 })
@@ -1380,14 +1437,69 @@
                       <div class="meta">avg ${escapeHtml(avg.toFixed(1))} ms | samples ${formatNumber(
                     samples
                   )} | calls ${formatNumber(calls)}</div>
+                      <div class="profiling-tools"><button type="button" class="secondary tool-trigger" data-tool="run_perf_guard">Run perf guard</button></div>
                     </div>
                   `;
                 })
                 .join("")}</div>
             </div>`
           : "";
+        const labelTrendRows = toArray(trends.labels)
+          .slice(0, 4)
+          .map((entryValue) => {
+            const entry = toObject(entryValue);
+            const label = String(entry.label || "latency");
+            const series = toArray(entry.series);
+            const p95Values = series.map((pointValue) =>
+              toNumber(toObject(pointValue).p95_ms, 0)
+            );
+            const latestP95 = p95Values.length ? p95Values[p95Values.length - 1] : 0;
+            return `
+              <div class="trend-label-item">
+                <div class="head">
+                  <span class="name mono">${escapeHtml(label)}</span>
+                  <span class="badge warn">p95 ${escapeHtml(latestP95.toFixed(1))} ms</span>
+                </div>
+                ${buildSparklineSvg(p95Values, { stroke: "#c6d2ff", width: 220, height: 48 })}
+              </div>
+            `;
+          })
+          .join("");
+        const trendHtml = trendPoints.length
+          ? `
+            <div class="profiling-group">
+              <div class="profiling-group-title">Trend Monitor</div>
+              <div class="profiling-trend-grid">
+                <article class="trend-card">
+                  <div class="head">
+                    <span class="name">RSS High Water</span>
+                    <span class="badge">${formatNumber(
+                      rssValues.length ? rssValues[rssValues.length - 1] : 0
+                    )} KB</span>
+                  </div>
+                  ${buildSparklineSvg(rssValues, { stroke: "#c7f2e0", width: 260, height: 54 })}
+                </article>
+                <article class="trend-card">
+                  <div class="head">
+                    <span class="name">Queue Depth Peak</span>
+                    <span class="badge">${formatNumber(
+                      queueValues.length ? queueValues[queueValues.length - 1] : 0
+                    )}</span>
+                  </div>
+                  ${buildSparklineSvg(queueValues, { stroke: "#b8d5ff", width: 260, height: 54 })}
+                </article>
+              </div>
+              ${
+                labelTrendRows
+                  ? `<div class="profiling-label-trends">${labelTrendRows}</div>`
+                  : ""
+              }
+            </div>
+          `
+          : "";
         profilingWrap.innerHTML = `<div class="profiling-wrap">
           ${summary}
+          ${trendHtml}
           ${regressionsHtml}
           ${optimizationsHtml}
           ${hotspotsHtml}
@@ -1546,6 +1658,9 @@
       function renderRateLimits(state) {
         const limits = toObject(state.rate_limits);
         const runtime = toObject(state.runtime);
+        const perfGuard = toObject(runtime.perf_guard);
+        const perfGuardVerdict = toObject(perfGuard.verdict);
+        const perfGuardLast = toObject(perfGuard.last_result);
         const status = describeRateLimitState(state);
         const cadence = status.cadence;
         const policy = toObject(runtime.rate_limit_policy);
@@ -1571,6 +1686,11 @@
               Retry policy: default resume ${formatNumber(policy.default_resume_seconds || 0)}s ·
               auth resume ${formatNumber(policy.auth_resume_seconds || 0)}s ·
               max backoff ${formatNumber(policy.max_retry_backoff_ms || 0)}ms
+            </div>
+            <div class="hint">
+              Perf guard: running=${escapeHtml(String(Boolean(perfGuard.running)))} ·
+              verdict=${escapeHtml(String(perfGuardVerdict.status || perfGuardLast.status || "n/a"))} ·
+              last update=${escapeHtml(relTime(perfGuardLast.finished_at || perfGuard.last_finished_at))}
             </div>
             <div class="hint">
               Transport: requested=${escapeHtml(requestedTransport)} · active=${escapeHtml(activeTransport)} ·
@@ -1730,6 +1850,7 @@
           "profiling",
           {
             profiling: safeState.profiling,
+            profiling_compare: safeState.profiling_compare,
             hotspots: safeState.hotspots,
             profiling_hotspots: safeState.profiling_hotspots,
           },
@@ -1951,6 +2072,7 @@
         if (!tool) return;
         const needsIssueIdentifier = !(
           tool === "refresh_cycle" ||
+          tool === "run_perf_guard" ||
           tool === "durable_backup" ||
           tool === "durable_integrity_check"
         );
@@ -2408,6 +2530,12 @@
       }
       stateTransport = createStateTransportController();
       setDashboardView(activeDashboardView, false);
+      viewTabs.forEach((tabValue) => {
+        if (!(tabValue instanceof HTMLButtonElement)) return;
+        tabValue.addEventListener("click", () => {
+          setDashboardView(tabValue.dataset.view || "overview", true);
+        });
+      });
       layoutSelect.value = workspaceLayout;
       verbositySelect.value = workspaceVerbosity;
       const dashboardGrid = document.querySelector(".dashboard-grid");
@@ -2474,9 +2602,18 @@
         const target = event.target;
         if (!(target instanceof Element)) return;
         const button = target.closest("button[data-action='retry-now']");
-        if (!(button instanceof HTMLButtonElement)) return;
-        const issueIdentifier = String(button.dataset.issue || "");
-        triggerRetryNow(issueIdentifier);
+        if (button instanceof HTMLButtonElement) {
+          const issueIdentifier = String(button.dataset.issue || "");
+          triggerRetryNow(issueIdentifier);
+          return;
+        }
+        const runTool = target.closest("button[data-action='run-tool']");
+        if (!(runTool instanceof HTMLButtonElement)) return;
+        const tool = String(runTool.dataset.tool || "").trim();
+        if (!toolSelect || !toolRunButton) return;
+        toolSelect.value = tool;
+        toolSelect.dispatchEvent(new Event("change"));
+        runDashboardTool();
       });
       document.addEventListener("click", (event) => {
         const target = event.target;
@@ -2535,6 +2672,17 @@
       toolRunButton?.addEventListener("click", () => {
         runDashboardTool();
       });
+      profilingWrap?.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const button = target.closest(".tool-trigger[data-tool]");
+        if (!(button instanceof HTMLButtonElement)) return;
+        const tool = String(button.dataset.tool || "").trim();
+        if (!tool || !toolSelect) return;
+        toolSelect.value = tool;
+        toolSelect.dispatchEvent(new Event("change"));
+        runDashboardTool();
+      });
       toolSelect?.addEventListener("change", () => {
         const selected = String(toolSelect?.value || "").trim();
         if (!toolIssueInput) return;
@@ -2545,6 +2693,7 @@
         }
         if (
           selected === "refresh_cycle" ||
+          selected === "run_perf_guard" ||
           selected === "durable_backup" ||
           selected === "durable_integrity_check"
         ) {

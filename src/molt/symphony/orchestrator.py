@@ -85,6 +85,7 @@ class SymphonyOrchestrator:
         self._exec_mode = (
             str(os.environ.get("MOLT_SYMPHONY_EXEC_MODE", "python")).strip() or "python"
         )
+        self._server_port: int | None = None
 
         self._state = OrchestratorState(
             poll_interval_ms=config.polling.interval_ms,
@@ -178,6 +179,38 @@ class SymphonyOrchestrator:
         ext_root = Path(
             os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt")
         ).expanduser()
+        self._perf_reports_dir = Path(
+            os.environ.get(
+                "MOLT_SYMPHONY_PERF_GUARD_REPORTS_DIR",
+                str(ext_root / "logs" / "symphony"),
+            )
+        ).expanduser()
+        self._perf_verdict_path = Path(
+            os.environ.get(
+                "MOLT_SYMPHONY_PERF_VERDICT_FILE",
+                str(self._perf_reports_dir / "perf" / "verdict.json"),
+            )
+        ).expanduser()
+        self._perf_verdict_cache_ttl_seconds = max(
+            float(
+                os.environ.get(
+                    "MOLT_SYMPHONY_PERF_VERDICT_CACHE_TTL_SECONDS",
+                    "2.0",
+                )
+            ),
+            0.0,
+        )
+        self._perf_verdict_cache: (
+            tuple[float, tuple[int, int], dict[str, Any] | None] | None
+        ) = None
+        self._perf_guard_timeout_seconds = max(
+            int(os.environ.get("MOLT_SYMPHONY_PERF_GUARD_TIMEOUT_SECONDS", "1800")),
+            30,
+        )
+        self._perf_guard_running = False
+        self._perf_guard_last_started_at: str | None = None
+        self._perf_guard_last_finished_at: str | None = None
+        self._perf_guard_last_result: dict[str, Any] | None = None
         durable_enabled = str(
             os.environ.get("MOLT_SYMPHONY_DURABLE_MEMORY", "1")
         ).strip().lower() not in {"0", "false", "no", "off"}
@@ -775,6 +808,8 @@ class SymphonyOrchestrator:
                     else "Durable memory integrity check failed.",
                 )
             return {"tool": tool, **result}
+        if tool == "run_perf_guard":
+            return self._spawn_perf_guard_job()
         if tool == "inspect_issue":
             if not issue_identifier:
                 with self._state_lock:
@@ -840,9 +875,28 @@ class SymphonyOrchestrator:
         status: str,
         message: str,
     ) -> None:
+        now_iso = now_utc().isoformat().replace("+00:00", "Z")
+        if self._state.manual_actions:
+            last = self._state.manual_actions[-1]
+            if (
+                str(last.get("action") or "") == action
+                and str(last.get("issue_identifier") or "")
+                == str(issue_identifier or "")
+                and bool(last.get("ok")) == bool(ok)
+                and str(last.get("status") or "") == status
+                and str(last.get("message") or "") == message
+            ):
+                last_at = _coerce_timestamp_epoch_seconds(last.get("at"))
+                now_epoch = _coerce_timestamp_epoch_seconds(now_iso)
+                if (
+                    last_at is not None
+                    and now_epoch is not None
+                    and abs(now_epoch - last_at) < 2.0
+                ):
+                    return
         self._state.manual_actions.append(
             {
-                "at": now_utc().isoformat().replace("+00:00", "Z"),
+                "at": now_iso,
                 "action": action,
                 "issue_identifier": issue_identifier,
                 "ok": ok,
@@ -864,6 +918,219 @@ class SymphonyOrchestrator:
                     "message": message,
                 }
             )
+
+    def _spawn_perf_guard_job(self) -> dict[str, Any]:
+        with self._state_lock:
+            if self._perf_guard_running:
+                self._record_manual_action_locked(
+                    action="run_perf_guard",
+                    issue_identifier="SYSTEM",
+                    ok=False,
+                    status="busy",
+                    message="Performance guard is already running.",
+                )
+                return {
+                    "ok": False,
+                    "tool": "run_perf_guard",
+                    "error": "busy",
+                    "message": "Performance guard is already running.",
+                }
+            self._perf_guard_running = True
+            self._perf_guard_last_started_at = (
+                now_utc().isoformat().replace("+00:00", "Z")
+            )
+            self._record_manual_action_locked(
+                action="run_perf_guard",
+                issue_identifier="SYSTEM",
+                ok=True,
+                status="started",
+                message="Performance guard started.",
+            )
+        worker = threading.Thread(
+            target=self._run_perf_guard_job,
+            name="symphony-perf-guard",
+            daemon=True,
+        )
+        worker.start()
+        return {
+            "ok": True,
+            "tool": "run_perf_guard",
+            "status": "started",
+            "message": "Performance guard started.",
+        }
+
+    def _run_perf_guard_job(self) -> None:
+        command = self._build_perf_guard_command()
+        env = os.environ.copy()
+        env.setdefault("PYTHONPATH", "src")
+        started = time.perf_counter()
+        command_text = " ".join(shlex.quote(part) for part in command)
+        returncode = -1
+        stdout_tail = ""
+        stderr_tail = ""
+        status = "run_failed"
+        message = "Performance guard run failed."
+        try:
+            proc = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=max(self._perf_guard_timeout_seconds, 30),
+                cwd=str(_repo_root_path()),
+                env=env,
+            )
+            returncode = int(proc.returncode)
+            stdout_tail = str(proc.stdout or "")[-4000:]
+            stderr_tail = str(proc.stderr or "")[-4000:]
+            verdict = self._load_perf_verdict(force_refresh=True)
+            verdict_status = (
+                str(verdict.get("status") or "").strip().lower()
+                if isinstance(verdict, dict)
+                else ""
+            )
+            if returncode == 0 and verdict_status in {"", "pass"}:
+                status = "pass"
+                message = "Performance guard passed."
+            elif verdict_status == "breach":
+                status = "breach"
+                message = "Performance guard reported regression breaches."
+            elif verdict_status == "run_failed":
+                status = "run_failed"
+                message = "Performance guard launcher run failed."
+            elif returncode == 0:
+                status = "pass"
+                message = f"Performance guard completed with status={verdict_status}."
+        except subprocess.TimeoutExpired:
+            status = "timeout"
+            message = "Performance guard timed out."
+            stderr_tail = "timeout"
+        except Exception as exc:  # pragma: no cover - defensive path
+            status = "error"
+            message = f"Performance guard error: {exc}"
+            stderr_tail = str(exc)
+        finished_at = now_utc().isoformat().replace("+00:00", "Z")
+        duration_s = max(time.perf_counter() - started, 0.0)
+        result = {
+            "status": status,
+            "message": message,
+            "finished_at": finished_at,
+            "started_at": self._perf_guard_last_started_at,
+            "duration_s": round(duration_s, 3),
+            "returncode": returncode,
+            "command": command,
+            "command_text": command_text,
+            "stdout_tail": stdout_tail,
+            "stderr_tail": stderr_tail,
+            "verdict_path": str(self._perf_verdict_path),
+        }
+        with self._state_lock:
+            self._perf_guard_running = False
+            self._perf_guard_last_finished_at = finished_at
+            self._perf_guard_last_result = result
+            self._record_manual_action_locked(
+                action="run_perf_guard",
+                issue_identifier="SYSTEM",
+                ok=status == "pass",
+                status=status,
+                message=message,
+            )
+            self._wake_event.set()
+
+    def _build_perf_guard_command(self) -> list[str]:
+        custom = str(os.environ.get("MOLT_SYMPHONY_PERF_GUARD_COMMAND", "")).strip()
+        if custom:
+            parsed = shlex.split(custom)
+            if parsed:
+                return parsed
+        dashboard_port = self._server_port
+        if dashboard_port is None:
+            dashboard_port = self._port_override
+        if dashboard_port is None:
+            dashboard_port = self._config.server.port
+        base_url = f"http://127.0.0.1:{int(dashboard_port or 8089)}"
+        return [
+            sys.executable,
+            "tools/symphony_perf.py",
+            str(self._workflow.path),
+            "--skip-mode-runs",
+            "--dashboard-url",
+            base_url,
+            "--api-samples",
+            "80",
+            "--api-interval-ms",
+            "250",
+            "--auto-compare-latest",
+            "--reports-dir",
+            str(self._perf_reports_dir),
+            "--keep-reports",
+            "120",
+            "--verdict-json",
+            str(self._perf_verdict_path),
+            "--fail-on-regression",
+            "--max-dashboard-avg-latency-regression-ms",
+            str(
+                float(
+                    os.environ.get(
+                        "MOLT_SYMPHONY_PERF_MAX_DASHBOARD_AVG_LATENCY_REGRESSION_MS",
+                        "5",
+                    )
+                )
+            ),
+            "--max-dashboard-p95-latency-regression-ms",
+            str(
+                float(
+                    os.environ.get(
+                        "MOLT_SYMPHONY_PERF_MAX_DASHBOARD_P95_LATENCY_REGRESSION_MS",
+                        "10",
+                    )
+                )
+            ),
+            "--max-avg-regression-ratio",
+            str(
+                float(
+                    os.environ.get(
+                        "MOLT_SYMPHONY_PERF_MAX_AVG_REGRESSION_RATIO", "0.15"
+                    )
+                )
+            ),
+            "--max-p95-regression-ratio",
+            str(
+                float(
+                    os.environ.get(
+                        "MOLT_SYMPHONY_PERF_MAX_P95_REGRESSION_RATIO", "0.20"
+                    )
+                )
+            ),
+        ]
+
+    def _load_perf_verdict(
+        self, *, force_refresh: bool = False
+    ) -> dict[str, Any] | None:
+        signature = _path_signature(self._perf_verdict_path)
+        now_mono = time.monotonic()
+        cached = self._perf_verdict_cache
+        if (
+            not force_refresh
+            and cached is not None
+            and cached[1] == signature
+            and (now_mono - cached[0]) <= self._perf_verdict_cache_ttl_seconds
+        ):
+            payload = cached[2]
+            return dict(payload) if isinstance(payload, dict) else None
+        parsed: dict[str, Any] | None = None
+        if signature != (0, 0):
+            try:
+                raw = self._perf_verdict_path.read_text(encoding="utf-8")
+                decoded = json.loads(raw)
+            except (OSError, json.JSONDecodeError):
+                parsed = None
+            else:
+                if isinstance(decoded, dict):
+                    parsed = dict(decoded)
+                    parsed.setdefault("path", str(self._perf_verdict_path))
+        self._perf_verdict_cache = (now_mono, signature, parsed)
+        return dict(parsed) if isinstance(parsed, dict) else None
 
     def _record_profile_duration(self, label: str, duration_ms: float) -> None:
         with self._state_lock:
@@ -1037,6 +1304,18 @@ class SymphonyOrchestrator:
         now_mono = time.monotonic()
         usage = _sample_process_usage()
         profiling_baseline = self._profiling_baseline_snapshot()
+        profiling_trends: dict[str, Any] = {}
+        store = self._durable_memory
+        if store is not None:
+            try:
+                profiling_trends = store.profiling_trends(
+                    max_events=max(self._profiling_baseline_max_events, 1200),
+                    max_points=120,
+                    max_labels=4,
+                )
+            except Exception:  # pragma: no cover - durable store failure path
+                profiling_trends = {}
+        perf_verdict = self._load_perf_verdict()
         profiling_baseline_by_label_raw = profiling_baseline.get("by_label")
         profiling_baseline_by_label = (
             profiling_baseline_by_label_raw
@@ -1101,6 +1380,18 @@ class SymphonyOrchestrator:
                     dropped_events = max(int(raw_dropped), 0)
                 except (TypeError, ValueError):
                     dropped_events = 0
+            perf_guard_payload = {
+                "running": bool(self._perf_guard_running),
+                "last_started_at": self._perf_guard_last_started_at,
+                "last_finished_at": self._perf_guard_last_finished_at,
+                "last_result": (
+                    dict(self._perf_guard_last_result)
+                    if isinstance(self._perf_guard_last_result, dict)
+                    else None
+                ),
+                "verdict": perf_verdict if isinstance(perf_verdict, dict) else None,
+                "verdict_path": str(self._perf_verdict_path),
+            }
             runtime_payload = {
                 "exec_mode": self._exec_mode,
                 "default_role": self._config.agent.default_role,
@@ -1125,6 +1416,7 @@ class SymphonyOrchestrator:
                         0,
                     ),
                 },
+                "perf_guard": perf_guard_payload,
             }
 
         profiling_regressions = list(profiling_compare_rows.get("regressions") or [])
@@ -1144,6 +1436,7 @@ class SymphonyOrchestrator:
             "regressions": profiling_regressions,
             "improvements": profiling_improvements,
             "optimizations": profiling_optimizations,
+            "trends": profiling_trends,
         }
 
         running_rows: list[dict[str, Any]] = []
@@ -1313,6 +1606,36 @@ class SymphonyOrchestrator:
                 continue
             seen_attention.add(key)
             unique_attention.append(item)
+        if isinstance(perf_verdict, dict):
+            perf_status = str(perf_verdict.get("status") or "").strip().lower()
+            if perf_status in {"breach", "run_failed"}:
+                breaches_count = int(perf_verdict.get("breaches_count") or 0)
+                perf_message = str(
+                    perf_verdict.get("message")
+                    or (
+                        "Performance guard detected regression breaches."
+                        if perf_status == "breach"
+                        else "Performance guard run failed."
+                    )
+                )
+                unique_attention.insert(
+                    0,
+                    {
+                        "issue_id": "system",
+                        "issue_identifier": "SYSTEM",
+                        "kind": f"perf_guard_{perf_status}",
+                        "message": (
+                            f"{perf_message} breaches={breaches_count} "
+                            f"report={perf_verdict.get('report_path') or 'n/a'}"
+                        ),
+                        "suggested_action": (
+                            "Run tool `run_perf_guard`, inspect report JSON, and"
+                            " prioritize optimization candidates."
+                        ),
+                        "report_path": perf_verdict.get("report_path"),
+                        "compare_with": perf_verdict.get("compare_with"),
+                    },
+                )
         suspension_payload: dict[str, Any] | None = None
         if suspension_kind is not None:
             suspension_payload = {
@@ -1577,9 +1900,11 @@ class SymphonyOrchestrator:
         if port is None:
             port = self._config.server.port
         if port is None:
+            self._server_port = None
             return
         self._server = DashboardServer(provider=self, port=port)
         bound_port = self._server.start()
+        self._server_port = bound_port
         log("INFO", "http_server_started", port=bound_port)
 
     @profiled("tick")
@@ -2911,6 +3236,25 @@ class SymphonyOrchestrator:
             for row in list(profiling_compare.get("optimizations") or [])[:4]
             if isinstance(row, dict)
         ]
+        profiling_trends = (
+            profiling_compare.get("trends")
+            if isinstance(profiling_compare.get("trends"), dict)
+            else {}
+        )
+        trend_points = [
+            row
+            for row in list(profiling_trends.get("points") or [])[:12]
+            if isinstance(row, dict)
+        ]
+        trend_labels = [
+            row
+            for row in list(profiling_trends.get("labels") or [])[:4]
+            if isinstance(row, dict)
+        ]
+        runtime = state.get("runtime")
+        runtime_map = runtime if isinstance(runtime, dict) else {}
+        perf_guard = runtime_map.get("perf_guard")
+        perf_guard_map = perf_guard if isinstance(perf_guard, dict) else {}
 
         return {
             "generated_at": state.get("generated_at"),
@@ -2928,6 +3272,14 @@ class SymphonyOrchestrator:
             "profiling_hotspots": profiling_hotspots,
             "profiling_regressions": profiling_regressions,
             "profiling_optimizations": profiling_optimizations,
+            "profiling_trends": {
+                "checkpoint_samples": int(
+                    profiling_trends.get("checkpoint_samples") or 0
+                ),
+                "points": trend_points,
+                "labels": trend_labels,
+            },
+            "perf_guard": perf_guard_map,
             "runtime": state.get("runtime"),
             "compact": True,
         }
@@ -2992,9 +3344,19 @@ class SymphonyOrchestrator:
                 "baseline_checkpoint_samples": int(
                     profiling_compare.get("baseline_checkpoint_samples") or 0
                 ),
+                "trends": (
+                    profiling_compare.get("trends")
+                    if isinstance(profiling_compare.get("trends"), dict)
+                    else {}
+                ),
             },
             "needs_human_attention": state.get("needs_human_attention", False),
             "attention_count": len(state.get("attention") or []),
+            "perf_guard": (
+                runtime.get("perf_guard")
+                if isinstance(runtime.get("perf_guard"), dict)
+                else {}
+            ),
             "compact": True,
             "telemetry": True,
         }
@@ -3786,6 +4148,11 @@ def _profiling_optimization_candidates(
                 "priority_score": round(impact, 3),
                 "avg_delta_ms": round(avg_delta, 3),
                 "samples": samples,
+                "profile_tool": "run_perf_guard",
+                "profile_command": (
+                    "uv run --python 3.12 python3 tools/symphony_perf.py "
+                    "WORKFLOW.md --skip-mode-runs --auto-compare-latest"
+                ),
             }
         )
     hotspots = profiling_snapshot.get("hotspots")
@@ -3805,6 +4172,11 @@ def _profiling_optimization_candidates(
                     "priority_score": round(avg_ms * count, 3),
                     "avg_ms": round(avg_ms, 3),
                     "samples": count,
+                    "profile_tool": "run_perf_guard",
+                    "profile_command": (
+                        "uv run --python 3.12 python3 tools/symphony_perf.py "
+                        "WORKFLOW.md --skip-mode-runs --auto-compare-latest"
+                    ),
                 }
             )
     out.sort(
@@ -3822,6 +4194,19 @@ def _as_float(value: Any) -> float:
     if parsed != parsed or parsed in {float("inf"), float("-inf")}:
         return 0.0
     return parsed
+
+
+def _path_signature(path: Path) -> tuple[int, int]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return (0, 0)
+    return (int(stat.st_mtime_ns), int(stat.st_size))
+
+
+def _repo_root_path() -> Path:
+    # src/molt/symphony/orchestrator.py -> repo root
+    return Path(__file__).resolve().parents[3]
 
 
 def _dispatch_sort_key(issue: Issue) -> tuple[int, float, str]:
