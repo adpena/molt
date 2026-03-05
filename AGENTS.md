@@ -36,6 +36,11 @@
 ## Git Workflow Policy (Non-Negotiable)
 - Always develop on `main` and keep all local work based directly on `main`.
 - Always push directly to `main` (`origin/main`) by default.
+- Always commit completed work promptly; do not leave validated changes uncommitted.
+- Always push committed work promptly to `origin/main`; avoid local-only drift.
+- Proactively and aggressively land validated PR/branch work into `main` as soon as quality gates pass, preferring fast-forward/rebase flows that keep `main` continuously current.
+- Orchestration automation must never hard-block local commit/push progress due workspace sync conflicts. `before_run` git sync must be best-effort and non-fatal when the workspace is dirty/diverged.
+- The only enforced automation blocker for merge acceptance is author allowlisting: automated PR acceptance/merge must allow only changes authored by `adpena` or `orchestration` (configurable via `MOLT_REMOVED_AUTOMERGE_ALLOWED_AUTHORS`).
 - Never create branches or worktrees without explicit user approval for that specific task.
 - If explicit approval is missing, stop and ask before running commands such as `git switch -c`, `git checkout -b`, `git branch`, or `git worktree add`.
 
@@ -473,6 +478,7 @@ Use a single, explicit TODO format everywhere (code + docs + tests). This is how
 - This project is fundamentally low-level systems work blended with powerful higher-level abstractions; bring aspirational, genius-level rigor with gritty follow-through, seek the hardest problems first, own complexity end-to-end, and lean into building the future.
 - Do not implement frontend-only workarounds or cheap hacks for runtime/compiler/backend semantics; fix the core layers so compiled binaries match CPython behavior.
 - Agents may use `gh` (GitHub CLI) and git over SSH to open/merge PRs; commit frequently with clear messages.
+- For automated PR acceptance/merge flows, enforce author allowlisting (`adpena`, `orchestration`) before merge/auto-merge execution.
 - Run linting/testing once after a cohesive change set is complete (`tools/dev.py lint`, `tools/dev.py test`, plus relevant `cargo` checks); avoid repetitive cycles mid-implementation.
 - Prioritize clear, explicit communication: scope, files touched, and tests run.
 - After any push, monitor CI logs until green; if failures appear, propose fixes, implement them, push again, and repeat until green.
