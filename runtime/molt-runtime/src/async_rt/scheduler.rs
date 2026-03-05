@@ -3260,11 +3260,6 @@ pub(crate) fn wake_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn is_block_on_task(task_ptr: *mut u8) -> bool {
-    BLOCK_ON_TASK.with(|cell| cell.get() == task_ptr)
-}
-
 /// # Safety
 /// - `task_bits` must be a valid pointer to a Molt task with a valid header.
 #[unsafe(no_mangle)]
