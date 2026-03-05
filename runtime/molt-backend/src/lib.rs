@@ -716,9 +716,10 @@ fn is_inlineable(func: &FunctionIR, defined_functions: &std::collections::HashSe
             // Nested internal calls would cause recursive inlining
             "call_internal" => {
                 if let Some(target) = op.s_value.as_deref()
-                    && defined_functions.contains(target) {
-                        return false;
-                    }
+                    && defined_functions.contains(target)
+                {
+                    return false;
+                }
             }
             _ => {}
         }
@@ -820,30 +821,31 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
                 if callee_op.kind == "ret" || callee_op.kind == "ret_void" {
                     // Replace return with assignment to call output variable
                     if callee_op.kind == "ret"
-                        && let Some(ret_var) = callee_op.var.as_deref() {
-                            let renamed = rename_map
-                                .get(ret_var)
-                                .cloned()
-                                .unwrap_or_else(|| format!("{prefix}{ret_var}"));
-                            // Emit a copy: out = ret_var
-                            new_ops.push(OpIR {
-                                kind: "copy".to_string(),
-                                value: None,
-                                f_value: None,
-                                s_value: None,
-                                bytes: None,
-                                var: None,
-                                args: Some(vec![renamed]),
-                                out: Some(call_out.clone()),
-                                fast_int: None,
-                                task_kind: None,
-                                container_type: None,
-                                stack_eligible: None,
-                                fast_float: None,
-                                raw_int: None,
-                                type_hint: None,
-                            });
-                        }
+                        && let Some(ret_var) = callee_op.var.as_deref()
+                    {
+                        let renamed = rename_map
+                            .get(ret_var)
+                            .cloned()
+                            .unwrap_or_else(|| format!("{prefix}{ret_var}"));
+                        // Emit a copy: out = ret_var
+                        new_ops.push(OpIR {
+                            kind: "copy".to_string(),
+                            value: None,
+                            f_value: None,
+                            s_value: None,
+                            bytes: None,
+                            var: None,
+                            args: Some(vec![renamed]),
+                            out: Some(call_out.clone()),
+                            fast_int: None,
+                            task_kind: None,
+                            container_type: None,
+                            stack_eligible: None,
+                            fast_float: None,
+                            raw_int: None,
+                            type_hint: None,
+                        });
+                    }
                     // Skip the ret op itself (don't emit it into the caller)
                     continue;
                 }
@@ -13244,8 +13246,8 @@ impl SimpleBackend {
                     // args[0] = variable name (string), args[1] = new value
                     let args = op.args.as_ref().unwrap();
                     let carry_name = &args[0];
-                    let new_val =
-                        var_get(&mut builder, &vars, &args[1]).expect("Loop carry update val not found");
+                    let new_val = var_get(&mut builder, &vars, &args[1])
+                        .expect("Loop carry update val not found");
                     let frame = loop_stack.last_mut().unwrap_or_else(|| {
                         panic!("No loop on stack in {} at op {}", func_ir.name, op_idx)
                     });
@@ -14630,8 +14632,16 @@ impl SimpleBackend {
                 }
             }
 
+            // Skip tracking for raw_int ops — their outputs are raw i64
+            // values, not NaN-boxed objects, so dec_ref must NOT be called.
+            let skip_tracking = op.raw_int.unwrap_or(false)
+                || matches!(
+                    op.kind.as_str(),
+                    "unbox_to_raw_int" | "loop_carry_init" | "loop_carry_update"
+                );
             if let Some(name) = out_name.as_ref()
                 && name != "none"
+                && !skip_tracking
                 && let Some(block) = builder.current_block()
             {
                 if block == entry_block && loop_depth == 0 {
@@ -14723,6 +14733,25 @@ impl SimpleBackend {
             && (filter == "1" || filter == func_ir.name || func_ir.name.contains(&filter))
         {
             eprintln!("CLIF {}:\n{}", func_ir.name, self.ctx.func.display());
+            // Optional file sink for debug captures. We only write when explicitly
+            // configured to avoid unexpected local-disk churn.
+            if let Ok(path) = std::env::var("MOLT_DUMP_CLIF_FILE")
+                && !path.trim().is_empty()
+            {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                {
+                    let _ = writeln!(
+                        f,
+                        "=== CLIF {} ===\n{}",
+                        func_ir.name,
+                        self.ctx.func.display()
+                    );
+                }
+            }
         }
 
         let id = self

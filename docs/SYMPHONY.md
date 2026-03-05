@@ -159,6 +159,23 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_perf.py WORKFLOW.md \
   --compare-with /Volumes/APDataStore/Molt/logs/symphony/symphony_perf_<previous>.json
 ```
 
+Strict regression gate (CI/local hard-fail budget):
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_perf.py WORKFLOW.md \
+  --iterations 3 \
+  --compare-with /Volumes/APDataStore/Molt/logs/symphony/symphony_perf_<previous>.json \
+  --max-avg-regression-ratio 0.15 \
+  --max-p95-regression-ratio 0.20 \
+  --max-dashboard-avg-latency-regression-ms 5 \
+  --fail-on-regression
+```
+
+Exit codes:
+- `0`: success (no sample failures; no threshold breach when gating enabled)
+- `2`: benchmark execution failure in at least one sample
+- `3`: regression threshold breach with `--fail-on-regression`
+
 Optional hasher A/B micro-benchmark (Python vs helper process):
 
 ```bash

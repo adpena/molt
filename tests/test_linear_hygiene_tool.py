@@ -136,5 +136,7 @@ def test_dspy_route_decision_falls_back_when_not_ready(
         rationale="heuristic",
         extra_labels=[],
     )
-    decision = linear_hygiene._dspy_route_decision(issue={"title": "x"}, fallback=fallback)
+    decision = linear_hygiene._dspy_route_decision(
+        issue={"title": "x"}, fallback=fallback
+    )
     assert decision == fallback

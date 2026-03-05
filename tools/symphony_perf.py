@@ -123,6 +123,47 @@ def build_parser() -> argparse.ArgumentParser:
             "When provided, emits current-vs-baseline deltas."
         ),
     )
+    parser.add_argument(
+        "--fail-on-regression",
+        action="store_true",
+        help="Return nonzero when configured regression thresholds are breached.",
+    )
+    parser.add_argument(
+        "--max-avg-regression-s",
+        type=float,
+        default=None,
+        help="Maximum allowed avg_s increase per mode vs baseline.",
+    )
+    parser.add_argument(
+        "--max-p95-regression-s",
+        type=float,
+        default=None,
+        help="Maximum allowed p95_s increase per mode vs baseline.",
+    )
+    parser.add_argument(
+        "--max-avg-regression-ratio",
+        type=float,
+        default=None,
+        help="Maximum allowed avg_s regression ratio per mode (e.g. 0.15 for +15%).",
+    )
+    parser.add_argument(
+        "--max-p95-regression-ratio",
+        type=float,
+        default=None,
+        help="Maximum allowed p95_s regression ratio per mode (e.g. 0.20 for +20%).",
+    )
+    parser.add_argument(
+        "--max-dashboard-avg-latency-regression-ms",
+        type=float,
+        default=None,
+        help="Maximum allowed dashboard API avg latency regression in ms.",
+    )
+    parser.add_argument(
+        "--max-dashboard-p95-latency-regression-ms",
+        type=float,
+        default=None,
+        help="Maximum allowed dashboard API p95 latency regression in ms.",
+    )
     return parser
 
 
@@ -531,6 +572,91 @@ def _delta_ratio(current: float | None, baseline: float | None) -> float | None:
     return round((current - baseline) / baseline, 4)
 
 
+def _collect_regression_breaches(
+    comparison: dict[str, Any],
+    *,
+    max_avg_regression_s: float | None,
+    max_p95_regression_s: float | None,
+    max_avg_regression_ratio: float | None,
+    max_p95_regression_ratio: float | None,
+    max_dashboard_avg_latency_regression_ms: float | None,
+    max_dashboard_p95_latency_regression_ms: float | None,
+) -> list[dict[str, Any]]:
+    breaches: list[dict[str, Any]] = []
+    mode_rows = comparison.get("mode_comparison")
+    if isinstance(mode_rows, dict):
+        for mode, raw_row in mode_rows.items():
+            row = raw_row if isinstance(raw_row, dict) else {}
+            _maybe_add_breach(
+                breaches,
+                scope=f"mode:{mode}",
+                metric="avg_delta_s",
+                observed=_num_or_none(row.get("avg_delta_s")),
+                threshold=max_avg_regression_s,
+            )
+            _maybe_add_breach(
+                breaches,
+                scope=f"mode:{mode}",
+                metric="p95_delta_s",
+                observed=_num_or_none(row.get("p95_delta_s")),
+                threshold=max_p95_regression_s,
+            )
+            _maybe_add_breach(
+                breaches,
+                scope=f"mode:{mode}",
+                metric="avg_delta_ratio",
+                observed=_num_or_none(row.get("avg_delta_ratio")),
+                threshold=max_avg_regression_ratio,
+            )
+            _maybe_add_breach(
+                breaches,
+                scope=f"mode:{mode}",
+                metric="p95_delta_ratio",
+                observed=_num_or_none(row.get("p95_delta_ratio")),
+                threshold=max_p95_regression_ratio,
+            )
+    dashboard_row = comparison.get("dashboard_state_api_comparison")
+    if isinstance(dashboard_row, dict):
+        _maybe_add_breach(
+            breaches,
+            scope="dashboard_state_api",
+            metric="avg_latency_delta_ms",
+            observed=_num_or_none(dashboard_row.get("avg_latency_delta_ms")),
+            threshold=max_dashboard_avg_latency_regression_ms,
+        )
+        _maybe_add_breach(
+            breaches,
+            scope="dashboard_state_api",
+            metric="p95_latency_delta_ms",
+            observed=_num_or_none(dashboard_row.get("p95_latency_delta_ms")),
+            threshold=max_dashboard_p95_latency_regression_ms,
+        )
+    return breaches
+
+
+def _maybe_add_breach(
+    breaches: list[dict[str, Any]],
+    *,
+    scope: str,
+    metric: str,
+    observed: float | None,
+    threshold: float | None,
+) -> None:
+    if threshold is None or observed is None:
+        return
+    if observed <= threshold:
+        return
+    breaches.append(
+        {
+            "scope": scope,
+            "metric": metric,
+            "observed": round(observed, 4),
+            "threshold": round(float(threshold), 4),
+            "delta_over_budget": round(observed - float(threshold), 4),
+        }
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     modes = _parse_modes(args.modes)
@@ -606,7 +732,10 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     comparison: dict[str, Any] | None = None
+    regression_breaches: list[dict[str, Any]] = []
     compare_with = str(args.compare_with or "").strip()
+    if args.fail_on_regression and not compare_with:
+        raise RuntimeError("--fail-on-regression requires --compare-with.")
     if compare_with:
         baseline_path = Path(compare_with).expanduser()
         baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
@@ -619,6 +748,17 @@ def main(argv: list[str] | None = None) -> int:
         }
         comparison = _compare_reports(current_payload, baseline)
         print(json.dumps({"comparison": comparison}, indent=2))
+        regression_breaches = _collect_regression_breaches(
+            comparison,
+            max_avg_regression_s=args.max_avg_regression_s,
+            max_p95_regression_s=args.max_p95_regression_s,
+            max_avg_regression_ratio=args.max_avg_regression_ratio,
+            max_p95_regression_ratio=args.max_p95_regression_ratio,
+            max_dashboard_avg_latency_regression_ms=args.max_dashboard_avg_latency_regression_ms,
+            max_dashboard_p95_latency_regression_ms=args.max_dashboard_p95_latency_regression_ms,
+        )
+        if regression_breaches:
+            print(json.dumps({"regression_breaches": regression_breaches}, indent=2))
 
     output_path: Path | None = None
     if args.output_json:
@@ -640,6 +780,7 @@ def main(argv: list[str] | None = None) -> int:
                     "summary": summary,
                     "dashboard_state_api": dashboard_report,
                     "comparison": comparison,
+                    "regression_breaches": regression_breaches,
                     "hash_bench": hash_bench,
                     "samples": [
                         {
@@ -669,7 +810,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {output_path}")
 
     any_failure = any(sample.returncode != 0 for sample in samples)
-    return 2 if any_failure else 0
+    if any_failure:
+        return 2
+    if args.fail_on_regression and regression_breaches:
+        return 3
+    return 0
 
 
 if __name__ == "__main__":
