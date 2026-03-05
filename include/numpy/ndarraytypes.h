@@ -34,6 +34,7 @@ typedef size_t npy_uintp;
 typedef intptr_t npy_hash_t;
 
 #define _MOLT_NUMPY_OBJECT_HEAD PyObject *ob_base
+#define NPY_MAXDIMS_LEGACY_ITERS 32
 
 static inline PyTypeObject *_molt_numpy_builtin_type_borrowed(const char *name) {
     return _molt_builtin_type_object_borrowed(name);
@@ -41,6 +42,7 @@ static inline PyTypeObject *_molt_numpy_builtin_type_borrowed(const char *name) 
 
 typedef struct NpyAuxData_tag NpyAuxData;
 typedef struct PyArray_ArrFuncs PyArray_ArrFuncs;
+typedef struct PyArrayIterObject_tag PyArrayIterObject;
 
 typedef enum {
     NPY_BOOL = 0,
@@ -218,13 +220,50 @@ typedef struct PyArrayArrayConverterObject {
     PyObject *object;
 } PyArrayArrayConverterObject;
 
-typedef struct PyArrayIterObject {
+typedef char *(*npy_iter_get_dataptr_t)(PyArrayIterObject *iter, const npy_intp *);
+
+struct PyArrayIterObject_tag {
     _MOLT_NUMPY_OBJECT_HEAD;
+    int nd_m1;
+    npy_intp index;
+    npy_intp size;
+    npy_intp coordinates[NPY_MAXDIMS_LEGACY_ITERS];
+    npy_intp dims_m1[NPY_MAXDIMS_LEGACY_ITERS];
+    npy_intp strides[NPY_MAXDIMS_LEGACY_ITERS];
+    npy_intp backstrides[NPY_MAXDIMS_LEGACY_ITERS];
+    npy_intp factors[NPY_MAXDIMS_LEGACY_ITERS];
+    PyArrayObject *ao;
+    char *dataptr;
+    npy_bool contiguous;
+    npy_intp bounds[NPY_MAXDIMS_LEGACY_ITERS][2];
+    npy_intp limits[NPY_MAXDIMS_LEGACY_ITERS][2];
+    npy_intp limits_sizes[NPY_MAXDIMS_LEGACY_ITERS];
+    npy_iter_get_dataptr_t translate;
+};
+
+typedef struct PyArrayNeighborhoodIterObject {
+    _MOLT_NUMPY_OBJECT_HEAD;
+    int nd_m1;
     PyArrayObject *ao;
     npy_intp index;
     npy_intp size;
+    npy_intp coordinates[NPY_MAXDIMS_LEGACY_ITERS];
+    npy_intp dims_m1[NPY_MAXDIMS_LEGACY_ITERS];
+    npy_intp strides[NPY_MAXDIMS_LEGACY_ITERS];
+    npy_intp backstrides[NPY_MAXDIMS_LEGACY_ITERS];
+    npy_intp factors[NPY_MAXDIMS_LEGACY_ITERS];
     char *dataptr;
-} PyArrayIterObject;
+    npy_bool contiguous;
+    npy_intp bounds[NPY_MAXDIMS_LEGACY_ITERS][2];
+    npy_intp limits[NPY_MAXDIMS_LEGACY_ITERS][2];
+    npy_intp limits_sizes[NPY_MAXDIMS_LEGACY_ITERS];
+    npy_iter_get_dataptr_t translate;
+    npy_intp nd;
+    npy_intp dimensions[NPY_MAXDIMS_LEGACY_ITERS];
+    PyArrayIterObject *_internal_iter;
+    char *constant;
+    int mode;
+} PyArrayNeighborhoodIterObject;
 
 typedef PyArrayIterObject PyArrayIterObject_tag;
 
@@ -239,12 +278,6 @@ typedef struct PyArrayMapIterObject {
     int _molt_reserved;
 } PyArrayMapIterObject;
 
-typedef struct PyArrayNeighborhoodIterObject {
-    _MOLT_NUMPY_OBJECT_HEAD;
-    PyArrayObject *ao;
-    npy_intp index;
-} PyArrayNeighborhoodIterObject;
-
 typedef struct PyArray_DTypeMeta {
     _MOLT_NUMPY_OBJECT_HEAD;
     PyArray_Descr *singleton;
@@ -257,7 +290,7 @@ typedef struct PyArray_DTypeMeta {
 
 typedef PyArray_DTypeMeta PyArray_DTypeMeta_tag;
 
-typedef struct PyArrayMethodObject {
+typedef struct PyArrayMethodObject_tag {
     _MOLT_NUMPY_OBJECT_HEAD;
     const char *name;
     int nin;
@@ -275,7 +308,7 @@ typedef struct PyBoundArrayMethodObject {
     PyArrayMethodObject *method;
 } PyBoundArrayMethodObject;
 
-typedef struct PyArrayMethod_Context {
+typedef struct PyArrayMethod_Context_tag {
     PyObject *caller;
     PyArrayMethodObject *method;
     PyArray_Descr *const *descriptors;
@@ -508,6 +541,7 @@ static inline int PyDataType_ALIGNMENT(const PyArray_Descr *descr) {
 #define PyArrayFlags_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #define PyArrayFunctionDispatcher_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #define PyArrayIter_Type (*_molt_numpy_builtin_type_borrowed("object"))
+#define PyArrayMapIter_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #define PyArrayMultiIter_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #define PyArrayNeighborhoodIter_Type (*_molt_numpy_builtin_type_borrowed("object"))
 
@@ -579,6 +613,27 @@ static inline PyObject *PyDataMem_SetHandler(PyObject *handler) {
     }
     Py_INCREF(handler);
     return handler;
+}
+
+static inline int PyArrayNeighborhoodIter_Next(PyArrayNeighborhoodIterObject *iter) {
+    if (iter == NULL || iter->translate == NULL) {
+        return -1;
+    }
+    iter->index += 1;
+    iter->dataptr = iter->translate((PyArrayIterObject *)iter, iter->coordinates);
+    return 0;
+}
+
+static inline int PyArrayNeighborhoodIter_Reset(PyArrayNeighborhoodIterObject *iter) {
+    npy_intp i;
+    if (iter == NULL || iter->translate == NULL) {
+        return -1;
+    }
+    for (i = 0; i < iter->nd; i++) {
+        iter->coordinates[i] = iter->bounds[i][0];
+    }
+    iter->dataptr = iter->translate((PyArrayIterObject *)iter, iter->coordinates);
+    return 0;
 }
 
 #ifdef __cplusplus
