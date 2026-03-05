@@ -1,0 +1,70 @@
+name: Security Hardening
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 8 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  python-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+      - name: Install dependencies
+        run: uv sync --frozen --group dev --python 3.12
+      - name: pip-audit
+        run: uv run --python 3.12 pip-audit
+
+  rust-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-deny and cargo-audit
+        run: |
+          cargo install cargo-deny --locked
+          cargo install cargo-audit --locked
+      - name: cargo deny check
+        run: cargo deny check
+      - name: cargo audit
+        run: cargo audit
+
+  orchestration-guardrails:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+      - name: Install dependencies
+        run: uv sync --frozen --python 3.12
+      - name: Orchestration hardening tests
+        run: |
+          uv run --python 3.12 pytest -q \
+            tests/test_symphony_http_server.py \
+            tests/test_symphony_orchestrator_retry.py \
+            tests/test_symphony_runtime_tools.py \
+            tests/test_symphony_bootstrap_tool.py \
+            tests/test_secret_guard.py \
+            tests/test_secret_guard_tool.py \
+            tests/test_symphony_durable_memory.py
