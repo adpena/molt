@@ -310,8 +310,11 @@ typedef struct PyArrayDTypeMeta_Spec {
 } PyArrayDTypeMeta_Spec;
 
 typedef struct PyArray_Chunk {
-    npy_intp start;
-    npy_intp stop;
+    _MOLT_NUMPY_OBJECT_HEAD;
+    PyObject *base;
+    void *ptr;
+    npy_intp len;
+    int flags;
 } PyArray_Chunk;
 
 typedef struct PyArrayInterface {

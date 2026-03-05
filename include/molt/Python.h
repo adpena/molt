@@ -2559,13 +2559,6 @@ static inline long long PyLong_AsLongLongAndOverflow(PyObject *obj, int *overflo
     return PyLong_AsLongLong(obj);
 }
 
-static inline long PyLong_AsLongAndOverflow(PyObject *obj, int *overflow) {
-    if (overflow != NULL) {
-        *overflow = 0;
-    }
-    return (long)PyLong_AsLongLong(obj);
-}
-
 static inline Py_ssize_t PyLong_AsSsize_t(PyObject *obj) {
     return (Py_ssize_t)PyLong_AsLongLong(obj);
 }
@@ -2602,19 +2595,6 @@ static inline PyObject *PyNumber_FloorDivide(PyObject *a, PyObject *b) {
 
 static inline PyObject *PyNumber_Long(PyObject *obj) {
     return _molt_pyobject_from_result(molt_number_long(_molt_py_handle(obj)));
-}
-
-static inline Py_ssize_t PyNumber_AsSsize_t(PyObject *obj, PyObject *exc) {
-    PyObject *index_value;
-    Py_ssize_t result;
-    (void)exc;
-    index_value = PyNumber_Long(obj);
-    if (index_value == NULL) {
-        return -1;
-    }
-    result = PyLong_AsSsize_t(index_value);
-    Py_DECREF(index_value);
-    return result;
 }
 
 static inline Py_ssize_t PySequence_Size(PyObject *seq) {
