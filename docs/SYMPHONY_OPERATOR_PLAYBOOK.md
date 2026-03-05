@@ -82,7 +82,13 @@ Input source for seed generation is TODO taxonomy in canonical docs.
 Run the readiness audit at least daily (and before/after orchestration changes):
 
 ```bash
-PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --team Moltlang
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py \
+  --team Moltlang \
+  --env-file /Users/adpena/PycharmProjects/molt/ops/linear/runtime/symphony.env \
+  --formal-suite inventory \
+  --baseline-retention-days 90 \
+  --growth-alert-issue MOL-211 \
+  --fail-on none
 ```
 
 Artifacts are written to:
@@ -92,6 +98,7 @@ Artifacts are written to:
 - `/Volumes/APDataStore/Molt/logs/symphony/readiness/history/baseline_*.json`
 - `/Volumes/APDataStore/Molt/logs/symphony/metrics/harness_baseline_latest.md`
 - `/Volumes/APDataStore/Molt/logs/symphony/metrics/harness_timeseries.csv`
+- `/Volumes/APDataStore/Molt/tmp/symphony_harness_trend_7d.json` (optional trend export)
 
 Use this report to drive cleanup of malformed Linear issues, metadata gaps,
 launchd/durable-memory wiring drift, and harness score regressions. Keep
@@ -122,6 +129,14 @@ swarm routing labels current:
 
 ```bash
 PYTHONPATH=src uv run --group dev --python 3.12 python3 tools/linear_hygiene.py full-pass --team Moltlang --apply --formal-suite all
+```
+
+Generate rolling harness trend deltas (operator quick-read):
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_harness_trend.py \
+  --days 7 \
+  --json-out /Volumes/APDataStore/Molt/tmp/symphony_harness_trend_7d.json
 ```
 
 Optional DSPy routing knobs for `linear_hygiene`:

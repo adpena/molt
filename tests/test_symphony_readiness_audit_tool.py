@@ -640,8 +640,8 @@ def test_apply_durable_growth_gate_emits_info_without_baseline() -> None:
 def test_persist_harness_metrics_appends_and_dedupes(tmp_path: Path) -> None:
     ext_root = tmp_path / "ext"
     report = _sample_report(generated_at="2026-03-05T13:17:18.842231Z")
-    readiness_audit._persist_harness_metrics(ext_root, report)
-    readiness_audit._persist_harness_metrics(ext_root, report)
+    readiness_audit._persist_harness_metrics(ext_root, report, retention_days=90)
+    readiness_audit._persist_harness_metrics(ext_root, report, retention_days=90)
 
     csv_path = ext_root / "logs" / "symphony" / "metrics" / "harness_timeseries.csv"
     lines = csv_path.read_text(encoding="utf-8").strip().splitlines()
@@ -653,7 +653,7 @@ def test_persist_harness_metrics_appends_and_dedupes(tmp_path: Path) -> None:
         overall_status="warn",
         formal_mode="inventory",
     )
-    readiness_audit._persist_harness_metrics(ext_root, second)
+    readiness_audit._persist_harness_metrics(ext_root, second, retention_days=90)
     lines = csv_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 3
     assert "2026-03-05T17:15:56.868769Z" in lines[2]
@@ -670,6 +670,36 @@ def test_persist_harness_metrics_skips_when_linear_fails(tmp_path: Path) -> None
         overall_status="fail",
         linear_status="fail",
     )
-    readiness_audit._persist_harness_metrics(ext_root, failed)
+    result = readiness_audit._persist_harness_metrics(
+        ext_root, failed, retention_days=90
+    )
+    assert result["status"] == "skipped"
     csv_path = ext_root / "logs" / "symphony" / "metrics" / "harness_timeseries.csv"
     assert not csv_path.exists()
+
+
+def test_prune_baseline_history_removes_old_files(tmp_path: Path) -> None:
+    history = tmp_path / "history"
+    history.mkdir(parents=True, exist_ok=True)
+    old_payload = {"captured_at": "2024-01-01T00:00:00Z"}
+    new_payload = {"captured_at": "2026-03-05T00:00:00Z"}
+    (history / "baseline_old.json").write_text(json.dumps(old_payload), encoding="utf-8")
+    (history / "baseline_new.json").write_text(json.dumps(new_payload), encoding="utf-8")
+    removed = readiness_audit._prune_baseline_history(history, retention_days=30)
+    assert removed >= 1
+    assert not (history / "baseline_old.json").exists()
+    assert (history / "baseline_new.json").exists()
+
+
+def test_post_growth_alert_comment_skips_without_breach(tmp_path: Path) -> None:
+    report = _sample_report()
+    report["findings"] = [{"code": "other", "severity": "info"}]
+    env_file = tmp_path / "symphony.env"
+    env_file.write_text("", encoding="utf-8")
+    out = readiness_audit._post_growth_alert_comment(
+        report=report,
+        team="Moltlang",
+        issue_ref="MOL-211",
+        env_file=env_file,
+    )
+    assert out["status"] == "skipped"

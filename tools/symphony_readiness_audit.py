@@ -10,7 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -128,6 +128,15 @@ QUERY_PROJECT_TYPE_FIELDS = """
 query ProjectTypeFields {
   __type(name: "Project") {
     fields { name }
+  }
+}
+""".strip()
+
+MUTATION_COMMENT_CREATE = """
+mutation CommentCreate($input: CommentCreateInput!) {
+  commentCreate(input: $input) {
+    success
+    comment { id body createdAt }
   }
 }
 """.strip()
@@ -1669,10 +1678,123 @@ def _apply_durable_growth_gate(
         )
 
 
-def _persist_harness_metrics(ext_root: Path, report: dict[str, Any]) -> None:
+def _prune_baseline_history(history_dir: Path, retention_days: int) -> int:
+    if retention_days <= 0 or not history_dir.exists():
+        return 0
+    cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+    removed = 0
+    for path in sorted(history_dir.glob("baseline_*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        captured_raw = str(payload.get("captured_at") or "").strip()
+        if not captured_raw:
+            continue
+        try:
+            captured_at = datetime.fromisoformat(captured_raw.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if captured_at < cutoff:
+            path.unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
+def _durable_growth_breach_finding(report: dict[str, Any]) -> dict[str, Any] | None:
+    findings = report.get("findings")
+    if not isinstance(findings, list):
+        return None
+    for row in findings:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("code")) == "durable_growth_budget_exceeded":
+            return row
+    return None
+
+
+def _post_growth_alert_comment(
+    *,
+    report: dict[str, Any],
+    team: str,
+    issue_ref: str,
+    env_file: Path,
+) -> dict[str, Any]:
+    finding = _durable_growth_breach_finding(report)
+    if finding is None:
+        return {"status": "skipped", "reason": "no_growth_breach"}
+
+    details = finding.get("details")
+    if not isinstance(details, dict):
+        return {"status": "skipped", "reason": "missing_details"}
+
+    api_key = _resolve_linear_api_key(env_file)  # secret-guard: allow
+    if not api_key:
+        return {"status": "skipped", "reason": "missing_linear_api_key"}
+
+    breaches = details.get("breaches")
+    breach_rows = breaches if isinstance(breaches, list) else []
+    if not breach_rows:
+        return {"status": "skipped", "reason": "empty_breaches"}
+
+    lines = [
+        "Readiness durable growth alert",
+        "",
+        f"- Captured at: `{report.get('generated_at')}`",
+        (
+            f"- Threshold: `{int(float(details.get('threshold_ratio', 0.05)) * 100)}%` "
+            "run-over-run"
+        ),
+        f"- Previous baseline: `{details.get('previous_captured_at')}`",
+        "",
+        "Breaches:",
+    ]
+    for item in breach_rows:
+        if not isinstance(item, dict):
+            continue
+        artifact = item.get("artifact")
+        ratio = float(item.get("delta_ratio") or 0.0) * 100.0
+        delta_bytes = _safe_int(item.get("delta_bytes"))
+        current_bytes = _safe_int(item.get("current_bytes"))
+        lines.append(
+            (
+                f"- `{artifact}`: +{ratio:.2f}% "
+                f"(`{delta_bytes}` bytes, now `{current_bytes}`)"
+            )
+        )
+    lines.extend(
+        [
+            "",
+            "Action requested: triage source of growth and confirm expected vs unexpected expansion.",
+        ]
+    )
+    body = "\n".join(lines)
+
+    with _temporary_linear_api_key(api_key):
+        team_id = linear_workspace._resolve_team_id(team)
+        issue_id = linear_workspace._resolve_issue_id(team_id, issue_ref)
+        data = linear_workspace.graphql(
+            MUTATION_COMMENT_CREATE, {"input": {"issueId": issue_id, "body": body}}
+        )
+    result = data.get("commentCreate") if isinstance(data, dict) else None
+    if not isinstance(result, dict) or not result.get("success"):
+        raise RuntimeError("commentCreate returned success=false")
+    comment = result.get("comment") if isinstance(result.get("comment"), dict) else {}
+    return {
+        "status": "posted",
+        "issue": issue_ref,
+        "comment_id": comment.get("id"),
+    }
+
+
+def _persist_harness_metrics(
+    ext_root: Path, report: dict[str, Any], *, retention_days: int
+) -> dict[str, Any]:
     linear_section = (report.get("sections") or {}).get("linear_workspace") or {}
     if str(linear_section.get("status") or "unknown") != "pass":
-        return
+        return {"status": "skipped", "reason": "linear_workspace_not_pass"}
 
     snapshot = _snapshot_from_report(report)
     readiness_history_dir = ext_root / "logs" / "symphony" / "readiness" / "history"
@@ -1682,10 +1804,12 @@ def _persist_harness_metrics(ext_root: Path, report: dict[str, Any]) -> None:
 
     stamp = _iso_compact(snapshot["captured_at"])
     history_path = readiness_history_dir / f"baseline_{stamp}.json"
+    history_written = False
     if not history_path.exists():
         history_path.write_text(
             json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
+        history_written = True
 
     baseline_md = metrics_dir / "harness_baseline_latest.md"
     _write_baseline_markdown(baseline_md, snapshot)
@@ -1705,14 +1829,26 @@ def _persist_harness_metrics(ext_root: Path, report: dict[str, Any]) -> None:
                 existing_rows.append({str(k): str(v) for k, v in row.items()})
 
     captured_at = snapshot["captured_at"]
+    appended_csv_row = False
     if captured_at not in seen_captured_at:
         row = {field: str(snapshot.get(field, "")) for field in HARNESS_TIMESERIES_FIELDS}
         existing_rows.append(row)
+        appended_csv_row = True
 
     with csv_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(HARNESS_TIMESERIES_FIELDS))
         writer.writeheader()
         writer.writerows(existing_rows)
+
+    pruned = _prune_baseline_history(readiness_history_dir, retention_days)
+    return {
+        "status": "ok",
+        "history_written": history_written,
+        "csv_row_appended": appended_csv_row,
+        "history_pruned": pruned,
+        "history_path": str(history_path),
+        "csv_path": str(csv_path),
+    }
 
 
 def _exit_code_for(findings: list[dict[str, Any]], fail_on: str) -> int:
@@ -1825,6 +1961,23 @@ def build_parser() -> argparse.ArgumentParser:
             "Use all/lean/quint for deeper checks; off disables this section."
         ),
     )
+    parser.add_argument(
+        "--baseline-retention-days",
+        type=int,
+        default=90,
+        help=(
+            "Retention window for readiness history baselines. "
+            "Older baseline_*.json files are pruned after each successful metrics persist."
+        ),
+    )
+    parser.add_argument(
+        "--growth-alert-issue",
+        default=None,
+        help=(
+            "Optional Linear issue identifier to comment when durable growth budget is exceeded "
+            "(example: MOL-211)."
+        ),
+    )
     return parser
 
 
@@ -1866,7 +2019,33 @@ def main(argv: list[str] | None = None) -> int:
 
     output_md.parent.mkdir(parents=True, exist_ok=True)
     output_md.write_text(_as_markdown(report), encoding="utf-8")
-    _persist_harness_metrics(ext_root, report)
+    metrics_result = _persist_harness_metrics(
+        ext_root, report, retention_days=max(0, int(args.baseline_retention_days))
+    )
+    print(
+        f"Harness metrics persistence: {json.dumps(metrics_result, sort_keys=True)}",
+        file=sys.stderr,
+    )
+    if args.growth_alert_issue:
+        try:
+            alert_result = _post_growth_alert_comment(
+                report=report,
+                team=str(args.team),
+                issue_ref=str(args.growth_alert_issue),
+                env_file=env_file,
+            )
+            print(
+                f"Growth alert hook: {json.dumps(alert_result, sort_keys=True)}",
+                file=sys.stderr,
+            )
+        except Exception as exc:
+            print(
+                (
+                    "Growth alert hook failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+                file=sys.stderr,
+            )
 
     print(json.dumps(report, indent=2, sort_keys=True))
     print(f"Wrote JSON report: {output_json}", file=sys.stderr)
