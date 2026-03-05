@@ -1073,6 +1073,29 @@ def _collect_findings(report: dict[str, Any]) -> list[dict[str, Any]]:
             message="Formalization suite check passed for current mode.",
             details={"mode": formal.get("mode")},
         )
+        formal_report = formal.get("report")
+        if isinstance(formal_report, dict):
+            checks = formal_report.get("checks")
+            quint = checks.get("quint") if isinstance(checks, dict) else None
+            diagnostics = (
+                quint.get("diagnostics") if isinstance(quint, dict) else None
+            )
+            if isinstance(diagnostics, dict) and bool(
+                diagnostics.get("fallback_used")
+            ):
+                _record_finding(
+                    findings,
+                    severity="info",
+                    code="formal_suite_fallback_used",
+                    message=(
+                        "Quint formal checks required Node fallback execution; "
+                        "formal signal is preserved but toolchain mismatch remains."
+                    ),
+                    details={
+                        "node": diagnostics.get("node"),
+                        "fallback_prefix": diagnostics.get("fallback_prefix"),
+                    },
+                )
     return findings
 
 
