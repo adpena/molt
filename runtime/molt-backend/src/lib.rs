@@ -1127,6 +1127,11 @@ struct LoopFrame {
     after_block: Block,
     index_name: Option<String>,
     next_index: Option<Value>,
+    /// Additional loop-carried variables (name → current Value).
+    /// Used by LOOP_CARRY_INIT / LOOP_CARRY_UPDATE to pass typed locals
+    /// through block params instead of boxed cells.
+    carry_names: Vec<String>,
+    carry_values: Vec<Value>,
 }
 
 fn parse_truthy_env(raw: &str) -> bool {
@@ -12931,20 +12936,61 @@ impl SimpleBackend {
                     let loop_block = builder.create_block();
                     let body_block = builder.create_block();
                     let after_block = builder.create_block();
+
+                    // Scan ahead for loop_carry_init ops to set up block params
+                    let mut carry_init_ops: Vec<(String, String)> = Vec::new(); // (out_name, init_arg_name)
+                    {
+                        let mut scan = op_idx + 1;
+                        while scan < ops.len() && ops[scan].kind == "loop_carry_init" {
+                            let ci_op = &ops[scan];
+                            let ci_args = ci_op.args.as_ref().unwrap();
+                            let ci_out = ci_op.out.clone().unwrap();
+                            carry_init_ops.push((ci_out, ci_args[0].clone()));
+                            scan += 1;
+                        }
+                    }
+
+                    // Create block params for carry vars
+                    let mut carry_names: Vec<String> = Vec::new();
+                    let mut carry_init_values: Vec<Value> = Vec::new();
+                    for (out_name, init_arg_name) in &carry_init_ops {
+                        let param = builder.append_block_param(loop_block, types::I64);
+                        let init_val = var_get(&mut builder, &vars, init_arg_name)
+                            .expect("Loop carry init value not found");
+                        carry_names.push(out_name.clone());
+                        carry_init_values.push(*init_val);
+                        // We'll define the variable after switching to loop_block
+                        let _ = param; // used after switch_to_block
+                    }
+
                     if !is_block_filled {
                         ensure_block_in_layout(&mut builder, loop_block);
                         reachable_blocks.insert(loop_block);
-                        jump_block(&mut builder, loop_block, &[]);
+                        jump_block(&mut builder, loop_block, &carry_init_values);
                         switch_to_block_tracking(&mut builder, loop_block, &mut is_block_filled);
                     } else {
                         is_block_filled = true;
                     }
+
+                    // Now define carry variables using block params
+                    if reachable_blocks.contains(&loop_block) {
+                        let param_vals: Vec<Value> = builder.block_params(loop_block).to_vec();
+                        for (i, (out_name, _)) in carry_init_ops.iter().enumerate() {
+                            def_var_named(&mut builder, &vars, out_name.clone(), param_vals[i]);
+                        }
+                    }
+
+                    // Store carry values for loop_continue to use
+                    let carry_values = carry_init_values;
+
                     loop_stack.push(LoopFrame {
                         loop_block,
                         body_block,
                         after_block,
                         index_name: None,
                         next_index: None,
+                        carry_names,
+                        carry_values,
                     });
                     loop_depth += 1;
                 }
@@ -12974,6 +13020,8 @@ impl SimpleBackend {
                         after_block,
                         index_name: Some(out_name),
                         next_index: None,
+                        carry_names: Vec::new(),
+                        carry_values: Vec::new(),
                     });
                     loop_depth += 1;
                 }
@@ -13152,6 +13200,28 @@ impl SimpleBackend {
                     let out_name = op.out.unwrap();
                     def_var_named(&mut builder, &vars, out_name, *next_idx);
                 }
+                "loop_carry_init" => {
+                    // Already processed by LOOP_START scan-ahead — skip.
+                    // The block param and variable definition were set up in LOOP_START.
+                }
+                "loop_carry_update" => {
+                    // Update the carry value for a loop-carried variable.
+                    // args[0] = variable name (string), args[1] = new value
+                    let args = op.args.as_ref().unwrap();
+                    let carry_name = &args[0];
+                    let new_val =
+                        var_get(&mut builder, &vars, &args[1]).expect("Loop carry update val not found");
+                    let frame = loop_stack.last_mut().unwrap_or_else(|| {
+                        panic!("No loop on stack in {} at op {}", func_ir.name, op_idx)
+                    });
+                    // Find the carry var by name and update its value
+                    if let Some(pos) = frame.carry_names.iter().position(|n| n == carry_name) {
+                        frame.carry_values[pos] = *new_val;
+                    }
+                    // Also redefine the SSA variable so subsequent ops see the new value
+                    let out_name = op.out.clone().unwrap();
+                    def_var_named(&mut builder, &vars, out_name, *new_val);
+                }
                 "loop_continue" => {
                     let frame = loop_stack.last_mut().unwrap_or_else(|| {
                         panic!("No loop on stack in {} at op {}", func_ir.name, op_idx)
@@ -13184,15 +13254,19 @@ impl SimpleBackend {
                         }
                     }
                     reachable_blocks.insert(frame.loop_block);
+                    let mut jump_args: Vec<Value> = Vec::new();
                     if let Some(next_idx) = frame.next_index.take() {
-                        jump_block(&mut builder, frame.loop_block, &[next_idx]);
+                        jump_args.push(next_idx);
                     } else if let Some(name) = frame.index_name.as_ref() {
                         let current_idx =
                             var_get(&mut builder, &vars, name).expect("Loop index not found");
-                        jump_block(&mut builder, frame.loop_block, &[*current_idx]);
-                    } else {
-                        jump_block(&mut builder, frame.loop_block, &[]);
+                        jump_args.push(*current_idx);
                     }
+                    // Append carry values for loop-carried variables
+                    for val in &frame.carry_values {
+                        jump_args.push(*val);
+                    }
+                    jump_block(&mut builder, frame.loop_block, &jump_args);
                     is_block_filled = true;
                 }
                 "loop_end" => {

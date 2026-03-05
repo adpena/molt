@@ -9,6 +9,7 @@
       const toolRunButton = document.getElementById("tool-run-btn");
       const toolResult = document.getElementById("tool-result");
       const traceModal = document.getElementById("trace-modal");
+      const tracePanel = document.getElementById("trace-panel");
       const traceSubtitle = document.getElementById("trace-subtitle");
       const traceSummary = document.getElementById("trace-summary");
       const traceEvents = document.getElementById("trace-events");
@@ -68,6 +69,7 @@
       let durablePollTimer = null;
       let durableFetchInFlight = false;
       let traceFetchInFlight = false;
+      let traceLastFocusedElement = null;
       let streamStatusState = { message: "", mode: "" };
       let streamIntervalMs = 1000;
       let fallbackPollIntervalMs = 2500;
@@ -362,7 +364,11 @@
       }
 
       function setDashboardView(view, persist = true) {
-        activeDashboardView = normalizeDashboardView(view);
+        const normalized = normalizeDashboardView(view);
+        if (persist && normalized === activeDashboardView) {
+          return;
+        }
+        activeDashboardView = normalized;
         if (persist) {
           persistDashboardView();
         }
@@ -1562,7 +1568,6 @@
         }
         latestState = safeState;
         applyTransportCadence(safeState);
-        applyDashboardView();
         updatePanel(
           "kpis",
           {
@@ -1872,12 +1877,40 @@
       function closeTraceModal() {
         stopTracePolling();
         traceIssueIdentifier = "";
-        traceModal.classList.remove("open");
-        traceModal.setAttribute("aria-hidden", "true");
+        traceModal?.classList.remove("open");
+        traceModal?.setAttribute("aria-hidden", "true");
+        document.body.classList.remove("modal-open");
         traceSubtitle.textContent = "Select an agent to inspect.";
         traceSummary.innerHTML = '<div class="empty">No trace selected.</div>';
         traceEvents.innerHTML =
           '<div class="empty">Click an issue/agent pill to open live trace.</div>';
+        if (traceLastFocusedElement instanceof HTMLElement) {
+          traceLastFocusedElement.focus();
+        }
+        traceLastFocusedElement = null;
+      }
+
+      function traceFocusableElements() {
+        if (!traceModal) return [];
+        const nodes = traceModal.querySelectorAll(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        );
+        return Array.from(nodes).filter((node) => {
+          if (!(node instanceof HTMLElement)) return false;
+          if (node.hasAttribute("disabled")) return false;
+          if (node.getAttribute("aria-hidden") === "true") return false;
+          return node.offsetParent !== null;
+        });
+      }
+
+      function focusTracePrimaryControl() {
+        if (traceCloseButton instanceof HTMLElement) {
+          traceCloseButton.focus();
+          return;
+        }
+        if (tracePanel instanceof HTMLElement) {
+          tracePanel.focus();
+        }
       }
 
       function traceEventTone(eventName) {
@@ -2038,14 +2071,19 @@
       function openTraceModal(issueIdentifier) {
         const issue = String(issueIdentifier || "").trim();
         if (!issue) return;
+        if (document.activeElement instanceof HTMLElement) {
+          traceLastFocusedElement = document.activeElement;
+        }
         traceIssueIdentifier = issue;
-        traceModal.classList.add("open");
-        traceModal.setAttribute("aria-hidden", "false");
+        traceModal?.classList.add("open");
+        traceModal?.setAttribute("aria-hidden", "false");
+        document.body.classList.add("modal-open");
         traceSubtitle.textContent = `${issue} · loading`;
         traceSummary.innerHTML = '<div class="empty">Loading trace summary...</div>';
         traceEvents.innerHTML = '<div class="empty">Loading live trace...</div>';
         stopTracePolling();
         fetchTraceIssue();
+        window.setTimeout(focusTracePrimaryControl, 0);
       }
 
       function startPollingFallback(forceRestart = false) {
@@ -2216,6 +2254,18 @@
         if (!(target instanceof Element)) return;
         const tab = target.closest(".view-tab");
         if (!(tab instanceof HTMLButtonElement)) return;
+        if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+          event.preventDefault();
+          const dir = event.key === "ArrowRight" ? 1 : -1;
+          const idx = viewTabs.indexOf(tab);
+          if (idx < 0) return;
+          const nextIdx = (idx + dir + viewTabs.length) % viewTabs.length;
+          const nextTab = viewTabs[nextIdx];
+          if (!(nextTab instanceof HTMLButtonElement)) return;
+          setDashboardView(nextTab.dataset.view || "overview", true);
+          nextTab.focus();
+          return;
+        }
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
         setDashboardView(tab.dataset.view || "overview", true);
@@ -2252,8 +2302,34 @@
         }
       });
       document.addEventListener("keydown", (event) => {
-        if (event.key === "Escape" && traceModal.classList.contains("open")) {
+        const traceOpen = Boolean(traceModal?.classList.contains("open"));
+        if (!traceOpen) return;
+        if (event.key === "Escape") {
+          event.preventDefault();
           closeTraceModal();
+          return;
+        }
+        if (event.key !== "Tab") return;
+        const focusable = traceFocusableElements();
+        if (!focusable.length) {
+          event.preventDefault();
+          focusTracePrimaryControl();
+          return;
+        }
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        const active = document.activeElement;
+        const activeInsideModal = Boolean(active && traceModal?.contains(active));
+        if (event.shiftKey) {
+          if (!activeInsideModal || active === first) {
+            event.preventDefault();
+            last.focus();
+          }
+          return;
+        }
+        if (!activeInsideModal || active === last) {
+          event.preventDefault();
+          first.focus();
         }
       });
       toolRunButton?.addEventListener("click", () => {
