@@ -6,11 +6,11 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12, <3.15"
 dependencies = [
-    "click>=8.1.7",
-    "packaging>=25.0",
-    "PyYAML>=6.0.2",
-    "rich>=13.7.0",
-    "ty>=0.0.8",
+    "click>=8.3.1",
+    "packaging>=26.0",
+    "PyYAML>=6.0.3",
+    "rich>=14.3.3",
+    "ty>=0.0.20",
 ]
 
 [project.scripts]
@@ -58,22 +58,22 @@ native_wheels = ["cbor2", "cryptography", "msgpack"]
 
 [dependency-groups]
 bench = [
-    "setuptools>=80.9.0",
+    "setuptools>=82.0.0",
 ]
 dev = [
     "cbor2>=5.8.0",
     "msgpack>=1.1.2",
     "pre-commit>=4.5.1",
     "pytest>=9.0.2",
-    "ruff>=0.14.10",
-    "ty>=0.0.8",
-    "setuptools>=80.9.0",
+    "ruff>=0.15.4",
+    "ty>=0.0.20",
+    "setuptools>=82.0.0",
     "django>=6.0.3",
-    "filelock>=3.20.3",
-    "virtualenv>=20.36.1",
-    "pip>=26.0",
+    "filelock>=3.25.0",
+    "virtualenv>=21.1.0",
+    "pip>=26.0.1",
     "stdlib-list>=0.12.0",
-    "coverage>=7.13.1",
+    "coverage>=7.13.4",
     "pip-audit>=2.10.0",
     "py-spy>=0.4.1",
     "duckdb>=1.4.4",
@@ -81,9 +81,9 @@ dev = [
 ]
 demo = [
     "django>=6.0.3",
-    "gunicorn>=23.0.0",
+    "gunicorn>=25.1.0",
     "msgpack>=1.1.2",
-    "uvicorn>=0.34.0",
+    "uvicorn>=0.41.0",
 ]
 
 [tool.setuptools]

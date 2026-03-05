@@ -7,18 +7,24 @@ Validates:
   - Formal methods file inventory matches expectations
 
 Usage:
-  python3 tools/check_formal_methods.py           # run all checks
-  python3 tools/check_formal_methods.py --lean     # Lean proofs only
-  python3 tools/check_formal_methods.py --quint    # Quint models only
-  python3 tools/check_formal_methods.py --inventory  # file inventory only
+  python3 tools/check_formal_methods.py             # run all checks
+  python3 tools/check_formal_methods.py --lean      # Lean proofs only
+  python3 tools/check_formal_methods.py --quint     # Quint models only
+  python3 tools/check_formal_methods.py --inventory # file inventory only
+  python3 tools/check_formal_methods.py --json      # machine-readable output
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import os
+import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 FORMAL_DIR = ROOT / "formal"
@@ -84,6 +90,68 @@ QUINT_MODELS = [
     ("molt_midend_pipeline.qnt", "Inv"),
 ]
 
+QUINT_RUNTIME_MISMATCH_PATTERNS = (
+    "ReferenceError: require is not defined in ES module scope",
+    "Error [ERR_REQUIRE_ESM]",
+    "Node.js v",
+)
+
+
+def _safe_run(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def _detect_runtime_mismatch(output: str) -> bool:
+    return all(pattern in output for pattern in QUINT_RUNTIME_MISMATCH_PATTERNS)
+
+
+def _parse_node_major(version_text: str) -> int | None:
+    match = re.search(r"v(\d+)\.", version_text)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _node_info() -> dict[str, Any]:
+    node_path = shutil.which("node")
+    if not node_path:
+        return {"path": None, "version": None, "major": None}
+    try:
+        proc = _safe_run([node_path, "--version"], timeout=10)
+    except Exception:
+        return {"path": node_path, "version": None, "major": None}
+    version = (proc.stdout or proc.stderr or "").strip()
+    return {
+        "path": node_path,
+        "version": version or None,
+        "major": _parse_node_major(version),
+    }
+
+
+def _resolve_quint_fallback_prefix() -> list[str] | None:
+    raw = os.environ.get("MOLT_QUINT_NODE_FALLBACK", "").strip()
+    if raw:
+        parts = [part for part in shlex.split(raw) if part]
+        return parts if parts else None
+    if not shutil.which("npx"):
+        return None
+    return ["npx", "-y", "node@22"]
+
 
 def check_inventory() -> list[str]:
     """Check that all expected formal methods files exist."""
@@ -127,13 +195,7 @@ def check_lean() -> list[str]:
         return errors
 
     print("  Running: lake build (formal/lean/) ...")
-    result = subprocess.run(
-        [lake, "build"],
-        cwd=LEAN_DIR,
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
+    result = _safe_run([lake, "build"], cwd=LEAN_DIR, timeout=600)
 
     if result.returncode != 0:
         errors.append("Lean proofs failed to build")
@@ -145,51 +207,138 @@ def check_lean() -> list[str]:
     return errors
 
 
-def check_quint() -> list[str]:
-    """Run Quint model verification."""
+def check_quint() -> tuple[list[str], dict[str, Any]]:
+    """Run Quint model verification with Node toolchain diagnostics/fallback."""
     errors: list[str] = []
+    diagnostics: dict[str, Any] = {
+        "node": _node_info(),
+        "quint_path": None,
+        "fallback_prefix": None,
+        "fallback_used": False,
+        "fallback_attempts": 0,
+        "runtime_mismatch_detected": False,
+        "models": [],
+    }
 
     quint = shutil.which("quint")
     if quint is None:
         errors.append(
             "quint not found; install via: npm install -g @informalsystems/quint"
         )
-        return errors
+        return errors, diagnostics
+
+    diagnostics["quint_path"] = quint
+    diagnostics["fallback_prefix"] = _resolve_quint_fallback_prefix()
 
     if not QUINT_DIR.exists():
         errors.append("formal/quint/ directory does not exist")
-        return errors
+        return errors, diagnostics
 
     for model_file, invariant in QUINT_MODELS:
         model_path = QUINT_DIR / model_file
+        model_diag: dict[str, Any] = {
+            "model": model_file,
+            "invariant": invariant,
+            "attempted_commands": [],
+            "returncode": None,
+            "fallback_used": False,
+            "runtime_mismatch": False,
+        }
+        diagnostics["models"].append(model_diag)
+
         if not model_path.exists():
             errors.append(f"missing Quint model: {model_file}")
+            model_diag["error"] = "missing_model"
             continue
 
-        # Use simulation (run) with bounded steps for CI speed.
-        # Full `quint verify` can be run separately for exhaustive checking.
+        args = [
+            "run",
+            str(model_path),
+            f"--invariant={invariant}",
+            "--max-steps=12",
+            "--max-samples=200",
+        ]
+        primary_cmd = [quint, *args]
+        model_diag["attempted_commands"].append(primary_cmd)
         print(f"  Running: quint run {model_file} --invariant={invariant} ...")
-        result = subprocess.run(
-            [
-                quint,
-                "run",
-                str(model_path),
-                f"--invariant={invariant}",
-                "--max-steps=12",
-                "--max-samples=200",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
+        primary = _safe_run(primary_cmd, timeout=120)
+
+        final_result = primary
+        output = (primary.stdout or "") + (primary.stderr or "")
+        node_major = diagnostics["node"].get("major")
+        mismatch = (
+            primary.returncode != 0
+            and isinstance(node_major, int)
+            and node_major >= 25
+            and _detect_runtime_mismatch(output)
         )
 
-        if result.returncode != 0:
+        if mismatch:
+            diagnostics["runtime_mismatch_detected"] = True
+            model_diag["runtime_mismatch"] = True
+            fallback_prefix = diagnostics.get("fallback_prefix")
+            if isinstance(fallback_prefix, list) and fallback_prefix:
+                fallback_cmd = [*fallback_prefix, quint, *args]
+                model_diag["attempted_commands"].append(fallback_cmd)
+                diagnostics["fallback_attempts"] = int(
+                    diagnostics.get("fallback_attempts", 0)
+                ) + 1
+                fallback = _safe_run(fallback_cmd, timeout=240)
+                final_result = fallback
+                model_diag["fallback_used"] = True
+                diagnostics["fallback_used"] = True
+
+        model_diag["returncode"] = int(final_result.returncode)
+
+        if final_result.returncode != 0:
             errors.append(f"Quint model {model_file} invariant {invariant} violated")
-            output = (result.stdout + result.stderr).strip()
+            output = ((final_result.stdout or "") + (final_result.stderr or "")).strip()
             for line in output.splitlines()[-10:]:
                 errors.append(f"  {line}")
 
-    return errors
+    if diagnostics["runtime_mismatch_detected"] and errors:
+        errors.append(
+            "quint_runtime_toolchain_mismatch: Node >=25 with current quint may fail; "
+            "set MOLT_QUINT_NODE_FALLBACK='npx -y node@22' or install a compatible Node/quint pair"
+        )
+
+    return errors, diagnostics
+
+
+def run_gate(*, run_inventory: bool, run_lean: bool, run_quint: bool) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "ok": True,
+        "checks": {},
+        "errors": [],
+    }
+
+    if run_inventory:
+        inv_errors = check_inventory()
+        report["checks"]["inventory"] = {
+            "ok": not bool(inv_errors),
+            "errors": inv_errors,
+        }
+        report["errors"].extend(inv_errors)
+
+    if run_lean:
+        lean_errors = check_lean()
+        report["checks"]["lean"] = {
+            "ok": not bool(lean_errors),
+            "errors": lean_errors,
+        }
+        report["errors"].extend(lean_errors)
+
+    if run_quint:
+        quint_errors, quint_diag = check_quint()
+        report["checks"]["quint"] = {
+            "ok": not bool(quint_errors),
+            "errors": quint_errors,
+            "diagnostics": quint_diag,
+        }
+        report["errors"].extend(quint_errors)
+
+    report["ok"] = not bool(report["errors"])
+    return report
 
 
 def main() -> int:
@@ -199,31 +348,48 @@ def main() -> int:
     parser.add_argument(
         "--inventory", action="store_true", help="Check file inventory only"
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON report to stdout",
+    )
+    parser.add_argument(
+        "--json-only",
+        action="store_true",
+        help="Emit only machine-readable JSON report to stdout",
+    )
     args = parser.parse_args()
 
     run_all = not (args.lean or args.quint or args.inventory)
-    errors: list[str] = []
+    run_inventory = bool(run_all or args.inventory)
+    run_lean = bool(run_all or args.lean)
+    run_quint = bool(run_all or args.quint)
 
-    if run_all or args.inventory:
+    log_enabled = not bool(args.json_only)
+    if log_enabled and run_inventory:
         print("[formal-methods] Checking file inventory ...")
-        errors.extend(check_inventory())
-
-    if run_all or args.lean:
+    if log_enabled and run_lean:
         print("[formal-methods] Checking Lean proofs ...")
-        errors.extend(check_lean())
-
-    if run_all or args.quint:
+    if log_enabled and run_quint:
         print("[formal-methods] Checking Quint models ...")
-        errors.extend(check_quint())
 
-    if errors:
+    report = run_gate(
+        run_inventory=run_inventory,
+        run_lean=run_lean,
+        run_quint=run_quint,
+    )
+
+    if log_enabled and report["errors"]:
         print("\nformal-methods gate FAILED:")
-        for err in errors:
+        for err in report["errors"]:
             print(f"  - {err}")
-        return 1
+    elif log_enabled:
+        print("\nformal-methods gate: ok")
 
-    print("\nformal-methods gate: ok")
-    return 0
+    if args.json or args.json_only:
+        print(json.dumps(report, indent=2, sort_keys=True))
+
+    return 0 if report["ok"] else 1
 
 
 if __name__ == "__main__":

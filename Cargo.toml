@@ -39,3 +39,6 @@ lto = "thin"
 codegen-units = 4
 panic = "abort"
 strip = true
+
+[patch.crates-io]
+rustpython-parser = { path = "vendor/rustpython-parser" }
