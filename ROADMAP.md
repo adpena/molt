@@ -23,6 +23,15 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
 - Compatibility target: near-Nuitka CPython coverage + interoperability for
   Molt-supported semantics, without violating Molt break-policy constraints.
 
+## Orchestration Harness Engineering Track (2026-03-05)
+- Implemented: added canonical harness architecture and scoring docs:
+  `docs/HARNESS_ENGINEERING.md`, `docs/QUALITY_SCORE.md`, and
+  `docs/exec-plans/TEMPLATE.md` (with active/completed plan roots).
+- Implemented: readiness audit now includes `sections.harness_engineering` with
+  artifact checks, principle coverage checks, and a weighted score target (`>= 90`).
+- Next: keep nightly strict-autonomy lane green (`--strict-autonomy --fail-on warn`)
+  by holding harness score at target and repairing drift immediately.
+
 ## Optimization Program Kickoff (2026-02-11)
 - Week 1 observability is complete and Week 0 baseline-lock artifacts are captured.
 - Canonical optimization scope: [OPTIMIZATIONS_PLAN.md](OPTIMIZATIONS_PLAN.md).
