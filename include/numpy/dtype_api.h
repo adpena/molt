@@ -18,6 +18,25 @@ typedef enum {
 
 #define PyArrayMethod_COMBINED_FLAGS(lhs, rhs) \
     ((NPY_ARRAYMETHOD_FLAGS)((lhs) | (rhs)))
+#define PyArrayMethod_MINIMAL_FLAGS 0
+
+typedef NPY_CASTING (PyArrayMethod_ResolveDescriptors)(
+    PyArrayMethodObject *method,
+    PyArray_DTypeMeta *const *dtypes,
+    PyArray_Descr *const *given_descrs,
+    PyArray_Descr **loop_descrs,
+    npy_intp *view_offset
+);
+
+typedef int (PyArrayMethod_GetMaskedStridedLoop)(
+    PyArrayMethod_Context *context,
+    int aligned,
+    int move_references,
+    const npy_intp *strides,
+    PyArrayMethod_StridedLoop **out_loop,
+    NpyAuxData **out_auxdata,
+    NPY_ARRAYMETHOD_FLAGS *flags
+);
 
 typedef int (PyArrayMethod_TraverseLoop)(
     void *traverse_context,
@@ -37,6 +56,17 @@ typedef int (PyArrayMethod_GetTraverseLoop)(
     NpyAuxData **out_auxdata,
     NPY_ARRAYMETHOD_FLAGS *flags
 );
+
+typedef int (PyArrayMethod_PromoterFunction)(
+    PyObject *ufunc,
+    PyArray_DTypeMeta *const op_dtypes[],
+    PyArray_DTypeMeta *const signature[],
+    PyArray_DTypeMeta *new_op_dtypes[]
+);
+
+typedef struct {
+    int flags;
+} PyArrayMethod_SortParameters;
 
 #ifdef __cplusplus
 }
