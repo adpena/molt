@@ -783,20 +783,21 @@ fn msgpack_key_to_object(_py: &PyToken<'_>, value: rmpv::Value) -> Result<MoltOb
 
 fn cbor_value_to_object(
     _py: &PyToken<'_>,
-    value: serde_cbor::Value,
+    value: ciborium::Value,
     arena: &mut TempArena,
 ) -> Result<MoltObject, i32> {
     match value {
-        serde_cbor::Value::Null => Ok(MoltObject::none()),
-        serde_cbor::Value::Bool(b) => Ok(MoltObject::from_bool(b)),
-        serde_cbor::Value::Integer(i) => {
-            if i < i64::MIN as i128 || i > i64::MAX as i128 {
+        ciborium::Value::Null => Ok(MoltObject::none()),
+        ciborium::Value::Bool(b) => Ok(MoltObject::from_bool(b)),
+        ciborium::Value::Integer(i) => {
+            let i_val: i128 = i.into();
+            if i_val < i64::MIN as i128 || i_val > i64::MAX as i128 {
                 return Err(2);
             }
-            Ok(MoltObject::from_int(i as i64))
+            Ok(MoltObject::from_int(i_val as i64))
         }
-        serde_cbor::Value::Float(f) => Ok(MoltObject::from_float(f)),
-        serde_cbor::Value::Text(s) => {
+        ciborium::Value::Float(f) => Ok(MoltObject::from_float(f)),
+        ciborium::Value::Text(s) => {
             let ptr = alloc_string(_py, s.as_bytes());
             if ptr.is_null() {
                 Err(2)
@@ -804,7 +805,7 @@ fn cbor_value_to_object(
                 Ok(MoltObject::from_ptr(ptr))
             }
         }
-        serde_cbor::Value::Bytes(b) => {
+        ciborium::Value::Bytes(b) => {
             let ptr = alloc_bytes(_py, &b);
             if ptr.is_null() {
                 Err(2)
@@ -812,7 +813,7 @@ fn cbor_value_to_object(
                 Ok(MoltObject::from_ptr(ptr))
             }
         }
-        serde_cbor::Value::Array(items) => {
+        ciborium::Value::Array(items) => {
             if items.len() > MAX_SMALL_LIST {
                 return Err(2);
             }
@@ -842,7 +843,7 @@ fn cbor_value_to_object(
                 Ok(MoltObject::from_ptr(ptr))
             }
         }
-        serde_cbor::Value::Map(items) => {
+        ciborium::Value::Map(items) => {
             if items.len() > MAX_SMALL_LIST {
                 return Err(2);
             }
@@ -878,19 +879,19 @@ fn cbor_value_to_object(
     }
 }
 
-fn cbor_key_to_object(_py: &PyToken<'_>, value: serde_cbor::Value) -> Result<MoltObject, i32> {
+fn cbor_key_to_object(_py: &PyToken<'_>, value: ciborium::Value) -> Result<MoltObject, i32> {
     match value {
-        serde_cbor::Value::Null => Ok(MoltObject::none()),
-        serde_cbor::Value::Bool(b) => Ok(MoltObject::from_bool(b)),
-        serde_cbor::Value::Integer(i) => {
-            let i_val = i;
+        ciborium::Value::Null => Ok(MoltObject::none()),
+        ciborium::Value::Bool(b) => Ok(MoltObject::from_bool(b)),
+        ciborium::Value::Integer(i) => {
+            let i_val: i128 = i.into();
             if i_val < i64::MIN as i128 || i_val > i64::MAX as i128 {
                 Err(2)
             } else {
                 Ok(MoltObject::from_int(i_val as i64))
             }
         }
-        serde_cbor::Value::Text(s) => {
+        ciborium::Value::Text(s) => {
             let ptr = alloc_string(_py, s.as_bytes());
             if ptr.is_null() {
                 Err(2)
@@ -898,7 +899,7 @@ fn cbor_key_to_object(_py: &PyToken<'_>, value: serde_cbor::Value) -> Result<Mol
                 Ok(MoltObject::from_ptr(ptr))
             }
         }
-        serde_cbor::Value::Bytes(b) => {
+        ciborium::Value::Bytes(b) => {
             let ptr = alloc_bytes(_py, &b);
             if ptr.is_null() {
                 Err(2)
@@ -908,6 +909,15 @@ fn cbor_key_to_object(_py: &PyToken<'_>, value: serde_cbor::Value) -> Result<Mol
         }
         _ => Err(2),
     }
+}
+
+fn parse_cbor_value(slice: &[u8]) -> Result<ciborium::Value, ()> {
+    let mut cursor = Cursor::new(slice);
+    let value: ciborium::Value = ciborium::from_reader(&mut cursor).map_err(|_| ())?;
+    if cursor.position() as usize != slice.len() {
+        return Err(());
+    }
+    Ok(value)
 }
 
 unsafe fn parse_json_scalar(
@@ -1005,7 +1015,7 @@ pub unsafe extern "C" fn molt_cbor_parse_scalar(
                 return 2;
             }
             let slice = std::slice::from_raw_parts(ptr, len);
-            let v: serde_cbor::Value = match serde_cbor::from_slice(slice) {
+            let v: ciborium::Value = match parse_cbor_value(slice) {
                 Ok(val) => val,
                 Err(_) => return 1,
             };
@@ -1106,7 +1116,7 @@ pub extern "C" fn molt_cbor_parse_scalar_obj(obj_bits: u64) -> u64 {
             let len = bytes_len(ptr);
             let data = bytes_data(ptr);
             let slice = std::slice::from_raw_parts(data, len);
-            let v: serde_cbor::Value = match serde_cbor::from_slice(slice) {
+            let v: ciborium::Value = match parse_cbor_value(slice) {
                 Ok(val) => val,
                 Err(_) => {
                     return raise_exception::<u64>(_py, "ValueError", "invalid cbor payload");

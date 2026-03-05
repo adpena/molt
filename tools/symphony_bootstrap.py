@@ -150,9 +150,20 @@ def _sync_env_defaults(
     )
     merged.setdefault("MOLT_SYMPHONY_ENFORCE_ORIGIN", "1")
     merged.setdefault("MOLT_SYMPHONY_REQUIRE_CSRF_HEADER", "1")
+    merged.setdefault("MOLT_SYMPHONY_SECURITY_PROFILE", "local")
+    merged.setdefault("MOLT_SYMPHONY_BIND_HOST", "127.0.0.1")
+    merged.setdefault("MOLT_SYMPHONY_ALLOW_NONLOCAL_BIND", "0")
+    merged.setdefault("MOLT_SYMPHONY_ALLOW_QUERY_TOKEN", "1")
+    merged.setdefault("MOLT_SYMPHONY_DISABLE_DASHBOARD_UI", "0")
+    merged.setdefault(
+        "MOLT_SYMPHONY_SECURITY_EVENTS_FILE",
+        str(ext_root / "logs" / "symphony" / "security" / "events.jsonl"),
+    )
     merged.setdefault("MOLT_SYMPHONY_MAX_HTTP_CONNECTIONS", "96")
     merged.setdefault("MOLT_SYMPHONY_MAX_STREAM_CLIENTS", "16")
     merged.setdefault("MOLT_SYMPHONY_STREAM_MAX_AGE_SECONDS", "300")
+    merged.setdefault("MOLT_SYMPHONY_HTTP_RATE_LIMIT_MAX_REQUESTS", "240")
+    merged.setdefault("MOLT_SYMPHONY_HTTP_RATE_LIMIT_WINDOW_SECONDS", "60")
     merged.setdefault("MOLT_SYMPHONY_EVENT_QUEUE_MAX", "8192")
     merged.setdefault("MOLT_SYMPHONY_EVENT_QUEUE_DROP_LOG_INTERVAL", "250")
 
@@ -188,6 +199,7 @@ def _ensure_ext_dirs(ext_root: Path) -> list[str]:
         ext_root / "symphony_workspaces",
         ext_root / "logs" / "symphony",
         ext_root / "logs" / "symphony" / "secrets",
+        ext_root / "logs" / "symphony" / "security",
     ]
     created: list[str] = []
     for path in dirs:

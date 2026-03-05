@@ -658,6 +658,64 @@ class SymphonyOrchestrator:
             result = self.request_set_max_concurrent_agents(raw)
             result["tool"] = tool
             return result
+        if tool == "durable_backup":
+            store = self._durable_memory
+            if store is None:
+                with self._state_lock:
+                    self._record_manual_action_locked(
+                        action="durable_backup",
+                        issue_identifier=None,
+                        ok=False,
+                        status="disabled",
+                        message="Durable memory is disabled.",
+                    )
+                return {
+                    "ok": False,
+                    "tool": tool,
+                    "error": "durable_memory_disabled",
+                    "message": "Durable memory is disabled.",
+                }
+            result = store.create_backup(reason="dashboard_manual")
+            with self._state_lock:
+                self._record_manual_action_locked(
+                    action="durable_backup",
+                    issue_identifier=None,
+                    ok=bool(result.get("ok")),
+                    status="ok" if bool(result.get("ok")) else "error",
+                    message="Durable memory backup completed."
+                    if bool(result.get("ok"))
+                    else "Durable memory backup failed.",
+                )
+            return {"tool": tool, **result}
+        if tool == "durable_integrity_check":
+            store = self._durable_memory
+            if store is None:
+                with self._state_lock:
+                    self._record_manual_action_locked(
+                        action="durable_integrity_check",
+                        issue_identifier=None,
+                        ok=False,
+                        status="disabled",
+                        message="Durable memory is disabled.",
+                    )
+                return {
+                    "ok": False,
+                    "tool": tool,
+                    "error": "durable_memory_disabled",
+                    "message": "Durable memory is disabled.",
+                }
+            result = store.run_integrity_check()
+            with self._state_lock:
+                self._record_manual_action_locked(
+                    action="durable_integrity_check",
+                    issue_identifier=None,
+                    ok=bool(result.get("ok")),
+                    status="ok" if bool(result.get("ok")) else "error",
+                    message="Durable memory integrity check passed."
+                    if bool(result.get("ok"))
+                    else "Durable memory integrity check failed.",
+                )
+            return {"tool": tool, **result}
         if tool == "inspect_issue":
             if not issue_identifier:
                 with self._state_lock:
