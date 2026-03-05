@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from threading import Thread
+from threading import Lock, Thread
 from typing import Any, Protocol
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -48,6 +48,47 @@ class DashboardServer:
 
     def start(self) -> int:
         provider = self.provider
+        state_cache_lock = Lock()
+        state_cache_ttl_seconds = 0.25
+        state_cache: dict[str, Any] = {
+            "captured_at_monotonic": 0.0,
+            "payload": None,
+            "encoded": b"",
+            "etag": "",
+        }
+
+        def _invalidate_state_cache() -> None:
+            with state_cache_lock:
+                state_cache["captured_at_monotonic"] = 0.0
+                state_cache["payload"] = None
+                state_cache["encoded"] = b""
+                state_cache["etag"] = ""
+
+        def _snapshot_state_cached() -> tuple[dict[str, Any], bytes, str]:
+            now_mono = time.monotonic()
+            with state_cache_lock:
+                captured_at = float(state_cache.get("captured_at_monotonic") or 0.0)
+                encoded_cached = state_cache.get("encoded")
+                etag_cached = state_cache.get("etag")
+                payload_cached = state_cache.get("payload")
+                if (
+                    isinstance(encoded_cached, bytes)
+                    and encoded_cached
+                    and isinstance(etag_cached, str)
+                    and etag_cached
+                    and isinstance(payload_cached, dict)
+                    and (now_mono - captured_at) <= state_cache_ttl_seconds
+                ):
+                    return payload_cached, encoded_cached, etag_cached
+            payload = provider.snapshot_state()
+            encoded = _encode_json_bytes(payload)
+            etag = _state_etag_for_payload(encoded)
+            with state_cache_lock:
+                state_cache["captured_at_monotonic"] = now_mono
+                state_cache["payload"] = payload
+                state_cache["encoded"] = encoded
+                state_cache["etag"] = etag
+            return payload, encoded, etag
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, format: str, *args: object) -> None:  # noqa: A003
@@ -96,9 +137,7 @@ class DashboardServer:
                     self._handle_dashboard()
                     return
                 if path == "/api/v1/state":
-                    payload = provider.snapshot_state()
-                    encoded = _encode_json_bytes(payload)
-                    etag = _state_etag_for_payload(encoded)
+                    _, encoded, etag = _snapshot_state_cached()
                     if self.headers.get("If-None-Match") == etag:
                         self.send_response(HTTPStatus.NOT_MODIFIED)
                         self.send_header("Cache-Control", "no-store")
@@ -154,6 +193,7 @@ class DashboardServer:
 
                 if path == "/api/v1/refresh":
                     queued = provider.request_refresh()
+                    _invalidate_state_cache()
                     self._write_json(
                         HTTPStatus.ACCEPTED,
                         {
@@ -256,9 +296,7 @@ class DashboardServer:
                     next_heartbeat = time.monotonic() + 15.0
                     previous_etag = ""
                     while True:
-                        payload = provider.snapshot_state()
-                        encoded = _encode_json_bytes(payload)
-                        etag = _state_etag_for_payload(encoded)
+                        _, encoded, etag = _snapshot_state_cached()
                         if etag != previous_etag:
                             event = (
                                 f"id: {etag}\nevent: state\ndata: "
@@ -423,85 +461,33 @@ _DASHBOARD_HTML = """<!doctype html>
         justify-content: flex-end;
       }
       .top-nav {
-        display: grid;
-        grid-template-columns: repeat(6, minmax(0, 1fr));
-        gap: 8px;
-        width: min(860px, 100%);
+        display: inline-flex;
+        background: rgba(0, 0, 0, 0.3);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-radius: 10px;
+        padding: 4px;
+        gap: 2px;
       }
       .view-tab {
         appearance: none;
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        background: linear-gradient(
-          180deg,
-          rgba(255, 255, 255, 0.045),
-          rgba(255, 255, 255, 0.01)
-        );
+        border: none;
+        background: transparent;
         color: var(--ink-soft);
-        border-radius: 12px;
-        padding: 10px 12px;
+        border-radius: 6px;
+        padding: 6px 12px;
         font-size: 0.82rem;
         font-weight: 500;
         cursor: pointer;
-        text-align: left;
-        display: grid;
-        gap: 3px;
-        position: relative;
-        transition:
-          transform 160ms ease,
-          border-color 220ms ease,
-          background 220ms ease,
-          color 220ms ease,
-          box-shadow 240ms ease;
-      }
-      .view-tab::after {
-        content: "";
-        position: absolute;
-        left: 12px;
-        right: 12px;
-        bottom: 7px;
-        height: 2px;
-        border-radius: 999px;
-        background: rgba(255, 255, 255, 0.16);
-        transform: scaleX(0);
-        transform-origin: left center;
-        transition: transform 220ms ease;
-      }
-      .view-tab .tab-title {
-        font-size: 0.84rem;
-        font-weight: 600;
-        color: #f6f6f6;
-        letter-spacing: 0.01em;
-      }
-      .view-tab .tab-meta {
-        font-size: 0.72rem;
-        color: var(--ink-soft);
+        transition: all 200ms ease;
       }
       .view-tab:hover {
-        transform: translateY(-1px);
-        border-color: rgba(255, 255, 255, 0.2);
         color: var(--ink);
-        background: linear-gradient(
-          180deg,
-          rgba(255, 255, 255, 0.08),
-          rgba(255, 255, 255, 0.02)
-        );
-        box-shadow: 0 16px 24px -20px rgba(0, 0, 0, 0.92);
+        background: rgba(255, 255, 255, 0.05);
       }
       .view-tab.active {
-        border-color: rgba(255, 255, 255, 0.28);
-        background: linear-gradient(
-          180deg,
-          rgba(255, 255, 255, 0.16),
-          rgba(255, 255, 255, 0.05)
-        );
+        background: rgba(255, 255, 255, 0.1);
         color: #ffffff;
-        box-shadow: 0 18px 30px -24px rgba(0, 0, 0, 0.9);
-      }
-      .view-tab.active::after {
-        transform: scaleX(1);
-      }
-      .view-tab.active .tab-meta {
-        color: #d8d8d8;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.3);
       }
       .status-chip {
         border: 1px solid rgba(255, 255, 255, 0.08);
@@ -1424,30 +1410,12 @@ _DASHBOARD_HTML = """<!doctype html>
             <div class="subtitle">Realtime Control</div>
           </div>
           <div class="top-nav" role="tablist" aria-label="dashboard views">
-            <button type="button" role="tab" class="view-tab active" data-view="overview">
-              <span class="tab-title">Overview</span>
-              <span class="tab-meta">mission posture</span>
-            </button>
-            <button type="button" role="tab" class="view-tab" data-view="interventions">
-              <span class="tab-title">Interventions</span>
-              <span class="tab-meta">human action lane</span>
-            </button>
-            <button type="button" role="tab" class="view-tab" data-view="agents">
-              <span class="tab-title">Agents</span>
-              <span class="tab-meta">live workers</span>
-            </button>
-            <button type="button" role="tab" class="view-tab" data-view="performance">
-              <span class="tab-title">Performance</span>
-              <span class="tab-meta">throughput + hotspots</span>
-            </button>
-            <button type="button" role="tab" class="view-tab" data-view="memory">
-              <span class="tab-title">Memory</span>
-              <span class="tab-meta">durable telemetry</span>
-            </button>
-            <button type="button" role="tab" class="view-tab" data-view="all">
-              <span class="tab-title">All</span>
-              <span class="tab-meta">full command center</span>
-            </button>
+            <button type="button" class="view-tab active" data-view="overview">Overview</button>
+            <button type="button" class="view-tab" data-view="interventions">Interventions</button>
+            <button type="button" class="view-tab" data-view="agents">Agents</button>
+            <button type="button" class="view-tab" data-view="performance">Performance</button>
+            <button type="button" class="view-tab" data-view="memory">Memory</button>
+            <button type="button" class="view-tab" data-view="all">All</button>
           </div>
         </div>
         <div class="controls">
@@ -1747,6 +1715,10 @@ _DASHBOARD_HTML = """<!doctype html>
       let requestedTransport = "auto";
       let activeTransport = "idle";
       let stateTransport = null;
+      let pollErrorStreak = 0;
+      let pollNotModifiedStreak = 0;
+      let pollScheduledDelayMs = 0;
+      let lastPollStatusLabel = "";
 
       function toObject(value) {
         return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -2264,9 +2236,39 @@ _DASHBOARD_HTML = """<!doctype html>
 
       function stopPolling() {
         if (pollTimer) {
-          clearInterval(pollTimer);
+          clearTimeout(pollTimer);
           pollTimer = null;
         }
+        pollScheduledDelayMs = 0;
+        lastPollStatusLabel = "";
+      }
+
+      function _setFallbackStatus(delayMs) {
+        const delay = Math.max(250, Math.round(toNumber(delayMs, fallbackPollIntervalMs)));
+        const adaptive = delay !== Math.round(fallbackPollIntervalMs);
+        const label = adaptive
+          ? `Polling fallback (${delay}ms adaptive)`
+          : `Polling fallback (${delay}ms)`;
+        if (label === lastPollStatusLabel) return;
+        lastPollStatusLabel = label;
+        setStreamStatus(label, "warn");
+      }
+
+      function _nextFallbackDelayMs(changed, hadError) {
+        const baseMs = Math.max(250, Math.round(fallbackPollIntervalMs));
+        if (hadError) {
+          pollErrorStreak = Math.min(pollErrorStreak + 1, 8);
+          pollNotModifiedStreak = 0;
+          return Math.min(baseMs * Math.pow(2, Math.min(pollErrorStreak, 4)), 60000);
+        }
+        pollErrorStreak = 0;
+        if (changed === false) {
+          pollNotModifiedStreak = Math.min(pollNotModifiedStreak + 1, 8);
+          const factor = 1 + pollNotModifiedStreak * 0.5;
+          return Math.min(Math.round(baseMs * factor), 30000);
+        }
+        pollNotModifiedStreak = 0;
+        return baseMs;
       }
 
       function stopStream() {
@@ -2909,6 +2911,9 @@ _DASHBOARD_HTML = """<!doctype html>
                 transportMetrics.sseReconnects
               )} ·
               poll ticks ${formatNumber(transportMetrics.fallbackPollTicks)} ·
+              poll delay ${formatNumber(
+                pollScheduledDelayMs > 0 ? pollScheduledDelayMs : fallbackPollIntervalMs
+              )}ms ·
               render commits ${formatNumber(transportMetrics.renderCommits)}
             </div>
           </div>
@@ -3106,6 +3111,7 @@ _DASHBOARD_HTML = """<!doctype html>
         if (updatedChip.textContent !== updatedText) {
           updatedChip.textContent = updatedText;
         }
+        publishClientTelemetry();
       }
 
       function renderState(state) {
@@ -3458,17 +3464,28 @@ _DASHBOARD_HTML = """<!doctype html>
         if (pollTimer) {
           stopPolling();
         }
+        if (forceRestart) {
+          pollErrorStreak = 0;
+          pollNotModifiedStreak = 0;
+        }
         activeTransport = "poll";
-        setStreamStatus(`Polling fallback (${fallbackPollIntervalMs}ms)`, "warn");
+        _setFallbackStatus(fallbackPollIntervalMs);
         const run = async () => {
           transportMetrics.fallbackPollTicks += 1;
+          let delayMs = fallbackPollIntervalMs;
           try {
-            await fetchState();
+            const changed = await fetchState();
+            delayMs = _nextFallbackDelayMs(changed, false);
           } catch (_err) {
-            // keep polling
+            delayMs = _nextFallbackDelayMs(false, true);
           }
+          if (activeTransport !== "poll") {
+            return;
+          }
+          pollScheduledDelayMs = Math.max(250, Math.round(delayMs));
+          _setFallbackStatus(pollScheduledDelayMs);
+          pollTimer = setTimeout(run, pollScheduledDelayMs);
         };
-        pollTimer = setInterval(run, fallbackPollIntervalMs);
         run();
       }
 

@@ -134,7 +134,9 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_perf.py WORKFLOW.md \
 - Dashboard/API state payload now includes `profiling` and `runtime.exec_mode` fields.
 - Dashboard/API state payload includes `agent_panes`, runtime role pool settings, token throughput (`codex_totals.tokens_per_second`), and suspension metadata (`suspension`).
 - `/api/v1/state` now supports conditional reads via `ETag` + `If-None-Match` to avoid re-downloading unchanged state during fallback polling.
+- Dashboard HTTP now uses a short shared snapshot cache for `/api/v1/state` and `/api/v1/stream` to reduce duplicate serialization under concurrent readers.
 - `/api/v1/stream` now emits `state` events only when the serialized snapshot changes (plus heartbeats), reducing UI churn and endpoint pressure.
+- Fallback polling now uses adaptive backoff (error/not-modified aware) to avoid endpoint thrash while preserving realtime responsiveness.
 - `symphony_state` defaults to compact payload mode with short TTL caching for lower token burn; use `{ "detail": "full" }` when agents need full raw state.
 - `symphony_state` also supports `{ "detail": "telemetry" }` for agent-native, token-efficient MCP telemetry.
 - Codex event profiling counters are cardinality-bounded (`MOLT_SYMPHONY_MAX_CODEX_EVENT_COUNTERS`, default `64`) to avoid unbounded metric growth.

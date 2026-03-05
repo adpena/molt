@@ -126,6 +126,9 @@ def test_symphony_launchd_watchdog_program_includes_timing(tmp_path: Path) -> No
         interval_ms=1500,
         quiet_ms=1200,
         cooldown_ms=5000,
+        state_url="http://127.0.0.1:8089/api/v1/state",
+        state_timeout_ms=600,
+        restart_when_idle=True,
     )
     assert args == [
         "/usr/bin/python3",
@@ -140,6 +143,11 @@ def test_symphony_launchd_watchdog_program_includes_timing(tmp_path: Path) -> No
         "1200",
         "--cooldown-ms",
         "5000",
+        "--state-url",
+        "http://127.0.0.1:8089/api/v1/state",
+        "--state-timeout-ms",
+        "600",
+        "--restart-when-idle",
     ]
 
 
