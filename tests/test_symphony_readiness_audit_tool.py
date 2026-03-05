@@ -471,3 +471,95 @@ def test_collect_findings_reports_harness_score_gap() -> None:
     assert codes["harness_artifacts_missing"]["severity"] == "warn"
     assert codes["harness_principles_missing"]["severity"] == "warn"
     assert codes["harness_score_below_target"]["severity"] == "warn"
+
+
+def test_audit_dspy_routing_warns_when_enabled_and_module_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    env_file = tmp_path / "symphony.env"
+    env_file.write_text(
+        (
+            "MOLT_SYMPHONY_DSPY_ENABLE=1\n"
+            "MOLT_SYMPHONY_DSPY_MODEL=openai/gpt-4.1-mini\n"
+            "MOLT_SYMPHONY_DSPY_API_KEY_ENV=OPENAI_API_KEY\n"
+            "OPENAI_API_KEY=test-key\n"
+        ),
+        encoding="utf-8",
+    )
+
+    def _fake_find_spec(name: str) -> object | None:
+        if name == "dspy":
+            return None
+        if name == "pydantic":
+            return object()
+        return object()
+
+    monkeypatch.setattr(readiness_audit.importlib.util, "find_spec", _fake_find_spec)
+
+    result = readiness_audit._audit_dspy_routing(env_file)
+    assert result["status"] == "warn"
+    assert result["enabled"] is True
+    assert result["reason"] == "dspy_module_unavailable"
+
+
+def test_collect_findings_reports_dspy_not_ready_warn() -> None:
+    report = {
+        "sections": {
+            "environment": {
+                "ext_root_mounted": True,
+                "missing_env_keys": [],
+                "has_linear_api_key": True,
+            },
+            "docs_and_tools": {
+                "missing_docs": [],
+                "missing_tools": [],
+                "has_human_authority_gate": True,
+            },
+            "harness_engineering": {
+                "score": 100,
+                "target_score": 90,
+                "missing_artifacts": [],
+                "critical_missing_artifacts": [],
+                "missing_principles": [],
+            },
+            "dspy_routing": {
+                "status": "warn",
+                "enabled": True,
+                "reason": "model_missing",
+                "model_configured": False,
+                "api_key_present": True,
+                "module_available": True,
+                "pydantic_available": True,
+                "api_key_env": "OPENAI_API_KEY",
+            },
+            "launchd": {"main_loaded": True, "watchdog_loaded": True},
+            "durable_memory": {
+                "checks": {
+                    "jsonl_readable": {"ok": True},
+                    "duckdb_readable": {"ok": True},
+                }
+            },
+            "manifest_index": {
+                "missing_manifest_files": [],
+                "malformed_titles": [],
+                "metadata_gaps": [],
+            },
+            "linear_workspace": {
+                "status": "pass",
+                "missing_project": [],
+                "seeded_missing_metadata": [],
+                "malformed_titles": [],
+                "active_execution_flow": True,
+                "label_count": 10,
+            },
+            "linear_cli_compat": {"status": "pass", "lin_installed": True},
+            "formal_suite": {
+                "status": "pass",
+                "mode": "inventory",
+                "returncode": 0,
+            },
+        }
+    }
+    findings = readiness_audit._collect_findings(report)
+    codes = {row["code"]: row for row in findings}
+    assert codes["dspy_routing_not_ready"]["severity"] == "warn"

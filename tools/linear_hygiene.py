@@ -130,6 +130,11 @@ AREA_ROLE_MAP = {
 
 FORMAL_REQUIRED_AREAS = {"compiler", "runtime", "wasm", "security", "stdlib", "c-api"}
 FORMAL_SUITE_MODES = ("off", "inventory", "lean", "quint", "all")
+DSPY_ENABLE_ENV = "MOLT_SYMPHONY_DSPY_ENABLE"
+DSPY_MODEL_ENV = "MOLT_SYMPHONY_DSPY_MODEL"
+DSPY_API_KEY_ENV_ENV = "MOLT_SYMPHONY_DSPY_API_KEY_ENV"
+DSPY_API_KEY_INLINE_ENV = "MOLT_SYMPHONY_DSPY_API_KEY"
+DSPY_DEFAULT_API_KEY_ENV = "OPENAI_API_KEY"
 
 LABEL_TAXONOMY = (
     ("role:executor", "#4EA7FC", "Default execution role for implementation."),
@@ -497,15 +502,12 @@ def _dspy_route_decision(
     issue: dict[str, Any],
     fallback: RouteDecision,
 ) -> RouteDecision:
-    if dspy is None or BaseModel is None:
-        return fallback
-    if not os.environ.get("MOLT_SYMPHONY_DSPY_ENABLE"):
+    status = _dspy_runtime_status()
+    if not bool(status["ready"]):
         return fallback
 
-    model = os.environ.get("MOLT_SYMPHONY_DSPY_MODEL", "").strip()
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if not model or not api_key:
-        return fallback
+    model = str(status["model"] or "")
+    api_key = str(status["api_key"] or "")
 
     try:
         if getattr(dspy.settings, "lm", None) is None:  # pragma: no cover
@@ -558,6 +560,71 @@ def _dspy_route_decision(
         return RouteDecision(**payload)  # type: ignore[arg-type]
     except Exception:
         return fallback
+
+
+def _coerce_bool_env(name: str, *, default: bool = False) -> bool:
+    raw = str(os.environ.get(name, "")).strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _resolve_dspy_api_key() -> tuple[str, str]:
+    inline = str(os.environ.get(DSPY_API_KEY_INLINE_ENV) or "").strip()
+    if inline:
+        return inline, DSPY_API_KEY_INLINE_ENV
+    env_name = (
+        str(os.environ.get(DSPY_API_KEY_ENV_ENV) or "").strip() or DSPY_DEFAULT_API_KEY_ENV
+    )
+    value = str(os.environ.get(env_name) or "").strip()
+    return value, env_name
+
+
+def _dspy_runtime_status() -> dict[str, Any]:
+    enabled = _coerce_bool_env(DSPY_ENABLE_ENV, default=False)
+    model = str(os.environ.get(DSPY_MODEL_ENV) or "").strip()
+    api_key, api_key_source = _resolve_dspy_api_key()
+
+    module_available = dspy is not None
+    pydantic_available = BaseModel is not None
+    model_configured = bool(model)
+    api_key_present = bool(api_key)
+
+    if not enabled:
+        reason = "disabled"
+        ready = False
+    elif not module_available:
+        reason = "dspy_module_unavailable"
+        ready = False
+    elif not pydantic_available:
+        reason = "pydantic_unavailable"
+        ready = False
+    elif not model_configured:
+        reason = "model_missing"
+        ready = False
+    elif not api_key_present:
+        reason = "api_key_missing"
+        ready = False
+    else:
+        reason = "ready"
+        ready = True
+
+    return {
+        "enabled": enabled,
+        "module_available": module_available,
+        "pydantic_available": pydantic_available,
+        "model": model,
+        "model_configured": model_configured,
+        "api_key_present": api_key_present,
+        "api_key_source": api_key_source,
+        "api_key": api_key,
+        "ready": ready,
+        "reason": reason,
+    }
 
 
 def _label_name_to_ids() -> dict[str, str]:
@@ -917,9 +984,9 @@ def cmd_apply_routing(args: argparse.Namespace) -> int:
         "apply": bool(args.apply),
         "states": sorted(target_states),
         "dspy": {
-            "env_enabled": bool(os.environ.get("MOLT_SYMPHONY_DSPY_ENABLE")),
-            "module_available": dspy is not None,
-            "pydantic_available": BaseModel is not None,
+            key: value
+            for key, value in _dspy_runtime_status().items()
+            if key != "api_key"
         },
         "planned_updates": len(planned),
         "updated": updated if args.apply else 0,
