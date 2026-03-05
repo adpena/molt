@@ -29,6 +29,10 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
   `docs/exec-plans/TEMPLATE.md` (with active/completed plan roots).
 - Implemented: readiness audit now includes `sections.harness_engineering` with
   artifact checks, principle coverage checks, and a weighted score target (`>= 90`).
+- Implemented: readiness audit now includes `sections.dspy_routing` so DSPy
+  routing drift is visible when enabled but under-configured.
+- Implemented: bootstrap/env defaults now seed DSPy keys and runbooks now use
+  `uv run --group dev` for `linear_hygiene` so DSPy/Pydantic deps are present.
 - Next: keep nightly strict-autonomy lane green (`--strict-autonomy --fail-on warn`)
   by holding harness score at target and repairing drift immediately.
 

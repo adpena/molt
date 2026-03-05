@@ -9767,18 +9767,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         prev_carry = set(self.loop_carry_vars)
         saved_cells: dict[str, MoltValue] = {}
         carry_init_vals: list[tuple[str, MoltValue]] = []
-        for name in sorted(carry_vars):
-            init_val = self._load_local_value(name)
-            if init_val is None:
-                init_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[0], result=init_val))
+        # Include the index variable as a carry-like var — remove its boxed cell
+        # during the loop so body reads use the block-param SSA value directly.
+        all_loop_vars = carry_vars | {index_name}
+        for name in sorted(all_loop_vars):
+            if name in carry_vars:
+                init_val = self._load_local_value(name)
+                if init_val is None:
+                    init_val = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="CONST", args=[0], result=init_val))
+                carry_init_vals.append((name, init_val))
             if name in self.boxed_locals:
                 saved_cells[name] = self.boxed_locals.pop(name)
-            carry_init_vals.append((name, init_val))
         self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
         idx = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
-        # Emit carry inits immediately after LOOP_INDEX_START (consecutive)
+        # Emit carry inits immediately after LOOP_INDEX_START (consecutive).
         for name, init_val in carry_init_vals:
             carry_out = MoltValue(f"__carry_{name}", type_hint="int")
             self.emit(MoltOp(kind="LOOP_CARRY_INIT", args=[init_val], result=carry_out))
@@ -9789,18 +9793,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(
             MoltOp(kind="LOOP_BREAK_IF_FALSE", args=[cond], result=MoltValue("none"))
         )
-        self._store_local_value(index_name, idx)
+        # Set index var directly in locals (no boxed cell write, no dict_set)
+        self.locals[index_name] = idx
+        # Suppress locals-dict writes inside tight loop body
+        prev_locals_cache = self.locals_cache_val
+        self.locals_cache_val = None
         self._visit_loop_body(body, guard_map)
+        self.locals_cache_val = prev_locals_cache
         next_idx = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="ADD", args=[idx, one], result=next_idx))
         self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
         self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
         self.loop_carry_vars = prev_carry
-        # Restore boxed cells and write final carry values back
+        # Restore boxed cells and write final values back (index + carry vars)
         for name, cell in saved_cells.items():
             self.boxed_locals[name] = cell
-            final_val = self.locals.get(name)
+            if name == index_name:
+                final_val = idx
+            else:
+                final_val = self.locals.get(name)
             if final_val is not None:
                 idx_var = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="CONST", args=[0], result=idx_var))
