@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import importlib.util
 import json
 import os
 import re
@@ -97,8 +98,14 @@ STRICT_AUTONOMY_FAIL_CODES = {
     "linear_titles_malformed",
     "linear_no_active_flow",
     "harness_score_below_target",
+    "dspy_routing_not_ready",
 }
 FORMAL_SUITE_MODES = ("off", "inventory", "lean", "quint", "all")
+DSPY_ENABLE_ENV = "MOLT_SYMPHONY_DSPY_ENABLE"
+DSPY_MODEL_ENV = "MOLT_SYMPHONY_DSPY_MODEL"
+DSPY_API_KEY_ENV_ENV = "MOLT_SYMPHONY_DSPY_API_KEY_ENV"
+DSPY_API_KEY_INLINE_ENV = "MOLT_SYMPHONY_DSPY_API_KEY"
+DSPY_DEFAULT_API_KEY_ENV = "OPENAI_API_KEY"
 
 QUERY_LABELS = """
 query LabelsByTeam($teamId: ID!) {
@@ -140,6 +147,17 @@ def _load_env_file(path: Path) -> dict[str, str]:
         key, value = line.split("=", 1)
         values[key.strip()] = value.strip()
     return values
+
+
+def _coerce_bool(value: str, *, default: bool = False) -> bool:
+    raw = value.strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def _resolve_linear_api_key(env_file: Path) -> str:
@@ -430,6 +448,59 @@ def _audit_harness_engineering(repo_root: Path) -> dict[str, Any]:
         "critical_missing_artifacts": critical_missing_artifacts,
         "principle_coverage": principle_coverage,
         "missing_principles": missing_principles,
+    }
+
+
+def _audit_dspy_routing(env_file: Path) -> dict[str, Any]:
+    env_values = _load_env_file(env_file)
+    enabled_raw = env_values.get(DSPY_ENABLE_ENV, os.environ.get(DSPY_ENABLE_ENV, ""))
+    enabled = _coerce_bool(enabled_raw, default=False)
+    model = str(
+        env_values.get(DSPY_MODEL_ENV, os.environ.get(DSPY_MODEL_ENV, ""))
+    ).strip()
+    api_key_env_name = (
+        str(env_values.get(DSPY_API_KEY_ENV_ENV, os.environ.get(DSPY_API_KEY_ENV_ENV, ""))).strip()
+        or DSPY_DEFAULT_API_KEY_ENV
+    )
+    inline_api_key = str(
+        env_values.get(DSPY_API_KEY_INLINE_ENV, os.environ.get(DSPY_API_KEY_INLINE_ENV, ""))
+    ).strip()
+    scoped_api_key = str(
+        env_values.get(api_key_env_name, os.environ.get(api_key_env_name, ""))
+    ).strip()
+    api_key_present = bool(inline_api_key or scoped_api_key)
+    module_available = importlib.util.find_spec("dspy") is not None
+    pydantic_available = importlib.util.find_spec("pydantic") is not None
+
+    if not enabled:
+        status = "info"
+        reason = "disabled"
+    elif not module_available:
+        status = "warn"
+        reason = "dspy_module_unavailable"
+    elif not pydantic_available:
+        status = "warn"
+        reason = "pydantic_unavailable"
+    elif not model:
+        status = "warn"
+        reason = "model_missing"
+    elif not api_key_present:
+        status = "warn"
+        reason = "api_key_missing"
+    else:
+        status = "pass"
+        reason = "ready"
+
+    return {
+        "status": status,
+        "enabled": enabled,
+        "reason": reason,
+        "model": model,
+        "model_configured": bool(model),
+        "api_key_env": api_key_env_name,
+        "api_key_present": api_key_present,
+        "module_available": module_available,
+        "pydantic_available": pydantic_available,
     }
 
 
@@ -1018,6 +1089,45 @@ def _collect_findings(report: dict[str, Any]) -> list[dict[str, Any]]:
                 details={"score": score, "target_score": target_score},
             )
 
+    dspy = (report.get("sections") or {}).get("dspy_routing") or {}
+    if bool(dspy.get("enabled")):
+        if dspy.get("status") != "pass":
+            _record_finding(
+                findings,
+                severity="warn",
+                code="dspy_routing_not_ready",
+                message=(
+                    "DSPy routing is enabled but not fully configured; linear_hygiene "
+                    "will fall back to heuristic routing."
+                ),
+                details={
+                    "reason": dspy.get("reason"),
+                    "model_configured": dspy.get("model_configured"),
+                    "api_key_present": dspy.get("api_key_present"),
+                    "module_available": dspy.get("module_available"),
+                    "pydantic_available": dspy.get("pydantic_available"),
+                    "api_key_env": dspy.get("api_key_env"),
+                },
+            )
+        else:
+            _record_finding(
+                findings,
+                severity="info",
+                code="dspy_routing_ready",
+                message="DSPy routing is enabled and ready for linear_hygiene.",
+                details={"model": dspy.get("model"), "api_key_env": dspy.get("api_key_env")},
+            )
+    else:
+        _record_finding(
+            findings,
+            severity="info",
+            code="dspy_routing_disabled",
+            message=(
+                "DSPy routing is disabled; linear_hygiene uses deterministic "
+                "heuristic routing."
+            ),
+        )
+
     launchd = report["sections"]["launchd"]
     if not bool(launchd.get("main_loaded")):
         _record_finding(
@@ -1375,6 +1485,7 @@ def run_audit(
             "environment": _audit_env_and_volume(env_file=env_file, ext_root=ext_root),
             "docs_and_tools": _audit_docs_and_tools(repo_root),
             "harness_engineering": _audit_harness_engineering(repo_root),
+            "dspy_routing": _audit_dspy_routing(env_file),
             "launchd": _audit_launchd(),
             "durable_memory": _audit_durable_memory(durable_root),
             "manifest_index": _audit_manifest_index(index_path),
