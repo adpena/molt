@@ -54,3 +54,19 @@ def test_load_security_events_summary_counts_recent_rows(tmp_path: Path) -> None
     secret_guard = summary["secret_guard_blocked"]
     assert secret_guard["total"] == 2
     assert secret_guard["last_at"] == "2026-03-04T01:03:00Z"
+
+
+def test_project_state_payload_keeps_token_metrics_visible() -> None:
+    payload = {
+        "tokens_per_second": 42.5,
+        "codex_totals": {
+            "input_tokens": 120,
+            "output_tokens": 30,
+            "total_tokens": 150,
+        },
+        "runtime": {},
+    }
+    projected = project_state_payload(payload, http_security={"profile": "local"})
+    assert projected["tokens_per_second"] == 42.5
+    assert projected["codex_totals"]["total_tokens"] == 150
+    assert projected["codex_totals"]["input_tokens"] == 120

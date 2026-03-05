@@ -36090,19 +36090,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
         for i, op in enumerate(ops):
             is_fast = (
-                op.metadata is not None and op.metadata.get("guard_fast_int")
-            ) or (
-                op.kind == "CONST"
-                and isinstance(op.result, MoltValue)
-                and op.result.type_hint == "int"
-            ) or (
-                # Type-hint-based fast_int (--type-hints trust path):
-                # same eligibility check as _should_fast_int but without
-                # needing guard metadata from SCCP.
-                op.kind in raw_int_ops
-                and all(
-                    isinstance(a, MoltValue) and a.type_hint == "int"
-                    for a in op.args
+                (op.metadata is not None and op.metadata.get("guard_fast_int"))
+                or (
+                    op.kind == "CONST"
+                    and isinstance(op.result, MoltValue)
+                    and op.result.type_hint == "int"
+                )
+                or (
+                    # Type-hint-based fast_int (--type-hints trust path):
+                    # same eligibility check as _should_fast_int but without
+                    # needing guard metadata from SCCP.
+                    op.kind in raw_int_ops
+                    and all(
+                        isinstance(a, MoltValue) and a.type_hint == "int"
+                        for a in op.args
+                    )
                 )
             )
             if is_fast and op.kind in raw_int_ops:
@@ -36185,7 +36187,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 can_promote = True
                 for arg in op.args:
                     if isinstance(arg, MoltValue):
-                        if arg.name in raw_vars or arg.name in int_producers or arg.type_hint == "int":
+                        if (
+                            arg.name in raw_vars
+                            or arg.name in int_producers
+                            or arg.type_hint == "int"
+                        ):
                             new_args.append(ensure_raw(arg))
                         else:
                             can_promote = False
@@ -36196,8 +36202,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if can_promote:
                     meta = dict(op.metadata) if op.metadata else {}
                     meta["raw_int"] = True
-                    result_name = op.result.name if isinstance(op.result, MoltValue) else "none"
-                    new_result = MoltValue(result_name, op.result.type_hint if isinstance(op.result, MoltValue) else "Unknown")
+                    result_name = (
+                        op.result.name if isinstance(op.result, MoltValue) else "none"
+                    )
+                    new_result = MoltValue(
+                        result_name,
+                        op.result.type_hint
+                        if isinstance(op.result, MoltValue)
+                        else "Unknown",
+                    )
                     new_op = MoltOp(
                         kind=op.kind,
                         args=new_args,
@@ -36222,7 +36235,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     new_op = MoltOp(
                         kind=op.kind,
                         args=[MoltValue(op.args[0].name, op.args[0].type_hint)],
-                        result=MoltValue(op.result.name, op.result.type_hint) if isinstance(op.result, MoltValue) else op.result,
+                        result=MoltValue(op.result.name, op.result.type_hint)
+                        if isinstance(op.result, MoltValue)
+                        else op.result,
                         metadata=meta,
                     )
                     promoted += 1
@@ -36260,11 +36275,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         if isinstance(arg, MoltValue) and arg.name in raw_vars:
                             new_args.append(ensure_boxed(arg))
                         else:
-                            new_args.append(arg if not isinstance(arg, MoltValue) else MoltValue(arg.name, arg.type_hint))
+                            new_args.append(
+                                arg
+                                if not isinstance(arg, MoltValue)
+                                else MoltValue(arg.name, arg.type_hint)
+                            )
                     new_op = MoltOp(
                         kind=op.kind,
                         args=new_args,
-                        result=MoltValue(op.result.name, op.result.type_hint) if isinstance(op.result, MoltValue) else op.result,
+                        result=MoltValue(op.result.name, op.result.type_hint)
+                        if isinstance(op.result, MoltValue)
+                        else op.result,
                         metadata=dict(op.metadata) if op.metadata else op.metadata,
                     )
                     new_ops.append(new_op)
