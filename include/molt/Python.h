@@ -792,6 +792,7 @@ static inline void PyMem_Free(void *ptr) {
 #define PyMem_RawFree PyMem_Free
 #define PyMem_FREE PyMem_Free
 #define PyObject_Malloc PyMem_Malloc
+#define PyObject_Realloc PyMem_Realloc
 #define PyObject_Free PyMem_Free
 
 static inline void PyErr_Fetch(PyObject **ptype, PyObject **pvalue, PyObject **ptraceback) {

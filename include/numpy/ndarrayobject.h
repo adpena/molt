@@ -47,6 +47,8 @@ static inline PyTypeObject *_molt_numpy_builtin_type_borrowed(const char *name) 
 #define PyArrayArrayConverter_Type PyArray_Type
 #define PyArrayFlags_Type PyArray_Type
 #define PyArrayFunctionDispatcher_Type PyArray_Type
+#define PyArray_PyLongDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("int"))
+#define PyArray_StringDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("str"))
 
 #define PyArray_Check(op) PyObject_TypeCheck((PyObject *)(op), &PyArray_Type)
 #define PyArray_CheckExact(op) PyObject_TypeCheck((PyObject *)(op), &PyArray_Type)
@@ -59,6 +61,7 @@ static inline PyTypeObject *_molt_numpy_builtin_type_borrowed(const char *name) 
 #define PyArray_STRIDES(arr) (((PyArrayObject_fields *)(arr))->strides)
 #define PyArray_STRIDE(arr, i) (((PyArrayObject_fields *)(arr))->strides[(i)])
 #define PyArray_DIM(arr, i) (((PyArrayObject_fields *)(arr))->dimensions[(i)])
+#define PyArray_SHAPE(arr) PyArray_DIMS(arr)
 #define PyArray_DESCR(arr) (((PyArrayObject_fields *)(arr))->descr)
 #define PyArray_FLAGS(arr) (((PyArrayObject_fields *)(arr))->flags)
 #define PyArray_ITEMSIZE(arr) ((PyArray_DESCR(arr) != NULL) ? PyArray_DESCR(arr)->elsize : 0)
@@ -149,6 +152,43 @@ static inline int PyArray_CompareLists(
         }
     }
     return 0;
+}
+
+static inline npy_intp PyArray_MultiplyList(const npy_intp *values, int length) {
+    npy_intp out = 1;
+    int i = 0;
+    if (values == NULL || length <= 0) {
+        return 0;
+    }
+    for (i = 0; i < length; i++) {
+        out *= values[i];
+    }
+    return out;
+}
+
+static inline int PyArray_EquivTypes(PyArray_Descr *lhs, PyArray_Descr *rhs) {
+    if (lhs == NULL || rhs == NULL) {
+        return 0;
+    }
+    return lhs->type_num == rhs->type_num;
+}
+
+static inline int PyArray_IntpConverter(PyObject *obj, PyArray_Dims *dims_out) {
+    (void)obj;
+    if (dims_out != NULL) {
+        dims_out->ptr = NULL;
+        dims_out->len = 0;
+    }
+    return _molt_numpy_unavailable_i32("PyArray_IntpConverter");
+}
+
+static inline PyArrayObject *PyArray_NewCopy(PyArrayObject *array_obj, int order) {
+    (void)order;
+    if (array_obj == NULL) {
+        return NULL;
+    }
+    Py_INCREF((PyObject *)array_obj);
+    return array_obj;
 }
 
 static inline int PyArray_FailUnlessWriteable(PyArrayObject *array_obj, const char *who) {
