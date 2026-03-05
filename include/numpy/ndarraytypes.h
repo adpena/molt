@@ -131,6 +131,11 @@ typedef struct PyArrayMultiIterObject {
     int numiter;
 } PyArrayMultiIterObject;
 
+typedef struct PyArrayMapIterObject {
+    _MOLT_NUMPY_OBJECT_HEAD;
+    int _molt_reserved;
+} PyArrayMapIterObject;
+
 typedef struct PyArray_DTypeMeta {
     _MOLT_NUMPY_OBJECT_HEAD;
     PyArray_Descr *singleton;
@@ -253,6 +258,7 @@ typedef enum {
 } NPY_COPYMODE;
 
 typedef void (PyArray_CopySwapFunc)(void *, void *, int, void *);
+typedef PyObject *(PyArray_GetItemFunc)(void *, void *);
 typedef void (PyArray_CopySwapNFunc)(
     void *,
     npy_intp,
