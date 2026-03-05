@@ -61,7 +61,7 @@ def build_runtime_config(workflow: WorkflowDefinition) -> RuntimeConfig:
 
     workspace_root = _coerce_path(
         workspace_raw.get("root"),
-        str(Path(tempfile.gettempdir()) / "symphony_workspaces"),
+        _default_workspace_root(),
     )
     workspace = WorkspaceConfig(root=workspace_root)
 
@@ -283,6 +283,29 @@ def _coerce_path(value: Any, default: str) -> Path:
         # Preserve bare relative roots exactly as provided (spec-compatible).
         return path
     return path.resolve()
+
+
+def _default_workspace_root() -> str:
+    # Prefer explicit overrides and the external root to avoid local-disk churn.
+    explicit = _resolve_env_token(
+        os.environ.get("MOLT_SYMPHONY_WORKSPACE_ROOT")
+    ) or _resolve_env_token(os.environ.get("MOLT_WORKSPACE_ROOT"))
+    if explicit:
+        return explicit
+
+    ext_root = _resolve_env_token(os.environ.get("MOLT_EXT_ROOT"))
+    if ext_root:
+        return str(Path(ext_root).expanduser() / "symphony_workspaces")
+
+    # Fall back to TMPDIR or system temp when available.
+    env_tmp = _resolve_env_token(os.environ.get("TMPDIR"))
+    if env_tmp:
+        return str(Path(env_tmp).expanduser() / "symphony_workspaces")
+    try:
+        return str(Path(tempfile.gettempdir()) / "symphony_workspaces")
+    except (FileNotFoundError, OSError):
+        # Last-resort deterministic fallback for constrained environments.
+        return "/tmp/symphony_workspaces"
 
 
 def _coerce_optional_port(value: Any) -> int | None:

@@ -114,6 +114,26 @@ def test_snapshot_state_uses_identifier_index_for_attention() -> None:
     assert attention[0]["issue_identifier"] == "MOL-7"
 
 
+def test_snapshot_state_retry_rows_handle_orphaned_claims_without_crashing() -> None:
+    orchestrator = _orchestrator_stub()
+    issue = _issue()
+    with orchestrator._state_lock:
+        orchestrator._state.claimed.add(issue.id)
+        orchestrator._state.retry_attempts[issue.id] = RetryEntry(
+            issue_id=issue.id,
+            identifier=issue.identifier,
+            attempt=3,
+            due_at_monotonic=0.0,
+            error="hook_failed",
+        )
+
+    snapshot = orchestrator.snapshot_state()
+    assert snapshot["retrying"]
+    retry_row = snapshot["retrying"][0]
+    assert retry_row["issue_identifier"] == issue.identifier
+    assert retry_row["title"] is None
+
+
 def test_snapshot_issue_returns_blocked_for_orphaned_issue() -> None:
     orchestrator = _orchestrator_stub()
     issue_id = "d0bc450d-8b47-47b5-ad51-839222bf5d9a"
