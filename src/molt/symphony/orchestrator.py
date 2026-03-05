@@ -848,6 +848,7 @@ class SymphonyOrchestrator:
                     {
                         "issue_id": issue_id,
                         "issue_identifier": entry.issue_identifier,
+                        "title": entry.issue.title,
                         "state": entry.issue.state,
                         "worker_role": entry.worker_role,
                         "worker_name": entry.worker_name,
@@ -920,10 +921,13 @@ class SymphonyOrchestrator:
             for entry in self._state.retry_attempts.values():
                 due_seconds = max(entry.due_at_monotonic - now_mono, 0.0)
                 due_at = now + timedelta(seconds=due_seconds)
+                title = None
+
                 retry_rows.append(
                     {
                         "issue_id": entry.issue_id,
                         "issue_identifier": entry.identifier,
+                        "title": title,
                         "attempt": entry.attempt,
                         "due_at": due_at.isoformat().replace("+00:00", "Z"),
                         "due_in_seconds": round(due_seconds, 3),
@@ -944,6 +948,7 @@ class SymphonyOrchestrator:
                         {
                             "issue_id": row["issue_id"],
                             "issue_identifier": row["issue_identifier"],
+                            "title": row.get("title"),
                             "kind": "retry_error",
                             "message": str(row["error"]),
                             "suggested_action": "Inspect issue logs and decide whether to unblock, edit issue scope, or retry with workflow changes.",
@@ -956,10 +961,13 @@ class SymphonyOrchestrator:
                     or self._state.issue_identifiers.get(issue_id)
                     or issue_id
                 )
+                title = None
+
                 attention.append(
                     {
                         "issue_id": issue_id,
                         "issue_identifier": identifier,
+                        "title": title,
                         "kind": "last_error",
                         "message": error,
                         "suggested_action": "Review failure context and provide human guidance if the agent is blocked.",
@@ -1051,6 +1059,33 @@ class SymphonyOrchestrator:
                     ),
                 },
             }
+
+    def snapshot_durable_memory(self, limit: int = 120) -> dict[str, Any]:
+        store = self._durable_memory
+        if store is None:
+            ext_root = Path(
+                os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt")
+            ).expanduser()
+            durable_root = Path(
+                os.environ.get(
+                    "MOLT_SYMPHONY_DURABLE_ROOT",
+                    str(ext_root / "logs" / "symphony" / "durable_memory"),
+                )
+            ).expanduser()
+            return {
+                "enabled": False,
+                "root": str(durable_root),
+                "reason": "durable_memory_disabled",
+                "recent_events": [],
+                "files": {
+                    "jsonl": {"exists": False, "size_bytes": 0, "modified_at": None},
+                    "duckdb": {"exists": False, "size_bytes": 0, "modified_at": None},
+                    "parquet": {"exists": False, "size_bytes": 0, "modified_at": None},
+                },
+            }
+        payload = store.summary(limit=max(limit, 10))
+        payload["generated_at"] = now_utc().isoformat().replace("+00:00", "Z")
+        return payload
 
     def snapshot_issue(self, issue_identifier: str) -> dict[str, Any] | None:
         identifier_norm = issue_identifier.strip()
