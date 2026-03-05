@@ -22,6 +22,13 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   missing-artifact detection, and principle-coverage checks.
 - Implemented: strict-autonomy mode now treats low harness score
   (`harness_score_below_target`) as a promoted fail condition for unattended runs.
+- Implemented: DSPy routing readiness is now explicitly audited
+  (`sections.dspy_routing`) with concrete reasons when DSPy is enabled but not
+  fully configured (module/model/api-key coverage).
+- Implemented: Symphony bootstrap/runtime env defaults now include DSPy routing
+  keys (`MOLT_SYMPHONY_DSPY_ENABLE`, `MOLT_SYMPHONY_DSPY_MODEL`,
+  `MOLT_SYMPHONY_DSPY_API_KEY_ENV`) and docs now run `linear_hygiene` via
+  `uv run --group dev` to guarantee optional routing deps are available.
 
 ## Rust-First Stdlib Lowering Sprint (2026-03-01)
 - Completed (2026-03-03): wasm dynamic-parse lanes are now explicitly capability-broken
