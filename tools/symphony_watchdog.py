@@ -140,6 +140,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--state-url", default="http://127.0.0.1:8089/api/v1/state")
     parser.add_argument("--state-timeout-ms", type=int, default=600)
     parser.add_argument(
+        "--defer-log-interval-ms",
+        type=int,
+        default=12000,
+        help="Minimum interval for repeated deferred-restart logs while busy.",
+    )
+    parser.add_argument(
         "--restart-when-idle",
         action="store_true",
         default=True,
@@ -168,10 +174,13 @@ def main(argv: list[str] | None = None) -> int:
     interval_s = max(int(args.interval_ms), 250) / 1000.0
     quiet_s = max(int(args.quiet_ms), 250) / 1000.0
     cooldown_s = max(int(args.cooldown_ms), 250) / 1000.0
+    defer_log_interval_s = max(int(args.defer_log_interval_ms), 500) / 1000.0
 
     previous = _fingerprint(repo_root, patterns)
     pending_change_at: float | None = None
     last_restart_at = 0.0
+    last_defer_log_at = 0.0
+    last_defer_reason = ""
     _log(
         "INFO",
         "watchdog_started",
@@ -180,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
         interval_ms=int(interval_s * 1000),
         quiet_ms=int(quiet_s * 1000),
         cooldown_ms=int(cooldown_s * 1000),
+        defer_log_interval_ms=int(defer_log_interval_s * 1000),
         target=_launchd_target(args.service_label),
     )
     state_timeout_s = max(int(args.state_timeout_ms), 100) / 1000.0
@@ -203,24 +213,38 @@ def main(argv: list[str] | None = None) -> int:
         if bool(args.restart_when_idle):
             busy, detail = _service_is_busy(args.state_url, state_timeout_s)
             if busy is True:
-                _log(
-                    "INFO",
-                    "watchdog_restart_deferred_busy",
-                    detail=detail,
-                    state_url=args.state_url,
-                )
+                reason = f"busy:{detail}"
+                if (reason != last_defer_reason) or (
+                    now - last_defer_log_at >= defer_log_interval_s
+                ):
+                    _log(
+                        "INFO",
+                        "watchdog_restart_deferred_busy",
+                        detail=detail,
+                        state_url=args.state_url,
+                    )
+                    last_defer_log_at = now
+                    last_defer_reason = reason
                 continue
             if busy is None:
-                _log(
-                    "WARNING",
-                    "watchdog_state_probe_failed",
-                    detail=detail,
-                    state_url=args.state_url,
-                )
+                reason = f"state_unavailable:{detail}"
+                if (reason != last_defer_reason) or (
+                    now - last_defer_log_at >= defer_log_interval_s
+                ):
+                    _log(
+                        "WARNING",
+                        "watchdog_state_probe_failed",
+                        detail=detail,
+                        state_url=args.state_url,
+                    )
+                    last_defer_log_at = now
+                    last_defer_reason = reason
+                continue
 
         _restart_service(args.service_label)
         last_restart_at = now
         pending_change_at = None
+        last_defer_reason = ""
 
 
 if __name__ == "__main__":

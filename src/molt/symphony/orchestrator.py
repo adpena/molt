@@ -928,6 +928,9 @@ class SymphonyOrchestrator:
                 due_seconds = max(entry.due_at_monotonic - now_mono, 0.0)
                 due_at = now + timedelta(seconds=due_seconds)
                 title = None
+                running_entry = self._state.running.get(entry.issue_id)
+                if running_entry is not None:
+                    title = running_entry.issue.title
 
                 retry_rows.append(
                     {
@@ -968,6 +971,9 @@ class SymphonyOrchestrator:
                     or issue_id
                 )
                 title = None
+                running_entry = self._state.running.get(issue_id)
+                if running_entry is not None:
+                    title = running_entry.issue.title
 
                 attention.append(
                     {
@@ -2496,15 +2502,15 @@ class SymphonyOrchestrator:
         }
 
     def _agent_native_telemetry_payload(self, state: dict[str, Any]) -> dict[str, Any]:
-        counts = state.get("counts") if isinstance(state.get("counts"), dict) else {}
-        totals = (
-            state.get("codex_totals")
-            if isinstance(state.get("codex_totals"), dict)
-            else {}
-        )
-        runtime = state.get("runtime") if isinstance(state.get("runtime"), dict) else {}
-        suspension = (
-            state.get("suspension") if isinstance(state.get("suspension"), dict) else {}
+        counts_raw = state.get("counts")
+        counts: dict[str, Any] = counts_raw if isinstance(counts_raw, dict) else {}
+        totals_raw = state.get("codex_totals")
+        totals: dict[str, Any] = totals_raw if isinstance(totals_raw, dict) else {}
+        runtime_raw = state.get("runtime")
+        runtime: dict[str, Any] = runtime_raw if isinstance(runtime_raw, dict) else {}
+        suspension_raw = state.get("suspension")
+        suspension: dict[str, Any] = (
+            suspension_raw if isinstance(suspension_raw, dict) else {}
         )
         return {
             "generated_at": state.get("generated_at"),

@@ -128,6 +128,7 @@ def test_symphony_launchd_watchdog_program_includes_timing(tmp_path: Path) -> No
         cooldown_ms=5000,
         state_url="http://127.0.0.1:8089/api/v1/state",
         state_timeout_ms=600,
+        defer_log_interval_ms=12000,
         restart_when_idle=True,
     )
     assert args == [
@@ -147,6 +148,8 @@ def test_symphony_launchd_watchdog_program_includes_timing(tmp_path: Path) -> No
         "http://127.0.0.1:8089/api/v1/state",
         "--state-timeout-ms",
         "600",
+        "--defer-log-interval-ms",
+        "12000",
         "--restart-when-idle",
     ]
 

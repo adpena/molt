@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
+import shlex
 import shutil
 import statistics
 import subprocess
@@ -91,6 +94,26 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=250,
         help="Delay between /api/v1/state benchmark samples.",
+    )
+    parser.add_argument(
+        "--hash-bench-iterations",
+        type=int,
+        default=0,
+        help="Optional number of state-hash micro-benchmark iterations (0 disables).",
+    )
+    parser.add_argument(
+        "--hash-bench-bytes",
+        type=int,
+        default=65536,
+        help="Payload size in bytes for state-hash benchmark.",
+    )
+    parser.add_argument(
+        "--hash-helper-cmd",
+        default="",
+        help=(
+            "Optional helper command for hash benchmark (e.g. "
+            "'/path/to/symphony_state_hasher_bin')."
+        ),
     )
     return parser
 
@@ -308,6 +331,93 @@ def _summarize_dashboard_state_samples(
     }
 
 
+def _bench_python_hash(*, payload: bytes, iterations: int) -> dict[str, Any]:
+    started = time.perf_counter()
+    for _ in range(max(iterations, 1)):
+        _ = hashlib.blake2s(payload, digest_size=8).hexdigest()
+    elapsed = max(time.perf_counter() - started, 1e-9)
+    bytes_total = len(payload) * max(iterations, 1)
+    return {
+        "mode": "python_blake2s",
+        "iterations": max(iterations, 1),
+        "payload_bytes": len(payload),
+        "elapsed_s": round(elapsed, 6),
+        "hashes_per_second": round(max(iterations, 1) / elapsed, 2),
+        "throughput_mb_s": round((bytes_total / elapsed) / (1024 * 1024), 2),
+    }
+
+
+def _bench_helper_hash(
+    *, payload: bytes, iterations: int, helper_cmd: str
+) -> dict[str, Any]:
+    command = shlex.split(helper_cmd.strip())
+    if not command:
+        return {"mode": "helper", "error": "empty_helper_command"}
+    if "--stdio" not in command:
+        command.append("--stdio")
+    payload_b64 = base64.b64encode(payload).decode("ascii")
+    try:
+        proc = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+        )
+    except OSError as exc:
+        return {"mode": "helper", "error": "spawn_failed", "message": str(exc)}
+
+    started = time.perf_counter()
+    error: str | None = None
+    try:
+        if proc.stdin is None or proc.stdout is None:
+            error = "pipe_unavailable"
+        else:
+            for _ in range(max(iterations, 1)):
+                proc.stdin.write(payload_b64 + "\n")
+                proc.stdin.flush()
+                line = proc.stdout.readline()
+                etag = line.strip()
+                if not (etag.startswith('W/"') and etag.endswith('"')):
+                    error = "invalid_helper_output"
+                    break
+    except OSError as exc:
+        error = f"io_error:{exc}"
+    elapsed = max(time.perf_counter() - started, 1e-9)
+    try:
+        if proc.stdin is not None:
+            proc.stdin.close()
+    except OSError:
+        pass
+    try:
+        proc.terminate()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=0.5)
+    except (subprocess.TimeoutExpired, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+    bytes_total = len(payload) * max(iterations, 1)
+    report: dict[str, Any] = {
+        "mode": "helper_stdio",
+        "iterations": max(iterations, 1),
+        "payload_bytes": len(payload),
+        "elapsed_s": round(elapsed, 6),
+        "hashes_per_second": round(max(iterations, 1) / elapsed, 2),
+        "throughput_mb_s": round((bytes_total / elapsed) / (1024 * 1024), 2),
+        "command": command,
+    }
+    if error is not None:
+        report["error"] = error
+    return report
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     modes = _parse_modes(args.modes)
@@ -361,6 +471,27 @@ def main(argv: list[str] | None = None) -> int:
             f"avg_latency_ms={dashboard_report['avg_latency_ms']}"
         )
 
+    hash_bench: dict[str, Any] | None = None
+    if int(args.hash_bench_iterations) > 0:
+        payload_size = max(int(args.hash_bench_bytes), 256)
+        payload = bytes((idx * 17) % 251 for idx in range(payload_size))
+        python_hash = _bench_python_hash(
+            payload=payload, iterations=max(int(args.hash_bench_iterations), 1)
+        )
+        helper_hash: dict[str, Any] | None = None
+        if str(args.hash_helper_cmd or "").strip():
+            helper_hash = _bench_helper_hash(
+                payload=payload,
+                iterations=max(int(args.hash_bench_iterations), 1),
+                helper_cmd=str(args.hash_helper_cmd),
+            )
+        hash_bench = {"python": python_hash, "helper": helper_hash}
+        print(
+            "hash_bench "
+            f"python_hps={python_hash['hashes_per_second']} "
+            f"helper_hps={(helper_hash or {}).get('hashes_per_second')}"
+        )
+
     output_path: Path | None = None
     if args.output_json:
         output_path = Path(args.output_json).expanduser()
@@ -380,6 +511,7 @@ def main(argv: list[str] | None = None) -> int:
                     "iterations": int(args.iterations),
                     "summary": summary,
                     "dashboard_state_api": dashboard_report,
+                    "hash_bench": hash_bench,
                     "samples": [
                         {
                             "mode": s.mode,
