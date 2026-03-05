@@ -169,6 +169,11 @@ def test_run_audit_uses_linear_api_key_from_env_file(
         "_audit_lin_cli_compat",
         lambda _env_file: {"status": "pass", "lin_installed": True},
     )
+    monkeypatch.setattr(
+        readiness_audit,
+        "_audit_formal_suite",
+        lambda _repo_root, _mode: {"status": "pass", "mode": _mode},
+    )
 
     report = readiness_audit.run_audit(
         repo_root=tmp_path,
@@ -181,3 +186,38 @@ def test_run_audit_uses_linear_api_key_from_env_file(
     )
     linear_section = report["sections"]["linear_workspace"]
     assert linear_section["env_seen"] == "file-token"
+
+
+def test_collect_findings_marks_formal_toolchain_mismatch_warn() -> None:
+    report = {
+        "sections": {
+            "environment": {
+                "ext_root_mounted": True,
+                "missing_env_keys": [],
+                "has_linear_api_key": True,
+            },
+            "docs_and_tools": {"missing_docs": [], "missing_tools": [], "has_human_authority_gate": True},
+            "launchd": {"main_loaded": True, "watchdog_loaded": True},
+            "durable_memory": {
+                "checks": {
+                    "jsonl_readable": {"ok": True},
+                    "duckdb_readable": {"ok": True},
+                }
+            },
+            "manifest_index": {"missing_manifest_files": [], "malformed_titles": [], "metadata_gaps": []},
+            "linear_workspace": {
+                "status": "pass",
+                "missing_project": [],
+                "seeded_missing_metadata": [],
+                "malformed_titles": [],
+                "active_execution_flow": True,
+                "label_count": 10,
+            },
+            "linear_cli_compat": {"status": "pass", "lin_installed": True},
+            "formal_suite": {"status": "warn", "mode": "all", "reason": "toolchain_mismatch", "returncode": 1},
+        }
+    }
+    findings = readiness_audit._collect_findings(report)
+    codes = {row["code"]: row for row in findings}
+    assert "formal_suite_toolchain_mismatch" in codes
+    assert codes["formal_suite_toolchain_mismatch"]["severity"] == "warn"

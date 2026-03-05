@@ -202,16 +202,28 @@ This emits:
 The audit checks Linear hygiene, manifest quality, launchd/watchdog wiring,
 durable memory readability, and required docs/tooling coverage.
 
-For hard autonomy gating:
+For hard autonomy gating (includes formal-suite inventory by default):
 
 ```bash
 PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --team Moltlang --strict-autonomy --fail-on warn
 ```
 
+For full formalization signal in readiness:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --team Moltlang --strict-autonomy --fail-on warn --formal-suite all
+```
+
 To repair manifests/issues + bootstrap labels/routing in one pass:
 
 ```bash
-PYTHONPATH=src uv run --python 3.12 python3 tools/linear_hygiene.py full-pass --team Moltlang --apply --run-formal-inventory
+PYTHONPATH=src uv run --python 3.12 python3 tools/linear_hygiene.py full-pass --team Moltlang --apply --formal-suite all
+```
+
+If Quint fails due Node/Quint runtime mismatch (Node `>=25`), configure fallback:
+
+```bash
+export MOLT_QUINT_NODE_FALLBACK='npx -y node@22'
 ```
 
 ## 10. Human operating loop (required)
