@@ -10,6 +10,7 @@ import hashlib
 import http.client
 import io
 import tempfile
+import tarfile
 import json
 import os
 import platform
@@ -119,6 +120,18 @@ _PY_C_API_TOKEN_RE = re.compile(r"\bPy[A-Za-z_][A-Za-z0-9_]*\b")
 _C_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", flags=re.DOTALL)
 _C_LINE_COMMENT_RE = re.compile(r"//.*?$", flags=re.MULTILINE)
 _C_STRING_LITERAL_RE = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
+_EXTENSION_SCAN_SUFFIXES = {
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".inc",
+    ".inl",
+}
 _SUPPORTED_PKG_ABI_MAJOR = 0
 _SUPPORTED_PKG_ABI_MINOR = 1
 _SUPPORTED_PKG_ABI = f"{_SUPPORTED_PKG_ABI_MAJOR}.{_SUPPORTED_PKG_ABI_MINOR}"
@@ -186,6 +199,12 @@ class ExtensionManifestValidation:
     abi_tag: str | None
     capabilities: list[str]
     wheel_tags: tuple[str, str, str] | None
+
+
+@dataclass(frozen=True)
+class ExtensionScanSourceUnit:
+    label: str
+    text: str
 
 
 def _emit_json(payload: dict[str, Any], json_output: bool) -> None:
@@ -11825,10 +11844,167 @@ def _load_supported_py_c_api_surface(
     return supported_tokens, header_path, None
 
 
+def _is_extension_scan_c_like_path(path: Path) -> bool:
+    return path.suffix.lower() in _EXTENSION_SCAN_SUFFIXES
+
+
+def _is_extension_scan_c_like_name(name: str) -> bool:
+    return Path(name).suffix.lower() in _EXTENSION_SCAN_SUFFIXES
+
+
+def _is_extension_scan_archive(path: Path) -> bool:
+    lower_name = path.name.lower()
+    return lower_name.endswith(
+        (".zip", ".whl", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz")
+    )
+
+
+def _decode_extension_scan_text(
+    raw: bytes,
+    label: str,
+    warnings: list[str],
+) -> str:
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        warnings.append(
+            f"Source {label} contained non-UTF-8 bytes; invalid bytes were replaced."
+        )
+        return raw.decode("utf-8", errors="replace")
+
+
+def _collect_extension_scan_units_from_file(
+    path: Path,
+    warnings: list[str],
+    errors: list[str],
+) -> list[ExtensionScanSourceUnit]:
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        errors.append(f"failed to read source file {path}: {exc}")
+        return []
+    return [
+        ExtensionScanSourceUnit(
+            label=str(path),
+            text=_decode_extension_scan_text(raw, str(path), warnings),
+        )
+    ]
+
+
+def _collect_extension_scan_units_from_directory(
+    path: Path,
+    warnings: list[str],
+    errors: list[str],
+) -> list[ExtensionScanSourceUnit]:
+    candidates = sorted(
+        candidate
+        for candidate in path.rglob("*")
+        if candidate.is_file() and _is_extension_scan_c_like_path(candidate)
+    )
+    if not candidates:
+        errors.append(
+            f"source directory has no C/C++ files with known suffixes: {path}"
+        )
+        return []
+    units: list[ExtensionScanSourceUnit] = []
+    for candidate in candidates:
+        units.extend(
+            _collect_extension_scan_units_from_file(candidate, warnings, errors)
+        )
+    return units
+
+
+def _collect_extension_scan_units_from_zip_archive(
+    path: Path,
+    warnings: list[str],
+    errors: list[str],
+) -> list[ExtensionScanSourceUnit]:
+    try:
+        with zipfile.ZipFile(path) as zf:
+            member_names = sorted(
+                name
+                for name in zf.namelist()
+                if _is_extension_scan_c_like_name(name)
+            )
+            if not member_names:
+                errors.append(
+                    f"archive has no C/C++ files with known suffixes: {path}"
+                )
+                return []
+            units: list[ExtensionScanSourceUnit] = []
+            for member_name in member_names:
+                raw = zf.read(member_name)
+                label = f"{path}!{member_name}"
+                units.append(
+                    ExtensionScanSourceUnit(
+                        label=label,
+                        text=_decode_extension_scan_text(raw, label, warnings),
+                    )
+                )
+            return units
+    except (OSError, zipfile.BadZipFile) as exc:
+        errors.append(f"failed to read archive {path}: {exc}")
+        return []
+
+
+def _collect_extension_scan_units_from_tar_archive(
+    path: Path,
+    warnings: list[str],
+    errors: list[str],
+) -> list[ExtensionScanSourceUnit]:
+    try:
+        with tarfile.open(path, mode="r:*") as tf:
+            members = sorted(
+                (
+                    member
+                    for member in tf.getmembers()
+                    if member.isfile() and _is_extension_scan_c_like_name(member.name)
+                ),
+                key=lambda member: member.name,
+            )
+            if not members:
+                errors.append(
+                    f"archive has no C/C++ files with known suffixes: {path}"
+                )
+                return []
+            units: list[ExtensionScanSourceUnit] = []
+            for member in members:
+                extracted = tf.extractfile(member)
+                if extracted is None:
+                    errors.append(
+                        f"failed to read archive member {member.name!r} from {path}"
+                    )
+                    continue
+                raw = extracted.read()
+                label = f"{path}!{member.name}"
+                units.append(
+                    ExtensionScanSourceUnit(
+                        label=label,
+                        text=_decode_extension_scan_text(raw, label, warnings),
+                    )
+                )
+            return units
+    except (OSError, tarfile.TarError) as exc:
+        errors.append(f"failed to read archive {path}: {exc}")
+        return []
+
+
+def _collect_extension_scan_units_from_archive(
+    path: Path,
+    warnings: list[str],
+    errors: list[str],
+) -> list[ExtensionScanSourceUnit]:
+    lower_name = path.name.lower()
+    if lower_name.endswith((".zip", ".whl")):
+        return _collect_extension_scan_units_from_zip_archive(path, warnings, errors)
+    return _collect_extension_scan_units_from_tar_archive(path, warnings, errors)
+
+
 def _resolve_extension_scan_sources(
     project_root: Path, explicit_sources: list[str] | None
-) -> tuple[list[Path], list[str]]:
+) -> tuple[list[ExtensionScanSourceUnit], list[str], list[str]]:
     errors: list[str] = []
+    warnings: list[str] = []
     source_entries: list[str] = []
     if explicit_sources:
         source_entries = [
@@ -11852,16 +12028,44 @@ def _resolve_extension_scan_sources(
                 errors.append(
                     "tool.molt.extension.sources must include at least one source"
                 )
-    source_paths: list[Path] = []
+
+    scan_units: list[ExtensionScanSourceUnit] = []
     for entry in source_entries:
         source_path = Path(entry).expanduser()
         if not source_path.is_absolute():
             source_path = (project_root / source_path).absolute()
-        if not source_path.exists() or not source_path.is_file():
-            errors.append(f"source file not found: {source_path}")
+        if not source_path.exists():
+            errors.append(f"source path not found: {source_path}")
             continue
-        source_paths.append(source_path)
-    return source_paths, errors
+        if source_path.is_dir():
+            scan_units.extend(
+                _collect_extension_scan_units_from_directory(
+                    source_path, warnings, errors
+                )
+            )
+            continue
+        if source_path.is_file() and _is_extension_scan_archive(source_path):
+            scan_units.extend(
+                _collect_extension_scan_units_from_archive(source_path, warnings, errors)
+            )
+            continue
+        if source_path.is_file():
+            scan_units.extend(
+                _collect_extension_scan_units_from_file(source_path, warnings, errors)
+            )
+            continue
+        errors.append(f"unsupported source path type: {source_path}")
+
+    deduped_units: list[ExtensionScanSourceUnit] = []
+    seen_labels: set[str] = set()
+    for unit in scan_units:
+        if unit.label in seen_labels:
+            continue
+        seen_labels.add(unit.label)
+        deduped_units.append(unit)
+    if not deduped_units and not errors:
+        errors.append("no source files resolved for extension scan")
+    return deduped_units, errors, warnings
 
 
 def extension_scan(
@@ -11881,7 +12085,9 @@ def extension_scan(
             command="extension-scan",
         )
 
-    source_paths, errors = _resolve_extension_scan_sources(project_root, sources)
+    source_units, errors, source_warnings = _resolve_extension_scan_sources(
+        project_root, sources
+    )
     if errors:
         return _fail(
             "Extension scan configuration errors: " + "; ".join(errors),
@@ -11908,23 +12114,23 @@ def extension_scan(
     required_by_file: dict[str, list[str]] = {}
     missing_by_file: dict[str, list[str]] = {}
     required_symbols: set[str] = set()
-    for source_path in source_paths:
-        try:
-            source_text = source_path.read_text()
-        except OSError as exc:
-            return _fail(
-                f"Failed to read source file {source_path}: {exc}",
-                json_output,
-                command="extension-scan",
-            )
+    missing_symbol_frequency: dict[str, int] = {}
+    chars_scanned = 0
+    for source_unit in source_units:
+        source_text = source_unit.text
+        chars_scanned += len(source_text)
         file_required = sorted(_extract_py_c_api_tokens(source_text))
-        required_by_file[str(source_path)] = file_required
+        required_by_file[source_unit.label] = file_required
         required_symbols.update(file_required)
         file_missing = sorted(
             symbol for symbol in file_required if symbol not in supported_surface
         )
         if file_missing:
-            missing_by_file[str(source_path)] = file_missing
+            missing_by_file[source_unit.label] = file_missing
+            for symbol in file_missing:
+                missing_symbol_frequency[symbol] = (
+                    missing_symbol_frequency.get(symbol, 0) + 1
+                )
 
     required_sorted = sorted(required_symbols)
     missing_sorted = sorted(
@@ -11933,7 +12139,7 @@ def extension_scan(
     supported_used_sorted = sorted(
         symbol for symbol in required_sorted if symbol in supported_surface
     )
-    warnings: list[str] = []
+    warnings = list(source_warnings)
     if missing_sorted and not fail_on_missing:
         warnings.append(
             "Unsupported Py* C-API symbols detected (run with --fail-on-missing to gate)."
@@ -11941,6 +12147,16 @@ def extension_scan(
     status = "ok"
     if fail_on_missing and missing_sorted:
         status = "error"
+    coverage_ratio = (
+        (len(supported_used_sorted) / len(required_sorted)) if required_sorted else 1.0
+    )
+    top_missing_symbols = [
+        {"symbol": symbol, "file_count": missing_symbol_frequency.get(symbol, 0)}
+        for symbol in sorted(
+            missing_sorted,
+            key=lambda symbol: (-missing_symbol_frequency.get(symbol, 0), symbol),
+        )
+    ]
 
     if json_output:
         payload = _json_payload(
@@ -11949,13 +12165,17 @@ def extension_scan(
             data={
                 "project": str(project_root),
                 "header": str(header_path),
-                "source_count": len(source_paths),
+                "source_count": len(source_units),
+                "chars_scanned": chars_scanned,
                 "required_symbol_count": len(required_sorted),
                 "supported_symbol_count": len(supported_used_sorted),
                 "missing_symbol_count": len(missing_sorted),
+                "coverage_ratio": coverage_ratio,
                 "required_symbols": required_sorted,
                 "supported_symbols": supported_used_sorted,
                 "missing_symbols": missing_sorted,
+                "missing_symbol_frequency": missing_symbol_frequency,
+                "top_missing_symbols": top_missing_symbols,
                 "required_by_file": required_by_file,
                 "missing_by_file": missing_by_file,
                 "fail_on_missing": fail_on_missing,
@@ -11966,14 +12186,24 @@ def extension_scan(
         _emit_json(payload, json_output=True)
     else:
         print(f"Extension C-API scan header: {header_path}")
-        print(f"Scanned source files: {len(source_paths)}")
+        print(f"Scanned source files: {len(source_units)}")
+        print(f"Scanned source characters: {chars_scanned}")
         print(f"Required Py* symbols: {len(required_sorted)}")
         print(f"Supported Py* symbols used: {len(supported_used_sorted)}")
         print(f"Missing Py* symbols: {len(missing_sorted)}")
+        print(f"Coverage ratio: {coverage_ratio:.3f}")
         if missing_sorted:
-            limit = len(missing_sorted) if verbose else min(30, len(missing_sorted))
-            for symbol in missing_sorted[:limit]:
-                print(f"MISSING: {symbol}")
+            ranked_missing = sorted(
+                missing_sorted,
+                key=lambda symbol: (-missing_symbol_frequency.get(symbol, 0), symbol),
+            )
+            limit = len(ranked_missing) if verbose else min(30, len(ranked_missing))
+            for symbol in ranked_missing[:limit]:
+                usage_count = missing_symbol_frequency.get(symbol, 0)
+                if usage_count > 1:
+                    print(f"MISSING [{usage_count} files]: {symbol}")
+                else:
+                    print(f"MISSING: {symbol}")
             if limit < len(missing_sorted):
                 print(f"... {len(missing_sorted) - limit} additional symbols omitted")
         if verbose and missing_by_file:
@@ -15240,8 +15470,9 @@ def main() -> int:
         "--source",
         action="append",
         help=(
-            "Source path to scan (repeatable). If omitted, uses "
-            "tool.molt.extension.sources from pyproject.toml."
+            "Source path to scan (repeatable). Accepts files, directories "
+            "(recursive C/C++ scan), and source archives (.tar*, .zip, .whl). "
+            "If omitted, uses tool.molt.extension.sources from pyproject.toml."
         ),
     )
     extension_scan_parser.add_argument(
