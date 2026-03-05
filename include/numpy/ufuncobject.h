@@ -7,6 +7,13 @@
 extern "C" {
 #endif
 
+typedef void (*PyUFuncGenericFunction)(
+    char **args,
+    const npy_intp *dimensions,
+    const npy_intp *strides,
+    void *innerloopdata
+);
+
 #define PyUFunc_Check(op) PyObject_TypeCheck((PyObject *)(op), &PyArray_Type)
 
 static inline int PyUFunc_GiveFloatingpointErrors(const char *name, int fpe_errors) {
