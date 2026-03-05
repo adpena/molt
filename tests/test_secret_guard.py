@@ -19,7 +19,7 @@ index 1111111..2222222 100644
 
 
 def test_scan_diff_detects_linear_api_key() -> None:
-    token = "lin_api_" + "GQHZxAFeCj9ZfBCeYAZzGBxn3YM6kliCLx6HuGwA"
+    token = "lin_api_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCD"
     diff = """diff --git a/ops/linear/runtime/symphony.env b/ops/linear/runtime/symphony.env
 index 1111111..2222222 100644
 --- a/ops/linear/runtime/symphony.env
@@ -55,3 +55,14 @@ index 1111111..2222222 100644
 """.format(key_header=key_header)
     findings = secret_guard.scan_diff_text(diff)
     assert any(item.reason == "Private key material" for item in findings)
+
+
+def test_scan_diff_skips_allowlisted_vendor_prefix() -> None:
+    diff = """diff --git a/vendor/rustpython-parser/src/python.lalrpop b/vendor/rustpython-parser/src/python.lalrpop
+index 1111111..2222222 100644
+--- a/vendor/rustpython-parser/src/python.lalrpop
++++ b/vendor/rustpython-parser/src/python.lalrpop
+@@ -1,0 +1,1 @@
++StartInteractive => token::Tok::StartInteractive, # secret-guard: allow
+"""
+    assert secret_guard.scan_diff_text(diff) == []
