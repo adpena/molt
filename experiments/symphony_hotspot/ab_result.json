@@ -1,0 +1,55 @@
+{
+  "experiment": "symphony_hotspot_normalize_issue",
+  "date": "2026-03-05T07:45:00Z",
+  "description": "A/B test: CPython 3.12 vs Molt-compiled symphony hotspot _normalize_issue",
+  "methodology": "Internal timing via time.perf_counter_ns(), excludes startup/shutdown",
+  "kernels": {
+    "arith_kernel": {
+      "description": "Pure integer arithmetic loop (10M iterations)",
+      "cpython_ns_per_iter": 68,
+      "molt_dev_ns_per_iter": 2402,
+      "molt_release_ns_per_iter": 774,
+      "ratio_dev": 35.3,
+      "ratio_release": 11.4
+    },
+    "strip_kernel": {
+      "description": "string.strip().lower() in tight loop (1M iterations)",
+      "cpython_ns_per_call": 59,
+      "molt_dev_ns_per_call": 2305,
+      "molt_release_ns_per_call": 1491,
+      "ratio_dev": 39.1,
+      "ratio_release": 25.3
+    },
+    "normalize_stripped": {
+      "description": "Full normalize_issue logic without dataclasses (50K iterations)",
+      "cpython_us_per_call": 1.17,
+      "molt_dev_us_per_call": 144.44,
+      "molt_release_us_per_call": 52.37,
+      "ratio_dev": 123.5,
+      "ratio_release": 44.8
+    },
+    "normalize_issue_full": {
+      "description": "Full normalize_issue with frozen dataclasses (50K iterations)",
+      "cpython_us_per_call": 3.49,
+      "molt_dev_us_per_call": 1390.28,
+      "molt_release_us_per_call": "not_tested",
+      "ratio_dev": 398.4,
+      "note": "Dataclass construction adds ~10x overhead on top of string ops"
+    }
+  },
+  "findings": {
+    "baseline_overhead": "Even pure arithmetic shows 11.4x regression on release profile, suggesting per-operation dispatch overhead in the runtime loop",
+    "string_ops": "String.strip()+lower() adds marginal overhead vs arithmetic (25x vs 11x), string intrinsics are working but not at parity",
+    "dict_and_list": "Dict lookups + list.append + list.sort in normalize_stripped compound to 45x, suggesting collection operations are a major contributor",
+    "dataclasses": "Frozen dataclass construction adds ~10x on top of everything else (398x vs 45x), likely going through slow call_bind path",
+    "dev_vs_release": "Release profile is 2-3x faster than dev across all kernels, consistent with opt-level and LTO differences"
+  },
+  "actionable_items": [
+    "P0: Investigate per-operation dispatch overhead causing 11x baseline regression on arithmetic",
+    "P1: Optimize frozen dataclass construction path — bypass call_bind for known frozen fields",
+    "P1: Dict 'not in' check and list.sort() specialization for string-keyed small dicts",
+    "P2: String.strip()/lower() intrinsic path optimization — fuse strip+lower into single pass",
+    "P2: Profile with MOLT_PROFILE_JSON=1 to identify which runtime operations dominate"
+  },
+  "verdict": "CPYTHON_FASTER on all kernels. Primary bottleneck is per-operation dispatch overhead (not string/collection intrinsics). Dataclass construction is a secondary 10x multiplier. These findings directly inform MOL-198 (hash merge), MOL-203 (deopt-driven recompilation), and the existing WASM performance gap."
+}
