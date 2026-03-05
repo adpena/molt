@@ -28,6 +28,15 @@ typedef NPY_CASTING (PyArrayMethod_ResolveDescriptors)(
     npy_intp *view_offset
 );
 
+typedef NPY_CASTING (PyArrayMethod_ResolveDescriptorsWithScalar)(
+    PyArrayMethodObject *method,
+    PyArray_DTypeMeta *const *dtypes,
+    PyArray_Descr *const *given_descrs,
+    PyObject *const *input_scalars,
+    PyArray_Descr **loop_descrs,
+    npy_intp *view_offset
+);
+
 typedef int (PyArrayMethod_GetMaskedStridedLoop)(
     PyArrayMethod_Context *context,
     int aligned,
@@ -36,6 +45,39 @@ typedef int (PyArrayMethod_GetMaskedStridedLoop)(
     PyArrayMethod_StridedLoop **out_loop,
     NpyAuxData **out_auxdata,
     NPY_ARRAYMETHOD_FLAGS *flags
+);
+
+typedef int (PyArrayMethod_GetLoop)(
+    PyArrayMethod_Context *context,
+    int aligned,
+    int move_references,
+    const npy_intp *strides,
+    PyArrayMethod_StridedLoop **out_loop,
+    NpyAuxData **out_auxdata,
+    NPY_ARRAYMETHOD_FLAGS *flags
+);
+
+typedef int (PyArrayMethod_GetReductionInitial)(
+    PyArrayMethod_Context *context,
+    npy_bool reduction_is_empty,
+    void *initial
+);
+
+typedef int (PyArrayMethod_TranslateGivenDescriptors)(
+    int nin,
+    int nout,
+    PyArray_DTypeMeta *const wrapped_dtypes[],
+    PyArray_Descr *const given_descrs[],
+    PyArray_Descr *new_descrs[]
+);
+
+typedef int (PyArrayMethod_TranslateLoopDescriptors)(
+    int nin,
+    int nout,
+    PyArray_DTypeMeta *const new_dtypes[],
+    PyArray_Descr *const given_descrs[],
+    PyArray_Descr *original_descrs[],
+    PyArray_Descr *loop_descrs[]
 );
 
 typedef int (PyArrayMethod_TraverseLoop)(
@@ -67,6 +109,27 @@ typedef int (PyArrayMethod_PromoterFunction)(
 typedef struct {
     int flags;
 } PyArrayMethod_SortParameters;
+
+static inline int _molt_numpy_dtype_unavailable_i32(const char *name) {
+    PyErr_Format(
+        PyExc_RuntimeError,
+        "%s is not yet implemented in Molt's NumPy compatibility layer",
+        name);
+    return -1;
+}
+
+#define PyArrayMethod_GetLoop(...) \
+    _molt_numpy_dtype_unavailable_i32("PyArrayMethod_GetLoop")
+#define PyArrayMethod_GetReductionInitial(...) \
+    _molt_numpy_dtype_unavailable_i32("PyArrayMethod_GetReductionInitial")
+#define PyArrayMethod_ResolveDescriptors(...) \
+    ((NPY_CASTING)_molt_numpy_dtype_unavailable_i32("PyArrayMethod_ResolveDescriptors"))
+#define PyArrayMethod_ResolveDescriptorsWithScalar(...) \
+    ((NPY_CASTING)_molt_numpy_dtype_unavailable_i32("PyArrayMethod_ResolveDescriptorsWithScalar"))
+#define PyArrayMethod_TranslateGivenDescriptors(...) \
+    _molt_numpy_dtype_unavailable_i32("PyArrayMethod_TranslateGivenDescriptors")
+#define PyArrayMethod_TranslateLoopDescriptors(...) \
+    _molt_numpy_dtype_unavailable_i32("PyArrayMethod_TranslateLoopDescriptors")
 
 #ifdef __cplusplus
 }

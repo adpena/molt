@@ -20,6 +20,22 @@ if str(_REPO_ROOT) not in sys.path:
 
 import tools.linear_workspace as linear_workspace  # noqa: E402
 import tools.symphony_launchd as symphony_launchd  # noqa: E402
+from molt.symphony.paths import (  # noqa: E402
+    is_within,
+    resolve_symphony_parent_root,
+    resolve_symphony_store_root,
+    symphony_api_token_file,
+    symphony_dlq_events_file,
+    symphony_durable_root,
+    symphony_log_root,
+    symphony_metrics_dir,
+    symphony_readiness_dir,
+    symphony_security_events_file,
+    symphony_state_root,
+    symphony_taste_memory_distillations_dir,
+    symphony_taste_memory_events_file,
+    symphony_workspace_root,
+)
 
 try:  # pragma: no cover - optional dependency
     import duckdb as _duckdb_module
@@ -45,6 +61,12 @@ REQUIRED_ENV_KEYS = (
     "TMPDIR",
     "MOLT_SYMPHONY_DURABLE_MEMORY",
     "MOLT_SYMPHONY_DURABLE_ROOT",
+    "MOLT_SYMPHONY_PARENT_ROOT",
+    "MOLT_SYMPHONY_PROJECT_KEY",
+    "MOLT_SYMPHONY_STORE_ROOT",
+    "MOLT_SYMPHONY_DLQ_EVENTS_FILE",
+    "MOLT_SYMPHONY_TASTE_MEMORY_EVENTS_FILE",
+    "MOLT_SYMPHONY_TASTE_MEMORY_DISTILLATIONS_DIR",
 )
 
 REQUIRED_DOCS = (
@@ -65,8 +87,10 @@ REQUIRED_TOOLS = (
     "tools/symphony_launchd.py",
     "tools/symphony_watchdog.py",
     "tools/symphony_durable_admin.py",
+    "tools/symphony_dlq.py",
     "tools/linear_workspace.py",
     "tools/symphony_perf.py",
+    "tools/symphony_taste_memory.py",
 )
 
 REQUIRED_HARNESS_ARTIFACTS = (
@@ -1006,6 +1030,64 @@ def _audit_env_and_volume(
     }
 
 
+def _runtime_env(env_file: Path) -> dict[str, str]:
+    merged = _load_env_file(env_file)
+    for key, value in os.environ.items():
+        if value:
+            merged[key] = value
+    return merged
+
+
+def _audit_storage_layout(env_file: Path) -> dict[str, Any]:
+    env_values = _runtime_env(env_file)
+    parent_root = resolve_symphony_parent_root(env_values)
+    store_root = resolve_symphony_store_root(env_values)
+    log_root = symphony_log_root(env_values)
+    state_root = symphony_state_root(env_values)
+    workspace_root = symphony_workspace_root(env_values)
+    durable_root = symphony_durable_root(env_values)
+    dlq_file = symphony_dlq_events_file(env_values)
+    taste_events_file = symphony_taste_memory_events_file(env_values)
+    taste_distillations_dir = symphony_taste_memory_distillations_dir(env_values)
+    security_events = symphony_security_events_file(env_values)
+    api_token_file = symphony_api_token_file(env_values)
+
+    checks = {
+        "parent_root_exists": parent_root.exists(),
+        "store_under_parent": is_within(store_root, parent_root),
+        "logs_under_store": is_within(log_root, store_root),
+        "state_under_store": is_within(state_root, store_root),
+        "workspaces_under_store": is_within(workspace_root, store_root),
+        "durable_under_state": is_within(durable_root, state_root),
+        "dlq_under_state": is_within(dlq_file, state_root),
+        "taste_events_under_state": is_within(taste_events_file, state_root),
+        "taste_distillations_under_state": is_within(taste_distillations_dir, state_root),
+        "security_events_under_logs": is_within(security_events, log_root),
+        "api_token_under_state": is_within(api_token_file, state_root),
+    }
+    violations = [name for name, ok in checks.items() if not ok]
+    status = "pass" if not violations else "fail"
+    return {
+        "status": status,
+        "parent_root": str(parent_root),
+        "parent_root_exists": parent_root.exists(),
+        "store_root": str(store_root),
+        "store_root_exists": store_root.exists(),
+        "project_key": env_values.get("MOLT_SYMPHONY_PROJECT_KEY", "molt"),
+        "log_root": str(log_root),
+        "state_root": str(state_root),
+        "workspace_root": str(workspace_root),
+        "durable_root": str(durable_root),
+        "dlq_file": str(dlq_file),
+        "taste_events_file": str(taste_events_file),
+        "taste_distillations_dir": str(taste_distillations_dir),
+        "security_events_file": str(security_events),
+        "api_token_file": str(api_token_file),
+        "checks": checks,
+        "violations": violations,
+    }
+
+
 def _record_finding(
     findings: list[dict[str, Any]],
     *,
@@ -1045,6 +1127,23 @@ def _collect_findings(report: dict[str, Any]) -> list[dict[str, Any]]:
             severity="fail",
             code="linear_api_key_missing",
             message="LINEAR_API_KEY is missing; Linear audit and orchestration cannot run.",
+        )
+
+    storage = report["sections"].get("storage_layout") or {}
+    if storage.get("violations"):
+        _record_finding(
+            findings,
+            severity="fail",
+            code="symphony_storage_layout_invalid",
+            message=(
+                "Symphony long-lived logs/state are not isolated under the canonical "
+                "shared Symphony parent/store root."
+            ),
+            details={
+                "parent_root": storage.get("parent_root"),
+                "store_root": storage.get("store_root"),
+                "violations": storage.get("violations"),
+            },
         )
 
     docs = report["sections"]["docs_and_tools"]
@@ -1596,6 +1695,16 @@ def _synthesize_next_tranche(report: dict[str, Any]) -> dict[str, Any]:
             "why": "Linear hygiene and dispatch cannot run without API auth.",
             "commands": [
                 "grep '^LINEAR_API_KEY=' ops/linear/runtime/symphony.env",
+            ],
+        },
+        "symphony_storage_layout_invalid": {
+            "id": "repair_symphony_storage_layout",
+            "priority": "P0",
+            "title": "Repair canonical Symphony storage layout",
+            "why": "Long-lived Symphony logs/state must live under a project-specific store root, not a sibling project tree.",
+            "commands": [
+                "PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_bootstrap.py --sync-env",
+                "PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --strict-autonomy --fail-on warn",
             ],
         },
         "dspy_routing_not_ready": {
@@ -2223,15 +2332,20 @@ def _post_growth_alert_comment(
 
 
 def _persist_harness_metrics(
-    ext_root: Path, report: dict[str, Any], *, retention_days: int
+    ext_root: Path,
+    report: dict[str, Any],
+    *,
+    retention_days: int,
+    path_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    del ext_root
     linear_section = (report.get("sections") or {}).get("linear_workspace") or {}
     if str(linear_section.get("status") or "unknown") != "pass":
         return {"status": "skipped", "reason": "linear_workspace_not_pass"}
 
     snapshot = _snapshot_from_report(report)
-    readiness_history_dir = ext_root / "logs" / "symphony" / "readiness" / "history"
-    metrics_dir = ext_root / "logs" / "symphony" / "metrics"
+    readiness_history_dir = symphony_readiness_dir(path_env) / "history"
+    metrics_dir = symphony_metrics_dir(path_env)
     readiness_history_dir.mkdir(parents=True, exist_ok=True)
     metrics_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2311,6 +2425,7 @@ def run_audit(
     min_formal_pass_ratio: float = DEFAULT_MIN_FORMAL_PASS_RATIO,
     max_durable_growth_ratio: float = DEFAULT_DURABLE_GROWTH_WARN_RATIO,
 ) -> dict[str, Any]:
+    path_env = _runtime_env(env_file)
     api_key = _resolve_linear_api_key(env_file)  # secret-guard: allow
     with _temporary_linear_api_key(api_key):
         linear_workspace_section = _audit_linear_workspace(team)
@@ -2321,6 +2436,7 @@ def run_audit(
         "repo_root": str(repo_root),
         "sections": {
             "environment": _audit_env_and_volume(env_file=env_file, ext_root=ext_root),
+            "storage_layout": _audit_storage_layout(env_file),
             "docs_and_tools": _audit_docs_and_tools(repo_root),
             "harness_engineering": _audit_harness_engineering(repo_root),
             "dspy_routing": _audit_dspy_routing(env_file),
@@ -2332,7 +2448,7 @@ def run_audit(
             "formal_suite": _audit_formal_suite(repo_root, formal_suite_mode),
         },
     }
-    history_dir = ext_root / "logs" / "symphony" / "readiness" / "history"
+    history_dir = symphony_readiness_dir(path_env) / "history"
     trend_history = _load_baseline_history(history_dir, limit=max(2, trend_window))
     current_snapshot = _snapshot_from_report(report)
     report["sections"]["trend_analysis"] = _calculate_trend_analysis(
@@ -2388,17 +2504,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--durable-root",
         default=os.environ.get("MOLT_SYMPHONY_DURABLE_ROOT")
-        or "/Volumes/APDataStore/Molt/logs/symphony/durable_memory",
+        or str(symphony_durable_root()),
     )
     parser.add_argument(
         "--output-json",
         default=None,
-        help="Write JSON report to path (default: <ext-root>/logs/symphony/readiness/latest.json)",
+        help="Write JSON report to path (default: Symphony readiness log root under the canonical store).",
     )
     parser.add_argument(
         "--output-md",
         default=None,
-        help="Write Markdown summary to path (default: <ext-root>/logs/symphony/readiness/latest.md)",
+        help="Write Markdown summary to path (default: Symphony readiness log root under the canonical store).",
     )
     parser.add_argument(
         "--fail-on",
@@ -2458,7 +2574,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Write synthesized next-tranche plan JSON (default: "
-            "<ext-root>/logs/symphony/readiness/next_tranche.json)"
+            "Symphony readiness log root under the canonical store)"
         ),
     )
     parser.add_argument(
@@ -2466,7 +2582,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Write synthesized next-tranche plan Markdown (default: "
-            "<ext-root>/logs/symphony/readiness/next_tranche.md)"
+            "Symphony readiness log root under the canonical store)"
         ),
     )
     parser.add_argument(
@@ -2513,7 +2629,8 @@ def main(argv: list[str] | None = None) -> int:
         max_durable_growth_ratio=max(0.0, float(args.max_durable_growth_ratio)),
     )
 
-    readiness_root = ext_root / "logs" / "symphony" / "readiness"
+    runtime_env = _runtime_env(env_file)
+    readiness_root = symphony_readiness_dir(runtime_env)
     output_json = (
         Path(str(args.output_json)).expanduser().resolve()
         if args.output_json
@@ -2569,7 +2686,10 @@ def main(argv: list[str] | None = None) -> int:
         next_lines.append("- No actions generated.")
     output_next_tranche_md.write_text("\n".join(next_lines) + "\n", encoding="utf-8")
     metrics_result = _persist_harness_metrics(
-        ext_root, report, retention_days=max(0, int(args.baseline_retention_days))
+        ext_root,
+        report,
+        retention_days=max(0, int(args.baseline_retention_days)),
+        path_env=runtime_env,
     )
     print(
         f"Harness metrics persistence: {json.dumps(metrics_result, sort_keys=True)}",

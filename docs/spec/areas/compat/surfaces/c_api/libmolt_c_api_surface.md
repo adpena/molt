@@ -117,8 +117,11 @@ performance-first C-extension compatibility without embedding CPython.
 - `PyType_Spec` slot lowering includes selected call/numeric/sequence/getset
   lanes and type-method flag handling for `METH_CLASS` + `METH_STATIC`
 - NumPy source-compat include lane (`#include <numpy/arrayobject.h>`) with
-  initial type/shape macros, typenum predicates, `import_array*` capsule wiring,
-  and fail-fast stubs for unsupported heavy APIs
+  type/shape/flag macros, typenum predicates, dtype/type-object exports,
+  `PyDataType_*` and `PyDataMem_*` helpers, `import_array*` capsule wiring,
+  upstream-shaped internal include wrappers (`npy_common.h`, `dtype_api.h`,
+  `__multiarray_api.h`, `__ufunc_api.h`, `npy_2_compat.h`, `npy_math.h`),
+  and fail-fast stubs for unsupported heavy ndarray/ufunc APIs
 - Datetime source-compat include lane (`#include <datetime.h>`) with
   `PyDateTimeAPI`, `PyDateTime_IMPORT`, and basic date/datetime/timedelta
   checker shims

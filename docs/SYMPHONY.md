@@ -22,6 +22,12 @@ Harness engineering alignment:
 - [docs/QUALITY_SCORE.md](docs/QUALITY_SCORE.md)
 - [docs/exec-plans/TEMPLATE.md](docs/exec-plans/TEMPLATE.md)
 
+Canonical storage layout:
+- compiler/build artifacts stay under `MOLT_EXT_ROOT` (default `/Volumes/APDataStore/Molt`)
+- long-lived Symphony logs/state/artifacts live under the shared parent
+  `/Volumes/APDataStore/symphony/<project>` with Molt defaulting to
+  `/Volumes/APDataStore/symphony/molt`
+
 ## What is implemented
 
 - `WORKFLOW.md` loader with YAML front matter + strict prompt rendering
@@ -76,6 +82,8 @@ Harness engineering alignment:
 - `tools/symphony_git_sync.sh`: best-effort workspace git sync with author allowlist gating
 - `tools/symphony_launchd.py`: launchd lifecycle helper for Symphony + watchdog
 - `tools/symphony_watchdog.py`: file-watch daemon that auto-restarts Symphony service on changes
+- `tools/symphony_dlq.py`: inspect and replay recursive-loop dead-letter items
+- `tools/symphony_taste_memory.py`: inspect and distill recursive learning memory
 
 ## Quick start
 
@@ -115,7 +123,7 @@ For scripted Linear operations, use `tools/linear_workspace.py` as the canonical
 PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_perf.py WORKFLOW.md --iterations 3
 ```
 
-This writes a JSON report under `/Volumes/APDataStore/Molt/logs/symphony/` by default.
+This writes JSON reports under `/Volumes/APDataStore/symphony/molt/logs/` by default.
 
 Optional client-side WASM lane (Python -> Molt -> WASM) for dashboard kernels:
 
@@ -156,7 +164,7 @@ Compare current run vs a previous report to detect regressions:
 ```bash
 PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_perf.py WORKFLOW.md \
   --iterations 3 \
-  --compare-with /Volumes/APDataStore/Molt/logs/symphony/symphony_perf_<previous>.json
+  --compare-with /Volumes/APDataStore/symphony/molt/logs/symphony_perf_<previous>.json
 ```
 
 Strict regression gate (CI/local hard-fail budget):
@@ -164,7 +172,7 @@ Strict regression gate (CI/local hard-fail budget):
 ```bash
 PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_perf.py WORKFLOW.md \
   --iterations 3 \
-  --compare-with /Volumes/APDataStore/Molt/logs/symphony/symphony_perf_<previous>.json \
+  --compare-with /Volumes/APDataStore/symphony/molt/logs/symphony_perf_<previous>.json \
   --max-avg-regression-ratio 0.15 \
   --max-p95-regression-ratio 0.20 \
   --max-dashboard-avg-latency-regression-ms 5 \
@@ -202,7 +210,7 @@ export MOLT_SYMPHONY_STATE_HASH_HELPER="/Volumes/APDataStore/Molt/bin/symphony_s
 - Use `.gitignore`-protected local files for machine-specific overrides (`WORKFLOW.local.md`, `.env`, `ops/linear/*.secret*`).
 - `tools/secret_guard.py --staged` is enforced by `.githooks/pre-commit` (installed by `tools/symphony_bootstrap.py` via `core.hooksPath=.githooks` unless a custom hooks path already exists).
 - For intentional fake fixtures, add `# secret-guard: allow` on the specific test line.
-- Secret-guard blocked commits emit security events to `MOLT_SYMPHONY_SECURITY_EVENTS_FILE` (default `/Volumes/APDataStore/Molt/logs/symphony/security/events.jsonl`), surfaced in dashboard `Security Telemetry`.
+- Secret-guard blocked commits emit security events to `MOLT_SYMPHONY_SECURITY_EVENTS_FILE` (default `/Volumes/APDataStore/symphony/molt/logs/security/events.jsonl`), surfaced in dashboard `Security Telemetry`.
 - Network bind is loopback-only by default (`MOLT_SYMPHONY_BIND_HOST=127.0.0.1`). Non-loopback bind requires explicit opt-in (`MOLT_SYMPHONY_ALLOW_NONLOCAL_BIND=1`).
 - `MOLT_SYMPHONY_SECURITY_PROFILE=production` enables stricter startup rules (API token required; dashboard UI disabled by default via `MOLT_SYMPHONY_DISABLE_DASHBOARD_UI=1`; query-token auth disabled by default via `MOLT_SYMPHONY_ALLOW_QUERY_TOKEN=0`).
 - Full adversarial review checklist: [docs/SYMPHONY_RED_TEAM_CHECKLIST.md](docs/SYMPHONY_RED_TEAM_CHECKLIST.md).
@@ -247,10 +255,55 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --
 
 Outputs are written under:
 
-- `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.json`
-- `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.md`
-- `/Volumes/APDataStore/Molt/logs/symphony/readiness/next_tranche.json`
-- `/Volumes/APDataStore/Molt/logs/symphony/readiness/next_tranche.md`
+- `/Volumes/APDataStore/symphony/molt/logs/readiness/latest.json`
+- `/Volumes/APDataStore/symphony/molt/logs/readiness/latest.md`
+- `/Volumes/APDataStore/symphony/molt/logs/readiness/next_tranche.json`
+- `/Volumes/APDataStore/symphony/molt/logs/readiness/next_tranche.md`
+
+### Recursive Loop Runner
+
+Run deterministic harness cycles that bundle readiness, Linear hygiene, and
+trend deltas into per-cycle artifacts:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_recursive_loop.py --quick
+```
+
+Full lane with strict-autonomy + formal-all, optional perf guard, and optional
+execution of `next_tranche.actions`:
+
+```bash
+PYTHONPATH=src uv run --group dev --python 3.12 python3 tools/symphony_recursive_loop.py \
+  --formal-suite all \
+  --run-perf-guard \
+  --execute-next-tranche
+```
+
+Artifacts are written under:
+
+- `/Volumes/APDataStore/symphony/molt/logs/recursive_loop/<timestamp>-cycleXX/summary.json`
+- `/Volumes/APDataStore/symphony/molt/logs/recursive_loop/<timestamp>-cycleXX/summary.md`
+
+Recursive-loop self-improvement surfaces:
+
+- dead-letter queue: `/Volumes/APDataStore/symphony/molt/state/dlq/events.jsonl`
+- taste-memory events: `/Volumes/APDataStore/symphony/molt/state/taste_memory/events.jsonl`
+- taste-memory distillations:
+  `/Volumes/APDataStore/symphony/molt/state/taste_memory/distillations/`
+- optional typed hook command: `MOLT_SYMPHONY_LOOP_HOOK_CMD`
+
+DLQ inspection/replay:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_dlq.py summary --limit 20
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_dlq.py replay --fingerprint <id> --dry-run
+```
+
+Taste-memory distillation:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_taste_memory.py distill --limit 50
+```
 
 The audit covers Linear workspace hygiene, manifest quality, docs/tooling coverage,
 launchd/watchdog wiring, durable memory readability, and a harness engineering
