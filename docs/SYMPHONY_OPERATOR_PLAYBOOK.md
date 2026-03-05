@@ -89,10 +89,21 @@ Artifacts are written to:
 
 - `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.json`
 - `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.md`
+- `/Volumes/APDataStore/Molt/logs/symphony/readiness/history/baseline_*.json`
+- `/Volumes/APDataStore/Molt/logs/symphony/metrics/harness_baseline_latest.md`
+- `/Volumes/APDataStore/Molt/logs/symphony/metrics/harness_timeseries.csv`
 
 Use this report to drive cleanup of malformed Linear issues, metadata gaps,
 launchd/durable-memory wiring drift, and harness score regressions. Keep
 `sections.harness_engineering.score >= 90` before scaling unattended autonomy.
+
+Readiness now includes a run-over-run durable-memory growth budget signal:
+
+- finding code `durable_growth_budget_exceeded` is raised when any durable
+  artifact (`jsonl`/`duckdb`/`parquet`) grows by more than `5%` vs the previous
+  readiness baseline.
+- if no previous baseline exists yet, the report emits
+  `durable_growth_baseline_missing` (info) until the second baseline is captured.
 
 For autonomy hard-gating (CI/nightly), run:
 
