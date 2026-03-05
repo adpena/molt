@@ -4293,7 +4293,7 @@ def _build_lock(project_root: Path, name: str):
         yield
         return
     try:
-        import fcntl  # type: ignore
+        import fcntl
     except Exception:
         yield
         return
@@ -10316,9 +10316,7 @@ int main(int argc, char** argv) {
     if target_triple:
         if "apple" in target_triple or "darwin" in target_triple:
             link_cmd.append("-lc++")
-            _append_darwin_runtime_frameworks(
-                link_cmd, target_triple=target_triple
-            )
+            _append_darwin_runtime_frameworks(link_cmd, target_triple=target_triple)
         elif "linux" in target_triple:
             link_cmd.append("-lstdc++")
             link_cmd.append("-lm")

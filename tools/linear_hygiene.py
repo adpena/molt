@@ -620,9 +620,7 @@ def _run_formal_suite(mode: str) -> dict[str, Any]:
     elif not bool(report.get("ok")):
         checks = report.get("checks")
         quint = checks.get("quint") if isinstance(checks, dict) else None
-        diagnostics = (
-            quint.get("diagnostics") if isinstance(quint, dict) else None
-        )
+        diagnostics = quint.get("diagnostics") if isinstance(quint, dict) else None
         runtime_mismatch = bool(
             isinstance(diagnostics, dict)
             and diagnostics.get("runtime_mismatch_detected")
@@ -767,9 +765,12 @@ def cmd_ensure_projects(args: argparse.Namespace) -> int:
     team_id = linear_workspace._resolve_team_id(args.team)
     projects = linear_workspace._fetch_projects(team_id)
     project_name_to_id = {
-        str(project.get("name") or "").strip().lower(): str(project.get("id") or "").strip()
+        str(project.get("name") or "").strip().lower(): str(
+            project.get("id") or ""
+        ).strip()
         for project in projects
-        if str(project.get("name") or "").strip() and str(project.get("id") or "").strip()
+        if str(project.get("name") or "").strip()
+        and str(project.get("id") or "").strip()
     }
     manifest_lookup = _build_manifest_lookup(Path(args.index).resolve())
     issues = _fetch_issues_for_hygiene(team_id)
@@ -902,7 +903,10 @@ def cmd_apply_routing(args: argparse.Namespace) -> int:
                 updated += 1
 
     formal_suite_mode = str(getattr(args, "formal_suite", "off")).strip().lower()
-    if bool(getattr(args, "run_formal_inventory", False)) and formal_suite_mode == "off":
+    if (
+        bool(getattr(args, "run_formal_inventory", False))
+        and formal_suite_mode == "off"
+    ):
         formal_suite_mode = "inventory"
     formal_suite: dict[str, Any] | None = None
     if formal_suite_mode != "off":

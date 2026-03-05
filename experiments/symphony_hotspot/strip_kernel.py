@@ -1,4 +1,5 @@
 """Absolute minimal: just string.strip() + lower() in a loop."""
+
 import time
 
 

@@ -14,6 +14,34 @@ DEFAULT_EXT_ROOT = "/Volumes/APDataStore/Molt"
 DEFAULT_ENV_FILE = Path("ops/linear/runtime/symphony.env")
 
 
+def _default_quint_node_fallback() -> str:
+    for candidate in (
+        Path("/opt/homebrew/opt/node@22/bin/node"),
+        Path("/usr/local/opt/node@22/bin/node"),
+    ):
+        if candidate.exists():
+            return str(candidate)
+    return "npx -y node@22"
+
+
+def _default_java_home() -> str | None:
+    for env_key in ("JAVA_HOME", "MOLT_JAVA_HOME"):
+        raw = str(os.environ.get(env_key) or "").strip()
+        if raw and (Path(raw) / "bin" / "java").exists():
+            return raw
+    for candidate in (
+        Path("/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"),
+        Path("/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home"),
+        Path("/usr/local/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"),
+        Path("/usr/local/opt/openjdk/libexec/openjdk.jdk/Contents/Home"),
+        Path("/Library/Java/JavaVirtualMachines/openjdk-21.jdk/Contents/Home"),
+        Path("/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home"),
+    ):
+        if (candidate / "bin" / "java").exists():
+            return str(candidate)
+    return None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -260,7 +288,22 @@ def main(argv: list[str] | None = None) -> int:
     env.setdefault("MOLT_SYMPHONY_SYNC_REMOTE", "origin")
     env.setdefault("MOLT_SYMPHONY_SYNC_BRANCH", "main")
     env.setdefault("MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS", "adpena,symphony")
-    env.setdefault("MOLT_QUINT_NODE_FALLBACK", "npx -y node@22")
+    env.setdefault("MOLT_QUINT_NODE_FALLBACK", _default_quint_node_fallback())
+    default_java_home = _default_java_home()
+    if default_java_home:
+        env.setdefault("JAVA_HOME", default_java_home)
+    java_home = str(env.get("JAVA_HOME") or "").strip()
+    if java_home:
+        java_bin_dir = str(Path(java_home) / "bin")
+        if Path(java_bin_dir).exists():
+            current_path = env.get("PATH", "")
+            path_parts = [part for part in current_path.split(os.pathsep) if part]
+            if java_bin_dir not in path_parts:
+                env["PATH"] = (
+                    f"{java_bin_dir}{os.pathsep}{current_path}"
+                    if current_path
+                    else java_bin_dir
+                )
     _ensure_dashboard_security_defaults(env=env, ext_root=ext_root, port=args.port)
 
     if not env.get("MOLT_LINEAR_PROJECT_SLUG"):

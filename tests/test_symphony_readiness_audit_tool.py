@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -196,7 +197,11 @@ def test_collect_findings_marks_formal_toolchain_mismatch_warn() -> None:
                 "missing_env_keys": [],
                 "has_linear_api_key": True,
             },
-            "docs_and_tools": {"missing_docs": [], "missing_tools": [], "has_human_authority_gate": True},
+            "docs_and_tools": {
+                "missing_docs": [],
+                "missing_tools": [],
+                "has_human_authority_gate": True,
+            },
             "launchd": {"main_loaded": True, "watchdog_loaded": True},
             "durable_memory": {
                 "checks": {
@@ -204,7 +209,11 @@ def test_collect_findings_marks_formal_toolchain_mismatch_warn() -> None:
                     "duckdb_readable": {"ok": True},
                 }
             },
-            "manifest_index": {"missing_manifest_files": [], "malformed_titles": [], "metadata_gaps": []},
+            "manifest_index": {
+                "missing_manifest_files": [],
+                "malformed_titles": [],
+                "metadata_gaps": [],
+            },
             "linear_workspace": {
                 "status": "pass",
                 "missing_project": [],
@@ -214,10 +223,150 @@ def test_collect_findings_marks_formal_toolchain_mismatch_warn() -> None:
                 "label_count": 10,
             },
             "linear_cli_compat": {"status": "pass", "lin_installed": True},
-            "formal_suite": {"status": "warn", "mode": "all", "reason": "toolchain_mismatch", "returncode": 1},
+            "formal_suite": {
+                "status": "warn",
+                "mode": "all",
+                "reason": "toolchain_mismatch",
+                "returncode": 1,
+            },
         }
     }
     findings = readiness_audit._collect_findings(report)
     codes = {row["code"]: row for row in findings}
     assert "formal_suite_toolchain_mismatch" in codes
     assert codes["formal_suite_toolchain_mismatch"]["severity"] == "warn"
+
+
+def test_collect_findings_warns_on_node25_even_when_formal_passes() -> None:
+    report = {
+        "sections": {
+            "environment": {
+                "ext_root_mounted": True,
+                "missing_env_keys": [],
+                "has_linear_api_key": True,
+            },
+            "docs_and_tools": {
+                "missing_docs": [],
+                "missing_tools": [],
+                "has_human_authority_gate": True,
+            },
+            "launchd": {"main_loaded": True, "watchdog_loaded": True},
+            "durable_memory": {
+                "checks": {
+                    "jsonl_readable": {"ok": True},
+                    "duckdb_readable": {"ok": True},
+                }
+            },
+            "manifest_index": {
+                "missing_manifest_files": [],
+                "malformed_titles": [],
+                "metadata_gaps": [],
+            },
+            "linear_workspace": {
+                "status": "pass",
+                "missing_project": [],
+                "seeded_missing_metadata": [],
+                "malformed_titles": [],
+                "active_execution_flow": True,
+                "label_count": 10,
+            },
+            "linear_cli_compat": {"status": "pass", "lin_installed": True},
+            "formal_suite": {
+                "status": "pass",
+                "mode": "all",
+                "returncode": 0,
+                "report": {
+                    "ok": True,
+                    "checks": {
+                        "quint": {
+                            "ok": True,
+                            "diagnostics": {
+                                "fallback_used": True,
+                                "fallback_prefix": ["npx", "-y", "node@22"],
+                                "node": {"major": 25, "version": "v25.8.0"},
+                            },
+                        }
+                    },
+                },
+            },
+        }
+    }
+    findings = readiness_audit._collect_findings(report)
+    codes = {row["code"]: row for row in findings}
+    assert codes["formal_suite_pass"]["severity"] == "info"
+    assert codes["formal_suite_fallback_used"]["severity"] == "info"
+    assert codes["formal_suite_node_major_mismatch"]["severity"] == "warn"
+
+
+def test_audit_formal_suite_classifies_java_runtime_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    payload = {
+        "ok": False,
+        "checks": {
+            "quint": {
+                "ok": False,
+                "errors": ["quint_java_runtime_missing: Java runtime missing"],
+                "diagnostics": {"java_runtime_missing": True},
+            }
+        },
+    }
+
+    monkeypatch.setattr(
+        readiness_audit.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=1, stdout=json.dumps(payload), stderr=""
+        ),
+    )
+
+    result = readiness_audit._audit_formal_suite(tmp_path, "all")
+    assert result["status"] == "fail"
+    assert result["reason"] == "java_runtime_missing"
+
+
+def test_collect_findings_reports_java_runtime_missing_failure() -> None:
+    report = {
+        "sections": {
+            "environment": {
+                "ext_root_mounted": True,
+                "missing_env_keys": [],
+                "has_linear_api_key": True,
+            },
+            "docs_and_tools": {
+                "missing_docs": [],
+                "missing_tools": [],
+                "has_human_authority_gate": True,
+            },
+            "launchd": {"main_loaded": True, "watchdog_loaded": True},
+            "durable_memory": {
+                "checks": {
+                    "jsonl_readable": {"ok": True},
+                    "duckdb_readable": {"ok": True},
+                }
+            },
+            "manifest_index": {
+                "missing_manifest_files": [],
+                "malformed_titles": [],
+                "metadata_gaps": [],
+            },
+            "linear_workspace": {
+                "status": "pass",
+                "missing_project": [],
+                "seeded_missing_metadata": [],
+                "malformed_titles": [],
+                "active_execution_flow": True,
+                "label_count": 10,
+            },
+            "linear_cli_compat": {"status": "pass", "lin_installed": True},
+            "formal_suite": {
+                "status": "fail",
+                "mode": "all",
+                "reason": "java_runtime_missing",
+                "returncode": 1,
+            },
+        }
+    }
+    findings = readiness_audit._collect_findings(report)
+    codes = {row["code"]: row for row in findings}
+    assert codes["formal_suite_java_runtime_missing"]["severity"] == "fail"

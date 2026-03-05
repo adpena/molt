@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 from molt_accel.contracts import build_list_items_payload
 from molt_accel.errors import MoltInvalidInput
@@ -65,15 +65,16 @@ def _normalize_params(
     if params is None:
         return DbParamsSpec(mode="positional", values=[])
     if isinstance(params, Mapping):
+        mapping = cast(Mapping[str, Any], params)
         items = []
         keys: list[str] = []
-        for key in params.keys():
+        for key in mapping.keys():
             if not isinstance(key, str):
                 raise MoltInvalidInput("Named params must use string keys")
             keys.append(key)
         keys.sort()
         for key in keys:
-            normalized = _normalize_param(params[key])
+            normalized = _normalize_param(mapping[key])
             if isinstance(normalized, dict):
                 items.append({"name": key, **normalized})
             else:

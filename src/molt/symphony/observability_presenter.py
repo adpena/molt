@@ -26,7 +26,9 @@ def project_state_payload(
 ) -> dict[str, Any]:
     payload = redact_payload(state_payload)
     runtime_payload_raw = payload.get("runtime")
-    runtime_payload = dict(runtime_payload_raw) if isinstance(runtime_payload_raw, dict) else {}
+    runtime_payload = (
+        dict(runtime_payload_raw) if isinstance(runtime_payload_raw, dict) else {}
+    )
     runtime_payload["http_security"] = http_security
     payload["runtime"] = runtime_payload
     return payload

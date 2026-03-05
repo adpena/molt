@@ -4385,7 +4385,7 @@ mod tests {
         let kind_bits = molt_exception_kind(exc_bits);
         let class_bits = molt_exception_class(kind_bits);
         assert_eq!(molt_err_matches(runtime_error), 0);
-        assert_eq!(issubclass_bits(class_bits, runtime_error), true);
+        assert!(issubclass_bits(class_bits, runtime_error));
         crate::with_gil_entry!(_py, {
             dec_ref_bits(_py, kind_bits);
             dec_ref_bits(_py, class_bits);
@@ -6081,7 +6081,7 @@ mod tests {
 
             let utf8_ptr = PyUnicode_AsUTF8(str_bits);
             assert!(!utf8_ptr.is_null());
-            let observed = unsafe { std::ffi::CStr::from_ptr(utf8_ptr).to_bytes() };
+            let _observed = unsafe { std::ffi::CStr::from_ptr(utf8_ptr).to_bytes() };
             // The string content might not be NUL-terminated in molt's internal
             // storage, so compare the known length.
             let mut out_size: isize = 0;

@@ -95,7 +95,7 @@ def test_stdlib_intrinsics_ignores_sys_modules_runtime_helper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     loader = _load_stdlib_intrinsics("_molt_test_intrinsics_runtime_helper_sys_modules")
-    helper = lambda _name: (lambda: "runtime")  # noqa: E731
+    helper = lambda _name: lambda: "runtime"  # noqa: E731
     monkeypatch.setitem(
         sys.modules,
         "builtins",

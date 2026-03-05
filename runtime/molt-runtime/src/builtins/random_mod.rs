@@ -289,7 +289,7 @@ impl MersenneTwisterRng {
         if k == 0 {
             return BigUint::zero();
         }
-        let words_needed = (k as usize + 31) / 32;
+        let words_needed = (k as usize).div_ceil(32);
         let mut words: Vec<u32> = (0..words_needed).map(|_| self.rand_u32()).collect();
         // Mask the top word to exactly k bits
         let remainder = k % 32;
@@ -598,10 +598,10 @@ pub extern "C" fn molt_random_getrandbits(handle_bits: u64, k_bits: u64) -> u64 
             rng.randbits_biguint(k)
         };
         // Try to fit in i64 first to avoid heap allocation
-        if let Some(small) = big.to_u64() {
-            if small <= i64::MAX as u64 {
-                return int_bits_from_i64(_py, small as i64);
-            }
+        if let Some(small) = big.to_u64()
+            && small <= i64::MAX as u64
+        {
+            return int_bits_from_i64(_py, small as i64);
         }
         int_bits_from_bigint(_py, BigInt::from(big))
     })
@@ -757,10 +757,8 @@ pub extern "C" fn molt_random_setstate(handle_bits: u64, state_bits: u64) -> u64
             None
         } else if let Some(f) = gauss_obj.as_float() {
             Some(f)
-        } else if let Some(i) = to_i64(gauss_obj) {
-            Some(i as f64)
         } else {
-            None
+            to_i64(gauss_obj).map(|i| i as f64)
         };
 
         {

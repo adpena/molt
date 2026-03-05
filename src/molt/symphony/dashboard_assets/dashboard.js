@@ -200,6 +200,18 @@
         return date.toLocaleString();
       }
 
+      function parseRetryAfterHeader(value) {
+        const text = String(value || "").trim();
+        if (!text) return 0;
+        const numeric = Number(text);
+        if (Number.isFinite(numeric) && numeric > 0) {
+          return Math.max(Math.round(numeric * 1000), 1000);
+        }
+        const dateMs = Date.parse(text);
+        if (!Number.isFinite(dateMs)) return 0;
+        return Math.max(Math.round(dateMs - Date.now()), 1000);
+      }
+
       function deriveDashboardCadence(state) {
         const runtime = toObject(state.runtime);
         const profile = toObject(runtime.dashboard_profile);
@@ -659,22 +671,33 @@
         lastPollStatusLabel = "";
       }
 
-      function _setFallbackStatus(delayMs) {
+      function _setFallbackStatus(delayMs, reason = "") {
         const delay = Math.max(250, Math.round(toNumber(delayMs, fallbackPollIntervalMs)));
         const adaptive = delay !== Math.round(fallbackPollIntervalMs);
-        const label = adaptive
+        let label = adaptive
           ? `Polling fallback (${delay}ms adaptive)`
           : `Polling fallback (${delay}ms)`;
+        if (String(reason).startsWith("rate_limited")) {
+          label = `Polling fallback (${delay}ms, server rate-limited)`;
+        } else if (String(reason).startsWith("fetch_error")) {
+          label = `Polling fallback (${delay}ms, transient fetch error)`;
+        }
         if (label === lastPollStatusLabel) return;
         lastPollStatusLabel = label;
         setStreamStatus(label, "warn");
       }
 
-      function _nextFallbackDelayMs(changed, hadError) {
+      function _nextFallbackDelayMs({ changed, hadError, retryAfterMs = 0 }) {
         const baseMs = Math.max(250, Math.round(fallbackPollIntervalMs));
         if (hadError) {
           pollErrorStreak = Math.min(pollErrorStreak + 1, 8);
           pollNotModifiedStreak = 0;
+          if (retryAfterMs > 0) {
+            return Math.min(
+              Math.max(Math.round(retryAfterMs), baseMs),
+              120000
+            );
+          }
           return Math.min(baseMs * Math.pow(2, Math.min(pollErrorStreak, 4)), 60000);
         }
         pollErrorStreak = 0;
@@ -1326,7 +1349,16 @@
         const secondaryUsed = toNumber(secondary.usedPercent, 0);
         const windowSaturated = primaryUsed >= 99.9 || secondaryUsed >= 99.9;
         const suspended = Boolean(suspension.active);
-        const dueIn = suspension.due_in_seconds != null ? `${Math.round(toNumber(suspension.due_in_seconds, 0))}s` : "n/a";
+        const resumeAtEpoch = toNumber(suspension.resume_at_epoch_seconds, NaN);
+        const dueInSecondsFromEpoch = Number.isFinite(resumeAtEpoch)
+          ? Math.max(Math.round(resumeAtEpoch - Date.now() / 1000), 0)
+          : null;
+        const dueInSeconds =
+          suspension.due_in_seconds != null
+            ? Math.round(toNumber(suspension.due_in_seconds, 0))
+            : dueInSecondsFromEpoch;
+        const dueIn =
+          dueInSeconds != null ? formatDurationSeconds(dueInSeconds) : "n/a";
         const primaryResetAt = primary.resetsAt || primary.resetAt || null;
         const secondaryResetAt = secondary.resetsAt || secondary.resetAt || null;
 
@@ -1334,12 +1366,17 @@
         let detail =
           "Symphony is running in normal cadence. Polling and stream intervals are set for responsiveness.";
         let level = "ok";
+        const resumeAtText = Number.isFinite(resumeAtEpoch)
+          ? formatEpochSeconds(resumeAtEpoch)
+          : "n/a";
+        const resumeSource = String(suspension.resume_source || "unknown");
+        const resumeReason = String(suspension.resume_reason || "");
 
         if (creditExhausted) {
           headline = "Provider credits are exhausted (not a local concurrency cap).";
           detail =
             `Codex reports credits.hasCredits=false, so work is paused until credits return. ` +
-            `Auto-resume in about ${dueIn}.`;
+            `Auto-resume in about ${dueIn} (target ${resumeAtText}; source ${resumeSource}).`;
           level = "danger";
         } else if (windowSaturated || suspended) {
           headline = "Provider rate-limit window is active.";
@@ -1347,7 +1384,9 @@
             `Symphony is in gentle mode and will auto-resume in about ${dueIn}. ` +
             `Primary reset: ${formatEpochSeconds(primaryResetAt)} · Secondary reset: ${formatEpochSeconds(
               secondaryResetAt
-            )}.`;
+            )} · Resume target: ${resumeAtText} (${resumeSource}${
+              resumeReason ? `/${resumeReason}` : ""
+            }).`;
           level = "warn";
         }
 
@@ -1516,7 +1555,6 @@
             codex_totals: safeState.codex_totals,
             attention_count: toArray(safeState.attention).length,
             retry_count: toArray(safeState.retrying).length,
-            generated_at: generatedAt,
           },
           () => renderKpis(safeState)
         );
@@ -1534,12 +1572,12 @@
         );
         updatePanel(
           "running",
-          { running: safeState.running, generated_at: generatedAt },
+          { running: safeState.running },
           () => renderRunning(safeState)
         );
         updatePanel(
           "retry",
-          { retrying: safeState.retrying, generated_at: generatedAt },
+          { retrying: safeState.retrying },
           () => renderRetry(safeState)
         );
         updatePanel(
@@ -1560,12 +1598,12 @@
         );
         updatePanel(
           "events",
-          { recent_events: safeState.recent_events, generated_at: generatedAt },
+          { recent_events: safeState.recent_events },
           () => renderEvents(safeState)
         );
         updatePanel(
           "intervention_activity",
-          { manual_actions: safeState.manual_actions, generated_at: generatedAt },
+          { manual_actions: safeState.manual_actions },
           () => renderInterventionActivity(safeState)
         );
         updatePanel(
@@ -1644,10 +1682,22 @@
           if (resp.status === 304) {
             transportMetrics.stateFetch304 += 1;
             publishClientTelemetry();
-            return false;
+            return { changed: false, status: 304, retryAfterMs: 0 };
           }
           if (!resp.ok) {
-            throw new Error(`state_fetch_failed:${resp.status}`);
+            const retryAfterMs = parseRetryAfterHeader(resp.headers.get("Retry-After"));
+            let errorCode = "";
+            try {
+              const payload = await resp.json();
+              errorCode = String(toObject(payload.error).code || "");
+            } catch (_err) {
+              errorCode = "";
+            }
+            const err = new Error(`state_fetch_failed:${resp.status}`);
+            err.status = resp.status;
+            err.retryAfterMs = retryAfterMs;
+            err.errorCode = errorCode;
+            throw err;
           }
           transportMetrics.stateFetch200 += 1;
           const etag = String(resp.headers.get("ETag") || "").trim();
@@ -1657,7 +1707,7 @@
           const data = await resp.json();
           renderState(data);
           publishClientTelemetry();
-          return true;
+          return { changed: true, status: 200, retryAfterMs: 0 };
         } catch (_err) {
           transportMetrics.stateFetchErrors += 1;
           publishClientTelemetry();
@@ -1990,17 +2040,30 @@
         const run = async () => {
           transportMetrics.fallbackPollTicks += 1;
           let delayMs = fallbackPollIntervalMs;
+          let statusReason = "";
           try {
-            const changed = await fetchState();
-            delayMs = _nextFallbackDelayMs(changed, false);
-          } catch (_err) {
-            delayMs = _nextFallbackDelayMs(false, true);
+            const result = await fetchState();
+            delayMs = _nextFallbackDelayMs({
+              changed: Boolean(result.changed),
+              hadError: false,
+            });
+          } catch (err) {
+            const retryAfterMs = toNumber(err?.retryAfterMs, 0);
+            const statusCode = toNumber(err?.status, 0);
+            const errorCode = String(err?.errorCode || "").toLowerCase();
+            const isRateLimited = statusCode === 429 || errorCode === "rate_limited";
+            delayMs = _nextFallbackDelayMs({
+              changed: false,
+              hadError: true,
+              retryAfterMs,
+            });
+            statusReason = isRateLimited ? "rate_limited" : "fetch_error";
           }
           if (activeTransport !== "poll") {
             return;
           }
           pollScheduledDelayMs = Math.max(250, Math.round(delayMs));
-          _setFallbackStatus(pollScheduledDelayMs);
+          _setFallbackStatus(pollScheduledDelayMs, statusReason);
           pollTimer = setTimeout(run, pollScheduledDelayMs);
         };
         run();

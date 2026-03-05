@@ -408,7 +408,7 @@ fn b32_encode(input: &[u8], alphabet: &[u8; 32]) -> Vec<u8> {
     let leftover = input.len() % 5;
     let mut padded = input.to_vec();
     if leftover != 0 {
-        padded.extend(std::iter::repeat(0u8).take(5 - leftover));
+        padded.extend(std::iter::repeat_n(0u8, 5 - leftover));
     }
     let mut out = Vec::with_capacity(padded.len().div_ceil(5) * 8);
     for chunk in padded.chunks(5) {
@@ -480,7 +480,7 @@ fn b32_decode(
         data.make_ascii_uppercase();
     }
 
-    if data.len() % 8 != 0 {
+    if !data.len().is_multiple_of(8) {
         return Err("Incorrect padding");
     }
 
@@ -668,7 +668,7 @@ fn b16_decode(input: &[u8], casefold: bool) -> Result<Vec<u8>, &'static str> {
         input.to_vec()
     };
 
-    if data.len() % 2 != 0 {
+    if !data.len().is_multiple_of(2) {
         return Err("Odd-length string");
     }
 
