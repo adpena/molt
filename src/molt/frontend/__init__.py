@@ -1737,6 +1737,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_line_marker(self, lineno: int) -> None:
         if lineno <= 0:
             return
+        if getattr(self, "_suppress_line_markers", False):
+            return
         if self.current_line == lineno:
             return
         self.current_line = lineno
@@ -9716,14 +9718,96 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return True
         return False
 
-    def _identify_carry_candidates(
-        self, assigned: set[str], exclude: set[str] | None = None
-    ) -> set[str]:
-        """Identify int-typed locals eligible for loop-carried block params."""
-        if not self._hints_enabled() or self.type_hint_policy != "trust":
+    def _is_int_expr_ast(self, expr: ast.expr, int_names: set[str]) -> bool:
+        """Check if an AST expression is provably int-typed given known int names."""
+        if (
+            isinstance(expr, ast.Constant)
+            and isinstance(expr.value, int)
+            and not isinstance(expr.value, bool)
+        ):
+            return True
+        if isinstance(expr, ast.Name) and expr.id in int_names:
+            return True
+        if isinstance(expr, ast.BinOp) and isinstance(
+            expr.op,
+            (
+                ast.Add,
+                ast.Sub,
+                ast.Mult,
+                ast.FloorDiv,
+                ast.Mod,
+                ast.Pow,
+                ast.BitAnd,
+                ast.BitOr,
+                ast.BitXor,
+                ast.LShift,
+                ast.RShift,
+            ),
+        ):
+            return self._is_int_expr_ast(
+                expr.left, int_names
+            ) and self._is_int_expr_ast(expr.right, int_names)
+        if isinstance(expr, ast.UnaryOp) and isinstance(
+            expr.op, (ast.USub, ast.UAdd, ast.Invert)
+        ):
+            return self._is_int_expr_ast(expr.operand, int_names)
+        if isinstance(expr, ast.IfExp):
+            return self._is_int_expr_ast(
+                expr.body, int_names
+            ) and self._is_int_expr_ast(expr.orelse, int_names)
+        return False
+
+    def _find_int_initialized_vars(self, while_node: ast.While) -> set[str]:
+        """Find variables initialized with int literals before a while loop.
+
+        Walks the enclosing function body to find simple assignments like
+        ``total = 0`` or ``total: int = 0`` that precede *while_node*.
+        """
+        func_body = getattr(self, "_current_func_body", None)
+        if func_body is None:
             return set()
-        candidates: set[str] = set()
+        int_inited: set[str] = set()
+        for stmt in func_body:
+            if stmt is while_node:
+                break
+            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+                target = stmt.targets[0]
+                if (
+                    isinstance(target, ast.Name)
+                    and isinstance(stmt.value, ast.Constant)
+                    and isinstance(stmt.value.value, int)
+                    and not isinstance(stmt.value.value, bool)
+                ):
+                    int_inited.add(target.id)
+            elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+                if (
+                    isinstance(stmt.target, ast.Name)
+                    and isinstance(stmt.value, ast.Constant)
+                    and isinstance(stmt.value.value, int)
+                    and not isinstance(stmt.value.value, bool)
+                ):
+                    int_inited.add(stmt.target.id)
+        return int_inited
+
+    def _infer_int_carry_structural(
+        self,
+        assigned: set[str],
+        body: list[ast.stmt],
+        index_name: str,
+        while_node: ast.While,
+        exclude: set[str] | None = None,
+    ) -> set[str]:
+        """Infer int carry candidates structurally without trusting type hints.
+
+        A variable qualifies if:
+        1. It was initialized with an int literal before the while loop
+        2. Every assignment to it in the loop body is pure int arithmetic
+           involving only int constants, the index variable, or other candidates.
+        """
         closure_captured = getattr(self, "closure_locals", set())
+        int_inited = self._find_int_initialized_vars(while_node)
+        # First pass: find candidates with known int pre-loop values
+        potential: set[str] = set()
         for name in sorted(assigned):
             if exclude and name in exclude:
                 continue
@@ -9733,10 +9817,93 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 continue
             if name in self.del_targets:
                 continue
-            hint = self.explicit_type_hints.get(name)
-            if hint == "int":
-                candidates.add(name)
-        return candidates
+            if name in int_inited:
+                potential.add(name)
+        if not potential:
+            return set()
+        # Known int names: index + potential candidates
+        int_names = potential | {index_name}
+        # Second pass: verify all assignments in body are pure int arithmetic
+        confirmed: set[str] = set()
+        for name in sorted(potential):
+            all_int = True
+            for stmt in body:
+                if not all_int:
+                    break
+                if isinstance(stmt, ast.Assign):
+                    for target in stmt.targets:
+                        if isinstance(target, ast.Name) and target.id == name:
+                            if not self._is_int_expr_ast(stmt.value, int_names):
+                                all_int = False
+                                break
+                elif isinstance(stmt, ast.AugAssign):
+                    if isinstance(stmt.target, ast.Name) and stmt.target.id == name:
+                        if not isinstance(
+                            stmt.op,
+                            (
+                                ast.Add,
+                                ast.Sub,
+                                ast.Mult,
+                                ast.FloorDiv,
+                                ast.Mod,
+                                ast.Pow,
+                                ast.BitAnd,
+                                ast.BitOr,
+                                ast.BitXor,
+                                ast.LShift,
+                                ast.RShift,
+                            ),
+                        ):
+                            all_int = False
+                        elif not self._is_int_expr_ast(stmt.value, int_names):
+                            all_int = False
+                elif isinstance(stmt, ast.AnnAssign):
+                    if isinstance(stmt.target, ast.Name) and stmt.target.id == name:
+                        if stmt.value is None or not self._is_int_expr_ast(
+                            stmt.value, int_names
+                        ):
+                            all_int = False
+            if all_int:
+                confirmed.add(name)
+        return confirmed
+
+    def _identify_carry_candidates(
+        self,
+        assigned: set[str],
+        exclude: set[str] | None = None,
+        body: list[ast.stmt] | None = None,
+        index_name: str | None = None,
+        while_node: ast.While | None = None,
+    ) -> set[str]:
+        """Identify int-typed locals eligible for loop-carried block params.
+
+        Uses trusted type hints when available, otherwise falls back to
+        structural inference from int-constant initialization and pure
+        int arithmetic in the loop body.
+        """
+        closure_captured = getattr(self, "closure_locals", set())
+        candidates: set[str] = set()
+        # Path 1: trusted type hints
+        if self._hints_enabled() and self.type_hint_policy == "trust":
+            for name in sorted(assigned):
+                if exclude and name in exclude:
+                    continue
+                if name in self.global_decls or name in self.nonlocal_decls:
+                    continue
+                if name in self.free_vars or name in closure_captured:
+                    continue
+                if name in self.del_targets:
+                    continue
+                hint = self.explicit_type_hints.get(name)
+                if hint == "int":
+                    candidates.add(name)
+            return candidates
+        # Path 2: structural inference (no type hints needed)
+        if body is not None and index_name is not None and while_node is not None:
+            return self._infer_int_carry_structural(
+                assigned, body, index_name, while_node, exclude
+            )
+        return set()
 
     def _emit_counted_while_with_carry(
         self,
@@ -9745,16 +9912,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         body: list[ast.stmt],
         carry_vars: set[str],
     ) -> None:
-        """Counted while loop using all-carry-var block params (no LOOP_INDEX).
+        """Counted while loop using carry vars plus indexed loop progression.
 
-        Both the loop index and accumulator variables use LOOP_CARRY_INIT/UPDATE
-        with raw i64 values, eliminating per-iteration NaN-box/unbox overhead.
+        Carry variables use LOOP_CARRY_INIT/UPDATE with raw i64 values, while
+        the loop index preserves the canonical LOOP_INDEX_START/NEXT contract.
         """
         if not carry_vars:
             self._emit_counted_while(index_name, bound, body)
             return
-        # Include the index variable in carry vars for uniform raw i64 treatment
-        all_carry = carry_vars | {index_name}
+        all_carry = set(carry_vars)
         start = self._load_local_value(index_name)
         if start is None:
             start = MoltValue(self.next_var(), type_hint="int")
@@ -9770,78 +9936,90 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         saved_cells: dict[str, MoltValue] = {}
         carry_init_vals: list[tuple[str, MoltValue]] = []
         for name in sorted(all_carry):
-            if name == index_name:
-                init_val = start
-            else:
-                init_val = self._load_local_value(name)
-                if init_val is None:
-                    init_val = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="CONST", args=[0], result=init_val))
+            init_val = self._load_local_value(name)
+            if init_val is None:
+                init_val = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[0], result=init_val))
             # Unbox to raw i64 before the loop
             raw_init = MoltValue(f"__carry_raw_init_{name}", type_hint="int")
             self.emit(MoltOp(kind="UNBOX_TO_RAW_INT", args=[init_val], result=raw_init))
             carry_init_vals.append((name, raw_init))
             if name in self.boxed_locals:
                 saved_cells[name] = self.boxed_locals.pop(name)
+        # If the loop index is currently boxed, temporarily unbox/write-through
+        # it like other loop-carried values and restore at loop exit.
+        if index_name in self.boxed_locals:
+            saved_cells[index_name] = self.boxed_locals.pop(index_name)
+        raw_start = MoltValue("__raw_loop_start", type_hint="int")
+        self.emit(MoltOp(kind="UNBOX_TO_RAW_INT", args=[start], result=raw_start))
         # Unbox loop bound to raw i64 (loop-invariant)
-        raw_stop = MoltValue(f"__raw_loop_stop", type_hint="int")
+        raw_stop = MoltValue("__raw_loop_stop", type_hint="int")
         self.emit(MoltOp(kind="UNBOX_TO_RAW_INT", args=[stop], result=raw_stop))
-        # Emit LOOP_START + LOOP_CARRY_INIT (no LOOP_INDEX_START — all vars are carries)
+        # Emit LOOP_START + LOOP_INDEX_START + LOOP_CARRY_INIT.
         self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+        idx_carry_name = f"__carry_{index_name}"
+        idx_carry = MoltValue(idx_carry_name, type_hint="int")
+        self.emit(MoltOp(kind="LOOP_INDEX_START", args=[raw_start], result=idx_carry))
+        self.locals[index_name] = idx_carry
         for name, raw_init in carry_init_vals:
             carry_out = MoltValue(f"__carry_{name}", type_hint="int")
             self.emit(MoltOp(kind="LOOP_CARRY_INIT", args=[raw_init], result=carry_out))
             self.locals[name] = carry_out
             self.loop_carry_vars.add(name)
-        # Condition: __carry_i < raw_stop (both raw i64)
-        idx_carry = self.locals[index_name]
-        cond = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(
-            MoltOp(
-                kind="LT",
-                args=[idx_carry, raw_stop],
-                result=cond,
-                metadata={"raw_int": True},
-            )
-        )
-        self.emit(
-            MoltOp(
-                kind="LOOP_BREAK_IF_FALSE",
-                args=[cond],
-                result=MoltValue("none"),
-                metadata={"raw_int": True},
-            )
-        )
-        # Suppress locals-dict writes inside tight loop body
+        # Suppress exception checks and raise-if-pending inside the entire
+        # carry-var loop body (condition + body + increment).  These loops only
+        # contain pure integer arithmetic, so no exceptions can be raised.
         prev_locals_cache = self.locals_cache_val
         self.locals_cache_val = None
-        self._visit_loop_body(body, guard_map)
+        prev_raise_suppress = getattr(self, "_suppress_raise_if_pending", False)
+        self._suppress_raise_if_pending = True
+        prev_line_suppress = getattr(self, "_suppress_line_markers", False)
+        self._suppress_line_markers = True
+        with self._suppress_check_exception(emit_on_exit=False):
+            # Condition: __carry_i < raw_stop (both raw i64)
+            idx_carry = self.locals[index_name]
+            cond = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(
+                    kind="LT",
+                    args=[idx_carry, raw_stop],
+                    result=cond,
+                    metadata={"raw_int": True},
+                )
+            )
+            self.emit(
+                MoltOp(
+                    kind="LOOP_BREAK_IF_FALSE",
+                    args=[cond],
+                    result=MoltValue("none"),
+                    metadata={"raw_int": True},
+                )
+            )
+            self._visit_loop_body(body, guard_map)
+            # Increment index: __carry_i + 1 (raw i64)
+            raw_one = MoltValue("__raw_loop_one", type_hint="int")
+            self.emit(
+                MoltOp(
+                    kind="CONST", args=[1], result=raw_one, metadata={"raw_int": True}
+                )
+            )
+            idx_carry_cur = self.locals[index_name]
+            next_idx = MoltValue(self.next_var(), type_hint="int")
+            self.emit(
+                MoltOp(
+                    kind="ADD",
+                    args=[idx_carry_cur, raw_one],
+                    result=next_idx,
+                    metadata={"raw_int": True},
+                )
+            )
+            idx_next = MoltValue(idx_carry_name, type_hint="int")
+            self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx_next))
+            self.locals[index_name] = idx_next
+            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+        self._suppress_raise_if_pending = prev_raise_suppress
+        self._suppress_line_markers = prev_line_suppress
         self.locals_cache_val = prev_locals_cache
-        # Increment index: __carry_i + 1 (raw i64)
-        raw_one = MoltValue(f"__raw_loop_one", type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[1], result=raw_one, metadata={"raw_int": True}))
-        idx_carry_cur = self.locals[index_name]
-        next_idx = MoltValue(self.next_var(), type_hint="int")
-        self.emit(
-            MoltOp(
-                kind="ADD",
-                args=[idx_carry_cur, raw_one],
-                result=next_idx,
-                metadata={"raw_int": True},
-            )
-        )
-        # Update index carry var
-        carry_name = f"__carry_{index_name}"
-        carry_out = MoltValue(carry_name, type_hint="int")
-        self.emit(
-            MoltOp(
-                kind="LOOP_CARRY_UPDATE",
-                args=[carry_name, next_idx],
-                result=carry_out,
-            )
-        )
-        self.locals[index_name] = carry_out
-        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
         self.loop_carry_vars = prev_carry
         # Restore boxed cells and write final values back
@@ -22755,7 +22933,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return None
             assigned = self._collect_assigned_names(node.body)
             carry_in_counted = self._identify_carry_candidates(
-                assigned, exclude={index_name}
+                assigned,
+                exclude={index_name},
+                body=body,
+                index_name=index_name,
+                while_node=node,
             )
             for name in sorted(assigned):
                 if name not in carry_in_counted:
@@ -22775,7 +22957,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return None
             assigned = self._collect_assigned_names(node.body)
             carry_in_counted = self._identify_carry_candidates(
-                assigned, exclude={index_name}
+                assigned,
+                exclude={index_name},
+                body=body,
+                index_name=index_name,
+                while_node=node,
             )
             for name in sorted(assigned):
                 if name not in carry_in_counted:
@@ -23021,6 +23207,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         clear_handlers: bool = False,
         force_exit: bool = False,
     ) -> None:
+        if getattr(self, "_suppress_raise_if_pending", False):
+            return
         with self._suppress_check_exception():
             if (
                 self.current_func_name == "molt_main"
@@ -24483,12 +24671,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if needs_locals_cache:
                 self._init_locals_cache()
             self._push_qualname(func_name, True)
+            prev_func_body = getattr(self, "_current_func_body", None)
+            self._current_func_body = node.body
             try:
                 for item in node.body:
                     self.visit(item)
                     if isinstance(item, (ast.Return, ast.Raise)):
                         break
             finally:
+                self._current_func_body = prev_func_body
                 self._pop_qualname()
             if self.return_label is not None:
                 if not self._ends_with_return_jump():
@@ -24807,10 +24998,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if needs_locals_cache:
             self._init_locals_cache()
         self._push_qualname(func_name, True)
+        prev_func_body = getattr(self, "_current_func_body", None)
+        self._current_func_body = node.body
         try:
             for item in node.body:
                 self.visit(item)
         finally:
+            self._current_func_body = prev_func_body
             self._pop_qualname()
         if self.return_label is not None:
             if not self._ends_with_return_jump():
@@ -25140,12 +25334,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if needs_locals_cache:
                 self._init_locals_cache()
             self._push_qualname(func_name, True)
+            prev_func_body = getattr(self, "_current_func_body", None)
+            self._current_func_body = node.body
             try:
                 for item in node.body:
                     self.visit(item)
                     if isinstance(item, (ast.Return, ast.Raise)):
                         break
             finally:
+                self._current_func_body = prev_func_body
                 self._pop_qualname()
             if self.return_label is not None:
                 if not self._ends_with_return_jump():
@@ -25414,10 +25611,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if needs_locals_cache:
                 self._init_locals_cache()
         self._push_qualname(func_name, True)
+        prev_func_body = getattr(self, "_current_func_body", None)
+        self._current_func_body = node.body
         try:
             for item in node.body:
                 self.visit(item)
         finally:
+            self._current_func_body = prev_func_body
             self._pop_qualname()
         if self.return_label is not None:
             if not self._ends_with_return_jump():
@@ -36331,6 +36531,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "NE",
         }
         loop_cond_ops = {"LOOP_BREAK_IF_TRUE", "LOOP_BREAK_IF_FALSE"}
+        # Ops that safely consume raw i64 values (don't need boxing)
+        raw_safe_consumers = loop_cond_ops | {"LOOP_CARRY_UPDATE"}
 
         # Phase 1: identify variables that are produced AND consumed entirely
         # within guard_fast_int arithmetic chains.
@@ -36366,8 +36568,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 for arg in op.args:
                     if isinstance(arg, MoltValue):
                         int_consumers.setdefault(arg.name, []).append(i)
-            elif op.kind in loop_cond_ops:
-                # Loop break conditions consume the comparison result
+            elif is_fast and op.kind == "CONST" and isinstance(op.result, MoltValue):
+                # Track CONST int results as producers so Phase 2 can mark them
+                # raw_eligible when all their consumers are fast_int ops.
+                int_producers[op.result.name] = i
+            elif op.kind in raw_safe_consumers:
+                # Loop break conditions and carry updates consume raw values safely
                 for arg in op.args:
                     if isinstance(arg, MoltValue):
                         int_consumers.setdefault(arg.name, []).append(i)
@@ -36380,7 +36586,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if not consumers:
                 continue
             all_fast = all(
-                ci in fast_int_ops or ops[ci].kind in loop_cond_ops for ci in consumers
+                ci in fast_int_ops or ops[ci].kind in raw_safe_consumers
+                for ci in consumers
             )
             if all_fast:
                 raw_eligible.add(var_name)
@@ -36530,9 +36737,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     and last_arg.name in raw_vars
                 ):
                     out_name = (
-                        op.result.name
-                        if isinstance(op.result, MoltValue)
-                        else "none"
+                        op.result.name if isinstance(op.result, MoltValue) else "none"
                     )
                     if out_name != "none":
                         raw_vars.add(out_name)
