@@ -2085,6 +2085,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "molt-python"
+version = "0.0.1"
+dependencies = [
+ "molt-backend",
+ "molt-db",
+ "molt-obj-model",
+ "molt-runtime",
+]
+
+[[package]]
 name = "molt-runtime"
 version = "0.1.0"
 dependencies = [

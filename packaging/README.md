@@ -9,6 +9,14 @@ This folder holds release assets, install scripts, and packaging templates.
 - `templates/`: boilerplate for Homebrew, Scoop, and Winget.
 - `config.toml`: naming + repo metadata used by release helpers.
 
+## Canonical namespace
+
+- Canonical cross-registry package name: `molt-python`
+- Cargo crate path in this repo: `runtime/molt-python`
+- Cargo release version must start at `0.0.1`; `0.0.001` is invalid SemVer for Cargo
+- `packaging/config.toml` `[ecosystem_names]` is the source of truth for the
+  cross-registry target names we want to reserve/publish
+
 ## Release workflow (summary)
 
 1. Tag the release `v0.0.001` (increment the thousandths place).

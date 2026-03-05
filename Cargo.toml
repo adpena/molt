@@ -4,6 +4,7 @@ members = [
     "runtime/molt-obj-model",
     "runtime/molt-backend",
     "runtime/molt-db",
+    "runtime/molt-python",
     "runtime/molt-worker",
     "runtime/molt-wasm-host",
 ]

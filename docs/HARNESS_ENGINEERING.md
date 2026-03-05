@@ -78,7 +78,15 @@ The recursive and continual learning loop is:
    `tools/symphony_dlq.py`.
 8. Distill recurring preferences/failures/tools into taste memory with
    `tools/symphony_taste_memory.py`.
-9. Feed learnings back into docs/manifests/workflows and repeat.
+9. Distill recurring successful actions into tool-promotion candidates with
+   `tools/symphony_tool_promotion.py`.
+10. Generate reviewable promotion manifests for ready candidates.
+11. Feed learnings back into docs/manifests/workflows and repeat.
+
+Readiness keeps this loop measurable:
+- `sections.dlq_health` tracks unresolved failures, recurring fingerprints, and replay success/failure counts
+- `sections.tool_promotion` tracks when recurring successful actions are ready to graduate into explicit tools or hooks
+- `improvement_issue_sync` turns those findings into a dry-run/apply Linear issue sync plan so the loop can externalize its own improvement backlog
 
 ## Canonical Score Target
 
