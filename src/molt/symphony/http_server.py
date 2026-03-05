@@ -12,10 +12,11 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from threading import Lock, Thread
+from threading import BoundedSemaphore, Lock, Thread
 from typing import Any, Protocol
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlparse, urlsplit
 
 
 class StateProvider(Protocol):
@@ -36,6 +37,32 @@ class StateProvider(Protocol):
 
 class _QuietThreadingHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        request_handler_class: type[BaseHTTPRequestHandler],
+        *,
+        max_active_requests: int = 96,
+    ) -> None:
+        self._request_slots = BoundedSemaphore(max(max_active_requests, 8))
+        super().__init__(server_address, request_handler_class)
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self._request_slots.acquire(blocking=False):
+            _reject_connection_overloaded(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
 
     def handle_error(self, request: Any, client_address: Any) -> None:
         exc_type, _, _ = sys.exc_info()
@@ -136,7 +163,21 @@ class DashboardServer:
     def start(self) -> int:
         provider = self.provider
         state_hasher = _state_hasher_from_env()
+        security = _dashboard_security_from_env(port=self.port)
         self._state_hasher = state_hasher
+        max_stream_clients = _coerce_non_negative_int_env(
+            "MOLT_SYMPHONY_MAX_STREAM_CLIENTS", default=16, minimum=1
+        )
+        stream_max_age_seconds = max(
+            _coerce_non_negative_float_env(
+                "MOLT_SYMPHONY_STREAM_MAX_AGE_SECONDS",
+                default=300.0,
+                minimum=30.0,
+            ),
+            30.0,
+        )
+        active_stream_clients = 0
+        stream_clients_lock = Lock()
         state_cache_lock = Lock()
         state_cache_ttl_seconds = 0.25
         state_cache: dict[str, Any] = {
@@ -183,6 +224,128 @@ class DashboardServer:
             def log_message(self, format: str, *args: object) -> None:  # noqa: A003
                 return
 
+            def _auth_token_from_request(
+                self, *, query: str, allow_query: bool
+            ) -> str | None:
+                auth_header = str(self.headers.get("Authorization") or "").strip()
+                if auth_header.lower().startswith("bearer "):
+                    token = auth_header[7:].strip()
+                    if token:
+                        return token
+                token_header = str(self.headers.get("X-Symphony-Token") or "").strip()
+                if token_header:
+                    return token_header
+                cookie_header = str(self.headers.get("Cookie") or "").strip()
+                if cookie_header:
+                    parsed = SimpleCookie()
+                    try:
+                        parsed.load(cookie_header)
+                    except Exception:
+                        parsed = SimpleCookie()
+                    morsel = parsed.get("molt_symphony_token")
+                    if morsel is not None:
+                        cookie_token = str(morsel.value or "").strip()
+                        if cookie_token:
+                            return cookie_token
+                if allow_query:
+                    query_values = parse_qs(query).get("token", [])
+                    if query_values:
+                        return str(query_values[0] or "").strip() or None
+                return None
+
+            def _request_origin(self) -> str | None:
+                origin = str(self.headers.get("Origin") or "").strip()
+                if origin:
+                    return origin
+                referer = str(self.headers.get("Referer") or "").strip()
+                if not referer:
+                    return None
+                try:
+                    parsed = urlparse(referer)
+                except Exception:
+                    return None
+                if not parsed.scheme or not parsed.netloc:
+                    return None
+                return f"{parsed.scheme}://{parsed.netloc}"
+
+            def _is_origin_allowed(self, origin: str) -> bool:
+                origin_norm = origin.strip().lower()
+                if not origin_norm:
+                    return False
+                if origin_norm in security.allowed_origins:
+                    return True
+                if security.allow_localhost_any_port:
+                    if origin_norm.startswith("http://127.0.0.1:"):
+                        return True
+                    if origin_norm.startswith("http://localhost:"):
+                        return True
+                return False
+
+            def _deny_json(self, status: HTTPStatus, code: str, message: str) -> None:
+                self._write_json(
+                    int(status),
+                    {
+                        "error": {
+                            "code": code,
+                            "message": message,
+                        }
+                    },
+                )
+
+            def _authorize_request(
+                self,
+                *,
+                method: str,
+                query: str,
+                mutating: bool,
+                allow_query_token: bool = True,
+            ) -> bool:
+                _ = method
+                auth_header_present = bool(
+                    str(self.headers.get("Authorization") or "").strip()
+                    or str(self.headers.get("X-Symphony-Token") or "").strip()
+                )
+                if security.api_token:
+                    supplied = self._auth_token_from_request(
+                        query=query, allow_query=allow_query_token
+                    )
+                    if supplied != security.api_token:
+                        self._deny_json(
+                            HTTPStatus.UNAUTHORIZED,
+                            "unauthorized",
+                            "Missing or invalid Symphony API token.",
+                        )
+                        return False
+                if mutating and security.enforce_origin:
+                    origin = self._request_origin()
+                    if not origin:
+                        if security.api_token and not auth_header_present:
+                            self._deny_json(
+                                HTTPStatus.FORBIDDEN,
+                                "forbidden_origin",
+                                "Origin is required for cookie/query-token mutating requests.",
+                            )
+                            return False
+                    elif not self._is_origin_allowed(origin):
+                        self._deny_json(
+                            HTTPStatus.FORBIDDEN,
+                            "forbidden_origin",
+                            "Origin not allowed for mutating Symphony requests.",
+                        )
+                        return False
+                if mutating and security.require_csrf_header:
+                    origin = self._request_origin()
+                    if origin:
+                        csrf = str(self.headers.get("X-Symphony-CSRF") or "").strip()
+                        if csrf != "1":
+                            self._deny_json(
+                                HTTPStatus.FORBIDDEN,
+                                "missing_csrf_header",
+                                "Missing X-Symphony-CSRF header.",
+                            )
+                            return False
+                return True
+
             def _write_json(
                 self,
                 status: int,
@@ -203,6 +366,10 @@ class DashboardServer:
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("X-Frame-Options", "DENY")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("Permissions-Policy", "interest-cohort=()")
                 if headers:
                     for key, value in headers.items():
                         self.send_header(key, value)
@@ -215,6 +382,24 @@ class DashboardServer:
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", str(len(data)))
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("X-Frame-Options", "DENY")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("Permissions-Policy", "interest-cohort=()")
+                self.send_header(
+                    "Content-Security-Policy",
+                    (
+                        "default-src 'self'; "
+                        "script-src 'self' 'unsafe-inline'; "
+                        "style-src 'self' 'unsafe-inline'; "
+                        "img-src 'self' data:; "
+                        "connect-src 'self'; "
+                        "object-src 'none'; "
+                        "base-uri 'self'; "
+                        "frame-ancestors 'none'; "
+                        "form-action 'self'"
+                    ),
+                )
                 self.end_headers()
                 self.wfile.write(data)
 
@@ -223,14 +408,31 @@ class DashboardServer:
                 path = parsed.path
 
                 if path == "/":
+                    if not self._authorize_request(
+                        method="GET",
+                        query=parsed.query,
+                        mutating=False,
+                        allow_query_token=True,
+                    ):
+                        return
                     self._handle_dashboard()
                     return
                 if path == "/api/v1/state":
+                    if not self._authorize_request(
+                        method="GET",
+                        query=parsed.query,
+                        mutating=False,
+                        allow_query_token=True,
+                    ):
+                        return
                     _, encoded, etag = _snapshot_state_cached()
                     if self.headers.get("If-None-Match") == etag:
                         self.send_response(HTTPStatus.NOT_MODIFIED)
                         self.send_header("Cache-Control", "no-store")
                         self.send_header("ETag", etag)
+                        self.send_header("X-Content-Type-Options", "nosniff")
+                        self.send_header("X-Frame-Options", "DENY")
+                        self.send_header("Referrer-Policy", "no-referrer")
                         self.end_headers()
                         return
                     self._write_json_bytes(
@@ -240,15 +442,36 @@ class DashboardServer:
                     )
                     return
                 if path == "/api/v1/durable":
+                    if not self._authorize_request(
+                        method="GET",
+                        query=parsed.query,
+                        mutating=False,
+                        allow_query_token=True,
+                    ):
+                        return
                     limit = _coerce_limit_param(parsed.query, default=120)
                     self._write_json(
                         HTTPStatus.OK, provider.snapshot_durable_memory(limit=limit)
                     )
                     return
                 if path == "/api/v1/stream":
+                    if not self._authorize_request(
+                        method="GET",
+                        query=parsed.query,
+                        mutating=False,
+                        allow_query_token=True,
+                    ):
+                        return
                     self._handle_state_stream(parsed.query)
                     return
                 if path.startswith("/api/v1/"):
+                    if not self._authorize_request(
+                        method="GET",
+                        query=parsed.query,
+                        mutating=False,
+                        allow_query_token=True,
+                    ):
+                        return
                     issue_identifier = unquote(path.removeprefix("/api/v1/"))
                     payload = provider.snapshot_issue(issue_identifier)
                     if payload is None:
@@ -281,6 +504,13 @@ class DashboardServer:
                 path = parsed.path
 
                 if path == "/api/v1/refresh":
+                    if not self._authorize_request(
+                        method="POST",
+                        query=parsed.query,
+                        mutating=True,
+                        allow_query_token=False,
+                    ):
+                        return
                     queued = provider.request_refresh()
                     _invalidate_state_cache()
                     self._write_json(
@@ -296,6 +526,13 @@ class DashboardServer:
                     )
                     return
                 if path == "/api/v1/interventions/retry-now":
+                    if not self._authorize_request(
+                        method="POST",
+                        query=parsed.query,
+                        mutating=True,
+                        allow_query_token=False,
+                    ):
+                        return
                     payload = self._read_json_payload()
                     issue_identifier = str(payload.get("issue_identifier", "")).strip()
                     result = provider.request_retry_now(issue_identifier)
@@ -307,6 +544,13 @@ class DashboardServer:
                     self._write_json(int(status), result)
                     return
                 if path == "/api/v1/tools/run":
+                    if not self._authorize_request(
+                        method="POST",
+                        query=parsed.query,
+                        mutating=True,
+                        allow_query_token=False,
+                    ):
+                        return
                     payload = self._read_json_payload()
                     tool_name = str(payload.get("tool") or "").strip()
                     result = provider.run_dashboard_tool(tool_name, payload)
@@ -373,18 +617,46 @@ class DashboardServer:
                 self._write_html(HTTPStatus.OK, _DASHBOARD_HTML)
 
             def _handle_state_stream(self, query: str) -> None:
+                nonlocal active_stream_clients
+                with stream_clients_lock:
+                    if active_stream_clients >= max_stream_clients:
+                        self._write_json(
+                            int(HTTPStatus.TOO_MANY_REQUESTS),
+                            {
+                                "error": {
+                                    "code": "stream_capacity_exhausted",
+                                    "message": (
+                                        "Maximum concurrent stream clients reached."
+                                    ),
+                                }
+                            },
+                        )
+                        return
+                    active_stream_clients += 1
                 interval_ms = _coerce_stream_interval_ms(query)
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-cache")
                 self.send_header("Connection", "keep-alive")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("X-Frame-Options", "DENY")
+                self.send_header("Referrer-Policy", "no-referrer")
                 self.end_headers()
                 try:
                     self.wfile.write(b": stream-open\n\n")
                     self.wfile.flush()
                     next_heartbeat = time.monotonic() + 15.0
+                    started_monotonic = time.monotonic()
                     previous_etag = ""
                     while True:
+                        if (
+                            time.monotonic() - started_monotonic
+                        ) >= stream_max_age_seconds:
+                            self.wfile.write(
+                                b'event: stream_end\ndata: {"reason":"max_age"}\n\n'
+                            )
+                            self.wfile.flush()
+                            return
                         _, encoded, etag = _snapshot_state_cached()
                         if etag != previous_etag:
                             event = (
@@ -408,8 +680,19 @@ class DashboardServer:
                                 next_heartbeat = time.monotonic() + 15.0
                 except (BrokenPipeError, ConnectionResetError, TimeoutError):
                     return
+                finally:
+                    with stream_clients_lock:
+                        active_stream_clients = max(active_stream_clients - 1, 0)
 
-        server = _QuietThreadingHTTPServer(("127.0.0.1", self.port), Handler)
+        server = _QuietThreadingHTTPServer(
+            ("127.0.0.1", self.port),
+            Handler,
+            max_active_requests=_coerce_non_negative_int_env(
+                "MOLT_SYMPHONY_MAX_HTTP_CONNECTIONS",
+                default=96,
+                minimum=8,
+            ),
+        )
         self._server = server
         self._thread = Thread(
             target=server.serve_forever, name="symphony-http", daemon=True
@@ -488,6 +771,106 @@ def _coerce_limit_param(query: str, *, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(10, min(parsed, 1000))
+
+
+@dataclass(frozen=True, slots=True)
+class _DashboardSecurityConfig:
+    api_token: str | None
+    enforce_origin: bool
+    require_csrf_header: bool
+    allowed_origins: frozenset[str]
+    allow_localhost_any_port: bool
+
+
+def _dashboard_security_from_env(*, port: int) -> _DashboardSecurityConfig:
+    api_token = str(
+        os.environ.get("MOLT_SYMPHONY_API_TOKEN")
+        or os.environ.get("MOLT_SYMPHONY_DASHBOARD_TOKEN")
+        or ""
+    ).strip()
+    enforce_origin = _coerce_bool_env("MOLT_SYMPHONY_ENFORCE_ORIGIN", default=True)
+    require_csrf = _coerce_bool_env("MOLT_SYMPHONY_REQUIRE_CSRF_HEADER", default=True)
+    allowed_raw = str(os.environ.get("MOLT_SYMPHONY_ALLOWED_ORIGINS") or "").strip()
+    allow_localhost_any_port = False
+    if allowed_raw:
+        allowed = frozenset(
+            origin.strip().lower()
+            for origin in allowed_raw.split(",")
+            if origin.strip()
+        )
+    else:
+        allow_localhost_any_port = port <= 0
+        allowed = frozenset(
+            {
+                f"http://127.0.0.1:{port}".lower(),
+                f"http://localhost:{port}".lower(),
+            }
+        )
+    return _DashboardSecurityConfig(
+        api_token=api_token or None,
+        enforce_origin=enforce_origin,
+        require_csrf_header=require_csrf,
+        allowed_origins=allowed,
+        allow_localhost_any_port=allow_localhost_any_port,
+    )
+
+
+def _coerce_bool_env(name: str, *, default: bool) -> bool:
+    raw = str(os.environ.get(name, "")).strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _coerce_non_negative_int_env(name: str, *, default: int, minimum: int) -> int:
+    raw = str(os.environ.get(name, "")).strip()
+    if not raw:
+        return max(default, minimum)
+    try:
+        parsed = int(raw)
+    except ValueError:
+        parsed = default
+    return max(parsed, minimum)
+
+
+def _coerce_non_negative_float_env(
+    name: str, *, default: float, minimum: float
+) -> float:
+    raw = str(os.environ.get(name, "")).strip()
+    if not raw:
+        return max(default, minimum)
+    try:
+        parsed = float(raw)
+    except ValueError:
+        parsed = default
+    return max(parsed, minimum)
+
+
+def _reject_connection_overloaded(request: Any) -> None:
+    try:
+        request.sendall(
+            (
+                b"HTTP/1.1 503 Service Unavailable\r\n"
+                b"Connection: close\r\n"
+                b"Content-Type: text/plain; charset=utf-8\r\n"
+                b"Content-Length: 32\r\n\r\n"
+                b"Service overloaded. Retry later."
+            )
+        )
+    except OSError:
+        pass
+    try:
+        request.shutdown(2)
+    except OSError:
+        pass
+    try:
+        request.close()
+    except OSError:
+        pass
 
 
 _DASHBOARD_HTML = """<!doctype html>
@@ -1794,6 +2177,7 @@ _DASHBOARD_HTML = """<!doctype html>
       const STORAGE_KEY = "molt.symphony.dashboard.workspace.v1";
       const VIEW_STORAGE_KEY = "molt.symphony.dashboard.view.v1";
       const TRANSPORT_STORAGE_KEY = "molt.symphony.dashboard.transport.v1";
+      const AUTH_STORAGE_KEY = "molt.symphony.dashboard.auth_token.v1";
       let stream = null;
       let pollTimer = null;
       let reconnectTimer = null;
@@ -1840,6 +2224,20 @@ _DASHBOARD_HTML = """<!doctype html>
       let pollNotModifiedStreak = 0;
       let pollScheduledDelayMs = 0;
       let lastPollStatusLabel = "";
+      const authToken = (() => {
+        try {
+          const params = new URLSearchParams(window.location.search || "");
+          const fromQuery = String(params.get("token") || "").trim();
+          if (fromQuery) {
+            window.localStorage.setItem(AUTH_STORAGE_KEY, fromQuery);
+            return fromQuery;
+          }
+          const fromStorage = String(window.localStorage.getItem(AUTH_STORAGE_KEY) || "").trim();
+          return fromStorage;
+        } catch (_err) {
+          return "";
+        }
+      })();
 
       function toObject(value) {
         return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -1895,6 +2293,36 @@ _DASHBOARD_HTML = """<!doctype html>
         if (sec < 60) return `${Math.floor(sec)}s`;
         if (sec < 3600) return `${Math.floor(sec / 60)}m`;
         return `${Math.floor(sec / 3600)}h`;
+      }
+
+      function withAuthPath(path) {
+        if (!authToken) return path;
+        const url = new URL(path, window.location.origin);
+        if (!url.searchParams.has("token")) {
+          url.searchParams.set("token", authToken);
+        }
+        return `${url.pathname}${url.search}`;
+      }
+
+      function buildApiHeaders({
+        cacheControl = true,
+        includeJsonContentType = false,
+        includeCsrf = false,
+      } = {}) {
+        const headers = {};
+        if (cacheControl) {
+          headers["Cache-Control"] = "no-cache";
+        }
+        if (includeJsonContentType) {
+          headers["Content-Type"] = "application/json";
+        }
+        if (authToken) {
+          headers["Authorization"] = `Bearer ${authToken}`;
+        }
+        if (includeCsrf) {
+          headers["X-Symphony-CSRF"] = "1";
+        }
+        return headers;
       }
 
       function formatEpochSeconds(value) {
@@ -2523,7 +2951,9 @@ _DASHBOARD_HTML = """<!doctype html>
               : "";
             const inspectLink = isSystem
               ? ""
-              : `<a href="/api/v1/${encodeURIComponent(issueId)}" target="_blank" rel="noreferrer">Inspect JSON</a>`;
+              : `<a href="${escapeHtml(
+                  withAuthPath(`/api/v1/${encodeURIComponent(issueId)}`)
+                )}" target="_blank" rel="noreferrer">Inspect JSON</a>`;
             const traceButton = isSystem
               ? ""
               : `<button type="button" class="agent-ref" data-agent-issue="${escapeHtml(
@@ -3259,18 +3689,17 @@ _DASHBOARD_HTML = """<!doctype html>
       async function fetchState() {
         transportMetrics.stateFetchTotal += 1;
         try {
-          const headers = { "Cache-Control": "no-cache" };
+          const headers = buildApiHeaders({ cacheControl: true });
           if (latestStateEtag) {
             headers["If-None-Match"] = latestStateEtag;
           }
-          const resp = await fetch("/api/v1/state", { headers });
+          const resp = await fetch(withAuthPath("/api/v1/state"), { headers });
           if (resp.status === 304) {
             transportMetrics.stateFetch304 += 1;
             publishClientTelemetry();
             return false;
           }
           if (!resp.ok) {
-            transportMetrics.stateFetchErrors += 1;
             throw new Error(`state_fetch_failed:${resp.status}`);
           }
           transportMetrics.stateFetch200 += 1;
@@ -3293,8 +3722,8 @@ _DASHBOARD_HTML = """<!doctype html>
         if (durableFetchInFlight) return false;
         durableFetchInFlight = true;
         try {
-          const resp = await fetch("/api/v1/durable?limit=140", {
-            headers: { "Cache-Control": "no-cache" },
+          const resp = await fetch(withAuthPath("/api/v1/durable?limit=140"), {
+            headers: buildApiHeaders({ cacheControl: true }),
           });
           if (!resp.ok) {
             throw new Error(`durable_fetch_failed:${resp.status}`);
@@ -3312,7 +3741,10 @@ _DASHBOARD_HTML = """<!doctype html>
       async function triggerRefresh() {
         refreshBtn.disabled = true;
         try {
-          const resp = await fetch("/api/v1/refresh", { method: "POST" });
+          const resp = await fetch(withAuthPath("/api/v1/refresh"), {
+            method: "POST",
+            headers: buildApiHeaders({ includeCsrf: true }),
+          });
           if (!resp.ok) throw new Error(`refresh_failed:${resp.status}`);
           await fetchState();
         } catch (_err) {
@@ -3332,9 +3764,12 @@ _DASHBOARD_HTML = """<!doctype html>
         });
         renderState(latestState);
         try {
-          const resp = await fetch("/api/v1/interventions/retry-now", {
+          const resp = await fetch(withAuthPath("/api/v1/interventions/retry-now"), {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: buildApiHeaders({
+              includeJsonContentType: true,
+              includeCsrf: true,
+            }),
             body: JSON.stringify({ issue_identifier: issueIdentifier }),
           });
           const payload = await resp.json();
@@ -3380,9 +3815,12 @@ _DASHBOARD_HTML = """<!doctype html>
           body.value = issueIdentifier;
         }
         try {
-          const resp = await fetch("/api/v1/tools/run", {
+          const resp = await fetch(withAuthPath("/api/v1/tools/run"), {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: buildApiHeaders({
+              includeJsonContentType: true,
+              includeCsrf: true,
+            }),
             body: JSON.stringify(body),
           });
           const payload = await resp.json();
@@ -3539,7 +3977,10 @@ _DASHBOARD_HTML = """<!doctype html>
         const expectedIssue = traceIssueIdentifier;
         const serial = ++traceFetchSerial;
         try {
-          const resp = await fetch(`/api/v1/${encodeURIComponent(expectedIssue)}`);
+          const resp = await fetch(
+            withAuthPath(`/api/v1/${encodeURIComponent(expectedIssue)}`),
+            { headers: buildApiHeaders({ cacheControl: true }) }
+          );
           if (serial !== traceFetchSerial || expectedIssue !== traceIssueIdentifier) {
             return;
           }
@@ -3645,7 +4086,9 @@ _DASHBOARD_HTML = """<!doctype html>
         activeTransport = "sse";
         setStreamStatus(`Connecting live stream (${streamIntervalMs}ms)...`, "connecting");
         ensureWatchdog();
-        stream = new EventSource(`/api/v1/stream?interval_ms=${streamIntervalMs}`);
+        stream = new EventSource(
+          withAuthPath(`/api/v1/stream?interval_ms=${streamIntervalMs}`)
+        );
         stream.onopen = () => {
           reconnectAttempts = 0;
           lastFrameAt = Date.now();
