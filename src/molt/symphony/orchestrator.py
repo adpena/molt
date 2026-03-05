@@ -99,6 +99,14 @@ class SymphonyOrchestrator:
         self._wake_event = threading.Event()
 
         self._server: DashboardServer | None = None
+        self._auth_resume_delay_seconds = max(
+            int(os.environ.get("MOLT_SYMPHONY_AUTH_RESUME_DELAY_SECONDS", "300")),
+            30,
+        )
+        self._rate_limit_resume_default_seconds = max(
+            int(os.environ.get("MOLT_SYMPHONY_RATE_LIMIT_RESUME_SECONDS", "900")),
+            60,
+        )
 
     def run(self) -> int:
         self._startup_terminal_workspace_cleanup()
@@ -189,6 +197,9 @@ class SymphonyOrchestrator:
             }
 
         now_mono = time.monotonic()
+        orphan_issue_id: str | None = None
+        orphan_issue_claimed = False
+        orphan_issue_has_last_error = False
         with self._state_lock:
             for issue_id, entry in self._state.retry_attempts.items():
                 if entry.identifier != identifier_norm:
@@ -211,6 +222,13 @@ class SymphonyOrchestrator:
                     "status": "retrying",
                     "message": "Retry due time moved to now.",
                 }
+            for issue_id, mapped_identifier in self._state.issue_identifiers.items():
+                if mapped_identifier != identifier_norm:
+                    continue
+                orphan_issue_id = issue_id
+                orphan_issue_claimed = issue_id in self._state.claimed
+                orphan_issue_has_last_error = issue_id in self._state.last_errors
+                break
 
         running_issue_id: str | None = None
         with self._state_lock:
@@ -239,6 +257,114 @@ class SymphonyOrchestrator:
                 "issue_identifier": identifier_norm,
                 "status": "running",
                 "message": "Stop requested; retry will be scheduled on worker exit.",
+            }
+
+        if (
+            orphan_issue_id is not None
+            and orphan_issue_claimed
+            and orphan_issue_has_last_error
+        ):
+            self._schedule_retry(
+                orphan_issue_id,
+                identifier_norm,
+                1,
+                error="manual_retry_recovered",
+                continuation=True,
+            )
+            with self._state_lock:
+                self._state.profiling.incr("manual_retry_now_requests")
+                self._record_manual_action_locked(
+                    action="retry_now",
+                    issue_identifier=identifier_norm,
+                    ok=True,
+                    status="retry_recovered",
+                    message="Recovered orphaned retry state and queued immediate retry.",
+                )
+            return {
+                "ok": True,
+                "queued": True,
+                "issue_id": orphan_issue_id,
+                "issue_identifier": identifier_norm,
+                "status": "retrying",
+                "message": "Recovered orphaned retry state and queued immediate retry.",
+            }
+
+        try:
+            candidates = self._tracker.fetch_candidate_issues()
+        except TrackerError as exc:
+            with self._state_lock:
+                self._record_manual_action_locked(
+                    action="retry_now",
+                    issue_identifier=identifier_norm,
+                    ok=False,
+                    status="tracker_error",
+                    message=f"Unable to fetch candidate issues: {exc}",
+                )
+            return {
+                "ok": False,
+                "error": "tracker_error",
+                "issue_identifier": identifier_norm,
+                "message": f"Unable to fetch candidate issues: {exc}",
+            }
+
+        issue_match = next(
+            (item for item in candidates if item.identifier == identifier_norm),
+            None,
+        )
+        if issue_match is not None:
+            if not self._is_dispatch_eligible(issue_match, from_retry=True):
+                with self._state_lock:
+                    self._record_manual_action_locked(
+                        action="retry_now",
+                        issue_identifier=identifier_norm,
+                        ok=False,
+                        status="not_eligible",
+                        message=(
+                            "Issue exists but is not dispatch-eligible in the current"
+                            " workflow state."
+                        ),
+                    )
+                return {
+                    "ok": False,
+                    "error": "issue_not_eligible",
+                    "issue_identifier": identifier_norm,
+                    "message": (
+                        "Issue exists but is not dispatch-eligible in the current"
+                        " workflow state."
+                    ),
+                }
+
+            dispatched = self._dispatch_issue(issue_match, attempt=1)
+            if not dispatched:
+                self._schedule_retry(
+                    issue_match.id,
+                    issue_match.identifier,
+                    1,
+                    error="manual_retry_deferred",
+                    continuation=True,
+                )
+                status = "retrying"
+                message = "Issue dispatch deferred; queued immediate retry when capacity opens."
+            else:
+                status = "running"
+                message = "Issue dispatch started."
+
+            with self._state_lock:
+                self._state.profiling.incr("manual_retry_now_requests")
+                self._record_manual_action_locked(
+                    action="retry_now",
+                    issue_identifier=identifier_norm,
+                    ok=True,
+                    status=status,
+                    message=message,
+                )
+            return {
+                "ok": True,
+                "queued": True,
+                "issue_id": issue_match.id,
+                "issue_identifier": identifier_norm,
+                "status": status,
+                "message": message,
             }
 
         with self._state_lock:
@@ -418,6 +544,49 @@ class SymphonyOrchestrator:
         with self._state_lock:
             self._state.profiling.observe_latency(label, duration_ms)
 
+    def _set_suspension_locked(
+        self,
+        *,
+        kind: str,
+        message: str,
+        resume_delay_seconds: int | None,
+        auto_resume: bool,
+    ) -> None:
+        now_mono = time.monotonic()
+        resume_at: float | None = None
+        if resume_delay_seconds is not None:
+            resume_at = now_mono + float(max(resume_delay_seconds, 1))
+        self._state.suspension_kind = kind
+        self._state.suspension_message = message
+        if self._state.suspension_since_utc is None:
+            self._state.suspension_since_utc = now_utc()
+        self._state.suspension_resume_at_monotonic = resume_at
+        self._state.suspension_auto_resume = auto_resume
+        self._state.profiling.incr("orchestrator_suspensions")
+
+    def _clear_suspension_locked(self) -> str | None:
+        previous_kind = self._state.suspension_kind
+        self._state.suspension_kind = None
+        self._state.suspension_message = None
+        self._state.suspension_since_utc = None
+        self._state.suspension_resume_at_monotonic = None
+        self._state.suspension_auto_resume = False
+        return previous_kind
+
+    def _resume_ready_locked(self, now_mono: float) -> bool:
+        if self._state.suspension_kind is None:
+            return True
+        resume_at = self._state.suspension_resume_at_monotonic
+        if resume_at is None:
+            return False
+        return now_mono >= resume_at
+
+    def _suspension_due_in_locked(self, now_mono: float) -> float | None:
+        resume_at = self._state.suspension_resume_at_monotonic
+        if resume_at is None:
+            return None
+        return max(resume_at - now_mono, 0.0)
+
     def _compute_wait_seconds(self, next_tick_monotonic: float) -> float:
         now = time.monotonic()
         if next_tick_monotonic <= now:
@@ -426,8 +595,11 @@ class SymphonyOrchestrator:
         wait_seconds = next_tick_monotonic - now
         with self._state_lock:
             next_retry_due = _next_retry_due(self._state.retry_attempts)
+            suspension_due = self._suspension_due_in_locked(now)
         if next_retry_due is not None:
             wait_seconds = min(wait_seconds, max(next_retry_due - now, 0.0))
+        if suspension_due is not None:
+            wait_seconds = min(wait_seconds, suspension_due)
 
         return _clamp_wait(wait_seconds, minimum=0.0, maximum=5.0)
 
@@ -573,6 +745,7 @@ class SymphonyOrchestrator:
                 identifier = (
                     running_id_to_identifier.get(issue_id)
                     or retry_id_to_identifier.get(issue_id)
+                    or self._state.issue_identifiers.get(issue_id)
                     or issue_id
                 )
                 attention.append(
@@ -596,6 +769,39 @@ class SymphonyOrchestrator:
                     continue
                 seen_attention.add(key)
                 unique_attention.append(item)
+            suspension_payload = None
+            if self._state.suspension_kind is not None:
+                due_in = self._suspension_due_in_locked(now_mono)
+                suspension_payload = {
+                    "active": True,
+                    "kind": self._state.suspension_kind,
+                    "message": self._state.suspension_message,
+                    "auto_resume": self._state.suspension_auto_resume,
+                    "due_in_seconds": (
+                        round(due_in, 3) if due_in is not None else None
+                    ),
+                    "since": (
+                        self._state.suspension_since_utc.isoformat().replace(
+                            "+00:00", "Z"
+                        )
+                        if self._state.suspension_since_utc is not None
+                        else None
+                    ),
+                }
+                unique_attention.insert(
+                    0,
+                    {
+                        "issue_id": "system",
+                        "issue_identifier": "SYSTEM",
+                        "kind": self._state.suspension_kind,
+                        "message": str(self._state.suspension_message or ""),
+                        "suggested_action": (
+                            "If this is an auth pause, run codex authentication and wait"
+                            " for auto-resume. If this is a rate-limit pause, Symphony"
+                            " will resume automatically when quota returns."
+                        ),
+                    },
+                )
 
             recent_events.sort(key=lambda row: str(row.get("at") or ""), reverse=True)
             recent_events = recent_events[:30]
@@ -623,6 +829,7 @@ class SymphonyOrchestrator:
                 "manual_actions": list(self._state.manual_actions[-40:]),
                 "attention": unique_attention,
                 "needs_human_attention": bool(unique_attention),
+                "suspension": suspension_payload,
                 "profiling": profiling_snapshot,
                 "runtime": {
                     "exec_mode": self._exec_mode,
@@ -715,6 +922,37 @@ class SymphonyOrchestrator:
                         "tracked": {},
                         "last_error": self._state.last_errors.get(entry.issue_id),
                     }
+
+            issue_id_from_index = None
+            for issue_id, identifier in self._state.issue_identifiers.items():
+                if identifier == identifier_norm:
+                    issue_id_from_index = issue_id
+                    break
+            if issue_id_from_index is not None and (
+                issue_id_from_index in self._state.last_errors
+                or issue_id_from_index in self._state.claimed
+            ):
+                return {
+                    "issue_identifier": identifier_norm,
+                    "issue_id": issue_id_from_index,
+                    "status": "blocked",
+                    "attempts": {
+                        "restart_count": 0,
+                        "current_retry_attempt": None,
+                    },
+                    "running": None,
+                    "retry": None,
+                    "logs": {
+                        "codex_session_logs": [],
+                    },
+                    "recent_events": [],
+                    "tracked": {
+                        "claimed": issue_id_from_index in self._state.claimed,
+                        "running": issue_id_from_index in self._state.running,
+                        "retrying": issue_id_from_index in self._state.retry_attempts,
+                    },
+                    "last_error": self._state.last_errors.get(issue_id_from_index),
+                }
         return None
 
     def _start_http_server_if_enabled(self) -> None:
@@ -738,6 +976,15 @@ class SymphonyOrchestrator:
             log("ERROR", "dispatch_preflight_failed", error=str(exc))
             return
 
+        with self._state_lock:
+            now_mono = time.monotonic()
+            if not self._resume_ready_locked(now_mono):
+                self._state.profiling.incr("tick_suspended")
+                return
+            resumed_kind = self._clear_suspension_locked()
+        if resumed_kind is not None:
+            log("INFO", "orchestrator_resumed", reason=resumed_kind)
+
         try:
             candidates = self._tracker.fetch_candidate_issues()
         except TrackerError as exc:
@@ -757,6 +1004,9 @@ class SymphonyOrchestrator:
         now_mono = time.monotonic()
         due: list[RetryEntry] = []
         with self._state_lock:
+            if not self._resume_ready_locked(now_mono):
+                self._state.profiling.incr("retry_processing_suspended")
+                return
             for issue_id, entry in list(self._state.retry_attempts.items()):
                 if entry.due_at_monotonic <= now_mono:
                     due.append(entry)
@@ -804,7 +1054,17 @@ class SymphonyOrchestrator:
             self._release_claim(retry_entry.issue_id)
             return
 
-            self._dispatch_issue(issue, attempt=retry_entry.attempt)
+        dispatched = self._dispatch_issue(issue, attempt=retry_entry.attempt)
+        if dispatched:
+            return
+
+        self._schedule_retry(
+            issue.id,
+            issue.identifier,
+            max(retry_entry.attempt, 1),
+            error="dispatch_deferred",
+            continuation=True,
+        )
 
     @profiled("reconcile_running_issues")
     def _reconcile_running_issues(self) -> None:
@@ -862,16 +1122,16 @@ class SymphonyOrchestrator:
                 )
                 self._request_stop(issue_id, cleanup_on_exit=False, reason="stall")
 
-    def _dispatch_issue(self, issue: Issue, attempt: int | None) -> None:
+    def _dispatch_issue(self, issue: Issue, attempt: int | None) -> bool:
         worker_role = self._derive_worker_role(issue)
         with self._state_lock:
             if issue.id in self._state.running:
-                return
+                return False
             if attempt is None and issue.id in self._state.claimed:
-                return
+                return False
             if not self._has_role_capacity_locked(worker_role):
                 self._state.profiling.incr("dispatch_deferred_role_pool_full")
-                return
+                return False
 
             retry_attempt = 0 if attempt is None else max(attempt, 1)
             running_entry = RunningEntry(
@@ -886,6 +1146,8 @@ class SymphonyOrchestrator:
             self._state.running[issue.id] = running_entry
             self._state.claimed.add(issue.id)
             self._state.retry_attempts.pop(issue.id, None)
+            self._state.issue_identifiers[issue.id] = issue.identifier
+            self._state.last_errors.pop(issue.id, None)
             self._state.profiling.incr("issues_dispatched")
             if attempt is not None:
                 self._state.profiling.incr("issues_dispatched_from_retry")
@@ -900,7 +1162,29 @@ class SymphonyOrchestrator:
         self._worker_controls[issue.id] = WorkerControl(
             thread=thread, stop_event=stop_event
         )
-        thread.start()
+        try:
+            thread.start()
+        except Exception as exc:  # pragma: no cover - defensive
+            with self._state_lock:
+                self._state.running.pop(issue.id, None)
+                self._state.claimed.discard(issue.id)
+                self._state.profiling.incr("dispatch_thread_start_failed")
+            self._worker_controls.pop(issue.id, None)
+            self._schedule_retry(
+                issue.id,
+                issue.identifier,
+                max(retry_attempt, 1),
+                error=f"dispatch_start_failed:{exc.__class__.__name__}:{exc}",
+                continuation=False,
+            )
+            log(
+                "ERROR",
+                "issue_dispatch_start_failed",
+                issue_id=issue.id,
+                issue_identifier=issue.identifier,
+                error=str(exc),
+            )
+            return False
         log(
             "INFO",
             "issue_dispatched",
@@ -908,6 +1192,7 @@ class SymphonyOrchestrator:
             issue_identifier=issue.identifier,
             worker_role=worker_role,
         )
+        return True
 
     def _derive_worker_role(self, issue: Issue) -> str:
         for label in issue.labels:
@@ -1055,8 +1340,25 @@ class SymphonyOrchestrator:
             reason = "failed"
             error = f"unexpected:{exc.__class__.__name__}:{exc}"
         finally:
+            after_run_error: str | None = None
             if workspace_path is not None:
-                self._workspace.run_after_run(workspace_path)
+                try:
+                    self._workspace.run_after_run(workspace_path)
+                except Exception as exc:  # pragma: no cover
+                    after_run_error = f"after_run_failed:{exc.__class__.__name__}:{exc}"
+                    log(
+                        "WARNING",
+                        "workspace_after_run_failed",
+                        issue_id=issue.id,
+                        issue_identifier=issue.identifier,
+                        error=str(exc),
+                    )
+            if after_run_error is not None:
+                if reason == "normal":
+                    reason = "failed"
+                    error = after_run_error
+                elif not error:
+                    error = after_run_error
 
             self._event_queue.put(
                 (
@@ -1185,6 +1487,21 @@ class SymphonyOrchestrator:
             rate_limits = payload.get("rate_limits")
             if isinstance(rate_limits, dict):
                 self._state.codex_rate_limits = rate_limits
+                rate_pause = _derive_rate_limit_suspension(
+                    rate_limits,
+                    default_resume_seconds=self._rate_limit_resume_default_seconds,
+                )
+                if rate_pause is not None:
+                    self._set_suspension_locked(
+                        kind="rate_limited",
+                        message=rate_pause["message"],
+                        resume_delay_seconds=rate_pause["resume_seconds"],
+                        auto_resume=True,
+                    )
+                    self._wake_event.set()
+                elif self._state.suspension_kind == "rate_limited":
+                    self._clear_suspension_locked()
+                    self._wake_event.set()
 
             if event_name in {
                 "session_started",
@@ -1324,6 +1641,67 @@ class SymphonyOrchestrator:
             )
             return
 
+        if reason == "turn_input_required":
+            auth_message = (
+                "Codex interaction requires login or human input. Run "
+                "`codex mcp login` (or `codex login`) and Symphony will auto-resume."
+            )
+            with self._state_lock:
+                self._set_suspension_locked(
+                    kind="auth_required",
+                    message=auth_message,
+                    resume_delay_seconds=self._auth_resume_delay_seconds,
+                    auto_resume=True,
+                )
+                self._state.last_errors[issue_id] = auth_message
+            self._schedule_retry(
+                issue_id,
+                running_entry.issue_identifier,
+                max(running_entry.retry_attempt + 1, 1),
+                error="auth_required",
+                continuation=False,
+                delay_override_ms=self._auth_resume_delay_seconds * 1000,
+            )
+            log(
+                "WARNING",
+                "worker_paused_auth_required",
+                issue_id=issue_id,
+                issue_identifier=running_entry.issue_identifier,
+            )
+            return
+
+        if _looks_like_rate_limit_error(error):
+            resume_seconds = self._rate_limit_resume_default_seconds
+            with self._state_lock:
+                self._set_suspension_locked(
+                    kind="rate_limited",
+                    message=(
+                        "Codex rate-limit exhausted. Symphony will pause and retry"
+                        " automatically when quota is expected to recover."
+                    ),
+                    resume_delay_seconds=resume_seconds,
+                    auto_resume=True,
+                )
+            self._schedule_retry(
+                issue_id,
+                running_entry.issue_identifier,
+                max(running_entry.retry_attempt + 1, 1),
+                error=error or "rate_limited",
+                continuation=False,
+                delay_override_ms=resume_seconds * 1000,
+            )
+            with self._state_lock:
+                self._state.last_errors[issue_id] = str(error or "rate_limited")
+            log(
+                "WARNING",
+                "worker_paused_rate_limited",
+                issue_id=issue_id,
+                issue_identifier=running_entry.issue_identifier,
+                reason=reason,
+                error=error,
+            )
+            return
+
         if reason == "normal":
             with self._state_lock:
                 self._state.completed.add(issue_id)
@@ -1375,8 +1753,11 @@ class SymphonyOrchestrator:
         *,
         error: str | None,
         continuation: bool,
+        delay_override_ms: int | None = None,
     ) -> None:
-        if continuation:
+        if delay_override_ms is not None:
+            delay_ms = max(int(delay_override_ms), 1000)
+        elif continuation:
             delay_ms = 1000
         else:
             max_backoff = self._config.agent.max_retry_backoff_ms
@@ -1393,6 +1774,7 @@ class SymphonyOrchestrator:
         with self._state_lock:
             self._state.retry_attempts[issue_id] = entry
             self._state.claimed.add(issue_id)
+            self._state.issue_identifiers[issue_id] = identifier
             self._state.profiling.incr("retries_scheduled")
             self._state.profiling.observe_latency("retry_backoff", float(delay_ms))
         self._wake_event.set()
@@ -1801,6 +2183,153 @@ def _run_tool_command(
         "stdout": stdout,
         "stderr": stderr,
     }
+
+
+def _derive_rate_limit_suspension(
+    rate_limits: dict[str, Any], *, default_resume_seconds: int
+) -> dict[str, Any] | None:
+    has_credits = _find_bool_key_recursive(
+        rate_limits,
+        {"hascredits", "has_credits"},
+    )
+    if has_credits is False:
+        resume_seconds = max(default_resume_seconds, 3600)
+        return {
+            "resume_seconds": resume_seconds,
+            "message": (
+                "Provider credits are exhausted. Symphony will pause and auto-resume in "
+                f"about {_format_duration_brief(resume_seconds)}."
+            ),
+        }
+
+    exhausted_windows: list[int] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            lowered = {str(key).lower(): value for key, value in node.items()}
+            used_percent = _extract_first_number(
+                lowered,
+                ("usedpercent", "used_percent"),
+            )
+            remaining = _extract_first_number(
+                lowered,
+                ("remaining", "remainingrequests", "remainingtokens"),
+            )
+            exhausted = False
+            if used_percent is not None and used_percent >= 99.9:
+                exhausted = True
+            if remaining is not None and remaining <= 0:
+                exhausted = True
+            if exhausted:
+                window_seconds = _extract_window_seconds(lowered)
+                if window_seconds is None:
+                    window_seconds = default_resume_seconds
+                exhausted_windows.append(window_seconds)
+            for value in node.values():
+                walk(value)
+            return
+        if isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(rate_limits)
+    if not exhausted_windows:
+        return None
+    resume_seconds = max(min(exhausted_windows), 60)
+    return {
+        "resume_seconds": resume_seconds,
+        "message": (
+            "Provider rate-limit window is exhausted. Symphony will pause and auto-resume in "
+            f"about {_format_duration_brief(resume_seconds)}."
+        ),
+    }
+
+
+def _find_bool_key_recursive(value: Any, keys: set[str]) -> bool | None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if str(key).lower() in keys and isinstance(child, bool):
+                return child
+        for child in value.values():
+            result = _find_bool_key_recursive(child, keys)
+            if result is not None:
+                return result
+    elif isinstance(value, list):
+        for child in value:
+            result = _find_bool_key_recursive(child, keys)
+            if result is not None:
+                return result
+    return None
+
+
+def _extract_first_number(
+    candidate: dict[str, Any], keys: tuple[str, ...]
+) -> float | None:
+    for key in keys:
+        if key in candidate:
+            value = candidate.get(key)
+            if isinstance(value, (int, float)):
+                return float(value)
+    return None
+
+
+def _extract_window_seconds(candidate: dict[str, Any]) -> int | None:
+    window_seconds = _extract_first_number(
+        candidate,
+        (
+            "windowseconds",
+            "windowdurationseconds",
+            "resetinseconds",
+            "retryafterseconds",
+            "retry_after_seconds",
+        ),
+    )
+    if window_seconds is not None and window_seconds > 0:
+        return int(window_seconds)
+
+    window_raw = _extract_first_number(
+        candidate,
+        (
+            "windowduration",
+            "window_ms",
+            "windowmilliseconds",
+            "resetinms",
+            "retryafterms",
+            "retry_after_ms",
+        ),
+    )
+    if window_raw is None or window_raw <= 0:
+        return None
+    if window_raw >= 100000:
+        return int(window_raw / 1000.0)
+    return int(window_raw)
+
+
+def _format_duration_brief(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{max(int(seconds / 60), 1)}m"
+    if seconds < 86400:
+        return f"{max(int(seconds / 3600), 1)}h"
+    return f"{max(int(seconds / 86400), 1)}d"
+
+
+def _looks_like_rate_limit_error(error: Any) -> bool:
+    if error is None:
+        return False
+    text = str(error).strip().lower()
+    if not text:
+        return False
+    if "429" in text:
+        return True
+    if "rate limit" in text or "ratelimit" in text:
+        return True
+    if "quota" in text:
+        return True
+    if "credit" in text and ("exhaust" in text or "deplet" in text):
+        return True
+    return False
 
 
 def _dispatch_sort_key(issue: Issue) -> tuple[int, float, str]:
