@@ -36,6 +36,7 @@ typedef struct PyArray_Descr {
     int type_num;
     int elsize;
     int alignment;
+    void *subarray;
 } PyArray_Descr;
 
 typedef struct PyArrayObject_fields {
@@ -175,7 +176,10 @@ typedef struct PyDatetimeScalarObject {
 #define NPY_ARRAY_C_CONTIGUOUS 0x0001
 #define NPY_ARRAY_F_CONTIGUOUS 0x0002
 #define NPY_ARRAY_OWNDATA 0x0004
+#define NPY_ARRAY_ALIGNED 0x0100
+#define NPY_ARRAY_NOTSWAPPED 0x0200
 #define NPY_ARRAY_WRITEABLE 0x0400
+#define NPY_ARRAY_WRITEBACKIFCOPY 0x2000
 
 #define NPY_ITEM_REFCOUNT 0x01
 #define NPY_NEEDS_PYAPI 0x02
@@ -192,6 +196,8 @@ typedef struct PyDatetimeScalarObject {
 #define PyTypeNum_ISUSERDEF(t) ((t) >= 256)
 #define PyTypeNum_ISEXTENDED(t) PyTypeNum_ISUSERDEF(t)
 #define PyTypeNum_ISFLEXIBLE(t) ((t) == NPY_STRING || (t) == NPY_UNICODE || (t) == NPY_VOID)
+
+#define PyDataType_SUBARRAY(descr) ((descr) != NULL ? (descr)->subarray : NULL)
 
 #ifdef __cplusplus
 }
