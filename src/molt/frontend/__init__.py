@@ -9745,81 +9745,114 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         body: list[ast.stmt],
         carry_vars: set[str],
     ) -> None:
-        """Counted while loop with loop-carried block params for int locals."""
+        """Counted while loop using all-carry-var block params (no LOOP_INDEX).
+
+        Both the loop index and accumulator variables use LOOP_CARRY_INIT/UPDATE
+        with raw i64 values, eliminating per-iteration NaN-box/unbox overhead.
+        """
         if not carry_vars:
             self._emit_counted_while(index_name, bound, body)
             return
+        # Include the index variable in carry vars for uniform raw i64 treatment
+        all_carry = carry_vars | {index_name}
         start = self._load_local_value(index_name)
         if start is None:
             start = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[0], result=start))
-        one = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[1], result=one))
         if isinstance(bound, MoltValue):
             stop = bound
         else:
             stop = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[bound], result=stop))
         guard_map = self._emit_hoisted_loop_guards(body)
-        # Pre-compute initial carry values BEFORE LOOP_INDEX_START so that
-        # LOOP_CARRY_INIT ops are emitted immediately after LOOP_INDEX_START
-        # (the backend scan-ahead requires them to be consecutive).
+        # Pre-compute initial values and unbox to raw i64 before the loop
         prev_carry = set(self.loop_carry_vars)
         saved_cells: dict[str, MoltValue] = {}
         carry_init_vals: list[tuple[str, MoltValue]] = []
-        # Include the index variable as a carry-like var — remove its boxed cell
-        # during the loop so body reads use the block-param SSA value directly.
-        all_loop_vars = carry_vars | {index_name}
-        for name in sorted(all_loop_vars):
-            if name in carry_vars:
+        for name in sorted(all_carry):
+            if name == index_name:
+                init_val = start
+            else:
                 init_val = self._load_local_value(name)
                 if init_val is None:
                     init_val = MoltValue(self.next_var(), type_hint="int")
                     self.emit(MoltOp(kind="CONST", args=[0], result=init_val))
-                # Unbox to raw i64 BEFORE the loop so the carry var stays raw
-                # throughout, avoiding per-iteration box/unbox overhead.
-                raw_init = MoltValue(f"__carry_raw_init_{name}", type_hint="int")
-                self.emit(MoltOp(kind="UNBOX_TO_RAW_INT", args=[init_val], result=raw_init))
-                carry_init_vals.append((name, raw_init))
+            # Unbox to raw i64 before the loop
+            raw_init = MoltValue(f"__carry_raw_init_{name}", type_hint="int")
+            self.emit(MoltOp(kind="UNBOX_TO_RAW_INT", args=[init_val], result=raw_init))
+            carry_init_vals.append((name, raw_init))
             if name in self.boxed_locals:
                 saved_cells[name] = self.boxed_locals.pop(name)
+        # Unbox loop bound to raw i64 (loop-invariant)
+        raw_stop = MoltValue(f"__raw_loop_stop", type_hint="int")
+        self.emit(MoltOp(kind="UNBOX_TO_RAW_INT", args=[stop], result=raw_stop))
+        # Emit LOOP_START + LOOP_CARRY_INIT (no LOOP_INDEX_START — all vars are carries)
         self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-        idx = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
-        # Emit carry inits immediately after LOOP_INDEX_START (consecutive).
-        for name, init_val in carry_init_vals:
+        for name, raw_init in carry_init_vals:
             carry_out = MoltValue(f"__carry_{name}", type_hint="int")
-            self.emit(MoltOp(kind="LOOP_CARRY_INIT", args=[init_val], result=carry_out))
+            self.emit(MoltOp(kind="LOOP_CARRY_INIT", args=[raw_init], result=carry_out))
             self.locals[name] = carry_out
             self.loop_carry_vars.add(name)
+        # Condition: __carry_i < raw_stop (both raw i64)
+        idx_carry = self.locals[index_name]
         cond = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
         self.emit(
-            MoltOp(kind="LOOP_BREAK_IF_FALSE", args=[cond], result=MoltValue("none"))
+            MoltOp(
+                kind="LT",
+                args=[idx_carry, raw_stop],
+                result=cond,
+                metadata={"raw_int": True},
+            )
         )
-        # Set index var directly in locals (no boxed cell write, no dict_set)
-        self.locals[index_name] = idx
+        self.emit(
+            MoltOp(
+                kind="LOOP_BREAK_IF_FALSE",
+                args=[cond],
+                result=MoltValue("none"),
+                metadata={"raw_int": True},
+            )
+        )
         # Suppress locals-dict writes inside tight loop body
         prev_locals_cache = self.locals_cache_val
         self.locals_cache_val = None
         self._visit_loop_body(body, guard_map)
         self.locals_cache_val = prev_locals_cache
+        # Increment index: __carry_i + 1 (raw i64)
+        raw_one = MoltValue(f"__raw_loop_one", type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[1], result=raw_one, metadata={"raw_int": True}))
+        idx_carry_cur = self.locals[index_name]
         next_idx = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="ADD", args=[idx, one], result=next_idx))
-        self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
+        self.emit(
+            MoltOp(
+                kind="ADD",
+                args=[idx_carry_cur, raw_one],
+                result=next_idx,
+                metadata={"raw_int": True},
+            )
+        )
+        # Update index carry var
+        carry_name = f"__carry_{index_name}"
+        carry_out = MoltValue(carry_name, type_hint="int")
+        self.emit(
+            MoltOp(
+                kind="LOOP_CARRY_UPDATE",
+                args=[carry_name, next_idx],
+                result=carry_out,
+            )
+        )
+        self.locals[index_name] = carry_out
         self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
         self.loop_carry_vars = prev_carry
-        # Restore boxed cells and write final values back (index + carry vars)
+        # Restore boxed cells and write final values back
         for name, cell in saved_cells.items():
             self.boxed_locals[name] = cell
-            if name == index_name:
-                final_val = idx
-            else:
-                final_val = self.locals.get(name)
+            final_val = self.locals.get(name)
             if final_val is not None:
                 idx_var = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="CONST", args=[0], result=idx_var))
+                # The raw_int pass will auto-insert BOX_FROM_RAW_INT when it
+                # sees STORE_INDEX consuming a raw carry value.
                 self.emit(
                     MoltOp(
                         kind="STORE_INDEX",
@@ -36465,7 +36498,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     new_ops.append(op)
 
             elif op.kind == "CONST" and isinstance(op.result, MoltValue):
-                if op.result.name in raw_eligible:
+                if op.result.name in raw_eligible or (
+                    op.metadata and op.metadata.get("raw_int")
+                ):
                     meta = dict(op.metadata) if op.metadata else {}
                     meta["raw_int"] = True
                     new_op = MoltOp(
