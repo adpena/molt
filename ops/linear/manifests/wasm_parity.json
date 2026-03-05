@@ -26,7 +26,7 @@
     }
   },
   {
-    "title": "[P0][RT2] expand browser socket coverage (UDP/listen/server sockets) + add more parity tests.)",
+    "title": "[P0][RT2] expand browser socket coverage (UDP/listen/server sockets) + add more parity tests)",
     "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: expand browser socket coverage (UDP/listen/server sockets) + add more parity tests.)\nArea: wasm-parity\nOwner lane: runtime\nMilestone: RT2\nStatus tag: partial",
     "priority": 1,
     "metadata": {
@@ -52,7 +52,7 @@
     }
   },
   {
-    "title": "[P1][DB2] wasm DB connector parity with real backend coverage (browser host tests cover cancellation + Arrow IPC bytes))",
+    "title": "[P1][DB2] wasm DB connector parity with real backend coverage (browser host tests cover cancellation + Arrow IPC bytes)",
     "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: wasm DB connector parity with real backend coverage (browser host tests cover cancellation + Arrow IPC bytes))\nArea: wasm-db-parity\nOwner lane: runtime\nMilestone: DB2\nStatus tag: partial",
     "priority": 2,
     "metadata": {
@@ -65,7 +65,7 @@
     }
   },
   {
-    "title": "[P1][DB2] wasm DB parity with real backend coverage.)",
+    "title": "[P1][DB2] wasm DB parity with real backend coverage)",
     "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: wasm DB parity with real backend coverage.)\nArea: wasm-db-parity\nOwner lane: runtime\nMilestone: DB2\nStatus tag: partial",
     "priority": 2,
     "metadata": {
@@ -104,7 +104,7 @@
     }
   },
   {
-    "title": "[P1][RT2] wire local timezone + locale on wasm hosts) (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): deterministic clock policy) |",
+    "title": "[P1][RT2] wire local timezone + locale on wasm hosts)",
     "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: wire local timezone + locale on wasm hosts) (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): deterministic clock policy) |\nArea: wasm-parity\nOwner lane: runtime\nMilestone: RT2\nStatus tag: partial",
     "priority": 2,
     "metadata": {

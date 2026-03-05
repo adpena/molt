@@ -1,0 +1,148 @@
+from __future__ import annotations
+
+import argparse
+
+import pytest
+
+import tools.linear_workspace as linear_workspace
+
+
+def test_resolve_issue_id_prefers_direct_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_graphql(
+        query: str, variables: dict[str, object] | None = None
+    ) -> dict[str, object]:
+        assert query == linear_workspace.QUERY_ISSUE_BY_ID
+        assert variables == {"id": "MOL-42"}
+        return {"issue": {"id": "issue-42"}}
+
+    monkeypatch.setattr(linear_workspace, "graphql", _fake_graphql)
+    issue_id = linear_workspace._resolve_issue_id("team-id", "MOL-42")
+    assert issue_id == "issue-42"
+
+
+def test_resolve_issue_id_falls_back_to_team_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_graphql(
+        query: str, variables: dict[str, object] | None = None
+    ) -> dict[str, object]:
+        raise RuntimeError("lookup_failed")
+
+    monkeypatch.setattr(linear_workspace, "graphql", _fake_graphql)
+    monkeypatch.setattr(
+        linear_workspace,
+        "_fetch_issues",
+        lambda _team_id, _project_id: [
+            {"id": "issue-100", "identifier": "MOL-100"},
+            {"id": "issue-101", "identifier": "MOL-101"},
+        ],
+    )
+    assert linear_workspace._resolve_issue_id("team-id", "MOL-101") == "issue-101"
+
+
+def test_cmd_update_issue_builds_expected_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    monkeypatch.setattr(linear_workspace, "_resolve_team_id", lambda _team: "team-id")
+    monkeypatch.setattr(
+        linear_workspace, "_resolve_issue_id", lambda _team_id, _issue: "issue-id"
+    )
+    monkeypatch.setattr(
+        linear_workspace, "_resolve_project_id", lambda _team_id, _project: "project-id"
+    )
+    monkeypatch.setattr(
+        linear_workspace, "_state_id_by_name", lambda _team_id, _state: "state-id"
+    )
+
+    def _fake_graphql(
+        query: str, variables: dict[str, object] | None = None
+    ) -> dict[str, object]:
+        calls.append((query, variables or {}))
+        return {
+            "issueUpdate": {
+                "success": True,
+                "issue": {"id": "issue-id", "identifier": "MOL-1", "title": "Updated"},
+            }
+        }
+
+    monkeypatch.setattr(linear_workspace, "graphql", _fake_graphql)
+    args = argparse.Namespace(
+        team="MOL",
+        issue="MOL-1",
+        title="Updated",
+        description="new body",
+        priority=1,
+        project="proj",
+        state="In Progress",
+    )
+    rc = linear_workspace.cmd_update_issue(args)
+    assert rc == 0
+    assert len(calls) == 1
+    query, variables = calls[0]
+    assert query == linear_workspace.MUTATION_ISSUE_UPDATE
+    assert variables == {
+        "id": "issue-id",
+        "input": {
+            "title": "Updated",
+            "description": "new body",
+            "priority": 1,
+            "projectId": "project-id",
+            "stateId": "state-id",
+        },
+    }
+
+
+def test_cmd_update_issue_requires_at_least_one_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(linear_workspace, "_resolve_team_id", lambda _team: "team-id")
+    monkeypatch.setattr(
+        linear_workspace, "_resolve_issue_id", lambda _team_id, _issue: "issue-id"
+    )
+    args = argparse.Namespace(
+        team="MOL",
+        issue="MOL-1",
+        title=None,
+        description=None,
+        priority=None,
+        project=None,
+        state=None,
+    )
+    with pytest.raises(RuntimeError):
+        linear_workspace.cmd_update_issue(args)
+
+
+def test_cmd_comment_issue_posts_expected_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(linear_workspace, "_resolve_team_id", lambda _team: "team-id")
+    monkeypatch.setattr(
+        linear_workspace, "_resolve_issue_id", lambda _team_id, _issue: "issue-id"
+    )
+
+    def _fake_graphql(
+        query: str, variables: dict[str, object] | None = None
+    ) -> dict[str, object]:
+        calls.append((query, variables or {}))
+        return {
+            "commentCreate": {
+                "success": True,
+                "comment": {"id": "comment-1", "body": "hello"},
+            }
+        }
+
+    monkeypatch.setattr(linear_workspace, "graphql", _fake_graphql)
+    args = argparse.Namespace(team="MOL", issue="MOL-1", body="hello")
+    rc = linear_workspace.cmd_comment_issue(args)
+    assert rc == 0
+    assert calls == [
+        (
+            linear_workspace.MUTATION_COMMENT_CREATE,
+            {"input": {"issueId": "issue-id", "body": "hello"}},
+        )
+    ]

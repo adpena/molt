@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -144,6 +145,14 @@ def _sync_env_defaults(
     merged.setdefault("MOLT_SYMPHONY_SYNC_REMOTE", "origin")
     merged.setdefault("MOLT_SYMPHONY_SYNC_BRANCH", "main")
     merged.setdefault("MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS", "adpena,symphony")
+    merged.setdefault("MOLT_SYMPHONY_TOOL_STATE_DETAIL", "compact")
+    merged.setdefault("MOLT_SYMPHONY_MAX_CODEX_EVENT_COUNTERS", "64")
+    merged.setdefault("MOLT_SYMPHONY_DURABLE_MEMORY", "1")
+    merged.setdefault(
+        "MOLT_SYMPHONY_DURABLE_ROOT",
+        str(ext_root / "logs" / "symphony" / "durable_memory"),
+    )
+    merged.setdefault("MOLT_SYMPHONY_DURABLE_SYNC_SECONDS", "180")
     merged.setdefault(
         "MOLT_SYMPHONY_API_TOKEN_FILE",
         str(ext_root / "logs" / "symphony" / "secrets" / "dashboard_api_token"),
@@ -208,6 +217,62 @@ def _ensure_ext_dirs(ext_root: Path) -> list[str]:
         path.mkdir(parents=True, exist_ok=True)
         created.append(str(path))
     return created
+
+
+def _configure_lin_cli(
+    *, env_file: Path, home_dir: Path | None = None
+) -> dict[str, Any]:
+    lin_path = shutil.which("lin")
+    if not lin_path:
+        return {
+            "configured": False,
+            "reason": "lin_not_found",
+            "lin_path": None,
+        }
+
+    api_key = os.environ.get("LINEAR_API_KEY", "").strip()
+    if not api_key:
+        api_key = _parse_env_file(env_file).get("LINEAR_API_KEY", "").strip()  # secret-guard: allow
+    if not api_key:
+        return {
+            "configured": False,
+            "reason": "missing_linear_api_key",
+            "lin_path": lin_path,
+        }
+
+    target_home = home_dir or Path.home()
+    lin_dir = target_home / ".lin"
+    lin_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(lin_dir, 0o700)
+    except OSError:
+        pass
+
+    store_file = lin_dir / "store.apiKey.json"
+    previous_key: str | None = None
+    if store_file.exists():
+        try:
+            parsed = json.loads(store_file.read_text(encoding="utf-8"))
+            if isinstance(parsed, str):
+                previous_key = parsed
+        except (json.JSONDecodeError, OSError):
+            previous_key = None
+
+    store_file.write_text(json.dumps(api_key), encoding="utf-8")
+    try:
+        os.chmod(store_file, 0o600)
+    except OSError:
+        pass
+
+    fingerprint = hashlib.blake2s(api_key.encode("utf-8"), digest_size=6).hexdigest()
+    return {
+        "configured": True,
+        "reason": "ok",
+        "lin_path": lin_path,
+        "store_file": str(store_file),
+        "changed": previous_key != api_key,
+        "api_key_fingerprint": fingerprint,
+    }
 
 
 def _ensure_git_hooks_path(
@@ -290,6 +355,7 @@ def main(argv: list[str] | None = None) -> int:
         repo_root=repo_root,
         force_path=bool(args.force_git_hooks_path),
     )
+    lin_cli_summary = _configure_lin_cli(env_file=env_file)
 
     launchd_summary: dict[str, Any] = {"installed": False}
     if args.install_launchd:
@@ -324,9 +390,11 @@ def main(argv: list[str] | None = None) -> int:
         "mcp_linear": mcp,
         "env": env_summary,
         "git_hooks": hooks_summary,
+        "lin_cli": lin_cli_summary,
         "launchd": launchd_summary,
         "notes": [
             "LINEAR_API_KEY is still required in env file for direct GraphQL tracker access.",
+            "lin CLI API key store is auto-seeded from LINEAR_API_KEY when lin is installed.",
             "If mcp_linear.auth_state is missing, run: codex mcp login linear",
         ],
     }

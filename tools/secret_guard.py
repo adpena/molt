@@ -39,6 +39,9 @@ PLACEHOLDER_TOKENS = (
     "none",
     "null",
 )
+ALLOW_PATH_PREFIXES = (
+    "vendor/rustpython-parser/",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +86,8 @@ def _looks_like_sensitive_assignment(line: str) -> bool:
 
 
 def _scan_line(path: str, line_no: int, line: str) -> list[Finding]:
+    if any(path.startswith(prefix) for prefix in ALLOW_PATH_PREFIXES):
+        return []
     if ALLOW_MARKER in line:
         return []
     findings: list[Finding] = []

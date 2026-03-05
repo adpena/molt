@@ -165,11 +165,42 @@ query IssuesByTeam($teamId: ID!, $first: Int!, $after: String) {
 }
 """.strip()
 
+QUERY_ISSUE_BY_ID = """
+query IssueById($id: String!) {
+  issue(id: $id) {
+    id
+    identifier
+    title
+    description
+    state { id name type }
+    project { id name slugId }
+    priority
+    createdAt
+    updatedAt
+    url
+  }
+}
+""".strip()
+
 MUTATION_ISSUE_CREATE = """
 mutation IssueCreate($input: IssueCreateInput!) {
   issueCreate(input: $input) {
     success
     issue { id identifier title url }
+  }
+}
+""".strip()
+
+MUTATION_COMMENT_CREATE = """
+mutation CommentCreate($input: CommentCreateInput!) {
+  commentCreate(input: $input) {
+    success
+    comment {
+      id
+      body
+      createdAt
+      updatedAt
+    }
   }
 }
 """.strip()
@@ -572,6 +603,31 @@ def _state_id_by_name(team_id: str, state_name: str) -> str:
     raise RuntimeError(f"workflow state not found: {state_name}")
 
 
+def _resolve_issue_id(team_id: str, issue_ref: str) -> str:
+    target = issue_ref.strip()
+    if not target:
+        raise RuntimeError("issue reference cannot be empty")
+
+    try:
+        data = graphql(QUERY_ISSUE_BY_ID, {"id": target})
+        issue = data.get("issue")
+        if isinstance(issue, dict):
+            issue_id = str(issue.get("id") or "").strip()
+            if issue_id:
+                return issue_id
+    except RuntimeError:
+        pass
+
+    normalized = target.lower()
+    issues = _fetch_issues(team_id, None)
+    for issue in issues:
+        issue_id = str(issue.get("id") or "").strip()
+        identifier = str(issue.get("identifier") or "").strip()
+        if issue_id.lower() == normalized or identifier.lower() == normalized:
+            return issue_id
+    raise RuntimeError(f"issue not found in team: {issue_ref}")
+
+
 def _sync_manifest(
     *,
     team: str,
@@ -666,6 +722,60 @@ def cmd_create_issue(args: argparse.Namespace) -> int:
     if not result.get("success"):
         raise RuntimeError("issueCreate returned success=false")
     print(json.dumps(result["issue"], indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_update_issue(args: argparse.Namespace) -> int:
+    team_id = _resolve_team_id(args.team)
+    issue_id = _resolve_issue_id(team_id, args.issue)
+    project_id = _resolve_project_id(team_id, args.project) if args.project else None
+    state_id = _state_id_by_name(team_id, args.state) if args.state else None
+
+    input_payload: dict[str, Any] = {}
+    if args.title is not None:
+        input_payload["title"] = args.title
+    if args.description is not None:
+        input_payload["description"] = args.description
+    if args.priority is not None:
+        input_payload["priority"] = args.priority
+    if project_id is not None:
+        input_payload["projectId"] = project_id
+    if state_id is not None:
+        input_payload["stateId"] = state_id
+
+    if not input_payload:
+        raise RuntimeError(
+            "no update fields provided; set at least one of --title/--description/--priority/--project/--state"
+        )
+
+    data = graphql(MUTATION_ISSUE_UPDATE, {"id": issue_id, "input": input_payload})
+    result = data["issueUpdate"]
+    if not result.get("success"):
+        raise RuntimeError("issueUpdate returned success=false")
+    print(json.dumps(result["issue"], indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_comment_issue(args: argparse.Namespace) -> int:
+    team_id = _resolve_team_id(args.team)
+    issue_id = _resolve_issue_id(team_id, args.issue)
+    body = str(args.body or "").strip()
+    if not body:
+        raise RuntimeError("--body cannot be empty")
+
+    data = graphql(
+        MUTATION_COMMENT_CREATE,
+        {
+            "input": {
+                "issueId": issue_id,
+                "body": body,
+            }
+        },
+    )
+    result = data["commentCreate"]
+    if not result.get("success"):
+        raise RuntimeError("commentCreate returned success=false")
+    print(json.dumps(result["comment"], indent=2, sort_keys=True))
     return 0
 
 
@@ -792,6 +902,32 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--description", default="")
     create.add_argument("--priority", type=int, default=None)
     create.set_defaults(func=cmd_create_issue)
+
+    update = sub.add_parser("update-issue", help="Update one issue by id/identifier")
+    update.add_argument("--team", required=True, help="Team id/key/name")
+    update.add_argument(
+        "--issue", required=True, help="Issue id or identifier (for example MOL-123)"
+    )
+    update.add_argument("--title", default=None)
+    update.add_argument("--description", default=None)
+    update.add_argument("--priority", type=int, default=None)
+    update.add_argument("--project", default=None, help="Project id/slug/name")
+    update.add_argument(
+        "--state",
+        default=None,
+        help="Workflow state name (for example In Progress, Done, Canceled)",
+    )
+    update.set_defaults(func=cmd_update_issue)
+
+    comment = sub.add_parser(
+        "comment-issue", help="Create one comment on an issue by id/identifier"
+    )
+    comment.add_argument("--team", required=True, help="Team id/key/name")
+    comment.add_argument(
+        "--issue", required=True, help="Issue id or identifier (for example MOL-123)"
+    )
+    comment.add_argument("--body", required=True, help="Comment text")
+    comment.set_defaults(func=cmd_comment_issue)
 
     bulk = sub.add_parser("bulk-create", help="Create issues from manifest JSON list")
     bulk.add_argument("--team", required=True, help="Team id/key/name")

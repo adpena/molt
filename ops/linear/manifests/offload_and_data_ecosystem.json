@@ -52,7 +52,7 @@
     }
   },
   {
-    "title": "[P1][SL1] compiled handler coverage beyond demo exports.)",
+    "title": "[P1][SL1] compiled handler coverage beyond demo exports)",
     "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: compiled handler coverage beyond demo exports.)\nArea: offload\nOwner lane: runtime\nMilestone: SL1\nStatus tag: partial",
     "priority": 2,
     "metadata": {
@@ -65,7 +65,7 @@
     }
   },
   {
-    "title": "[P1][SL1] finalize accel retry/backoff + non-demo handler coverage.)",
+    "title": "[P1][SL1] finalize accel retry/backoff + non-demo handler coverage)",
     "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: finalize accel retry/backoff + non-demo handler coverage.)\nArea: offload\nOwner lane: runtime\nMilestone: SL1\nStatus tag: partial",
     "priority": 2,
     "metadata": {

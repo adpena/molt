@@ -169,7 +169,7 @@
     }
   },
   {
-    "title": "[P1][LF1] exception objects + last-exception plumbing. |",
+    "title": "[P1][LF1] exception objects + last-exception plumbing",
     "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: exception objects + last-exception plumbing. |\nArea: semantics\nOwner lane: runtime\nMilestone: LF1\nStatus tag: partial",
     "priority": 2,
     "metadata": {

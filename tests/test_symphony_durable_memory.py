@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import molt.symphony.durable_memory as durable_memory
 from molt.symphony.durable_memory import DurableMemoryStore
 
 
@@ -75,5 +76,27 @@ def test_durable_memory_integrity_detects_bad_jsonl(tmp_path: Path) -> None:
         assert check["ok"] is False
         jsonl_check = check["checks"]["jsonl_readable"]
         assert jsonl_check["ok"] is False
+    finally:
+        store.close()
+
+
+def test_durable_memory_duckdb_lock_conflict_is_warning(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class _LockedDuckDB:
+        def connect(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError(
+                'IO Error: Could not set lock on file "events.duckdb": '
+                "Conflicting lock is held in python (PID 123)"
+            )
+
+    (tmp_path / "events.duckdb").write_bytes(b"not-used")
+    store = DurableMemoryStore(root=tmp_path, sync_interval_seconds=3600, max_queue=128)
+    monkeypatch.setattr(durable_memory, "_duckdb", _LockedDuckDB())
+    try:
+        check = store._check_duckdb_readable()
+        assert check["ok"] is True
+        assert check["reason"] == "duckdb_locked_by_writer"
+        assert check["warning"] is True
     finally:
         store.close()
