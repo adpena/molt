@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import csv
 import importlib.util
 import json
 import os
@@ -130,6 +131,25 @@ query ProjectTypeFields {
   }
 }
 """.strip()
+
+HARNESS_TIMESERIES_FIELDS = (
+    "captured_at",
+    "readiness_overall_status",
+    "harness_score",
+    "harness_target",
+    "linear_issue_count",
+    "linear_project_count",
+    "linear_label_count",
+    "linear_active_execution_flow",
+    "formal_suite_status",
+    "formal_suite_mode",
+    "durable_status",
+    "durable_jsonl_size",
+    "durable_duckdb_size",
+    "durable_parquet_size",
+)
+
+DURABLE_GROWTH_WARN_RATIO = 0.05
 
 
 def _utc_now() -> str:
@@ -1462,6 +1482,239 @@ def _as_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _safe_int(value: Any, *, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value))
+    except Exception:
+        return default
+
+
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if value is None:
+        return None
+    try:
+        return int(str(value))
+    except Exception:
+        return None
+
+
+def _iso_compact(timestamp: str) -> str:
+    raw = timestamp.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1]
+    return re.sub(r"[-:.]", "", raw) + "Z"
+
+
+def _snapshot_from_report(report: dict[str, Any]) -> dict[str, Any]:
+    sections = report.get("sections") or {}
+    linear = sections.get("linear_workspace") or {}
+    durable = sections.get("durable_memory") or {}
+    files = durable.get("files") or {}
+    harness = sections.get("harness_engineering") or {}
+    formal = sections.get("formal_suite") or {}
+    return {
+        "captured_at": str(report.get("generated_at") or _utc_now()),
+        "readiness_overall_status": str(report.get("overall_status") or "unknown"),
+        "harness_score": _safe_int(harness.get("score")),
+        "harness_target": _safe_int(harness.get("target_score"), default=90),
+        "linear_issue_count": _optional_int(linear.get("issue_count")),
+        "linear_project_count": _optional_int(linear.get("project_count")),
+        "linear_label_count": _optional_int(linear.get("label_count")),
+        "linear_active_execution_flow": bool(linear.get("active_execution_flow")),
+        "formal_suite_status": str(formal.get("status") or "unknown"),
+        "formal_suite_mode": str(formal.get("mode") or "unknown"),
+        "durable_status": str(durable.get("status") or "unknown"),
+        "durable_jsonl_size": _safe_int((files.get("jsonl") or {}).get("size_bytes")),
+        "durable_duckdb_size": _safe_int((files.get("duckdb") or {}).get("size_bytes")),
+        "durable_parquet_size": _safe_int((files.get("parquet") or {}).get("size_bytes")),
+    }
+
+
+def _write_baseline_markdown(path: Path, snapshot: dict[str, Any]) -> None:
+    issue_count = snapshot.get("linear_issue_count")
+    project_count = snapshot.get("linear_project_count")
+    label_count = snapshot.get("linear_label_count")
+    lines = [
+        "# Symphony Harness Baseline",
+        "",
+        f"- Captured: `{snapshot['captured_at']}`",
+        f"- Readiness overall: `{snapshot['readiness_overall_status']}`",
+        f"- Harness score: `{snapshot['harness_score']}` / `{snapshot['harness_target']}`",
+        (
+            "- Linear issues/projects/labels: "
+            f"`{issue_count if issue_count is not None else 'n/a'}` / "
+            f"`{project_count if project_count is not None else 'n/a'}` / "
+            f"`{label_count if label_count is not None else 'n/a'}`"
+        ),
+        f"- Active execution flow: `{snapshot['linear_active_execution_flow']}`",
+        (
+            f"- Formal suite: `{snapshot['formal_suite_status']}` "
+            f"(`{snapshot['formal_suite_mode']}`)"
+        ),
+        f"- Durable memory status: `{snapshot['durable_status']}`",
+        "",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _load_previous_baseline(
+    history_dir: Path, current_captured_at: str
+) -> dict[str, Any] | None:
+    if not history_dir.exists():
+        return None
+    rows: list[tuple[str, dict[str, Any]]] = []
+    for path in sorted(history_dir.glob("baseline_*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        captured_at = str(payload.get("captured_at") or "")
+        if not captured_at or captured_at == current_captured_at:
+            continue
+        rows.append((captured_at, payload))
+    if not rows:
+        return None
+    rows.sort(key=lambda item: item[0])
+    return rows[-1][1]
+
+
+def _apply_durable_growth_gate(
+    *,
+    report: dict[str, Any],
+    findings: list[dict[str, Any]],
+    previous_baseline: dict[str, Any] | None,
+) -> None:
+    if previous_baseline is None:
+        _record_finding(
+            findings,
+            severity="info",
+            code="durable_growth_baseline_missing",
+            message=(
+                "No previous readiness baseline found for durable growth comparison; "
+                "growth gate will activate after baseline history has at least 2 points."
+            ),
+        )
+        return
+
+    current = _snapshot_from_report(report)
+    growth_rows: list[dict[str, Any]] = []
+    for field, label in (
+        ("durable_jsonl_size", "jsonl"),
+        ("durable_duckdb_size", "duckdb"),
+        ("durable_parquet_size", "parquet"),
+    ):
+        prev = _safe_int(previous_baseline.get(field))
+        curr = _safe_int(current.get(field))
+        if prev <= 0:
+            continue
+        delta = curr - prev
+        ratio = delta / prev
+        growth_rows.append(
+            {
+                "artifact": label,
+                "previous_bytes": prev,
+                "current_bytes": curr,
+                "delta_bytes": delta,
+                "delta_ratio": round(ratio, 6),
+            }
+        )
+
+    if not growth_rows:
+        return
+
+    breaches = [
+        row for row in growth_rows if row["delta_ratio"] > DURABLE_GROWTH_WARN_RATIO
+    ]
+    if breaches:
+        _record_finding(
+            findings,
+            severity="warn",
+            code="durable_growth_budget_exceeded",
+            message=(
+                "Durable memory artifacts exceeded the run-over-run growth budget "
+                f"({int(DURABLE_GROWTH_WARN_RATIO * 100)}%)."
+            ),
+            details={
+                "previous_captured_at": previous_baseline.get("captured_at"),
+                "current_captured_at": current.get("captured_at"),
+                "threshold_ratio": DURABLE_GROWTH_WARN_RATIO,
+                "breaches": breaches,
+            },
+        )
+    else:
+        _record_finding(
+            findings,
+            severity="info",
+            code="durable_growth_within_budget",
+            message=(
+                "Durable memory growth stayed within run-over-run budget "
+                f"({int(DURABLE_GROWTH_WARN_RATIO * 100)}%)."
+            ),
+            details={
+                "previous_captured_at": previous_baseline.get("captured_at"),
+                "current_captured_at": current.get("captured_at"),
+                "threshold_ratio": DURABLE_GROWTH_WARN_RATIO,
+                "artifacts": growth_rows,
+            },
+        )
+
+
+def _persist_harness_metrics(ext_root: Path, report: dict[str, Any]) -> None:
+    linear_section = (report.get("sections") or {}).get("linear_workspace") or {}
+    if str(linear_section.get("status") or "unknown") != "pass":
+        return
+
+    snapshot = _snapshot_from_report(report)
+    readiness_history_dir = ext_root / "logs" / "symphony" / "readiness" / "history"
+    metrics_dir = ext_root / "logs" / "symphony" / "metrics"
+    readiness_history_dir.mkdir(parents=True, exist_ok=True)
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    stamp = _iso_compact(snapshot["captured_at"])
+    history_path = readiness_history_dir / f"baseline_{stamp}.json"
+    if not history_path.exists():
+        history_path.write_text(
+            json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+    baseline_md = metrics_dir / "harness_baseline_latest.md"
+    _write_baseline_markdown(baseline_md, snapshot)
+
+    csv_path = metrics_dir / "harness_timeseries.csv"
+    existing_rows: list[dict[str, str]] = []
+    seen_captured_at: set[str] = set()
+    if csv_path.exists():
+        with csv_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                if not isinstance(row, dict):
+                    continue
+                captured_at = str(row.get("captured_at") or "").strip()
+                if captured_at:
+                    seen_captured_at.add(captured_at)
+                existing_rows.append({str(k): str(v) for k, v in row.items()})
+
+    captured_at = snapshot["captured_at"]
+    if captured_at not in seen_captured_at:
+        row = {field: str(snapshot.get(field, "")) for field in HARNESS_TIMESERIES_FIELDS}
+        existing_rows.append(row)
+
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(HARNESS_TIMESERIES_FIELDS))
+        writer.writeheader()
+        writer.writerows(existing_rows)
+
+
 def _exit_code_for(findings: list[dict[str, Any]], fail_on: str) -> int:
     severities = {str(item.get("severity")) for item in findings}
     if fail_on == "none":
@@ -1503,7 +1756,14 @@ def run_audit(
             "formal_suite": _audit_formal_suite(repo_root, formal_suite_mode),
         },
     }
+    history_dir = ext_root / "logs" / "symphony" / "readiness" / "history"
+    previous_baseline = _load_previous_baseline(
+        history_dir, str(report.get("generated_at") or "")
+    )
     findings = _collect_findings(report)
+    _apply_durable_growth_gate(
+        report=report, findings=findings, previous_baseline=previous_baseline
+    )
     if strict_autonomy:
         findings = _apply_strict_autonomy(findings)
     report["findings"] = findings
@@ -1606,6 +1866,7 @@ def main(argv: list[str] | None = None) -> int:
 
     output_md.parent.mkdir(parents=True, exist_ok=True)
     output_md.write_text(_as_markdown(report), encoding="utf-8")
+    _persist_harness_metrics(ext_root, report)
 
     print(json.dumps(report, indent=2, sort_keys=True))
     print(f"Wrote JSON report: {output_json}", file=sys.stderr)

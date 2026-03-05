@@ -563,3 +563,113 @@ def test_collect_findings_reports_dspy_not_ready_warn() -> None:
     findings = readiness_audit._collect_findings(report)
     codes = {row["code"]: row for row in findings}
     assert codes["dspy_routing_not_ready"]["severity"] == "warn"
+
+
+def _sample_report(
+    *,
+    generated_at: str = "2026-03-05T13:17:18.842231Z",
+    overall_status: str = "pass",
+    linear_status: str = "pass",
+    issue_count: int = 211,
+    project_count: int = 8,
+    label_count: int = 19,
+    active_execution_flow: bool = True,
+    formal_mode: str = "all",
+    durable_jsonl: int = 73_545_691,
+    durable_duckdb: int = 12_070_912,
+    durable_parquet: int = 1_158_973,
+) -> dict[str, object]:
+    return {
+        "generated_at": generated_at,
+        "overall_status": overall_status,
+        "sections": {
+            "linear_workspace": {
+                "status": linear_status,
+                "issue_count": issue_count,
+                "project_count": project_count,
+                "label_count": label_count,
+                "active_execution_flow": active_execution_flow,
+            },
+            "harness_engineering": {"score": 100, "target_score": 90},
+            "formal_suite": {"status": "pass", "mode": formal_mode},
+            "durable_memory": {
+                "status": "pass",
+                "files": {
+                    "jsonl": {"size_bytes": durable_jsonl},
+                    "duckdb": {"size_bytes": durable_duckdb},
+                    "parquet": {"size_bytes": durable_parquet},
+                },
+            },
+        },
+    }
+
+
+def test_apply_durable_growth_gate_warns_on_budget_breach() -> None:
+    report = _sample_report(
+        generated_at="2026-03-05T17:15:56.868769Z",
+        durable_jsonl=83_608_942,
+        durable_duckdb=14_430_208,
+        durable_parquet=1_355_670,
+    )
+    previous = {
+        "captured_at": "2026-03-05T13:17:18.842231Z",
+        "durable_jsonl_size": 73_545_691,
+        "durable_duckdb_size": 12_070_912,
+        "durable_parquet_size": 1_158_973,
+    }
+    findings: list[dict[str, object]] = []
+    readiness_audit._apply_durable_growth_gate(
+        report=report, findings=findings, previous_baseline=previous
+    )
+    row = [f for f in findings if f.get("code") == "durable_growth_budget_exceeded"][0]
+    assert row["severity"] == "warn"
+    details = row["details"]
+    assert isinstance(details, dict)
+    assert details["threshold_ratio"] == 0.05
+
+
+def test_apply_durable_growth_gate_emits_info_without_baseline() -> None:
+    findings: list[dict[str, object]] = []
+    readiness_audit._apply_durable_growth_gate(
+        report=_sample_report(), findings=findings, previous_baseline=None
+    )
+    row = [f for f in findings if f.get("code") == "durable_growth_baseline_missing"][0]
+    assert row["severity"] == "info"
+
+
+def test_persist_harness_metrics_appends_and_dedupes(tmp_path: Path) -> None:
+    ext_root = tmp_path / "ext"
+    report = _sample_report(generated_at="2026-03-05T13:17:18.842231Z")
+    readiness_audit._persist_harness_metrics(ext_root, report)
+    readiness_audit._persist_harness_metrics(ext_root, report)
+
+    csv_path = ext_root / "logs" / "symphony" / "metrics" / "harness_timeseries.csv"
+    lines = csv_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 2  # header + one unique row
+    assert "2026-03-05T13:17:18.842231Z" in lines[1]
+
+    second = _sample_report(
+        generated_at="2026-03-05T17:15:56.868769Z",
+        overall_status="warn",
+        formal_mode="inventory",
+    )
+    readiness_audit._persist_harness_metrics(ext_root, second)
+    lines = csv_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 3
+    assert "2026-03-05T17:15:56.868769Z" in lines[2]
+
+    history = ext_root / "logs" / "symphony" / "readiness" / "history"
+    baselines = sorted(history.glob("baseline_*.json"))
+    assert len(baselines) == 2
+
+
+def test_persist_harness_metrics_skips_when_linear_fails(tmp_path: Path) -> None:
+    ext_root = tmp_path / "ext"
+    failed = _sample_report(
+        generated_at="2026-03-05T17:14:09.702724Z",
+        overall_status="fail",
+        linear_status="fail",
+    )
+    readiness_audit._persist_harness_metrics(ext_root, failed)
+    csv_path = ext_root / "logs" / "symphony" / "metrics" / "harness_timeseries.csv"
+    assert not csv_path.exists()
