@@ -100,4 +100,20 @@ def test_hash_bench_python_and_helper() -> None:
     )
     assert helper_report["mode"] == "helper_stdio"
     assert helper_report["iterations"] == 5
+    assert helper_report["iterations_completed"] == 5
     assert "error" not in helper_report
+
+
+def test_hash_bench_helper_reports_partial_completion_on_invalid_output() -> None:
+    payload = b"abcdef" * 64
+    helper_cmd = f'{sys.executable} -c "print(\'oops\')"'
+    helper_report = symphony_perf._bench_helper_hash(
+        payload=payload,
+        iterations=5,
+        helper_cmd=helper_cmd,
+    )
+    assert helper_report["mode"] == "helper_stdio"
+    assert helper_report["iterations"] == 5
+    assert helper_report["iterations_completed"] == 0
+    assert helper_report["hashes_per_second"] == 0.0
+    assert helper_report.get("error") == "invalid_helper_output"

@@ -371,11 +371,13 @@ def _bench_helper_hash(
 
     started = time.perf_counter()
     error: str | None = None
+    requested_iterations = max(iterations, 1)
+    completed_iterations = 0
     try:
         if proc.stdin is None or proc.stdout is None:
             error = "pipe_unavailable"
         else:
-            for _ in range(max(iterations, 1)):
+            for _ in range(requested_iterations):
                 proc.stdin.write(payload_b64 + "\n")
                 proc.stdin.flush()
                 line = proc.stdout.readline()
@@ -383,6 +385,7 @@ def _bench_helper_hash(
                 if not (etag.startswith('W/"') and etag.endswith('"')):
                     error = "invalid_helper_output"
                     break
+                completed_iterations += 1
     except OSError as exc:
         error = f"io_error:{exc}"
     elapsed = max(time.perf_counter() - started, 1e-9)
@@ -403,13 +406,14 @@ def _bench_helper_hash(
         except OSError:
             pass
 
-    bytes_total = len(payload) * max(iterations, 1)
+    bytes_total = len(payload) * completed_iterations
     report: dict[str, Any] = {
         "mode": "helper_stdio",
-        "iterations": max(iterations, 1),
+        "iterations": requested_iterations,
+        "iterations_completed": completed_iterations,
         "payload_bytes": len(payload),
         "elapsed_s": round(elapsed, 6),
-        "hashes_per_second": round(max(iterations, 1) / elapsed, 2),
+        "hashes_per_second": round(completed_iterations / elapsed, 2),
         "throughput_mb_s": round((bytes_total / elapsed) / (1024 * 1024), 2),
         "command": command,
     }
