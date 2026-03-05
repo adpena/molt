@@ -4,7 +4,7 @@
 **Priority:** P0
 **Audience:** Python integrators
 **Goal:** Provide a minimal, reliable acceleration layer that makes offloading one endpoint trivial today (worker IPC), with a planned in-process fast path for latency-sensitive handlers.
-**Implementation status:** Initial stdio client + decorator scaffolding exists in `src/molt_accel` (framing + JSON/MsgPack payloads) with concurrent in-flight support in the shared client plus optional worker pooling via `MOLT_ACCEL_POOL_SIZE`. Timeouts send a best-effort cancel and mark the worker for restart after in-flight requests drain; metrics hooks/cancel checks are wired, but Django test-client coverage and richer retry policy remain pending (TODO(offload, owner:runtime, milestone:SL1, priority:P1, status:partial): Django test-client coverage + retry policy). `molt_accel` ships as an optional dependency group (`pip install .[accel]`) with a packaged default exports manifest so the decorator can fall back to `molt-worker` in PATH when `MOLT_WORKER_CMD` is unset. A demo app scaffold lives in `demo/`.
+**Implementation status:** Initial stdio client + decorator scaffolding exists in `src/molt_accel` (framing + JSON/MsgPack payloads) with concurrent in-flight support in the shared client plus optional worker pooling via `MOLT_ACCEL_POOL_SIZE`. Timeouts send a best-effort cancel and mark the worker for restart after in-flight requests drain; metrics hooks/cancel checks are wired; idempotent retry/backoff policy is configurable per-call or via environment (`MOLT_ACCEL_RETRY_ON_TIMEOUT`, `MOLT_ACCEL_RETRY_ON_BUSY`, `MOLT_ACCEL_RETRY_BACKOFF_MS`, `MOLT_ACCEL_RETRY_BACKOFF_MAX_MS`); and Django test-client coverage now exercises baseline/offload parity plus worker-restart retry behavior. Remaining TODO(offload, owner:runtime, milestone:SL1, priority:P1, status:partial): broaden non-demo handler coverage and extend chaos/retry matrix coverage. `molt_accel` ships as an optional dependency group (`pip install .[accel]`) with a packaged default exports manifest so the decorator can fall back to `molt-worker` in PATH when `MOLT_WORKER_CMD` is unset. A demo app scaffold lives in `demo/`.
 
 ---
 
@@ -86,7 +86,7 @@ polls them when available.
 - restart worker once (configurable)
 - re-send request only if idempotent flag is set (default false)
 
-**Implementation note:** `MoltClient.call(..., idempotent=True)` will retry once after restarting the worker. The decorator exposes `idempotent=` to opt in.
+**Implementation note:** `MoltClient.call(..., idempotent=True)` retries worker-unavailable by default and can optionally retry timeout/busy errors with exponential backoff (`retry_on_timeout`, `retry_on_busy`, `retry_backoff_ms`, `retry_backoff_max_ms`). The decorator exposes matching options and environment defaults.
 
 ---
 
@@ -106,6 +106,7 @@ polls them when available.
 - `decode_response`: when False, return raw payload bytes to the response factory (useful for JSON pass-through).
 - Hooks: `before_send`, `after_recv`, `metrics_hook`, and `cancel_check(request)` provide observability and cancellation integration.
 - `idempotent`: when True, the client will retry once after a worker restart.
+- `retry_on_timeout`, `retry_on_busy`, `retry_backoff_ms`, `retry_backoff_max_ms`: opt-in retry controls for timeout/busy classes and exponential backoff between attempts; environment defaults are `MOLT_ACCEL_RETRY_ON_TIMEOUT`, `MOLT_ACCEL_RETRY_ON_BUSY`, `MOLT_ACCEL_RETRY_BACKOFF_MS`, `MOLT_ACCEL_RETRY_BACKOFF_MAX_MS`.
 - `execution_mode` (planned): `worker` (default) or `in_process`. In-process mode requires precompiled deploy-time artifacts and startup-time export loading.
 
 ## 5. Metrics hooks
