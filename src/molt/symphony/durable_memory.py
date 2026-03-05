@@ -55,6 +55,10 @@ class DurableMemoryStore:
         self._profiling_baseline_cache: (
             tuple[float, tuple[int, int], dict[str, Any]] | None
         ) = None
+        self._profiling_trends_cache_ttl_seconds = 5.0
+        self._profiling_trends_cache: (
+            tuple[float, tuple[int, int], dict[str, Any]] | None
+        ) = None
         self._thread.start()
 
     def record(self, row: dict[str, Any]) -> None:
@@ -199,6 +203,118 @@ class DurableMemoryStore:
             "by_label": {label: row for label, row in top_labels},
         }
         self._profiling_baseline_cache = (now_mono, signature, result)
+        return dict(result)
+
+    def profiling_trends(
+        self,
+        *,
+        max_events: int = 3600,
+        max_points: int = 120,
+        max_labels: int = 4,
+    ) -> dict[str, Any]:
+        signature = _file_signature(self._events_jsonl)
+        now_mono = time.monotonic()
+        cached = self._profiling_trends_cache
+        if (
+            cached is not None
+            and cached[1] == signature
+            and (now_mono - cached[0]) <= self._profiling_trends_cache_ttl_seconds
+        ):
+            return dict(cached[2])
+
+        rows = _tail_jsonl(self._events_jsonl, limit=max(max_events, 200))
+        checkpoints = [
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("kind") or "") == "profiling_checkpoint"
+        ]
+        if not checkpoints:
+            result = {
+                "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "checkpoint_samples": 0,
+                "points": [],
+                "labels": [],
+            }
+            self._profiling_trends_cache = (now_mono, signature, result)
+            return dict(result)
+
+        selected = _downsample_rows(checkpoints, max_points=max(max_points, 8))
+        points: list[dict[str, Any]] = []
+        label_peaks: dict[str, float] = {}
+        for row in selected:
+            process = row.get("process")
+            process_map = process if isinstance(process, dict) else {}
+            counters = row.get("counters")
+            counters_map = counters if isinstance(counters, dict) else {}
+            point = {
+                "at": (
+                    str(row.get("recorded_at") or row.get("at") or "")
+                    or datetime.now(UTC).isoformat().replace("+00:00", "Z")
+                ),
+                "rss_high_water_kb": int(
+                    max(_coerce_float(process_map.get("rss_high_water_kb")), 0.0)
+                ),
+                "queue_depth_peak": int(
+                    max(_coerce_float(row.get("queue_depth_peak")), 0.0)
+                ),
+                "events_processed": int(
+                    max(_coerce_float(counters_map.get("events_processed")), 0.0)
+                ),
+            }
+            points.append(point)
+            latencies = row.get("latencies")
+            if isinstance(latencies, dict):
+                for raw_label, raw_stats in latencies.items():
+                    label = str(raw_label).strip()
+                    if not label:
+                        continue
+                    stats = raw_stats if isinstance(raw_stats, dict) else {}
+                    label_peaks[label] = max(
+                        label_peaks.get(label, 0.0),
+                        _coerce_float(stats.get("p95_ms")),
+                    )
+
+        top_labels = [
+            label
+            for label, _peak in sorted(
+                label_peaks.items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )[: max(int(max_labels), 1)]
+        ]
+        label_rows: list[dict[str, Any]] = []
+        for label in top_labels:
+            series: list[dict[str, Any]] = []
+            for row in selected:
+                latencies = row.get("latencies")
+                latencies_map = latencies if isinstance(latencies, dict) else {}
+                stats_raw = latencies_map.get(label)
+                stats = stats_raw if isinstance(stats_raw, dict) else {}
+                if not stats:
+                    continue
+                series.append(
+                    {
+                        "at": (
+                            str(row.get("recorded_at") or row.get("at") or "")
+                            or datetime.now(UTC).isoformat().replace("+00:00", "Z")
+                        ),
+                        "avg_ms": round(_coerce_float(stats.get("avg_ms")), 3),
+                        "p95_ms": round(_coerce_float(stats.get("p95_ms")), 3),
+                        "count": int(max(_coerce_float(stats.get("count")), 0.0)),
+                    }
+                )
+            if not series:
+                continue
+            label_rows.append({"label": label, "series": series})
+
+        result = {
+            "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "checkpoint_samples": len(checkpoints),
+            "points": points,
+            "labels": label_rows,
+        }
+        self._profiling_trends_cache = (now_mono, signature, result)
         return dict(result)
 
     def create_backup(self, *, reason: str = "manual") -> dict[str, Any]:
@@ -588,6 +704,20 @@ def _tail_jsonl(path: Path, *, limit: int) -> list[dict[str, Any]]:
         if isinstance(parsed, dict):
             rows.append(parsed)
     return rows
+
+
+def _downsample_rows(
+    rows: list[dict[str, Any]], *, max_points: int
+) -> list[dict[str, Any]]:
+    if len(rows) <= max_points:
+        return list(rows)
+    stride = max(int(len(rows) / max_points), 1)
+    sampled = [rows[idx] for idx in range(0, len(rows), stride)]
+    if sampled and sampled[-1] is not rows[-1]:
+        sampled[-1] = rows[-1]
+    if len(sampled) > max_points:
+        sampled = sampled[-max_points:]
+    return sampled
 
 
 def _sql_quote(value: str) -> str:

@@ -148,19 +148,23 @@ def _default_perf_command(
             )
         ),
         "--max-avg-regression-ratio",
-        str(float(env_values.get("MOLT_SYMPHONY_PERF_MAX_AVG_REGRESSION_RATIO", "0.15"))),
+        str(
+            float(env_values.get("MOLT_SYMPHONY_PERF_MAX_AVG_REGRESSION_RATIO", "0.15"))
+        ),
         "--max-p95-regression-ratio",
-        str(float(env_values.get("MOLT_SYMPHONY_PERF_MAX_P95_REGRESSION_RATIO", "0.20"))),
+        str(
+            float(env_values.get("MOLT_SYMPHONY_PERF_MAX_P95_REGRESSION_RATIO", "0.20"))
+        ),
     ]
-    if _bool_value(
-        env_values.get("MOLT_SYMPHONY_PERF_LINEAR_SYNC"), default=False
-    ):
+    if _bool_value(env_values.get("MOLT_SYMPHONY_PERF_LINEAR_SYNC"), default=False):
         team = str(
             env_values.get("MOLT_LINEAR_TEAM")
             or env_values.get("MOLT_LINEAR_PROJECT_TEAM")
             or "Moltlang"
         ).strip()
-        project = str(env_values.get("MOLT_LINEAR_PROJECT_SLUG") or "").split(",")[0].strip()
+        project = (
+            str(env_values.get("MOLT_LINEAR_PROJECT_SLUG") or "").split(",")[0].strip()
+        )
         cmd.extend(["--linear-sync-regressions", "--linear-team", team])
         if project:
             cmd.extend(["--linear-project", project])
@@ -393,7 +397,11 @@ def main(argv: list[str] | None = None) -> int:
                 next_perf_due_at = now + min(perf_interval_s / 8.0, 600.0)
                 return
             if busy is None:
-                _log("WARNING", "watchdog_perf_deferred_state_probe_failed", detail=detail)
+                _log(
+                    "WARNING",
+                    "watchdog_perf_deferred_state_probe_failed",
+                    detail=detail,
+                )
                 next_perf_due_at = now + min(perf_interval_s / 8.0, 600.0)
                 return
         _log(

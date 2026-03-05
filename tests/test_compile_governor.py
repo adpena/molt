@@ -10,6 +10,26 @@ import tools.compile_governor as compile_governor
 @pytest.mark.skipif(
     compile_governor.fcntl is None, reason="compile governor slots require posix flock"
 )
+def test_compile_slot_allows_high_load_with_available_slot(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(compile_governor, "_count_active_compile_processes", lambda: 0)
+    monkeypatch.setattr(compile_governor, "_load_1m", lambda: 999.0)
+    env = {
+        "MOLT_COMPILE_GUARD_DIR": str(tmp_path / "guard"),
+        "MOLT_COMPILE_GUARD_WAIT_SEC": "0.2",
+        "MOLT_COMPILE_GUARD_POLL_SEC": "0.05",
+        "MOLT_COMPILE_GUARD_MAX_SLOTS": "1",
+        "MOLT_COMPILE_GUARD_MAX_LOAD": "1",
+    }
+    with compile_governor.compile_slot(env=env, label="high-load-free-slot") as lease:
+        assert lease.slot_index == 0
+
+
+@pytest.mark.skipif(
+    compile_governor.fcntl is None, reason="compile governor slots require posix flock"
+)
 def test_compile_slot_enforces_single_slot(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(compile_governor, "_count_active_compile_processes", lambda: 0)
     monkeypatch.setattr(compile_governor, "_load_1m", lambda: 0.0)

@@ -1233,8 +1233,7 @@ def _collect_findings(report: dict[str, Any]) -> list[dict[str, Any]]:
                 severity="warn",
                 code="harness_score_regressed",
                 message=(
-                    "Harness engineering score regressed vs previous baseline "
-                    "window."
+                    "Harness engineering score regressed vs previous baseline window."
                 ),
                 details={
                     "latest": harness.get("latest"),
@@ -1280,9 +1279,7 @@ def _collect_findings(report: dict[str, Any]) -> list[dict[str, Any]]:
                 },
             )
 
-        durable_trend = (
-            trend.get("durable_growth") if isinstance(trend, dict) else None
-        )
+        durable_trend = trend.get("durable_growth") if isinstance(trend, dict) else None
         if isinstance(durable_trend, dict) and bool(durable_trend.get("recurring")):
             _record_finding(
                 findings,
@@ -1827,7 +1824,9 @@ def _snapshot_from_report(report: dict[str, Any]) -> dict[str, Any]:
         "durable_status": str(durable.get("status") or "unknown"),
         "durable_jsonl_size": _safe_int((files.get("jsonl") or {}).get("size_bytes")),
         "durable_duckdb_size": _safe_int((files.get("duckdb") or {}).get("size_bytes")),
-        "durable_parquet_size": _safe_int((files.get("parquet") or {}).get("size_bytes")),
+        "durable_parquet_size": _safe_int(
+            (files.get("parquet") or {}).get("size_bytes")
+        ),
     }
 
 
@@ -1915,7 +1914,9 @@ def _calculate_trend_analysis(
     min_formal_pass_ratio: float,
     max_durable_growth_ratio: float,
 ) -> dict[str, Any]:
-    series = [row for row in baseline_history if isinstance(row, dict)] + [current_snapshot]
+    series = [row for row in baseline_history if isinstance(row, dict)] + [
+        current_snapshot
+    ]
     if trend_window > 0:
         series = series[-trend_window:]
 
@@ -1930,7 +1931,9 @@ def _calculate_trend_analysis(
     formal_values = [
         str(row.get("formal_suite_status") or "").strip().lower() for row in series
     ]
-    formal_considered = [value for value in formal_values if value and value != "unknown"]
+    formal_considered = [
+        value for value in formal_values if value and value != "unknown"
+    ]
     formal_pass_ratio = (
         round(
             sum(1 for value in formal_considered if value == "pass")
@@ -2073,9 +2076,7 @@ def _apply_durable_growth_gate(
     if not growth_rows:
         return
 
-    breaches = [
-        row for row in growth_rows if row["delta_ratio"] > max_growth_ratio
-    ]
+    breaches = [row for row in growth_rows if row["delta_ratio"] > max_growth_ratio]
     if breaches:
         _record_finding(
             findings,
@@ -2263,7 +2264,9 @@ def _persist_harness_metrics(
     captured_at = snapshot["captured_at"]
     appended_csv_row = False
     if captured_at not in seen_captured_at:
-        row = {field: str(snapshot.get(field, "")) for field in HARNESS_TIMESERIES_FIELDS}
+        row = {
+            field: str(snapshot.get(field, "")) for field in HARNESS_TIMESERIES_FIELDS
+        }
         existing_rows.append(row)
         appended_csv_row = True
 
@@ -2586,10 +2589,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         except Exception as exc:
             print(
-                (
-                    "Growth alert hook failed: "
-                    f"{type(exc).__name__}: {exc}"
-                ),
+                (f"Growth alert hook failed: {type(exc).__name__}: {exc}"),
                 file=sys.stderr,
             )
 

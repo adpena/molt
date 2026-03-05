@@ -151,3 +151,44 @@ def test_durable_memory_profiling_baseline_aggregates_checkpoints(
         assert "turn" in baseline["by_label"]
     finally:
         store.close()
+
+
+def test_durable_memory_profiling_trends_surfaces_series(tmp_path: Path) -> None:
+    store = DurableMemoryStore(root=tmp_path, sync_interval_seconds=3600, max_queue=128)
+    try:
+        for idx in range(6):
+            store.record(
+                {
+                    "kind": "profiling_checkpoint",
+                    "at": f"2026-03-05T00:00:0{idx}Z",
+                    "queue_depth_peak": idx,
+                    "process": {"rss_high_water_kb": 200_000 + (idx * 1024)},
+                    "counters": {"events_processed": 100 + idx},
+                    "latencies": {
+                        "tick": {
+                            "count": 10 + idx,
+                            "avg_ms": 4.0 + idx,
+                            "p95_ms": 8.0 + idx,
+                            "max_ms": 12.0 + idx,
+                        }
+                    },
+                }
+            )
+        _wait_for(lambda: (tmp_path / "events.jsonl").exists())
+        _wait_for(
+            lambda: (
+                store.profiling_trends(max_events=200, max_points=16, max_labels=2).get(
+                    "checkpoint_samples", 0
+                )
+                >= 6
+            )
+        )
+        trends = store.profiling_trends(max_events=200, max_points=16, max_labels=2)
+        assert trends["checkpoint_samples"] >= 6
+        assert len(trends["points"]) >= 6
+        assert trends["labels"]
+        label_row = trends["labels"][0]
+        assert label_row["label"] == "tick"
+        assert label_row["series"]
+    finally:
+        store.close()
