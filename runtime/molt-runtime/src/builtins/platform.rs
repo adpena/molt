@@ -5809,6 +5809,22 @@ fn importlib_module_should_retry_empty(
     module_name: &str,
     module_bits: u64,
 ) -> Result<bool, u64> {
+    // Some bootstrap-sensitive modules can become non-empty partial shells
+    // (for example they expose __all__) while still missing required runtime
+    // symbols. Treat these as retryable so we re-enter spec loading.
+    if module_name == "types" {
+        static MODULE_TYPE_NAME: AtomicU64 = AtomicU64::new(0);
+        let module_type_name = intern_static_name(_py, &MODULE_TYPE_NAME, b"ModuleType");
+        let has_module_type = if let Some(dict_ptr) = importlib_module_dict_ptr(module_bits) {
+            importlib_dict_get_string_key_bits(_py, dict_ptr, module_type_name)?.is_some()
+        } else {
+            false
+        };
+        if !has_module_type {
+            return Ok(true);
+        }
+    }
+
     if !IMPORTLIB_EMPTY_MODULE_RETRY_PREFIXES
         .iter()
         .any(|prefix| module_name.starts_with(prefix))
@@ -15530,6 +15546,78 @@ mod tests {
         });
         let bytes = serde_json::to_vec(&manifest).expect("encode extension manifest");
         std::fs::write(manifest_path, bytes).expect("write extension manifest");
+    }
+
+    #[test]
+    fn importlib_module_retry_for_types_when_required_attr_missing() {
+        with_trusted_runtime(|| {
+            crate::with_gil_entry!(_py, {
+                let name_bits = alloc_test_string_bits(_py, "types");
+                let module_bits = crate::builtins::modules::molt_module_new(name_bits);
+                dec_ref_bits(_py, name_bits);
+                assert!(
+                    !obj_from_bits(module_bits).is_none(),
+                    "failed to allocate test module"
+                );
+                assert!(
+                    !exception_pending(_py),
+                    "unexpected exception creating test module: {:?}",
+                    pending_exception_kind_and_message(_py)
+                );
+                let dict_ptr = importlib_module_dict_ptr(module_bits).expect("module dict");
+                let all_name_bits = alloc_test_string_bits(_py, "__all__");
+                let public_bits = alloc_test_string_bits(_py, "placeholder");
+                let all_ptr = alloc_list(_py, &[public_bits]);
+                assert!(!all_ptr.is_null(), "alloc __all__ list");
+                let all_bits = MoltObject::from_ptr(all_ptr).bits();
+                unsafe {
+                    dict_set_in_place(_py, dict_ptr, all_name_bits, all_bits);
+                }
+                dec_ref_bits(_py, all_name_bits);
+                dec_ref_bits(_py, public_bits);
+                dec_ref_bits(_py, all_bits);
+
+                let retry = importlib_module_should_retry_empty(_py, "types", module_bits)
+                    .expect("retry decision");
+                assert!(retry, "types module missing ModuleType must trigger retry");
+                dec_ref_bits(_py, module_bits);
+            });
+        });
+    }
+
+    #[test]
+    fn importlib_module_retry_for_types_disabled_when_required_attr_present() {
+        with_trusted_runtime(|| {
+            crate::with_gil_entry!(_py, {
+                let name_bits = alloc_test_string_bits(_py, "types");
+                let module_bits = crate::builtins::modules::molt_module_new(name_bits);
+                dec_ref_bits(_py, name_bits);
+                assert!(
+                    !obj_from_bits(module_bits).is_none(),
+                    "failed to allocate test module"
+                );
+                assert!(
+                    !exception_pending(_py),
+                    "unexpected exception creating test module: {:?}",
+                    pending_exception_kind_and_message(_py)
+                );
+                let module_type_bits = builtin_classes(_py).module;
+                let module_type_name_bits = alloc_test_string_bits(_py, "ModuleType");
+                let dict_ptr = importlib_module_dict_ptr(module_bits).expect("module dict");
+                unsafe {
+                    dict_set_in_place(_py, dict_ptr, module_type_name_bits, module_type_bits);
+                }
+                dec_ref_bits(_py, module_type_name_bits);
+
+                let retry = importlib_module_should_retry_empty(_py, "types", module_bits)
+                    .expect("retry decision");
+                assert!(
+                    !retry,
+                    "types module with ModuleType should not trigger retry"
+                );
+                dec_ref_bits(_py, module_bits);
+            });
+        });
     }
 
     #[test]
