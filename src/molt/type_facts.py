@@ -323,7 +323,7 @@ def _fact_from_dict(data: Any) -> Fact | None:
         return None
     if trust not in {"advisory", "guarded", "trusted"}:
         trust = "guarded"
-    return Fact(type_text, trust)  # type: ignore[arg-type]
+    return Fact(type_text, trust)
 
 
 def _filter_hints(facts: dict[str, Fact], policy: TypeHintPolicy) -> dict[str, str]:

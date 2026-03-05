@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import tools.check_formal_methods as check_formal_methods
 
 
@@ -15,6 +17,25 @@ def test_detect_runtime_mismatch_signature() -> None:
         "Node.js v25.8.0\n"
     )
     assert check_formal_methods._detect_runtime_mismatch(output) is True
+
+
+def test_detect_missing_java_runtime_signature() -> None:
+    output = "The operation couldn't be completed. Unable to locate a Java Runtime."
+    assert check_formal_methods._detect_missing_java_runtime(output) is True
+
+
+def test_resolve_java_home_prefers_java_home_env(
+    monkeypatch, tmp_path: Path
+) -> None:
+    java_home = tmp_path / "jdk"
+    java_bin = java_home / "bin"
+    java_bin.mkdir(parents=True)
+    (java_bin / "java").write_text("", encoding="utf-8")
+
+    monkeypatch.setenv("JAVA_HOME", str(java_home))
+    monkeypatch.setenv("MOLT_JAVA_HOME", "")
+
+    assert check_formal_methods._resolve_java_home() == str(java_home)
 
 
 def test_resolve_quint_fallback_prefix_prefers_env(

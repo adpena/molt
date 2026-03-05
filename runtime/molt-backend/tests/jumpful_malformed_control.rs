@@ -16,6 +16,7 @@ fn op(kind: &str) -> OpIR {
         container_type: None,
         stack_eligible: None,
         fast_float: None,
+        raw_int: None,
         type_hint: None,
     }
 }

@@ -24,7 +24,7 @@ ClientMode = str
 
 def _default_response_factory(payload: Any, status: int) -> Any:
     try:
-        from django.http import JsonResponse  # type: ignore
+        from django.http import JsonResponse
 
         return JsonResponse(payload, status=status, safe=isinstance(payload, dict))
     except Exception:
@@ -49,7 +49,7 @@ def _status_for_error(error: MoltAccelError) -> int:
 
 def raw_json_response_factory(payload: Any, status: int) -> Any:
     try:
-        from django.http import HttpResponse, JsonResponse  # type: ignore
+        from django.http import HttpResponse, JsonResponse
 
         if isinstance(payload, (bytes, bytearray)):
             return HttpResponse(

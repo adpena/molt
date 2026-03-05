@@ -20,23 +20,21 @@ _INTRINSICS = {
     "molt_base64_b32hexdecode": py_base64.b32hexdecode,
     "molt_base64_b16encode": py_base64.b16encode,
     "molt_base64_b16decode": py_base64.b16decode,
-    "molt_base64_a85encode": lambda data,
-    foldspaces=False,
-    wrapcol=0,
-    pad=False,
-    adobe=False: py_base64.a85encode(
-        data,
-        foldspaces=foldspaces,
-        wrapcol=wrapcol,
-        pad=pad,
-        adobe=adobe,
+    "molt_base64_a85encode": lambda data, foldspaces=False, wrapcol=0, pad=False, adobe=False: (
+        py_base64.a85encode(
+            data,
+            foldspaces=foldspaces,
+            wrapcol=wrapcol,
+            pad=pad,
+            adobe=adobe,
+        )
     ),
-    "molt_base64_a85decode": lambda data,
-    foldspaces=False,
-    adobe=False: py_base64.a85decode(
-        data,
-        foldspaces=foldspaces,
-        adobe=adobe,
+    "molt_base64_a85decode": lambda data, foldspaces=False, adobe=False: (
+        py_base64.a85decode(
+            data,
+            foldspaces=foldspaces,
+            adobe=adobe,
+        )
     ),
     "molt_base64_b85encode": py_base64.b85encode,
     "molt_base64_b85decode": py_base64.b85decode,
