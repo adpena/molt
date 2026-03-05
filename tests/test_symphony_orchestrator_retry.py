@@ -298,3 +298,28 @@ def test_tool_symphony_state_returns_compact_payload_by_default() -> None:
     assert state["compact"] is True
     assert "agent_panes" not in state
     assert state["running"]
+
+
+def test_snapshot_durable_memory_disabled_payload() -> None:
+    orchestrator = _orchestrator_stub()
+    payload = orchestrator.snapshot_durable_memory(limit=42)
+    assert payload["enabled"] is False
+    assert payload["reason"] == "durable_memory_disabled"
+
+
+def test_snapshot_durable_memory_enabled_payload() -> None:
+    orchestrator = _orchestrator_stub()
+
+    class _Store:
+        def summary(self, *, limit: int = 120) -> dict[str, object]:
+            return {
+                "enabled": True,
+                "root": "/Volumes/APDataStore/Molt/logs/symphony/durable_memory",
+                "recent_events": [{"kind": "codex_event"}][: max(limit, 1)],
+            }
+
+    orchestrator._durable_memory = _Store()  # type: ignore[assignment]
+    payload = orchestrator.snapshot_durable_memory(limit=5)
+    assert payload["enabled"] is True
+    assert payload["root"].endswith("durable_memory")
+    assert payload["recent_events"]
