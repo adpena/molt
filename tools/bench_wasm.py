@@ -14,6 +14,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
+try:
+    from . import compile_governor
+except ImportError:  # pragma: no cover - script execution path.
+    import compile_governor  # type: ignore[no-redef]
+
 SUPER_SAMPLES = 10
 
 BENCHMARKS = [
@@ -677,8 +682,21 @@ def _base_env() -> dict[str, str]:
     if external_root is not None:
         env.setdefault("CARGO_TARGET_DIR", str(external_root / "target"))
         env.setdefault("MOLT_WASM_RUNTIME_DIR", str(external_root / "wasm"))
+        env.setdefault(
+            "MOLT_COMPILE_GUARD_DIR",
+            str(external_root / "target" / ".molt_state" / "compile_guard"),
+        )
     env.setdefault("MOLT_RUNTIME_WASM", str(RUNTIME_WASM))
     return env
+
+
+def _compile_slot(
+    *,
+    env: dict[str, str],
+    label: str,
+    log: TextIO | None,
+):
+    return compile_governor.compile_slot(env=env, label=label, log=log)
 
 
 def _open_log(log_path: Path | None) -> TextIO | None:
@@ -916,6 +934,10 @@ def build_runtime_wasm(
     if os.environ.get("MOLT_WASM_RUNTIME_FORCE_LOCAL_TARGET") == "1":
         target_root = _repo_root() / "target"
     env["CARGO_TARGET_DIR"] = str(target_root)
+    env.setdefault(
+        "MOLT_COMPILE_GUARD_DIR",
+        str(target_root / ".molt_state" / "compile_guard"),
+    )
     _configure_wasm_runtime_codegen_flags(env, reloc=reloc)
     build_cmd = [
         "cargo",
@@ -927,14 +949,19 @@ def build_runtime_wasm(
         "--target",
         "wasm32-wasip1",
     ]
-    res = _run_cmd(
-        build_cmd,
+    with _compile_slot(
         env=env,
-        capture=not tty,
-        tty=tty,
+        label=f"bench_wasm:runtime_build:{'reloc' if reloc else 'shared'}",
         log=log,
-        timeout_s=runtime_build_timeout,
-    )
+    ):
+        res = _run_cmd(
+            build_cmd,
+            env=env,
+            capture=not tty,
+            tty=tty,
+            log=log,
+            timeout_s=runtime_build_timeout,
+        )
     if res.timed_out:
         print(
             f"WASM runtime build timed out after {runtime_build_timeout:.1f}s.",
@@ -966,32 +993,42 @@ def build_runtime_wasm(
             src.unlink(missing_ok=True)
         except OSError:
             pass
-        clean_res = _run_cmd(
-            [
-                "cargo",
-                "clean",
-                "--target",
-                "wasm32-wasip1",
-            ],
+        with _compile_slot(
             env=env,
-            capture=not tty,
-            tty=tty,
+            label="bench_wasm:runtime_clean",
             log=log,
-            timeout_s=runtime_build_timeout,
-        )
+        ):
+            clean_res = _run_cmd(
+                [
+                    "cargo",
+                    "clean",
+                    "--target",
+                    "wasm32-wasip1",
+                ],
+                env=env,
+                capture=not tty,
+                tty=tty,
+                log=log,
+                timeout_s=runtime_build_timeout,
+            )
         if clean_res.returncode != 0:
             err = (clean_res.stderr or clean_res.stdout).strip()
             if err:
                 print(f"WASM runtime clean failed: {err}", file=sys.stderr)
             return False
-        res = _run_cmd(
-            build_cmd,
+        with _compile_slot(
             env=env,
-            capture=not tty,
-            tty=tty,
+            label=f"bench_wasm:runtime_rebuild:{'reloc' if reloc else 'shared'}",
             log=log,
-            timeout_s=runtime_build_timeout,
-        )
+        ):
+            res = _run_cmd(
+                build_cmd,
+                env=env,
+                capture=not tty,
+                tty=tty,
+                log=log,
+                timeout_s=runtime_build_timeout,
+            )
         if res.timed_out:
             print(
                 f"WASM runtime rebuild timed out after {runtime_build_timeout:.1f}s.",
@@ -1009,14 +1046,22 @@ def build_runtime_wasm(
                 src.unlink(missing_ok=True)
             except OSError:
                 pass
-            res = _run_cmd(
-                build_cmd,
+            with _compile_slot(
                 env=env,
-                capture=not tty,
-                tty=tty,
+                label=(
+                    "bench_wasm:runtime_rebuild_second:"
+                    f"{'reloc' if reloc else 'shared'}"
+                ),
                 log=log,
-                timeout_s=runtime_build_timeout,
-            )
+            ):
+                res = _run_cmd(
+                    build_cmd,
+                    env=env,
+                    capture=not tty,
+                    tty=tty,
+                    log=log,
+                    timeout_s=runtime_build_timeout,
+                )
             if res.timed_out:
                 print(
                     "WASM runtime second rebuild timed out after "
@@ -1186,14 +1231,15 @@ def _build_wasm_output(
     if not use_cache:
         build_cmd.insert(build_cmd.index("--target"), "--no-cache")
     start = time.perf_counter()
-    build_res = _run_cmd(
-        build_cmd,
-        env=env,
-        capture=not tty,
-        tty=tty,
-        log=log,
-        timeout_s=build_timeout_s,
-    )
+    with _compile_slot(env=env, label=f"bench_wasm:build:{Path(script).name}", log=log):
+        build_res = _run_cmd(
+            build_cmd,
+            env=env,
+            capture=not tty,
+            tty=tty,
+            log=log,
+            timeout_s=build_timeout_s,
+        )
     build_s = time.perf_counter() - start
     if build_res.timed_out:
         print(
@@ -1221,14 +1267,19 @@ def _build_wasm_output(
             output_path.parent / ".molt_state_wasm_retry"
         )
         start = time.perf_counter()
-        build_res = _run_cmd(
-            build_cmd,
+        with _compile_slot(
             env=retry_env,
-            capture=not tty,
-            tty=tty,
+            label=f"bench_wasm:build_retry:{Path(script).name}",
             log=log,
-            timeout_s=build_timeout_s,
-        )
+        ):
+            build_res = _run_cmd(
+                build_cmd,
+                env=retry_env,
+                capture=not tty,
+                tty=tty,
+                log=log,
+                timeout_s=build_timeout_s,
+            )
         build_s = time.perf_counter() - start
         if build_res.timed_out:
             _write_build_timeout_diag(
@@ -1263,14 +1314,19 @@ def _build_wasm_output(
             output_path.parent / ".molt_state_wasm_lock_retry"
         )
         start = time.perf_counter()
-        build_res = _run_cmd(
-            build_cmd,
+        with _compile_slot(
             env=retry_env,
-            capture=not tty,
-            tty=tty,
+            label=f"bench_wasm:build_lock_retry:{Path(script).name}",
             log=log,
-            timeout_s=build_timeout_s,
-        )
+        ):
+            build_res = _run_cmd(
+                build_cmd,
+                env=retry_env,
+                capture=not tty,
+                tty=tty,
+                log=log,
+                timeout_s=build_timeout_s,
+            )
         build_s = time.perf_counter() - start
 
     if build_res.returncode != 0:
@@ -1297,14 +1353,19 @@ def _build_wasm_output(
         except OSError:
             pass
         start = time.perf_counter()
-        build_res = _run_cmd(
-            build_cmd,
+        with _compile_slot(
             env=env,
-            capture=not tty,
-            tty=tty,
+            label=f"bench_wasm:build_integrity_retry:{Path(script).name}",
             log=log,
-            timeout_s=build_timeout_s,
-        )
+        ):
+            build_res = _run_cmd(
+                build_cmd,
+                env=env,
+                capture=not tty,
+                tty=tty,
+                log=log,
+                timeout_s=build_timeout_s,
+            )
         build_s = time.perf_counter() - start
         if build_res.timed_out:
             _write_build_timeout_diag(
@@ -1620,13 +1681,18 @@ def _resolve_runner(
     if not target.exists():
         build_env = os.environ.copy()
         build_env.setdefault("CARGO_TARGET_DIR", str(_cargo_target_root()))
-        res = _run_cmd(
-            ["cargo", "build", "--release", "--package", "molt-wasm-host"],
-            env=build_env,
-            capture=not tty,
-            tty=tty,
-            log=log,
+        build_env.setdefault(
+            "MOLT_COMPILE_GUARD_DIR",
+            str(_cargo_target_root() / ".molt_state" / "compile_guard"),
         )
+        with _compile_slot(env=build_env, label="bench_wasm:host_build", log=log):
+            res = _run_cmd(
+                ["cargo", "build", "--release", "--package", "molt-wasm-host"],
+                env=build_env,
+                capture=not tty,
+                tty=tty,
+                log=log,
+            )
         if res.returncode != 0:
             err = (res.stderr or res.stdout).strip()
             raise RuntimeError(f"Failed to build molt-wasm-host: {err}")
