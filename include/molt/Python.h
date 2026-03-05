@@ -4,11 +4,13 @@
 #include <stdarg.h>
 #include <errno.h>
 #include <limits.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 
 #include <molt/molt.h>
 
@@ -25,6 +27,7 @@ MoltHandle molt_exception_class(MoltHandle kind_bits);
 
 typedef intptr_t Py_ssize_t;
 typedef Py_ssize_t Py_hash_t;
+typedef size_t Py_uhash_t;
 typedef struct _molt_pyobject PyObject;
 typedef PyObject PyTypeObject;
 typedef int PyGILState_STATE;
@@ -198,6 +201,17 @@ typedef struct {
     PyTypeObject *ht_type;
 } PyHeapTypeObject;
 
+typedef struct {
+    PyObject *ob_base;
+    Py_ssize_t ob_size;
+} PyVarObject;
+
+typedef struct {
+    PyObject *ob_base;
+    Py_ssize_t ob_size;
+    PyObject *ob_item[1];
+} PyTupleObject;
+
 static inline const char *PyUnicode_AsUTF8AndSize(PyObject *value, Py_ssize_t *size_out);
 static inline PyObject *PyType_FromSpec(PyType_Spec *spec);
 static inline PyObject *PyType_FromSpecWithBases(PyType_Spec *spec, PyObject *bases);
@@ -233,8 +247,13 @@ static inline int PyArg_VaParseTupleAndKeywords(
 static inline PyObject *Py_NewRef(PyObject *obj);
 static inline PyObject *PyObject_Str(PyObject *obj);
 static inline const char *PyUnicode_AsUTF8(PyObject *value);
-static inline PyObject *PyUnicode_FromString(const char *value);
+static inline PyObject *PyUnicode_AsEncodedString(
+    PyObject *unicode,
+    const char *encoding,
+    const char *errors);
 static inline int PyUnicode_Check(PyObject *obj);
+static inline PyObject *PyUnicode_FromString(const char *value);
+static inline PyObject *PyUnicode_FromWideChar(const wchar_t *value, Py_ssize_t size);
 static inline PyObject *PyBytes_FromStringAndSize(const char *value, Py_ssize_t size);
 static inline long long PyLong_AsLongLong(PyObject *obj);
 static inline long long PyLong_AsLongLongAndOverflow(PyObject *obj, int *overflow);
@@ -245,14 +264,23 @@ static inline double PyOS_string_to_double(
     const char *text, char **endptr, PyObject *overflow_exception);
 static inline PyObject *PyImport_ImportModule(const char *name);
 static inline void *PyCapsule_Import(const char *name, int no_block);
+static inline PyObject *PyObject_Dir(PyObject *obj);
 static inline PyObject *PyObject_GetAttrString(PyObject *obj, const char *name);
+static inline PyObject *PyObject_Format(PyObject *obj, PyObject *format_spec);
+static inline PyObject *PyObject_GetIter(PyObject *obj);
 static inline int PyObject_SetAttrString(PyObject *obj, const char *name, PyObject *value);
 static inline PyObject *PyObject_CallObject(PyObject *callable, PyObject *args);
+static inline Py_ssize_t PyObject_Length(PyObject *obj);
+static inline Py_ssize_t PyObject_Size(PyObject *obj);
 static inline PyObject *PyObject_Vectorcall(
     PyObject *callable, PyObject *const *args, size_t nargsf, PyObject *kwnames);
 static inline PyThreadState *PyThreadState_Get(void);
+static inline PyObject *PyTuple_New(Py_ssize_t size);
+static inline int PyTuple_SetItem(PyObject *tuple, Py_ssize_t index, PyObject *value);
 static inline PyGILState_STATE PyGILState_Ensure(void);
 static inline void PyGILState_Release(PyGILState_STATE state);
+static inline int PyTraceMalloc_Track(unsigned int domain, uintptr_t ptr, size_t size);
+static inline int PyTraceMalloc_Untrack(unsigned int domain, uintptr_t ptr);
 
 #ifndef PYTHON_API_VERSION
 #define PYTHON_API_VERSION 1013
@@ -312,6 +340,7 @@ static inline void PyGILState_Release(PyGILState_STATE state);
 #define PY_MICRO_VERSION 0
 
 #define PyOS_snprintf snprintf
+#define Py_HUGE_VAL HUGE_VAL
 
 #define PyGILState_LOCKED 0
 #define PyGILState_UNLOCKED 1
@@ -351,6 +380,7 @@ static inline void PyGILState_Release(PyGILState_STATE state);
 #define PyVarObject_HEAD_INIT(type, size) { 0 }
 #define PyObject_HEAD PyObject ob_base;
 #define PyObject_VAR_HEAD PyObject ob_base;
+#define Py_SIZE(ob) (((PyVarObject *)(ob))->ob_size)
 
 #if defined(__GNUC__) || defined(__clang__)
 #define Py_UNUSED(name) name __attribute__((unused))
@@ -632,6 +662,19 @@ static inline void PyGILState_Release(PyGILState_STATE state) {
     if (state == PyGILState_UNLOCKED) {
         (void)molt_gil_release();
     }
+}
+
+static inline int PyTraceMalloc_Track(unsigned int domain, uintptr_t ptr, size_t size) {
+    (void)domain;
+    (void)ptr;
+    (void)size;
+    return 0;
+}
+
+static inline int PyTraceMalloc_Untrack(unsigned int domain, uintptr_t ptr) {
+    (void)domain;
+    (void)ptr;
+    return 0;
 }
 
 static inline PyThread_type_lock PyThread_allocate_lock(void) {
@@ -1254,6 +1297,60 @@ static inline PyObject *PyObject_Str(PyObject *obj) {
 
 static inline PyObject *PyObject_Repr(PyObject *obj) {
     return _molt_pyobject_from_result(molt_object_repr(_molt_py_handle(obj)));
+}
+
+static inline PyObject *PyObject_Format(PyObject *obj, PyObject *format_spec) {
+    PyObject *format_fn;
+    PyObject *args;
+    PyObject *out;
+    if (obj == NULL) {
+        PyErr_SetString(PyExc_TypeError, "object must not be NULL");
+        return NULL;
+    }
+    if (format_spec == NULL) {
+        format_spec = PyUnicode_FromString("");
+        if (format_spec == NULL) {
+            return NULL;
+        }
+        out = PyObject_Format(obj, format_spec);
+        Py_DECREF(format_spec);
+        return out;
+    }
+    format_fn = PyObject_GetAttrString(obj, "__format__");
+    if (format_fn == NULL) {
+        return NULL;
+    }
+    args = PyTuple_New(1);
+    if (args == NULL) {
+        Py_DECREF(format_fn);
+        return NULL;
+    }
+    Py_INCREF(format_spec);
+    if (PyTuple_SetItem(args, 0, format_spec) < 0) {
+        Py_DECREF(format_fn);
+        Py_DECREF(args);
+        return NULL;
+    }
+    out = PyObject_CallObject(format_fn, args);
+    Py_DECREF(format_fn);
+    Py_DECREF(args);
+    return out;
+}
+
+static inline PyObject *PyObject_Dir(PyObject *obj) {
+    PyObject *dir_fn;
+    PyObject *out;
+    if (obj == NULL) {
+        PyErr_SetString(PyExc_TypeError, "object must not be NULL");
+        return NULL;
+    }
+    dir_fn = PyObject_GetAttrString(obj, "__dir__");
+    if (dir_fn == NULL) {
+        return NULL;
+    }
+    out = PyObject_CallObject(dir_fn, NULL);
+    Py_DECREF(dir_fn);
+    return out;
 }
 
 static inline int PyObject_Print(PyObject *obj, FILE *fp, int flags) {
@@ -2800,6 +2897,15 @@ static inline PyObject *PyUnicode_FromString(const char *value) {
     return _molt_pyobject_from_handle(bits);
 }
 
+static inline PyObject *PyUnicode_FromWideChar(const wchar_t *value, Py_ssize_t size) {
+    (void)value;
+    (void)size;
+    PyErr_SetString(
+        PyExc_RuntimeError,
+        "PyUnicode_FromWideChar is not yet implemented in Molt's C-API layer");
+    return NULL;
+}
+
 static inline PyObject *PyUnicode_Concat(PyObject *left, PyObject *right) {
     const char *left_text;
     const char *right_text;
@@ -2841,6 +2947,30 @@ static inline const char *PyUnicode_AsUTF8AndSize(PyObject *value, Py_ssize_t *s
 
 static inline const char *PyUnicode_AsUTF8(PyObject *value) {
     return PyUnicode_AsUTF8AndSize(value, NULL);
+}
+
+static inline PyObject *PyUnicode_AsEncodedString(
+    PyObject *unicode,
+    const char *encoding,
+    const char *errors
+) {
+    const char *text;
+    Py_ssize_t len = 0;
+    (void)errors;
+    if (encoding != NULL
+        && strcmp(encoding, "utf-8") != 0
+        && strcmp(encoding, "utf8") != 0
+        && strcmp(encoding, "utf_8") != 0) {
+        PyErr_SetString(
+            PyExc_RuntimeError,
+            "PyUnicode_AsEncodedString currently only supports utf-8");
+        return NULL;
+    }
+    text = PyUnicode_AsUTF8AndSize(unicode, &len);
+    if (text == NULL) {
+        return NULL;
+    }
+    return PyBytes_FromStringAndSize(text, len);
 }
 
 static inline Py_ssize_t PyUnicode_GetLength(PyObject *value) {
@@ -3699,6 +3829,30 @@ static inline int PyIter_Check(PyObject *obj) {
     return has_next;
 }
 
+static inline PyObject *PyObject_GetIter(PyObject *obj) {
+    PyObject *iter_fn;
+    PyObject *out;
+    if (obj == NULL) {
+        PyErr_SetString(PyExc_TypeError, "object must not be NULL");
+        return NULL;
+    }
+    iter_fn = PyObject_GetAttrString(obj, "__iter__");
+    if (iter_fn == NULL) {
+        return NULL;
+    }
+    out = PyObject_CallObject(iter_fn, NULL);
+    Py_DECREF(iter_fn);
+    if (out == NULL) {
+        return NULL;
+    }
+    if (!PyIter_Check(out)) {
+        Py_DECREF(out);
+        PyErr_SetString(PyExc_TypeError, "__iter__ returned a non-iterator");
+        return NULL;
+    }
+    return out;
+}
+
 static inline PyObject *PyIter_Next(PyObject *obj) {
     PyObject *next_fn;
     PyObject *out;
@@ -3717,6 +3871,32 @@ static inline PyObject *PyIter_Next(PyObject *obj) {
         return NULL;
     }
     return out;
+}
+
+static inline Py_ssize_t PyObject_Length(PyObject *obj) {
+    PyObject *len_fn;
+    PyObject *len_obj;
+    Py_ssize_t result;
+    if (obj == NULL) {
+        PyErr_SetString(PyExc_TypeError, "object must not be NULL");
+        return -1;
+    }
+    len_fn = PyObject_GetAttrString(obj, "__len__");
+    if (len_fn == NULL) {
+        return -1;
+    }
+    len_obj = PyObject_CallObject(len_fn, NULL);
+    Py_DECREF(len_fn);
+    if (len_obj == NULL) {
+        return -1;
+    }
+    result = PyLong_AsSsize_t(len_obj);
+    Py_DECREF(len_obj);
+    return result;
+}
+
+static inline Py_ssize_t PyObject_Size(PyObject *obj) {
+    return PyObject_Length(obj);
 }
 
 static inline int PyObject_IsInstance(PyObject *obj, PyObject *cls) {
