@@ -3995,11 +3995,15 @@ def _runtime_fingerprint(
 def _runtime_cargo_features(target_triple: str | None) -> tuple[str, ...]:
     if target_triple is not None and target_triple.startswith("wasm32"):
         return ()
+    features: list[str] = []
     raw = os.environ.get("MOLT_RUNTIME_TK_NATIVE")
     enabled = True if raw is None or raw.strip() == "" else _coerce_bool(raw, True)
-    if not enabled:
-        return ()
-    return ("molt_tk_native",)
+    if enabled:
+        features.append("molt_tk_native")
+    hosted_extension = os.environ.get("MOLT_RUNTIME_HOSTED_EXTENSION")
+    if hosted_extension and _coerce_bool(hosted_extension, False):
+        features.append("molt_hosted_extension")
+    return tuple(features)
 
 
 def _read_runtime_fingerprint(path: Path) -> dict[str, str | None] | None:
@@ -4234,6 +4238,16 @@ def _artifact_needs_rebuild(
         stored_rustc = stored_fingerprint.get("rustc")
         return stored_rustc is None or stored_rustc != rustc
     return False
+
+
+def _is_valid_static_archive(path: Path) -> bool:
+    try:
+        if path.suffix.lower() == ".a":
+            with path.open("rb") as handle:
+                return handle.read(8) == b"!<arch>\n"
+        return path.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def _is_valid_wasm_binary(path: Path) -> bool:
@@ -5798,8 +5812,16 @@ def _ensure_runtime_lib(
             if fingerprint_path.exists()
             else None
         )
-        if not _artifact_needs_rebuild(runtime_lib, fingerprint, stored_fingerprint):
+        needs_rebuild = _artifact_needs_rebuild(
+            runtime_lib, fingerprint, stored_fingerprint
+        )
+        if not needs_rebuild and _is_valid_static_archive(runtime_lib):
             return True
+        if not needs_rebuild and not json_output:
+            print(
+                "Runtime build artifact invalid/corrupt; forcing rebuild.",
+                file=sys.stderr,
+            )
         if not json_output:
             print("Runtime sources changed; rebuilding runtime...")
         cmd = ["cargo", "build", "-p", "molt-runtime", "--profile", cargo_profile]
@@ -5831,6 +5853,13 @@ def _ensure_runtime_lib(
             err = build.stderr.strip() or build.stdout.strip()
             if err:
                 print(err, file=sys.stderr)
+            return False
+        if not _is_valid_static_archive(runtime_lib):
+            if not json_output:
+                print(
+                    f"Runtime build produced invalid archive: {runtime_lib}",
+                    file=sys.stderr,
+                )
             return False
         if fingerprint is not None:
             try:
@@ -7446,6 +7475,57 @@ def _append_darwin_runtime_frameworks(
     for framework in ("Security", "CoreFoundation"):
         if not _link_args_has_framework(args, framework):
             args.extend(["-framework", framework])
+
+
+def _append_env_cflags(args: list[str]) -> None:
+    cflags = os.environ.get("CFLAGS", "")
+    if cflags:
+        args.extend(shlex.split(cflags))
+
+
+def _append_dev_linker_hint(args: list[str], *, profile: BuildProfile) -> str | None:
+    if profile != "dev":
+        return None
+    linker_hint = _resolve_dev_linker()
+    if linker_hint and not any(arg.startswith("-fuse-ld=") for arg in args):
+        args.append(f"-fuse-ld={linker_hint}")
+    return linker_hint
+
+
+def _apply_host_darwin_link_flags(
+    args: list[str], *, target_triple: str | None, reference_obj: Path
+) -> list[str]:
+    if sys.platform != "darwin" or target_triple:
+        return args
+    args = _strip_arch_flags(args)
+    arch = (
+        os.environ.get("MOLT_ARCH")
+        or _detect_macos_arch(reference_obj)
+        or platform.machine()
+    )
+    args.extend(["-arch", arch])
+    deployment_target = _detect_macos_deployment_target()
+    if deployment_target:
+        args.append(f"-mmacosx-version-min={deployment_target}")
+    return args
+
+
+def _append_platform_runtime_link_flags(
+    args: list[str], *, target_triple: str | None
+) -> None:
+    if target_triple:
+        lowered = target_triple.lower()
+        if "apple" in lowered or "darwin" in lowered or "macos" in lowered:
+            args.append("-lc++")
+            _append_darwin_runtime_frameworks(args, target_triple=target_triple)
+        elif "linux" in lowered:
+            args.extend(["-lstdc++", "-lm"])
+        return
+    if sys.platform == "darwin":
+        args.append("-lc++")
+        _append_darwin_runtime_frameworks(args, target_triple=None)
+    elif sys.platform.startswith("linux"):
+        args.extend(["-lstdc++", "-lm"])
 
 
 def build(
@@ -10321,42 +10401,15 @@ int main(int argc, char** argv) {
         ) or (not target_triple and sys.platform == "darwin"):
             sysroot_flag = "-isysroot"
         link_cmd.extend([sysroot_flag, str(sysroot_path)])
-    cflags = os.environ.get("CFLAGS", "")
-    if cflags:
-        link_cmd.extend(shlex.split(cflags))
-    linker_hint: str | None = None
-    if profile == "dev":
-        linker_hint = _resolve_dev_linker()
-        if linker_hint and not any(arg.startswith("-fuse-ld=") for arg in link_cmd):
-            link_cmd.append(f"-fuse-ld={linker_hint}")
-    if sys.platform == "darwin" and not target_triple:
-        link_cmd = _strip_arch_flags(link_cmd)
-        arch = (
-            os.environ.get("MOLT_ARCH")
-            or _detect_macos_arch(output_obj)
-            or platform.machine()
-        )
-        link_cmd.extend(["-arch", arch])
-        deployment_target = _detect_macos_deployment_target()
-        if deployment_target:
-            link_cmd.append(f"-mmacosx-version-min={deployment_target}")
+    _append_env_cflags(link_cmd)
+    linker_hint = _append_dev_linker_hint(link_cmd, profile=profile)
+    link_cmd = _apply_host_darwin_link_flags(
+        link_cmd, target_triple=target_triple, reference_obj=output_obj
+    )
     link_cmd.extend(
         [str(stub_path), str(output_obj), str(runtime_lib), "-o", str(output_binary)]
     )
-    if target_triple:
-        if "apple" in target_triple or "darwin" in target_triple:
-            link_cmd.append("-lc++")
-            _append_darwin_runtime_frameworks(link_cmd, target_triple=target_triple)
-        elif "linux" in target_triple:
-            link_cmd.append("-lstdc++")
-            link_cmd.append("-lm")
-    else:
-        if sys.platform == "darwin":
-            link_cmd.append("-lc++")
-            _append_darwin_runtime_frameworks(link_cmd, target_triple=None)
-        elif sys.platform.startswith("linux"):
-            link_cmd.append("-lstdc++")
-            link_cmd.append("-lm")
+    _append_platform_runtime_link_flags(link_cmd, target_triple=target_triple)
 
     if diagnostics_enabled and "link" not in phase_starts:
         phase_starts["link"] = time.perf_counter()
@@ -11947,14 +12000,10 @@ def _collect_extension_scan_units_from_zip_archive(
     try:
         with zipfile.ZipFile(path) as zf:
             member_names = sorted(
-                name
-                for name in zf.namelist()
-                if _is_extension_scan_c_like_name(name)
+                name for name in zf.namelist() if _is_extension_scan_c_like_name(name)
             )
             if not member_names:
-                errors.append(
-                    f"archive has no C/C++ files with known suffixes: {path}"
-                )
+                errors.append(f"archive has no C/C++ files with known suffixes: {path}")
                 return []
             units: list[ExtensionScanSourceUnit] = []
             for member_name in member_names:
@@ -11988,9 +12037,7 @@ def _collect_extension_scan_units_from_tar_archive(
                 key=lambda member: member.name,
             )
             if not members:
-                errors.append(
-                    f"archive has no C/C++ files with known suffixes: {path}"
-                )
+                errors.append(f"archive has no C/C++ files with known suffixes: {path}")
                 return []
             units: list[ExtensionScanSourceUnit] = []
             for member in members:
@@ -12071,7 +12118,9 @@ def _resolve_extension_scan_sources(
             continue
         if source_path.is_file() and _is_extension_scan_archive(source_path):
             scan_units.extend(
-                _collect_extension_scan_units_from_archive(source_path, warnings, errors)
+                _collect_extension_scan_units_from_archive(
+                    source_path, warnings, errors
+                )
             )
             continue
         if source_path.is_file():
@@ -12463,15 +12512,16 @@ def extension_build(
         )
     else:
         runtime_lib = target_root / profile_dir / "libmolt_runtime.a"
-    if not _ensure_runtime_lib(
-        runtime_lib,
-        runtime_target_triple,
-        json_output,
-        runtime_cargo_profile,
-        molt_root,
-        cargo_timeout,
-    ):
-        return _fail("Runtime build failed", json_output, command="extension-build")
+    with _temporary_env_overrides({"MOLT_RUNTIME_HOSTED_EXTENSION": "1"}):
+        if not _ensure_runtime_lib(
+            runtime_lib,
+            runtime_target_triple,
+            json_output,
+            runtime_cargo_profile,
+            molt_root,
+            cargo_timeout,
+        ):
+            return _fail("Runtime build failed", json_output, command="extension-build")
 
     include_root = molt_root / "include"
     if not include_root.exists():
@@ -12578,11 +12628,18 @@ def extension_build(
         built_extension = build_tmp / module_rel
         built_extension.parent.mkdir(parents=True, exist_ok=True)
         link_command = [*cc_cmd, "-shared"]
+        _append_env_cflags(link_command)
+        linker_hint = _append_dev_linker_hint(link_command, profile=profile)
+        link_command = _apply_host_darwin_link_flags(
+            link_command,
+            target_triple=runtime_target_triple,
+            reference_obj=object_paths[0],
+        )
         link_command.extend(str(path) for path in object_paths)
         link_command.append(str(runtime_lib))
         link_command.extend(["-o", str(built_extension)])
         link_command.extend(link_args)
-        _append_darwin_runtime_frameworks(
+        _append_platform_runtime_link_flags(
             link_command, target_triple=runtime_target_triple
         )
         link_result = subprocess.run(
@@ -12593,6 +12650,27 @@ def extension_build(
             text=True,
             check=False,
         )
+        if link_result.returncode != 0 and linker_hint is not None:
+            retry_command = [
+                arg for arg in link_command if arg != f"-fuse-ld={linker_hint}"
+            ]
+            if retry_command != link_command:
+                retry_result = subprocess.run(
+                    retry_command,
+                    cwd=project_root,
+                    env=build_env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if retry_result.returncode == 0:
+                    warnings.append(
+                        "Linker fallback: "
+                        f"-fuse-ld={linker_hint} failed for extension build; "
+                        "retried default linker."
+                    )
+                    link_command = retry_command
+                    link_result = retry_result
         if link_result.returncode != 0:
             detail = link_result.stderr.strip() or link_result.stdout.strip()
             if not detail:
