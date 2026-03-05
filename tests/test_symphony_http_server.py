@@ -7,6 +7,8 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+import pytest
+
 from molt.symphony.http_server import DashboardServer
 
 
@@ -99,6 +101,12 @@ class _Provider:
 
 def _read_json(url: str, method: str = "GET") -> tuple[int, dict[str, Any]]:
     req = urllib.request.Request(url, method=method)
+    with urllib.request.urlopen(req, timeout=5.0) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+        return int(resp.status), payload
+
+
+def _read_json_request(req: urllib.request.Request) -> tuple[int, dict[str, Any]]:
     with urllib.request.urlopen(req, timeout=5.0) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
         return int(resp.status), payload
@@ -369,5 +377,99 @@ def test_state_endpoint_falls_back_when_helper_is_invalid(monkeypatch: object) -
         assert etag.startswith('W/"')
         _ = resp.read()
         conn.close()
+    finally:
+        server.stop()
+
+
+def test_security_headers_present_on_dashboard_and_state() -> None:
+    provider = _Provider()
+    server = DashboardServer(provider=provider, port=0)
+    port = server.start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+        conn.request("GET", "/")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        assert resp.getheader("X-Content-Type-Options") == "nosniff"
+        assert resp.getheader("X-Frame-Options") == "DENY"
+        assert resp.getheader("Referrer-Policy") == "no-referrer"
+        assert "frame-ancestors 'none'" in (
+            resp.getheader("Content-Security-Policy") or ""
+        )
+        _ = resp.read()
+        conn.close()
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+        conn.request("GET", "/api/v1/state")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        assert resp.getheader("X-Content-Type-Options") == "nosniff"
+        assert resp.getheader("X-Frame-Options") == "DENY"
+        _ = resp.read()
+        conn.close()
+    finally:
+        server.stop()
+
+
+def test_api_token_required_for_state_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_SYMPHONY_API_TOKEN", "secret-token")
+    provider = _Provider()
+    server = DashboardServer(provider=provider, port=0)
+    port = server.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/v1/state", method="GET"
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(req, timeout=5.0)
+        assert exc_info.value.code == 401
+
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/v1/state",
+            method="GET",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+        status, payload = _read_json_request(req)
+        assert status == 200
+        assert payload["counts"]["running"] == 0
+    finally:
+        server.stop()
+
+
+def test_mutating_requests_require_csrf_for_browser_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_SYMPHONY_API_TOKEN", "secret-token")
+    provider = _Provider()
+    server = DashboardServer(provider=provider, port=0)
+    port = server.start()
+    origin = f"http://127.0.0.1:{port}"
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/v1/refresh",
+            method="POST",
+            headers={
+                "Authorization": "Bearer secret-token",
+                "Origin": origin,
+            },
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(req, timeout=5.0)
+        assert exc_info.value.code == 403
+
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/v1/refresh",
+            method="POST",
+            headers={
+                "Authorization": "Bearer secret-token",
+                "Origin": origin,
+                "X-Symphony-CSRF": "1",
+            },
+        )
+        status, payload = _read_json_request(req)
+        assert status == 202
+        assert payload["queued"] is True
     finally:
         server.stop()
