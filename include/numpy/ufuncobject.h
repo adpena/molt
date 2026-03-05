@@ -14,6 +14,9 @@ typedef void (*PyUFuncGenericFunction)(
     void *innerloopdata
 );
 
+#define PyUFunc_Type (*_molt_numpy_builtin_type_borrowed("object"))
+#define PyUFunc_None -1
+
 #define PyUFunc_Check(op) PyObject_TypeCheck((PyObject *)(op), &PyArray_Type)
 
 static inline int PyUFunc_GiveFloatingpointErrors(const char *name, int fpe_errors) {
@@ -22,6 +25,16 @@ static inline int PyUFunc_GiveFloatingpointErrors(const char *name, int fpe_erro
     PyErr_SetString(
         PyExc_RuntimeError,
         "PyUFunc_GiveFloatingpointErrors is not yet implemented in Molt's NumPy compatibility layer");
+    return -1;
+}
+
+static inline int PyUFunc_AddLoop(PyObject *ufunc, PyObject *info, int ignore) {
+    (void)ufunc;
+    (void)info;
+    (void)ignore;
+    PyErr_SetString(
+        PyExc_RuntimeError,
+        "PyUFunc_AddLoop is not yet implemented in Molt's NumPy compatibility layer");
     return -1;
 }
 
