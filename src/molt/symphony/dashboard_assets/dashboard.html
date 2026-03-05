@@ -14,13 +14,27 @@
             <h1>Molt Symphony</h1>
             <div class="subtitle">Realtime Control</div>
           </div>
-          <div class="top-nav" role="tablist" aria-label="dashboard views">
-            <button type="button" class="view-tab active" data-view="overview">Overview</button>
-            <button type="button" class="view-tab" data-view="interventions">Interventions</button>
-            <button type="button" class="view-tab" data-view="agents">Agents</button>
-            <button type="button" class="view-tab" data-view="performance">Performance</button>
-            <button type="button" class="view-tab" data-view="memory">Memory</button>
-            <button type="button" class="view-tab" data-view="all">All</button>
+          <div class="top-nav-wrap">
+            <div class="top-nav" role="tablist" aria-label="dashboard views">
+              <button
+                type="button"
+                role="tab"
+                class="view-tab active"
+                data-view="overview"
+                aria-selected="true"
+              >
+                Overview
+              </button>
+              <button type="button" role="tab" class="view-tab" data-view="interventions">
+                Interventions
+              </button>
+              <button type="button" role="tab" class="view-tab" data-view="agents">Agents</button>
+              <button type="button" role="tab" class="view-tab" data-view="performance">
+                Performance
+              </button>
+              <button type="button" role="tab" class="view-tab" data-view="memory">Memory</button>
+              <button type="button" role="tab" class="view-tab" data-view="all">All</button>
+            </div>
           </div>
         </div>
         <div class="controls">
@@ -211,7 +225,14 @@
       </div>
 
       <div id="trace-modal" class="trace-modal" aria-hidden="true">
-        <aside class="trace-panel" role="dialog" aria-label="Agent Trace">
+        <aside
+          id="trace-panel"
+          class="trace-panel"
+          role="dialog"
+          aria-label="Agent Trace"
+          aria-modal="true"
+          tabindex="-1"
+        >
           <div class="trace-head">
             <div>
               <h3 class="trace-title">Agent Trace</h3>

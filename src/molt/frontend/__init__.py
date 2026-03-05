@@ -927,6 +927,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.boxed_locals: dict[str, MoltValue] = {}
         self.closure_locals: set[str] = set()
         self.boxed_local_hints: dict[str, str] = {}
+        self.loop_carry_vars: set[str] = (
+            set()
+        )  # Variables using loop-carried block params
         self.free_vars: dict[str, int] = {}
         self.free_var_hints: dict[str, str] = {}
         self.global_decls: set[str] = set()
@@ -1378,6 +1381,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.boxed_locals = {}
         self.closure_locals = set()
         self.boxed_local_hints = {}
+        self.loop_carry_vars = set()
         self.free_vars = {}
         self.free_var_hints = {}
         self.global_decls = set()
@@ -2218,6 +2222,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.locals_cache_val = None
         self.boxed_locals = {}
         self.closure_locals = set()
+        self.loop_carry_vars = set()
         self.boxed_local_hints = {}
         self.free_vars = {}
         self.free_var_hints = {}
@@ -2769,6 +2774,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "boxed_locals": self.boxed_locals,
             "closure_locals": self.closure_locals,
             "boxed_local_hints": self.boxed_local_hints,
+            "loop_carry_vars": self.loop_carry_vars,
             "free_vars": self.free_vars,
             "free_var_hints": self.free_var_hints,
             "global_decls": self.global_decls,
@@ -2823,6 +2829,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.boxed_locals = state["boxed_locals"]
         self.closure_locals = state["closure_locals"]
         self.boxed_local_hints = state["boxed_local_hints"]
+        self.loop_carry_vars = state["loop_carry_vars"]
         self.free_vars = state["free_vars"]
         self.free_var_hints = state["free_var_hints"]
         self.global_decls = state["global_decls"]
@@ -6898,6 +6905,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return
         if self.control_flow_depth == 0 and name in self.unbound_check_names:
             self.unbound_check_names.discard(name)
+        if name in self.loop_carry_vars:
+            # Loop-carried variable: update via block param, not boxed cell
+            carry_name = f"__carry_{name}"
+            carry_out = MoltValue(carry_name, type_hint=value.type_hint)
+            self.emit(
+                MoltOp(
+                    kind="LOOP_CARRY_UPDATE",
+                    args=[carry_name, value],
+                    result=carry_out,
+                )
+            )
+            self.locals[name] = carry_out
+            update_locals_cache()
+            return
         cell = self._load_boxed_cell(name)
         if cell is not None:
             idx = MoltValue(self.next_var(), type_hint="int")

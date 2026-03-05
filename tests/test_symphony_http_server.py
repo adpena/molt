@@ -133,6 +133,45 @@ def test_refresh_endpoint_includes_requested_at() -> None:
         server.stop()
 
 
+def test_api_state_response_sets_no_store_cache_headers() -> None:
+    provider = _Provider()
+    server = DashboardServer(provider=provider, port=0)
+    port = server.start()
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/v1/state", timeout=5.0
+        ) as resp:
+            assert int(resp.status) == 200
+            cache_control = str(resp.headers.get("Cache-Control") or "").lower()
+            vary = str(resp.headers.get("Vary") or "")
+            assert "no-store" in cache_control
+            assert "authorization" in vary.lower()
+    finally:
+        server.stop()
+
+
+def test_retry_now_rejects_oversized_payload() -> None:
+    provider = _Provider()
+    server = DashboardServer(provider=provider, port=0)
+    port = server.start()
+    body = b"{" + (b'"a":' + b'"x"' * 90_000) + b"}"
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/v1/interventions/retry-now",
+            method="POST",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=5.0):  # pragma: no cover
+            raise AssertionError("expected HTTPError")
+    except urllib.error.HTTPError as exc:
+        payload = json.loads(exc.read().decode("utf-8"))
+        assert exc.code == 413
+        assert payload["error"]["code"] == "payload_too_large"
+    finally:
+        server.stop()
+
+
 def test_unknown_post_route_returns_not_found() -> None:
     provider = _Provider()
     server = DashboardServer(provider=provider, port=0)
