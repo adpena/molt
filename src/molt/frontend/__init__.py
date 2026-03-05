@@ -1656,6 +1656,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "LOOP_BREAK_IF_FALSE",
             "LOOP_INDEX_START",
             "LOOP_INDEX_NEXT",
+            "LOOP_CARRY_INIT",
+            "LOOP_CARRY_UPDATE",
             "STATE_TRANSITION",
             "STATE_YIELD",
             "PHI",
@@ -1700,6 +1702,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "LOOP_BREAK_IF_FALSE",
             "LOOP_INDEX_START",
             "LOOP_INDEX_NEXT",
+            "LOOP_CARRY_INIT",
+            "LOOP_CARRY_UPDATE",
             "STATE_TRANSITION",
             "STATE_YIELD",
             "PHI",
@@ -22625,13 +22629,56 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return None
         assigned = self._collect_assigned_names(node.body)
         assigned |= self._collect_namedexpr_names(node.test)
+        # Identify int-typed locals that can use loop-carried block params
+        # instead of boxed cells (avoids NaN-box overhead per iteration).
+        carry_candidates: set[str] = set()
+        if (
+            not self.is_async()
+            and self._hints_enabled()
+            and self.type_hint_policy == "trust"
+        ):
+            closure_captured = set()
+            if hasattr(self, "closure_locals"):
+                closure_captured = self.closure_locals
+            for name in sorted(assigned):
+                if name in self.global_decls or name in self.nonlocal_decls:
+                    continue
+                if name in self.free_vars or name in closure_captured:
+                    continue
+                if name in self.del_targets:
+                    continue
+                hint = self.explicit_type_hints.get(name)
+                if hint == "int":
+                    carry_candidates.add(name)
         for name in sorted(assigned):
             if not self.is_async():
-                self._box_local(name)
+                if name not in carry_candidates:
+                    self._box_local(name)
         guard_map = self._emit_hoisted_loop_guards(node.body)
+
+        carry_vars_for_loop = carry_candidates
 
         def emit_loop_body() -> None:
             self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+            # Emit LOOP_CARRY_INIT for each carry variable
+            prev_carry = set(self.loop_carry_vars)
+            for name in sorted(carry_vars_for_loop):
+                init_val = self.locals.get(name)
+                if init_val is None:
+                    # Variable not yet initialized — use 0
+                    init_val = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="CONST", args=[0], result=init_val))
+                    self.locals[name] = init_val
+                carry_out = MoltValue(f"__carry_{name}", type_hint="int")
+                self.emit(
+                    MoltOp(
+                        kind="LOOP_CARRY_INIT",
+                        args=[init_val],
+                        result=carry_out,
+                    )
+                )
+                self.locals[name] = carry_out
+                self.loop_carry_vars.add(name)
             cond = self.visit(node.test)
             self.emit(
                 MoltOp(
@@ -22643,6 +22690,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self._visit_loop_body(node.body, None, loop_break_flag=break_name)
             self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+            # Restore carry vars state
+            self.loop_carry_vars = prev_carry
 
         if guard_map:
             guard_cond = self._emit_guard_map_condition(guard_map)
@@ -28887,6 +28936,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     {
                         "kind": "loop_index_next",
                         "args": [op.args[0].name],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "LOOP_CARRY_INIT":
+                json_ops.append(
+                    {
+                        "kind": "loop_carry_init",
+                        "args": [op.args[0].name if isinstance(op.args[0], MoltValue) else str(op.args[0])],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "LOOP_CARRY_UPDATE":
+                json_ops.append(
+                    {
+                        "kind": "loop_carry_update",
+                        "args": [
+                            str(op.args[0]),  # carry variable name
+                            op.args[1].name if isinstance(op.args[1], MoltValue) else str(op.args[1]),
+                        ],
                         "out": op.result.name,
                     }
                 )
