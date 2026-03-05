@@ -54,6 +54,9 @@ prefers listen-PIDs from `MOLT_SERVER_PORT` when `lsof` is present, and falls
 back to command-name matching.
 Set `MOLT_ACCEL_CLIENT_MODE=per_request` to spawn a worker client per request (default is `shared`).
 Set `MOLT_ACCEL_POOL_SIZE` to use a pool of worker processes when `MOLT_ACCEL_CLIENT_MODE=shared`.
+Set `MOLT_ACCEL_RETRY_ON_TIMEOUT=1` to opt into timeout retries for idempotent calls.
+Set `MOLT_ACCEL_RETRY_ON_BUSY=1` to retry `Busy` responses for idempotent calls.
+Set `MOLT_ACCEL_RETRY_BACKOFF_MS=10` and `MOLT_ACCEL_RETRY_BACKOFF_MAX_MS=80` for exponential retry backoff.
 Set `MOLT_WORKER_THREADS` or `MOLT_WORKER_MAX_QUEUE` to override worker thread count or queue depth.
 Set `MOLT_UV_SYNC=0` to skip the automatic `uv sync --group demo` step in the bench script.
 Set `MOLT_SERVER=gunicorn|uvicorn|django` to choose the server (default `auto` prefers gunicorn, then uvicorn).
