@@ -13003,16 +13003,51 @@ impl SimpleBackend {
                     let body_block = builder.create_block();
                     let after_block = builder.create_block();
                     let idx_param = builder.append_block_param(loop_block, types::I64);
+
+                    // Scan ahead for loop_carry_init ops
+                    let mut carry_init_ops: Vec<(String, String)> = Vec::new();
+                    {
+                        let mut scan = op_idx + 1;
+                        while scan < ops.len() && ops[scan].kind == "loop_carry_init" {
+                            let ci_op = &ops[scan];
+                            let ci_args = ci_op.args.as_ref().unwrap();
+                            let ci_out = ci_op.out.clone().unwrap();
+                            carry_init_ops.push((ci_out, ci_args[0].clone()));
+                            scan += 1;
+                        }
+                    }
+
+                    // Create block params for carry vars
+                    let mut carry_names: Vec<String> = Vec::new();
+                    let mut carry_init_values: Vec<Value> = Vec::new();
+                    for (ci_out, ci_init_name) in &carry_init_ops {
+                        let _carry_param = builder.append_block_param(loop_block, types::I64);
+                        let init_val = var_get(&mut builder, &vars, ci_init_name)
+                            .expect("Loop carry init value not found");
+                        carry_names.push(ci_out.clone());
+                        carry_init_values.push(*init_val);
+                    }
+
+                    // Build initial jump args: [index_start, carry_init_1, carry_init_2, ...]
+                    let mut jump_args = vec![*start];
+                    jump_args.extend_from_slice(&carry_init_values);
+
                     if !is_block_filled {
                         ensure_block_in_layout(&mut builder, loop_block);
                         reachable_blocks.insert(loop_block);
-                        jump_block(&mut builder, loop_block, &[*start]);
+                        jump_block(&mut builder, loop_block, &jump_args);
                         switch_to_block_tracking(&mut builder, loop_block, &mut is_block_filled);
                     } else {
                         is_block_filled = true;
                     }
                     if reachable_blocks.contains(&loop_block) {
                         def_var_named(&mut builder, &vars, out_name.clone(), idx_param);
+                        // Define carry variables from block params
+                        let all_params: Vec<Value> = builder.block_params(loop_block).to_vec();
+                        for (i, (ci_out, _)) in carry_init_ops.iter().enumerate() {
+                            // Block param 0 is idx, carry params start at 1
+                            def_var_named(&mut builder, &vars, ci_out.clone(), all_params[i + 1]);
+                        }
                     }
                     loop_stack.push(LoopFrame {
                         loop_block,
@@ -13020,8 +13055,8 @@ impl SimpleBackend {
                         after_block,
                         index_name: Some(out_name),
                         next_index: None,
-                        carry_names: Vec::new(),
-                        carry_values: Vec::new(),
+                        carry_names,
+                        carry_values: carry_init_values,
                     });
                     loop_depth += 1;
                 }
