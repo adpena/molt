@@ -62,6 +62,9 @@ Human operator contract:
 ## Files
 
 - `src/molt/symphony/`: implementation package
+- `src/molt/symphony/http_server.py`: hardened dashboard/API transport layer (auth, rate limits, SSE, cache/ETag)
+- `src/molt/symphony/observability_presenter.py`: observability payload projection + redaction + security-event summary helpers
+- `src/molt/symphony/dashboard_assets.py`: embedded dashboard static assets + precomputed weak ETags
 - `WORKFLOW.md`: repository-owned workflow contract
 - `tools/symphony_bootstrap.py`: one-command setup for MCP/env/launchd
 - `tools/symphony_run.py`: launch helper with external-volume checks
@@ -138,6 +141,40 @@ export MOLT_SYMPHONY_STATE_HASH_HELPER="/Volumes/APDataStore/Molt/bin/symphony_s
 - Use `.gitignore`-protected local files for machine-specific overrides (`WORKFLOW.local.md`, `.env`, `ops/linear/*.secret*`).
 - `tools/secret_guard.py --staged` is enforced by `.githooks/pre-commit` (installed by `tools/symphony_bootstrap.py` via `core.hooksPath=.githooks` unless a custom hooks path already exists).
 - For intentional fake fixtures, add `# secret-guard: allow` on the specific test line.
+- Secret-guard blocked commits emit security events to `MOLT_SYMPHONY_SECURITY_EVENTS_FILE` (default `/Volumes/APDataStore/Molt/logs/symphony/security/events.jsonl`), surfaced in dashboard `Security Telemetry`.
+- Network bind is loopback-only by default (`MOLT_SYMPHONY_BIND_HOST=127.0.0.1`). Non-loopback bind requires explicit opt-in (`MOLT_SYMPHONY_ALLOW_NONLOCAL_BIND=1`).
+- `MOLT_SYMPHONY_SECURITY_PROFILE=production` enables stricter startup rules (API token required; dashboard UI disabled by default via `MOLT_SYMPHONY_DISABLE_DASHBOARD_UI=1`; query-token auth disabled by default via `MOLT_SYMPHONY_ALLOW_QUERY_TOKEN=0`).
+- Full adversarial review checklist: [docs/SYMPHONY_RED_TEAM_CHECKLIST.md](docs/SYMPHONY_RED_TEAM_CHECKLIST.md).
+
+### Hardening Gate (Local)
+
+```bash
+uv run --python 3.12 ruff check .
+uv run --python 3.12 ty check src
+uv run --python 3.12 pytest -q tests/test_symphony_http_server.py tests/test_symphony_observability_presenter.py tests/test_symphony_orchestrator_retry.py tests/test_symphony_runtime_tools.py tests/test_symphony_bootstrap_tool.py tests/test_secret_guard.py tests/test_secret_guard_tool.py tests/test_symphony_durable_memory.py tests/test_symphony_durable_admin_tool.py
+cargo deny check
+cargo audit
+uv run --python 3.12 pip-audit
+```
+
+### Supply-Chain Status (Current)
+
+- `cargo deny check` is green for `advisories`, `bans`, `licenses`, and `sources`.
+- `cargo audit` currently reports warning-only unmaintained crates (no known exploitable CVE lane in this set):
+  - `egg` transitive stack (`fxhash`, `instant`)
+  - `serde_cbor`
+  - `rustpython-parser` transitive `unic-*` crates
+- These are migration tasks, not ignored secrets or policy bypasses. Treat them as scheduled risk retirement work.
+
+### Durable Memory Admin
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_durable_admin.py summary
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_durable_admin.py check
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_durable_admin.py backup --reason manual
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_durable_admin.py restore
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_durable_admin.py prune --keep-latest 20 --max-age-days 30
+```
 
 ## Operational notes
 
@@ -155,8 +192,10 @@ export MOLT_SYMPHONY_STATE_HASH_HELPER="/Volumes/APDataStore/Molt/bin/symphony_s
 - Dashboard/API state payload includes `agent_panes`, runtime role pool settings, token throughput (`codex_totals.tokens_per_second`), and suspension metadata (`suspension`).
 - `/api/v1/state` now supports conditional reads via `ETag` + `If-None-Match` to avoid re-downloading unchanged state during fallback polling.
 - Dashboard HTTP now uses a short shared snapshot cache for `/api/v1/state` and `/api/v1/stream` to reduce duplicate serialization under concurrent readers.
+- Observability projection is split from transport: `http_server.py` owns protocol/security handling while `observability_presenter.py` owns payload projection, secret redaction, and security-event summary shaping.
 - `/api/v1/stream` now emits `state` events only when the serialized snapshot changes (plus heartbeats), reducing UI churn and endpoint pressure.
 - Fallback polling now uses adaptive backoff (error/not-modified aware) to avoid endpoint thrash while preserving realtime responsiveness.
+- Protected dashboard/API requests now support per-principal HTTP rate limiting with explicit `429` + `Retry-After` (`MOLT_SYMPHONY_HTTP_RATE_LIMIT_MAX_REQUESTS`, `MOLT_SYMPHONY_HTTP_RATE_LIMIT_WINDOW_SECONDS`).
 - Optional state-hash helper integration (`MOLT_SYMPHONY_STATE_HASH_HELPER`) supports a compiled-Molt helper binary (`tools/symphony_state_hasher.py`) with transparent fallback to Python hashing.
 - `symphony_state` defaults to compact payload mode with short TTL caching for lower token burn; use `{ "detail": "full" }` when agents need full raw state.
 - `symphony_state` also supports `{ "detail": "telemetry" }` for agent-native, token-efficient MCP telemetry.
@@ -169,5 +208,6 @@ export MOLT_SYMPHONY_STATE_HASH_HELPER="/Volumes/APDataStore/Molt/bin/symphony_s
   - `MOLT_SYMPHONY_REQUIRE_CSRF_HEADER=1` requires `X-Symphony-CSRF: 1` on browser-origin mutating requests.
   - `MOLT_SYMPHONY_MAX_HTTP_CONNECTIONS` bounds concurrent HTTP request handling.
   - `MOLT_SYMPHONY_MAX_STREAM_CLIENTS` and `MOLT_SYMPHONY_STREAM_MAX_AGE_SECONDS` bound SSE fanout and stream lifetime.
+  - `MOLT_SYMPHONY_HTTP_RATE_LIMIT_MAX_REQUESTS` + `MOLT_SYMPHONY_HTTP_RATE_LIMIT_WINDOW_SECONDS` bound authenticated API/dashboard request burst rates per principal.
 - Orchestrator event ingestion is bounded by `MOLT_SYMPHONY_EVENT_QUEUE_MAX`; dropped non-critical events are counted via profiling counters (`events_dropped*`) rather than unbounded memory growth.
 - `runtime.event_queue` in `/api/v1/state` now exposes queue depth/capacity/utilization plus dropped-event counts for fast operational diagnosis.

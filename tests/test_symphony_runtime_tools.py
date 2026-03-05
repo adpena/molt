@@ -85,8 +85,16 @@ def test_symphony_run_main_uses_env_file_and_launches(
     assert env["MOLT_SYMPHONY_ENFORCE_ORIGIN"] == "1"
     assert env["MOLT_SYMPHONY_REQUIRE_CSRF_HEADER"] == "1"
     assert env["MOLT_SYMPHONY_EVENT_QUEUE_MAX"] == "8192"
+    assert env["MOLT_SYMPHONY_HTTP_RATE_LIMIT_MAX_REQUESTS"] == "240"
+    assert env["MOLT_SYMPHONY_HTTP_RATE_LIMIT_WINDOW_SECONDS"] == "60"
+    assert env["MOLT_SYMPHONY_SECURITY_PROFILE"] == "local"
+    assert env["MOLT_SYMPHONY_BIND_HOST"] == "127.0.0.1"
+    assert env["MOLT_SYMPHONY_ALLOW_NONLOCAL_BIND"] == "0"
+    assert env["MOLT_SYMPHONY_ALLOW_QUERY_TOKEN"] == "1"
+    assert env["MOLT_SYMPHONY_DISABLE_DASHBOARD_UI"] == "0"
     assert env["MOLT_SYMPHONY_API_TOKEN"]
     assert Path(env["MOLT_SYMPHONY_API_TOKEN_FILE"]).exists()
+    assert Path(env["MOLT_SYMPHONY_SECURITY_EVENTS_FILE"]).parent.exists()
 
 
 def test_symphony_run_main_requires_linear_token(monkeypatch, tmp_path: Path) -> None:

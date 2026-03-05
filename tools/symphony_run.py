@@ -144,13 +144,34 @@ def _has_respect_pythonpath_flag(args: list[str]) -> bool:
 def _ensure_dashboard_security_defaults(
     *, env: dict[str, str], ext_root: Path, port: int | None
 ) -> None:
+    env.setdefault("MOLT_SYMPHONY_SECURITY_PROFILE", "local")
+    env.setdefault("MOLT_SYMPHONY_BIND_HOST", "127.0.0.1")
+    env.setdefault("MOLT_SYMPHONY_ALLOW_NONLOCAL_BIND", "0")
+    env.setdefault("MOLT_SYMPHONY_ALLOW_QUERY_TOKEN", "1")
+    env.setdefault("MOLT_SYMPHONY_DISABLE_DASHBOARD_UI", "0")
     env.setdefault("MOLT_SYMPHONY_ENFORCE_ORIGIN", "1")
     env.setdefault("MOLT_SYMPHONY_REQUIRE_CSRF_HEADER", "1")
     env.setdefault("MOLT_SYMPHONY_MAX_HTTP_CONNECTIONS", "96")
     env.setdefault("MOLT_SYMPHONY_MAX_STREAM_CLIENTS", "16")
     env.setdefault("MOLT_SYMPHONY_STREAM_MAX_AGE_SECONDS", "300")
+    env.setdefault("MOLT_SYMPHONY_HTTP_RATE_LIMIT_MAX_REQUESTS", "240")
+    env.setdefault("MOLT_SYMPHONY_HTTP_RATE_LIMIT_WINDOW_SECONDS", "60")
     env.setdefault("MOLT_SYMPHONY_EVENT_QUEUE_MAX", "8192")
     env.setdefault("MOLT_SYMPHONY_EVENT_QUEUE_DROP_LOG_INTERVAL", "250")
+    env.setdefault(
+        "MOLT_SYMPHONY_SECURITY_EVENTS_FILE",
+        str(ext_root / "logs" / "symphony" / "security" / "events.jsonl"),
+    )
+    security_events_file = Path(
+        str(env["MOLT_SYMPHONY_SECURITY_EVENTS_FILE"])
+    ).expanduser()
+    if not security_events_file.is_absolute():
+        security_events_file = (Path.cwd() / security_events_file).resolve()
+    try:
+        security_events_file.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    env["MOLT_SYMPHONY_SECURITY_EVENTS_FILE"] = str(security_events_file)
 
     token = (
         str(env.get("MOLT_SYMPHONY_API_TOKEN") or "").strip()

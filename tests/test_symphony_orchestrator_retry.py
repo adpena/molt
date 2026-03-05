@@ -303,6 +303,62 @@ def test_rate_limit_suspension_derivation() -> None:
     assert suspension["resume_seconds"] == 3600
 
 
+def test_worker_exit_rate_limited_sets_suspension_and_retry_delay() -> None:
+    orchestrator = _orchestrator_stub()
+    issue = _issue("MOL-11", "issue-11")
+    running_entry = RunningEntry(
+        issue=issue,
+        issue_identifier=issue.identifier,
+        worker_name="symphony-executor-MOL-11",
+        worker_role="executor",
+        started_at_utc=now_utc(),
+        started_at_monotonic=0.0,
+        retry_attempt=1,
+    )
+    with orchestrator._state_lock:
+        orchestrator._state.running[issue.id] = running_entry
+        orchestrator._state.claimed.add(issue.id)
+        orchestrator._state.codex_rate_limits = {
+            "primary": {"usedPercent": 100.0, "windowDuration": 60}
+        }
+    scheduled: list[tuple[str, str, int, str | None, bool, int | None]] = []
+    orchestrator._schedule_retry = (  # type: ignore[assignment]
+        lambda issue_id,
+        identifier,
+        attempt,
+        *,
+        error,
+        continuation,
+        delay_override_ms=None: scheduled.append(
+            (
+                issue_id,
+                identifier,
+                attempt,
+                error,
+                continuation,
+                delay_override_ms,
+            )
+        )
+    )
+
+    orchestrator._on_worker_exit(
+        {
+            "issue_id": issue.id,
+            "reason": "failed",
+            "error": "rate limit exhausted, retry after 45s",
+            "duration_seconds": 1.0,
+            "final_issue": issue,
+        }
+    )
+
+    with orchestrator._state_lock:
+        assert orchestrator._state.suspension_kind == "rate_limited"
+        assert orchestrator._state.suspension_auto_resume is True
+    assert scheduled
+    assert scheduled[0][0] == issue.id
+    assert scheduled[0][5] == 60_000
+
+
 def test_rate_limit_suspension_uses_reset_epoch_precisely() -> None:
     payload = {
         "primary": {
@@ -422,3 +478,27 @@ def test_snapshot_durable_memory_enabled_payload() -> None:
     assert payload["enabled"] is True
     assert payload["root"].endswith("durable_memory")
     assert payload["recent_events"]
+
+
+def test_run_dashboard_tool_durable_backup_disabled_returns_error() -> None:
+    orchestrator = _orchestrator_stub()
+    payload = orchestrator.run_dashboard_tool("durable_backup", {})
+    assert payload["ok"] is False
+    assert payload["error"] == "durable_memory_disabled"
+
+
+def test_run_dashboard_tool_durable_integrity_check_success() -> None:
+    orchestrator = _orchestrator_stub()
+
+    class _Store:
+        def run_integrity_check(self) -> dict[str, object]:
+            return {"ok": True, "checks": {"jsonl_readable": {"ok": True}}}
+
+        def record(self, row: dict[str, object]) -> None:
+            _ = row
+
+    orchestrator._durable_memory = _Store()  # type: ignore[assignment]
+    payload = orchestrator.run_dashboard_tool("durable_integrity_check", {})
+    assert payload["ok"] is True
+    assert payload["tool"] == "durable_integrity_check"
+    assert "checks" in payload

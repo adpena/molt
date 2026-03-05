@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Molt Symphony Control</title>
+    <link rel="stylesheet" href="/dashboard.css" />
+  </head>
+  <body>
+    <div class="dashboard-shell">
+      <header class="dashboard-header">
+        <div class="header-left">
+          <div class="title-wrap">
+            <h1>Molt Symphony</h1>
+            <div class="subtitle">Realtime Control</div>
+          </div>
+          <div class="top-nav" role="tablist" aria-label="dashboard views">
+            <button type="button" class="view-tab active" data-view="overview">Overview</button>
+            <button type="button" class="view-tab" data-view="interventions">Interventions</button>
+            <button type="button" class="view-tab" data-view="agents">Agents</button>
+            <button type="button" class="view-tab" data-view="performance">Performance</button>
+            <button type="button" class="view-tab" data-view="memory">Memory</button>
+            <button type="button" class="view-tab" data-view="all">All</button>
+          </div>
+        </div>
+        <div class="controls">
+          <span id="stream-chip" class="status-chip">Connecting...</span>
+          <span id="updated-chip" class="status-chip">No updates yet</span>
+          <label class="control-group" for="workspace-layout">
+            <select id="workspace-layout" aria-label="layout">
+              <option value="columns">columns</option>
+              <option value="rows">rows</option>
+              <option value="grid" selected>grid</option>
+            </select>
+          </label>
+          <label class="control-group" for="workspace-verbosity">
+            <select id="workspace-verbosity" aria-label="verbosity">
+              <option value="compact">compact</option>
+              <option value="normal" selected>normal</option>
+              <option value="verbose">verbose</option>
+            </select>
+          </label>
+          <button id="refresh-btn" type="button">Refresh</button>
+          <button id="reload-btn" type="button" class="secondary">Reconnect</button>
+        </div>
+      </header>
+
+      <div class="panel kpi-band" data-views="overview performance all">
+        <div class="section-head">
+          <h2>Health & Throughput KPIs</h2>
+          <div class="hint">System posture and output velocity at a glance</div>
+        </div>
+        <div class="kpi-grid">
+          <div class="kpi">
+            <div class="label">System Health</div>
+            <div id="kpi-health" class="value">Stable</div>
+            <div id="kpi-health-meta" class="meta">No blocking alerts</div>
+            <div class="meter"><div id="meter-health" class="meter-fill"></div></div>
+          </div>
+          <div class="kpi">
+            <div class="label">Running Sessions</div>
+            <div id="kpi-running" class="value">0</div>
+            <div class="meta">Live issue execution</div>
+            <div class="meter"><div id="meter-running" class="meter-fill"></div></div>
+          </div>
+          <div class="kpi">
+            <div class="label">Retry Queue</div>
+            <div id="kpi-retrying" class="value">0</div>
+            <div class="meta">Items awaiting replay</div>
+            <div class="meter"><div id="meter-retrying" class="meter-fill"></div></div>
+          </div>
+          <div class="kpi">
+            <div class="label">Token Throughput</div>
+            <div id="kpi-throughput" class="value">0 / sec</div>
+            <div id="kpi-throughput-meta" class="meta">0 total tokens</div>
+            <div class="meter"><div id="meter-throughput" class="meter-fill"></div></div>
+          </div>
+          <div class="kpi">
+            <div class="label">Completed Turns</div>
+            <div id="kpi-progress" class="value">0</div>
+            <div id="kpi-progress-meta" class="meta">0 completed issues</div>
+            <div class="meter"><div id="meter-progress" class="meter-fill"></div></div>
+          </div>
+          <div class="kpi">
+            <div class="label">Runtime Duration</div>
+            <div id="kpi-runtime" class="value">0s</div>
+            <div class="meta">Codex execution window</div>
+            <div class="meter"><div id="meter-runtime" class="meter-fill"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="dashboard-grid">
+        <div class="panel panel-queue" data-views="interventions overview all">
+          <div class="section-head">
+            <h2>Human Action Queue</h2>
+            <div class="hint">Needs triage and direct intervention</div>
+          </div>
+          <div id="attention-summary" class="attention-summary"></div>
+          <div id="attention-list" class="attention-list"></div>
+        </div>
+        <div class="panel panel-tools" data-views="interventions all">
+          <div class="section-head">
+            <h2>Tool Launcher</h2>
+            <div class="hint">Run direct intervention workflows</div>
+          </div>
+          <div class="tool-launcher">
+            <div class="tool-row">
+              <select id="tool-select" aria-label="tool-select">
+                <option value="refresh_cycle">refresh_cycle</option>
+                <option value="retry_now">retry_now</option>
+                <option value="stop_worker">stop_worker</option>
+                <option value="inspect_issue">inspect_issue</option>
+                <option value="set_max_concurrent_agents">set_max_concurrent_agents</option>
+                <option value="durable_backup">durable_backup</option>
+                <option value="durable_integrity_check">durable_integrity_check</option>
+              </select>
+              <input
+                id="tool-issue"
+                type="text"
+                class="mono"
+                placeholder="Issue identifier (e.g. MOL-42)"
+                aria-label="tool-issue-identifier"
+                list="tool-issue-datalist"
+              />
+              <datalist id="tool-issue-datalist"></datalist>
+              <button id="tool-run-btn" type="button" class="secondary">Run Tool</button>
+            </div>
+            <div class="hint">
+              `set_max_concurrent_agents` expects a numeric value; `refresh_cycle`,
+              `durable_backup`, and `durable_integrity_check` ignore issue identifier.
+            </div>
+            <pre id="tool-result" class="tool-result mono">No tool run yet.</pre>
+          </div>
+        </div>
+        <div class="panel panel-rate" data-views="overview performance all">
+          <div class="section-head">
+            <h2>Rate Limits</h2>
+            <div class="hint">Provider budget envelope</div>
+          </div>
+          <div id="rate-wrap"></div>
+        </div>
+
+        <div class="panel panel-running" data-views="overview agents all">
+          <div class="section-head">
+            <h2>Active Sessions</h2>
+            <div class="hint">Running issue workers and live state</div>
+          </div>
+          <div id="running-wrap"></div>
+        </div>
+        <div class="panel panel-retry" data-views="interventions overview all">
+          <div class="section-head">
+            <h2>Retry Queue</h2>
+            <div class="hint">Deferred retries and next attempt windows</div>
+          </div>
+          <div id="retry-wrap"></div>
+        </div>
+
+        <div class="panel panel-profiling" data-views="performance all">
+          <div class="section-head">
+            <h2>Profiling & Hotspots</h2>
+            <div class="hint">Latency concentration and execution heat</div>
+          </div>
+          <div id="profiling-wrap"></div>
+        </div>
+        <div class="panel panel-security" data-views="performance interventions all">
+          <div class="section-head">
+            <h2>Security Telemetry</h2>
+            <div class="hint">Auth denials, CSRF/origin blocks, and guardrail signals</div>
+          </div>
+          <div id="security-wrap"></div>
+        </div>
+        <div class="panel panel-durable" data-views="memory performance all">
+          <div class="section-head">
+            <h2>Durable Memory</h2>
+            <div class="hint">Historical telemetry persisted on external volume</div>
+          </div>
+          <div id="durable-summary" class="durable-summary"></div>
+          <div id="durable-files" class="durable-files"></div>
+          <div id="durable-events" class="durable-events"></div>
+        </div>
+        <div class="panel panel-events" data-views="interventions performance all">
+          <div class="section-head">
+            <h2>Recent Events</h2>
+            <div class="hint">Most recent orchestration timeline</div>
+          </div>
+          <div id="events" class="events"></div>
+        </div>
+        <div class="panel panel-activity" data-views="interventions all">
+          <div class="section-head">
+            <h2>Intervention Activity</h2>
+            <div class="hint">Outcome trail for manual actions</div>
+          </div>
+          <div id="intervention-activity" class="activity-list"></div>
+        </div>
+        <div class="panel panel-workspace" data-views="agents interventions all">
+          <div class="section-head">
+            <h2>Agent Telemetry Workspace</h2>
+            <div class="workspace-controls">
+              <span class="hint">per-agent panes</span>
+            </div>
+          </div>
+          <div id="workspace-meta" class="workspace-meta">No agent panes loaded yet.</div>
+          <div
+            id="agent-workspace"
+            class="agent-workspace"
+            data-layout="grid"
+            data-verbosity="normal"
+          ></div>
+        </div>
+      </div>
+
+      <div id="trace-modal" class="trace-modal" aria-hidden="true">
+        <aside class="trace-panel" role="dialog" aria-label="Agent Trace">
+          <div class="trace-head">
+            <div>
+              <h3 class="trace-title">Agent Trace</h3>
+              <div id="trace-subtitle" class="trace-sub">Select an agent to inspect.</div>
+            </div>
+            <div class="trace-controls">
+              <button id="trace-refresh-btn" type="button" class="secondary">Refresh</button>
+              <button id="trace-close-btn" type="button" class="secondary">Close</button>
+            </div>
+          </div>
+          <div id="trace-summary" class="trace-summary">No trace selected.</div>
+          <div class="trace-stream">
+            <div id="trace-events" class="trace-events">
+              <div class="empty">Click an issue/agent pill to open live trace.</div>
+            </div>
+          </div>
+        </aside>
+      </div>
+
+      <div class="footer">
+        Endpoints: <span class="mono">/api/v1/state</span>,
+        <span class="mono">/api/v1/durable</span>,
+        <span class="mono">/api/v1/stream</span>,
+        <span class="mono">/api/v1/refresh</span>,
+        <span class="mono">/api/v1/interventions/retry-now</span>,
+        <span class="mono">/api/v1/tools/run</span>,
+        <span class="mono">/api/v1/&lt;issue_identifier&gt;</span>
+      </div>
+    </div>
+
+    <script src="/dashboard.js"></script>
+  </body>
+</html>

@@ -2,6 +2,7 @@
 name = "molt-db"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
 
 [dependencies]
 tokio = { version = "1.49", features = ["macros", "rt", "sync", "time"], optional = true }
@@ -12,7 +13,7 @@ tokio-postgres = { version = "0.7", optional = true }
 tokio-postgres-rustls = { version = "0.13", optional = true }
 rustls = { version = "0.23", default-features = false, optional = true }
 rustls-native-certs = { version = "0.8", optional = true }
-rustls-pemfile = { version = "2.2", optional = true }
+rustls-pki-types = { version = "1.14", features = ["std"], optional = true }
 
 [features]
 default = []
@@ -23,6 +24,6 @@ postgres = [
     "tokio-postgres-rustls",
     "rustls",
     "rustls-native-certs",
-    "rustls-pemfile",
+    "rustls-pki-types",
 ]
 sqlite = ["rusqlite"]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import select
@@ -14,9 +15,16 @@ from datetime import UTC, datetime
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from threading import BoundedSemaphore, Lock, Thread
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from urllib.parse import parse_qs, unquote, urlparse, urlsplit
+
+from .dashboard_assets import DASHBOARD_HTML, fetch_dashboard_asset
+from .observability_presenter import (
+    load_security_events_summary,
+    project_state_payload,
+)
 
 
 class StateProvider(Protocol):
@@ -44,12 +52,19 @@ class _QuietThreadingHTTPServer(ThreadingHTTPServer):
         request_handler_class: type[BaseHTTPRequestHandler],
         *,
         max_active_requests: int = 96,
+        on_overload: Callable[[], None] | None = None,
     ) -> None:
         self._request_slots = BoundedSemaphore(max(max_active_requests, 8))
+        self._on_overload = on_overload
         super().__init__(server_address, request_handler_class)
 
     def process_request(self, request: Any, client_address: Any) -> None:
         if not self._request_slots.acquire(blocking=False):
+            if self._on_overload is not None:
+                try:
+                    self._on_overload()
+                except Exception:
+                    pass
             _reject_connection_overloaded(request)
             return
         try:
@@ -164,6 +179,18 @@ class DashboardServer:
         provider = self.provider
         state_hasher = _state_hasher_from_env()
         security = _dashboard_security_from_env(port=self.port)
+        if security.startup_error:
+            raise RuntimeError(security.startup_error)
+        bind_host, nonlocal_bind = _bind_host_from_env()
+        ext_root = Path(
+            os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt")
+        ).expanduser()
+        security_events_file = Path(
+            os.environ.get(
+                "MOLT_SYMPHONY_SECURITY_EVENTS_FILE",
+                str(ext_root / "logs" / "symphony" / "security" / "events.jsonl"),
+            )
+        ).expanduser()
         self._state_hasher = state_hasher
         max_stream_clients = _coerce_non_negative_int_env(
             "MOLT_SYMPHONY_MAX_STREAM_CLIENTS", default=16, minimum=1
@@ -176,8 +203,39 @@ class DashboardServer:
             ),
             30.0,
         )
+        rate_limit_max_requests = _coerce_non_negative_int_env(
+            "MOLT_SYMPHONY_HTTP_RATE_LIMIT_MAX_REQUESTS",
+            default=240,
+            minimum=0,
+        )
+        rate_limit_window_seconds = max(
+            _coerce_non_negative_float_env(
+                "MOLT_SYMPHONY_HTTP_RATE_LIMIT_WINDOW_SECONDS",
+                default=60.0,
+                minimum=1.0,
+            ),
+            1.0,
+        )
         active_stream_clients = 0
         stream_clients_lock = Lock()
+        rate_limit_lock = Lock()
+        rate_limit_state: dict[str, tuple[int, int]] = {}
+        security_counters_lock = Lock()
+        security_counters: dict[str, int] = {
+            "unauthorized": 0,
+            "origin_denied": 0,
+            "csrf_denied": 0,
+            "rate_limited": 0,
+            "overload_rejected": 0,
+            "stream_capacity_rejected": 0,
+            "method_not_allowed": 0,
+            "not_found": 0,
+        }
+        security_counter_generation = 0
+        security_events_cache: dict[str, Any] = {
+            "signature": None,
+            "payload": {"secret_guard_blocked": {"total": 0, "last_at": None}},
+        }
         state_cache_lock = Lock()
         state_cache_ttl_seconds = 0.25
         state_cache: dict[str, Any] = {
@@ -185,7 +243,54 @@ class DashboardServer:
             "payload": None,
             "encoded": b"",
             "etag": "",
+            "security_counter_generation": -1,
         }
+
+        def _incr_security_counter(name: str, *, inc: int = 1) -> None:
+            nonlocal security_counter_generation
+            with security_counters_lock:
+                security_counters[name] = max(
+                    int(security_counters.get(name, 0)) + int(inc), 0
+                )
+                security_counter_generation = max(
+                    int(security_counter_generation) + 1, 0
+                )
+
+        def _security_events_snapshot() -> dict[str, Any]:
+            try:
+                stat = security_events_file.stat()
+                signature = (int(stat.st_mtime_ns), int(stat.st_size))
+            except OSError:
+                signature = None
+            with security_counters_lock:
+                if signature == security_events_cache.get("signature"):
+                    cached = security_events_cache.get("payload")
+                    if isinstance(cached, dict):
+                        return dict(cached)
+            payload = load_security_events_summary(
+                security_events_file, max_lines=2000
+            )
+            with security_counters_lock:
+                security_events_cache["signature"] = signature
+                security_events_cache["payload"] = payload
+            return dict(payload)
+
+        def _http_security_snapshot() -> dict[str, Any]:
+            with security_counters_lock:
+                counters = dict(security_counters)
+            return {
+                "profile": security.profile,
+                "bind_host": bind_host,
+                "nonlocal_bind": nonlocal_bind,
+                "allow_query_token": security.allow_query_token,
+                "dashboard_enabled": not security.disable_dashboard,
+                "rate_limit": {
+                    "max_requests": rate_limit_max_requests,
+                    "window_seconds": rate_limit_window_seconds,
+                },
+                "counters": counters,
+                "events": _security_events_snapshot(),
+            }
 
         def _invalidate_state_cache() -> None:
             with state_cache_lock:
@@ -196,21 +301,30 @@ class DashboardServer:
 
         def _snapshot_state_cached() -> tuple[dict[str, Any], bytes, str]:
             now_mono = time.monotonic()
+            with security_counters_lock:
+                current_security_generation = int(security_counter_generation)
             with state_cache_lock:
                 captured_at = float(state_cache.get("captured_at_monotonic") or 0.0)
                 encoded_cached = state_cache.get("encoded")
                 etag_cached = state_cache.get("etag")
                 payload_cached = state_cache.get("payload")
+                cached_security_generation = int(
+                    state_cache.get("security_counter_generation") or 0
+                )
                 if (
                     isinstance(encoded_cached, bytes)
                     and encoded_cached
                     and isinstance(etag_cached, str)
                     and etag_cached
                     and isinstance(payload_cached, dict)
+                    and cached_security_generation == current_security_generation
                     and (now_mono - captured_at) <= state_cache_ttl_seconds
                 ):
                     return payload_cached, encoded_cached, etag_cached
-            payload = provider.snapshot_state()
+            payload = project_state_payload(
+                provider.snapshot_state(),
+                http_security=_http_security_snapshot(),
+            )
             encoded = _encode_json_bytes(payload)
             etag = _state_etag_for_payload(encoded, hasher=state_hasher)
             with state_cache_lock:
@@ -218,6 +332,7 @@ class DashboardServer:
                 state_cache["payload"] = payload
                 state_cache["encoded"] = encoded
                 state_cache["etag"] = etag
+                state_cache["security_counter_generation"] = current_security_generation
             return payload, encoded, etag
 
         class Handler(BaseHTTPRequestHandler):
@@ -281,7 +396,14 @@ class DashboardServer:
                         return True
                 return False
 
-            def _deny_json(self, status: HTTPStatus, code: str, message: str) -> None:
+            def _deny_json(
+                self,
+                status: HTTPStatus,
+                code: str,
+                message: str,
+                *,
+                headers: dict[str, str] | None = None,
+            ) -> None:
                 self._write_json(
                     int(status),
                     {
@@ -290,7 +412,60 @@ class DashboardServer:
                             "message": message,
                         }
                     },
+                    headers=headers,
                 )
+
+            def _rate_limit_principal(
+                self, *, query: str, allow_query_token: bool
+            ) -> str:
+                supplied = self._auth_token_from_request(
+                    query=query,
+                    allow_query=allow_query_token,
+                )
+                if supplied:
+                    digest = hashlib.sha256(
+                        supplied.encode("utf-8", errors="ignore")
+                    ).hexdigest()[:16]
+                    return f"token:{digest}"
+                peer_host = "unknown"
+                client_address = getattr(self, "client_address", None)
+                if isinstance(client_address, tuple) and client_address:
+                    peer_host = str(client_address[0])
+                return f"ip:{peer_host}"
+
+            def _consume_rate_limit(
+                self, *, query: str, allow_query_token: bool
+            ) -> int | None:
+                if rate_limit_max_requests <= 0:
+                    return None
+                now = time.time()
+                bucket = int(now // rate_limit_window_seconds)
+                principal = self._rate_limit_principal(
+                    query=query,
+                    allow_query_token=allow_query_token,
+                )
+                with rate_limit_lock:
+                    previous = rate_limit_state.get(principal)
+                    if previous is None or previous[0] != bucket:
+                        count = 1
+                    else:
+                        count = int(previous[1]) + 1
+                    rate_limit_state[principal] = (bucket, count)
+                    if len(rate_limit_state) > 8192:
+                        stale_keys = [
+                            key
+                            for key, (seen_bucket, _count) in rate_limit_state.items()
+                            if seen_bucket != bucket
+                        ]
+                        for key in stale_keys:
+                            rate_limit_state.pop(key, None)
+                if count > rate_limit_max_requests:
+                    retry_after = max(
+                        int((bucket + 1) * rate_limit_window_seconds - now + 0.999),
+                        1,
+                    )
+                    return retry_after
+                return None
 
             def _authorize_request(
                 self,
@@ -310,6 +485,7 @@ class DashboardServer:
                         query=query, allow_query=allow_query_token
                     )
                     if supplied != security.api_token:
+                        _incr_security_counter("unauthorized")
                         self._deny_json(
                             HTTPStatus.UNAUTHORIZED,
                             "unauthorized",
@@ -320,6 +496,7 @@ class DashboardServer:
                     origin = self._request_origin()
                     if not origin:
                         if security.api_token and not auth_header_present:
+                            _incr_security_counter("origin_denied")
                             self._deny_json(
                                 HTTPStatus.FORBIDDEN,
                                 "forbidden_origin",
@@ -327,6 +504,7 @@ class DashboardServer:
                             )
                             return False
                     elif not self._is_origin_allowed(origin):
+                        _incr_security_counter("origin_denied")
                         self._deny_json(
                             HTTPStatus.FORBIDDEN,
                             "forbidden_origin",
@@ -338,12 +516,27 @@ class DashboardServer:
                     if origin:
                         csrf = str(self.headers.get("X-Symphony-CSRF") or "").strip()
                         if csrf != "1":
+                            _incr_security_counter("csrf_denied")
                             self._deny_json(
                                 HTTPStatus.FORBIDDEN,
                                 "missing_csrf_header",
                                 "Missing X-Symphony-CSRF header.",
                             )
                             return False
+                retry_after_seconds = self._consume_rate_limit(
+                    query=query,
+                    allow_query_token=allow_query_token,
+                )
+                if retry_after_seconds is not None:
+                    _incr_security_counter("rate_limited")
+                    _invalidate_state_cache()
+                    self._deny_json(
+                        HTTPStatus.TOO_MANY_REQUESTS,
+                        "rate_limited",
+                        "Request rate limit exceeded. Retry later.",
+                        headers={"Retry-After": str(retry_after_seconds)},
+                    )
+                    return False
                 return True
 
             def _write_json(
@@ -366,15 +559,23 @@ class DashboardServer:
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
-                self.send_header("X-Content-Type-Options", "nosniff")
-                self.send_header("X-Frame-Options", "DENY")
-                self.send_header("Referrer-Policy", "no-referrer")
-                self.send_header("Permissions-Policy", "interest-cohort=()")
+                self._write_common_security_headers(frame_options="DENY")
                 if headers:
                     for key, value in headers.items():
                         self.send_header(key, value)
                 self.end_headers()
                 self.wfile.write(data)
+
+            def _write_common_security_headers(
+                self, *, frame_options: str | None
+            ) -> None:
+                self.send_header("X-Content-Type-Options", "nosniff")
+                if frame_options:
+                    self.send_header("X-Frame-Options", frame_options)
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("Permissions-Policy", "interest-cohort=()")
+                self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+                self.send_header("Cross-Origin-Resource-Policy", "same-origin")
 
             def _write_html(self, status: int, body: str) -> None:
                 data = body.encode("utf-8")
@@ -382,37 +583,145 @@ class DashboardServer:
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", str(len(data)))
-                self.send_header("X-Content-Type-Options", "nosniff")
-                self.send_header("X-Frame-Options", "DENY")
-                self.send_header("Referrer-Policy", "no-referrer")
-                self.send_header("Permissions-Policy", "interest-cohort=()")
+                self._write_common_security_headers(frame_options="DENY")
                 self.send_header(
                     "Content-Security-Policy",
                     (
                         "default-src 'self'; "
-                        "script-src 'self' 'unsafe-inline'; "
-                        "style-src 'self' 'unsafe-inline'; "
+                        "script-src 'self'; "
+                        "style-src 'self'; "
                         "img-src 'self' data:; "
                         "connect-src 'self'; "
                         "object-src 'none'; "
-                        "base-uri 'self'; "
+                        "base-uri 'none'; "
                         "frame-ancestors 'none'; "
-                        "form-action 'self'"
+                        "form-action 'none'"
                     ),
                 )
                 self.end_headers()
                 self.wfile.write(data)
 
+            def _write_static_asset(
+                self,
+                *,
+                content_type: str,
+                body: bytes,
+                cache_control: str,
+                etag: str | None = None,
+            ) -> None:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Cache-Control", cache_control)
+                self.send_header("Content-Length", str(len(body)))
+                self._write_common_security_headers(frame_options=None)
+                if isinstance(etag, str) and etag:
+                    self.send_header("ETag", etag)
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _write_not_modified(
+                self,
+                *,
+                cache_control: str,
+                etag: str,
+                include_frame_options: bool,
+            ) -> None:
+                self.send_response(HTTPStatus.NOT_MODIFIED)
+                self.send_header("Cache-Control", cache_control)
+                self.send_header("Content-Length", "0")
+                self.send_header("ETag", etag)
+                self._write_common_security_headers(
+                    frame_options="DENY" if include_frame_options else None
+                )
+                self.end_headers()
+
+            def _is_known_dashboard_route(self, path: str) -> bool:
+                return (
+                    path == "/"
+                    or path == "/dashboard.css"
+                    or path == "/dashboard.js"
+                    or path == "/api/v1/state"
+                    or path == "/api/v1/durable"
+                    or path == "/api/v1/stream"
+                    or path == "/api/v1/interventions/retry-now"
+                    or path == "/api/v1/tools/run"
+                    or path.startswith("/api/v1/")
+                )
+
+            def _write_not_found(self, path: str) -> None:
+                self._write_json(
+                    HTTPStatus.NOT_FOUND,
+                    {
+                        "error": {
+                            "code": "not_found",
+                            "message": f"Unknown route: {path}",
+                        }
+                    },
+                )
+                _incr_security_counter("not_found")
+
+            def _write_method_not_allowed(self, method: str, path: str) -> None:
+                _incr_security_counter("method_not_allowed")
+                self._write_json(
+                    HTTPStatus.METHOD_NOT_ALLOWED,
+                    {
+                        "error": {
+                            "code": "method_not_allowed",
+                            "message": f"Method {method} not allowed for {path}",
+                        }
+                    },
+                )
+
+            def _handle_unsupported_method(self, method: str) -> None:
+                parsed = urlsplit(self.path)
+                path = parsed.path
+                if self._is_known_dashboard_route(path):
+                    self._write_method_not_allowed(method, path)
+                    return
+                self._write_not_found(path)
+
             def do_GET(self) -> None:  # noqa: N802
                 parsed = urlsplit(self.path)
                 path = parsed.path
 
+                static_asset = fetch_dashboard_asset(path)
+                if static_asset is not None:
+                    if self.headers.get("If-None-Match") == static_asset.etag:
+                        self._write_not_modified(
+                            cache_control="public, max-age=300, immutable",
+                            etag=static_asset.etag,
+                            include_frame_options=False,
+                        )
+                        return
+                    self._write_static_asset(
+                        content_type=static_asset.content_type,
+                        body=static_asset.body,
+                        cache_control="public, max-age=300, immutable",
+                        etag=static_asset.etag,
+                    )
+                    return
+
                 if path == "/":
+                    if security.disable_dashboard:
+                        _incr_security_counter("not_found")
+                        self._write_json(
+                            HTTPStatus.NOT_FOUND,
+                            {
+                                "error": {
+                                    "code": "dashboard_disabled",
+                                    "message": (
+                                        "Dashboard UI is disabled in the active "
+                                        "security profile."
+                                    ),
+                                }
+                            },
+                        )
+                        return
                     if not self._authorize_request(
                         method="GET",
                         query=parsed.query,
                         mutating=False,
-                        allow_query_token=True,
+                        allow_query_token=security.allow_query_token,
                     ):
                         return
                     self._handle_dashboard()
@@ -422,18 +731,16 @@ class DashboardServer:
                         method="GET",
                         query=parsed.query,
                         mutating=False,
-                        allow_query_token=True,
+                        allow_query_token=security.allow_query_token,
                     ):
                         return
                     _, encoded, etag = _snapshot_state_cached()
                     if self.headers.get("If-None-Match") == etag:
-                        self.send_response(HTTPStatus.NOT_MODIFIED)
-                        self.send_header("Cache-Control", "no-store")
-                        self.send_header("ETag", etag)
-                        self.send_header("X-Content-Type-Options", "nosniff")
-                        self.send_header("X-Frame-Options", "DENY")
-                        self.send_header("Referrer-Policy", "no-referrer")
-                        self.end_headers()
+                        self._write_not_modified(
+                            cache_control="no-store",
+                            etag=etag,
+                            include_frame_options=True,
+                        )
                         return
                     self._write_json_bytes(
                         HTTPStatus.OK,
@@ -446,7 +753,7 @@ class DashboardServer:
                         method="GET",
                         query=parsed.query,
                         mutating=False,
-                        allow_query_token=True,
+                        allow_query_token=security.allow_query_token,
                     ):
                         return
                     limit = _coerce_limit_param(parsed.query, default=120)
@@ -459,7 +766,7 @@ class DashboardServer:
                         method="GET",
                         query=parsed.query,
                         mutating=False,
-                        allow_query_token=True,
+                        allow_query_token=security.allow_query_token,
                     ):
                         return
                     self._handle_state_stream(parsed.query)
@@ -469,7 +776,7 @@ class DashboardServer:
                         method="GET",
                         query=parsed.query,
                         mutating=False,
-                        allow_query_token=True,
+                        allow_query_token=security.allow_query_token,
                     ):
                         return
                     issue_identifier = unquote(path.removeprefix("/api/v1/"))
@@ -489,15 +796,7 @@ class DashboardServer:
                         return
                     self._write_json(HTTPStatus.OK, payload)
                     return
-                self._write_json(
-                    HTTPStatus.NOT_FOUND,
-                    {
-                        "error": {
-                            "code": "not_found",
-                            "message": f"Unknown route: {path}",
-                        }
-                    },
-                )
+                self._write_not_found(path)
 
             def do_POST(self) -> None:  # noqa: N802
                 parsed = urlsplit(self.path)
@@ -562,35 +861,23 @@ class DashboardServer:
                     self._write_json(int(status), result)
                     return
 
-                if (
-                    path == "/"
-                    or path == "/api/v1/state"
-                    or path == "/api/v1/durable"
-                    or path == "/api/v1/stream"
-                    or path == "/api/v1/interventions/retry-now"
-                    or path == "/api/v1/tools/run"
-                    or path.startswith("/api/v1/")
-                ):
-                    self._write_json(
-                        HTTPStatus.METHOD_NOT_ALLOWED,
-                        {
-                            "error": {
-                                "code": "method_not_allowed",
-                                "message": f"Method POST not allowed for {path}",
-                            }
-                        },
-                    )
+                if self._is_known_dashboard_route(path):
+                    self._write_method_not_allowed("POST", path)
                     return
 
-                self._write_json(
-                    HTTPStatus.NOT_FOUND,
-                    {
-                        "error": {
-                            "code": "not_found",
-                            "message": f"Unknown route: {path}",
-                        }
-                    },
-                )
+                self._write_not_found(path)
+
+            def do_PUT(self) -> None:  # noqa: N802
+                self._handle_unsupported_method("PUT")
+
+            def do_PATCH(self) -> None:  # noqa: N802
+                self._handle_unsupported_method("PATCH")
+
+            def do_DELETE(self) -> None:  # noqa: N802
+                self._handle_unsupported_method("DELETE")
+
+            def do_OPTIONS(self) -> None:  # noqa: N802
+                self._handle_unsupported_method("OPTIONS")
 
             def _read_json_payload(self) -> dict[str, Any]:
                 content_length_raw = self.headers.get("Content-Length") or "0"
@@ -605,8 +892,24 @@ class DashboardServer:
                 body = self.rfile.read(content_length)
                 if not body:
                     return {}
+                content_type = str(self.headers.get("Content-Type") or "").lower()
                 try:
-                    decoded = json.loads(body.decode("utf-8"))
+                    decoded_text = body.decode("utf-8")
+                except UnicodeDecodeError:
+                    decoded_text = ""
+                if "application/x-www-form-urlencoded" in content_type and decoded_text:
+                    form_payload = parse_qs(decoded_text, keep_blank_values=True)
+                    normalized: dict[str, Any] = {}
+                    for key, values in form_payload.items():
+                        if not values:
+                            normalized[key] = ""
+                        elif len(values) == 1:
+                            normalized[key] = values[0]
+                        else:
+                            normalized[key] = values
+                    return normalized
+                try:
+                    decoded = json.loads(decoded_text)
                 except (UnicodeDecodeError, json.JSONDecodeError):
                     return {}
                 if isinstance(decoded, dict):
@@ -614,12 +917,13 @@ class DashboardServer:
                 return {}
 
             def _handle_dashboard(self) -> None:
-                self._write_html(HTTPStatus.OK, _DASHBOARD_HTML)
+                self._write_html(HTTPStatus.OK, DASHBOARD_HTML)
 
             def _handle_state_stream(self, query: str) -> None:
                 nonlocal active_stream_clients
                 with stream_clients_lock:
                     if active_stream_clients >= max_stream_clients:
+                        _incr_security_counter("stream_capacity_rejected")
                         self._write_json(
                             int(HTTPStatus.TOO_MANY_REQUESTS),
                             {
@@ -641,6 +945,8 @@ class DashboardServer:
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("X-Frame-Options", "DENY")
                 self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+                self.send_header("Cross-Origin-Resource-Policy", "same-origin")
                 self.end_headers()
                 try:
                     self.wfile.write(b": stream-open\n\n")
@@ -685,13 +991,14 @@ class DashboardServer:
                         active_stream_clients = max(active_stream_clients - 1, 0)
 
         server = _QuietThreadingHTTPServer(
-            ("127.0.0.1", self.port),
+            (bind_host, self.port),
             Handler,
             max_active_requests=_coerce_non_negative_int_env(
                 "MOLT_SYMPHONY_MAX_HTTP_CONNECTIONS",
                 default=96,
                 minimum=8,
             ),
+            on_overload=lambda: _incr_security_counter("overload_rejected"),
         )
         self._server = server
         self._thread = Thread(
@@ -780,16 +1087,33 @@ class _DashboardSecurityConfig:
     require_csrf_header: bool
     allowed_origins: frozenset[str]
     allow_localhost_any_port: bool
+    profile: str
+    allow_query_token: bool
+    disable_dashboard: bool
+    startup_error: str | None
 
 
 def _dashboard_security_from_env(*, port: int) -> _DashboardSecurityConfig:
+    profile_raw = str(os.environ.get("MOLT_SYMPHONY_SECURITY_PROFILE") or "").strip()
+    profile = profile_raw.lower() if profile_raw else "local"
+    if profile not in {"local", "production"}:
+        profile = "local"
     api_token = str(
         os.environ.get("MOLT_SYMPHONY_API_TOKEN")
         or os.environ.get("MOLT_SYMPHONY_DASHBOARD_TOKEN")
         or ""
     ).strip()
+    default_enable_strict = profile == "production"
     enforce_origin = _coerce_bool_env("MOLT_SYMPHONY_ENFORCE_ORIGIN", default=True)
     require_csrf = _coerce_bool_env("MOLT_SYMPHONY_REQUIRE_CSRF_HEADER", default=True)
+    allow_query_token = _coerce_bool_env(
+        "MOLT_SYMPHONY_ALLOW_QUERY_TOKEN",
+        default=not default_enable_strict,
+    )
+    disable_dashboard = _coerce_bool_env(
+        "MOLT_SYMPHONY_DISABLE_DASHBOARD_UI",
+        default=default_enable_strict,
+    )
     allowed_raw = str(os.environ.get("MOLT_SYMPHONY_ALLOWED_ORIGINS") or "").strip()
     allow_localhost_any_port = False
     if allowed_raw:
@@ -806,13 +1130,48 @@ def _dashboard_security_from_env(*, port: int) -> _DashboardSecurityConfig:
                 f"http://localhost:{port}".lower(),
             }
         )
+    startup_error: str | None = None
+    if profile == "production" and not api_token:
+        startup_error = (
+            "MOLT_SYMPHONY_SECURITY_PROFILE=production requires "
+            "MOLT_SYMPHONY_API_TOKEN or MOLT_SYMPHONY_DASHBOARD_TOKEN."
+        )
     return _DashboardSecurityConfig(
         api_token=api_token or None,
         enforce_origin=enforce_origin,
         require_csrf_header=require_csrf,
         allowed_origins=allowed,
         allow_localhost_any_port=allow_localhost_any_port,
+        profile=profile,
+        allow_query_token=allow_query_token,
+        disable_dashboard=disable_dashboard,
+        startup_error=startup_error,
     )
+
+
+def _bind_host_from_env() -> tuple[str, bool]:
+    host = str(os.environ.get("MOLT_SYMPHONY_BIND_HOST") or "").strip() or "127.0.0.1"
+    allow_nonlocal = _coerce_bool_env(
+        "MOLT_SYMPHONY_ALLOW_NONLOCAL_BIND", default=False
+    )
+    is_loopback = _is_loopback_host(host)
+    if not is_loopback and not allow_nonlocal:
+        raise RuntimeError(
+            "Refusing non-loopback bind host without explicit opt-in. "
+            "Set MOLT_SYMPHONY_ALLOW_NONLOCAL_BIND=1 to allow "
+            f"MOLT_SYMPHONY_BIND_HOST={host!r}."
+        )
+    return host, (not is_loopback)
+
+
+def _is_loopback_host(host: str) -> bool:
+    normalized = host.strip().lower()
+    if normalized in {"localhost"}:
+        return True
+    try:
+        return bool(ipaddress.ip_address(normalized).is_loopback)
+    except ValueError:
+        return False
 
 
 def _coerce_bool_env(name: str, *, default: bool) -> bool:
@@ -871,3364 +1230,3 @@ def _reject_connection_overloaded(request: Any) -> None:
         request.close()
     except OSError:
         pass
-
-
-_DASHBOARD_HTML = """<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Molt Symphony Control</title>
-    <style>
-      :root {
-        --bg: #060606;
-        --surface: #101010;
-        --surface-alt: #161616;
-        --ink: #f2f2f2;
-        --ink-soft: #a6a6a6;
-        --line: #2c2c2c;
-        --brand: #f2f2f2;
-        --brand-soft: #1f1f1f;
-        --ok: #dddddd;
-        --ok-soft: #1f1f1f;
-        --warn: #bfbfbf;
-        --warn-soft: #1b1b1b;
-        --danger: #8f8f8f;
-        --danger-soft: #151515;
-        --shadow: 0 24px 44px -28px rgba(0, 0, 0, 0.65);
-      }
-      * {
-        box-sizing: border-box;
-      }
-      body {
-        margin: 0;
-        color: var(--ink);
-        font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-        background: var(--bg);
-        min-height: 100vh;
-        -webkit-font-smoothing: antialiased;
-      }
-      .dashboard-shell {
-        max-width: min(1600px, calc(100vw - 48px));
-        margin: 0 auto;
-        padding: 16px 0 60px;
-        animation: fade-in 420ms ease-out;
-      }
-      .dashboard-header {
-        position: sticky;
-        top: 16px;
-        z-index: 100;
-        background: rgba(20, 20, 20, 0.7);
-        backdrop-filter: blur(24px);
-        -webkit-backdrop-filter: blur(24px);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 16px;
-        padding: 12px 16px;
-        margin-bottom: 24px;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 16px;
-        align-items: center;
-        justify-content: space-between;
-        box-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.6);
-      }
-      .header-left {
-        display: flex;
-        align-items: center;
-        gap: 20px;
-        flex-wrap: wrap;
-      }
-      .title-wrap {
-        display: flex;
-        align-items: baseline;
-        gap: 10px;
-      }
-      h1 {
-        margin: 0;
-        font-weight: 600;
-        letter-spacing: -0.02em;
-        font-size: 1.15rem;
-        color: #ffffff;
-      }
-      .subtitle {
-        color: var(--ink-soft);
-        font-size: 0.85rem;
-        padding-left: 10px;
-        border-left: 1px solid rgba(255, 255, 255, 0.15);
-      }
-      .controls {
-        display: flex;
-        gap: 10px;
-        align-items: center;
-        flex-wrap: wrap;
-        flex: 1 1 auto;
-        justify-content: flex-end;
-      }
-      .top-nav {
-        display: inline-flex;
-        background: rgba(0, 0, 0, 0.3);
-        border: 1px solid rgba(255, 255, 255, 0.05);
-        border-radius: 10px;
-        padding: 4px;
-        gap: 2px;
-      }
-      .view-tab {
-        appearance: none;
-        border: none;
-        background: transparent;
-        color: var(--ink-soft);
-        border-radius: 6px;
-        padding: 6px 12px;
-        font-size: 0.82rem;
-        font-weight: 500;
-        cursor: pointer;
-        transition: all 200ms ease;
-      }
-      .view-tab:hover {
-        color: var(--ink);
-        background: rgba(255, 255, 255, 0.05);
-      }
-      .view-tab.active {
-        background: rgba(255, 255, 255, 0.1);
-        color: #ffffff;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-      }
-      .status-chip {
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        background: rgba(255, 255, 255, 0.03);
-        border-radius: 6px;
-        padding: 4px 10px;
-        font-size: 0.8rem;
-        color: var(--ink-soft);
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        transition: all 300ms ease;
-      }
-      .status-chip::before {
-        content: "";
-        display: block;
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background-color: currentColor;
-        opacity: 0.4;
-        transition: all 300ms ease;
-      }
-      .status-chip.live {
-        border-color: rgba(159, 230, 203, 0.3);
-        color: #9fe6cb;
-        background: rgba(159, 230, 203, 0.08);
-      }
-      .status-chip.live::before {
-        opacity: 1;
-        box-shadow: 0 0 6px currentColor;
-      }
-      .status-chip.warn {
-        border-color: rgba(255, 160, 100, 0.3);
-        color: #ffb880;
-        background: rgba(255, 160, 100, 0.1);
-      }
-      .status-chip.warn::before {
-        opacity: 1;
-        box-shadow: 0 0 6px currentColor;
-      }
-      .status-chip.connecting {
-        border-color: rgba(139, 180, 247, 0.4);
-        color: #8bb4f7;
-        background: rgba(139, 180, 247, 0.1);
-      }
-      .status-chip.connecting::before {
-        opacity: 1;
-        animation: pulse-dot 1s infinite alternate ease-in-out;
-      }
-      @keyframes pulse-dot {
-        0% { transform: scale(0.8); opacity: 0.5; box-shadow: 0 0 0 transparent; }
-        100% { transform: scale(1.5); opacity: 1; box-shadow: 0 0 6px currentColor; }
-      }
-      button {
-        appearance: none;
-        border: 1px solid rgba(255, 255, 255, 0.15);
-        background: rgba(255, 255, 255, 0.1);
-        color: #f2f2f2;
-        border-radius: 8px;
-        padding: 6px 14px;
-        font-size: 0.85rem;
-        font-weight: 500;
-        cursor: pointer;
-        transition: all 150ms ease;
-      }
-      button:hover {
-        background: rgba(255, 255, 255, 0.18);
-        border-color: rgba(255, 255, 255, 0.25);
-      }
-      button.secondary {
-        border-color: transparent;
-        background: rgba(255, 255, 255, 0.05);
-        color: var(--ink-soft);
-      }
-      button.secondary:hover {
-        background: rgba(255, 255, 255, 0.1);
-        color: var(--ink);
-      }
-      button:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-      }
-      input[type="text"],
-      select {
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 6px;
-        background: rgba(0, 0, 0, 0.25);
-        color: #eeeeee;
-        padding: 6px 10px;
-        font-size: 0.85rem;
-        font-family: inherit;
-        transition: border-color 150ms ease, background 150ms ease;
-      }
-      input[type="text"]::placeholder {
-        color: rgba(255, 255, 255, 0.3);
-      }
-      input[type="text"]:focus,
-      select:focus {
-        outline: none;
-        border-color: rgba(255, 255, 255, 0.35);
-        background: rgba(0, 0, 0, 0.4);
-      }
-      select {
-        appearance: none;
-        padding-right: 28px;
-        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='rgba(255,255,255,0.4)'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M8 9l4-4 4 4m0 6l-4 4-4-4'%3E%3C/path%3E%3C/svg%3E");
-        background-repeat: no-repeat;
-        background-position: right 8px center;
-        background-size: 14px;
-      }
-      .control-group {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 0.8rem;
-        color: var(--ink-soft);
-      }
-      a {
-        color: #8bb4f7;
-        text-decoration: none;
-      }
-      a:hover {
-        color: #a4c6fa;
-        text-decoration: underline;
-      }
-      .panel {
-        background: rgba(255, 255, 255, 0.02);
-        border: 1px solid rgba(255, 255, 255, 0.05);
-        border-radius: 12px;
-        padding: 20px;
-      }
-      .panel.hidden-view {
-        display: none;
-      }
-      .section-head {
-        display: flex;
-        align-items: baseline;
-        justify-content: space-between;
-        gap: 8px;
-        margin-bottom: 16px;
-      }
-      .section-head h2 {
-        margin: 0;
-        font-weight: 600;
-        letter-spacing: -0.01em;
-        font-size: 1.05rem;
-      }
-      .section-head .hint {
-        color: var(--ink-soft);
-        font-size: 0.8rem;
-      }
-      .kpi-band {
-        margin-top: 2px;
-        margin-bottom: 12px;
-      }
-      .kpi-grid {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 12px;
-      }
-      .kpi {
-        background: rgba(255, 255, 255, 0.02);
-        border: 1px solid rgba(255, 255, 255, 0.04);
-        border-radius: 12px;
-        padding: 16px;
-        min-height: 104px;
-        animation: fade-in 260ms ease-out;
-      }
-      .kpi .label {
-        color: var(--ink-soft);
-        font-size: 0.78rem;
-        margin-bottom: 7px;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-      }
-      .kpi .value {
-        font-size: 1.5rem;
-        font-weight: 600;
-        line-height: 1.08;
-      }
-      .kpi .meta {
-        margin-top: 7px;
-        color: var(--ink-soft);
-        font-size: 0.8rem;
-      }
-      .meter {
-        margin-top: 9px;
-        height: 4px;
-        border-radius: 999px;
-        background: rgba(255, 255, 255, 0.1);
-        overflow: hidden;
-      }
-      .meter-fill {
-        height: 100%;
-        width: 0%;
-        border-radius: 999px;
-        background: #f2f2f2;
-        transition: width 320ms ease;
-      }
-      .dashboard-grid {
-        margin-top: 12px;
-        display: grid;
-        grid-template-columns: repeat(12, minmax(0, 1fr));
-        gap: 12px;
-      }
-      .dashboard-grid[data-layout="columns"] {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
-      }
-      .dashboard-grid[data-layout="columns"] > .panel {
-        grid-column: span 1 !important;
-      }
-      .dashboard-grid[data-layout="rows"] {
-        display: grid;
-        grid-template-columns: 1fr;
-      }
-      .dashboard-grid[data-layout="rows"] > .panel {
-        grid-column: span 1 !important;
-      }
-      .panel-queue {
-        grid-column: span 8;
-      }
-      .panel-tools {
-        grid-column: span 4;
-      }
-      .panel-rate {
-        grid-column: span 4;
-      }
-      .panel-running {
-        grid-column: span 8;
-      }
-      .panel-retry {
-        grid-column: span 4;
-      }
-      .panel-profiling {
-        grid-column: span 6;
-      }
-      .panel-events {
-        grid-column: span 6;
-      }
-      .panel-activity {
-        grid-column: span 6;
-      }
-      .panel-workspace {
-        grid-column: span 12;
-      }
-      .panel-durable {
-        grid-column: span 6;
-      }
-      .workspace-controls {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-      .attention-summary {
-        margin: -2px 0 8px;
-        color: var(--ink-soft);
-        font-size: 0.8rem;
-      }
-      .tool-launcher {
-        display: grid;
-        gap: 8px;
-      }
-      .tool-row {
-        display: grid;
-        grid-template-columns: 1fr 1.2fr auto;
-        gap: 8px;
-      }
-      .tool-row input,
-      .tool-row select {
-        width: 100%;
-      }
-      .tool-result {
-        margin-top: 4px;
-        border: 1px solid #303030;
-        border-radius: 9px;
-        background: #0d0d0d;
-        color: var(--ink-soft);
-        font-size: 0.78rem;
-        padding: 8px;
-        white-space: pre-wrap;
-        max-height: 160px;
-        overflow: auto;
-      }
-      .action-status {
-        margin-top: 6px;
-        font-size: 0.78rem;
-        color: var(--ink-soft);
-      }
-      .activity-list {
-        display: grid;
-        gap: 7px;
-        max-height: 280px;
-        overflow: auto;
-      }
-      .activity-item {
-        border: 1px solid rgba(255, 255, 255, 0.04);
-        border-radius: 10px;
-        background: rgba(255, 255, 255, 0.02);
-        padding: 10px 12px;
-      }
-      .activity-item .head {
-        display: flex;
-        justify-content: space-between;
-        gap: 8px;
-      }
-      .durable-summary {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 8px;
-        margin-bottom: 10px;
-      }
-      .durable-kpi {
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        border-radius: 10px;
-        background: rgba(255, 255, 255, 0.02);
-        padding: 10px 12px;
-      }
-      .durable-kpi .label {
-        color: var(--ink-soft);
-        font-size: 0.72rem;
-        text-transform: uppercase;
-        letter-spacing: 0.07em;
-      }
-      .durable-kpi .value {
-        margin-top: 6px;
-        font-size: 0.98rem;
-        font-weight: 600;
-      }
-      .durable-files {
-        display: grid;
-        gap: 6px;
-        margin-top: 8px;
-        margin-bottom: 10px;
-      }
-      .durable-file {
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        border-radius: 9px;
-        background: rgba(255, 255, 255, 0.018);
-        padding: 8px 10px;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 8px;
-      }
-      .durable-events {
-        display: grid;
-        gap: 7px;
-        max-height: 280px;
-        overflow: auto;
-      }
-      .durable-event {
-        border: 1px solid rgba(255, 255, 255, 0.05);
-        border-left: 3px solid rgba(255, 255, 255, 0.26);
-        border-radius: 9px;
-        background: rgba(255, 255, 255, 0.015);
-        padding: 9px 11px;
-      }
-      .durable-event .head {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 10px;
-      }
-      .durable-event .msg {
-        margin-top: 4px;
-        color: var(--ink-soft);
-        font-size: 0.81rem;
-        white-space: pre-wrap;
-      }
-      .workspace-meta {
-        color: var(--ink-soft);
-        font-size: 0.82rem;
-        margin-bottom: 8px;
-      }
-      .agent-workspace {
-        display: grid;
-        gap: 10px;
-      }
-      .agent-workspace[data-layout="grid"] {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-      .agent-workspace[data-layout="columns"] {
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      }
-      .agent-workspace[data-layout="rows"] {
-        grid-template-columns: 1fr;
-      }
-      .agent-pane {
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        border-radius: 12px;
-        background: rgba(255, 255, 255, 0.015);
-        padding: 14px;
-        transition: transform 160ms ease, border-color 200ms ease, background 200ms ease;
-      }
-      .agent-pane:hover {
-        transform: translateY(-1px);
-        border-color: rgba(255, 255, 255, 0.15);
-        background: rgba(255, 255, 255, 0.03);
-      }
-      .agent-pane.dragging {
-        opacity: 0.55;
-      }
-      .agent-pane.drop-target {
-        outline: 2px dashed rgba(255, 255, 255, 0.2);
-        outline-offset: 2px;
-      }
-      .agent-pane-head {
-        display: flex;
-        justify-content: space-between;
-        gap: 8px;
-        align-items: flex-start;
-        margin-bottom: 12px;
-      }
-      .agent-pane-title {
-        font-weight: 600;
-        font-size: 0.9rem;
-      }
-      .agent-pane-sub {
-        margin-top: 4px;
-        font-size: 0.8rem;
-        color: var(--ink-soft);
-      }
-      .agent-pane-badges {
-        display: inline-flex;
-        gap: 6px;
-        align-items: center;
-      }
-      .drag-tag {
-        border: 1px dashed rgba(255, 255, 255, 0.1);
-        border-radius: 6px;
-        padding: 2px 6px;
-        color: var(--ink-soft);
-        font-size: 0.72rem;
-      }
-      .agent-lines {
-        display: grid;
-        gap: 6px;
-      }
-      .agent-line {
-        font-size: 0.84rem;
-        color: var(--ink-soft);
-      }
-      .agent-json {
-        margin-top: 10px;
-        max-height: 200px;
-        overflow: auto;
-        background: rgba(0, 0, 0, 0.2);
-        border: 1px solid rgba(255, 255, 255, 0.05);
-        border-radius: 8px;
-        padding: 10px;
-        white-space: pre-wrap;
-      }
-      .attention-list {
-        display: grid;
-        gap: 10px;
-      }
-      .attention-item {
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        background: rgba(255, 255, 255, 0.02);
-        border-radius: 12px;
-        padding: 16px;
-      }
-      .attention-item .head {
-        display: flex;
-        justify-content: space-between;
-        gap: 8px;
-        font-weight: 600;
-        font-size: 0.9rem;
-      }
-      .attention-item .msg {
-        margin-top: 8px;
-        font-size: 0.88rem;
-        line-height: 1.4;
-      }
-      .attention-item .hint {
-        margin-top: 8px;
-        font-size: 0.82rem;
-        color: var(--ink-soft);
-      }
-      .attention-tools {
-        margin-top: 12px;
-        display: flex;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-      .attention-tools a,
-      .attention-tools button {
-        border-radius: 6px;
-        border: none;
-        background: rgba(255, 255, 255, 0.08);
-        color: var(--ink);
-        padding: 6px 12px;
-        font-size: 0.8rem;
-        font-weight: 500;
-        text-decoration: none;
-        transition: background 150ms ease;
-      }
-      .attention-tools button {
-        cursor: pointer;
-      }
-      .attention-tools button:hover,
-      .attention-tools a:hover {
-        background: rgba(255, 255, 255, 0.15);
-      }
-      .empty {
-        border: 1px dashed rgba(255, 255, 255, 0.1);
-        border-radius: 12px;
-        padding: 20px;
-        color: var(--ink-soft);
-        background: rgba(255, 255, 255, 0.01);
-        text-align: center;
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 0.88rem;
-      }
-      th,
-      td {
-        text-align: left;
-        padding: 10px 12px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-        vertical-align: top;
-      }
-      th {
-        color: var(--ink-soft);
-        font-size: 0.75rem;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        font-weight: 500;
-      }
-      .table-scroll {
-        width: 100%;
-        overflow-x: auto;
-      }
-      .mono {
-        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-        font-size: 0.82rem;
-      }
-      .badge {
-        display: inline-block;
-        border-radius: 6px;
-        padding: 4px 8px;
-        font-size: 0.72rem;
-        font-weight: 600;
-        border: 1px solid transparent;
-      }
-      .badge.ok {
-        color: #a8d5c4;
-        border-color: rgba(168, 213, 196, 0.2);
-        background: rgba(168, 213, 196, 0.1);
-      }
-      .badge.warn {
-        color: #fce8b2;
-        border-color: rgba(252, 232, 178, 0.2);
-        background: rgba(252, 232, 178, 0.1);
-      }
-      .badge.danger {
-        color: #f2b8b5;
-        border-color: rgba(242, 184, 181, 0.2);
-        background: rgba(242, 184, 181, 0.1);
-      }
-      .kv-list {
-        display: grid;
-        gap: 6px;
-      }
-      .kv-item {
-        display: grid;
-        grid-template-columns: minmax(120px, 36%) 1fr;
-        gap: 12px;
-        padding: 8px 12px;
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.015);
-        border: 1px solid rgba(255, 255, 255, 0.04);
-        font-size: 0.84rem;
-      }
-      .kv-item .key {
-        color: var(--ink-soft);
-      }
-      .kv-item .value {
-        word-break: break-all;
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-      }
-      .profiling-list {
-        display: grid;
-        gap: 8px;
-      }
-      .profiling-item {
-        border: 1px solid rgba(255, 255, 255, 0.04);
-        border-radius: 10px;
-        background: rgba(255, 255, 255, 0.02);
-        padding: 10px 12px;
-      }
-      .profiling-item .head {
-        display: flex;
-        justify-content: space-between;
-        gap: 8px;
-        align-items: center;
-      }
-      .profiling-item .name {
-        font-size: 0.86rem;
-        font-weight: 600;
-      }
-      .profiling-item .meta {
-        margin-top: 6px;
-        color: var(--ink-soft);
-        font-size: 0.8rem;
-      }
-      .events {
-        max-height: 440px;
-        overflow: auto;
-        padding-right: 4px;
-      }
-      .event {
-        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-        padding: 10px 0;
-      }
-      .event:last-child {
-        border-bottom: 0;
-      }
-      .event .line {
-        font-size: 0.86rem;
-      }
-      .event .meta {
-        margin-top: 4px;
-        font-size: 0.8rem;
-        color: var(--ink-soft);
-      }
-      .agent-ref {
-        border: none;
-        border-radius: 6px;
-        background: rgba(255, 255, 255, 0.08);
-        color: var(--ink);
-        padding: 4px 8px;
-        font-size: 0.74rem;
-        font-weight: 500;
-        cursor: pointer;
-        transition: background 150ms ease;
-      }
-      .agent-ref:hover {
-        background: rgba(255, 255, 255, 0.15);
-      }
-      .trace-modal {
-        position: fixed;
-        inset: 0;
-        display: none;
-        align-items: stretch;
-        justify-content: flex-end;
-        background: rgba(0, 0, 0, 0.6);
-        backdrop-filter: blur(4px);
-        z-index: 200;
-      }
-      .trace-modal.open {
-        display: flex;
-        animation: fade-in 160ms ease-out;
-      }
-      .trace-panel {
-        width: min(760px, 96vw);
-        height: 100%;
-        background: #111111;
-        border-left: 1px solid rgba(255, 255, 255, 0.1);
-        display: grid;
-        grid-template-rows: auto auto 1fr;
-        box-shadow: -22px 0 48px -30px rgba(0, 0, 0, 0.8);
-      }
-      .trace-head {
-        padding: 20px 24px 16px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-        display: flex;
-        justify-content: space-between;
-        gap: 12px;
-        align-items: flex-start;
-      }
-      .trace-title {
-        margin: 0;
-        font-size: 1.15rem;
-        font-weight: 600;
-      }
-      .trace-sub {
-        margin-top: 6px;
-        color: var(--ink-soft);
-        font-size: 0.85rem;
-      }
-      .trace-controls {
-        display: inline-flex;
-        gap: 8px;
-      }
-      .trace-summary {
-        padding: 16px 24px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-        display: grid;
-        gap: 12px;
-      }
-      .trace-status-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px;
-      }
-      .trace-status-pill {
-        display: inline-flex;
-        align-items: center;
-        border-radius: 6px;
-        padding: 4px 10px;
-        font-size: 0.78rem;
-        font-weight: 600;
-        border: 1px solid transparent;
-      }
-      .trace-status-pill.status-running {
-        background: rgba(159, 230, 203, 0.1);
-        color: #9fe6cb;
-      }
-      .trace-status-pill.status-retrying {
-        background: rgba(244, 211, 159, 0.1);
-        color: #f4d39f;
-      }
-      .trace-status-pill.status-blocked {
-        background: rgba(240, 178, 178, 0.1);
-        color: #f0b2b2;
-      }
-      .trace-summary-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(142px, 1fr));
-        gap: 10px;
-      }
-      .trace-stat {
-        border: 1px solid rgba(255, 255, 255, 0.04);
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.015);
-        padding: 10px 12px;
-      }
-      .trace-stat .label {
-        color: var(--ink-soft);
-        font-size: 0.72rem;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        font-weight: 500;
-      }
-      .trace-stat .value {
-        margin-top: 6px;
-        font-size: 0.85rem;
-        font-weight: 500;
-      }
-      .trace-stream {
-        padding: 16px 24px 24px;
-        overflow: auto;
-      }
-      .trace-events {
-        display: grid;
-        gap: 10px;
-      }
-      .trace-event {
-        border: 1px solid rgba(255, 255, 255, 0.04);
-        border-left: 3px solid rgba(255, 255, 255, 0.2);
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.02);
-        padding: 12px 14px;
-      }
-      .trace-event.ok {
-        border-left-color: #3b8f74;
-      }
-      .trace-event.warn {
-        border-left-color: #8f7642;
-      }
-      .trace-event.danger {
-        border-left-color: #8f4a4a;
-      }
-      .trace-event.info {
-        border-left-color: #446a8f;
-      }
-      .trace-event .head {
-        display: flex;
-        justify-content: space-between;
-        gap: 8px;
-      }
-      .trace-event .event-tags {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-      .trace-event .event-type {
-        border: none;
-        background: rgba(255, 255, 255, 0.06);
-        border-radius: 6px;
-        padding: 2px 8px;
-        font-size: 0.7rem;
-        font-weight: 500;
-        color: var(--ink-soft);
-      }
-      .trace-event .event-name {
-        font-size: 0.82rem;
-        font-weight: 600;
-      }
-      .trace-event .event-body {
-        margin-top: 6px;
-        font-size: 0.85rem;
-        color: var(--ink);
-        white-space: pre-wrap;
-      }
-      .trace-event .event-detail {
-        margin-top: 6px;
-        font-size: 0.8rem;
-        color: var(--ink-soft);
-        white-space: pre-wrap;
-      }
-      .footer {
-        margin-top: 16px;
-        font-size: 0.8rem;
-        color: var(--ink-soft);
-      }
-      @media (min-width: 1540px) {
-        .dashboard-grid {
-          grid-template-columns: repeat(16, minmax(0, 1fr));
-        }
-        .panel-queue {
-          grid-column: span 6;
-        }
-        .panel-tools {
-          grid-column: span 5;
-        }
-        .panel-rate {
-          grid-column: span 5;
-        }
-        .panel-running {
-          grid-column: span 5;
-        }
-        .panel-retry {
-          grid-column: span 5;
-        }
-        .panel-profiling {
-          grid-column: span 6;
-        }
-        .panel-durable {
-          grid-column: span 6;
-        }
-        .panel-events {
-          grid-column: span 5;
-        }
-        .panel-activity {
-          grid-column: span 5;
-        }
-        .panel-workspace {
-          grid-column: span 16;
-        }
-      }
-      @media (max-width: 1180px) {
-        .top-nav {
-          grid-template-columns: repeat(3, minmax(0, 1fr));
-        }
-        .kpi-grid {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-        .panel-queue,
-        .panel-tools,
-        .panel-rate,
-        .panel-running,
-        .panel-retry,
-        .panel-profiling,
-        .panel-durable,
-        .panel-events,
-        .panel-activity {
-          grid-column: span 12;
-        }
-      }
-      @media (max-width: 640px) {
-        .dashboard-shell {
-          padding-left: 10px;
-          padding-right: 10px;
-        }
-        .kpi-grid {
-          grid-template-columns: 1fr;
-        }
-        .top-nav {
-          width: 100%;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-        .controls {
-          width: 100%;
-          justify-content: flex-start;
-        }
-        .workspace-controls {
-          justify-content: flex-start;
-        }
-        .status-chip {
-          font-size: 0.78rem;
-        }
-        .tool-row {
-          grid-template-columns: 1fr;
-        }
-        .trace-panel {
-          width: 100vw;
-        }
-        h1 {
-          font-size: 1.45rem;
-        }
-      }
-      @keyframes fade-in {
-        from {
-          opacity: 0;
-          transform: translateY(4px);
-        }
-        to {
-          opacity: 1;
-          transform: translateY(0);
-        }
-      }
-    </style>
-  </head>
-  <body>
-    <div class="dashboard-shell">
-      <header class="dashboard-header">
-        <div class="header-left">
-          <div class="title-wrap">
-            <h1>Molt Symphony</h1>
-            <div class="subtitle">Realtime Control</div>
-          </div>
-          <div class="top-nav" role="tablist" aria-label="dashboard views">
-            <button type="button" class="view-tab active" data-view="overview">Overview</button>
-            <button type="button" class="view-tab" data-view="interventions">Interventions</button>
-            <button type="button" class="view-tab" data-view="agents">Agents</button>
-            <button type="button" class="view-tab" data-view="performance">Performance</button>
-            <button type="button" class="view-tab" data-view="memory">Memory</button>
-            <button type="button" class="view-tab" data-view="all">All</button>
-          </div>
-        </div>
-        <div class="controls">
-          <span id="stream-chip" class="status-chip">Connecting...</span>
-          <span id="updated-chip" class="status-chip">No updates yet</span>
-          <label class="control-group" for="workspace-layout">
-            <select id="workspace-layout" aria-label="layout">
-              <option value="columns">columns</option>
-              <option value="rows">rows</option>
-              <option value="grid" selected>grid</option>
-            </select>
-          </label>
-          <label class="control-group" for="workspace-verbosity">
-            <select id="workspace-verbosity" aria-label="verbosity">
-              <option value="compact">compact</option>
-              <option value="normal" selected>normal</option>
-              <option value="verbose">verbose</option>
-            </select>
-          </label>
-          <button id="refresh-btn" type="button">Refresh</button>
-          <button id="reload-btn" type="button" class="secondary">Reconnect</button>
-        </div>
-      </header>
-
-      <div class="panel kpi-band" data-views="overview performance all">
-        <div class="section-head">
-          <h2>Health & Throughput KPIs</h2>
-          <div class="hint">System posture and output velocity at a glance</div>
-        </div>
-        <div class="kpi-grid">
-          <div class="kpi">
-            <div class="label">System Health</div>
-            <div id="kpi-health" class="value">Stable</div>
-            <div id="kpi-health-meta" class="meta">No blocking alerts</div>
-            <div class="meter"><div id="meter-health" class="meter-fill"></div></div>
-          </div>
-          <div class="kpi">
-            <div class="label">Running Sessions</div>
-            <div id="kpi-running" class="value">0</div>
-            <div class="meta">Live issue execution</div>
-            <div class="meter"><div id="meter-running" class="meter-fill"></div></div>
-          </div>
-          <div class="kpi">
-            <div class="label">Retry Queue</div>
-            <div id="kpi-retrying" class="value">0</div>
-            <div class="meta">Items awaiting replay</div>
-            <div class="meter"><div id="meter-retrying" class="meter-fill"></div></div>
-          </div>
-          <div class="kpi">
-            <div class="label">Token Throughput</div>
-            <div id="kpi-throughput" class="value">0 / sec</div>
-            <div id="kpi-throughput-meta" class="meta">0 total tokens</div>
-            <div class="meter"><div id="meter-throughput" class="meter-fill"></div></div>
-          </div>
-          <div class="kpi">
-            <div class="label">Completed Turns</div>
-            <div id="kpi-progress" class="value">0</div>
-            <div id="kpi-progress-meta" class="meta">0 completed issues</div>
-            <div class="meter"><div id="meter-progress" class="meter-fill"></div></div>
-          </div>
-          <div class="kpi">
-            <div class="label">Runtime Duration</div>
-            <div id="kpi-runtime" class="value">0s</div>
-            <div class="meta">Codex execution window</div>
-            <div class="meter"><div id="meter-runtime" class="meter-fill"></div></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="dashboard-grid">
-        <div class="panel panel-queue" data-views="interventions overview all">
-          <div class="section-head">
-            <h2>Human Action Queue</h2>
-            <div class="hint">Needs triage and direct intervention</div>
-          </div>
-          <div id="attention-summary" class="attention-summary"></div>
-          <div id="attention-list" class="attention-list"></div>
-        </div>
-        <div class="panel panel-tools" data-views="interventions all">
-          <div class="section-head">
-            <h2>Tool Launcher</h2>
-            <div class="hint">Run direct intervention workflows</div>
-          </div>
-          <div class="tool-launcher">
-            <div class="tool-row">
-              <select id="tool-select" aria-label="tool-select">
-                <option value="refresh_cycle">refresh_cycle</option>
-                <option value="retry_now">retry_now</option>
-                <option value="stop_worker">stop_worker</option>
-                <option value="inspect_issue">inspect_issue</option>
-                <option value="set_max_concurrent_agents">set_max_concurrent_agents</option>
-              </select>
-              <input
-                id="tool-issue"
-                type="text"
-                class="mono"
-                placeholder="Issue identifier (e.g. MOL-42)"
-                aria-label="tool-issue-identifier"
-                list="tool-issue-datalist"
-              />
-              <datalist id="tool-issue-datalist"></datalist>
-              <button id="tool-run-btn" type="button" class="secondary">Run Tool</button>
-            </div>
-            <div class="hint">
-              `set_max_concurrent_agents` expects a numeric value (for example: `2`).
-            </div>
-            <pre id="tool-result" class="tool-result mono">No tool run yet.</pre>
-          </div>
-        </div>
-        <div class="panel panel-rate" data-views="overview performance all">
-          <div class="section-head">
-            <h2>Rate Limits</h2>
-            <div class="hint">Provider budget envelope</div>
-          </div>
-          <div id="rate-wrap"></div>
-        </div>
-
-        <div class="panel panel-running" data-views="overview agents all">
-          <div class="section-head">
-            <h2>Active Sessions</h2>
-            <div class="hint">Running issue workers and live state</div>
-          </div>
-          <div id="running-wrap"></div>
-        </div>
-        <div class="panel panel-retry" data-views="interventions overview all">
-          <div class="section-head">
-            <h2>Retry Queue</h2>
-            <div class="hint">Deferred retries and next attempt windows</div>
-          </div>
-          <div id="retry-wrap"></div>
-        </div>
-
-        <div class="panel panel-profiling" data-views="performance all">
-          <div class="section-head">
-            <h2>Profiling & Hotspots</h2>
-            <div class="hint">Latency concentration and execution heat</div>
-          </div>
-          <div id="profiling-wrap"></div>
-        </div>
-        <div class="panel panel-durable" data-views="memory performance all">
-          <div class="section-head">
-            <h2>Durable Memory</h2>
-            <div class="hint">Historical telemetry persisted on external volume</div>
-          </div>
-          <div id="durable-summary" class="durable-summary"></div>
-          <div id="durable-files" class="durable-files"></div>
-          <div id="durable-events" class="durable-events"></div>
-        </div>
-        <div class="panel panel-events" data-views="interventions performance all">
-          <div class="section-head">
-            <h2>Recent Events</h2>
-            <div class="hint">Most recent orchestration timeline</div>
-          </div>
-          <div id="events" class="events"></div>
-        </div>
-        <div class="panel panel-activity" data-views="interventions all">
-          <div class="section-head">
-            <h2>Intervention Activity</h2>
-            <div class="hint">Outcome trail for manual actions</div>
-          </div>
-          <div id="intervention-activity" class="activity-list"></div>
-        </div>
-        <div class="panel panel-workspace" data-views="agents interventions all">
-          <div class="section-head">
-            <h2>Agent Telemetry Workspace</h2>
-            <div class="workspace-controls">
-              <span class="hint">per-agent panes</span>
-            </div>
-          </div>
-          <div id="workspace-meta" class="workspace-meta">No agent panes loaded yet.</div>
-          <div
-            id="agent-workspace"
-            class="agent-workspace"
-            data-layout="grid"
-            data-verbosity="normal"
-          ></div>
-        </div>
-      </div>
-
-      <div id="trace-modal" class="trace-modal" aria-hidden="true">
-        <aside class="trace-panel" role="dialog" aria-label="Agent Trace">
-          <div class="trace-head">
-            <div>
-              <h3 class="trace-title">Agent Trace</h3>
-              <div id="trace-subtitle" class="trace-sub">Select an agent to inspect.</div>
-            </div>
-            <div class="trace-controls">
-              <button id="trace-refresh-btn" type="button" class="secondary">Refresh</button>
-              <button id="trace-close-btn" type="button" class="secondary">Close</button>
-            </div>
-          </div>
-          <div id="trace-summary" class="trace-summary">No trace selected.</div>
-          <div class="trace-stream">
-            <div id="trace-events" class="trace-events">
-              <div class="empty">Click an issue/agent pill to open live trace.</div>
-            </div>
-          </div>
-        </aside>
-      </div>
-
-      <div class="footer">
-        Endpoints: <span class="mono">/api/v1/state</span>,
-        <span class="mono">/api/v1/durable</span>,
-        <span class="mono">/api/v1/stream</span>,
-        <span class="mono">/api/v1/refresh</span>,
-        <span class="mono">/api/v1/interventions/retry-now</span>,
-        <span class="mono">/api/v1/tools/run</span>,
-        <span class="mono">/api/v1/&lt;issue_identifier&gt;</span>
-      </div>
-    </div>
-
-    <script>
-      const streamChip = document.getElementById("stream-chip");
-      const updatedChip = document.getElementById("updated-chip");
-      const refreshBtn = document.getElementById("refresh-btn");
-      const reloadBtn = document.getElementById("reload-btn");
-      const attentionList = document.getElementById("attention-list");
-      const attentionSummary = document.getElementById("attention-summary");
-      const toolSelect = document.getElementById("tool-select");
-      const toolIssueInput = document.getElementById("tool-issue");
-      const toolRunButton = document.getElementById("tool-run-btn");
-      const toolResult = document.getElementById("tool-result");
-      const traceModal = document.getElementById("trace-modal");
-      const traceSubtitle = document.getElementById("trace-subtitle");
-      const traceSummary = document.getElementById("trace-summary");
-      const traceEvents = document.getElementById("trace-events");
-      const traceRefreshButton = document.getElementById("trace-refresh-btn");
-      const traceCloseButton = document.getElementById("trace-close-btn");
-      const runningWrap = document.getElementById("running-wrap");
-      const retryWrap = document.getElementById("retry-wrap");
-      const profilingWrap = document.getElementById("profiling-wrap");
-      const eventsWrap = document.getElementById("events");
-      const interventionActivity = document.getElementById("intervention-activity");
-      const rateWrap = document.getElementById("rate-wrap");
-      const durableSummary = document.getElementById("durable-summary");
-      const durableFiles = document.getElementById("durable-files");
-      const durableEvents = document.getElementById("durable-events");
-      const workspaceWrap = document.getElementById("agent-workspace");
-      const workspaceMeta = document.getElementById("workspace-meta");
-      const layoutSelect = document.getElementById("workspace-layout");
-      const verbositySelect = document.getElementById("workspace-verbosity");
-      const viewTabs = Array.from(document.querySelectorAll(".view-tab"));
-      const viewPanels = Array.from(document.querySelectorAll("[data-views]"));
-      const LAYOUT_CHOICES = ["columns", "rows", "grid"];
-      const VERBOSITY_CHOICES = ["compact", "normal", "verbose"];
-      const VIEW_CHOICES = [
-        "overview",
-        "interventions",
-        "agents",
-        "performance",
-        "memory",
-        "all",
-      ];
-      const TRANSPORT_CHOICES = ["auto", "sse", "poll"];
-      const STORAGE_KEY = "molt.symphony.dashboard.workspace.v1";
-      const VIEW_STORAGE_KEY = "molt.symphony.dashboard.view.v1";
-      const TRANSPORT_STORAGE_KEY = "molt.symphony.dashboard.transport.v1";
-      const AUTH_STORAGE_KEY = "molt.symphony.dashboard.auth_token.v1";
-      let stream = null;
-      let pollTimer = null;
-      let reconnectTimer = null;
-      let staleWatchdog = null;
-      let lastFrameAt = 0;
-      let reconnectAttempts = 0;
-      let workspaceLayout = "grid";
-      let workspaceVerbosity = "normal";
-      let activeDashboardView = "overview";
-      let paneOrder = [];
-      let dragPaneId = "";
-      let latestState = {};
-      const localActionStatus = new Map();
-      const pendingRetries = new Set();
-      let traceIssueIdentifier = "";
-      let tracePollTimer = null;
-      let traceFetchSerial = 0;
-      let latestGeneratedAt = "";
-      let latestStateEtag = "";
-      let durableMemoryState = {};
-      let durablePollTimer = null;
-      let durableFetchInFlight = false;
-      let streamIntervalMs = 1000;
-      let fallbackPollIntervalMs = 2500;
-      let staleAfterMs = 7000;
-      let pendingRenderState = null;
-      let renderFrame = 0;
-      const panelSignatures = new Map();
-      const transportMetrics = {
-        stateFetchTotal: 0,
-        stateFetch200: 0,
-        stateFetch304: 0,
-        stateFetchErrors: 0,
-        sseFrames: 0,
-        sseReconnects: 0,
-        fallbackPollTicks: 0,
-        renderCommits: 0,
-        renderFrames: 0,
-      };
-      let requestedTransport = "auto";
-      let activeTransport = "idle";
-      let stateTransport = null;
-      let pollErrorStreak = 0;
-      let pollNotModifiedStreak = 0;
-      let pollScheduledDelayMs = 0;
-      let lastPollStatusLabel = "";
-      const authToken = (() => {
-        try {
-          const params = new URLSearchParams(window.location.search || "");
-          const fromQuery = String(params.get("token") || "").trim();
-          if (fromQuery) {
-            window.localStorage.setItem(AUTH_STORAGE_KEY, fromQuery);
-            return fromQuery;
-          }
-          const fromStorage = String(window.localStorage.getItem(AUTH_STORAGE_KEY) || "").trim();
-          return fromStorage;
-        } catch (_err) {
-          return "";
-        }
-      })();
-
-      function toObject(value) {
-        return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-      }
-
-      function toArray(value) {
-        return Array.isArray(value) ? value : [];
-      }
-
-      function toNumber(value, fallback = 0) {
-        const parsed = Number(value);
-        return Number.isFinite(parsed) ? parsed : fallback;
-      }
-
-      function escapeHtml(value) {
-        return String(value ?? "")
-          .replaceAll("&", "&amp;")
-          .replaceAll("<", "&lt;")
-          .replaceAll(">", "&gt;")
-          .replaceAll('"', "&quot;");
-      }
-
-      function formatNumber(value) {
-        const num = toNumber(value, 0);
-        return Number.isFinite(num) ? num.toLocaleString() : "0";
-      }
-
-      function formatTime(value) {
-        if (!value) return "n/a";
-        try {
-          const date = new Date(value);
-          if (Number.isNaN(date.getTime())) return "n/a";
-          return date.toLocaleTimeString();
-        } catch (_err) {
-          return "n/a";
-        }
-      }
-
-      function relTime(value) {
-        if (!value) return "n/a";
-        const now = Date.now();
-        const then = Date.parse(value);
-        if (!Number.isFinite(then)) return "n/a";
-        const sec = Math.max(Math.floor((now - then) / 1000), 0);
-        if (sec < 60) return `${sec}s ago`;
-        if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
-        return `${Math.floor(sec / 3600)}h ago`;
-      }
-
-      function formatDurationSeconds(value) {
-        const sec = Math.max(toNumber(value, 0), 0);
-        if (!Number.isFinite(sec)) return "0s";
-        if (sec < 60) return `${Math.floor(sec)}s`;
-        if (sec < 3600) return `${Math.floor(sec / 60)}m`;
-        return `${Math.floor(sec / 3600)}h`;
-      }
-
-      function withAuthPath(path) {
-        if (!authToken) return path;
-        const url = new URL(path, window.location.origin);
-        if (!url.searchParams.has("token")) {
-          url.searchParams.set("token", authToken);
-        }
-        return `${url.pathname}${url.search}`;
-      }
-
-      function buildApiHeaders({
-        cacheControl = true,
-        includeJsonContentType = false,
-        includeCsrf = false,
-      } = {}) {
-        const headers = {};
-        if (cacheControl) {
-          headers["Cache-Control"] = "no-cache";
-        }
-        if (includeJsonContentType) {
-          headers["Content-Type"] = "application/json";
-        }
-        if (authToken) {
-          headers["Authorization"] = `Bearer ${authToken}`;
-        }
-        if (includeCsrf) {
-          headers["X-Symphony-CSRF"] = "1";
-        }
-        return headers;
-      }
-
-      function formatEpochSeconds(value) {
-        const num = toNumber(value, NaN);
-        if (!Number.isFinite(num) || num <= 0) return "n/a";
-        const date = new Date(num * 1000);
-        if (Number.isNaN(date.getTime())) return "n/a";
-        return date.toLocaleString();
-      }
-
-      function deriveDashboardCadence(state) {
-        const runtime = toObject(state.runtime);
-        const profile = toObject(runtime.dashboard_profile);
-        const mode = String(profile.mode || "normal").toLowerCase();
-        return {
-          mode,
-          streamIntervalMs: Math.max(500, toNumber(profile.stream_interval_ms, mode === "gentle" ? 5000 : 1000)),
-          fallbackPollIntervalMs: Math.max(
-            1000,
-            toNumber(profile.fallback_poll_interval_ms, mode === "gentle" ? 15000 : 2500)
-          ),
-          staleAfterMs: Math.max(3000, toNumber(profile.stale_after_ms, mode === "gentle" ? 20000 : 7000)),
-        };
-      }
-
-      function setMeter(id, ratio) {
-        const node = document.getElementById(id);
-        if (!node) return;
-        const clamped = Math.max(0, Math.min(1, ratio));
-        node.style.width = `${Math.round(clamped * 100)}%`;
-      }
-
-      function normalizeLayout(value) {
-        return LAYOUT_CHOICES.includes(value) ? value : "grid";
-      }
-
-      function normalizeVerbosity(value) {
-        return VERBOSITY_CHOICES.includes(value) ? value : "normal";
-      }
-
-      function normalizeDashboardView(value) {
-        return VIEW_CHOICES.includes(value) ? value : "overview";
-      }
-
-      function normalizeTransportChoice(value) {
-        const normalized = String(value || "").trim().toLowerCase();
-        return TRANSPORT_CHOICES.includes(normalized) ? normalized : "auto";
-      }
-
-      function resolveTransportPreference() {
-        const params = new URLSearchParams(window.location.search || "");
-        const fromQuery = normalizeTransportChoice(params.get("transport"));
-        if (fromQuery !== "auto") {
-          return fromQuery;
-        }
-        try {
-          const fromStorage = normalizeTransportChoice(
-            window.localStorage.getItem(TRANSPORT_STORAGE_KEY)
-          );
-          return fromStorage;
-        } catch (_err) {
-          return "auto";
-        }
-      }
-
-      function arraysEqual(left, right) {
-        if (left.length !== right.length) return false;
-        for (let idx = 0; idx < left.length; idx += 1) {
-          if (left[idx] !== right[idx]) return false;
-        }
-        return true;
-      }
-
-      function stableSignature(value) {
-        try {
-          return JSON.stringify(value) || "";
-        } catch (_err) {
-          return String(value ?? "");
-        }
-      }
-
-      function updatePanel(key, value, renderFn) {
-        const sig = stableSignature(value);
-        if (panelSignatures.get(key) === sig) return false;
-        panelSignatures.set(key, sig);
-        renderFn();
-        return true;
-      }
-
-      function persistWorkspacePrefs() {
-        try {
-          window.localStorage.setItem(
-            STORAGE_KEY,
-            JSON.stringify({
-              layout: workspaceLayout,
-              verbosity: workspaceVerbosity,
-              pane_order: paneOrder,
-            })
-          );
-        } catch (_err) {
-          // ignore storage write failures
-        }
-      }
-
-      function persistDashboardView() {
-        try {
-          window.localStorage.setItem(VIEW_STORAGE_KEY, activeDashboardView);
-        } catch (_err) {
-          // ignore storage write failures
-        }
-      }
-
-      function loadWorkspacePrefs() {
-        try {
-          const raw = window.localStorage.getItem(STORAGE_KEY);
-          if (!raw) return;
-          const prefs = toObject(JSON.parse(raw));
-          workspaceLayout = normalizeLayout(prefs.layout);
-          workspaceVerbosity = normalizeVerbosity(prefs.verbosity);
-          paneOrder = toArray(prefs.pane_order)
-            .map((value) => String(value || ""))
-            .filter((value) => value.length > 0);
-        } catch (_err) {
-          // ignore malformed storage payloads
-        }
-      }
-
-      function loadDashboardView() {
-        try {
-          const raw = window.localStorage.getItem(VIEW_STORAGE_KEY);
-          if (!raw) return;
-          activeDashboardView = normalizeDashboardView(raw);
-        } catch (_err) {
-          // ignore malformed storage payloads
-        }
-      }
-
-      function applyDashboardView() {
-        viewPanels.forEach((panel) => {
-          const allowed = String(panel.getAttribute("data-views") || "")
-            .split(" ")
-            .map((value) => value.trim().toLowerCase())
-            .filter((value) => value.length > 0);
-          const visible =
-            activeDashboardView === "all" ||
-            allowed.includes(activeDashboardView);
-          panel.classList.toggle("hidden-view", !visible);
-          panel.style.display = visible ? "" : "none";
-        });
-        viewTabs.forEach((tab) => {
-          const tabView = normalizeDashboardView(tab.dataset.view || "overview");
-          tab.classList.toggle("active", tabView === activeDashboardView);
-          tab.setAttribute("aria-selected", tabView === activeDashboardView ? "true" : "false");
-          tab.setAttribute("tabindex", tabView === activeDashboardView ? "0" : "-1");
-        });
-      }
-
-      function setDashboardView(view, persist = true) {
-        activeDashboardView = normalizeDashboardView(view);
-        if (persist) {
-          persistDashboardView();
-        }
-        applyDashboardView();
-      }
-
-      function badgeClassForState(value) {
-        const normalized = String(value || "").toLowerCase();
-        if (
-          normalized.includes("error") ||
-          normalized.includes("fail") ||
-          normalized.includes("panic")
-        ) {
-          return "danger";
-        }
-        if (normalized.includes("retry") || normalized.includes("warn")) {
-          return "warn";
-        }
-        return "ok";
-      }
-
-      function deriveAgentPanes(state) {
-        const sourcePanes = toArray(state.agent_panes);
-        const fallbackRunning = toArray(state.running);
-        const source = sourcePanes.length ? sourcePanes : fallbackRunning;
-        const seenPaneIds = new Set();
-        return source.map((entryValue, index) => {
-          const entry = toObject(entryValue);
-          const issueId = entry.issue_identifier || entry.issue_id || "";
-          const tokens = toObject(entry.tokens);
-          const basePaneId = String(
-            entry.pane_id ||
-              entry.agent_id ||
-              entry.id ||
-              entry.worker_id ||
-              entry.agent ||
-              entry.agent_name ||
-              issueId ||
-              `agent-${index + 1}`
-          );
-          let paneId = basePaneId || `agent-${index + 1}`;
-          if (seenPaneIds.has(paneId)) {
-            let suffix = 2;
-            while (seenPaneIds.has(`${paneId}-${suffix}`)) {
-              suffix += 1;
-            }
-            paneId = `${paneId}-${suffix}`;
-          }
-          seenPaneIds.add(paneId);
-          const agentLabel = String(
-            entry.agent ||
-              entry.agent_name ||
-              entry.worker ||
-              entry.worker_name ||
-              entry.session_name ||
-              entry.name ||
-              issueId ||
-              `Agent ${index + 1}`
-          );
-          return {
-            paneId,
-            agentLabel,
-            issueId,
-            role: String(entry.role || entry.worker_role || "executor"),
-            state: String(entry.state || entry.status || "running"),
-            turns: toNumber(entry.turn_count, toNumber(entry.turns, 0)),
-            totalTokens: toNumber(
-              entry.total_tokens ?? tokens.total_tokens ?? entry.tokens_total,
-              0
-            ),
-            lastEvent: String(entry.last_event || entry.event || entry.activity || "n/a"),
-            updatedAt: entry.last_event_at || entry.updated_at || entry.generated_at || "",
-            raw: entry,
-          };
-        });
-      }
-
-      function orderAgentPanes(panes) {
-        if (!panes.length) {
-          if (paneOrder.length) {
-            paneOrder = [];
-            persistWorkspacePrefs();
-          }
-          return [];
-        }
-        if (!paneOrder.length) {
-          paneOrder = panes.map((pane) => pane.paneId);
-          persistWorkspacePrefs();
-          return panes;
-        }
-        const byId = new Map(panes.map((pane) => [pane.paneId, pane]));
-        const ordered = [];
-        paneOrder.forEach((paneId) => {
-          const pane = byId.get(paneId);
-          if (!pane) return;
-          ordered.push(pane);
-          byId.delete(paneId);
-        });
-        panes.forEach((pane) => {
-          if (!byId.has(pane.paneId)) return;
-          ordered.push(pane);
-          byId.delete(pane.paneId);
-        });
-        const nextOrder = ordered.map((pane) => pane.paneId);
-        if (!arraysEqual(nextOrder, paneOrder)) {
-          paneOrder = nextOrder;
-          persistWorkspacePrefs();
-        }
-        return ordered;
-      }
-
-      function renderAgentPaneDetails(pane) {
-        const lines = [
-          `<div class="agent-line">Role: ${escapeHtml(pane.role || "executor")}</div>`,
-          `<div class="agent-line">Last event: ${escapeHtml(pane.lastEvent)}</div>`,
-          `<div class="agent-line">Updated: ${escapeHtml(relTime(pane.updatedAt))}</div>`,
-        ];
-        if (workspaceVerbosity !== "compact") {
-          lines.unshift(
-            `<div class="agent-line">Turns: ${formatNumber(pane.turns)} | Tokens: ${formatNumber(
-              pane.totalTokens
-            )}</div>`
-          );
-        }
-        if (workspaceVerbosity !== "verbose") {
-          return `<div class="agent-lines">${lines.join("")}</div>`;
-        }
-        let rawJson = "{}";
-        try {
-          rawJson = JSON.stringify(toObject(pane.raw), null, 2) || "{}";
-        } catch (_err) {
-          rawJson = "{}";
-        }
-        if (rawJson.length > 8000) {
-          rawJson = `${rawJson.slice(0, 8000)}\n...`;
-        }
-        return `
-          <div class="agent-lines">${lines.join("")}</div>
-          <pre class="agent-json mono">${escapeHtml(rawJson)}</pre>
-        `;
-      }
-
-      function renderAgentWorkspace(state) {
-        const panes = orderAgentPanes(deriveAgentPanes(state));
-        workspaceWrap.dataset.layout = workspaceLayout;
-        workspaceWrap.dataset.verbosity = workspaceVerbosity;
-        if (!panes.length) {
-          workspaceWrap.innerHTML = '<div class="empty">No agent telemetry panes yet.</div>';
-          workspaceMeta.textContent = "No agent panes loaded yet.";
-          return;
-        }
-        workspaceWrap.innerHTML = panes
-          .map((pane) => {
-            const issueLine = pane.issueId
-              ? `Issue ${escapeHtml(pane.issueId)}`
-              : "No issue bound";
-            const dragTag =
-              workspaceLayout === "grid"
-                ? '<span class="drag-tag">drag</span>'
-                : '<span class="drag-tag">locked</span>';
-            return `
-              <article
-                class="agent-pane"
-                data-pane-id="${escapeHtml(pane.paneId)}"
-                data-agent-issue="${escapeHtml(pane.issueId || "")}"
-                draggable="${workspaceLayout === "grid"}"
-              >
-                <div class="agent-pane-head">
-                  <div>
-                    <div class="agent-pane-title mono">${escapeHtml(pane.agentLabel)}</div>
-                    <div class="agent-pane-sub">${issueLine}</div>
-                  </div>
-                  <div class="agent-pane-badges">
-                    <button type="button" class="agent-ref" data-agent-issue="${escapeHtml(
-                      pane.issueId || ""
-                    )}">trace</button>
-                    <span class="badge">${escapeHtml(pane.role || "executor")}</span>
-                    <span class="badge ${badgeClassForState(pane.state)}">${escapeHtml(
-              pane.state
-            )}</span>
-                    ${dragTag}
-                  </div>
-                </div>
-                ${renderAgentPaneDetails(pane)}
-              </article>
-            `;
-          })
-          .join("");
-        const dragHint =
-          workspaceLayout === "grid"
-            ? "Drag panes to reorder."
-            : "Switch to grid layout to reorder panes.";
-        workspaceMeta.textContent = `${formatNumber(panes.length)} pane(s) | ${dragHint}`;
-      }
-
-      function clearDropTargets() {
-        workspaceWrap.querySelectorAll(".drop-target").forEach((node) => {
-          node.classList.remove("drop-target");
-        });
-      }
-
-      function movePaneInOrder(sourceId, targetId) {
-        if (!sourceId || !targetId || sourceId === targetId) return;
-        const fromIndex = paneOrder.indexOf(sourceId);
-        const toIndex = paneOrder.indexOf(targetId);
-        if (fromIndex < 0 || toIndex < 0) return;
-        const nextOrder = paneOrder.slice();
-        nextOrder.splice(fromIndex, 1);
-        nextOrder.splice(toIndex, 0, sourceId);
-        if (arraysEqual(nextOrder, paneOrder)) return;
-        paneOrder = nextOrder;
-        persistWorkspacePrefs();
-        renderAgentWorkspace(latestState);
-      }
-
-      function handlePaneDragStart(event) {
-        if (workspaceLayout !== "grid") return;
-        const target = event.target;
-        if (!(target instanceof Element)) return;
-        const pane = target.closest(".agent-pane");
-        if (!pane) return;
-        dragPaneId = pane.dataset.paneId || "";
-        pane.classList.add("dragging");
-        if (event.dataTransfer) {
-          event.dataTransfer.effectAllowed = "move";
-          event.dataTransfer.setData("text/plain", dragPaneId);
-        }
-      }
-
-      function handlePaneDragOver(event) {
-        if (workspaceLayout !== "grid") return;
-        const target = event.target;
-        if (!(target instanceof Element)) return;
-        const pane = target.closest(".agent-pane");
-        if (!pane) return;
-        event.preventDefault();
-        clearDropTargets();
-        if ((pane.dataset.paneId || "") !== dragPaneId) {
-          pane.classList.add("drop-target");
-        }
-      }
-
-      function handlePaneDrop(event) {
-        if (workspaceLayout !== "grid") return;
-        const target = event.target;
-        if (!(target instanceof Element)) return;
-        const pane = target.closest(".agent-pane");
-        if (!pane) return;
-        event.preventDefault();
-        const targetId = pane.dataset.paneId || "";
-        movePaneInOrder(dragPaneId, targetId);
-        dragPaneId = "";
-        clearDropTargets();
-      }
-
-      function handlePaneDragEnd() {
-        dragPaneId = "";
-        workspaceWrap.querySelectorAll(".dragging").forEach((node) => {
-          node.classList.remove("dragging");
-        });
-        clearDropTargets();
-      }
-
-      function setStreamStatus(message, mode = "") {
-        streamChip.textContent = message;
-        streamChip.className = "status-chip";
-        if (mode === "live") streamChip.classList.add("live");
-        if (mode === "warn") streamChip.classList.add("warn");
-        if (mode === "connecting") streamChip.classList.add("connecting");
-      }
-
-      function buildClientTelemetrySnapshot() {
-        return {
-          generated_at: new Date().toISOString(),
-          requested_transport: requestedTransport,
-          active_transport: activeTransport,
-          stream_interval_ms: streamIntervalMs,
-          fallback_poll_interval_ms: fallbackPollIntervalMs,
-          stale_after_ms: staleAfterMs,
-          render: {
-            commits: transportMetrics.renderCommits,
-            frames: transportMetrics.renderFrames,
-          },
-          fetch: {
-            total: transportMetrics.stateFetchTotal,
-            ok_200: transportMetrics.stateFetch200,
-            not_modified_304: transportMetrics.stateFetch304,
-            errors: transportMetrics.stateFetchErrors,
-          },
-          stream: {
-            frames: transportMetrics.sseFrames,
-            reconnects: transportMetrics.sseReconnects,
-            fallback_poll_ticks: transportMetrics.fallbackPollTicks,
-          },
-        };
-      }
-
-      function publishClientTelemetry() {
-        window.__MOLT_SYMPHONY_CLIENT_TELEMETRY__ = buildClientTelemetrySnapshot();
-      }
-
-      function stopPolling() {
-        if (pollTimer) {
-          clearTimeout(pollTimer);
-          pollTimer = null;
-        }
-        pollScheduledDelayMs = 0;
-        lastPollStatusLabel = "";
-      }
-
-      function _setFallbackStatus(delayMs) {
-        const delay = Math.max(250, Math.round(toNumber(delayMs, fallbackPollIntervalMs)));
-        const adaptive = delay !== Math.round(fallbackPollIntervalMs);
-        const label = adaptive
-          ? `Polling fallback (${delay}ms adaptive)`
-          : `Polling fallback (${delay}ms)`;
-        if (label === lastPollStatusLabel) return;
-        lastPollStatusLabel = label;
-        setStreamStatus(label, "warn");
-      }
-
-      function _nextFallbackDelayMs(changed, hadError) {
-        const baseMs = Math.max(250, Math.round(fallbackPollIntervalMs));
-        if (hadError) {
-          pollErrorStreak = Math.min(pollErrorStreak + 1, 8);
-          pollNotModifiedStreak = 0;
-          return Math.min(baseMs * Math.pow(2, Math.min(pollErrorStreak, 4)), 60000);
-        }
-        pollErrorStreak = 0;
-        if (changed === false) {
-          pollNotModifiedStreak = Math.min(pollNotModifiedStreak + 1, 8);
-          const factor = 1 + pollNotModifiedStreak * 0.5;
-          return Math.min(Math.round(baseMs * factor), 30000);
-        }
-        pollNotModifiedStreak = 0;
-        return baseMs;
-      }
-
-      function stopStream() {
-        if (stream) {
-          stream.close();
-          stream = null;
-        }
-      }
-
-      function stopReconnectTimer() {
-        if (reconnectTimer) {
-          clearTimeout(reconnectTimer);
-          reconnectTimer = null;
-        }
-      }
-
-      function ensureWatchdog() {
-        if (staleWatchdog) return;
-        staleWatchdog = setInterval(() => {
-          if (!stream || !lastFrameAt) return;
-          if (Date.now() - lastFrameAt > staleAfterMs) {
-            setStreamStatus("Live stream stale, using fallback", "warn");
-            startPollingFallback();
-            scheduleReconnect();
-          }
-        }, 2000);
-      }
-
-      function createStateTransportController() {
-        return {
-          start(manual = false) {
-            if (requestedTransport === "poll") {
-              startPollingFallback(true);
-              return;
-            }
-            connectStream(manual);
-          },
-          restart(manual = false) {
-            if (requestedTransport === "poll") {
-              startPollingFallback(true);
-              return;
-            }
-            connectStream(manual);
-          },
-          stop() {
-            stopReconnectTimer();
-            stopStream();
-            stopPolling();
-            activeTransport = "idle";
-          },
-          refreshCadence() {
-            if (requestedTransport === "poll") {
-              startPollingFallback(true);
-              return;
-            }
-            if (stream) {
-              connectStream(false);
-              return;
-            }
-            if (pollTimer) {
-              startPollingFallback(true);
-            }
-          },
-        };
-      }
-
-      function applyTransportCadence(state) {
-        const cadence = deriveDashboardCadence(state);
-        const changed =
-          cadence.streamIntervalMs !== streamIntervalMs ||
-          cadence.fallbackPollIntervalMs !== fallbackPollIntervalMs ||
-          cadence.staleAfterMs !== staleAfterMs;
-        streamIntervalMs = cadence.streamIntervalMs;
-        fallbackPollIntervalMs = cadence.fallbackPollIntervalMs;
-        staleAfterMs = cadence.staleAfterMs;
-        if (!changed) return;
-        if (stateTransport) {
-          stateTransport.refreshCadence();
-        }
-      }
-
-      function renderAttention(state) {
-        const attention = toArray(state.attention);
-        const actions = toArray(state.manual_actions);
-        const runningRows = toArray(state.running);
-        const retryRows = toArray(state.retrying);
-        const latestActionByIssue = new Map();
-        const runningByIssue = new Map();
-        const retryByIssue = new Map();
-        actions.forEach((actionValue) => {
-          const action = toObject(actionValue);
-          const issueId = String(action.issue_identifier || "");
-          if (!issueId) return;
-          latestActionByIssue.set(issueId, action);
-        });
-        runningRows.forEach((rowValue) => {
-          const row = toObject(rowValue);
-          runningByIssue.set(String(row.issue_identifier || row.issue_id || ""), row);
-        });
-        retryRows.forEach((rowValue) => {
-          const row = toObject(rowValue);
-          retryByIssue.set(String(row.issue_identifier || row.issue_id || ""), row);
-        });
-        const byKind = new Map();
-        attention.forEach((itemValue) => {
-          const item = toObject(itemValue);
-          const key = String(item.kind || "attention");
-          byKind.set(key, (byKind.get(key) || 0) + 1);
-        });
-        const summaryText = attention.length
-          ? `${formatNumber(attention.length)} intervention item(s) · ${Array.from(byKind.entries())
-              .map(([kind, count]) => `${kind}: ${count}`)
-              .join(" · ")}`
-          : "No intervention items. System is currently healthy.";
-        attentionSummary.textContent = summaryText;
-        if (!attention.length) {
-          attentionList.innerHTML =
-            '<div class="empty"><span class="badge ok">Healthy</span> No action required right now.</div>';
-          return;
-        }
-        attentionList.innerHTML = attention
-          .map((itemValue) => {
-            const item = toObject(itemValue);
-            const issueId = String(item.issue_identifier || item.issue_id || "unknown");
-            const isSystem = issueId.toUpperCase() === "SYSTEM";
-            const running = toObject(runningByIssue.get(issueId));
-            const retry = toObject(retryByIssue.get(issueId));
-            const issueUrl = String(item.issue_url || running.url || retry.url || "");
-            const issueLink = issueUrl
-              ? `<a href="${escapeHtml(issueUrl)}" target="_blank" rel="noreferrer">Open Linear</a>`
-              : "";
-            const inspectLink = isSystem
-              ? ""
-              : `<a href="${escapeHtml(
-                  withAuthPath(`/api/v1/${encodeURIComponent(issueId)}`)
-                )}" target="_blank" rel="noreferrer">Inspect JSON</a>`;
-            const traceButton = isSystem
-              ? ""
-              : `<button type="button" class="agent-ref" data-agent-issue="${escapeHtml(
-                  issueId
-                )}">Trace</button>`;
-            const localStatus = localActionStatus.get(issueId);
-            const latestAction = toObject(latestActionByIssue.get(issueId));
-            const pending = pendingRetries.has(issueId);
-            const statusText = localStatus
-              ? `${localStatus.status} · ${localStatus.message}`
-              : latestAction.action
-                ? `${latestAction.action}: ${latestAction.status || "updated"}`
-                : "";
-            const retryNowButton = isSystem
-              ? ""
-              : `<button type="button" data-action="retry-now" data-issue="${escapeHtml(
-                  issueId
-                )}" ${pending ? "disabled" : ""}>${pending ? "Retrying..." : "Retry now"}</button>`;
-            const extraSummary = [
-              running.state ? `state: ${running.state}` : "",
-              retry.attempt ? `retry attempt: ${retry.attempt}` : "",
-              retry.due_in_seconds ? `due in ${retry.due_in_seconds}s` : "",
-            ]
-              .filter((entry) => entry.length > 0)
-              .join(" · ");
-            return `
-              <div class="attention-item">
-                <div class="head">
-                  ${
-                    isSystem
-                      ? `<span class="mono">${escapeHtml(issueId)}</span>`
-                      : `<button type="button" class="agent-ref mono" data-agent-issue="${escapeHtml(
-                          issueId
-                        )}">${escapeHtml(issueId)}</button>`
-                  }
-                  <span class="badge warn">${escapeHtml(item.kind || "attention")}</span>
-                </div>
-                <div class="msg">${escapeHtml(item.message || "")}</div>
-                <div class="hint">${escapeHtml(item.suggested_action || "")}</div>
-                ${extraSummary ? `<div class="hint">${escapeHtml(extraSummary)}</div>` : ""}
-                ${statusText ? `<div class="action-status">${escapeHtml(statusText)}</div>` : ""}
-                <div class="attention-tools">
-                  ${issueLink}
-                  ${inspectLink}
-                  ${traceButton}
-                  ${retryNowButton}
-                </div>
-              </div>
-            `;
-          })
-          .join("");
-      }
-
-      function renderInterventionActivity(state) {
-        const actions = toArray(state.manual_actions);
-        if (!actions.length) {
-          interventionActivity.innerHTML =
-            '<div class="empty">No manual intervention actions recorded yet.</div>';
-          return;
-        }
-        interventionActivity.innerHTML = actions
-          .slice()
-          .reverse()
-          .slice(0, 20)
-          .map((actionValue) => {
-            const action = toObject(actionValue);
-            const ok = Boolean(action.ok);
-            return `
-              <div class="activity-item">
-                <div class="head">
-                  <span class="mono">${escapeHtml(action.action || "action")}</span>
-                  <span class="badge ${ok ? "ok" : "warn"}">${escapeHtml(
-              action.status || (ok ? "ok" : "error")
-            )}</span>
-                </div>
-                <div class="meta">${escapeHtml(action.issue_identifier || "global")}</div>
-                <div class="meta">${escapeHtml(action.message || "")}</div>
-                <div class="meta">${escapeHtml(relTime(action.at))}</div>
-              </div>
-            `;
-          })
-          .join("");
-      }
-
-      function formatBytes(bytes) {
-        const value = toNumber(bytes, 0);
-        if (!Number.isFinite(value) || value <= 0) return "0 B";
-        const units = ["B", "KB", "MB", "GB", "TB"];
-        let size = value;
-        let idx = 0;
-        while (size >= 1024 && idx < units.length - 1) {
-          size /= 1024;
-          idx += 1;
-        }
-        return `${size.toFixed(size >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`;
-      }
-
-      function renderDurableMemory() {
-        if (!durableSummary || !durableFiles || !durableEvents) {
-          return;
-        }
-        const payload = toObject(durableMemoryState);
-        const enabled = Boolean(payload.enabled);
-        const files = toObject(payload.files);
-        const jsonl = toObject(files.jsonl);
-        const duckdb = toObject(files.duckdb);
-        const parquet = toObject(files.parquet);
-        const root = String(payload.root || "");
-        const events = toArray(payload.recent_events);
-        const kindCounts = toObject(payload.kind_counts);
-        const statusText = enabled ? "Enabled" : "Disabled";
-        const statusClass = enabled ? "ok" : "warn";
-        durableSummary.innerHTML = `
-          <div class="durable-kpi">
-            <div class="label">Status</div>
-            <div class="value"><span class="badge ${statusClass}">${escapeHtml(
-              statusText
-            )}</span></div>
-          </div>
-          <div class="durable-kpi">
-            <div class="label">Root</div>
-            <div class="value mono">${escapeHtml(root || "n/a")}</div>
-          </div>
-          <div class="durable-kpi">
-            <div class="label">Queue Depth</div>
-            <div class="value">${formatNumber(payload.queue_depth || 0)}</div>
-          </div>
-          <div class="durable-kpi">
-            <div class="label">Dropped Rows</div>
-            <div class="value">${formatNumber(payload.dropped_rows || 0)}</div>
-          </div>
-        `;
-        durableFiles.innerHTML = `
-          <div class="durable-file">
-            <span class="mono">events.jsonl</span>
-            <span>${formatBytes(jsonl.size_bytes)} · ${escapeHtml(relTime(
-              jsonl.modified_at
-            ))}</span>
-          </div>
-          <div class="durable-file">
-            <span class="mono">events.duckdb</span>
-            <span>${formatBytes(duckdb.size_bytes)} · ${escapeHtml(relTime(
-              duckdb.modified_at
-            ))}</span>
-          </div>
-          <div class="durable-file">
-            <span class="mono">events.parquet</span>
-            <span>${formatBytes(parquet.size_bytes)} · ${escapeHtml(relTime(
-              parquet.modified_at
-            ))}</span>
-          </div>
-          <div class="durable-file">
-            <span class="mono">last sync</span>
-            <span>${escapeHtml(relTime(payload.last_sync_utc))}</span>
-          </div>
-        `;
-        if (!events.length) {
-          durableEvents.innerHTML =
-            '<div class="empty">No durable telemetry events recorded yet.</div>';
-          return;
-        }
-        const kindSummary = Object.entries(kindCounts)
-          .map(([kind, count]) => `${kind}:${formatNumber(count)}`)
-          .join(" · ");
-        durableEvents.innerHTML = `
-          <div class="hint">${escapeHtml(kindSummary || "recent event trail")}</div>
-          ${events
-            .slice()
-            .reverse()
-            .slice(0, 80)
-            .map((eventValue) => {
-              const event = toObject(eventValue);
-              const issueIdentifier = String(event.issue_identifier || "");
-              const canTrace = issueIdentifier && issueIdentifier.toUpperCase() !== "SYSTEM";
-              const issueBadge = canTrace
-                ? `<button type="button" class="agent-ref mono" data-agent-issue="${escapeHtml(
-                    issueIdentifier
-                  )}">${escapeHtml(issueIdentifier)}</button>`
-                : `<span class="mono">${escapeHtml(issueIdentifier || "SYSTEM")}</span>`;
-              const kind = String(event.kind || "event");
-              const message = String(
-                event.message || event.detail || event.error || event.status || ""
-              );
-              return `
-                <article class="durable-event">
-                  <div class="head">
-                    <div class="event-tags">
-                      ${issueBadge}
-                      <span class="badge">${escapeHtml(kind)}</span>
-                    </div>
-                    <div class="meta">${escapeHtml(relTime(event.recorded_at || event.at))}</div>
-                  </div>
-                  <div class="msg">${escapeHtml(message)}</div>
-                </article>
-              `;
-            })
-            .join("")}
-        `;
-      }
-
-      function renderToolLauncher(state) {
-        const issues = new Map();
-
-        const processItem = (item) => {
-          const obj = toObject(item);
-          const id = String(obj.issue_identifier || obj.issue_id || "");
-          if (!id || id === "SYSTEM") return;
-
-          let context = "";
-          if (obj.kind) {
-            context = `Attention: [${obj.kind}] - ${obj.message || "Needs intervention"}`;
-          } else if (obj.worker_role || obj.role) {
-            const role = obj.role || obj.worker_role || "worker";
-            const st = obj.state || obj.status || "active";
-            const turns = obj.turn_count || obj.turns || 0;
-            const event = obj.last_event || obj.event || "processing";
-            context = `Running: [${role}] state=${st} · turns=${turns} · event=${event}`;
-          } else if (obj.due_at) {
-            const attempt = obj.attempt || 1;
-            const err = obj.error || obj.message || "unknown error";
-            context = `Retrying: attempt=${attempt} · error=${err}`;
-          }
-
-          issues.set(id, { title: obj.title || "", context });
-        };
-
-        toArray(state.attention).forEach(processItem);
-        toArray(state.running).forEach(processItem);
-        toArray(state.retrying).forEach(processItem);
-
-        const datalist = document.getElementById("tool-issue-datalist");
-        if (!datalist) return;
-
-        datalist.innerHTML = Array.from(issues.entries())
-          .map(([id, info]) => {
-            const label = info.title ? `${id} - ${info.title}` : id;
-            return `<option value="${escapeHtml(label)}">${escapeHtml(info.context)}</option>`;
-          })
-          .join("");
-      }
-
-      function renderRunning(state) {
-        const rows = toArray(state.running);
-        if (!rows.length) {
-          runningWrap.innerHTML = '<div class="empty">No active sessions.</div>';
-          return;
-        }
-        runningWrap.innerHTML = `
-          <div class="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Issue</th>
-                  <th>State</th>
-                  <th>Turns</th>
-                  <th>Last Event</th>
-                  <th>Tokens</th>
-                  <th>Updated</th>
-                  <th>Trace</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${rows
-                  .map((rowValue) => {
-                    const row = toObject(rowValue);
-                    const tokens = toObject(row.tokens);
-                    const totalTokens = toNumber(tokens.total_tokens, 0);
-                    const issueId = row.issue_identifier || row.issue_id || "unknown";
-                    const issueCell = `
-                      <button type="button" class="agent-ref mono" data-agent-issue="${escapeHtml(
-                        issueId
-                      )}">${escapeHtml(issueId)}</button>
-                      ${
-                        row.url
-                          ? `<a href="${escapeHtml(
-                              row.url
-                            )}" target="_blank" rel="noreferrer">linear</a>`
-                          : ""
-                      }
-                    `;
-                    return `
-                      <tr>
-                        <td class="mono">${issueCell}</td>
-                        <td>${escapeHtml(row.state || "running")}</td>
-                        <td>${formatNumber(row.turn_count)}</td>
-                        <td>${escapeHtml(row.last_event || "n/a")}</td>
-                        <td>${formatNumber(totalTokens)}</td>
-                        <td title="${escapeHtml(row.last_event_at || "")}">${relTime(
-                      row.last_event_at
-                    )}</td>
-                        <td><button type="button" class="agent-ref" data-agent-issue="${escapeHtml(
-                          issueId
-                        )}">open</button></td>
-                      </tr>
-                    `;
-                  })
-                  .join("")}
-              </tbody>
-            </table>
-          </div>
-        `;
-      }
-
-      function renderRetry(state) {
-        const rows = toArray(state.retrying);
-        if (!rows.length) {
-          retryWrap.innerHTML = '<div class="empty">Retry queue is empty.</div>';
-          return;
-        }
-        retryWrap.innerHTML = `
-          <div class="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Issue</th>
-                  <th>Attempt</th>
-                  <th>Due In</th>
-                  <th>Error</th>
-                  <th>Trace</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${rows
-                  .map((rowValue) => {
-                    const row = toObject(rowValue);
-                    const issueId = row.issue_identifier || row.issue_id || "unknown";
-                    return `
-                      <tr>
-                        <td class="mono"><button type="button" class="agent-ref mono" data-agent-issue="${escapeHtml(
-                          issueId
-                        )}">${escapeHtml(issueId)}</button></td>
-                        <td>${formatNumber(row.attempt)}</td>
-                        <td>${formatNumber(row.due_in_seconds)}s</td>
-                        <td>${escapeHtml(row.error || row.message || "")}</td>
-                        <td><button type="button" class="agent-ref" data-agent-issue="${escapeHtml(
-                          issueId
-                        )}">open</button></td>
-                      </tr>
-                    `;
-                  })
-                  .join("")}
-              </tbody>
-            </table>
-          </div>
-        `;
-      }
-
-      function renderProfiling(state) {
-        const profiling = toObject(state.profiling);
-        const hotspots = [
-          ...toArray(profiling.hotspots),
-          ...toArray(state.hotspots),
-          ...toArray(state.profiling_hotspots),
-        ];
-        if (!hotspots.length) {
-          profilingWrap.innerHTML =
-            '<div class="empty">No profiling hotspot telemetry available yet.</div>';
-          return;
-        }
-        profilingWrap.innerHTML = `<div class="profiling-list">${hotspots
-          .slice(0, 8)
-          .map((rowValue) => {
-            const row = toObject(rowValue);
-            const name =
-              row.label || row.name || row.scope || row.operation || "unknown hotspot";
-            const p95 = toNumber(row.p95_ms || row.p95, 0);
-            const avg = toNumber(row.avg_ms || row.avg, 0);
-            const samples = toNumber(row.samples || row.count, 0);
-            const calls = toNumber(row.calls, 0);
-            return `
-              <div class="profiling-item">
-                <div class="head">
-                  <span class="name mono">${escapeHtml(name)}</span>
-                  <span class="badge warn">p95 ${escapeHtml(p95.toFixed(1))} ms</span>
-                </div>
-                <div class="meta">avg ${escapeHtml(avg.toFixed(1))} ms | samples ${formatNumber(
-              samples
-            )} | calls ${formatNumber(calls)}</div>
-              </div>
-            `;
-          })
-          .join("")}</div>`;
-      }
-
-      function renderEvents(state) {
-        const rows = toArray(state.recent_events);
-        if (!rows.length) {
-          eventsWrap.innerHTML = '<div class="empty">No recent orchestration events.</div>';
-          return;
-        }
-        eventsWrap.innerHTML = rows
-          .slice(0, 50)
-          .map((rowValue) => {
-            const row = toObject(rowValue);
-            const issueId = row.issue_identifier || row.issue_id || "unknown";
-            return `
-            <div class="event">
-              <div class="line">
-                <button type="button" class="agent-ref mono" data-agent-issue="${escapeHtml(
-                  issueId
-                )}">${escapeHtml(issueId)}</button>
-                ${escapeHtml(row.event || "")}
-              </div>
-              <div class="meta">
-                ${escapeHtml(row.message || "")}
-                ${row.at ? " | " + escapeHtml(formatTime(row.at)) : ""}
-              </div>
-              ${
-                row.detail
-                  ? `<div class="meta">${escapeHtml(String(row.detail || ""))}</div>`
-                  : ""
-              }
-            </div>
-          `;
-          })
-          .join("");
-      }
-
-      function describeRateLimitState(state) {
-        const suspension = toObject(state.suspension);
-        const limits = toObject(state.rate_limits);
-        const credits = toObject(limits.credits);
-        const primary = toObject(limits.primary);
-        const secondary = toObject(limits.secondary);
-        const runtime = toObject(state.runtime);
-        const cadence = deriveDashboardCadence(state);
-        const pollIntervalMs = Math.max(1000, toNumber(runtime.poll_interval_ms, 30000));
-        const creditExhausted = credits.hasCredits === false;
-        const primaryUsed = toNumber(primary.usedPercent, 0);
-        const secondaryUsed = toNumber(secondary.usedPercent, 0);
-        const windowSaturated = primaryUsed >= 99.9 || secondaryUsed >= 99.9;
-        const suspended = Boolean(suspension.active);
-        const dueIn = suspension.due_in_seconds != null ? `${Math.round(toNumber(suspension.due_in_seconds, 0))}s` : "n/a";
-        const primaryResetAt = primary.resetsAt || primary.resetAt || null;
-        const secondaryResetAt = secondary.resetsAt || secondary.resetAt || null;
-
-        let headline = "No provider throttle detected.";
-        let detail =
-          "Symphony is running in normal cadence. Polling and stream intervals are set for responsiveness.";
-        let level = "ok";
-
-        if (creditExhausted) {
-          headline = "Provider credits are exhausted (not a local concurrency cap).";
-          detail =
-            `Codex reports credits.hasCredits=false, so work is paused until credits return. ` +
-            `Auto-resume in about ${dueIn}.`;
-          level = "danger";
-        } else if (windowSaturated || suspended) {
-          headline = "Provider rate-limit window is active.";
-          detail =
-            `Symphony is in gentle mode and will auto-resume in about ${dueIn}. ` +
-            `Primary reset: ${formatEpochSeconds(primaryResetAt)} · Secondary reset: ${formatEpochSeconds(
-              secondaryResetAt
-            )}.`;
-          level = "warn";
-        }
-
-        return {
-          headline,
-          detail,
-          level,
-          cadence,
-          pollIntervalMs,
-          dueIn,
-          primaryResetAt,
-          secondaryResetAt,
-        };
-      }
-
-      function renderRateLimits(state) {
-        const limits = toObject(state.rate_limits);
-        const runtime = toObject(state.runtime);
-        const status = describeRateLimitState(state);
-        const cadence = status.cadence;
-        const summaryHtml = `
-          <div class="attention-item">
-            <div class="head">
-              <span class="mono">${escapeHtml(status.headline)}</span>
-              <span class="badge ${status.level === "danger" ? "warn" : "ok"}">${escapeHtml(
-                cadence.mode
-              )} cadence</span>
-            </div>
-            <div class="msg">${escapeHtml(status.detail)}</div>
-            <div class="hint">
-              Orchestrator poll: ${formatNumber(status.pollIntervalMs)}ms ·
-              Dashboard stream: ${formatNumber(cadence.streamIntervalMs)}ms ·
-              Fallback poll: ${formatNumber(cadence.fallbackPollIntervalMs)}ms ·
-              Stale timeout: ${formatNumber(cadence.staleAfterMs)}ms
-            </div>
-            <div class="hint">
-              Max concurrent agents: ${formatNumber(runtime.max_concurrent_agents || 0)}
-            </div>
-            <div class="hint">
-              Transport: requested=${escapeHtml(requestedTransport)} · active=${escapeHtml(activeTransport)} ·
-              state fetches ${formatNumber(transportMetrics.stateFetchTotal)} (200=${formatNumber(
-                transportMetrics.stateFetch200
-              )}, 304=${formatNumber(transportMetrics.stateFetch304)}, err=${formatNumber(
-                transportMetrics.stateFetchErrors
-              )}) ·
-              sse frames ${formatNumber(transportMetrics.sseFrames)} · reconnects ${formatNumber(
-                transportMetrics.sseReconnects
-              )} ·
-              poll ticks ${formatNumber(transportMetrics.fallbackPollTicks)} ·
-              poll delay ${formatNumber(
-                pollScheduledDelayMs > 0 ? pollScheduledDelayMs : fallbackPollIntervalMs
-              )}ms ·
-              render commits ${formatNumber(transportMetrics.renderCommits)}
-            </div>
-          </div>
-        `;
-        const entries = Object.entries(limits);
-        if (!entries.length) {
-          rateWrap.innerHTML = summaryHtml + '<div class="empty">No rate limit telemetry recorded.</div>';
-          return;
-        }
-        const rows = entries
-          .map(([key, value]) => {
-            let valStr = "";
-            if (typeof value === 'object' && value !== null) {
-              const obj = toObject(value);
-              if (obj.usedPercent != null) valStr += `${obj.usedPercent}% used`;
-              if (obj.resetsAt != null || obj.resetAt != null) {
-                const r = obj.resetsAt || obj.resetAt;
-                if (valStr) valStr += " | ";
-                valStr += `resets ${relTime(r)}`;
-              }
-              if (obj.hasCredits != null) {
-                if (valStr) valStr += " | ";
-                valStr += `credits: ${obj.hasCredits}`;
-              }
-              if (obj.balance != null) {
-                if (valStr) valStr += " | ";
-                valStr += `balance: ${obj.balance}`;
-              }
-              if (!valStr) valStr = JSON.stringify(obj);
-            } else {
-              valStr = String(value);
-            }
-            return `
-              <div class="kv-item">
-                <div class="key mono">${escapeHtml(key)}</div>
-                <div class="value mono">${escapeHtml(valStr)}</div>
-              </div>
-            `;
-          })
-          .join("");
-        rateWrap.innerHTML = summaryHtml + `<div class="kv-list" style="margin-top: 12px">${rows}</div>`;
-      }
-
-      function renderKpis(state) {
-        const counts = toObject(state.counts);
-        const totals = toObject(state.codex_totals);
-        const attention = toArray(state.attention);
-        const retryCount = toNumber(counts.retrying, toArray(state.retrying).length);
-        const throughput = toNumber(
-          state.tokens_per_second || totals.tokens_per_second || state.throughput_tps,
-          0
-        );
-        const totalTokens = toNumber(totals.total_tokens, 0);
-        const completed = toNumber(counts.completed, 0);
-        const runtime = toNumber(totals.seconds_running, 0);
-        const healthEl = document.getElementById("kpi-health");
-        const healthMetaEl = document.getElementById("kpi-health-meta");
-
-        document.getElementById("kpi-running").textContent = formatNumber(counts.running);
-        document.getElementById("kpi-retrying").textContent = formatNumber(retryCount);
-        document.getElementById("kpi-throughput").textContent = `${formatNumber(
-          throughput
-        )} / sec`;
-        document.getElementById("kpi-throughput-meta").textContent = `${formatNumber(
-          totalTokens
-        )} total tokens`;
-        document.getElementById("kpi-progress").textContent = formatNumber(
-          totals.turns_completed
-        );
-        document.getElementById("kpi-progress-meta").textContent = `${formatNumber(
-          completed
-        )} completed issues`;
-        document.getElementById("kpi-runtime").textContent = formatDurationSeconds(runtime);
-        setMeter("meter-running", Math.min(toNumber(counts.running, 0) / 8, 1));
-        setMeter("meter-retrying", Math.min(retryCount / 8, 1));
-        setMeter("meter-throughput", Math.min(throughput / 8000, 1));
-        setMeter("meter-progress", Math.min(toNumber(totals.turns_completed, 0) / 40, 1));
-        setMeter("meter-runtime", Math.min(runtime / 3600, 1));
-
-        if (attention.length) {
-          healthEl.textContent = "Needs Action";
-          healthMetaEl.textContent = `${formatNumber(attention.length)} human action item(s)`;
-          setMeter("meter-health", 1);
-          return;
-        }
-        if (retryCount > 0) {
-          healthEl.textContent = "Degraded";
-          healthMetaEl.textContent = `${formatNumber(retryCount)} item(s) in retry queue`;
-          setMeter("meter-health", 0.55);
-          return;
-        }
-        healthEl.textContent = "Stable";
-        healthMetaEl.textContent = "No blocking alerts";
-        setMeter("meter-health", 0.22);
-      }
-
-      function commitRenderState(state) {
-        transportMetrics.renderCommits += 1;
-        const safeState = toObject(state);
-        const generatedAt = String(safeState.generated_at || "");
-        if (generatedAt && latestGeneratedAt && generatedAt < latestGeneratedAt) {
-          return;
-        }
-        if (generatedAt) {
-          latestGeneratedAt = generatedAt;
-        }
-        latestState = safeState;
-        applyTransportCadence(safeState);
-        applyDashboardView();
-        updatePanel(
-          "kpis",
-          {
-            counts: safeState.counts,
-            codex_totals: safeState.codex_totals,
-            attention_count: toArray(safeState.attention).length,
-            retry_count: toArray(safeState.retrying).length,
-            generated_at: generatedAt,
-          },
-          () => renderKpis(safeState)
-        );
-        updatePanel(
-          "attention",
-          {
-            attention: safeState.attention,
-            manual_actions: safeState.manual_actions,
-            running: safeState.running,
-            retrying: safeState.retrying,
-            local_status: Array.from(localActionStatus.entries()),
-            pending_retries: Array.from(pendingRetries.values()).sort(),
-          },
-          () => renderAttention(safeState)
-        );
-        updatePanel(
-          "running",
-          { running: safeState.running, generated_at: generatedAt },
-          () => renderRunning(safeState)
-        );
-        updatePanel(
-          "retry",
-          { retrying: safeState.retrying, generated_at: generatedAt },
-          () => renderRetry(safeState)
-        );
-        updatePanel(
-          "profiling",
-          {
-            profiling: safeState.profiling,
-            hotspots: safeState.hotspots,
-            profiling_hotspots: safeState.profiling_hotspots,
-          },
-          () => renderProfiling(safeState)
-        );
-        updatePanel(
-          "events",
-          { recent_events: safeState.recent_events, generated_at: generatedAt },
-          () => renderEvents(safeState)
-        );
-        updatePanel(
-          "intervention_activity",
-          { manual_actions: safeState.manual_actions, generated_at: generatedAt },
-          () => renderInterventionActivity(safeState)
-        );
-        updatePanel(
-          "rate_limits",
-          {
-            rate_limits: safeState.rate_limits,
-            suspension: safeState.suspension,
-            runtime: safeState.runtime,
-          },
-          () => renderRateLimits(safeState)
-        );
-        updatePanel(
-          "agent_workspace",
-          {
-            agent_panes: safeState.agent_panes,
-            running: safeState.running,
-            layout: workspaceLayout,
-            verbosity: workspaceVerbosity,
-            pane_order: paneOrder,
-          },
-          () => renderAgentWorkspace(safeState)
-        );
-        updatePanel(
-          "tool_launcher",
-          {
-            attention: safeState.attention,
-            running: safeState.running,
-            retrying: safeState.retrying,
-          },
-          () => renderToolLauncher(safeState)
-        );
-        updatePanel(
-          "durable_memory",
-          { durable: durableMemoryState },
-          () => renderDurableMemory()
-        );
-        const updatedText = `Updated ${formatTime(safeState.generated_at)}`;
-        if (updatedChip.textContent !== updatedText) {
-          updatedChip.textContent = updatedText;
-        }
-        publishClientTelemetry();
-      }
-
-      function renderState(state) {
-        const safeState = toObject(state);
-        const generatedAt = String(safeState.generated_at || "");
-        if (generatedAt && latestGeneratedAt && generatedAt < latestGeneratedAt) {
-          return;
-        }
-        pendingRenderState = safeState;
-        if (renderFrame) {
-          return;
-        }
-        const schedule =
-          typeof window.requestAnimationFrame === "function"
-            ? window.requestAnimationFrame.bind(window)
-            : (callback) => window.setTimeout(callback, 16);
-        renderFrame = schedule(() => {
-          transportMetrics.renderFrames += 1;
-          renderFrame = 0;
-          const nextState = pendingRenderState;
-          pendingRenderState = null;
-          if (!nextState) return;
-          commitRenderState(nextState);
-        });
-      }
-
-      async function fetchState() {
-        transportMetrics.stateFetchTotal += 1;
-        try {
-          const headers = buildApiHeaders({ cacheControl: true });
-          if (latestStateEtag) {
-            headers["If-None-Match"] = latestStateEtag;
-          }
-          const resp = await fetch(withAuthPath("/api/v1/state"), { headers });
-          if (resp.status === 304) {
-            transportMetrics.stateFetch304 += 1;
-            publishClientTelemetry();
-            return false;
-          }
-          if (!resp.ok) {
-            throw new Error(`state_fetch_failed:${resp.status}`);
-          }
-          transportMetrics.stateFetch200 += 1;
-          const etag = String(resp.headers.get("ETag") || "").trim();
-          if (etag) {
-            latestStateEtag = etag;
-          }
-          const data = await resp.json();
-          renderState(data);
-          publishClientTelemetry();
-          return true;
-        } catch (_err) {
-          transportMetrics.stateFetchErrors += 1;
-          publishClientTelemetry();
-          throw _err;
-        }
-      }
-
-      async function fetchDurableMemory() {
-        if (durableFetchInFlight) return false;
-        durableFetchInFlight = true;
-        try {
-          const resp = await fetch(withAuthPath("/api/v1/durable?limit=140"), {
-            headers: buildApiHeaders({ cacheControl: true }),
-          });
-          if (!resp.ok) {
-            throw new Error(`durable_fetch_failed:${resp.status}`);
-          }
-          durableMemoryState = await resp.json();
-          renderState(latestState);
-          return true;
-        } catch (_err) {
-          return false;
-        } finally {
-          durableFetchInFlight = false;
-        }
-      }
-
-      async function triggerRefresh() {
-        refreshBtn.disabled = true;
-        try {
-          const resp = await fetch(withAuthPath("/api/v1/refresh"), {
-            method: "POST",
-            headers: buildApiHeaders({ includeCsrf: true }),
-          });
-          if (!resp.ok) throw new Error(`refresh_failed:${resp.status}`);
-          await fetchState();
-        } catch (_err) {
-          setStreamStatus("Refresh failed", "warn");
-        } finally {
-          refreshBtn.disabled = false;
-        }
-      }
-
-      async function triggerRetryNow(issueIdentifier) {
-        if (!issueIdentifier) return;
-        pendingRetries.add(issueIdentifier);
-        localActionStatus.set(issueIdentifier, {
-          status: "pending",
-          message: "Submitting retry request...",
-          at: new Date().toISOString(),
-        });
-        renderState(latestState);
-        try {
-          const resp = await fetch(withAuthPath("/api/v1/interventions/retry-now"), {
-            method: "POST",
-            headers: buildApiHeaders({
-              includeJsonContentType: true,
-              includeCsrf: true,
-            }),
-            body: JSON.stringify({ issue_identifier: issueIdentifier }),
-          });
-          const payload = await resp.json();
-          if (!resp.ok || payload.ok === false) {
-            localActionStatus.set(issueIdentifier, {
-              status: payload.status || "failed",
-              message: payload.message || `retry_now_failed:${resp.status}`,
-              at: new Date().toISOString(),
-            });
-            renderState(latestState);
-            throw new Error(`retry_now_failed:${resp.status}`);
-          }
-          localActionStatus.set(issueIdentifier, {
-            status: payload.status || "queued",
-            message: payload.message || "Retry request accepted.",
-            at: new Date().toISOString(),
-          });
-          setStreamStatus("Retry request queued", "live");
-          await fetchState();
-        } catch (_err) {
-          setStreamStatus("Retry-now action failed", "warn");
-        } finally {
-          pendingRetries.delete(issueIdentifier);
-          renderState(latestState);
-        }
-      }
-
-      async function runDashboardTool() {
-        const tool = String(toolSelect?.value || "").trim();
-        let issueIdentifier = String(toolIssueInput?.value || "").trim();
-        if (issueIdentifier.includes(" - ")) {
-          issueIdentifier = issueIdentifier.split(" - ")[0].trim();
-        }
-        if (!tool) return;
-        if (toolRunButton) {
-          toolRunButton.disabled = true;
-        }
-        const body = {
-          tool,
-          issue_identifier: issueIdentifier,
-        };
-        if (tool === "set_max_concurrent_agents") {
-          body.value = issueIdentifier;
-        }
-        try {
-          const resp = await fetch(withAuthPath("/api/v1/tools/run"), {
-            method: "POST",
-            headers: buildApiHeaders({
-              includeJsonContentType: true,
-              includeCsrf: true,
-            }),
-            body: JSON.stringify(body),
-          });
-          const payload = await resp.json();
-          toolResult.textContent = JSON.stringify(payload, null, 2);
-          if (!resp.ok || payload.ok === false) {
-            setStreamStatus("Tool run failed", "warn");
-            return;
-          }
-          await fetchState();
-        } catch (_err) {
-          toolResult.textContent = "Tool run failed.";
-          setStreamStatus("Tool run failed", "warn");
-        } finally {
-          if (toolRunButton) {
-            toolRunButton.disabled = false;
-          }
-        }
-      }
-
-      function stopTracePolling() {
-        if (tracePollTimer) {
-          clearInterval(tracePollTimer);
-          tracePollTimer = null;
-        }
-      }
-
-      function closeTraceModal() {
-        stopTracePolling();
-        traceIssueIdentifier = "";
-        traceModal.classList.remove("open");
-        traceModal.setAttribute("aria-hidden", "true");
-        traceSubtitle.textContent = "Select an agent to inspect.";
-        traceSummary.innerHTML = '<div class="empty">No trace selected.</div>';
-        traceEvents.innerHTML =
-          '<div class="empty">Click an issue/agent pill to open live trace.</div>';
-      }
-
-      function traceEventTone(eventName) {
-        const name = String(eventName || "").toLowerCase();
-        if (
-          name.includes("failed") ||
-          name.includes("error") ||
-          name.includes("cancel") ||
-          name.includes("timeout")
-        ) {
-          return "danger";
-        }
-        if (name.includes("token") || name.includes("rate") || name.includes("usage")) {
-          return "info";
-        }
-        if (name.includes("retry") || name.includes("input_required")) {
-          return "warn";
-        }
-        if (name.includes("complete") || name.includes("started")) {
-          return "ok";
-        }
-        return "warn";
-      }
-
-      function traceStatusClass(status) {
-        const norm = String(status || "unknown").toLowerCase();
-        if (norm.includes("run")) return "status-running";
-        if (norm.includes("retry")) return "status-retrying";
-        if (norm.includes("block") || norm.includes("fail")) return "status-blocked";
-        return "";
-      }
-
-      function renderTraceIssue(payloadValue) {
-        const payload = toObject(payloadValue);
-        const status = String(payload.status || "unknown");
-        const running = toObject(payload.running);
-        const attempts = toObject(payload.attempts);
-        const retry = toObject(payload.retry);
-        const recent = toArray(payload.recent_events).slice().reverse().slice(0, 80);
-        traceSubtitle.textContent = `${payload.issue_identifier || traceIssueIdentifier} · ${status}`;
-        const statusClass = traceStatusClass(status);
-        traceSummary.innerHTML = `
-          <div class="trace-status-row">
-            <span class="trace-status-pill ${statusClass}">${escapeHtml(status)}</span>
-            <span class="meta">${escapeHtml(relTime(payload.generated_at || payload.updated_at || null))}</span>
-          </div>
-          <div class="trace-summary-grid">
-            <div class="trace-stat">
-              <div class="label">Issue State</div>
-              <div class="value">${escapeHtml(running.state || "n/a")}</div>
-            </div>
-            <div class="trace-stat">
-              <div class="label">Turns</div>
-              <div class="value">${formatNumber(running.turn_count || 0)}</div>
-            </div>
-            <div class="trace-stat">
-              <div class="label">Role</div>
-              <div class="value">${escapeHtml(running.worker_role || "n/a")}</div>
-            </div>
-            <div class="trace-stat">
-              <div class="label">Retry Attempt</div>
-              <div class="value">${escapeHtml(
-                attempts.current_retry_attempt != null
-                  ? String(attempts.current_retry_attempt)
-                  : "n/a"
-              )}</div>
-            </div>
-            <div class="trace-stat">
-              <div class="label">Retry Due</div>
-              <div class="value">${escapeHtml(
-                retry.due_in_seconds != null ? `${retry.due_in_seconds}s` : "n/a"
-              )}</div>
-            </div>
-            <div class="trace-stat">
-              <div class="label">Last Event</div>
-              <div class="value">${escapeHtml(running.last_event || "n/a")}</div>
-            </div>
-          </div>
-          ${
-            payload.last_error
-              ? `<div class="event-detail"><strong>Last error:</strong> ${escapeHtml(
-                  String(payload.last_error)
-                )}</div>`
-              : ""
-          }
-        `;
-        if (!recent.length) {
-          traceEvents.innerHTML =
-            '<div class="empty">No trace events yet for this agent.</div>';
-          return;
-        }
-        traceEvents.innerHTML = recent
-          .map((eventValue) => {
-            const event = toObject(eventValue);
-            const tone = traceEventTone(event.event || "");
-            return `
-              <article class="trace-event ${tone}">
-                <div class="head">
-                  <div class="event-tags">
-                    <div class="event-name mono">${escapeHtml(event.event || "event")}</div>
-                    <span class="event-type">${escapeHtml(tone)}</span>
-                  </div>
-                  <div class="meta">${escapeHtml(relTime(event.at))}</div>
-                </div>
-                <div class="event-body">${escapeHtml(event.message || "")}</div>
-                ${
-                  event.detail
-                    ? `<div class="event-detail">${escapeHtml(String(event.detail || ""))}</div>`
-                    : ""
-                }
-              </article>
-            `;
-          })
-          .join("");
-      }
-
-      async function fetchTraceIssue() {
-        if (!traceIssueIdentifier) return;
-        const expectedIssue = traceIssueIdentifier;
-        const serial = ++traceFetchSerial;
-        try {
-          const resp = await fetch(
-            withAuthPath(`/api/v1/${encodeURIComponent(expectedIssue)}`),
-            { headers: buildApiHeaders({ cacheControl: true }) }
-          );
-          if (serial !== traceFetchSerial || expectedIssue !== traceIssueIdentifier) {
-            return;
-          }
-          if (!resp.ok) {
-            traceSummary.innerHTML =
-              '<div class="empty">Trace metadata unavailable for this issue.</div>';
-            traceEvents.innerHTML = `<div class="empty">Trace not available (${resp.status}).</div>`;
-            return;
-          }
-          const payload = await resp.json();
-          if (serial !== traceFetchSerial || expectedIssue !== traceIssueIdentifier) {
-            return;
-          }
-          renderTraceIssue(payload);
-        } catch (_err) {
-          if (serial !== traceFetchSerial || expectedIssue !== traceIssueIdentifier) {
-            return;
-          }
-          traceSummary.innerHTML =
-            '<div class="empty">Trace metadata fetch failed.</div>';
-          traceEvents.innerHTML = '<div class="empty">Trace fetch failed.</div>';
-        }
-      }
-
-      function openTraceModal(issueIdentifier) {
-        const issue = String(issueIdentifier || "").trim();
-        if (!issue) return;
-        traceIssueIdentifier = issue;
-        traceModal.classList.add("open");
-        traceModal.setAttribute("aria-hidden", "false");
-        traceSubtitle.textContent = `${issue} · loading`;
-        traceSummary.innerHTML = '<div class="empty">Loading trace summary...</div>';
-        traceEvents.innerHTML = '<div class="empty">Loading live trace...</div>';
-        fetchTraceIssue();
-        stopTracePolling();
-        tracePollTimer = setInterval(fetchTraceIssue, 1200);
-      }
-
-      function startPollingFallback(forceRestart = false) {
-        if (pollTimer && !forceRestart) {
-          return;
-        }
-        if (pollTimer) {
-          stopPolling();
-        }
-        if (forceRestart) {
-          pollErrorStreak = 0;
-          pollNotModifiedStreak = 0;
-        }
-        activeTransport = "poll";
-        _setFallbackStatus(fallbackPollIntervalMs);
-        const run = async () => {
-          transportMetrics.fallbackPollTicks += 1;
-          let delayMs = fallbackPollIntervalMs;
-          try {
-            const changed = await fetchState();
-            delayMs = _nextFallbackDelayMs(changed, false);
-          } catch (_err) {
-            delayMs = _nextFallbackDelayMs(false, true);
-          }
-          if (activeTransport !== "poll") {
-            return;
-          }
-          pollScheduledDelayMs = Math.max(250, Math.round(delayMs));
-          _setFallbackStatus(pollScheduledDelayMs);
-          pollTimer = setTimeout(run, pollScheduledDelayMs);
-        };
-        run();
-      }
-
-      function scheduleReconnect() {
-        if (reconnectTimer) return;
-        const delayMs = Math.min(12000, 1000 * Math.pow(2, Math.min(reconnectAttempts, 4)));
-        activeTransport = "reconnecting";
-        transportMetrics.sseReconnects += 1;
-        reconnectTimer = setTimeout(() => {
-          reconnectTimer = null;
-          reconnectAttempts += 1;
-          if (stateTransport) {
-            stateTransport.start(false);
-            return;
-          }
-          connectStream();
-        }, delayMs);
-      }
-
-      function connectStream(manual = false) {
-        if (requestedTransport === "poll") {
-          startPollingFallback(true);
-          return;
-        }
-        stopReconnectTimer();
-        stopStream();
-        lastFrameAt = 0;
-        if (!window.EventSource || typeof EventSource !== "function") {
-          activeTransport = "poll";
-          startPollingFallback();
-          return;
-        }
-        if (manual) {
-          reconnectAttempts = 0;
-        }
-        activeTransport = "sse";
-        setStreamStatus(`Connecting live stream (${streamIntervalMs}ms)...`, "connecting");
-        ensureWatchdog();
-        stream = new EventSource(
-          withAuthPath(`/api/v1/stream?interval_ms=${streamIntervalMs}`)
-        );
-        stream.onopen = () => {
-          reconnectAttempts = 0;
-          lastFrameAt = Date.now();
-          stopPolling();
-          activeTransport = "sse";
-          setStreamStatus(`Live stream (${streamIntervalMs}ms)`, "live");
-        };
-        stream.onerror = () => {
-          activeTransport = "reconnecting";
-          setStreamStatus("Stream reconnecting...", "warn");
-          startPollingFallback();
-          scheduleReconnect();
-        };
-        stream.addEventListener("state", (event) => {
-          try {
-            lastFrameAt = Date.now();
-            transportMetrics.sseFrames += 1;
-            if (event.lastEventId) {
-              latestStateEtag = String(event.lastEventId);
-            }
-            renderState(JSON.parse(event.data));
-            stopPolling();
-            activeTransport = "sse";
-            setStreamStatus(`Live stream (${streamIntervalMs}ms)`, "live");
-          } catch (_err) {
-            // ignore malformed frames
-          }
-        });
-      }
-
-      function startDurablePolling() {
-        if (durablePollTimer) return;
-        const run = async () => {
-          await fetchDurableMemory();
-        };
-        durablePollTimer = setInterval(run, 10000);
-        run();
-      }
-
-      loadWorkspacePrefs();
-      loadDashboardView();
-      requestedTransport = resolveTransportPreference();
-      try {
-        window.localStorage.setItem(TRANSPORT_STORAGE_KEY, requestedTransport);
-      } catch (_err) {
-        // ignore storage write failures
-      }
-      stateTransport = createStateTransportController();
-      setDashboardView(activeDashboardView, false);
-      layoutSelect.value = workspaceLayout;
-      verbositySelect.value = workspaceVerbosity;
-      const dashboardGrid = document.querySelector(".dashboard-grid");
-      if (dashboardGrid) dashboardGrid.dataset.layout = workspaceLayout;
-      workspaceWrap.addEventListener("dragstart", handlePaneDragStart);
-      workspaceWrap.addEventListener("dragover", handlePaneDragOver);
-      workspaceWrap.addEventListener("drop", handlePaneDrop);
-      workspaceWrap.addEventListener("dragend", handlePaneDragEnd);
-      layoutSelect.addEventListener("change", () => {
-        workspaceLayout = normalizeLayout(layoutSelect.value);
-        layoutSelect.value = workspaceLayout;
-        const dashboardGrid = document.querySelector(".dashboard-grid");
-        if (dashboardGrid) dashboardGrid.dataset.layout = workspaceLayout;
-        persistWorkspacePrefs();
-        renderState(latestState);
-      });
-      verbositySelect.addEventListener("change", () => {
-        workspaceVerbosity = normalizeVerbosity(verbositySelect.value);
-        verbositySelect.value = workspaceVerbosity;
-        persistWorkspacePrefs();
-        renderState(latestState);
-      });
-      refreshBtn.addEventListener("click", triggerRefresh);
-      reloadBtn.addEventListener("click", () => stateTransport?.restart(true));
-      document.querySelector(".top-nav")?.addEventListener("click", (event) => {
-        const target = event.target;
-        if (!(target instanceof Element)) return;
-        const tab = target.closest(".view-tab");
-        if (!(tab instanceof HTMLButtonElement)) return;
-        setDashboardView(tab.dataset.view || "overview", true);
-      });
-      document.querySelector(".top-nav")?.addEventListener("keydown", (event) => {
-        const target = event.target;
-        if (!(target instanceof Element)) return;
-        const tab = target.closest(".view-tab");
-        if (!(tab instanceof HTMLButtonElement)) return;
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault();
-        setDashboardView(tab.dataset.view || "overview", true);
-      });
-      attentionList.addEventListener("click", (event) => {
-        const target = event.target;
-        if (!(target instanceof Element)) return;
-        const button = target.closest("button[data-action='retry-now']");
-        if (!(button instanceof HTMLButtonElement)) return;
-        const issueIdentifier = String(button.dataset.issue || "");
-        triggerRetryNow(issueIdentifier);
-      });
-      document.addEventListener("click", (event) => {
-        const target = event.target;
-        if (!(target instanceof Element)) return;
-        const agentRef = target.closest("[data-agent-issue]");
-        if (!agentRef) return;
-        const issueIdentifier = String(agentRef.getAttribute("data-agent-issue") || "").trim();
-        if (!issueIdentifier) return;
-        if (target.closest("button[data-action='retry-now']")) return;
-        openTraceModal(issueIdentifier);
-      });
-      traceRefreshButton?.addEventListener("click", () => {
-        fetchTraceIssue();
-      });
-      traceCloseButton?.addEventListener("click", () => {
-        closeTraceModal();
-      });
-      traceModal?.addEventListener("click", (event) => {
-        const target = event.target;
-        if (!(target instanceof Element)) return;
-        if (target === traceModal) {
-          closeTraceModal();
-        }
-      });
-      document.addEventListener("keydown", (event) => {
-        if (event.key === "Escape" && traceModal.classList.contains("open")) {
-          closeTraceModal();
-        }
-      });
-      toolRunButton?.addEventListener("click", () => {
-        runDashboardTool();
-      });
-      toolSelect?.addEventListener("change", () => {
-        const selected = String(toolSelect?.value || "").trim();
-        if (!toolIssueInput) return;
-        toolIssueInput.placeholder =
-          selected === "set_max_concurrent_agents"
-            ? "Max concurrent agents (e.g. 2)"
-            : "Issue identifier (e.g. MOL-42)";
-      });
-      stateTransport.start(false);
-      fetchState().catch(() => stateTransport?.start(false));
-      startDurablePolling();
-    </script>
-  </body>
-</html>
-"""
