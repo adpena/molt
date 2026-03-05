@@ -237,6 +237,145 @@ def test_collect_findings_marks_formal_toolchain_mismatch_warn() -> None:
     assert codes["formal_suite_toolchain_mismatch"]["severity"] == "warn"
 
 
+def test_audit_dlq_health_reports_backlog_and_replay(tmp_path: Path) -> None:
+    dlq_path = tmp_path / "dlq.jsonl"
+    queue = readiness_audit.DeadLetterQueue(dlq_path)
+    queue.append(
+        {
+            "kind": "recursive_loop_step_failure",
+            "name": "next_tranche_01",
+            "phase": "next_tranche",
+            "command": ["echo fail"],
+            "fingerprint": "abc123",
+        }
+    )
+    queue.append_replay_result(
+        target_fingerprint="abc123",
+        command=["echo fail"],
+        returncode=1,
+    )
+    report = readiness_audit._audit_dlq_health(dlq_path, limit=20)
+    assert report["status"] == "warn"
+    assert report["health"]["open_failure_count"] == 1
+    assert report["health"]["replay_failure_count"] == 1
+    assert report["recommended_replay_target"]["fingerprint"] == "abc123"
+
+
+def test_audit_tool_promotion_reports_ready_candidates(tmp_path: Path) -> None:
+    events_path = tmp_path / "tool_promotion" / "events.jsonl"
+    distillations_dir = tmp_path / "tool_promotion" / "distillations"
+    store = readiness_audit.ToolPromotionStore(
+        events_path=events_path,
+        distillations_dir=distillations_dir,
+    )
+    payload = store.distill_candidates(
+        taste_rows=[
+            {
+                "recorded_at": "2026-03-05T00:00:00Z",
+                "successful_actions": ["echo stable"],
+                "tools_used": ["readiness_audit"],
+            },
+            {
+                "recorded_at": "2026-03-05T00:01:00Z",
+                "successful_actions": ["echo stable"],
+                "tools_used": ["readiness_audit"],
+            },
+            {
+                "recorded_at": "2026-03-05T00:02:00Z",
+                "successful_actions": ["echo stable"],
+                "tools_used": ["readiness_audit"],
+            },
+        ],
+        min_success_count=3,
+    )
+    store.record(
+        {
+            "kind": "tool_promotion_distillation",
+            "candidate_count": payload["candidate_count"],
+            "ready_candidate_count": payload["ready_candidate_count"],
+            "manifest_count": payload["manifest_batch"]["manifest_count"],
+            "path": payload["path"],
+        }
+    )
+    report = readiness_audit._audit_tool_promotion(
+        events_path=events_path,
+        distillations_dir=distillations_dir,
+    )
+    assert report["status"] == "pass"
+    assert report["latest_ready_candidate_count"] == 1
+    assert report["latest_manifest_count"] == 1
+    assert report["ready_candidates"][0]["command"] == "echo stable"
+
+
+def test_collect_findings_includes_dlq_and_tool_promotion() -> None:
+    report = {
+        "sections": {
+            "environment": {
+                "ext_root_mounted": True,
+                "missing_env_keys": [],
+                "has_linear_api_key": True,
+            },
+            "storage_layout": {"violations": []},
+            "docs_and_tools": {
+                "missing_docs": [],
+                "missing_tools": [],
+                "has_human_authority_gate": True,
+            },
+            "harness_engineering": {"score": 95, "target_score": 90},
+            "dspy_routing": {"enabled": False},
+            "launchd": {"main_loaded": True, "watchdog_loaded": True},
+            "durable_memory": {
+                "checks": {
+                    "jsonl_readable": {"ok": True},
+                    "duckdb_readable": {"ok": True},
+                }
+            },
+            "dlq_health": {
+                "health": {
+                    "open_failure_count": 2,
+                    "recurring_open_fingerprints": {"abc123": 2},
+                    "latest_open_failure": {"fingerprint": "abc123"},
+                    "replay_success_count": 1,
+                    "replay_failure_count": 2,
+                },
+                "recommended_replay_target": {"fingerprint": "abc123"},
+                "max_open_failures": 3,
+                "max_recurring_open_fingerprints": 1,
+            },
+            "trend_analysis": {},
+            "manifest_index": {
+                "missing_manifest_files": [],
+                "malformed_titles": [],
+                "metadata_gaps": [],
+            },
+            "linear_workspace": {
+                "status": "pass",
+                "missing_project": [],
+                "seeded_missing_metadata": [],
+                "malformed_titles": [],
+                "active_execution_flow": True,
+                "label_count": 10,
+            },
+            "linear_cli_compat": {"status": "pass", "lin_installed": True},
+            "formal_suite": {"status": "pass", "mode": "all", "report": {}},
+            "tool_promotion": {
+                "latest_ready_candidate_count": 2,
+                "latest_candidate_count": 2,
+                "latest_distillation_path": "/tmp/tool_promotion.json",
+                "latest_manifest_count": 2,
+                "manifest_batch": {"manifests_dir": "/tmp/manifests"},
+            },
+        }
+    }
+    findings = readiness_audit._collect_findings(report)
+    codes = {row["code"]: row for row in findings}
+    assert codes["dlq_backlog_present"]["severity"] == "warn"
+    assert codes["dlq_recurring_failures"]["severity"] == "warn"
+    assert codes["dlq_replay_health_low"]["severity"] == "warn"
+    assert codes["tool_promotion_candidates_ready"]["severity"] == "info"
+    assert codes["tool_promotion_manifests_ready"]["severity"] == "info"
+
+
 def test_collect_findings_warns_on_node25_even_when_formal_passes() -> None:
     report = {
         "sections": {
@@ -692,7 +831,9 @@ def test_persist_harness_metrics_appends_and_dedupes(tmp_path: Path) -> None:
         ext_root, report, retention_days=90, path_env=path_env
     )
 
-    csv_path = ext_root / "symphony" / "molt" / "logs" / "metrics" / "harness_timeseries.csv"
+    csv_path = (
+        ext_root / "symphony" / "molt" / "logs" / "metrics" / "harness_timeseries.csv"
+    )
     lines = csv_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 2  # header + one unique row
     assert "2026-03-05T13:17:18.842231Z" in lines[1]
@@ -844,18 +985,138 @@ def test_synthesize_next_tranche_prioritizes_actionable_findings() -> None:
     report = {
         "generated_at": "2026-03-05T12:00:00Z",
         "overall_status": "warn",
+        "sections": {
+            "dlq_health": {
+                "recommended_replay_target": {"fingerprint": "abc123"},
+            }
+        },
         "findings": [
             {"severity": "warn", "code": "active_flow_ratio_low"},
-            {"severity": "warn", "code": "durable_growth_budget_exceeded"},
+            {"severity": "warn", "code": "dlq_backlog_present"},
             {"severity": "info", "code": "dspy_routing_disabled"},
         ],
     }
     plan = readiness_audit._synthesize_next_tranche(report)
     assert plan["status"] == "action_required"
     assert plan["action_count"] >= 2
-    ids = [row["id"] for row in plan["actions"]]
+    actions = {row["id"]: row for row in plan["actions"]}
+    ids = list(actions)
     assert "restore_execution_flow" in ids
-    assert "trim_durable_growth" in ids
+    assert "triage_dlq_backlog" in ids
+    assert any(
+        "abc123" in command for command in actions["triage_dlq_backlog"]["commands"]
+    )
+
+
+def test_build_improvement_issue_specs_emits_dlq_and_tool_promotion_specs() -> None:
+    report = {
+        "findings": [
+            {"severity": "warn", "code": "dlq_backlog_present"},
+            {"severity": "info", "code": "tool_promotion_candidates_ready"},
+        ],
+        "sections": {
+            "dlq_health": {
+                "path": "/tmp/dlq.jsonl",
+                "recommended_replay_target": {
+                    "fingerprint": "abc123",
+                    "name": "readiness_audit",
+                },
+            },
+            "tool_promotion": {
+                "ready_candidates": [
+                    {
+                        "candidate_id": "command-macro-echo-stable",
+                        "command": "echo stable",
+                        "success_count": 3,
+                    }
+                ],
+                "manifest_batch": {
+                    "manifests": [
+                        {
+                            "candidate_id": "command-macro-echo-stable",
+                            "path": "/tmp/manifests/command-macro-echo-stable.json",
+                        }
+                    ]
+                },
+            },
+        },
+    }
+    specs = readiness_audit._build_improvement_issue_specs(
+        report, max_tool_candidates=3
+    )
+    titles = [row["title"] for row in specs]
+    assert "[P1][TL2] Symphony DLQ replay backlog" in titles
+    assert any("Symphony tool promotion" in title for title in titles)
+
+
+def test_sync_improvement_issues_dry_run_plans_create_and_update(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    env_file = tmp_path / "symphony.env"
+    env_file.write_text("LINEAR_API_KEY=test-token\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        readiness_audit.linear_workspace, "_resolve_team_id", lambda _team: "team-1"
+    )
+    monkeypatch.setattr(
+        readiness_audit.linear_workspace,
+        "_resolve_project_id",
+        lambda _team_id, _project: "proj-1",
+    )
+    monkeypatch.setattr(
+        readiness_audit.linear_workspace,
+        "_fetch_issues",
+        lambda _team_id, _project_id: [
+            {
+                "id": "issue-1",
+                "identifier": "MOL-1",
+                "title": "[P1][TL2] Symphony DLQ replay backlog",
+                "description": "old",
+                "priority": 3,
+                "project": {"id": "proj-1"},
+            }
+        ],
+    )
+    report = {
+        "findings": [
+            {"severity": "warn", "code": "dlq_backlog_present"},
+            {"severity": "info", "code": "tool_promotion_candidates_ready"},
+        ],
+        "sections": {
+            "dlq_health": {
+                "path": "/tmp/dlq.jsonl",
+                "recommended_replay_target": {"fingerprint": "abc123"},
+            },
+            "tool_promotion": {
+                "ready_candidates": [
+                    {
+                        "candidate_id": "command-macro-echo-stable",
+                        "command": "echo stable",
+                        "success_count": 3,
+                    }
+                ],
+                "manifest_batch": {
+                    "manifests": [
+                        {
+                            "candidate_id": "command-macro-echo-stable",
+                            "path": "/tmp/manifests/command-macro-echo-stable.json",
+                        }
+                    ]
+                },
+            },
+        },
+    }
+    sync = readiness_audit._sync_improvement_issues(
+        report=report,
+        team="Moltlang",
+        env_file=env_file,
+        project_ref="Tooling & DevEx",
+        apply=False,
+        max_tool_candidates=3,
+    )
+    assert sync["status"] == "dry_run"
+    assert sync["update_count"] == 1
+    assert sync["create_count"] == 1
 
 
 def test_as_markdown_includes_next_tranche_actions() -> None:

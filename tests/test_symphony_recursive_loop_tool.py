@@ -4,6 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
+import pytest
+
 import tools.symphony_recursive_loop as recursive_loop
 
 
@@ -108,3 +110,78 @@ def test_failure_codes_from_readiness_extracts_warn_and_fail(tmp_path: Path) -> 
         "formal_pass_ratio_low",
         "symphony_storage_layout_invalid",
     ]
+
+
+def test_run_cycle_records_tool_promotion_distillation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def fake_run_step_with_hooks(**kwargs):  # type: ignore[no-untyped-def]
+        cycle_dir = kwargs["cycle_dir"]
+        step = recursive_loop.StepResult(
+            name=str(kwargs["name"]),
+            command=["echo ok"],
+            returncode=0,
+            duration_seconds=0.01,
+            stdout_path=str(cycle_dir / f"{kwargs['name']}.stdout.log"),
+            stderr_path=str(cycle_dir / f"{kwargs['name']}.stderr.log"),
+        )
+        return (
+            step,
+            {"action": "allow", "reason": "", "command": [], "metadata": {}},
+            {
+                "action": "allow",
+                "reason": "",
+                "command": [],
+                "metadata": {},
+            },
+        )
+
+    monkeypatch.setattr(
+        recursive_loop, "_run_step_with_hooks", fake_run_step_with_hooks
+    )
+    monkeypatch.setattr(recursive_loop, "_load_next_tranche_actions", lambda _path: [])
+    monkeypatch.setattr(
+        recursive_loop, "_failure_codes_from_readiness", lambda _path: []
+    )
+
+    args = argparse.Namespace(
+        output_root=str(tmp_path / "cycles"),
+        team="Moltlang",
+        formal_suite="inventory",
+        strict_autonomy=False,
+        fail_on="warn",
+        apply_linear=False,
+        run_perf_guard=False,
+        execute_next_tranche=False,
+        workflow="WORKFLOW.md",
+        perf_iterations=1,
+        perf_reports_dir=str(tmp_path / "perf"),
+        fail_on_regression=False,
+        trend_days=7,
+        ext_root=str(tmp_path / "ext"),
+        hook_cmd="",
+        dlq_file=str(tmp_path / "dlq" / "events.jsonl"),
+        taste_memory_file=str(tmp_path / "taste" / "events.jsonl"),
+        taste_distillations_dir=str(tmp_path / "taste" / "distillations"),
+        taste_memory_limit=50,
+        tool_promotion_file=str(tmp_path / "tool_promotion" / "events.jsonl"),
+        tool_promotion_distillations_dir=str(
+            tmp_path / "tool_promotion" / "distillations"
+        ),
+        tool_promotion_min_success_count=1,
+    )
+
+    rc = recursive_loop._run_cycle(
+        args=args,
+        repo_root=tmp_path,
+        env={"PYTHONPATH": "src"},
+        cycle_index=1,
+    )
+    assert rc == 0
+    summaries = list((tmp_path / "cycles").glob("*/summary.json"))
+    assert len(summaries) == 1
+    payload = json.loads(summaries[0].read_text(encoding="utf-8"))
+    assert payload["tool_promotion"]["distillation"]["candidate_count"] >= 0
+    assert payload["artifacts"]["tool_promotion_events_file"] == str(
+        Path(args.tool_promotion_file).expanduser().resolve()
+    )

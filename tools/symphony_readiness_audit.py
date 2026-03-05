@@ -20,6 +20,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 import tools.linear_workspace as linear_workspace  # noqa: E402
 import tools.symphony_launchd as symphony_launchd  # noqa: E402
+from molt.symphony.dlq import DeadLetterQueue  # noqa: E402
 from molt.symphony.paths import (  # noqa: E402
     is_within,
     resolve_symphony_parent_root,
@@ -34,8 +35,11 @@ from molt.symphony.paths import (  # noqa: E402
     symphony_state_root,
     symphony_taste_memory_distillations_dir,
     symphony_taste_memory_events_file,
+    symphony_tool_promotion_distillations_dir,
+    symphony_tool_promotion_events_file,
     symphony_workspace_root,
 )
+from molt.symphony.tool_promotion import ToolPromotionStore  # noqa: E402
 
 try:  # pragma: no cover - optional dependency
     import duckdb as _duckdb_module
@@ -67,6 +71,8 @@ REQUIRED_ENV_KEYS = (
     "MOLT_SYMPHONY_DLQ_EVENTS_FILE",
     "MOLT_SYMPHONY_TASTE_MEMORY_EVENTS_FILE",
     "MOLT_SYMPHONY_TASTE_MEMORY_DISTILLATIONS_DIR",
+    "MOLT_SYMPHONY_TOOL_PROMOTION_EVENTS_FILE",
+    "MOLT_SYMPHONY_TOOL_PROMOTION_DISTILLATIONS_DIR",
 )
 
 REQUIRED_DOCS = (
@@ -91,6 +97,7 @@ REQUIRED_TOOLS = (
     "tools/linear_workspace.py",
     "tools/symphony_perf.py",
     "tools/symphony_taste_memory.py",
+    "tools/symphony_tool_promotion.py",
 )
 
 REQUIRED_HARNESS_ARTIFACTS = (
@@ -191,6 +198,8 @@ DEFAULT_TREND_WINDOW = 12
 DEFAULT_MAX_HARNESS_SCORE_DROP = 5
 DEFAULT_MIN_ACTIVE_FLOW_RATIO = 0.7
 DEFAULT_MIN_FORMAL_PASS_RATIO = 0.8
+DEFAULT_MAX_DLQ_OPEN_FAILURES = 3
+DEFAULT_MAX_DLQ_RECURRING_FINGERPRINTS = 1
 
 _PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
@@ -1049,6 +1058,10 @@ def _audit_storage_layout(env_file: Path) -> dict[str, Any]:
     dlq_file = symphony_dlq_events_file(env_values)
     taste_events_file = symphony_taste_memory_events_file(env_values)
     taste_distillations_dir = symphony_taste_memory_distillations_dir(env_values)
+    tool_promotion_events_file = symphony_tool_promotion_events_file(env_values)
+    tool_promotion_distillations_dir = symphony_tool_promotion_distillations_dir(
+        env_values
+    )
     security_events = symphony_security_events_file(env_values)
     api_token_file = symphony_api_token_file(env_values)
 
@@ -1061,7 +1074,15 @@ def _audit_storage_layout(env_file: Path) -> dict[str, Any]:
         "durable_under_state": is_within(durable_root, state_root),
         "dlq_under_state": is_within(dlq_file, state_root),
         "taste_events_under_state": is_within(taste_events_file, state_root),
-        "taste_distillations_under_state": is_within(taste_distillations_dir, state_root),
+        "taste_distillations_under_state": is_within(
+            taste_distillations_dir, state_root
+        ),
+        "tool_promotion_events_under_state": is_within(
+            tool_promotion_events_file, state_root
+        ),
+        "tool_promotion_distillations_under_state": is_within(
+            tool_promotion_distillations_dir, state_root
+        ),
         "security_events_under_logs": is_within(security_events, log_root),
         "api_token_under_state": is_within(api_token_file, state_root),
     }
@@ -1081,10 +1102,116 @@ def _audit_storage_layout(env_file: Path) -> dict[str, Any]:
         "dlq_file": str(dlq_file),
         "taste_events_file": str(taste_events_file),
         "taste_distillations_dir": str(taste_distillations_dir),
+        "tool_promotion_events_file": str(tool_promotion_events_file),
+        "tool_promotion_distillations_dir": str(tool_promotion_distillations_dir),
         "security_events_file": str(security_events),
         "api_token_file": str(api_token_file),
         "checks": checks,
         "violations": violations,
+    }
+
+
+def _audit_dlq_health(
+    path: Path,
+    *,
+    limit: int = 200,
+    max_open_failures: int = DEFAULT_MAX_DLQ_OPEN_FAILURES,
+    max_recurring: int = DEFAULT_MAX_DLQ_RECURRING_FINGERPRINTS,
+) -> dict[str, Any]:
+    queue = DeadLetterQueue(path)
+    summary = queue.summary(limit=max(limit, 0))
+    health = summary.get("health") if isinstance(summary, dict) else {}
+    if not isinstance(health, dict):
+        health = {}
+    open_failure_count = _safe_int(health.get("open_failure_count"))
+    recurring_open = health.get("recurring_open_fingerprints")
+    recurring_count = len(recurring_open) if isinstance(recurring_open, dict) else 0
+    recommended_replay_target = queue.recommended_replay_target(limit=max(limit, 0))
+    if open_failure_count > max_open_failures or recurring_count > max_recurring:
+        status = "warn"
+        reason = "backlog_high"
+    elif open_failure_count > 0 or recurring_count > 0:
+        status = "warn"
+        reason = "backlog_present"
+    else:
+        status = "pass"
+        reason = "clear"
+    return {
+        "status": status,
+        "reason": reason,
+        "path": str(path),
+        "summary": summary,
+        "health": health,
+        "recommended_replay_target": recommended_replay_target,
+        "max_open_failures": max_open_failures,
+        "max_recurring_open_fingerprints": max_recurring,
+    }
+
+
+def _audit_tool_promotion(
+    *,
+    events_path: Path,
+    distillations_dir: Path,
+    limit: int = 200,
+) -> dict[str, Any]:
+    store = ToolPromotionStore(
+        events_path=events_path, distillations_dir=distillations_dir
+    )
+    rows = store.load(limit=max(limit, 0))
+    latest = rows[-1] if rows else None
+    latest_distillation_path = None
+    latest_ready_candidate_count = 0
+    latest_candidate_count = 0
+    latest_manifest_count = 0
+    ready_candidates: list[dict[str, Any]] = []
+    manifest_batch: dict[str, Any] | None = None
+    if isinstance(latest, dict):
+        latest_distillation_path = latest.get("path")
+        latest_ready_candidate_count = _safe_int(latest.get("ready_candidate_count"))
+        latest_candidate_count = _safe_int(latest.get("candidate_count"))
+        latest_manifest_count = _safe_int(latest.get("manifest_count"))
+    if isinstance(latest_distillation_path, str) and latest_distillation_path:
+        distillation_path = Path(latest_distillation_path).expanduser().resolve()
+        if distillation_path.exists():
+            try:
+                payload = json.loads(distillation_path.read_text(encoding="utf-8"))
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                ready_payload = payload.get("ready_candidates")
+                if isinstance(ready_payload, list):
+                    ready_candidates = [
+                        row for row in ready_payload if isinstance(row, dict)
+                    ][:10]
+                batch = payload.get("manifest_batch")
+                if isinstance(batch, dict):
+                    manifest_batch = batch
+                    latest_manifest_count = _safe_int(batch.get("manifest_count"))
+    if latest_ready_candidate_count > 0:
+        status = "pass"
+        reason = "ready_candidates_present"
+    elif latest_candidate_count > 0:
+        status = "info"
+        reason = "candidates_present_not_ready"
+    elif rows:
+        status = "info"
+        reason = "history_present"
+    else:
+        status = "info"
+        reason = "no_candidates_yet"
+    return {
+        "status": status,
+        "reason": reason,
+        "events_path": str(events_path),
+        "distillations_dir": str(distillations_dir),
+        "event_count": len(rows),
+        "latest": latest,
+        "latest_distillation_path": latest_distillation_path,
+        "latest_candidate_count": latest_candidate_count,
+        "latest_ready_candidate_count": latest_ready_candidate_count,
+        "latest_manifest_count": latest_manifest_count,
+        "ready_candidates": ready_candidates,
+        "manifest_batch": manifest_batch,
     }
 
 
@@ -1321,6 +1448,129 @@ def _collect_findings(report: dict[str, Any]) -> list[dict[str, Any]]:
             code="durable_duckdb_unreadable",
             message="Durable DuckDB store is unreadable.",
             details=duckdb_check,
+        )
+
+    dlq = (report.get("sections") or {}).get("dlq_health") or {}
+    dlq_health = dlq.get("health") if isinstance(dlq, dict) else {}
+    if not isinstance(dlq_health, dict):
+        dlq_health = {}
+    open_failure_count = _safe_int(dlq_health.get("open_failure_count"))
+    recurring_open = dlq_health.get("recurring_open_fingerprints")
+    recurring_open_count = (
+        len(recurring_open) if isinstance(recurring_open, dict) else 0
+    )
+    if open_failure_count > _safe_int(dlq.get("max_open_failures"), default=3):
+        _record_finding(
+            findings,
+            severity="warn",
+            code="dlq_backlog_high",
+            message="DLQ open-failure backlog is above the configured threshold.",
+            details={
+                "open_failure_count": open_failure_count,
+                "max_open_failures": dlq.get("max_open_failures"),
+                "latest_open_failure": dlq_health.get("latest_open_failure"),
+            },
+        )
+    elif open_failure_count > 0:
+        _record_finding(
+            findings,
+            severity="warn",
+            code="dlq_backlog_present",
+            message="DLQ contains unresolved recursive-loop failures awaiting replay or repair.",
+            details={
+                "open_failure_count": open_failure_count,
+                "latest_open_failure": dlq_health.get("latest_open_failure"),
+            },
+        )
+    else:
+        _record_finding(
+            findings,
+            severity="info",
+            code="dlq_backlog_clear",
+            message="DLQ has no unresolved recursive-loop failures.",
+        )
+    if recurring_open_count > 0:
+        _record_finding(
+            findings,
+            severity="warn",
+            code="dlq_recurring_failures",
+            message="DLQ contains recurring unresolved failure fingerprints.",
+            details={
+                "recurring_open_fingerprints": recurring_open,
+                "max_recurring_open_fingerprints": dlq.get(
+                    "max_recurring_open_fingerprints"
+                ),
+            },
+        )
+    replay_success_count = _safe_int(dlq_health.get("replay_success_count"))
+    replay_failure_count = _safe_int(dlq_health.get("replay_failure_count"))
+    if replay_failure_count > replay_success_count and replay_failure_count > 0:
+        _record_finding(
+            findings,
+            severity="warn",
+            code="dlq_replay_health_low",
+            message="DLQ replay attempts are failing more often than they are succeeding.",
+            details={
+                "replay_success_count": replay_success_count,
+                "replay_failure_count": replay_failure_count,
+                "recommended_replay_target": dlq.get("recommended_replay_target"),
+            },
+        )
+    if replay_success_count > 0:
+        _record_finding(
+            findings,
+            severity="info",
+            code="dlq_replay_success_present",
+            message="DLQ replay history includes successful recovery attempts.",
+            details={"replay_success_count": replay_success_count},
+        )
+
+    tool_promotion = (report.get("sections") or {}).get("tool_promotion") or {}
+    ready_candidate_count = _safe_int(
+        tool_promotion.get("latest_ready_candidate_count")
+    )
+    latest_candidate_count = _safe_int(tool_promotion.get("latest_candidate_count"))
+    if ready_candidate_count > 0:
+        _record_finding(
+            findings,
+            severity="info",
+            code="tool_promotion_candidates_ready",
+            message="Tool-promotion distillation has ready candidates for explicit extraction.",
+            details={
+                "ready_candidate_count": ready_candidate_count,
+                "latest_distillation_path": tool_promotion.get(
+                    "latest_distillation_path"
+                ),
+            },
+        )
+    elif latest_candidate_count > 0:
+        _record_finding(
+            findings,
+            severity="info",
+            code="tool_promotion_candidates_observed",
+            message="Tool-promotion distillation has emerging candidates that are not ready yet.",
+            details={
+                "candidate_count": latest_candidate_count,
+                "latest_distillation_path": tool_promotion.get(
+                    "latest_distillation_path"
+                ),
+            },
+        )
+    latest_manifest_count = _safe_int(tool_promotion.get("latest_manifest_count"))
+    if latest_manifest_count > 0:
+        _record_finding(
+            findings,
+            severity="info",
+            code="tool_promotion_manifests_ready",
+            message="Tool-promotion manifests were generated for reviewable candidate promotion.",
+            details={
+                "latest_manifest_count": latest_manifest_count,
+                "manifests_dir": (tool_promotion.get("manifest_batch") or {}).get(
+                    "manifests_dir"
+                )
+                if isinstance(tool_promotion.get("manifest_batch"), dict)
+                else None,
+            },
         )
 
     trend = (report.get("sections") or {}).get("trend_analysis") or {}
@@ -1661,6 +1911,333 @@ def _overall_status(findings: list[dict[str, Any]]) -> str:
     return "pass"
 
 
+def _linear_priority_value(priority_label: str) -> int | None:
+    mapping = {"P0": 1, "P1": 2, "P2": 3, "P3": 4}
+    return mapping.get(priority_label.strip().upper())
+
+
+def _truncate_text(value: str, *, limit: int = 72) -> str:
+    compact = re.sub(r"\s+", " ", value.strip())
+    if len(compact) <= limit:
+        return compact
+    return compact[: max(limit - 3, 0)].rstrip() + "..."
+
+
+def _dlq_replay_command_for_report(report: dict[str, Any]) -> str | None:
+    section = (report.get("sections") or {}).get("dlq_health") or {}
+    target = (
+        section.get("recommended_replay_target") if isinstance(section, dict) else None
+    )
+    if not isinstance(target, dict):
+        return None
+    fingerprint = str(target.get("fingerprint") or "").strip()
+    if not fingerprint:
+        return None
+    return (
+        "PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_dlq.py replay "
+        f"--fingerprint {fingerprint} --dry-run"
+    )
+
+
+def _build_improvement_issue_specs(
+    report: dict[str, Any],
+    *,
+    max_tool_candidates: int = 3,
+) -> list[dict[str, Any]]:
+    findings = report.get("findings")
+    finding_codes = (
+        {str(row.get("code") or "") for row in findings if isinstance(row, dict)}
+        if isinstance(findings, list)
+        else set()
+    )
+    specs: list[dict[str, Any]] = []
+
+    dlq_section = (report.get("sections") or {}).get("dlq_health") or {}
+    dlq_target = (
+        dlq_section.get("recommended_replay_target")
+        if isinstance(dlq_section, dict)
+        else None
+    )
+    if finding_codes & {
+        "dlq_backlog_high",
+        "dlq_backlog_present",
+        "dlq_recurring_failures",
+        "dlq_replay_health_low",
+    }:
+        fingerprint = (
+            str(dlq_target.get("fingerprint") or "").strip()
+            if isinstance(dlq_target, dict)
+            else ""
+        )
+        name = (
+            str(dlq_target.get("name") or "").strip()
+            if isinstance(dlq_target, dict)
+            else ""
+        )
+        replay_cmd = _dlq_replay_command_for_report(report)
+        description_lines = [
+            "Auto-seeded from Symphony readiness improvement loop.",
+            "",
+            "- area: tooling",
+            "- owner: symphony",
+            "- milestone: TL2",
+            "- priority: P1",
+            "- status: planned",
+            "- source: tools/symphony_readiness_audit.py",
+            "",
+            "Symphony readiness detected unresolved DLQ backlog that should be replayed or repaired.",
+        ]
+        if fingerprint:
+            description_lines.append(f"- recommended fingerprint: `{fingerprint}`")
+        if name:
+            description_lines.append(f"- latest failing step: `{name}`")
+        description_lines.append(
+            f"- dlq path: `{str(dlq_section.get('path') or '').strip()}`"
+        )
+        if replay_cmd:
+            description_lines.append(f"- replay command: `{replay_cmd}`")
+        specs.append(
+            {
+                "title": "[P1][TL2] Symphony DLQ replay backlog",
+                "description": "\n".join(description_lines).strip(),
+                "priority": _linear_priority_value("P1"),
+                "canonical_key": "symphony-dlq-replay-backlog",
+            }
+        )
+
+    tool_section = (report.get("sections") or {}).get("tool_promotion") or {}
+    ready_candidates = (
+        tool_section.get("ready_candidates") if isinstance(tool_section, dict) else None
+    )
+    manifest_batch = (
+        tool_section.get("manifest_batch") if isinstance(tool_section, dict) else None
+    )
+    manifests_by_id: dict[str, str] = {}
+    if isinstance(manifest_batch, dict):
+        raw_manifests = manifest_batch.get("manifests")
+        if isinstance(raw_manifests, list):
+            for row in raw_manifests:
+                if not isinstance(row, dict):
+                    continue
+                candidate_id = str(row.get("candidate_id") or "").strip()
+                path = str(row.get("path") or "").strip()
+                if candidate_id and path:
+                    manifests_by_id[candidate_id] = path
+    if "tool_promotion_candidates_ready" in finding_codes and isinstance(
+        ready_candidates, list
+    ):
+        for candidate in [row for row in ready_candidates if isinstance(row, dict)][
+            : max(0, int(max_tool_candidates))
+        ]:
+            candidate_id = str(candidate.get("candidate_id") or "").strip()
+            command = str(candidate.get("command") or "").strip()
+            if not candidate_id or not command:
+                continue
+            manifest_path = manifests_by_id.get(candidate_id, "")
+            description_lines = [
+                "Auto-seeded from Symphony readiness improvement loop.",
+                "",
+                "- area: tooling",
+                "- owner: symphony",
+                "- milestone: TL2",
+                "- priority: P2",
+                "- status: planned",
+                "- source: tools/symphony_readiness_audit.py",
+                "",
+                "Symphony observed a recurring successful action that is ready for explicit promotion.",
+                f"- candidate id: `{candidate_id}`",
+                f"- command: `{command}`",
+                f"- success count: `{int(candidate.get('success_count') or 0)}`",
+            ]
+            if manifest_path:
+                description_lines.append(f"- manifest: `{manifest_path}`")
+            title = f"[P2][TL2] Symphony tool promotion: {_truncate_text(candidate_id, limit=48)}"
+            specs.append(
+                {
+                    "title": title,
+                    "description": "\n".join(description_lines).strip(),
+                    "priority": _linear_priority_value("P2"),
+                    "canonical_key": f"symphony-tool-promotion-{candidate_id}",
+                }
+            )
+    return specs
+
+
+def _sync_improvement_issues(
+    *,
+    report: dict[str, Any],
+    team: str,
+    env_file: Path,
+    project_ref: str | None,
+    apply: bool,
+    max_tool_candidates: int,
+) -> dict[str, Any]:
+    desired_issues = _build_improvement_issue_specs(
+        report,
+        max_tool_candidates=max_tool_candidates,
+    )
+    if not desired_issues:
+        return {
+            "status": "skipped",
+            "reason": "no_desired_issues",
+            "desired_issue_count": 0,
+            "create_count": 0,
+            "update_count": 0,
+            "skip_count": 0,
+            "errors": [],
+            "desired_issues": [],
+        }
+
+    api_key = _resolve_linear_api_key(env_file)  # secret-guard: allow
+    if not api_key:
+        return {
+            "status": "skipped",
+            "reason": "missing_linear_api_key",
+            "desired_issue_count": len(desired_issues),
+            "create_count": 0,
+            "update_count": 0,
+            "skip_count": 0,
+            "errors": [],
+            "desired_issues": desired_issues,
+        }
+
+    try:
+        with _temporary_linear_api_key(api_key):
+            team_id = linear_workspace._resolve_team_id(team)
+            project_id = (
+                linear_workspace._resolve_project_id(team_id, project_ref)
+                if project_ref
+                else None
+            )
+            existing_issues = linear_workspace._fetch_issues(team_id, project_id)
+
+            issues_by_title = {
+                linear_workspace._title_key(str(issue.get("title") or "")): issue
+                for issue in existing_issues
+                if isinstance(issue, dict) and str(issue.get("title") or "").strip()
+            }
+
+            creates: list[dict[str, Any]] = []
+            updates: list[dict[str, Any]] = []
+            skipped: list[dict[str, Any]] = []
+            errors: list[str] = []
+
+            for spec in desired_issues:
+                title = str(spec.get("title") or "").strip()
+                description = str(spec.get("description") or "").strip()
+                priority = spec.get("priority")
+                key = linear_workspace._title_key(title)
+                existing = issues_by_title.get(key)
+                if existing is None:
+                    planned = {
+                        "title": title,
+                        "priority": priority,
+                        "project_ref": project_ref,
+                        "canonical_key": spec.get("canonical_key"),
+                    }
+                    if not apply:
+                        creates.append(planned)
+                        continue
+                    input_payload: dict[str, Any] = {
+                        "teamId": team_id,
+                        "title": title,
+                        "description": description,
+                    }
+                    if isinstance(priority, int):
+                        input_payload["priority"] = priority
+                    if project_id:
+                        input_payload["projectId"] = project_id
+                    try:
+                        data = linear_workspace.graphql(
+                            linear_workspace.MUTATION_ISSUE_CREATE,
+                            {"input": input_payload},
+                        )
+                        result = data["issueCreate"]
+                        if not result.get("success"):
+                            raise RuntimeError("issueCreate returned success=false")
+                        creates.append(result["issue"])
+                    except Exception as exc:
+                        errors.append(f"create:{title}:{exc}")
+                    continue
+
+                existing_description = str(existing.get("description") or "").strip()
+                existing_priority = existing.get("priority")
+                existing_project = existing.get("project")
+                existing_project_id = (
+                    str(existing_project.get("id") or "").strip()
+                    if isinstance(existing_project, dict)
+                    else ""
+                )
+                input_payload: dict[str, Any] = {}
+                if existing_description != description:
+                    input_payload["description"] = description
+                if isinstance(priority, int) and priority != existing_priority:
+                    input_payload["priority"] = priority
+                if project_id and project_id != existing_project_id:
+                    input_payload["projectId"] = project_id
+                if not input_payload:
+                    skipped.append(
+                        {
+                            "issue": str(
+                                existing.get("identifier") or existing.get("id") or ""
+                            ),
+                            "title": title,
+                            "canonical_key": spec.get("canonical_key"),
+                        }
+                    )
+                    continue
+                if not apply:
+                    updates.append(
+                        {
+                            "issue": str(
+                                existing.get("identifier") or existing.get("id") or ""
+                            ),
+                            "title": title,
+                            "fields": sorted(input_payload.keys()),
+                            "canonical_key": spec.get("canonical_key"),
+                        }
+                    )
+                    continue
+                try:
+                    data = linear_workspace.graphql(
+                        linear_workspace.MUTATION_ISSUE_UPDATE,
+                        {"id": str(existing["id"]), "input": input_payload},
+                    )
+                    result = data["issueUpdate"]
+                    if not result.get("success"):
+                        raise RuntimeError("issueUpdate returned success=false")
+                    updates.append(result["issue"])
+                except Exception as exc:
+                    errors.append(f"update:{title}:{exc}")
+    except Exception as exc:
+        return {
+            "status": "error",
+            "reason": "linear_sync_failed",
+            "project_ref": project_ref,
+            "desired_issue_count": len(desired_issues),
+            "create_count": 0,
+            "update_count": 0,
+            "skip_count": 0,
+            "errors": [str(exc)],
+            "desired_issues": desired_issues,
+        }
+
+    return {
+        "status": "applied" if apply else "dry_run",
+        "reason": "ok",
+        "project_ref": project_ref,
+        "desired_issue_count": len(desired_issues),
+        "create_count": len(creates),
+        "update_count": len(updates),
+        "skip_count": len(skipped),
+        "errors": errors,
+        "desired_issues": desired_issues,
+        "creates": creates,
+        "updates": updates,
+        "skipped": skipped,
+    }
+
+
 def _synthesize_next_tranche(report: dict[str, Any]) -> dict[str, Any]:
     findings = report.get("findings") or []
     actionable = [
@@ -1780,6 +2357,52 @@ def _synthesize_next_tranche(report: dict[str, Any]) -> dict[str, Any]:
                 "PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_durable_admin.py summary",
             ],
         },
+        "dlq_backlog_high": {
+            "id": "drain_dlq_backlog",
+            "priority": "P0",
+            "title": "Drain DLQ backlog and replay failed autonomy steps",
+            "why": "Unresolved recursive-loop failures reduce loop closure and compound drift.",
+            "commands": [
+                "PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_dlq.py summary --limit 20",
+                "PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_dlq.py replay --fingerprint <fingerprint> --dry-run",
+            ],
+        },
+        "dlq_backlog_present": {
+            "id": "triage_dlq_backlog",
+            "priority": "P1",
+            "title": "Triage unresolved DLQ failures",
+            "why": "A small unresolved DLQ backlog still blocks deterministic self-repair learning.",
+            "commands": [
+                "PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_dlq.py summary --limit 20",
+            ],
+        },
+        "dlq_recurring_failures": {
+            "id": "stabilize_recurring_dlq_failures",
+            "priority": "P1",
+            "title": "Stabilize recurring DLQ fingerprints",
+            "why": "Recurring unresolved failures indicate a missing repair, retry, or tool abstraction.",
+            "commands": [
+                "PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_dlq.py summary --limit 20",
+            ],
+        },
+        "dlq_replay_health_low": {
+            "id": "repair_dlq_replay_health",
+            "priority": "P1",
+            "title": "Repair DLQ replay health",
+            "why": "Replay attempts are failing more often than succeeding, so the self-repair loop is not compounding yet.",
+            "commands": [
+                "PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_dlq.py summary --limit 20",
+            ],
+        },
+        "tool_promotion_candidates_ready": {
+            "id": "promote_recurring_actions_to_tools",
+            "priority": "P1",
+            "title": "Promote recurring successful actions into explicit tools or hooks",
+            "why": "Repeated successful shell actions should become durable Symphony capabilities.",
+            "commands": [
+                "PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_tool_promotion.py distill --limit 200 --min-success-count 3",
+            ],
+        },
     }
 
     chosen: dict[str, dict[str, Any]] = {}
@@ -1820,6 +2443,22 @@ def _synthesize_next_tranche(report: dict[str, Any]) -> dict[str, Any]:
             str(row.get("title") or ""),
         )
     )
+    replay_command = _dlq_replay_command_for_report(report)
+    if replay_command:
+        for row in actions:
+            action_id = str(row.get("id") or "")
+            if action_id not in {
+                "drain_dlq_backlog",
+                "triage_dlq_backlog",
+                "stabilize_recurring_dlq_failures",
+                "repair_dlq_replay_health",
+            }:
+                continue
+            commands = row.get("commands")
+            if not isinstance(commands, list):
+                continue
+            if replay_command not in commands:
+                commands.append(replay_command)
     return {
         "generated_at": str(report.get("generated_at") or _utc_now()),
         "overall_status": str(report.get("overall_status") or "unknown"),
@@ -1851,6 +2490,13 @@ def _as_markdown(report: dict[str, Any]) -> str:
             code = row.get("code", "uncategorized")
             message = row.get("message", "")
             lines.append(f"- `{severity}` `{code}`: {message}")
+    improvement = report.get("improvement_issue_sync") or {}
+    if isinstance(improvement, dict):
+        lines.extend(["", "## Improvement Issue Sync"])
+        lines.append(f"- Status: `{improvement.get('status', 'unknown')}`")
+        lines.append(f"- Desired issues: `{improvement.get('desired_issue_count', 0)}`")
+        lines.append(f"- Planned creates: `{improvement.get('create_count', 0)}`")
+        lines.append(f"- Planned updates: `{improvement.get('update_count', 0)}`")
     next_tranche = report.get("next_tranche") or {}
     lines.extend(["", "## Next Tranche"])
     actions = next_tranche.get("actions") if isinstance(next_tranche, dict) else None
@@ -2424,6 +3070,9 @@ def run_audit(
     min_active_flow_ratio: float = DEFAULT_MIN_ACTIVE_FLOW_RATIO,
     min_formal_pass_ratio: float = DEFAULT_MIN_FORMAL_PASS_RATIO,
     max_durable_growth_ratio: float = DEFAULT_DURABLE_GROWTH_WARN_RATIO,
+    sync_improvement_issues: bool = False,
+    improvement_issue_project: str | None = None,
+    improvement_issue_limit: int = 3,
 ) -> dict[str, Any]:
     path_env = _runtime_env(env_file)
     api_key = _resolve_linear_api_key(env_file)  # secret-guard: allow
@@ -2442,10 +3091,15 @@ def run_audit(
             "dspy_routing": _audit_dspy_routing(env_file),
             "launchd": _audit_launchd(),
             "durable_memory": _audit_durable_memory(durable_root),
+            "dlq_health": _audit_dlq_health(symphony_dlq_events_file(path_env)),
             "manifest_index": _audit_manifest_index(index_path),
             "linear_workspace": linear_workspace_section,
             "linear_cli_compat": linear_cli_compat_section,
             "formal_suite": _audit_formal_suite(repo_root, formal_suite_mode),
+            "tool_promotion": _audit_tool_promotion(
+                events_path=symphony_tool_promotion_events_file(path_env),
+                distillations_dir=symphony_tool_promotion_distillations_dir(path_env),
+            ),
         },
     }
     history_dir = symphony_readiness_dir(path_env) / "history"
@@ -2483,6 +3137,14 @@ def run_audit(
         "max_durable_growth_ratio": max_durable_growth_ratio,
     }
     report["next_tranche"] = _synthesize_next_tranche(report)
+    report["improvement_issue_sync"] = _sync_improvement_issues(
+        report=report,
+        team=team,
+        env_file=env_file,
+        project_ref=improvement_issue_project,
+        apply=bool(sync_improvement_issues),
+        max_tool_candidates=max(0, int(improvement_issue_limit)),
+    )
     return report
 
 
@@ -2602,6 +3264,28 @@ def build_parser() -> argparse.ArgumentParser:
             "(example: MOL-211)."
         ),
     )
+    parser.add_argument(
+        "--sync-improvement-issues",
+        action="store_true",
+        help=(
+            "Create/update improvement issues for DLQ backlog and tool-promotion candidates. "
+            "Without this flag, readiness emits only a dry-run sync plan."
+        ),
+    )
+    parser.add_argument(
+        "--improvement-issue-project",
+        default=None,
+        help=(
+            "Optional Linear project ref (name, slugId, or id) used when syncing "
+            "improvement issues."
+        ),
+    )
+    parser.add_argument(
+        "--improvement-issue-limit",
+        type=int,
+        default=3,
+        help="Maximum number of tool-promotion candidate issues to plan/sync.",
+    )
     return parser
 
 
@@ -2627,6 +3311,13 @@ def main(argv: list[str] | None = None) -> int:
         min_active_flow_ratio=max(0.0, min(1.0, float(args.min_active_flow_ratio))),
         min_formal_pass_ratio=max(0.0, min(1.0, float(args.min_formal_pass_ratio))),
         max_durable_growth_ratio=max(0.0, float(args.max_durable_growth_ratio)),
+        sync_improvement_issues=bool(args.sync_improvement_issues),
+        improvement_issue_project=(
+            str(args.improvement_issue_project).strip()
+            if args.improvement_issue_project
+            else None
+        ),
+        improvement_issue_limit=max(0, int(args.improvement_issue_limit)),
     )
 
     runtime_env = _runtime_env(env_file)

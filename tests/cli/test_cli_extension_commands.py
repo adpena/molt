@@ -230,7 +230,7 @@ def _write_extension_numpy_batch_project(project_root: Path) -> None:
                 "    NPY_SEARCHSIDE side = NPY_SEARCHLEFT;",
                 "    NPY_CLIPMODE clipmode = NPY_CLIP;",
                 "    char byteorder = '=';",
-                "    PyObject *capsule = PyCapsule_New((void *)data, \"demo.capsule\", NULL);",
+                '    PyObject *capsule = PyCapsule_New((void *)data, "demo.capsule", NULL);',
                 "    PyObject *tuple_obj = NULL;",
                 "    PyObject *handler = NULL;",
                 "    PyObject *descr_copy = NULL;",
@@ -264,7 +264,7 @@ def _write_extension_numpy_batch_project(project_root: Path) -> None:
                 "    (void)PyArray_SortkindConverter(PyLong_FromLong(NPY_QUICKSORT), &sortkind);",
                 "    (void)PyArray_SearchsideConverter(PyLong_FromLong(NPY_SEARCHLEFT), &side);",
                 "    (void)PyArray_ClipmodeConverter(PyLong_FromLong(NPY_CLIP), &clipmode);",
-                "    (void)PyArray_ByteorderConverter(PyUnicode_FromString(\"<\"), &byteorder);",
+                '    (void)PyArray_ByteorderConverter(PyUnicode_FromString("<"), &byteorder);',
                 "    PyArray_ENABLEFLAGS(&arr_storage, NPY_ARRAY_WRITEABLE);",
                 "    (void)PyArray_CHKFLAGS(&arr_storage, NPY_ARRAY_WRITEABLE);",
                 "    PyArray_CLEARFLAGS(&arr_storage, NPY_ARRAY_WRITEBACKIFCOPY);",
@@ -292,7 +292,7 @@ def _write_extension_numpy_batch_project(project_root: Path) -> None:
                 "    (void)PyErr_Print;",
                 "    (void)PyUFunc_API;",
                 "    (void)PyUFunc_ImportUFuncAPI();",
-                "    ufunc_obj = PyUFunc_FromFuncAndData(NULL, NULL, NULL, 0, 1, 1, PyUFunc_None, \"demo\", NULL, 0);",
+                '    ufunc_obj = PyUFunc_FromFuncAndData(NULL, NULL, NULL, 0, 1, 1, PyUFunc_None, "demo", NULL, 0);',
                 "    (void)PyUFunc_RegisterLoopForType(ufunc_obj, NPY_INT, NULL, NULL, NULL);",
                 "    (void)PyArrayMethod_GetLoop(NULL, NULL, 0, 0, NULL, NULL, NULL);",
                 "    (void)PyArrayMethod_ResolveDescriptors(NULL, NULL, NULL, NULL, NULL);",
@@ -457,9 +457,7 @@ def test_extension_scan_supports_directory_sources(tmp_path: Path, capsys) -> No
     assert data["coverage_ratio"] < 1.0
 
 
-def test_extension_scan_supports_tar_archive_sources(
-    tmp_path: Path, capsys
-) -> None:
+def test_extension_scan_supports_tar_archive_sources(tmp_path: Path, capsys) -> None:
     archive_path = tmp_path / "demoext.tar.gz"
     archive_source = tmp_path / "demoext.c"
     archive_source.write_text(
@@ -496,9 +494,7 @@ def test_extension_scan_supports_tar_archive_sources(
     assert archive_label in data["required_by_file"]
 
 
-def test_extension_scan_supports_zip_archive_sources(
-    tmp_path: Path, capsys
-) -> None:
+def test_extension_scan_supports_zip_archive_sources(tmp_path: Path, capsys) -> None:
     archive_path = tmp_path / "demoext.zip"
     source_text = "\n".join(
         [
@@ -696,6 +692,8 @@ def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -
 
     monkeypatch.setattr(cli, "_ensure_runtime_lib", fake_ensure_runtime_lib)
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli, "_detect_macos_arch", lambda _obj: None)
+    monkeypatch.setattr(cli, "_detect_macos_deployment_target", lambda: None)
 
     out_dir = project_root / "dist"
     rc = cli.extension_build(
@@ -745,6 +743,9 @@ def test_extension_build_cross_target_uses_target_runtime(
         del json_output, cargo_profile, project_root, cargo_timeout
         seen["runtime_target"] = target_triple
         seen["runtime_lib"] = runtime_lib
+        seen["hosted_extension_env"] = cli.os.environ.get(
+            "MOLT_RUNTIME_HOSTED_EXTENSION"
+        )
         runtime_lib.parent.mkdir(parents=True, exist_ok=True)
         runtime_lib.write_bytes(b"runtime")
         return True
@@ -788,6 +789,7 @@ def test_extension_build_cross_target_uses_target_runtime(
     )
     assert rc == 0
     assert seen["runtime_target"] == target
+    assert seen["hosted_extension_env"] == "1"
     runtime_lib = seen["runtime_lib"]
     assert isinstance(runtime_lib, Path)
     assert f"/{target}/" in runtime_lib.as_posix()
@@ -795,8 +797,81 @@ def test_extension_build_cross_target_uses_target_runtime(
         cmd[:2] == ["zig", "cc"] and "-target" in cmd and "-c" in cmd
         for cmd in commands
     )
+    link_command = next(cmd for cmd in commands if "-shared" in cmd)
+    assert "-lstdc++" in link_command
+    assert "-lm" in link_command
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
     assert manifest["target_triple"] == target
+
+
+def test_extension_build_native_darwin_link_matches_runtime_binary_flags(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "extproj"
+    project_root.mkdir()
+    _write_extension_project(project_root)
+    commands: list[list[str]] = []
+
+    def fake_ensure_runtime_lib(
+        runtime_lib: Path,
+        target_triple: str | None,
+        json_output: bool,
+        cargo_profile: str,
+        project_root: Path,
+        cargo_timeout: float | None,
+    ) -> bool:
+        del target_triple, json_output, cargo_profile, project_root, cargo_timeout
+        runtime_lib.parent.mkdir(parents=True, exist_ok=True)
+        runtime_lib.write_bytes(b"runtime")
+        return True
+
+    def fake_run(
+        cmd: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        capture_output: bool,
+        text: bool,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, env, capture_output, text, check
+        commands.append(cmd)
+        out_index = cmd.index("-o")
+        out_path = Path(cmd[out_index + 1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if "-c" in cmd:
+            out_path.write_bytes(b"obj")
+        else:
+            out_path.write_bytes(b"shared")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli, "_ensure_runtime_lib", fake_ensure_runtime_lib)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli.sys, "platform", "darwin")
+    monkeypatch.setattr(cli.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(cli, "_detect_macos_arch", lambda _obj: "arm64")
+    monkeypatch.setattr(cli, "_detect_macos_deployment_target", lambda: "15.0")
+    monkeypatch.setenv("CC", "clang -arch x86_64")
+
+    out_dir = project_root / "dist"
+    rc = cli.extension_build(
+        project=str(project_root),
+        out_dir=str(out_dir),
+        deterministic=False,
+        json_output=False,
+        verbose=False,
+    )
+    assert rc == 0
+
+    link_command = next(cmd for cmd in commands if "-shared" in cmd)
+    assert "-lc++" in link_command
+    assert cli._link_args_has_framework(link_command, "Security")
+    assert cli._link_args_has_framework(link_command, "CoreFoundation")
+    assert link_command.count("-arch") == 1
+    arch_index = link_command.index("-arch")
+    assert link_command[arch_index + 1] == "arm64"
+    assert "x86_64" not in link_command
+    assert "-mmacosx-version-min=15.0" in link_command
 
 
 def test_extension_build_rejects_wasm_target(tmp_path: Path) -> None:
@@ -863,6 +938,8 @@ def test_extension_numpy_build_audit_publish_dry_run_matrix(
 
     monkeypatch.setattr(cli, "_ensure_runtime_lib", fake_ensure_runtime_lib)
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli, "_detect_macos_arch", lambda _obj: None)
+    monkeypatch.setattr(cli, "_detect_macos_deployment_target", lambda: None)
 
     if target is not None:
         monkeypatch.setattr(
@@ -1368,7 +1445,7 @@ def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
                 "    PyUFuncGenericFunction generic_fn = NULL;",
                 "    PyTypeObject *ufunc_type = &PyUFunc_Type;",
                 "    int ufunc_none = PyUFunc_None;",
-                "    int fp_errors = PyUFunc_GiveFloatingpointErrors(\"numpy_smoke\", 0);",
+                '    int fp_errors = PyUFunc_GiveFloatingpointErrors("numpy_smoke", 0);',
                 "    (void)PyArray_ClearBuffer;",
                 "    (void)PyArray_AddCastingImplementation_FromSpec;",
                 "    (void)PyArrayMethod_FromSpec_int;",
@@ -1393,9 +1470,9 @@ def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
                 "    Py_ssize_t number_ssize = PyNumber_AsSsize_t(PyLong_FromLong(3), NULL);",
                 "    double huge_val = Py_HUGE_VAL;",
                 "    Py_ssize_t tuple_size_macro = Py_SIZE((PyObject *)&tuple_obj);",
-                "    PyObject *unicode_concat = PyUnicode_Concat(PyUnicode_FromString(\"a\"), PyUnicode_FromString(\"b\"));",
-                "    int unicode_cmp = PyUnicode_Compare(PyUnicode_FromString(\"a\"), PyUnicode_FromString(\"b\"));",
-                "    Py_ssize_t unicode_len = PyUnicode_GET_LENGTH(PyUnicode_FromString(\"abc\"));",
+                '    PyObject *unicode_concat = PyUnicode_Concat(PyUnicode_FromString("a"), PyUnicode_FromString("b"));',
+                '    int unicode_cmp = PyUnicode_Compare(PyUnicode_FromString("a"), PyUnicode_FromString("b"));',
+                '    Py_ssize_t unicode_len = PyUnicode_GET_LENGTH(PyUnicode_FromString("abc"));',
                 "    int unicode_space = Py_UNICODE_ISSPACE(' ');",
                 "    char endian = '=';",
                 "    int byteorder_ok = PyArray_ByteorderConverter(Py_None, &endian);",
@@ -1665,7 +1742,7 @@ def test_numpy_header_arrayobject_batch_smoke(tmp_path: Path) -> None:
                 "    NPY_SEARCHSIDE side = NPY_SEARCHLEFT;",
                 "    NPY_CLIPMODE clipmode = NPY_CLIP;",
                 "    char byteorder = '=';",
-                "    PyObject *capsule = PyCapsule_New((void *)data, \"demo.capsule\", NULL);",
+                '    PyObject *capsule = PyCapsule_New((void *)data, "demo.capsule", NULL);',
                 "    PyObject *shape = PyTuple_Pack(2, PyLong_FromLong(2), PyLong_FromLong(3));",
                 "    PyUFuncGenericFunction fn = PyUFunc_O_O;",
                 "    (void)fn;",
@@ -1688,7 +1765,7 @@ def test_numpy_header_arrayobject_batch_smoke(tmp_path: Path) -> None:
                 "    (void)PyArray_SortkindConverter(PyLong_FromLong(NPY_QUICKSORT), &sortkind);",
                 "    (void)PyArray_SearchsideConverter(PyLong_FromLong(NPY_SEARCHLEFT), &side);",
                 "    (void)PyArray_ClipmodeConverter(PyLong_FromLong(NPY_CLIP), &clipmode);",
-                "    (void)PyArray_ByteorderConverter(PyUnicode_FromString(\"<\"), &byteorder);",
+                '    (void)PyArray_ByteorderConverter(PyUnicode_FromString("<"), &byteorder);',
                 "    (void)PyArray_CopyInto(&arr, &arr);",
                 "    (void)PyArray_SetBaseObject(&arr, Py_None);",
                 "    (void)PyDataType_ELSIZE(&descr);",
@@ -1699,7 +1776,7 @@ def test_numpy_header_arrayobject_batch_smoke(tmp_path: Path) -> None:
                 "    (void)PyCapsule_SetContext(capsule, data);",
                 "    (void)PyCapsule_GetContext(capsule);",
                 "    (void)PyUFunc_ImportUFuncAPI();",
-                "    (void)PyUFunc_FromFuncAndData(NULL, NULL, NULL, 0, 1, 1, PyUFunc_None, \"demo\", NULL, 0);",
+                '    (void)PyUFunc_FromFuncAndData(NULL, NULL, NULL, 0, 1, 1, PyUFunc_None, "demo", NULL, 0);',
                 "    (void)PyUFunc_RegisterLoopForType(Py_None, NPY_INT, fn, NULL, NULL);",
                 "    (void)PyArrayMethod_GetLoop(NULL, NULL, 0, 0, NULL, NULL, NULL);",
                 "    (void)PyArrayMethod_ResolveDescriptors(NULL, NULL, NULL, NULL, NULL);",

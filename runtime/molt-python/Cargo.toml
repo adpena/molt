@@ -1,0 +1,32 @@
+[package]
+name = "molt-python"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "Public Rust entrypoint and release-coordinate helpers for the Molt compiler project."
+readme = "README.md"
+homepage = "https://github.com/adpena/molt"
+repository = "https://github.com/adpena/molt"
+documentation = "https://docs.rs/molt-python"
+keywords = ["python", "compiler", "wasm", "cloudflare", "aot"]
+categories = ["compilers", "wasm"]
+
+[features]
+default = ["backend", "runtime"]
+backend = ["dep:molt-backend"]
+db = ["dep:molt-db"]
+db-async = ["db", "molt-db/async"]
+db-postgres = ["db", "molt-db/postgres"]
+db-sqlite = ["db", "molt-db/sqlite"]
+obj-model = ["dep:molt-obj-model"]
+runtime = ["dep:molt-runtime"]
+
+[dependencies]
+molt-backend = { path = "../molt-backend", version = "0.1.0", optional = true }
+molt-db = { path = "../molt-db", version = "0.1.0", optional = true }
+molt-obj-model = { path = "../molt-obj-model", version = "0.1.0", optional = true }
+molt-runtime = { path = "../molt-runtime", version = "0.1.0", optional = true }
+
+[package.metadata.docs.rs]
+all-features = true
