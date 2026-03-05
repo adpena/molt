@@ -627,7 +627,6 @@ def _run_cycle(
                     phase="next_tranche",
                 )
             )
-
     taste_row = _record_taste_memory(
         store=taste_memory,
         cycle_name=cycle_name,
@@ -637,9 +636,7 @@ def _run_cycle(
         executed_commands=executed_commands,
         steps=steps,
     )
-    distillation = taste_memory.distill_recent(
-        limit=max(int(args.taste_memory_limit), 20)
-    )
+    distillation = taste_memory.distill_recent(limit=max(int(args.taste_memory_limit), 20))
     cycle_hook = hook_runner.run(
         event="after_cycle",
         payload={
