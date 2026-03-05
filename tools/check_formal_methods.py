@@ -87,15 +87,8 @@ EXPECTED_QUINT_FILES = [
 QUINT_MODELS = [
     ("molt_build_determinism.qnt", "Inv"),
     ("molt_runtime_determinism.qnt", "Inv"),
-    ("molt_midend_pipeline.qnt", "Inv"),
+    ("molt_midend_pipeline.qnt", "inv"),
 ]
-
-QUINT_RUNTIME_MISMATCH_PATTERNS = (
-    "ReferenceError: require is not defined in ES module scope",
-    "Error [ERR_REQUIRE_ESM]",
-    "Node.js v",
-)
-
 
 def _safe_run(
     cmd: list[str],
@@ -114,7 +107,12 @@ def _safe_run(
 
 
 def _detect_runtime_mismatch(output: str) -> bool:
-    return all(pattern in output for pattern in QUINT_RUNTIME_MISMATCH_PATTERNS)
+    has_node = "Node.js v" in output
+    has_esm_mismatch = (
+        "require is not defined in ES module scope" in output
+        or "ERR_REQUIRE_ESM" in output
+    )
+    return has_node and has_esm_mismatch
 
 
 def _parse_node_major(version_text: str) -> int | None:
