@@ -11,13 +11,29 @@ _REDACT_VALUE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(?:ghp|github_pat)_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b"),
 )
-_REDACT_SENSITIVE_KEYS = (
-    "token",
-    "api_key",
-    "apikey",
-    "secret",
-    "password",
-    "authorization",
+_REDACT_SENSITIVE_KEYS_EXACT = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "authorization",
+        "password",
+        "secret",
+        "api_token",
+        "auth_token",
+        "access_token",
+        "refresh_token",
+        "bearer_token",
+        "session_token",
+    }
+)
+_REDACT_SENSITIVE_SUFFIXES = (
+    "_api_key",
+    "_secret",
+    "_password",
+    "_auth_token",
+    "_access_token",
+    "_refresh_token",
+    "_bearer_token",
 )
 
 
@@ -46,7 +62,7 @@ def _redact_value(value: Any, *, depth: int) -> Any:
         for raw_key, raw_value in value.items():
             key = str(raw_key)
             key_norm = key.strip().lower()
-            if any(marker in key_norm for marker in _REDACT_SENSITIVE_KEYS):
+            if _is_sensitive_key(key_norm):
                 redacted[key] = "<redacted>"
                 continue
             redacted[key] = _redact_value(raw_value, depth=depth + 1)
@@ -61,6 +77,12 @@ def _redact_value(value: Any, *, depth: int) -> Any:
             redacted = pattern.sub("<redacted>", redacted)
         return redacted
     return value
+
+
+def _is_sensitive_key(key_norm: str) -> bool:
+    if key_norm in _REDACT_SENSITIVE_KEYS_EXACT:
+        return True
+    return key_norm.endswith(_REDACT_SENSITIVE_SUFFIXES)
 
 
 def load_security_events_summary(path: Path, *, max_lines: int) -> dict[str, Any]:

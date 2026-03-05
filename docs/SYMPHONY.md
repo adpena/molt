@@ -225,6 +225,10 @@ auto-detects Homebrew OpenJDK and sets `JAVA_HOME` when possible; if needed:
 export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
 ```
 
+Bootstrap/runtime also seed `MOLT_APALACHE_WORK_DIR` (default:
+`/Volumes/APDataStore/Molt/tmp/apalache`) so Quint/Apalache `_apalache-out`
+artifacts stay off the repo root.
+
 ### Linear Hygiene + Swarm Routing
 
 Run the full Linear hygiene pass (manifest title repair, seeded metadata backfill,

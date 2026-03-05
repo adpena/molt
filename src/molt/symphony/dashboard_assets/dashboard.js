@@ -67,6 +67,8 @@
       let durableMemoryState = {};
       let durablePollTimer = null;
       let durableFetchInFlight = false;
+      let traceFetchInFlight = false;
+      let streamStatusState = { message: "", mode: "" };
       let streamIntervalMs = 1000;
       let fallbackPollIntervalMs = 2500;
       let staleAfterMs = 7000;
@@ -525,7 +527,6 @@
               <article
                 class="agent-pane"
                 data-pane-id="${escapeHtml(pane.paneId)}"
-                data-agent-issue="${escapeHtml(pane.issueId || "")}"
                 draggable="${workspaceLayout === "grid"}"
               >
                 <div class="agent-pane-head">
@@ -625,6 +626,14 @@
       }
 
       function setStreamStatus(message, mode = "") {
+        const next = { message: String(message || ""), mode: String(mode || "") };
+        if (
+          next.message === streamStatusState.message &&
+          next.mode === streamStatusState.mode
+        ) {
+          return;
+        }
+        streamStatusState = next;
         streamChip.textContent = message;
         streamChip.className = "status-chip";
         if (mode === "live") streamChip.classList.add("live");
@@ -1407,6 +1416,7 @@
         const runtime = toObject(state.runtime);
         const status = describeRateLimitState(state);
         const cadence = status.cadence;
+        const policy = toObject(runtime.rate_limit_policy);
         const summaryHtml = `
           <div class="attention-item">
             <div class="head">
@@ -1424,6 +1434,11 @@
             </div>
             <div class="hint">
               Max concurrent agents: ${formatNumber(runtime.max_concurrent_agents || 0)}
+            </div>
+            <div class="hint">
+              Retry policy: default resume ${formatNumber(policy.default_resume_seconds || 0)}s ·
+              auth resume ${formatNumber(policy.auth_resume_seconds || 0)}s ·
+              max backoff ${formatNumber(policy.max_retry_backoff_ms || 0)}ms
             </div>
             <div class="hint">
               Transport: requested=${escapeHtml(requestedTransport)} · active=${escapeHtml(activeTransport)} ·
@@ -1776,8 +1791,8 @@
               message: payload.message || `retry_now_failed:${resp.status}`,
               at: new Date().toISOString(),
             });
-            renderState(latestState);
-            throw new Error(`retry_now_failed:${resp.status}`);
+            setStreamStatus("Retry-now action failed", "warn");
+            return;
           }
           localActionStatus.set(issueIdentifier, {
             status: payload.status || "queued",
@@ -1785,12 +1800,14 @@
             at: new Date().toISOString(),
           });
           setStreamStatus("Retry request queued", "live");
-          await fetchState();
         } catch (_err) {
           setStreamStatus("Retry-now action failed", "warn");
         } finally {
           pendingRetries.delete(issueIdentifier);
           renderState(latestState);
+          await fetchState().catch(() => {
+            // keep UI responsive even if a state refresh races with transport reconnects
+          });
         }
       }
 
@@ -1847,7 +1864,7 @@
 
       function stopTracePolling() {
         if (tracePollTimer) {
-          clearInterval(tracePollTimer);
+          clearTimeout(tracePollTimer);
           tracePollTimer = null;
         }
       }
@@ -1979,6 +1996,8 @@
 
       async function fetchTraceIssue() {
         if (!traceIssueIdentifier) return;
+        if (traceFetchInFlight) return;
+        traceFetchInFlight = true;
         const expectedIssue = traceIssueIdentifier;
         const serial = ++traceFetchSerial;
         try {
@@ -2007,6 +2026,12 @@
           traceSummary.innerHTML =
             '<div class="empty">Trace metadata fetch failed.</div>';
           traceEvents.innerHTML = '<div class="empty">Trace fetch failed.</div>';
+        } finally {
+          traceFetchInFlight = false;
+          if (traceIssueIdentifier === expectedIssue) {
+            stopTracePolling();
+            tracePollTimer = setTimeout(fetchTraceIssue, 1200);
+          }
         }
       }
 
@@ -2019,9 +2044,8 @@
         traceSubtitle.textContent = `${issue} · loading`;
         traceSummary.innerHTML = '<div class="empty">Loading trace summary...</div>';
         traceEvents.innerHTML = '<div class="empty">Loading live trace...</div>';
-        fetchTraceIssue();
         stopTracePolling();
-        tracePollTimer = setInterval(fetchTraceIssue, 1200);
+        fetchTraceIssue();
       }
 
       function startPollingFallback(forceRestart = false) {
@@ -2207,7 +2231,7 @@
       document.addEventListener("click", (event) => {
         const target = event.target;
         if (!(target instanceof Element)) return;
-        const agentRef = target.closest("[data-agent-issue]");
+        const agentRef = target.closest(".agent-ref[data-agent-issue]");
         if (!agentRef) return;
         const issueIdentifier = String(agentRef.getAttribute("data-agent-issue") || "").trim();
         if (!issueIdentifier) return;

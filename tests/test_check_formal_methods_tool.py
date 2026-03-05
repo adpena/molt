@@ -24,9 +24,7 @@ def test_detect_missing_java_runtime_signature() -> None:
     assert check_formal_methods._detect_missing_java_runtime(output) is True
 
 
-def test_resolve_java_home_prefers_java_home_env(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_resolve_java_home_prefers_java_home_env(monkeypatch, tmp_path: Path) -> None:
     java_home = tmp_path / "jdk"
     java_bin = java_home / "bin"
     java_bin.mkdir(parents=True)
@@ -36,6 +34,14 @@ def test_resolve_java_home_prefers_java_home_env(
     monkeypatch.setenv("MOLT_JAVA_HOME", "")
 
     assert check_formal_methods._resolve_java_home() == str(java_home)
+
+
+def test_resolve_apalache_work_dir_prefers_env(monkeypatch, tmp_path: Path) -> None:
+    work_dir = tmp_path / "apalache-work"
+    monkeypatch.setenv("MOLT_APALACHE_WORK_DIR", str(work_dir))
+    resolved = check_formal_methods._resolve_apalache_work_dir()
+    assert resolved == work_dir.resolve()
+    assert resolved.exists()
 
 
 def test_resolve_quint_fallback_prefix_prefers_env(
