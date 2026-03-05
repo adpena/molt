@@ -396,6 +396,66 @@ def test_extension_scan_supports_zip_archive_sources(
     assert data["coverage_ratio"] == 1.0
 
 
+def test_extension_scan_ignores_locally_defined_py_symbols(
+    tmp_path: Path, capsys
+) -> None:
+    project_root = tmp_path / "scanproj_local_defs"
+    src_dir = project_root / "src"
+    src_dir.mkdir(parents=True)
+    source_path = src_dir / "demoext.c"
+    source_path.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#define PyLocalMacro(x) (x)",
+                "static int PyLocalHelper(PyObject *obj) {",
+                "    (void)obj;",
+                "    return 0;",
+                "}",
+                "int demo(void) {",
+                "    (void)PyLocalMacro;",
+                "    (void)PyLocalHelper;",
+                "    (void)PyObject_Vectorcall;",
+                "    return 0;",
+                "}",
+                "",
+            ]
+        )
+    )
+    (project_root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "scan-local-defs"',
+                'version = "0.1.0"',
+                "",
+                "[tool.molt.extension]",
+                'module = "demoext"',
+                'sources = ["src/demoext.c"]',
+                'capabilities = ["fs.read"]',
+                'molt_c_api_version = "1"',
+                "",
+            ]
+        )
+    )
+
+    rc = cli.extension_scan(
+        project=str(project_root),
+        fail_on_missing=True,
+        json_output=True,
+        verbose=False,
+    )
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    data = payload["data"]
+    assert "PyObject_Vectorcall" in data["missing_symbols"]
+    assert "PyLocalMacro" not in data["missing_symbols"]
+    assert "PyLocalHelper" not in data["missing_symbols"]
+    local_defs = data["locally_defined_by_file"][str(source_path)]
+    assert "PyLocalMacro" in local_defs
+    assert "PyLocalHelper" in local_defs
+
+
 def test_extension_scan_numpy_surface_symbols_supported(tmp_path: Path, capsys) -> None:
     project_root = tmp_path / "numpy_scanproj"
     project_root.mkdir()
@@ -1021,9 +1081,18 @@ def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
                 "    PyArray_Descr *scalar_descr = PyArray_DescrFromScalar(obj);",
                 "    npy_intp nd = PyArray_NDIM(arr);",
                 "    npy_intp size = PyArray_SIZE(arr);",
+                "    npy_intp mult = PyArray_MultiplyList(PyArray_DIMS(arr), PyArray_NDIM(arr));",
                 "    int is_int = PyTypeNum_ISINTEGER(PyArray_TYPE(arr));",
                 "    int is_scalar = PyArray_CheckScalar(obj);",
                 "    int is_datetime = PyArray_ISDATETIME(arr);",
+                "    int eq = PyArray_EquivTypes(descr, scalar_descr);",
+                "    PyArray_Dims dims_out = {0};",
+                "    int conv = PyArray_IntpConverter(obj, &dims_out);",
+                "    PyArrayObject *copied = PyArray_NewCopy(arr, 0);",
+                "    PyArray_DTypeMeta *long_dtype = PyArray_PyLongDType;",
+                "    PyArray_DTypeMeta *string_dtype = PyArray_StringDType;",
+                "    npy_intp *shape = PyArray_SHAPE(arr);",
+                "    int fp_errors = PyUFunc_GiveFloatingpointErrors(\"numpy_smoke\", 0);",
                 "    import_array1(-1);",
                 "    if (descr != NULL) {",
                 "        PyMem_Free(descr);",
@@ -1031,6 +1100,14 @@ def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
                 "    if (scalar_descr != NULL) {",
                 "        PyMem_Free(scalar_descr);",
                 "    }",
+                "    (void)mult;",
+                "    (void)eq;",
+                "    (void)conv;",
+                "    (void)copied;",
+                "    (void)long_dtype;",
+                "    (void)string_dtype;",
+                "    (void)shape;",
+                "    (void)fp_errors;",
                 "    return (int)(nd + size + is_int + is_scalar + is_datetime);",
                 "}",
                 "",
