@@ -106,6 +106,29 @@ typedef int (PyArrayMethod_PromoterFunction)(
     PyArray_DTypeMeta *new_op_dtypes[]
 );
 
+typedef int (PyArrayMethod_GetReductionInitial)(
+    PyArrayMethod_Context *context,
+    npy_bool reduction_is_empty,
+    void *initial
+);
+
+typedef int (PyArrayMethod_TranslateGivenDescriptors)(
+    int nin,
+    int nout,
+    PyArray_DTypeMeta *const wrapped_dtypes[],
+    PyArray_Descr *const given_descrs[],
+    PyArray_Descr *new_descrs[]
+);
+
+typedef int (PyArrayMethod_TranslateLoopDescriptors)(
+    int nin,
+    int nout,
+    PyArray_DTypeMeta *const new_dtypes[],
+    PyArray_Descr *const given_descrs[],
+    PyArray_Descr *original_descrs[],
+    PyArray_Descr *loop_descrs[]
+);
+
 typedef struct {
     int flags;
 } PyArrayMethod_SortParameters;
