@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import base64
 import hashlib
 import sys
@@ -33,31 +32,40 @@ def _run_stdio() -> int:
     return 0
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Hash Symphony state payload bytes into weak ETags. "
-            "Supports one-shot and stdio streaming modes."
-        )
-    )
-    parser.add_argument(
-        "--payload-b64",
-        default="",
-        help="One-shot input payload bytes as base64.",
-    )
-    parser.add_argument(
-        "--stdio",
-        action="store_true",
-        help="Run in streaming mode: one base64 payload per stdin line.",
-    )
-    return parser
+def _parse_args(argv: list[str]) -> tuple[bool, str]:
+    stdio = False
+    payload_b64 = ""
+    idx = 0
+    while idx < len(argv):
+        arg = str(argv[idx])
+        if arg == "--stdio":
+            stdio = True
+            idx += 1
+            continue
+        if arg == "--payload-b64":
+            if idx + 1 >= len(argv):
+                return False, ""
+            payload_b64 = str(argv[idx + 1])
+            idx += 2
+            continue
+        if arg.startswith("--payload-b64="):
+            payload_b64 = arg.split("=", 1)[1]
+            idx += 1
+            continue
+        # Unknown flags are treated as invalid input.
+        return False, ""
+    return stdio, payload_b64
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
-    if bool(args.stdio):
+    args = list(argv or [])
+    parsed = _parse_args(args)
+    if parsed == (False, "") and args:
+        return 2
+    stdio, payload_b64 = parsed
+    if stdio:
         return _run_stdio()
-    payload = _decode_payload(str(args.payload_b64 or ""))
+    payload = _decode_payload(payload_b64)
     if payload is None:
         return 2
     sys.stdout.write(_etag_for_payload(payload))
