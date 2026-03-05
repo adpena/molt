@@ -9716,6 +9716,98 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return True
         return False
 
+    def _identify_carry_candidates(
+        self, assigned: set[str], exclude: set[str] | None = None
+    ) -> set[str]:
+        """Identify int-typed locals eligible for loop-carried block params."""
+        if not self._hints_enabled() or self.type_hint_policy != "trust":
+            return set()
+        candidates: set[str] = set()
+        closure_captured = getattr(self, "closure_locals", set())
+        for name in sorted(assigned):
+            if exclude and name in exclude:
+                continue
+            if name in self.global_decls or name in self.nonlocal_decls:
+                continue
+            if name in self.free_vars or name in closure_captured:
+                continue
+            if name in self.del_targets:
+                continue
+            hint = self.explicit_type_hints.get(name)
+            if hint == "int":
+                candidates.add(name)
+        return candidates
+
+    def _emit_counted_while_with_carry(
+        self,
+        index_name: str,
+        bound: int | MoltValue,
+        body: list[ast.stmt],
+        carry_vars: set[str],
+    ) -> None:
+        """Counted while loop with loop-carried block params for int locals."""
+        if not carry_vars:
+            self._emit_counted_while(index_name, bound, body)
+            return
+        start = self._load_local_value(index_name)
+        if start is None:
+            start = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=start))
+        one = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[1], result=one))
+        if isinstance(bound, MoltValue):
+            stop = bound
+        else:
+            stop = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[bound], result=stop))
+        guard_map = self._emit_hoisted_loop_guards(body)
+        self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+        idx = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
+        # Emit carry inits for int-typed loop-carried variables AFTER LOOP_INDEX_START
+        prev_carry = set(self.loop_carry_vars)
+        saved_cells: dict[str, MoltValue] = {}
+        for name in sorted(carry_vars):
+            # Read current value from boxed cell (if boxed), then unbox for carry
+            init_val = self._load_local_value(name)
+            if init_val is None:
+                init_val = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[0], result=init_val))
+            # Remove from boxed_locals so _store/_load use SSA path during loop
+            if name in self.boxed_locals:
+                saved_cells[name] = self.boxed_locals.pop(name)
+            carry_out = MoltValue(f"__carry_{name}", type_hint="int")
+            self.emit(MoltOp(kind="LOOP_CARRY_INIT", args=[init_val], result=carry_out))
+            self.locals[name] = carry_out
+            self.loop_carry_vars.add(name)
+        cond = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
+        self.emit(
+            MoltOp(kind="LOOP_BREAK_IF_FALSE", args=[cond], result=MoltValue("none"))
+        )
+        self._store_local_value(index_name, idx)
+        self._visit_loop_body(body, guard_map)
+        next_idx = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="ADD", args=[idx, one], result=next_idx))
+        self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
+        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+        self.loop_carry_vars = prev_carry
+        # Restore boxed cells and write final carry values back
+        for name, cell in saved_cells.items():
+            self.boxed_locals[name] = cell
+            final_val = self.locals.get(name)
+            if final_val is not None:
+                idx_var = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[0], result=idx_var))
+                self.emit(
+                    MoltOp(
+                        kind="STORE_INDEX",
+                        args=[cell, idx_var, final_val],
+                        result=MoltValue("none"),
+                    )
+                )
+
     def _emit_counted_while(
         self, index_name: str, bound: int | MoltValue, body: list[ast.stmt]
     ) -> None:
@@ -22662,12 +22754,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 hint = self.explicit_type_hints.get(name)
                 if hint == "int":
                     carry_candidates.add(name)
-        import sys
-
-        print(
-            f"[CARRY DEBUG] assigned={sorted(assigned)} carry_candidates={sorted(carry_candidates)} hints_enabled={self._hints_enabled()} policy={self.type_hint_policy} explicit_hints={dict(self.explicit_type_hints)}",
-            file=sys.stderr,
-        )
         for name in sorted(assigned):
             if not self.is_async():
                 if name not in carry_candidates:
@@ -35606,7 +35692,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             add_degrade_event(
                 "fixed_point_round_cap",
                 "fixed_point_exit",
-                "fallback_to_pre_midend_ops",
+                "accept_last_verified_round",
                 value=max_rounds,
             )
             degraded = True

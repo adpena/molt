@@ -109,6 +109,12 @@
           return "";
         }
       })();
+      const externalKernel = (() => {
+        const root = window;
+        const candidate =
+          root.__MOLT_SYMPHONY_KERNEL__ || root.MoltSymphonyKernel || null;
+        return candidate && typeof candidate === "object" ? candidate : null;
+      })();
 
       function toObject(value) {
         return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -648,6 +654,24 @@
       }
 
       function buildClientTelemetrySnapshot() {
+        const kernelProfile = (() => {
+          try {
+            const kernel = window.__MOLT_SYMPHONY_KERNEL__;
+            if (kernel && typeof kernel.getProfileSnapshot === "function") {
+              const snapshot = kernel.getProfileSnapshot();
+              if (snapshot && typeof snapshot === "object") {
+                return snapshot;
+              }
+            }
+            const fallback = window.__MOLT_SYMPHONY_KERNEL_PROFILE__;
+            if (fallback && typeof fallback === "object") {
+              return fallback;
+            }
+          } catch (_err) {
+            return null;
+          }
+          return null;
+        })();
         return {
           generated_at: new Date().toISOString(),
           requested_transport: requestedTransport,
@@ -670,6 +694,7 @@
             reconnects: transportMetrics.sseReconnects,
             fallback_poll_ticks: transportMetrics.fallbackPollTicks,
           },
+          kernel: kernelProfile,
         };
       }
 
@@ -1914,6 +1939,17 @@
       }
 
       function traceEventTone(eventName) {
+        const kernelFn = externalKernel?.classifyEventTone;
+        if (typeof kernelFn === "function") {
+          try {
+            const value = String(kernelFn(String(eventName || "")) || "");
+            if (value === "danger" || value === "info" || value === "warn" || value === "ok") {
+              return value;
+            }
+          } catch (_err) {
+            // fall back to local implementation
+          }
+        }
         const name = String(eventName || "").toLowerCase();
         if (
           name.includes("failed") ||
@@ -1936,11 +1972,62 @@
       }
 
       function traceStatusClass(status) {
+        const kernelFn = externalKernel?.classifyTraceStatus;
+        if (typeof kernelFn === "function") {
+          try {
+            const value = String(kernelFn(String(status || "")) || "");
+            if (
+              value === "status-running" ||
+              value === "status-retrying" ||
+              value === "status-blocked" ||
+              value === ""
+            ) {
+              return value;
+            }
+          } catch (_err) {
+            // fall back to local implementation
+          }
+        }
         const norm = String(status || "unknown").toLowerCase();
         if (norm.includes("run")) return "status-running";
         if (norm.includes("retry")) return "status-retrying";
         if (norm.includes("block") || norm.includes("fail")) return "status-blocked";
         return "";
+      }
+
+      function compactTraceEvents(rowsValue, limit = 80) {
+        const rows = toArray(rowsValue);
+        const cap = Math.max(toNumber(limit, 80), 1);
+        const kernelFn = externalKernel?.compactRecentEvents;
+        if (typeof kernelFn === "function") {
+          try {
+            const raw = kernelFn(rows, cap);
+            if (Array.isArray(raw)) {
+              return raw.slice(0, cap).map((itemValue) => {
+                const item = toObject(itemValue);
+                return {
+                  event: String(item.event || ""),
+                  message: String(item.message || ""),
+                  detail: String(item.detail || ""),
+                  at: String(item.at || ""),
+                  tone: traceEventTone(item.tone || item.event || ""),
+                };
+              });
+            }
+          } catch (_err) {
+            // fall back to local implementation
+          }
+        }
+        return rows.slice(0, cap).map((eventValue) => {
+          const event = toObject(eventValue);
+          return {
+            event: String(event.event || ""),
+            message: String(event.message || ""),
+            detail: String(event.detail || ""),
+            at: String(event.at || ""),
+            tone: traceEventTone(event.event || ""),
+          };
+        });
       }
 
       function renderTraceIssue(payloadValue) {
@@ -1949,7 +2036,10 @@
         const running = toObject(payload.running);
         const attempts = toObject(payload.attempts);
         const retry = toObject(payload.retry);
-        const recent = toArray(payload.recent_events).slice().reverse().slice(0, 80);
+        const recent = compactTraceEvents(
+          toArray(payload.recent_events).slice().reverse(),
+          80
+        );
         traceSubtitle.textContent = `${payload.issue_identifier || traceIssueIdentifier} · ${status}`;
         const statusClass = traceStatusClass(status);
         traceSummary.innerHTML = `
@@ -2003,9 +2093,8 @@
           return;
         }
         traceEvents.innerHTML = recent
-          .map((eventValue) => {
-            const event = toObject(eventValue);
-            const tone = traceEventTone(event.event || "");
+          .map((event) => {
+            const tone = traceEventTone(event.tone || event.event || "");
             return `
               <article class="trace-event ${tone}">
                 <div class="head">
