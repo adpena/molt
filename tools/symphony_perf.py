@@ -115,6 +115,14 @@ def build_parser() -> argparse.ArgumentParser:
             "'/path/to/symphony_state_hasher_bin')."
         ),
     )
+    parser.add_argument(
+        "--compare-with",
+        default="",
+        help=(
+            "Optional path to a prior symphony_perf JSON report. "
+            "When provided, emits current-vs-baseline deltas."
+        ),
+    )
     return parser
 
 
@@ -441,6 +449,88 @@ def _bench_helper_hash(
     return report
 
 
+def _compare_reports(
+    current: dict[str, Any], baseline: dict[str, Any]
+) -> dict[str, Any]:
+    current_summary = current.get("summary")
+    baseline_summary = baseline.get("summary")
+    current_modes = current_summary if isinstance(current_summary, dict) else {}
+    baseline_modes = baseline_summary if isinstance(baseline_summary, dict) else {}
+    mode_comparison: dict[str, Any] = {}
+    for mode in sorted(set(current_modes) | set(baseline_modes)):
+        current_row = current_modes.get(mode)
+        baseline_row = baseline_modes.get(mode)
+        if not isinstance(current_row, dict) or not isinstance(baseline_row, dict):
+            continue
+        current_avg = _num_or_none(current_row.get("avg_s"))
+        baseline_avg = _num_or_none(baseline_row.get("avg_s"))
+        current_p95 = _num_or_none(current_row.get("p95_s"))
+        baseline_p95 = _num_or_none(baseline_row.get("p95_s"))
+        mode_comparison[mode] = {
+            "current_avg_s": current_avg,
+            "baseline_avg_s": baseline_avg,
+            "avg_delta_s": _delta(current_avg, baseline_avg),
+            "avg_delta_ratio": _delta_ratio(current_avg, baseline_avg),
+            "current_p95_s": current_p95,
+            "baseline_p95_s": baseline_p95,
+            "p95_delta_s": _delta(current_p95, baseline_p95),
+            "p95_delta_ratio": _delta_ratio(current_p95, baseline_p95),
+        }
+    current_dashboard = current.get("dashboard_state_api")
+    baseline_dashboard = baseline.get("dashboard_state_api")
+    dashboard_comparison: dict[str, Any] | None = None
+    if isinstance(current_dashboard, dict) and isinstance(baseline_dashboard, dict):
+        dashboard_comparison = {
+            "current_avg_latency_ms": _num_or_none(
+                current_dashboard.get("avg_latency_ms")
+            ),
+            "baseline_avg_latency_ms": _num_or_none(
+                baseline_dashboard.get("avg_latency_ms")
+            ),
+            "avg_latency_delta_ms": _delta(
+                _num_or_none(current_dashboard.get("avg_latency_ms")),
+                _num_or_none(baseline_dashboard.get("avg_latency_ms")),
+            ),
+            "current_p95_latency_ms": _num_or_none(
+                current_dashboard.get("p95_latency_ms")
+            ),
+            "baseline_p95_latency_ms": _num_or_none(
+                baseline_dashboard.get("p95_latency_ms")
+            ),
+            "p95_latency_delta_ms": _delta(
+                _num_or_none(current_dashboard.get("p95_latency_ms")),
+                _num_or_none(baseline_dashboard.get("p95_latency_ms")),
+            ),
+        }
+    return {
+        "baseline_report": baseline.get("generated_at"),
+        "mode_comparison": mode_comparison,
+        "dashboard_state_api_comparison": dashboard_comparison,
+    }
+
+
+def _num_or_none(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed != parsed or parsed in {float("inf"), float("-inf")}:
+        return None
+    return parsed
+
+
+def _delta(current: float | None, baseline: float | None) -> float | None:
+    if current is None or baseline is None:
+        return None
+    return round(current - baseline, 4)
+
+
+def _delta_ratio(current: float | None, baseline: float | None) -> float | None:
+    if current is None or baseline is None or baseline == 0:
+        return None
+    return round((current - baseline) / baseline, 4)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     modes = _parse_modes(args.modes)
@@ -515,6 +605,21 @@ def main(argv: list[str] | None = None) -> int:
             f"helper_hps={(helper_hash or {}).get('hashes_per_second')}"
         )
 
+    comparison: dict[str, Any] | None = None
+    compare_with = str(args.compare_with or "").strip()
+    if compare_with:
+        baseline_path = Path(compare_with).expanduser()
+        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+        if not isinstance(baseline, dict):
+            raise RuntimeError(f"Invalid baseline report: {baseline_path}")
+        current_payload = {
+            "summary": summary,
+            "dashboard_state_api": dashboard_report,
+            "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        }
+        comparison = _compare_reports(current_payload, baseline)
+        print(json.dumps({"comparison": comparison}, indent=2))
+
     output_path: Path | None = None
     if args.output_json:
         output_path = Path(args.output_json).expanduser()
@@ -534,6 +639,7 @@ def main(argv: list[str] | None = None) -> int:
                     "iterations": int(args.iterations),
                     "summary": summary,
                     "dashboard_state_api": dashboard_report,
+                    "comparison": comparison,
                     "hash_bench": hash_bench,
                     "samples": [
                         {

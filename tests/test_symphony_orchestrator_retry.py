@@ -70,6 +70,11 @@ def _orchestrator_stub() -> SymphonyOrchestrator:
     orchestrator._tool_state_events_limit = 12
     orchestrator._tool_state_cache_ttl_seconds = 60.0
     orchestrator._tool_state_cache = {}
+    orchestrator._profiling_checkpoint_interval_seconds = 20.0
+    orchestrator._profiling_compare_recent_window = 48
+    orchestrator._profiling_baseline_max_events = 2400
+    orchestrator._profiling_baseline_max_labels = 64
+    orchestrator._last_profiling_checkpoint_monotonic = 0.0
     orchestrator._durable_memory = None
     orchestrator._exec_mode = "python"
     return orchestrator
@@ -153,6 +158,9 @@ def test_snapshot_state_includes_event_queue_runtime_telemetry() -> None:
     assert queue_payload["max"] == orchestrator._event_queue_max
     assert queue_payload["dropped_events"] == 3
     assert queue_payload["utilization"] > 0
+    profiling_compare = snapshot["profiling_compare"]
+    assert profiling_compare["baseline_checkpoint_samples"] == 0
+    assert isinstance(profiling_compare["optimizations"], list)
 
 
 def test_snapshot_issue_returns_blocked_for_orphaned_issue() -> None:

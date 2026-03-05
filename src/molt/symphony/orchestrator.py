@@ -154,6 +154,27 @@ class SymphonyOrchestrator:
             0.0,
         )
         self._tool_state_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._profiling_checkpoint_interval_seconds = max(
+            float(
+                os.environ.get(
+                    "MOLT_SYMPHONY_PROFILING_CHECKPOINT_INTERVAL_SECONDS", "20"
+                )
+            ),
+            5.0,
+        )
+        self._profiling_compare_recent_window = max(
+            int(os.environ.get("MOLT_SYMPHONY_PROFILING_COMPARE_RECENT_WINDOW", "48")),
+            8,
+        )
+        self._profiling_baseline_max_events = max(
+            int(os.environ.get("MOLT_SYMPHONY_PROFILING_BASELINE_MAX_EVENTS", "2400")),
+            200,
+        )
+        self._profiling_baseline_max_labels = max(
+            int(os.environ.get("MOLT_SYMPHONY_PROFILING_BASELINE_MAX_LABELS", "64")),
+            8,
+        )
+        self._last_profiling_checkpoint_monotonic = 0.0
         ext_root = Path(
             os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt")
         ).expanduser()
@@ -217,6 +238,7 @@ class SymphonyOrchestrator:
                     with self._state_lock:
                         poll_interval = self._state.poll_interval_ms
                     next_tick = now + (poll_interval / 1000.0)
+                self._maybe_record_profiling_checkpoint(now_mono=now)
 
                 wait_seconds = self._compute_wait_seconds(next_tick)
                 if wait_seconds > 0:
@@ -847,6 +869,76 @@ class SymphonyOrchestrator:
         with self._state_lock:
             self._state.profiling.observe_latency(label, duration_ms)
 
+    def _maybe_record_profiling_checkpoint(
+        self, *, now_mono: float | None = None
+    ) -> None:
+        store = self._durable_memory
+        if store is None:
+            return
+        now_value = time.monotonic() if now_mono is None else now_mono
+        if (
+            now_value - self._last_profiling_checkpoint_monotonic
+            < self._profiling_checkpoint_interval_seconds
+        ):
+            return
+        payload: dict[str, Any] | None = None
+        with self._state_lock:
+            if (
+                now_value - self._last_profiling_checkpoint_monotonic
+                < self._profiling_checkpoint_interval_seconds
+            ):
+                return
+            active_seconds = 0.0
+            for entry in self._state.running.values():
+                active_seconds += max(now_value - entry.started_at_monotonic, 0.0)
+            profiling_snapshot = self._state.profiling.snapshot(
+                now_monotonic=now_value,
+                hotspot_limit=16,
+            )
+            latencies_raw = profiling_snapshot.get("latencies_ms")
+            latencies = (
+                _compact_latency_snapshot(latencies_raw, limit=32)
+                if isinstance(latencies_raw, dict)
+                else {}
+            )
+            totals_snapshot = self._state.codex_totals.snapshot(active_seconds)
+            payload = {
+                "kind": "profiling_checkpoint",
+                "interval_seconds": round(
+                    float(self._profiling_checkpoint_interval_seconds), 3
+                ),
+                "counts": {
+                    "running": len(self._state.running),
+                    "retrying": len(self._state.retry_attempts),
+                    "claimed": len(self._state.claimed),
+                    "completed": len(self._state.completed),
+                },
+                "latencies": latencies,
+                "hotspots": list(profiling_snapshot.get("hotspots") or [])[:12],
+                "counters": dict(profiling_snapshot.get("counters") or {}),
+                "queue_depth_peak": int(
+                    profiling_snapshot.get("queue_depth_peak") or 0
+                ),
+                "process": dict(profiling_snapshot.get("process") or {}),
+                "codex_totals": totals_snapshot,
+                "tokens_per_second": totals_snapshot.get("tokens_per_second", 0.0),
+                "suspension_kind": self._state.suspension_kind,
+            }
+            self._last_profiling_checkpoint_monotonic = now_value
+        if payload is not None:
+            store.record(payload)
+
+    def _profiling_baseline_snapshot(self) -> dict[str, Any]:
+        store = self._durable_memory
+        if store is None:
+            return {"checkpoint_samples": 0, "labels_count": 0, "by_label": {}}
+        payload = store.profiling_baseline(
+            max_events=self._profiling_baseline_max_events,
+            min_samples=3,
+            max_labels=self._profiling_baseline_max_labels,
+        )
+        return payload if isinstance(payload, dict) else {}
+
     def _record_codex_event_counter_locked(self, event_name: str) -> None:
         counters = self._state.profiling.counters
         counter_name = f"codex_event_{event_name}"
@@ -944,6 +1036,13 @@ class SymphonyOrchestrator:
         now = datetime.now(UTC)
         now_mono = time.monotonic()
         usage = _sample_process_usage()
+        profiling_baseline = self._profiling_baseline_snapshot()
+        profiling_baseline_by_label_raw = profiling_baseline.get("by_label")
+        profiling_baseline_by_label = (
+            profiling_baseline_by_label_raw
+            if isinstance(profiling_baseline_by_label_raw, dict)
+            else {}
+        )
         with self._state_lock:
             if usage is not None:
                 self._state.profiling.observe_resource_usage(
@@ -972,6 +1071,11 @@ class SymphonyOrchestrator:
             suspension_resume_source = self._state.suspension_resume_source
             suspension_resume_reason = self._state.suspension_resume_reason
             profiling_snapshot = self._state.profiling.snapshot(now_monotonic=now_mono)
+            profiling_compare_rows = self._state.profiling.compare_against_baseline(
+                profiling_baseline_by_label,
+                recent_window=self._profiling_compare_recent_window,
+                limit=8,
+            )
             totals_input = self._state.codex_totals.input_tokens
             totals_output = self._state.codex_totals.output_tokens
             totals_total = self._state.codex_totals.total_tokens
@@ -1022,6 +1126,25 @@ class SymphonyOrchestrator:
                     ),
                 },
             }
+
+        profiling_regressions = list(profiling_compare_rows.get("regressions") or [])
+        profiling_improvements = list(profiling_compare_rows.get("improvements") or [])
+        profiling_optimizations = _profiling_optimization_candidates(
+            profiling_snapshot=profiling_snapshot,
+            regressions=profiling_regressions,
+            limit=8,
+        )
+        profiling_compare_payload = {
+            "generated_at": now.isoformat().replace("+00:00", "Z"),
+            "recent_window": int(self._profiling_compare_recent_window),
+            "baseline_checkpoint_samples": int(
+                profiling_baseline.get("checkpoint_samples") or 0
+            ),
+            "baseline_labels_count": int(profiling_baseline.get("labels_count") or 0),
+            "regressions": profiling_regressions,
+            "improvements": profiling_improvements,
+            "optimizations": profiling_optimizations,
+        }
 
         running_rows: list[dict[str, Any]] = []
         agent_panes: list[dict[str, Any]] = []
@@ -1270,6 +1393,7 @@ class SymphonyOrchestrator:
             "needs_human_attention": bool(unique_attention),
             "suspension": suspension_payload,
             "profiling": profiling_snapshot,
+            "profiling_compare": profiling_compare_payload,
             "runtime": runtime_payload,
         }
 
@@ -2773,6 +2897,20 @@ class SymphonyOrchestrator:
             for row in list(profiling.get("hotspots") or [])[:8]:
                 if isinstance(row, dict):
                     profiling_hotspots.append(row)
+        profiling_compare_raw = state.get("profiling_compare")
+        profiling_compare = (
+            profiling_compare_raw if isinstance(profiling_compare_raw, dict) else {}
+        )
+        profiling_regressions = [
+            row
+            for row in list(profiling_compare.get("regressions") or [])[:4]
+            if isinstance(row, dict)
+        ]
+        profiling_optimizations = [
+            row
+            for row in list(profiling_compare.get("optimizations") or [])[:4]
+            if isinstance(row, dict)
+        ]
 
         return {
             "generated_at": state.get("generated_at"),
@@ -2788,6 +2926,8 @@ class SymphonyOrchestrator:
             "recent_events": recent_events,
             "manual_actions": manual_actions,
             "profiling_hotspots": profiling_hotspots,
+            "profiling_regressions": profiling_regressions,
+            "profiling_optimizations": profiling_optimizations,
             "runtime": state.get("runtime"),
             "compact": True,
         }
@@ -2802,6 +2942,14 @@ class SymphonyOrchestrator:
         suspension_raw = state.get("suspension")
         suspension: dict[str, Any] = (
             suspension_raw if isinstance(suspension_raw, dict) else {}
+        )
+        profiling_raw = state.get("profiling")
+        profiling: dict[str, Any] = (
+            profiling_raw if isinstance(profiling_raw, dict) else {}
+        )
+        profiling_compare_raw = state.get("profiling_compare")
+        profiling_compare: dict[str, Any] = (
+            profiling_compare_raw if isinstance(profiling_compare_raw, dict) else {}
         )
         return {
             "generated_at": state.get("generated_at"),
@@ -2825,6 +2973,26 @@ class SymphonyOrchestrator:
                 "dashboard_profile": runtime.get("dashboard_profile"),
             },
             "suspension": suspension,
+            "profiling": {
+                "hotspots": [
+                    row
+                    for row in list(profiling.get("hotspots") or [])[:6]
+                    if isinstance(row, dict)
+                ],
+                "regressions": [
+                    row
+                    for row in list(profiling_compare.get("regressions") or [])[:6]
+                    if isinstance(row, dict)
+                ],
+                "optimizations": [
+                    row
+                    for row in list(profiling_compare.get("optimizations") or [])[:6]
+                    if isinstance(row, dict)
+                ],
+                "baseline_checkpoint_samples": int(
+                    profiling_compare.get("baseline_checkpoint_samples") or 0
+                ),
+            },
             "needs_human_attention": state.get("needs_human_attention", False),
             "attention_count": len(state.get("attention") or []),
             "compact": True,
@@ -3565,6 +3733,95 @@ def _dashboard_profile_for_suspension(suspension_kind: str | None) -> dict[str, 
         "fallback_poll_interval_ms": 2500,
         "stale_after_ms": 7000,
     }
+
+
+def _compact_latency_snapshot(
+    latencies: dict[str, Any], *, limit: int
+) -> dict[str, dict[str, float | int]]:
+    rows: list[tuple[str, dict[str, float | int]]] = []
+    for raw_label, raw_stats in latencies.items():
+        label = str(raw_label).strip()
+        if not label:
+            continue
+        stats = raw_stats if isinstance(raw_stats, dict) else {}
+        row = {
+            "count": max(int(_as_float(stats.get("count"))), 0),
+            "avg_ms": round(max(_as_float(stats.get("avg_ms")), 0.0), 3),
+            "p95_ms": round(max(_as_float(stats.get("p95_ms")), 0.0), 3),
+            "max_ms": round(max(_as_float(stats.get("max_ms")), 0.0), 3),
+            "total_ms": round(max(_as_float(stats.get("total_ms")), 0.0), 3),
+        }
+        rows.append((label, row))
+    rows.sort(
+        key=lambda item: (
+            _as_float(item[1].get("p95_ms")),
+            _as_float(item[1].get("avg_ms")),
+            _as_float(item[1].get("total_ms")),
+        ),
+        reverse=True,
+    )
+    return {label: row for label, row in rows[: max(int(limit), 1)]}
+
+
+def _profiling_optimization_candidates(
+    *,
+    profiling_snapshot: dict[str, Any],
+    regressions: list[dict[str, Any]],
+    limit: int,
+) -> list[dict[str, float | int | str]]:
+    out: list[dict[str, float | int | str]] = []
+    seen: set[str] = set()
+    for row in regressions:
+        label = str(row.get("label") or "").strip()
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        avg_delta = max(_as_float(row.get("avg_delta_ms")), 0.0)
+        samples = max(int(_as_float(row.get("samples"))), 1)
+        impact = avg_delta * samples
+        out.append(
+            {
+                "label": label,
+                "reason": "regression_vs_baseline",
+                "priority_score": round(impact, 3),
+                "avg_delta_ms": round(avg_delta, 3),
+                "samples": samples,
+            }
+        )
+    hotspots = profiling_snapshot.get("hotspots")
+    if isinstance(hotspots, list):
+        for row in hotspots:
+            if not isinstance(row, dict):
+                continue
+            label = str(row.get("label") or "").strip()
+            if not label or label in seen:
+                continue
+            avg_ms = max(_as_float(row.get("avg_ms")), 0.0)
+            count = max(int(_as_float(row.get("count"))), 1)
+            out.append(
+                {
+                    "label": label,
+                    "reason": "absolute_hotspot",
+                    "priority_score": round(avg_ms * count, 3),
+                    "avg_ms": round(avg_ms, 3),
+                    "samples": count,
+                }
+            )
+    out.sort(
+        key=lambda item: _as_float(item.get("priority_score")),
+        reverse=True,
+    )
+    return out[: max(int(limit), 1)]
+
+
+def _as_float(value: Any) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if parsed != parsed or parsed in {float("inf"), float("-inf")}:
+        return 0.0
+    return parsed
 
 
 def _dispatch_sort_key(issue: Issue) -> tuple[int, float, str]:

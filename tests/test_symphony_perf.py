@@ -131,3 +131,30 @@ def test_hash_bench_helper_frame_mode() -> None:
     assert helper_report["iterations"] == 5
     assert helper_report["iterations_completed"] == 5
     assert "error" not in helper_report
+
+
+def test_compare_reports_emits_mode_and_dashboard_deltas() -> None:
+    current = {
+        "generated_at": "2026-03-05T00:00:00Z",
+        "summary": {
+            "python": {"avg_s": 2.0, "p95_s": 2.5},
+            "molt-run": {"avg_s": 1.2, "p95_s": 1.6},
+        },
+        "dashboard_state_api": {"avg_latency_ms": 12.0, "p95_latency_ms": 20.0},
+    }
+    baseline = {
+        "generated_at": "2026-03-04T00:00:00Z",
+        "summary": {
+            "python": {"avg_s": 1.5, "p95_s": 2.2},
+            "molt-run": {"avg_s": 1.4, "p95_s": 1.8},
+        },
+        "dashboard_state_api": {"avg_latency_ms": 10.0, "p95_latency_ms": 18.0},
+    }
+    report = symphony_perf._compare_reports(current, baseline)
+    python = report["mode_comparison"]["python"]
+    assert python["avg_delta_s"] == 0.5
+    assert python["avg_delta_ratio"] == 0.3333
+    assert python["p95_delta_s"] == 0.3
+    dashboard = report["dashboard_state_api_comparison"]
+    assert dashboard["avg_latency_delta_ms"] == 2.0
+    assert dashboard["p95_latency_delta_ms"] == 2.0

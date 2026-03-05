@@ -26,3 +26,23 @@ def test_profiling_hotspots_sorts_by_latency() -> None:
     hotspots = snap["hotspots"]
     assert hotspots
     assert hotspots[0]["label"] == "turn"
+
+
+def test_profiling_compare_against_baseline_reports_regression() -> None:
+    prof = ProfilingStats()
+    for _ in range(12):
+        prof.observe_latency("tick", 30.0)
+    for _ in range(12):
+        prof.observe_latency("turn", 10.0)
+    baseline = {
+        "tick": {"avg_ms": 10.0, "p95_ms": 12.0},
+        "turn": {"avg_ms": 12.0, "p95_ms": 14.0},
+    }
+    report = prof.compare_against_baseline(baseline, recent_window=12, limit=4)
+    regressions = report["regressions"]
+    improvements = report["improvements"]
+    assert regressions
+    assert regressions[0]["label"] == "tick"
+    assert regressions[0]["avg_delta_ms"] > 0
+    assert improvements
+    assert improvements[0]["label"] == "turn"
