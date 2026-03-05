@@ -31,7 +31,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _load_latest_by_fingerprint(queue: DeadLetterQueue, fingerprint: str) -> dict[str, object] | None:
+def _load_latest_by_fingerprint(
+    queue: DeadLetterQueue, fingerprint: str
+) -> dict[str, object] | None:
     rows = queue.load(limit=0)
     matches = [
         row for row in rows if str(row.get("fingerprint") or "") == fingerprint.strip()
@@ -44,13 +46,21 @@ def main(argv: list[str] | None = None) -> int:
     path = Path(str(args.path)).expanduser().resolve()
     queue = DeadLetterQueue(path)
     if args.cmd == "summary":
-        print(json.dumps(queue.summary(limit=max(int(args.limit), 0)), indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                queue.summary(limit=max(int(args.limit), 0)), indent=2, sort_keys=True
+            )
+        )
         return 0
     row = _load_latest_by_fingerprint(queue, str(args.fingerprint))
     if row is None:
         print(
             json.dumps(
-                {"ok": False, "error": "fingerprint_not_found", "fingerprint": args.fingerprint},
+                {
+                    "ok": False,
+                    "error": "fingerprint_not_found",
+                    "fingerprint": args.fingerprint,
+                },
                 indent=2,
                 sort_keys=True,
             )
@@ -58,16 +68,39 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     command = row.get("command")
     if not isinstance(command, list) or not command:
-        print(json.dumps({"ok": False, "error": "missing_command", "row": row}, indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                {"ok": False, "error": "missing_command", "row": row},
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 2
     if args.dry_run:
-        print(json.dumps({"ok": True, "dry_run": True, "row": row}, indent=2, sort_keys=True))
+        replay_row = queue.append_replay_result(
+            target_fingerprint=str(args.fingerprint),
+            command=[str(part) for part in command],
+            returncode=0,
+            dry_run=True,
+        )
+        print(
+            json.dumps(
+                {"ok": True, "dry_run": True, "row": row, "replay_row": replay_row},
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 0
     proc = subprocess.run(
         [str(part) for part in command],
         cwd=Path.cwd(),
         env=os.environ.copy(),
         check=False,
+    )
+    replay_row = queue.append_replay_result(
+        target_fingerprint=str(args.fingerprint),
+        command=[str(part) for part in command],
+        returncode=int(proc.returncode),
     )
     print(
         json.dumps(
@@ -76,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
                 "fingerprint": args.fingerprint,
                 "returncode": int(proc.returncode),
                 "command": command,
+                "replay_row": replay_row,
             },
             indent=2,
             sort_keys=True,

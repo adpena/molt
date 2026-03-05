@@ -69,8 +69,32 @@ def test_sync_env_defaults_fills_external_paths(monkeypatch, tmp_path: Path) -> 
     assert loaded["MOLT_SYMPHONY_TOOL_STATE_DETAIL"] == "compact"
     assert loaded["MOLT_SYMPHONY_MAX_CODEX_EVENT_COUNTERS"] == "64"
     assert loaded["MOLT_SYMPHONY_DURABLE_MEMORY"] == "1"
-    assert loaded["MOLT_SYMPHONY_DURABLE_ROOT"] == str(
-        ext_root / "logs" / "symphony" / "durable_memory"
+    assert loaded["MOLT_SYMPHONY_PARENT_ROOT"] == "/Volumes/APDataStore/symphony"
+    assert loaded["MOLT_SYMPHONY_PROJECT_KEY"] == "molt"
+    assert loaded["MOLT_SYMPHONY_STORE_ROOT"] == "/Volumes/APDataStore/symphony/molt"
+    assert (
+        loaded["MOLT_SYMPHONY_DURABLE_ROOT"]
+        == "/Volumes/APDataStore/symphony/molt/state/durable_memory"
+    )
+    assert (
+        loaded["MOLT_SYMPHONY_DLQ_EVENTS_FILE"]
+        == "/Volumes/APDataStore/symphony/molt/state/dlq/events.jsonl"
+    )
+    assert (
+        loaded["MOLT_SYMPHONY_TASTE_MEMORY_EVENTS_FILE"]
+        == "/Volumes/APDataStore/symphony/molt/state/taste_memory/events.jsonl"
+    )
+    assert (
+        loaded["MOLT_SYMPHONY_TASTE_MEMORY_DISTILLATIONS_DIR"]
+        == "/Volumes/APDataStore/symphony/molt/state/taste_memory/distillations"
+    )
+    assert (
+        loaded["MOLT_SYMPHONY_TOOL_PROMOTION_EVENTS_FILE"]
+        == "/Volumes/APDataStore/symphony/molt/state/tool_promotion/events.jsonl"
+    )
+    assert (
+        loaded["MOLT_SYMPHONY_TOOL_PROMOTION_DISTILLATIONS_DIR"]
+        == "/Volumes/APDataStore/symphony/molt/state/tool_promotion/distillations"
     )
     assert loaded["MOLT_SYMPHONY_DURABLE_SYNC_SECONDS"] == "180"
     assert loaded["MOLT_SYMPHONY_DSPY_ENABLE"] == "0"
@@ -81,16 +105,18 @@ def test_sync_env_defaults_fills_external_paths(monkeypatch, tmp_path: Path) -> 
         == symphony_bootstrap._default_quint_node_fallback()
     )
     assert loaded["JAVA_HOME"] == "/opt/java/home"
-    assert loaded["MOLT_SYMPHONY_API_TOKEN_FILE"] == str(
-        ext_root / "logs" / "symphony" / "secrets" / "dashboard_api_token"
+    assert (
+        loaded["MOLT_SYMPHONY_API_TOKEN_FILE"]
+        == "/Volumes/APDataStore/symphony/molt/state/secrets/dashboard_api_token"
     )
     assert loaded["MOLT_SYMPHONY_SECURITY_PROFILE"] == "local"
     assert loaded["MOLT_SYMPHONY_BIND_HOST"] == "127.0.0.1"
     assert loaded["MOLT_SYMPHONY_ALLOW_NONLOCAL_BIND"] == "0"
     assert loaded["MOLT_SYMPHONY_ALLOW_QUERY_TOKEN"] == "1"
     assert loaded["MOLT_SYMPHONY_DISABLE_DASHBOARD_UI"] == "0"
-    assert loaded["MOLT_SYMPHONY_SECURITY_EVENTS_FILE"] == str(
-        ext_root / "logs" / "symphony" / "security" / "events.jsonl"
+    assert (
+        loaded["MOLT_SYMPHONY_SECURITY_EVENTS_FILE"]
+        == "/Volumes/APDataStore/symphony/molt/logs/security/events.jsonl"
     )
     assert loaded["MOLT_SYMPHONY_ENFORCE_ORIGIN"] == "1"
     assert loaded["MOLT_SYMPHONY_REQUIRE_CSRF_HEADER"] == "1"

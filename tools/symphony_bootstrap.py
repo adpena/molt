@@ -23,6 +23,8 @@ from molt.symphony.paths import (
     symphony_state_root,
     symphony_taste_memory_distillations_dir,
     symphony_taste_memory_events_file,
+    symphony_tool_promotion_distillations_dir,
+    symphony_tool_promotion_events_file,
     symphony_workspace_root,
 )
 
@@ -350,7 +352,9 @@ def _sync_env_defaults(
         str(symphony_workspace_root(merged)),
     )
     merged.setdefault("MOLT_SYMPHONY_DURABLE_ROOT", str(symphony_durable_root(merged)))
-    merged.setdefault("MOLT_SYMPHONY_DLQ_EVENTS_FILE", str(symphony_dlq_events_file(merged)))
+    merged.setdefault(
+        "MOLT_SYMPHONY_DLQ_EVENTS_FILE", str(symphony_dlq_events_file(merged))
+    )
     merged.setdefault(
         "MOLT_SYMPHONY_TASTE_MEMORY_EVENTS_FILE",
         str(symphony_taste_memory_events_file(merged)),
@@ -358,6 +362,14 @@ def _sync_env_defaults(
     merged.setdefault(
         "MOLT_SYMPHONY_TASTE_MEMORY_DISTILLATIONS_DIR",
         str(symphony_taste_memory_distillations_dir(merged)),
+    )
+    merged.setdefault(
+        "MOLT_SYMPHONY_TOOL_PROMOTION_EVENTS_FILE",
+        str(symphony_tool_promotion_events_file(merged)),
+    )
+    merged.setdefault(
+        "MOLT_SYMPHONY_TOOL_PROMOTION_DISTILLATIONS_DIR",
+        str(symphony_tool_promotion_distillations_dir(merged)),
     )
     merged.setdefault("MOLT_SYMPHONY_LOOP_HOOK_CMD", "")
     merged.setdefault("MOLT_SYMPHONY_DURABLE_SYNC_SECONDS", "180")

@@ -33,6 +33,31 @@ pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
     molt_obj_model::MoltObject::none().bits()
 }
 
+#[cfg(feature = "molt_hosted_extension")]
+fn hosted_extension_isolate_unavailable(symbol: &str) -> u64 {
+    crate::concurrency::with_gil(|py| {
+        crate::builtins::exceptions::raise_exception::<u64>(
+            &py,
+            "RuntimeError",
+            &format!(
+                "hosted libmolt extension invoked {symbol} without compiler-emitted isolate entrypoints"
+            ),
+        )
+    })
+}
+
+#[cfg(all(not(test), feature = "molt_hosted_extension"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_isolate_bootstrap() -> u64 {
+    hosted_extension_isolate_unavailable("molt_isolate_bootstrap")
+}
+
+#[cfg(all(not(test), feature = "molt_hosted_extension"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
+    hosted_extension_isolate_unavailable("molt_isolate_import")
+}
+
 mod async_rt;
 mod builtins;
 mod c_api;

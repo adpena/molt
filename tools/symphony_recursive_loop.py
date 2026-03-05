@@ -19,8 +19,11 @@ from molt.symphony.paths import (
     symphony_recursive_loop_dir,
     symphony_taste_memory_distillations_dir,
     symphony_taste_memory_events_file,
+    symphony_tool_promotion_distillations_dir,
+    symphony_tool_promotion_events_file,
 )
 from molt.symphony.taste_memory import TasteMemoryStore
+from molt.symphony.tool_promotion import ToolPromotionStore
 
 DEFAULT_EXT_ROOT = "/Volumes/APDataStore/Molt"
 DEFAULT_TEAM = "Moltlang"
@@ -274,9 +277,7 @@ def _record_taste_memory(
     steps: list[StepResult],
 ) -> dict[str, object]:
     successful_actions = [
-        " ".join(step.command)
-        for step in executed_commands
-        if step.ok and step.command
+        " ".join(step.command) for step in executed_commands if step.ok and step.command
     ]
     tools_used = [step.name for step in steps]
     payload = {
@@ -440,7 +441,9 @@ def _build_linear_hygiene_command(args: argparse.Namespace) -> list[str]:
     return command
 
 
-def _build_harness_trend_command(*, args: argparse.Namespace, trend_json: Path) -> list[str]:
+def _build_harness_trend_command(
+    *, args: argparse.Namespace, trend_json: Path
+) -> list[str]:
     return [
         "uv",
         "run",
@@ -513,7 +516,15 @@ def _run_cycle(
     dlq = DeadLetterQueue(Path(str(args.dlq_file)).expanduser().resolve())
     taste_memory = TasteMemoryStore(
         events_path=Path(str(args.taste_memory_file)).expanduser().resolve(),
-        distillations_dir=Path(str(args.taste_distillations_dir)).expanduser().resolve(),
+        distillations_dir=Path(str(args.taste_distillations_dir))
+        .expanduser()
+        .resolve(),
+    )
+    tool_promotion = ToolPromotionStore(
+        events_path=Path(str(args.tool_promotion_file)).expanduser().resolve(),
+        distillations_dir=Path(str(args.tool_promotion_distillations_dir))
+        .expanduser()
+        .resolve(),
     )
 
     steps: list[StepResult] = []
@@ -530,7 +541,10 @@ def _run_cycle(
             ),
         ),
         ("linear_hygiene", _build_linear_hygiene_command(args)),
-        ("harness_trend", _build_harness_trend_command(args=args, trend_json=trend_json)),
+        (
+            "harness_trend",
+            _build_harness_trend_command(args=args, trend_json=trend_json),
+        ),
     ):
         step, before_hook, after_hook = _run_step_with_hooks(
             name=name,
@@ -636,7 +650,34 @@ def _run_cycle(
         executed_commands=executed_commands,
         steps=steps,
     )
-    distillation = taste_memory.distill_recent(limit=max(int(args.taste_memory_limit), 20))
+    distillation = taste_memory.distill_recent(
+        limit=max(int(args.taste_memory_limit), 20)
+    )
+    tool_promotion_distillation = tool_promotion.distill_candidates(
+        taste_rows=taste_memory.load(limit=max(int(args.taste_memory_limit), 20)),
+        limit=max(int(args.taste_memory_limit), 20),
+        min_success_count=max(1, int(args.tool_promotion_min_success_count)),
+    )
+    tool_promotion_row = tool_promotion.record(
+        {
+            "kind": "tool_promotion_distillation",
+            "cycle_name": cycle_name,
+            "cycle_status": status,
+            "samples": tool_promotion_distillation["samples"],
+            "candidate_count": tool_promotion_distillation["candidate_count"],
+            "ready_candidate_count": tool_promotion_distillation[
+                "ready_candidate_count"
+            ],
+            "manifest_count": (
+                (tool_promotion_distillation.get("manifest_batch") or {}).get(
+                    "manifest_count"
+                )
+                if isinstance(tool_promotion_distillation.get("manifest_batch"), dict)
+                else 0
+            ),
+            "path": tool_promotion_distillation["path"],
+        }
+    )
     cycle_hook = hook_runner.run(
         event="after_cycle",
         payload={
@@ -645,6 +686,9 @@ def _run_cycle(
             "failures": failures,
             "failure_codes": failure_codes,
             "summary_path": str(cycle_dir / "summary.json"),
+            "tool_promotion_ready_candidate_count": tool_promotion_distillation[
+                "ready_candidate_count"
+            ],
         },
         cwd=repo_root,
         env=env,
@@ -667,6 +711,10 @@ def _run_cycle(
             "recorded": taste_row,
             "distillation": distillation,
         },
+        "tool_promotion": {
+            "recorded": tool_promotion_row,
+            "distillation": tool_promotion_distillation,
+        },
         "artifacts": {
             "cycle_dir": str(cycle_dir),
             "readiness_json": str(readiness_json),
@@ -679,6 +727,10 @@ def _run_cycle(
                 str(perf_verdict_json) if args.run_perf_guard else None
             ),
             "trace_json": str(trace_path),
+            "tool_promotion_events_file": str(args.tool_promotion_file),
+            "tool_promotion_distillations_dir": str(
+                args.tool_promotion_distillations_dir
+            ),
         },
     }
     (cycle_dir / "summary.json").write_text(
@@ -703,6 +755,10 @@ def _run_cycle(
                 "failure_codes": failure_codes,
                 "dead_letters": dead_letters,
                 "hook_trace": hook_trace,
+                "tool_promotion": {
+                    "recorded": tool_promotion_row,
+                    "distillation": tool_promotion_distillation,
+                },
             },
             indent=2,
             sort_keys=True,
@@ -860,6 +916,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=200,
         help="Recent taste-memory event window used for deterministic distillation.",
     )
+    parser.add_argument(
+        "--tool-promotion-file",
+        default=None,
+        help="Tool-promotion events JSONL path (defaults to the canonical Symphony state root).",
+    )
+    parser.add_argument(
+        "--tool-promotion-distillations-dir",
+        default=None,
+        help="Tool-promotion distillation output dir (defaults to the canonical Symphony state root).",
+    )
+    parser.add_argument(
+        "--tool-promotion-min-success-count",
+        type=int,
+        default=3,
+        help="Minimum recurring success count required before a tool-promotion candidate becomes ready.",
+    )
     return parser
 
 
@@ -888,13 +960,21 @@ def main(argv: list[str] | None = None) -> int:
         args.taste_distillations_dir = str(
             symphony_taste_memory_distillations_dir(env=env)
         )
+    if args.tool_promotion_file is None:
+        args.tool_promotion_file = str(symphony_tool_promotion_events_file(env=env))
+    if args.tool_promotion_distillations_dir is None:
+        args.tool_promotion_distillations_dir = str(
+            symphony_tool_promotion_distillations_dir(env=env)
+        )
     if args.quick:
         args.formal_suite = "inventory"
         args.run_perf_guard = False
         args.execute_next_tranche = False
 
     env = _env_with_external_defaults(env, ext_root=ext_root)
-    Path(str(args.output_root)).expanduser().resolve().mkdir(parents=True, exist_ok=True)
+    Path(str(args.output_root)).expanduser().resolve().mkdir(
+        parents=True, exist_ok=True
+    )
 
     iterations = max(1, int(args.iterations))
     interval_seconds = max(0, int(args.interval_seconds))

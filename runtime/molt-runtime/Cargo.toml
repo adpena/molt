@@ -10,6 +10,7 @@ crate-type = ["staticlib", "rlib", "cdylib"]
 
 [features]
 molt_debug_gil = []
+molt_hosted_extension = []
 molt_tk_native = ["dep:libloading"]
 
 [dependencies]
