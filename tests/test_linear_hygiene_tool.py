@@ -105,3 +105,36 @@ def test_project_name_for_issue_uses_title_prefix_overrides() -> None:
         )
         == "Testing & Differential"
     )
+
+
+def test_dspy_runtime_status_uses_custom_api_key_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_REMOVED_DSPY_ENABLE", "1")
+    monkeypatch.setenv("MOLT_REMOVED_DSPY_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("MOLT_REMOVED_DSPY_API_KEY_ENV", "ALT_KEY")
+    monkeypatch.setenv("ALT_KEY", "abc123")
+    monkeypatch.setattr(linear_hygiene, "dspy", object())
+    monkeypatch.setattr(linear_hygiene, "BaseModel", object())
+
+    status = linear_hygiene._dspy_runtime_status()
+    assert status["enabled"] is True
+    assert status["api_key_env"] == "ALT_KEY"
+    assert status["api_key_present"] is True
+    assert status["reason"] == "ready"
+    assert status["ready"] is True
+
+
+def test_dspy_route_decision_falls_back_when_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_REMOVED_DSPY_ENABLE", "1")
+    monkeypatch.delenv("MOLT_REMOVED_DSPY_MODEL", raising=False)
+    fallback = linear_hygiene.RouteDecision(
+        role="executor",
+        formal_required=False,
+        rationale="heuristic",
+        extra_labels=[],
+    )
+    decision = linear_hygiene._dspy_route_decision(issue={"title": "x"}, fallback=fallback)
+    assert decision == fallback
