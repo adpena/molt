@@ -36,8 +36,8 @@
 ## Git Workflow Policy (Non-Negotiable)
 - Always develop on `main` and keep all local work based directly on `main`.
 - Always push directly to `main` (`origin/main`) by default.
-- Always commit completed work promptly; do not leave validated changes uncommitted.
-- Always push committed work promptly to `origin/main`; avoid local-only drift.
+- Always commit and push all current repository changes promptly to `origin/main`.
+- Use the standard commit message `chore: sync all changes` for routine landing commits.
 - Proactively and aggressively land validated PR/branch work into `main` as soon as quality gates pass, preferring fast-forward/rebase flows that keep `main` continuously current.
 - Symphony automation must never hard-block local commit/push progress due workspace sync conflicts. `before_run` git sync must be best-effort and non-fatal when the workspace is dirty/diverged.
 - The only enforced automation blocker for merge acceptance is author allowlisting: automated PR acceptance/merge must allow only changes authored by `adpena` or `symphony` (configurable via `MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS`).
@@ -482,8 +482,6 @@ Use a single, explicit TODO format everywhere (code + docs + tests). This is how
 - Run linting/testing once after a cohesive change set is complete (`tools/dev.py lint`, `tools/dev.py test`, plus relevant `cargo` checks); avoid repetitive cycles mid-implementation.
 - Prioritize clear, explicit communication: scope, files touched, and tests run.
 - After any push, monitor CI logs until green; if failures appear, propose fixes, implement them, push again, and repeat until green.
-- Avoid infinite commit/push/CI loops: only repeat the cycle when there are new changes or an explicit user request to re-run; otherwise stop and ask before looping again.
-- If a user request implies repeating commit/push/CI without new changes, pause and ask before re-running.
 
 ## Runtime Module Ownership (Planned Layout)
 - `runtime/molt-runtime/src/state/*`: runtime

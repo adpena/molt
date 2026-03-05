@@ -122,6 +122,7 @@ def test_dashboard_contains_realtime_ui() -> None:
         assert "verbosity" in body
         assert "Interventions" in body
         assert "view-tab" in body
+        assert "set_max_concurrent_agents" in body
         assert "/api/v1/stream" in body
         assert "EventSource" in body
     finally:

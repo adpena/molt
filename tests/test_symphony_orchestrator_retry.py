@@ -43,11 +43,23 @@ def _orchestrator_stub() -> SymphonyOrchestrator:
     orchestrator._wake_event = threading.Event()
     orchestrator._config = SimpleNamespace(
         codex=SimpleNamespace(command="codex"),
-        agent=SimpleNamespace(default_role="executor", role_pools={}),
+        agent=SimpleNamespace(
+            default_role="executor",
+            role_pools={},
+            max_concurrent_agents=4,
+            max_concurrent_agents_by_state={"todo": 4, "in progress": 4, "rework": 2},
+        ),
     )
     orchestrator._worker_controls = {}
     orchestrator._auth_resume_delay_seconds = 300
     orchestrator._rate_limit_resume_default_seconds = 900
+    orchestrator._max_codex_event_counters = 8
+    orchestrator._tool_state_default_detail = "compact"
+    orchestrator._tool_state_running_limit = 8
+    orchestrator._tool_state_retry_limit = 8
+    orchestrator._tool_state_attention_limit = 8
+    orchestrator._tool_state_events_limit = 12
+    orchestrator._durable_memory = None
     orchestrator._exec_mode = "python"
     return orchestrator
 
@@ -138,6 +150,33 @@ def test_request_retry_now_recovers_orphaned_claim() -> None:
     ]
 
 
+def test_set_max_concurrent_agents_tool_updates_limits() -> None:
+    orchestrator = _orchestrator_stub()
+    result = orchestrator.run_dashboard_tool(
+        "set_max_concurrent_agents",
+        {"value": "2"},
+    )
+    assert result["ok"] is True
+    assert result["status"] == "updated"
+    assert result["max_concurrent_agents"] == 2
+    with orchestrator._state_lock:
+        assert orchestrator._state.max_concurrent_agents == 2
+    assert orchestrator._config.agent.max_concurrent_agents == 2
+    assert orchestrator._config.agent.max_concurrent_agents_by_state["todo"] == 2
+    assert orchestrator._config.agent.max_concurrent_agents_by_state["in progress"] == 2
+    assert orchestrator._config.agent.max_concurrent_agents_by_state["rework"] == 2
+
+
+def test_set_max_concurrent_agents_tool_rejects_invalid_value() -> None:
+    orchestrator = _orchestrator_stub()
+    result = orchestrator.run_dashboard_tool(
+        "set_max_concurrent_agents",
+        {"value": "nope"},
+    )
+    assert result["ok"] is False
+    assert result["error"] == "invalid_value"
+
+
 def test_snapshot_state_surfaces_system_suspension_attention() -> None:
     orchestrator = _orchestrator_stub()
     with orchestrator._state_lock:
@@ -222,3 +261,40 @@ def test_rate_limit_suspension_derivation() -> None:
     )
     assert suspension is not None
     assert suspension["resume_seconds"] == 3600
+
+
+def test_codex_event_counter_cardinality_caps_to_other() -> None:
+    orchestrator = _orchestrator_stub()
+    orchestrator._max_codex_event_counters = 2
+    with orchestrator._state_lock:
+        orchestrator._record_codex_event_counter_locked("session_started")
+        orchestrator._record_codex_event_counter_locked("turn_completed")
+        orchestrator._record_codex_event_counter_locked("some_new_event")
+    counters = orchestrator._state.profiling.counters
+    assert counters["codex_event_session_started"] == 1
+    assert counters["codex_event_turn_completed"] == 1
+    assert counters["codex_event_other"] == 1
+
+
+def test_tool_symphony_state_returns_compact_payload_by_default() -> None:
+    orchestrator = _orchestrator_stub()
+    issue = _issue("MOL-33", "issue-33")
+    running_entry = RunningEntry(
+        issue=issue,
+        issue_identifier=issue.identifier,
+        worker_name="symphony-executor-MOL-33",
+        worker_role="executor",
+        started_at_utc=now_utc(),
+        started_at_monotonic=0.0,
+        retry_attempt=1,
+    )
+    with orchestrator._state_lock:
+        orchestrator._state.running[issue.id] = running_entry
+        orchestrator._state.last_errors[issue.id] = "hook_failed"
+        orchestrator._state.issue_identifiers[issue.id] = issue.identifier
+    payload = orchestrator._tool_symphony_state(None)
+    assert payload["success"] is True
+    state = payload["state"]
+    assert state["compact"] is True
+    assert "agent_panes" not in state
+    assert state["running"]
