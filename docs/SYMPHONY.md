@@ -94,6 +94,7 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_run.py WORKFLOW.md --
 ```
 
 `MOLT_LINEAR_PROJECT_SLUG` supports a comma-separated list of Linear `project.slugId` values, so one Symphony service can dispatch across multiple projects.
+For scripted Linear operations, use `tools/linear_workspace.py` as the canonical CLI path.
 
 3. Open dashboard:
 
@@ -176,6 +177,51 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_durable_admin.py rest
 PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_durable_admin.py prune --keep-latest 20 --max-age-days 30
 ```
 
+### Readiness Audit
+
+Run the comprehensive readiness audit before/after major orchestration changes:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --team Moltlang
+```
+
+Outputs are written under:
+
+- `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.json`
+- `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.md`
+
+The audit covers Linear workspace hygiene, manifest quality, docs/tooling coverage,
+launchd/watchdog wiring, and durable memory readability. DuckDB lock contention
+while the live service is writing is reported as warning-only (`duckdb_locked_by_writer`).
+
+Strict autonomy mode (promotes metadata/title drift and no-active-flow warnings
+to failures):
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --team Moltlang --strict-autonomy --fail-on warn
+```
+
+### Linear Hygiene + Swarm Routing
+
+Run the full Linear hygiene pass (manifest title repair, seeded metadata backfill,
+label taxonomy bootstrap, role-label routing, and active-flow promotion):
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/linear_hygiene.py full-pass --team Moltlang --apply --run-formal-inventory
+```
+
+`tools/linear_hygiene.py` supports optional DSPy-assisted role routing.
+Set:
+
+- `uv run --python 3.12 pip install pydantic dspy-ai`
+- `MOLT_SYMPHONY_DSPY_ENABLE=1`
+- `MOLT_SYMPHONY_DSPY_MODEL=<provider/model>`
+- `OPENAI_API_KEY=<token>`
+
+When DSPy is not configured, deterministic heuristics are used and all outputs
+remain valid for swarm routing (`role:*` labels consumed by Symphony).
+It also reports `linear_cli_compat` to explicitly flag npm `lin` schema drift and confirm native `tools/linear_workspace.py` health path.
+
 ## Operational notes
 
 - Workspace paths are enforced under `workspace.root`.
@@ -196,7 +242,8 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_durable_admin.py prun
 - `/api/v1/stream` now emits `state` events only when the serialized snapshot changes (plus heartbeats), reducing UI churn and endpoint pressure.
 - Fallback polling now uses adaptive backoff (error/not-modified aware) to avoid endpoint thrash while preserving realtime responsiveness.
 - Protected dashboard/API requests now support per-principal HTTP rate limiting with explicit `429` + `Retry-After` (`MOLT_SYMPHONY_HTTP_RATE_LIMIT_MAX_REQUESTS`, `MOLT_SYMPHONY_HTTP_RATE_LIMIT_WINDOW_SECONDS`).
-- Optional state-hash helper integration (`MOLT_SYMPHONY_STATE_HASH_HELPER`) supports a compiled-Molt helper binary (`tools/symphony_state_hasher.py`) with transparent fallback to Python hashing.
+- Optional state-hash helper integration (`MOLT_SYMPHONY_STATE_HASH_HELPER`) supports a compiled-Molt helper binary (`tools/symphony_state_hasher.py`) with framed binary mode (`--stdio-frame`) for lower overhead, automatic legacy text fallback (`--stdio`), and transparent fallback to in-process Python hashing when helper execution fails.
+- `MOLT_SYMPHONY_STATE_HASH_HELPER_PREFER_FRAME` controls protocol preference when no explicit helper mode is provided (`1` by default).
 - `symphony_state` defaults to compact payload mode with short TTL caching for lower token burn; use `{ "detail": "full" }` when agents need full raw state.
 - `symphony_state` also supports `{ "detail": "telemetry" }` for agent-native, token-efficient MCP telemetry.
 - Codex event profiling counters are cardinality-bounded (`MOLT_SYMPHONY_MAX_CODEX_EVENT_COUNTERS`, default `64`) to avoid unbounded metric growth.

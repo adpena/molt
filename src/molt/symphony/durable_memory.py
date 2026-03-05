@@ -333,7 +333,7 @@ class DurableMemoryStore:
         query = "SELECT COUNT(*) AS c FROM events"
         if _duckdb is not None:
             try:
-                conn = _duckdb.connect(str(self._duckdb_path))
+                conn = _duckdb.connect(str(self._duckdb_path), read_only=True)
                 try:
                     rows = conn.execute(query).fetchall()
                 finally:
@@ -341,7 +341,38 @@ class DurableMemoryStore:
                 count = int(rows[0][0]) if rows else 0
                 return {"ok": True, "rows": count}
             except Exception as exc:  # pragma: no cover - duckdb dependent
-                return {"ok": False, "reason": "duckdb_query_failed", "error": str(exc)}
+                error = str(exc)
+                if "Table with name events does not exist" in error:
+                    # DuckDB file can appear before the first full sync has
+                    # materialized the events table; treat as warning-only.
+                    return {
+                        "ok": True,
+                        "reason": "duckdb_events_table_missing",
+                        "warning": True,
+                        "error": error,
+                    }
+                if "different configuration than existing connections" in error:
+                    # The background sync thread can briefly hold a rw connection
+                    # while this integrity probe opens read_only; this is a busy
+                    # state, not data corruption.
+                    return {
+                        "ok": True,
+                        "reason": "duckdb_busy_existing_connection",
+                        "warning": True,
+                        "error": error,
+                    }
+                if "Conflicting lock is held" in error or (
+                    "Could not set lock on file" in error
+                ):
+                    # Active writer lock means the file is healthy but currently busy.
+                    # Treat as a warning-only state so integrity checks don't flap.
+                    return {
+                        "ok": True,
+                        "reason": "duckdb_locked_by_writer",
+                        "warning": True,
+                        "error": error,
+                    }
+                return {"ok": False, "reason": "duckdb_query_failed", "error": error}
         if self._duckdb_bin is None:
             return {"ok": True, "reason": "duckdb_unavailable"}
         try:

@@ -353,8 +353,17 @@ def _bench_helper_hash(
     command = shlex.split(helper_cmd.strip())
     if not command:
         return {"mode": "helper", "error": "empty_helper_command"}
-    if "--stdio" not in command:
+    has_stdio_text = "--stdio" in command
+    has_stdio_frame = "--stdio-frame" in command
+    if has_stdio_text and has_stdio_frame:
+        return {
+            "mode": "helper",
+            "error": "conflicting_helper_modes",
+            "command": command,
+        }
+    if not has_stdio_text and not has_stdio_frame:
         command.append("--stdio")
+        has_stdio_text = True
     payload_b64 = base64.b64encode(payload).decode("ascii")
     try:
         proc = subprocess.Popen(
@@ -362,9 +371,9 @@ def _bench_helper_hash(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            bufsize=1,
+            text=has_stdio_text,
+            encoding="utf-8" if has_stdio_text else None,
+            bufsize=1 if has_stdio_text else 0,
         )
     except OSError as exc:
         return {"mode": "helper", "error": "spawn_failed", "message": str(exc)}
@@ -378,14 +387,24 @@ def _bench_helper_hash(
             error = "pipe_unavailable"
         else:
             for _ in range(requested_iterations):
-                proc.stdin.write(payload_b64 + "\n")
-                proc.stdin.flush()
-                line = proc.stdout.readline()
-                etag = line.strip()
-                if not (etag.startswith('W/"') and etag.endswith('"')):
-                    error = "invalid_helper_output"
-                    break
-                completed_iterations += 1
+                if has_stdio_frame:
+                    proc.stdin.write(len(payload).to_bytes(4, "big", signed=False))
+                    proc.stdin.write(payload)
+                    proc.stdin.flush()
+                    digest = proc.stdout.read(8)
+                    if not isinstance(digest, (bytes, bytearray)) or len(digest) != 8:
+                        error = "invalid_helper_output"
+                        break
+                    completed_iterations += 1
+                else:
+                    proc.stdin.write(payload_b64 + "\n")
+                    proc.stdin.flush()
+                    line = proc.stdout.readline()
+                    etag = line.strip()
+                    if not (etag.startswith('W/"') and etag.endswith('"')):
+                        error = "invalid_helper_output"
+                        break
+                    completed_iterations += 1
     except OSError as exc:
         error = f"io_error:{exc}"
     elapsed = max(time.perf_counter() - started, 1e-9)
@@ -408,7 +427,7 @@ def _bench_helper_hash(
 
     bytes_total = len(payload) * completed_iterations
     report: dict[str, Any] = {
-        "mode": "helper_stdio",
+        "mode": "helper_framed" if has_stdio_frame else "helper_stdio",
         "iterations": requested_iterations,
         "iterations_completed": completed_iterations,
         "payload_bytes": len(payload),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -45,6 +46,13 @@ def test_sync_env_defaults_fills_external_paths(monkeypatch, tmp_path: Path) -> 
     assert loaded["MOLT_SYMPHONY_SYNC_REMOTE"] == "origin"
     assert loaded["MOLT_SYMPHONY_SYNC_BRANCH"] == "main"
     assert loaded["MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS"] == "adpena,symphony"
+    assert loaded["MOLT_SYMPHONY_TOOL_STATE_DETAIL"] == "compact"
+    assert loaded["MOLT_SYMPHONY_MAX_CODEX_EVENT_COUNTERS"] == "64"
+    assert loaded["MOLT_SYMPHONY_DURABLE_MEMORY"] == "1"
+    assert loaded["MOLT_SYMPHONY_DURABLE_ROOT"] == str(
+        ext_root / "logs" / "symphony" / "durable_memory"
+    )
+    assert loaded["MOLT_SYMPHONY_DURABLE_SYNC_SECONDS"] == "180"
     assert loaded["MOLT_SYMPHONY_API_TOKEN_FILE"] == str(
         ext_root / "logs" / "symphony" / "secrets" / "dashboard_api_token"
     )
@@ -111,3 +119,35 @@ def test_ensure_git_hooks_path_preserves_existing_custom_path(
     assert result["path"] == "custom-hooks"
     assert result["reason"] == "preserved_existing"
     assert calls == [["git", "config", "--local", "--get", "core.hooksPath"]]
+
+
+def test_configure_lin_cli_reports_missing_binary(monkeypatch, tmp_path: Path) -> None:
+    env_file = tmp_path / "symphony.env"
+    env_file.write_text("LINEAR_API_KEY=abc123\n", encoding="utf-8")
+    monkeypatch.setattr(symphony_bootstrap.shutil, "which", lambda _: None)
+    result = symphony_bootstrap._configure_lin_cli(env_file=env_file, home_dir=tmp_path)
+    assert result["configured"] is False
+    assert result["reason"] == "lin_not_found"
+
+
+def test_configure_lin_cli_requires_api_key(monkeypatch, tmp_path: Path) -> None:
+    env_file = tmp_path / "symphony.env"
+    env_file.write_text("", encoding="utf-8")
+    monkeypatch.setattr(symphony_bootstrap.shutil, "which", lambda _: "/usr/bin/lin")
+    result = symphony_bootstrap._configure_lin_cli(env_file=env_file, home_dir=tmp_path)
+    assert result["configured"] is False
+    assert result["reason"] == "missing_linear_api_key"
+
+
+def test_configure_lin_cli_writes_store_file(monkeypatch, tmp_path: Path) -> None:
+    env_file = tmp_path / "symphony.env"
+    env_file.write_text("LINEAR_API_KEY=test-token\n", encoding="utf-8")
+    monkeypatch.setattr(symphony_bootstrap.shutil, "which", lambda _: "/usr/bin/lin")
+    result = symphony_bootstrap._configure_lin_cli(env_file=env_file, home_dir=tmp_path)
+    assert result["configured"] is True
+    assert result["reason"] == "ok"
+    assert result["lin_path"] == "/usr/bin/lin"
+    assert result["changed"] is True
+    store_file = tmp_path / ".lin" / "store.apiKey.json"
+    assert store_file.exists()
+    assert json.loads(store_file.read_text(encoding="utf-8")) == "test-token"

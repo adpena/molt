@@ -48,6 +48,7 @@ What this bootstraps automatically:
 - ensures Linear MCP server registration in Codex (`codex mcp add linear ...` if missing)
 - writes `ops/linear/runtime/symphony.env` with external-volume defaults
 - creates external runtime/cache/log directories under `/Volumes/APDataStore/Molt`
+- auto-seeds official `lin` CLI credentials (`~/.lin/store.apiKey.json`) from `LINEAR_API_KEY` when `lin` is installed
 - optionally installs persistent launchd service via `tools/symphony_launchd.py`
 
 After bootstrap, recurring runs do not require manual setup each time.
@@ -67,6 +68,18 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/linear_workspace.py whoami
 PYTHONPATH=src uv run --python 3.12 python3 tools/linear_workspace.py list-projects --team <team-key-or-name>
 PYTHONPATH=src uv run --python 3.12 python3 tools/linear_workspace.py list-states --team <team-key-or-name>
 PYTHONPATH=src uv run --python 3.12 python3 tools/linear_workspace.py list-issues --team <team-key-or-name>
+```
+
+Direct non-interactive issue operations:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/linear_workspace.py create-issue \
+  --team <team-key-or-name> --project <project-id-or-slug-or-name> \
+  --title "Issue title" --description "Issue body"
+PYTHONPATH=src uv run --python 3.12 python3 tools/linear_workspace.py update-issue \
+  --team <team-key-or-name> --issue MOL-123 --state "In Progress"
+PYTHONPATH=src uv run --python 3.12 python3 tools/linear_workspace.py comment-issue \
+  --team <team-key-or-name> --issue MOL-123 --body "Progress update"
 ```
 
 ## 5. Build a repo-derived backlog (clean seeding)
@@ -173,7 +186,35 @@ Logs:
 `tools/symphony_launchd.py install` now supports `--env-file` and `--ext-root`.
 It also installs a watchdog service by default (`com.molt.symphony.watchdog`) to auto-restart Symphony when workflow/runtime files change.
 
-## 9. Human operating loop (required)
+## 9. Continuous readiness audit
+
+Run the comprehensive readiness audit after sync/bootstrap and before long runs:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --team Moltlang
+```
+
+This emits:
+
+- `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.json`
+- `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.md`
+
+The audit checks Linear hygiene, manifest quality, launchd/watchdog wiring,
+durable memory readability, and required docs/tooling coverage.
+
+For hard autonomy gating:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --team Moltlang --strict-autonomy --fail-on warn
+```
+
+To repair manifests/issues + bootstrap labels/routing in one pass:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/linear_hygiene.py full-pass --team Moltlang --apply --run-formal-inventory
+```
+
+## 10. Human operating loop (required)
 
 - Human role and responsibilities are defined in:
   - `docs/SYMPHONY_HUMAN_ROLE.md`
@@ -184,7 +225,7 @@ It also installs a watchdog service by default (`com.molt.symphony.watchdog`) to
   3. Review evidence (tests, benchmarks, docs sync).
   4. Move issues to terminal state only after gates pass.
 
-## 10. Harness extras
+## 11. Harness extras
 
 - Repo-native code search helper:
 

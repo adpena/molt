@@ -90,7 +90,9 @@ class _QuietThreadingHTTPServer(ThreadingHTTPServer):
 class _ExternalStateHasher:
     command: list[str]
     timeout_seconds: float
-    _proc: subprocess.Popen[str] | None = field(default=None, init=False)
+    frame_mode: bool = False
+    fallback_command: list[str] | None = None
+    _proc: subprocess.Popen[Any] | None = field(default=None, init=False)
     _lock: Lock = field(default_factory=Lock, init=False)
     _enabled: bool = field(default=True, init=False)
 
@@ -105,9 +107,9 @@ class _ExternalStateHasher:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                bufsize=1,
+                text=not self.frame_mode,
+                encoding="utf-8" if not self.frame_mode else None,
+                bufsize=1 if not self.frame_mode else 0,
             )
         except OSError:
             self._enabled = False
@@ -115,8 +117,33 @@ class _ExternalStateHasher:
             return False
         return True
 
+    def _read_exact_with_timeout(self, stream: Any, count: int) -> bytes | None:
+        if count <= 0:
+            return b""
+        out = bytearray()
+        while len(out) < count:
+            if os.name != "nt":
+                ready, _, _ = select.select([stream], [], [], self.timeout_seconds)
+                if not ready:
+                    return None
+            chunk = stream.read(count - len(out))
+            if not isinstance(chunk, (bytes, bytearray)) or not chunk:
+                return None
+            out.extend(chunk)
+        return bytes(out)
+
+    def _switch_to_fallback_locked(self) -> bool:
+        fallback = self.fallback_command
+        if not fallback:
+            return False
+        self._close_locked(disable=False)
+        self.command = list(fallback)
+        self.frame_mode = False
+        self.fallback_command = None
+        self._enabled = True
+        return self._ensure_started()
+
     def hash(self, payload_bytes: bytes) -> str | None:
-        payload_b64 = base64.b64encode(payload_bytes).decode("ascii")
         with self._lock:
             if not self._ensure_started():
                 return None
@@ -124,6 +151,26 @@ class _ExternalStateHasher:
             if proc is None or proc.stdin is None or proc.stdout is None:
                 self._enabled = False
                 return None
+            if self.frame_mode:
+                try:
+                    proc.stdin.write(
+                        len(payload_bytes).to_bytes(4, "big", signed=False)
+                    )
+                    proc.stdin.write(payload_bytes)
+                    proc.stdin.flush()
+                    digest = self._read_exact_with_timeout(proc.stdout, 8)
+                    if digest is not None:
+                        return f'W/"{digest.hex()}"'
+                except OSError:
+                    pass
+                if not self._switch_to_fallback_locked():
+                    self._close_locked(disable=True)
+                    return None
+                proc = self._proc
+                if proc is None or proc.stdin is None or proc.stdout is None:
+                    self._enabled = False
+                    return None
+            payload_b64 = base64.b64encode(payload_bytes).decode("ascii")
             try:
                 proc.stdin.write(payload_b64 + "\n")
                 proc.stdin.flush()
@@ -267,9 +314,7 @@ class DashboardServer:
                     cached = security_events_cache.get("payload")
                     if isinstance(cached, dict):
                         return dict(cached)
-            payload = load_security_events_summary(
-                security_events_file, max_lines=2000
-            )
+            payload = load_security_events_summary(security_events_file, max_lines=2000)
             with security_counters_lock:
                 security_events_cache["signature"] = signature
                 security_events_cache["payload"] = payload
@@ -1055,8 +1100,20 @@ def _state_hasher_from_env() -> _ExternalStateHasher | None:
         return None
     if not command:
         return None
-    if "--stdio" not in command:
-        command.append("--stdio")
+    has_mode = "--stdio" in command or "--stdio-frame" in command
+    prefer_frame = _coerce_bool_env(
+        "MOLT_SYMPHONY_STATE_HASH_HELPER_PREFER_FRAME", default=True
+    )
+    frame_mode = "--stdio-frame" in command
+    fallback_command: list[str] | None = None
+    if not has_mode:
+        if prefer_frame:
+            fallback_command = [*command, "--stdio"]
+            command = [*command, "--stdio-frame"]
+            frame_mode = True
+        else:
+            command = [*command, "--stdio"]
+            frame_mode = False
     timeout_ms_raw = str(
         os.environ.get("MOLT_SYMPHONY_STATE_HASH_HELPER_TIMEOUT_MS", "150")
     ).strip()
@@ -1065,7 +1122,12 @@ def _state_hasher_from_env() -> _ExternalStateHasher | None:
     except ValueError:
         timeout_ms = 150
     timeout_seconds = max(timeout_ms, 10) / 1000.0
-    return _ExternalStateHasher(command=command, timeout_seconds=timeout_seconds)
+    return _ExternalStateHasher(
+        command=command,
+        timeout_seconds=timeout_seconds,
+        frame_mode=frame_mode,
+        fallback_command=fallback_command,
+    )
 
 
 def _coerce_limit_param(query: str, *, default: int) -> int:

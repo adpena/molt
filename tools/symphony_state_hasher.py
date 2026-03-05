@@ -32,8 +32,44 @@ def _run_stdio() -> int:
     return 0
 
 
-def _parse_args(argv: list[str]) -> tuple[bool, str]:
+def _read_exact(stream: object, count: int) -> bytes | None:
+    if count <= 0:
+        return b""
+    read = getattr(stream, "read", None)
+    if not callable(read):
+        return None
+    out = bytearray()
+    while len(out) < count:
+        chunk = read(count - len(out))
+        if not isinstance(chunk, (bytes, bytearray)):
+            return None
+        if not chunk:
+            return None
+        out.extend(chunk)
+    return bytes(out)
+
+
+def _run_stdio_frame() -> int:
+    stdin = sys.stdin.buffer
+    stdout = sys.stdout.buffer
+    while True:
+        header = stdin.read(4)
+        if not header:
+            return 0
+        if len(header) != 4:
+            return 2
+        size = int.from_bytes(header, "big", signed=False)
+        payload = _read_exact(stdin, size)
+        if payload is None:
+            return 2
+        digest = hashlib.blake2s(payload, digest_size=8).digest()
+        stdout.write(digest)
+        stdout.flush()
+
+
+def _parse_args(argv: list[str]) -> tuple[str, str]:
     stdio = False
+    stdio_frame = False
     payload_b64 = ""
     idx = 0
     while idx < len(argv):
@@ -42,9 +78,13 @@ def _parse_args(argv: list[str]) -> tuple[bool, str]:
             stdio = True
             idx += 1
             continue
+        if arg == "--stdio-frame":
+            stdio_frame = True
+            idx += 1
+            continue
         if arg == "--payload-b64":
             if idx + 1 >= len(argv):
-                return False, ""
+                return "invalid", ""
             payload_b64 = str(argv[idx + 1])
             idx += 2
             continue
@@ -53,18 +93,25 @@ def _parse_args(argv: list[str]) -> tuple[bool, str]:
             idx += 1
             continue
         # Unknown flags are treated as invalid input.
-        return False, ""
-    return stdio, payload_b64
+        return "invalid", ""
+    if stdio and stdio_frame:
+        return "invalid", ""
+    if stdio:
+        return "stdio", payload_b64
+    if stdio_frame:
+        return "stdio-frame", payload_b64
+    return "oneshot", payload_b64
 
 
 def main(argv: list[str] | None = None) -> int:
     args = list(argv or [])
-    parsed = _parse_args(args)
-    if parsed == (False, "") and args:
+    mode, payload_b64 = _parse_args(args)
+    if mode == "invalid":
         return 2
-    stdio, payload_b64 = parsed
-    if stdio:
+    if mode == "stdio":
         return _run_stdio()
+    if mode == "stdio-frame":
+        return _run_stdio_frame()
     payload = _decode_payload(payload_b64)
     if payload is None:
         return 2

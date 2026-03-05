@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from molt.symphony.http_server import DashboardServer
+from molt.symphony.http_server import DashboardServer, _state_hasher_from_env
 
 
 class _Provider:
@@ -252,7 +252,9 @@ def test_dashboard_static_assets_are_served() -> None:
                 resp.headers.get("Cache-Control") or ""
             ) == "public, max-age=300, immutable"
             assert (resp.headers.get("Referrer-Policy") or "") == "no-referrer"
-            assert (resp.headers.get("Permissions-Policy") or "") == "interest-cohort=()"
+            assert (
+                resp.headers.get("Permissions-Policy") or ""
+            ) == "interest-cohort=()"
             assert (
                 resp.headers.get("Cross-Origin-Opener-Policy") or ""
             ) == "same-origin"
@@ -272,9 +274,7 @@ def test_dashboard_static_assets_are_served() -> None:
             urllib.request.urlopen(req, timeout=5.0)
         assert exc_info.value.code == 304
         assert (exc_info.value.headers.get("ETag") or "") == str(css_etag)
-        assert (
-            exc_info.value.headers.get("Referrer-Policy") or ""
-        ) == "no-referrer"
+        assert (exc_info.value.headers.get("Referrer-Policy") or "") == "no-referrer"
         assert (
             exc_info.value.headers.get("Permissions-Policy") or ""
         ) == "interest-cohort=()"
@@ -289,7 +289,9 @@ def test_dashboard_static_assets_are_served() -> None:
                 resp.headers.get("Cache-Control") or ""
             ) == "public, max-age=300, immutable"
             assert (resp.headers.get("Referrer-Policy") or "") == "no-referrer"
-            assert (resp.headers.get("Permissions-Policy") or "") == "interest-cohort=()"
+            assert (
+                resp.headers.get("Permissions-Policy") or ""
+            ) == "interest-cohort=()"
             js_etag = resp.headers.get("ETag")
             assert js_etag
             assert "EventSource" in js
@@ -303,9 +305,7 @@ def test_dashboard_static_assets_are_served() -> None:
             urllib.request.urlopen(req, timeout=5.0)
         assert exc_info.value.code == 304
         assert (exc_info.value.headers.get("ETag") or "") == str(js_etag)
-        assert (
-            exc_info.value.headers.get("Referrer-Policy") or ""
-        ) == "no-referrer"
+        assert (exc_info.value.headers.get("Referrer-Policy") or "") == "no-referrer"
         assert (
             exc_info.value.headers.get("Permissions-Policy") or ""
         ) == "interest-cohort=()"
@@ -518,6 +518,29 @@ def test_state_endpoint_supports_external_hasher_helper(monkeypatch: object) -> 
         conn.close()
     finally:
         server.stop()
+
+
+def test_state_hasher_env_prefers_frame_with_text_fallback(monkeypatch: object) -> None:
+    helper_cmd = f"{sys.executable} tools/symphony_state_hasher.py"
+    monkeypatch.setenv("MOLT_SYMPHONY_STATE_HASH_HELPER", helper_cmd)
+    monkeypatch.setenv("MOLT_SYMPHONY_STATE_HASH_HELPER_PREFER_FRAME", "1")
+    hasher = _state_hasher_from_env()
+    assert hasher is not None
+    assert "--stdio-frame" in hasher.command
+    assert hasher.frame_mode is True
+    assert hasher.fallback_command is not None
+    assert "--stdio" in hasher.fallback_command
+
+
+def test_state_hasher_env_can_force_text_mode(monkeypatch: object) -> None:
+    helper_cmd = f"{sys.executable} tools/symphony_state_hasher.py"
+    monkeypatch.setenv("MOLT_SYMPHONY_STATE_HASH_HELPER", helper_cmd)
+    monkeypatch.setenv("MOLT_SYMPHONY_STATE_HASH_HELPER_PREFER_FRAME", "0")
+    hasher = _state_hasher_from_env()
+    assert hasher is not None
+    assert "--stdio" in hasher.command
+    assert "--stdio-frame" not in hasher.command
+    assert hasher.frame_mode is False
 
 
 def test_state_endpoint_falls_back_when_helper_is_invalid(monkeypatch: object) -> None:

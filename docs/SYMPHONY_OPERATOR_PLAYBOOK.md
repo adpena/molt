@@ -1,6 +1,6 @@
 # Symphony + Linear Operator Playbook (Molt)
 
-Last updated: 2026-03-04
+Last updated: 2026-03-05
 
 This is the practical runbook for a human operator supervising Symphony in the Molt repo.
 
@@ -59,6 +59,10 @@ Recommended top-level project buckets:
 - Security & Supply Chain
 - Offload & Data Ecosystem
 
+Automation note (as of 2026-03-04):
+- Treat `tools/linear_workspace.py` as the canonical non-interactive Linear CLI for Symphony automation.
+- The npm `@linear/cli` (`lin`) can be auth-seeded by bootstrap, but upstream schema drift may break command execution.
+
 ## 4. Issue Schema Rules (Human-Enforced)
 
 Every engineering issue should include normalized metadata in title/description:
@@ -71,7 +75,36 @@ Every engineering issue should include normalized metadata in title/description:
 
 Input source for seed generation is TODO taxonomy in canonical docs.
 
-## 5. Daily Operator Workflow
+## 5. Readiness Audit Loop
+
+Run the readiness audit at least daily (and before/after orchestration changes):
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --team Moltlang
+```
+
+Artifacts are written to:
+
+- `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.json`
+- `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.md`
+
+Use this report to drive cleanup of malformed Linear issues, metadata gaps, and
+launchd/durable-memory wiring drift.
+
+For autonomy hard-gating (CI/nightly), run:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --team Moltlang --strict-autonomy --fail-on warn
+```
+
+Use `tools/linear_hygiene.py` to continuously clean/taxonomize Linear and keep
+swarm routing labels current:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/linear_hygiene.py full-pass --team Moltlang --apply --run-formal-inventory
+```
+
+## 6. Daily Operator Workflow
 
 1. Pull latest candidate work from canonical docs.
 2. Curate/merge duplicates and malformed issues.
@@ -80,7 +113,7 @@ Input source for seed generation is TODO taxonomy in canonical docs.
 5. Review evidence artifacts.
 6. Close only when acceptance gates pass.
 
-## 6. Acceptance Gates (Must Pass)
+## 7. Acceptance Gates (Must Pass)
 
 Use these gate docs as hard acceptance criteria:
 
@@ -94,7 +127,7 @@ Minimum expectations for substantial work:
 - compatibility/doc sync when behavior changes
 - determinism/security checks for sensitive lanes
 
-## 7. Human Decision Gates
+## 8. Human Decision Gates
 
 Symphony can execute, but the human decides:
 
@@ -103,7 +136,7 @@ Symphony can execute, but the human decides:
 - when to escalate blockers
 - whether a change is safe to mark `Done`
 
-## 8. Escalation Conditions
+## 9. Escalation Conditions
 
 Escalate immediately when:
 
@@ -112,21 +145,21 @@ Escalate immediately when:
 - diff parity/memory behavior regresses
 - determinism/security checklist cannot be satisfied
 
-## 9. Security/Secret Hygiene
+## 10. Security/Secret Hygiene
 
 - Keep `LINEAR_API_KEY` and other tokens in env vars only.
 - Never put raw secrets in docs, issues, prompts, or committed files.
 - Use `.gitignore`-protected local files (`.env`, `WORKFLOW.local.md`, `ops/linear/*.secret*`).
 - Keep automated merge acceptance gated to trusted authors (`adpena`, `symphony`) via `MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS`.
 
-## 10. Symphony Tool-Call Discipline
+## 11. Symphony Tool-Call Discipline
 - `symphony_state`: read/write orchestration progress and checkpoint transitions.
 - `linear_graphql`: fetch/create/update issues with normalized metadata (`area/owner/milestone/priority/status`).
 - `molt_code_search`: inspect impacted code/docs surfaces before task dispatch.
 - `molt_cli`: run build/test/bench workflows and capture evidence.
 - `molt_formal_check`: run formal validation for orchestration-risk changes.
 
-## 11. Formalization Gate (Lean + Quint)
+## 12. Formalization Gate (Lean + Quint)
 - Risky orchestration changes (`src/molt/symphony/**`, `tools/symphony_*.py`, workflow/state logic) should run:
   - `cd formal/lean && lake build`
   - `quint run formal/quint/molt_build_determinism.qnt --invariant=Inv --max-steps=10`
@@ -134,7 +167,7 @@ Escalate immediately when:
   - `quint verify formal/quint/molt_build_determinism.qnt --invariant=Inv`
 - Default policy: bounded checks in normal turns, full verify before major merges.
 
-## 12. Canonical Symphony Compliance
+## 13. Canonical Symphony Compliance
 
 Track implementation compliance in:
 
