@@ -1,6 +1,6 @@
 # STATUS (Canonical)
 
-Last updated: 2026-03-04
+Last updated: 2026-03-05
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
@@ -12,6 +12,16 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Coverage/interoperability: approach Nuitka-level CPython surface coverage and
   ecosystem interoperability, while preserving Molt vision constraints
   (determinism, explicit capabilities, and no implicit host-Python fallback).
+
+## Symphony Harness Engineering (2026-03-05)
+- Implemented: canonical harness architecture docs are now explicit and linked:
+  `docs/HARNESS_ENGINEERING.md`, `docs/QUALITY_SCORE.md`, and
+  `docs/exec-plans/TEMPLATE.md` (+ active/completed execution-plan directories).
+- Implemented: `tools/symphony_readiness_audit.py` now emits a dedicated
+  `harness_engineering` section with weighted scoring (`0..100`, target `>= 90`),
+  missing-artifact detection, and principle-coverage checks.
+- Implemented: strict-autonomy mode now treats low harness score
+  (`harness_score_below_target`) as a promoted fail condition for unattended runs.
 
 ## Rust-First Stdlib Lowering Sprint (2026-03-01)
 - Completed (2026-03-03): wasm dynamic-parse lanes are now explicitly capability-broken

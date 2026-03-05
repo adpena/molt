@@ -17,6 +17,11 @@ Human operator contract:
 - [docs/SYMPHONY_HUMAN_ROLE.md](docs/SYMPHONY_HUMAN_ROLE.md)
 - [docs/SYMPHONY_OPERATOR_PLAYBOOK.md](docs/SYMPHONY_OPERATOR_PLAYBOOK.md)
 
+Harness engineering alignment:
+- [docs/HARNESS_ENGINEERING.md](docs/HARNESS_ENGINEERING.md)
+- [docs/QUALITY_SCORE.md](docs/QUALITY_SCORE.md)
+- [docs/exec-plans/TEMPLATE.md](docs/exec-plans/TEMPLATE.md)
+
 ## What is implemented
 
 - `WORKFLOW.md` loader with YAML front matter + strict prompt rendering
@@ -112,6 +117,16 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_perf.py WORKFLOW.md -
 
 This writes a JSON report under `/Volumes/APDataStore/Molt/logs/symphony/` by default.
 
+Optional client-side WASM lane (Python -> Molt -> WASM) for dashboard kernels:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_dashboard_wasm.py \
+  --profile release \
+  --output /Volumes/APDataStore/Molt/wasm/symphony/dashboard_kernel.wasm
+```
+
+Kernel source is `src/molt/symphony/dashboard_kernel.py`.
+
 Optional dashboard API efficiency baseline in the same run:
 
 ```bash
@@ -194,8 +209,10 @@ Outputs are written under:
 - `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.md`
 
 The audit covers Linear workspace hygiene, manifest quality, docs/tooling coverage,
-launchd/watchdog wiring, and durable memory readability. DuckDB lock contention
-while the live service is writing is reported as warning-only (`duckdb_locked_by_writer`).
+launchd/watchdog wiring, durable memory readability, and a harness engineering
+score (`sections.harness_engineering.score`, target `>= 90`). DuckDB lock
+contention while the live service is writing is reported as warning-only
+(`duckdb_locked_by_writer`).
 
 Strict autonomy mode (promotes metadata/title drift and no-active-flow warnings
 to failures). This also runs formal-suite inventory by default:

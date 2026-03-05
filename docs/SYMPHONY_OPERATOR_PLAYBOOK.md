@@ -10,6 +10,8 @@ Operate Symphony so execution stays aligned with:
 
 - `docs/SYMPHONY.md` (canonical Symphony architecture and execution model)
 - `docs/SYMPHONY_HUMAN_ROLE.md` (human authority and escalation model)
+- `docs/HARNESS_ENGINEERING.md` (harness controls + recursive improvement loop)
+- `docs/QUALITY_SCORE.md` (quality score rubric + target thresholds)
 - `docs/spec/STATUS.md` (current truth)
 - `ROADMAP.md` (active plan)
 - `OPTIMIZATIONS_PLAN.md` (optimization sequencing)
@@ -88,8 +90,9 @@ Artifacts are written to:
 - `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.json`
 - `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.md`
 
-Use this report to drive cleanup of malformed Linear issues, metadata gaps, and
-launchd/durable-memory wiring drift.
+Use this report to drive cleanup of malformed Linear issues, metadata gaps,
+launchd/durable-memory wiring drift, and harness score regressions. Keep
+`sections.harness_engineering.score >= 90` before scaling unattended autonomy.
 
 For autonomy hard-gating (CI/nightly), run:
 

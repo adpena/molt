@@ -2254,6 +2254,16 @@
         if (!(target instanceof Element)) return;
         const tab = target.closest(".view-tab");
         if (!(tab instanceof HTMLButtonElement)) return;
+        if (event.key === "Home" || event.key === "End") {
+          event.preventDefault();
+          if (!viewTabs.length) return;
+          const nextTab =
+            event.key === "Home" ? viewTabs[0] : viewTabs[viewTabs.length - 1];
+          if (!(nextTab instanceof HTMLButtonElement)) return;
+          setDashboardView(nextTab.dataset.view || "overview", true);
+          nextTab.focus();
+          return;
+        }
         if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
           event.preventDefault();
           const dir = event.key === "ArrowRight" ? 1 : -1;
