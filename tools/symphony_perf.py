@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import hashlib
 import json
@@ -14,6 +15,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,6 +42,7 @@ class DashboardStateSample:
     status: int
     latency_ms: float
     had_etag: bool
+    state_payload: dict[str, Any] | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -61,6 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated execution modes.",
     )
     parser.add_argument("--iterations", type=int, default=3)
+    parser.add_argument(
+        "--skip-mode-runs",
+        action="store_true",
+        help="Skip launcher-mode runs and collect only dashboard/hash/report analytics.",
+    )
     parser.add_argument("--molt-profile", choices=["dev", "release"], default="dev")
     parser.add_argument(
         "--rebuild-each-run",
@@ -124,6 +132,33 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--auto-compare-latest",
+        action="store_true",
+        help="Auto-compare against the newest prior report in --reports-dir.",
+    )
+    parser.add_argument(
+        "--reports-dir",
+        default="",
+        help=(
+            "Directory containing symphony_perf_*.json reports. "
+            "Defaults to $MOLT_EXT_ROOT/logs/symphony."
+        ),
+    )
+    parser.add_argument(
+        "--keep-reports",
+        type=int,
+        default=0,
+        help="Prune report files in --reports-dir to the latest N after writing output.",
+    )
+    parser.add_argument(
+        "--verdict-json",
+        default="",
+        help=(
+            "Optional path for concise performance verdict output "
+            "(status, breaches, baseline, report path)."
+        ),
+    )
+    parser.add_argument(
         "--fail-on-regression",
         action="store_true",
         help="Return nonzero when configured regression thresholds are breached.",
@@ -163,6 +198,35 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Maximum allowed dashboard API p95 latency regression in ms.",
+    )
+    parser.add_argument(
+        "--linear-sync-regressions",
+        action="store_true",
+        help=(
+            "Create/update Linear issues for top regression/optimization candidates "
+            "when comparison data is available."
+        ),
+    )
+    parser.add_argument(
+        "--linear-team",
+        default="",
+        help="Linear team reference (name/key/id) for regression issue sync.",
+    )
+    parser.add_argument(
+        "--linear-project",
+        default="",
+        help="Optional Linear project reference for regression issue sync.",
+    )
+    parser.add_argument(
+        "--linear-max-issues",
+        type=int,
+        default=8,
+        help="Maximum regression issues to sync to Linear per run.",
+    )
+    parser.add_argument(
+        "--linear-dry-run",
+        action="store_true",
+        help="Prepare Linear regression issue plan without mutating Linear state.",
     )
     return parser
 
@@ -317,6 +381,7 @@ def _collect_dashboard_state_samples(
         started = time.perf_counter()
         status = 0
         had_etag = False
+        state_payload: dict[str, Any] | None = None
         try:
             with urllib.request.urlopen(
                 req, timeout=max(int(timeout_seconds), 1)
@@ -326,7 +391,9 @@ def _collect_dashboard_state_samples(
                 if response_etag:
                     etag = response_etag
                     had_etag = True
-                _ = resp.read()
+                body = resp.read()
+                if status == 200:
+                    state_payload = _decode_state_payload(body)
         except urllib.error.HTTPError as exc:
             status = int(exc.code)
             response_etag = (
@@ -345,11 +412,20 @@ def _collect_dashboard_state_samples(
                 status=status,
                 latency_ms=latency_ms,
                 had_etag=had_etag,
+                state_payload=state_payload,
             )
         )
         if pause_seconds > 0 and idx + 1 < total:
             time.sleep(pause_seconds)
     return rows
+
+
+def _decode_state_payload(body: bytes) -> dict[str, Any] | None:
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _summarize_dashboard_state_samples(
@@ -657,36 +733,286 @@ def _maybe_add_breach(
     )
 
 
+def _default_reports_dir(ext_root: Path) -> Path:
+    return ext_root / "logs" / "symphony"
+
+
+def _resolve_reports_dir(raw: str, *, ext_root: Path) -> Path:
+    text = str(raw or "").strip()
+    if text:
+        return Path(text).expanduser()
+    return _default_reports_dir(ext_root)
+
+
+def _list_reports(reports_dir: Path) -> list[Path]:
+    if not reports_dir.exists():
+        return []
+    return sorted(
+        [path for path in reports_dir.glob("symphony_perf_*.json") if path.is_file()],
+        key=lambda path: path.stat().st_mtime_ns,
+    )
+
+
+def _discover_latest_baseline_report(
+    reports_dir: Path, *, exclude: Sequence[Path] | None = None
+) -> Path | None:
+    excluded = {path.resolve() for path in (exclude or [])}
+    for candidate in reversed(_list_reports(reports_dir)):
+        resolved = candidate.resolve()
+        if resolved in excluded:
+            continue
+        return candidate
+    return None
+
+
+def _prune_reports(reports_dir: Path, *, keep_reports: int) -> list[str]:
+    keep = max(int(keep_reports), 0)
+    if keep <= 0:
+        return []
+    reports = _list_reports(reports_dir)
+    if len(reports) <= keep:
+        return []
+    removed: list[str] = []
+    for candidate in reports[: len(reports) - keep]:
+        try:
+            candidate.unlink()
+            removed.append(str(candidate))
+        except OSError:
+            continue
+    return removed
+
+
+def _latest_state_payload(
+    rows: list[DashboardStateSample],
+) -> dict[str, Any] | None:
+    for row in reversed(rows):
+        if row.status == 200 and isinstance(row.state_payload, dict):
+            return row.state_payload
+    return None
+
+
+def _candidate_component(label: str) -> tuple[str, str]:
+    text = label.lower()
+    if any(
+        token in text
+        for token in ("dispatch", "retry", "worker", "orchestrator", "event_handler")
+    ):
+        return ("symphony-orchestrator", "executor")
+    if any(
+        token in text for token in ("dashboard", "stream", "http", "state_hash", "sse")
+    ):
+        return ("symphony-dashboard", "executor")
+    if any(
+        token in text for token in ("molt", "runtime", "backend", "intrinsic", "build")
+    ):
+        return ("molt-runtime", "executor")
+    return ("symphony-core", "executor")
+
+
+def _build_regression_candidates(
+    comparison: dict[str, Any] | None,
+    dashboard_rows: list[DashboardStateSample],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen_titles: set[str] = set()
+
+    if isinstance(comparison, dict):
+        mode_rows = comparison.get("mode_comparison")
+        if isinstance(mode_rows, dict):
+            for mode, raw_row in mode_rows.items():
+                row = raw_row if isinstance(raw_row, dict) else {}
+                avg_delta = _num_or_none(row.get("avg_delta_s")) or 0.0
+                p95_delta = _num_or_none(row.get("p95_delta_s")) or 0.0
+                if avg_delta <= 0 and p95_delta <= 0:
+                    continue
+                title = f"Perf Regression: mode {mode}"
+                if title in seen_titles:
+                    continue
+                seen_titles.add(title)
+                component, owner = _candidate_component(str(mode))
+                candidates.append(
+                    {
+                        "title": title,
+                        "priority": 1,
+                        "component": component,
+                        "owner_hint": owner,
+                        "score": max(avg_delta, p95_delta),
+                        "description": (
+                            "Symphony perf comparison detected launcher-mode regression.\n\n"
+                            f"- Mode: `{mode}`\n"
+                            f"- avg delta (s): `{avg_delta}`\n"
+                            f"- p95 delta (s): `{p95_delta}`\n"
+                            f"- avg delta ratio: `{row.get('avg_delta_ratio')}`\n"
+                            f"- p95 delta ratio: `{row.get('p95_delta_ratio')}`\n"
+                            "Please investigate hotspot attribution and optimize."
+                        ),
+                    }
+                )
+    latest_state = _latest_state_payload(dashboard_rows)
+    profiling_compare = (
+        latest_state.get("profiling_compare")
+        if isinstance(latest_state, dict)
+        else None
+    )
+    regressions = (
+        profiling_compare.get("regressions")
+        if isinstance(profiling_compare, dict)
+        else None
+    )
+    optimizations = (
+        profiling_compare.get("optimizations")
+        if isinstance(profiling_compare, dict)
+        else None
+    )
+    for row_value in list(regressions or []) + list(optimizations or []):
+        row = row_value if isinstance(row_value, dict) else {}
+        label = str(row.get("label") or "").strip()
+        if not label:
+            continue
+        title = f"Perf Hotspot: {label}"
+        if title in seen_titles:
+            continue
+        seen_titles.add(title)
+        component, owner = _candidate_component(label)
+        score = max(
+            _num_or_none(row.get("impact_ms")) or 0.0,
+            _num_or_none(row.get("priority_score")) or 0.0,
+            _num_or_none(row.get("avg_delta_ms")) or 0.0,
+            _num_or_none(row.get("p95_delta_ms")) or 0.0,
+        )
+        candidates.append(
+            {
+                "title": title,
+                "priority": 1,
+                "component": component,
+                "owner_hint": owner,
+                "score": score,
+                "description": (
+                    "Symphony profiler identified hotspot regression candidate.\n\n"
+                    f"- Label: `{label}`\n"
+                    f"- Reason: `{row.get('reason')}`\n"
+                    f"- avg delta (ms): `{row.get('avg_delta_ms')}`\n"
+                    f"- p95 delta (ms): `{row.get('p95_delta_ms')}`\n"
+                    f"- Samples: `{row.get('samples')}`\n"
+                    f"- Recent samples: `{row.get('recent_samples')}`\n"
+                    f"- Priority score: `{row.get('priority_score')}`\n"
+                    "Attach profiler data and lower validated hotspots."
+                ),
+            }
+        )
+
+    candidates.sort(key=lambda row: float(row.get("score") or 0.0), reverse=True)
+    return candidates[: max(int(limit), 1)]
+
+
+def _sync_linear_regression_issues(
+    *,
+    team: str,
+    project: str | None,
+    candidates: list[dict[str, Any]],
+    dry_run: bool,
+) -> dict[str, Any]:
+    import tools.linear_workspace as linear_workspace
+
+    if not candidates:
+        return {"ok": True, "planned": 0, "result": {"created_count": 0, "updated_count": 0}}
+    team_id = linear_workspace._resolve_team_id(team)
+    project_id = linear_workspace._resolve_project_id(team_id, project)
+    existing = linear_workspace._fetch_issues(team_id, project_id)
+    desired = [
+        linear_workspace.DesiredIssue(
+            title=str(candidate["title"]),
+            description=str(candidate["description"]),
+            priority=int(candidate.get("priority") or 1),
+        )
+        for candidate in candidates
+    ]
+    plan = linear_workspace._build_sync_plan(
+        desired=desired,
+        existing=existing,
+        update_existing=True,
+        close_duplicates=False,
+        duplicate_state_id=None,
+    )
+    payload: dict[str, Any] = {
+        "ok": True,
+        "team": team,
+        "project": project,
+        "planned": {
+            "create": len(plan.creates),
+            "update": len(plan.updates),
+            "existing_skipped": plan.existing_skipped,
+        },
+        "dry_run": bool(dry_run),
+    }
+    if dry_run:
+        payload["sample_titles"] = [item.title for item in plan.creates[:10]]
+        return payload
+    outcome = asyncio.run(
+        linear_workspace._execute_sync_plan(
+            plan=plan,
+            team_id=team_id,
+            project_id=project_id,
+            duplicate_state_id=None,
+            concurrency=4,
+        )
+    )
+    created = [item for item in outcome.get("created", []) if isinstance(item, dict)]
+    updated = [item for item in outcome.get("updated", []) if isinstance(item, dict)]
+    payload["result"] = {
+        "created_count": len(created),
+        "updated_count": len(updated),
+        "error_count": len(outcome.get("errors", [])),
+        "created": created,
+        "updated": updated,
+        "errors": list(outcome.get("errors", [])),
+    }
+    return payload
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    modes = _parse_modes(args.modes)
     ext_root = Path(os.environ.get("MOLT_EXT_ROOT", str(DEFAULT_EXT_ROOT))).expanduser()
     if not ext_root.exists():
         raise RuntimeError(f"External root not mounted: {ext_root}")
+    modes = _parse_modes(args.modes)
+    reports_dir = _resolve_reports_dir(args.reports_dir, ext_root=ext_root)
+    reports_dir.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
     _ext_env_defaults(env, ext_root)
     if not shutil.which("uv"):
         raise RuntimeError("uv is required for symphony_perf")
 
+    output_path: Path
+    if args.output_json:
+        output_path = Path(args.output_json).expanduser()
+    else:
+        stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        output_path = reports_dir / f"symphony_perf_{stamp}.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
     samples: list[Sample] = []
-    for mode in modes:
-        for idx in range(max(args.iterations, 1)):
-            sample = _run_once(
-                mode=mode,
-                workflow_path=args.workflow_path,
-                env_file=str(args.env_file),
-                molt_profile=args.molt_profile,
-                rebuild_binary=bool(args.rebuild_each_run),
-                env=env,
-                timeout_seconds=args.timeout_seconds,
-            )
-            sample.iteration = idx + 1
-            samples.append(sample)
-            print(
-                f"{mode} iter={sample.iteration} rc={sample.returncode} "
-                f"duration_s={sample.duration_s:.3f}"
-            )
+    if not args.skip_mode_runs:
+        for mode in modes:
+            for idx in range(max(args.iterations, 1)):
+                sample = _run_once(
+                    mode=mode,
+                    workflow_path=args.workflow_path,
+                    env_file=str(args.env_file),
+                    molt_profile=args.molt_profile,
+                    rebuild_binary=bool(args.rebuild_each_run),
+                    env=env,
+                    timeout_seconds=args.timeout_seconds,
+                )
+                sample.iteration = idx + 1
+                samples.append(sample)
+                print(
+                    f"{mode} iter={sample.iteration} rc={sample.returncode} "
+                    f"duration_s={sample.duration_s:.3f}"
+                )
 
     summary = _summary(samples)
     print(json.dumps(summary, indent=2))
@@ -733,9 +1059,19 @@ def main(argv: list[str] | None = None) -> int:
 
     comparison: dict[str, Any] | None = None
     regression_breaches: list[dict[str, Any]] = []
+    linear_sync: dict[str, Any] | None = None
     compare_with = str(args.compare_with or "").strip()
+    if not compare_with and bool(args.auto_compare_latest):
+        baseline_path_auto = _discover_latest_baseline_report(
+            reports_dir,
+            exclude=(output_path,),
+        )
+        if baseline_path_auto is not None:
+            compare_with = str(baseline_path_auto)
     if args.fail_on_regression and not compare_with:
-        raise RuntimeError("--fail-on-regression requires --compare-with.")
+        raise RuntimeError(
+            "--fail-on-regression requires --compare-with or --auto-compare-latest."
+        )
     if compare_with:
         baseline_path = Path(compare_with).expanduser()
         baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
@@ -759,62 +1095,102 @@ def main(argv: list[str] | None = None) -> int:
         )
         if regression_breaches:
             print(json.dumps({"regression_breaches": regression_breaches}, indent=2))
-
-    output_path: Path | None = None
-    if args.output_json:
-        output_path = Path(args.output_json).expanduser()
-    else:
-        stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-        output_path = ext_root / "logs" / "symphony" / f"symphony_perf_{stamp}.json"
-    if output_path is not None:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
-            json.dumps(
-                {
-                    "generated_at": datetime.now(UTC)
-                    .isoformat()
-                    .replace("+00:00", "Z"),
-                    "workflow_path": args.workflow_path,
-                    "modes": modes,
-                    "iterations": int(args.iterations),
-                    "summary": summary,
-                    "dashboard_state_api": dashboard_report,
-                    "comparison": comparison,
-                    "regression_breaches": regression_breaches,
-                    "hash_bench": hash_bench,
-                    "samples": [
-                        {
-                            "mode": s.mode,
-                            "iteration": s.iteration,
-                            "returncode": s.returncode,
-                            "duration_s": round(s.duration_s, 6),
-                            "stdout_tail": s.stdout_tail,
-                            "stderr_tail": s.stderr_tail,
-                        }
-                        for s in samples
-                    ],
-                    "dashboard_samples": [
-                        {
-                            "iteration": row.iteration,
-                            "status": row.status,
-                            "latency_ms": round(row.latency_ms, 3),
-                            "had_etag": row.had_etag,
-                        }
-                        for row in dashboard_samples
-                    ],
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
+    if args.linear_sync_regressions:
+        team = str(args.linear_team or "").strip()
+        if not team:
+            raise RuntimeError("--linear-sync-regressions requires --linear-team.")
+        candidates = _build_regression_candidates(
+            comparison,
+            dashboard_samples,
+            limit=max(int(args.linear_max_issues), 1),
         )
-        print(f"wrote {output_path}")
+        linear_sync = _sync_linear_regression_issues(
+            team=team,
+            project=(str(args.linear_project).strip() or None),
+            candidates=candidates,
+            dry_run=bool(args.linear_dry_run),
+        )
+        print(json.dumps({"linear_sync": linear_sync}, indent=2))
+
+    report_payload = {
+        "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "workflow_path": args.workflow_path,
+        "modes": modes,
+        "iterations": int(args.iterations),
+        "skip_mode_runs": bool(args.skip_mode_runs),
+        "reports_dir": str(reports_dir),
+        "summary": summary,
+        "dashboard_state_api": dashboard_report,
+        "comparison": comparison,
+        "compare_with": compare_with or None,
+        "regression_breaches": regression_breaches,
+        "linear_sync": linear_sync,
+        "hash_bench": hash_bench,
+        "samples": [
+            {
+                "mode": s.mode,
+                "iteration": s.iteration,
+                "returncode": s.returncode,
+                "duration_s": round(s.duration_s, 6),
+                "stdout_tail": s.stdout_tail,
+                "stderr_tail": s.stderr_tail,
+            }
+            for s in samples
+        ],
+        "dashboard_samples": [
+            {
+                "iteration": row.iteration,
+                "status": row.status,
+                "latency_ms": round(row.latency_ms, 3),
+                "had_etag": row.had_etag,
+            }
+            for row in dashboard_samples
+        ],
+    }
+    output_path.write_text(
+        json.dumps(report_payload, indent=2),
+        encoding="utf-8",
+    )
+    print(f"wrote {output_path}")
+    pruned_reports = _prune_reports(
+        reports_dir,
+        keep_reports=max(int(args.keep_reports), 0),
+    )
+    if pruned_reports:
+        print(json.dumps({"pruned_reports": pruned_reports}, indent=2))
 
     any_failure = any(sample.returncode != 0 for sample in samples)
+    exit_code = 0
     if any_failure:
-        return 2
-    if args.fail_on_regression and regression_breaches:
-        return 3
-    return 0
+        exit_code = 2
+    elif args.fail_on_regression and regression_breaches:
+        exit_code = 3
+
+    verdict_path_raw = str(args.verdict_json or "").strip()
+    verdict_path = (
+        Path(verdict_path_raw).expanduser()
+        if verdict_path_raw
+        else reports_dir / "perf" / "verdict.json"
+    )
+    verdict_path.parent.mkdir(parents=True, exist_ok=True)
+    verdict = {
+        "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "status": (
+            "run_failed"
+            if exit_code == 2
+            else ("breach" if exit_code == 3 else "pass")
+        ),
+        "exit_code": exit_code,
+        "report_path": str(output_path),
+        "compare_with": compare_with or None,
+        "breaches_count": len(regression_breaches),
+        "regression_breaches": regression_breaches,
+        "dashboard_state_api": dashboard_report,
+        "linear_sync": linear_sync,
+    }
+    verdict_path.write_text(json.dumps(verdict, indent=2) + "\n", encoding="utf-8")
+    print(f"verdict {verdict_path}")
+    return exit_code
 
 
 if __name__ == "__main__":

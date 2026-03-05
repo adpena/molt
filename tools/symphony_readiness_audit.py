@@ -99,6 +99,10 @@ STRICT_AUTONOMY_FAIL_CODES = {
     "linear_titles_malformed",
     "linear_no_active_flow",
     "harness_score_below_target",
+    "harness_score_regressed",
+    "active_flow_ratio_low",
+    "formal_pass_ratio_low",
+    "durable_growth_recurring",
     "dspy_routing_not_ready",
 }
 FORMAL_SUITE_MODES = ("off", "inventory", "lean", "quint", "all")
@@ -158,7 +162,13 @@ HARNESS_TIMESERIES_FIELDS = (
     "durable_parquet_size",
 )
 
-DURABLE_GROWTH_WARN_RATIO = 0.05
+DEFAULT_DURABLE_GROWTH_WARN_RATIO = 0.05
+DEFAULT_TREND_WINDOW = 12
+DEFAULT_MAX_HARNESS_SCORE_DROP = 5
+DEFAULT_MIN_ACTIVE_FLOW_RATIO = 0.7
+DEFAULT_MIN_FORMAL_PASS_RATIO = 0.8
+
+_PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
 
 def _utc_now() -> str:
@@ -1214,6 +1224,96 @@ def _collect_findings(report: dict[str, Any]) -> list[dict[str, Any]]:
             details=duckdb_check,
         )
 
+    trend = (report.get("sections") or {}).get("trend_analysis") or {}
+    if trend:
+        harness = trend.get("harness") if isinstance(trend, dict) else None
+        if isinstance(harness, dict) and bool(harness.get("regressed")):
+            _record_finding(
+                findings,
+                severity="warn",
+                code="harness_score_regressed",
+                message=(
+                    "Harness engineering score regressed vs previous baseline "
+                    "window."
+                ),
+                details={
+                    "latest": harness.get("latest"),
+                    "previous": harness.get("previous"),
+                    "delta": harness.get("delta"),
+                    "max_harness_score_drop": trend.get("max_harness_score_drop"),
+                },
+            )
+
+        active_flow = trend.get("active_flow") if isinstance(trend, dict) else None
+        if isinstance(active_flow, dict) and bool(active_flow.get("ratio_low")):
+            _record_finding(
+                findings,
+                severity="warn",
+                code="active_flow_ratio_low",
+                message=(
+                    "Active execution flow ratio is below trend threshold across "
+                    "recent readiness snapshots."
+                ),
+                details={
+                    "ratio": active_flow.get("ratio"),
+                    "min_active_flow_ratio": trend.get("min_active_flow_ratio"),
+                    "window": trend.get("window"),
+                    "point_count": trend.get("point_count"),
+                },
+            )
+
+        formal_trend = trend.get("formal_suite") if isinstance(trend, dict) else None
+        if isinstance(formal_trend, dict) and bool(formal_trend.get("ratio_low")):
+            _record_finding(
+                findings,
+                severity="warn",
+                code="formal_pass_ratio_low",
+                message=(
+                    "Formal-suite pass ratio is below trend threshold across recent "
+                    "readiness snapshots."
+                ),
+                details={
+                    "pass_ratio": formal_trend.get("pass_ratio"),
+                    "min_formal_pass_ratio": trend.get("min_formal_pass_ratio"),
+                    "window": trend.get("window"),
+                    "point_count": trend.get("point_count"),
+                },
+            )
+
+        durable_trend = (
+            trend.get("durable_growth") if isinstance(trend, dict) else None
+        )
+        if isinstance(durable_trend, dict) and bool(durable_trend.get("recurring")):
+            _record_finding(
+                findings,
+                severity="warn",
+                code="durable_growth_recurring",
+                message=(
+                    "Durable artifact growth breaches are recurring across recent "
+                    "baseline windows."
+                ),
+                details={
+                    "breach_count": len(durable_trend.get("breaches") or []),
+                    "breach_interval_count": durable_trend.get("breach_interval_count"),
+                    "max_durable_growth_ratio": trend.get("max_durable_growth_ratio"),
+                    "window": trend.get("window"),
+                },
+            )
+        if trend.get("status") == "pass":
+            _record_finding(
+                findings,
+                severity="info",
+                code="readiness_trend_stable",
+                message=(
+                    "Readiness trend checks are stable across the configured "
+                    "historical window."
+                ),
+                details={
+                    "window": trend.get("window"),
+                    "point_count": trend.get("point_count"),
+                },
+            )
+
     manifest = report["sections"]["manifest_index"]
     if manifest.get("missing_manifest_files"):
         _record_finding(
@@ -1465,6 +1565,164 @@ def _overall_status(findings: list[dict[str, Any]]) -> str:
     return "pass"
 
 
+def _synthesize_next_tranche(report: dict[str, Any]) -> dict[str, Any]:
+    findings = report.get("findings") or []
+    actionable = [
+        row
+        for row in findings
+        if str(row.get("severity") or "info") in {"fail", "warn"}
+    ]
+    action_specs: dict[str, dict[str, Any]] = {
+        "ext_root_missing": {
+            "id": "restore_external_volume",
+            "priority": "P0",
+            "title": "Restore external artifact volume mount",
+            "why": "Build/test evidence loops are blocked without external artifact routing.",
+            "commands": [
+                "export MOLT_EXT_ROOT=/Volumes/APDataStore/Molt",
+                "tools/throughput_env.sh --apply",
+            ],
+        },
+        "env_missing_keys": {
+            "id": "repair_runtime_env_contract",
+            "priority": "P0",
+            "title": "Repair Symphony runtime env contract",
+            "why": "Missing env keys can silently break autonomous orchestration lanes.",
+            "commands": [
+                "PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_bootstrap.py --sync-env",
+            ],
+        },
+        "linear_api_key_missing": {
+            "id": "restore_linear_auth",
+            "priority": "P0",
+            "title": "Restore Linear API auth in runtime env",
+            "why": "Linear hygiene and dispatch cannot run without API auth.",
+            "commands": [
+                "grep '^LINEAR_API_KEY=' ops/linear/runtime/symphony.env",
+            ],
+        },
+        "dspy_routing_not_ready": {
+            "id": "stabilize_dspy_routing",
+            "priority": "P1",
+            "title": "Stabilize DSPy routing readiness",
+            "why": "DSPy route selection should be either fully ready or explicitly disabled.",
+            "commands": [
+                "uv sync --group dev --python 3.12",
+                "PYTHONPATH=src uv run --group dev --python 3.12 python3 tools/linear_hygiene.py apply-routing --team Moltlang --apply",
+            ],
+        },
+        "harness_score_below_target": {
+            "id": "raise_harness_score",
+            "priority": "P0",
+            "title": "Raise harness score to target (>=90)",
+            "why": "Harness score below target weakens recursive improvement reliability.",
+            "commands": [
+                "PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --strict-autonomy --fail-on warn",
+            ],
+        },
+        "harness_score_regressed": {
+            "id": "arrest_harness_regression",
+            "priority": "P0",
+            "title": "Arrest harness score regression trend",
+            "why": "Negative harness trajectory indicates governance or tooling drift.",
+            "commands": [
+                "PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --strict-autonomy --fail-on warn",
+            ],
+        },
+        "active_flow_ratio_low": {
+            "id": "restore_execution_flow",
+            "priority": "P1",
+            "title": "Restore active execution flow ratio",
+            "why": "Queue-heavy states reduce throughput and learning feedback loops.",
+            "commands": [
+                "PYTHONPATH=src uv run --group dev --python 3.12 python3 tools/linear_hygiene.py ensure-active-flow --team Moltlang --apply",
+            ],
+        },
+        "formal_pass_ratio_low": {
+            "id": "stabilize_formal_lane",
+            "priority": "P1",
+            "title": "Stabilize formal verification pass ratio",
+            "why": "Repeated formal-suite failures reduce trust in autonomy-critical changes.",
+            "commands": [
+                "PYTHONPATH=src uv run --python 3.12 python3 tools/check_formal_methods.py --json-only",
+            ],
+        },
+        "durable_growth_budget_exceeded": {
+            "id": "trim_durable_growth",
+            "priority": "P1",
+            "title": "Trim durable memory growth budget breach",
+            "why": "Unbounded durable growth can degrade observability and storage health.",
+            "commands": [
+                "PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_durable_admin.py prune --keep-latest 20 --max-age-days 30",
+            ],
+        },
+        "durable_growth_recurring": {
+            "id": "stabilize_durable_growth_trend",
+            "priority": "P1",
+            "title": "Stabilize recurring durable growth trend",
+            "why": "Recurring growth breaches indicate systemic telemetry retention drift.",
+            "commands": [
+                "PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_durable_admin.py check",
+            ],
+        },
+        "durable_duckdb_locked": {
+            "id": "reduce_duckdb_lock_contention",
+            "priority": "P2",
+            "title": "Reduce DuckDB writer lock contention",
+            "why": "Persistent lock contention can hide durability health regressions.",
+            "commands": [
+                "PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_durable_admin.py summary",
+            ],
+        },
+    }
+
+    chosen: dict[str, dict[str, Any]] = {}
+    for row in actionable:
+        code = str(row.get("code") or "")
+        spec = action_specs.get(code)
+        if spec is None:
+            continue
+        key = str(spec["id"])
+        existing = chosen.get(key)
+        if existing is None:
+            chosen[key] = dict(spec)
+            chosen[key]["trigger_codes"] = [code]
+        else:
+            existing_codes = existing.get("trigger_codes") or []
+            if code not in existing_codes:
+                existing_codes.append(code)
+                existing["trigger_codes"] = existing_codes
+
+    actions = list(chosen.values())
+    if not actions:
+        actions.append(
+            {
+                "id": "maintain_green_baseline",
+                "priority": "P2",
+                "title": "Maintain green readiness baseline and expand optimization lanes",
+                "why": "System is stable; use spare capacity for proactive improvements.",
+                "commands": [
+                    "PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --strict-autonomy --fail-on warn --formal-suite all",
+                ],
+                "trigger_codes": [],
+            }
+        )
+
+    actions.sort(
+        key=lambda row: (
+            _PRIORITY_ORDER.get(str(row.get("priority") or "P3"), 3),
+            str(row.get("title") or ""),
+        )
+    )
+    return {
+        "generated_at": str(report.get("generated_at") or _utc_now()),
+        "overall_status": str(report.get("overall_status") or "unknown"),
+        "action_count": len(actions),
+        "status": "action_required" if actionable else "stable",
+        "actions": actions,
+    }
+
+
 def _as_markdown(report: dict[str, Any]) -> str:
     findings = report.get("findings") or []
     lines = [
@@ -1487,6 +1745,21 @@ def _as_markdown(report: dict[str, Any]) -> str:
             code = row.get("code", "uncategorized")
             message = row.get("message", "")
             lines.append(f"- `{severity}` `{code}`: {message}")
+    next_tranche = report.get("next_tranche") or {}
+    lines.extend(["", "## Next Tranche"])
+    actions = next_tranche.get("actions") if isinstance(next_tranche, dict) else None
+    if not isinstance(actions, list) or not actions:
+        lines.append("- none")
+    else:
+        for item in actions:
+            if not isinstance(item, dict):
+                continue
+            priority = str(item.get("priority") or "P3")
+            title = str(item.get("title") or "").strip()
+            why = str(item.get("why") or "").strip()
+            if not title:
+                continue
+            lines.append(f"- `{priority}` {title}: {why}")
     lines.append("")
     return "\n".join(lines)
 
@@ -1498,6 +1771,17 @@ def _safe_int(value: Any, *, default: int = 0) -> int:
         return value
     try:
         return int(str(value))
+    except Exception:
+        return default
+
+
+def _safe_float(value: Any, *, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (float, int)):
+        return float(value)
+    try:
+        return float(str(value))
     except Exception:
         return default
 
@@ -1597,11 +1881,159 @@ def _load_previous_baseline(
     return rows[-1][1]
 
 
+def _load_baseline_history(
+    history_dir: Path, *, limit: int | None = None
+) -> list[dict[str, Any]]:
+    if not history_dir.exists():
+        return []
+    rows: list[tuple[str, dict[str, Any]]] = []
+    for path in sorted(history_dir.glob("baseline_*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        captured_at = str(payload.get("captured_at") or "").strip()
+        if not captured_at:
+            continue
+        rows.append((captured_at, payload))
+    rows.sort(key=lambda item: item[0])
+    history = [payload for _, payload in rows]
+    if limit is not None and limit > 0:
+        history = history[-limit:]
+    return history
+
+
+def _calculate_trend_analysis(
+    *,
+    current_snapshot: dict[str, Any],
+    baseline_history: list[dict[str, Any]],
+    trend_window: int,
+    max_harness_score_drop: int,
+    min_active_flow_ratio: float,
+    min_formal_pass_ratio: float,
+    max_durable_growth_ratio: float,
+) -> dict[str, Any]:
+    series = [row for row in baseline_history if isinstance(row, dict)] + [current_snapshot]
+    if trend_window > 0:
+        series = series[-trend_window:]
+
+    point_count = len(series)
+    active_values = [bool(row.get("linear_active_execution_flow")) for row in series]
+    active_flow_ratio = (
+        round(sum(1 for value in active_values if value) / point_count, 4)
+        if point_count
+        else 0.0
+    )
+
+    formal_values = [
+        str(row.get("formal_suite_status") or "").strip().lower() for row in series
+    ]
+    formal_considered = [value for value in formal_values if value and value != "unknown"]
+    formal_pass_ratio = (
+        round(
+            sum(1 for value in formal_considered if value == "pass")
+            / len(formal_considered),
+            4,
+        )
+        if formal_considered
+        else 1.0
+    )
+
+    harness_scores = [_safe_int(row.get("harness_score")) for row in series]
+    previous_harness = harness_scores[-2] if len(harness_scores) >= 2 else None
+    latest_harness = harness_scores[-1] if harness_scores else None
+    harness_delta = (
+        latest_harness - previous_harness
+        if isinstance(latest_harness, int) and isinstance(previous_harness, int)
+        else None
+    )
+    harness_regressed = bool(
+        isinstance(harness_delta, int) and harness_delta < -max_harness_score_drop
+    )
+
+    durable_pairs: list[dict[str, Any]] = []
+    for prev, cur in zip(series, series[1:], strict=False):
+        for field, artifact in (
+            ("durable_jsonl_size", "jsonl"),
+            ("durable_duckdb_size", "duckdb"),
+            ("durable_parquet_size", "parquet"),
+        ):
+            prev_size = _safe_int(prev.get(field))
+            cur_size = _safe_int(cur.get(field))
+            if prev_size <= 0:
+                continue
+            ratio = (cur_size - prev_size) / prev_size
+            durable_pairs.append(
+                {
+                    "artifact": artifact,
+                    "prev_captured_at": prev.get("captured_at"),
+                    "captured_at": cur.get("captured_at"),
+                    "delta_ratio": round(ratio, 6),
+                    "delta_bytes": cur_size - prev_size,
+                }
+            )
+
+    durable_breaches = [
+        row for row in durable_pairs if row["delta_ratio"] > max_durable_growth_ratio
+    ]
+    breach_intervals = {
+        (str(row.get("prev_captured_at") or ""), str(row.get("captured_at") or ""))
+        for row in durable_breaches
+    }
+    recurring_durable_growth = len(breach_intervals) >= 2
+    active_flow_ratio_low = active_flow_ratio < min_active_flow_ratio
+    formal_pass_ratio_low = formal_pass_ratio < min_formal_pass_ratio
+
+    status = (
+        "warn"
+        if harness_regressed
+        or active_flow_ratio_low
+        or formal_pass_ratio_low
+        or recurring_durable_growth
+        else "pass"
+    )
+    return {
+        "status": status,
+        "point_count": point_count,
+        "window": trend_window,
+        "max_harness_score_drop": max_harness_score_drop,
+        "min_active_flow_ratio": round(min_active_flow_ratio, 4),
+        "min_formal_pass_ratio": round(min_formal_pass_ratio, 4),
+        "max_durable_growth_ratio": round(max_durable_growth_ratio, 6),
+        "harness": {
+            "scores": harness_scores,
+            "latest": latest_harness,
+            "previous": previous_harness,
+            "delta": harness_delta,
+            "regressed": harness_regressed,
+        },
+        "active_flow": {
+            "values": active_values,
+            "ratio": active_flow_ratio,
+            "ratio_low": active_flow_ratio_low,
+        },
+        "formal_suite": {
+            "values": formal_values,
+            "pass_ratio": formal_pass_ratio,
+            "ratio_low": formal_pass_ratio_low,
+        },
+        "durable_growth": {
+            "pairs": durable_pairs,
+            "breaches": durable_breaches,
+            "breach_interval_count": len(breach_intervals),
+            "recurring": recurring_durable_growth,
+        },
+    }
+
+
 def _apply_durable_growth_gate(
     *,
     report: dict[str, Any],
     findings: list[dict[str, Any]],
     previous_baseline: dict[str, Any] | None,
+    max_growth_ratio: float = DEFAULT_DURABLE_GROWTH_WARN_RATIO,
 ) -> None:
     if previous_baseline is None:
         _record_finding(
@@ -1642,7 +2074,7 @@ def _apply_durable_growth_gate(
         return
 
     breaches = [
-        row for row in growth_rows if row["delta_ratio"] > DURABLE_GROWTH_WARN_RATIO
+        row for row in growth_rows if row["delta_ratio"] > max_growth_ratio
     ]
     if breaches:
         _record_finding(
@@ -1651,12 +2083,12 @@ def _apply_durable_growth_gate(
             code="durable_growth_budget_exceeded",
             message=(
                 "Durable memory artifacts exceeded the run-over-run growth budget "
-                f"({int(DURABLE_GROWTH_WARN_RATIO * 100)}%)."
+                f"({int(max_growth_ratio * 100)}%)."
             ),
             details={
                 "previous_captured_at": previous_baseline.get("captured_at"),
                 "current_captured_at": current.get("captured_at"),
-                "threshold_ratio": DURABLE_GROWTH_WARN_RATIO,
+                "threshold_ratio": max_growth_ratio,
                 "breaches": breaches,
             },
         )
@@ -1667,12 +2099,12 @@ def _apply_durable_growth_gate(
             code="durable_growth_within_budget",
             message=(
                 "Durable memory growth stayed within run-over-run budget "
-                f"({int(DURABLE_GROWTH_WARN_RATIO * 100)}%)."
+                f"({int(max_growth_ratio * 100)}%)."
             ),
             details={
                 "previous_captured_at": previous_baseline.get("captured_at"),
                 "current_captured_at": current.get("captured_at"),
-                "threshold_ratio": DURABLE_GROWTH_WARN_RATIO,
+                "threshold_ratio": max_growth_ratio,
                 "artifacts": growth_rows,
             },
         )
@@ -1870,13 +2302,18 @@ def run_audit(
     durable_root: Path,
     strict_autonomy: bool,
     formal_suite_mode: str = "inventory",
+    trend_window: int = DEFAULT_TREND_WINDOW,
+    max_harness_score_drop: int = DEFAULT_MAX_HARNESS_SCORE_DROP,
+    min_active_flow_ratio: float = DEFAULT_MIN_ACTIVE_FLOW_RATIO,
+    min_formal_pass_ratio: float = DEFAULT_MIN_FORMAL_PASS_RATIO,
+    max_durable_growth_ratio: float = DEFAULT_DURABLE_GROWTH_WARN_RATIO,
 ) -> dict[str, Any]:
     api_key = _resolve_linear_api_key(env_file)  # secret-guard: allow
     with _temporary_linear_api_key(api_key):
         linear_workspace_section = _audit_linear_workspace(team)
         linear_cli_compat_section = _audit_lin_cli_compat(env_file)
 
-    report = {
+    report: dict[str, Any] = {
         "generated_at": _utc_now(),
         "repo_root": str(repo_root),
         "sections": {
@@ -1893,18 +2330,40 @@ def run_audit(
         },
     }
     history_dir = ext_root / "logs" / "symphony" / "readiness" / "history"
+    trend_history = _load_baseline_history(history_dir, limit=max(2, trend_window))
+    current_snapshot = _snapshot_from_report(report)
+    report["sections"]["trend_analysis"] = _calculate_trend_analysis(
+        current_snapshot=current_snapshot,
+        baseline_history=trend_history,
+        trend_window=max(2, trend_window),
+        max_harness_score_drop=max_harness_score_drop,
+        min_active_flow_ratio=min_active_flow_ratio,
+        min_formal_pass_ratio=min_formal_pass_ratio,
+        max_durable_growth_ratio=max_durable_growth_ratio,
+    )
     previous_baseline = _load_previous_baseline(
         history_dir, str(report.get("generated_at") or "")
     )
     findings = _collect_findings(report)
     _apply_durable_growth_gate(
-        report=report, findings=findings, previous_baseline=previous_baseline
+        report=report,
+        findings=findings,
+        previous_baseline=previous_baseline,
+        max_growth_ratio=max_durable_growth_ratio,
     )
     if strict_autonomy:
         findings = _apply_strict_autonomy(findings)
     report["findings"] = findings
     report["overall_status"] = _overall_status(findings)
     report["strict_autonomy"] = bool(strict_autonomy)
+    report["trend_config"] = {
+        "window": max(2, trend_window),
+        "max_harness_score_drop": max_harness_score_drop,
+        "min_active_flow_ratio": min_active_flow_ratio,
+        "min_formal_pass_ratio": min_formal_pass_ratio,
+        "max_durable_growth_ratio": max_durable_growth_ratio,
+    }
+    report["next_tranche"] = _synthesize_next_tranche(report)
     return report
 
 
@@ -1962,6 +2421,52 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--trend-window",
+        type=int,
+        default=DEFAULT_TREND_WINDOW,
+        help="Historical readiness points to include for trend analysis.",
+    )
+    parser.add_argument(
+        "--max-harness-score-drop",
+        type=int,
+        default=DEFAULT_MAX_HARNESS_SCORE_DROP,
+        help="Warn when harness score drops more than this amount vs prior baseline.",
+    )
+    parser.add_argument(
+        "--min-active-flow-ratio",
+        type=float,
+        default=DEFAULT_MIN_ACTIVE_FLOW_RATIO,
+        help="Minimum acceptable active-execution-flow ratio across trend window.",
+    )
+    parser.add_argument(
+        "--min-formal-pass-ratio",
+        type=float,
+        default=DEFAULT_MIN_FORMAL_PASS_RATIO,
+        help="Minimum acceptable formal-suite pass ratio across trend window.",
+    )
+    parser.add_argument(
+        "--max-durable-growth-ratio",
+        type=float,
+        default=DEFAULT_DURABLE_GROWTH_WARN_RATIO,
+        help="Maximum allowed durable artifact run-over-run growth ratio.",
+    )
+    parser.add_argument(
+        "--output-next-tranche-json",
+        default=None,
+        help=(
+            "Write synthesized next-tranche plan JSON (default: "
+            "<ext-root>/logs/symphony/readiness/next_tranche.json)"
+        ),
+    )
+    parser.add_argument(
+        "--output-next-tranche-md",
+        default=None,
+        help=(
+            "Write synthesized next-tranche plan Markdown (default: "
+            "<ext-root>/logs/symphony/readiness/next_tranche.md)"
+        ),
+    )
+    parser.add_argument(
         "--baseline-retention-days",
         type=int,
         default=90,
@@ -1998,6 +2503,11 @@ def main(argv: list[str] | None = None) -> int:
         durable_root=durable_root,
         strict_autonomy=bool(args.strict_autonomy),
         formal_suite_mode=str(args.formal_suite),
+        trend_window=max(2, int(args.trend_window)),
+        max_harness_score_drop=max(0, int(args.max_harness_score_drop)),
+        min_active_flow_ratio=max(0.0, min(1.0, float(args.min_active_flow_ratio))),
+        min_formal_pass_ratio=max(0.0, min(1.0, float(args.min_formal_pass_ratio))),
+        max_durable_growth_ratio=max(0.0, float(args.max_durable_growth_ratio)),
     )
 
     readiness_root = ext_root / "logs" / "symphony" / "readiness"
@@ -2011,6 +2521,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.output_md
         else (readiness_root / "latest.md")
     )
+    output_next_tranche_json = (
+        Path(str(args.output_next_tranche_json)).expanduser().resolve()
+        if args.output_next_tranche_json
+        else (readiness_root / "next_tranche.json")
+    )
+    output_next_tranche_md = (
+        Path(str(args.output_next_tranche_md)).expanduser().resolve()
+        if args.output_next_tranche_md
+        else (readiness_root / "next_tranche.md")
+    )
 
     output_json.parent.mkdir(parents=True, exist_ok=True)
     output_json.write_text(
@@ -2019,6 +2539,32 @@ def main(argv: list[str] | None = None) -> int:
 
     output_md.parent.mkdir(parents=True, exist_ok=True)
     output_md.write_text(_as_markdown(report), encoding="utf-8")
+    next_tranche = report.get("next_tranche") or {}
+    output_next_tranche_json.parent.mkdir(parents=True, exist_ok=True)
+    output_next_tranche_json.write_text(
+        json.dumps(next_tranche, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    output_next_tranche_md.parent.mkdir(parents=True, exist_ok=True)
+    next_lines = [
+        "# Symphony Next Tranche",
+        "",
+        f"- Generated: `{next_tranche.get('generated_at', report.get('generated_at'))}`",
+        f"- Overall status: `{next_tranche.get('overall_status', report.get('overall_status'))}`",
+        f"- Action count: `{next_tranche.get('action_count', 0)}`",
+        "",
+    ]
+    actions = next_tranche.get("actions")
+    if isinstance(actions, list) and actions:
+        next_lines.append("## Actions")
+        for row in actions:
+            if not isinstance(row, dict):
+                continue
+            next_lines.append(
+                f"- `{row.get('priority', 'P3')}` {row.get('title', 'Unnamed action')}: {row.get('why', '')}"
+            )
+    else:
+        next_lines.append("- No actions generated.")
+    output_next_tranche_md.write_text("\n".join(next_lines) + "\n", encoding="utf-8")
     metrics_result = _persist_harness_metrics(
         ext_root, report, retention_days=max(0, int(args.baseline_retention_days))
     )
@@ -2050,6 +2596,8 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(report, indent=2, sort_keys=True))
     print(f"Wrote JSON report: {output_json}", file=sys.stderr)
     print(f"Wrote Markdown report: {output_md}", file=sys.stderr)
+    print(f"Wrote Next Tranche JSON: {output_next_tranche_json}", file=sys.stderr)
+    print(f"Wrote Next Tranche Markdown: {output_next_tranche_md}", file=sys.stderr)
     return _exit_code_for(report["findings"], str(args.fail_on))
 
 

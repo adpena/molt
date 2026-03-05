@@ -71,7 +71,8 @@ The recursive and continual learning loop is:
 3. Execute with Symphony (`tools/symphony_run.py`).
 4. Gather evidence (tests/perf/formal/docs updates).
 5. Score and triage via readiness audit and quality score rubric.
-6. Feed learnings back into docs/manifests/workflows and repeat.
+6. Execute the deterministic `next_tranche.actions` emitted by readiness.
+7. Feed learnings back into docs/manifests/workflows and repeat.
 
 ## Canonical Score Target
 

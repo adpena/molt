@@ -33,6 +33,12 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
   routing drift is visible when enabled but under-configured.
 - Implemented: bootstrap/env defaults now seed DSPy keys and runbooks now use
   `uv run --group dev` for `linear_hygiene` so DSPy/Pydantic deps are present.
+- Implemented: readiness audit now computes trend-aware regression checks
+  (`sections.trend_analysis`) across harness score, active-flow ratio, formal
+  pass ratio, and recurring durable-growth pressure.
+- Implemented: readiness audit now emits deterministic next-tranche plans
+  (`next_tranche.actions`) with prioritized remediation commands and dedicated
+  artifacts (`readiness/next_tranche.json|md`) for recursive execution loops.
 - Next: keep nightly strict-autonomy lane green (`--strict-autonomy --fail-on warn`)
   by holding harness score at target and repairing drift immediately.
 
