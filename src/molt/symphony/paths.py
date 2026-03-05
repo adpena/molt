@@ -149,6 +149,31 @@ def symphony_taste_memory_distillations_dir(
     return symphony_taste_memory_root(env) / "distillations"
 
 
+def symphony_tool_promotion_root(env: Mapping[str, str] | None = None) -> Path:
+    configured = _env_get(env, "MOLT_SYMPHONY_TOOL_PROMOTION_ROOT")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return symphony_state_root(env) / "tool_promotion"
+
+
+def symphony_tool_promotion_events_file(
+    env: Mapping[str, str] | None = None,
+) -> Path:
+    configured = _env_get(env, "MOLT_SYMPHONY_TOOL_PROMOTION_EVENTS_FILE")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return symphony_tool_promotion_root(env) / "events.jsonl"
+
+
+def symphony_tool_promotion_distillations_dir(
+    env: Mapping[str, str] | None = None,
+) -> Path:
+    configured = _env_get(env, "MOLT_SYMPHONY_TOOL_PROMOTION_DISTILLATIONS_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return symphony_tool_promotion_root(env) / "distillations"
+
+
 def is_within(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())

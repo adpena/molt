@@ -107,6 +107,10 @@ launchd/durable-memory wiring drift, and harness score regressions. Keep
 `sections.harness_engineering.score >= 90` before scaling unattended autonomy.
 Use `next_tranche.actions` as the canonical prioritized remediation queue for
 the next significant execution wave.
+Readiness also now audits:
+- `sections.dlq_health` for unresolved replay backlog and recurring fingerprints
+- `sections.tool_promotion` for recurring successful actions that are ready to become explicit tools or hooks
+- top-level `improvement_issue_sync` for the dry-run/apply plan that externalizes DLQ backlog and promotion-ready candidates into Linear
 
 Readiness now includes a run-over-run durable-memory growth budget signal:
 
@@ -194,6 +198,29 @@ Distill recent taste memory:
 ```bash
 PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_taste_memory.py distill --limit 50
 ```
+
+Distill recurring successful actions into tool-promotion candidates:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_tool_promotion.py distill --limit 200 --min-success-count 3
+```
+
+Interpret DLQ health via `tools/symphony_dlq.py summary`:
+- `open_failure_count > 0` means the recursive loop has unresolved failed actions
+- `recurring_open_fingerprints` means the same failure class is repeating and should usually trigger a repair or tool extraction pass
+- `recommended_replay_target` is the default fingerprint to dry-run first when the backlog is non-empty
+
+Apply improvement issue sync only when you want readiness to mutate Linear:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py \
+  --team Moltlang \
+  --sync-improvement-issues \
+  --improvement-issue-project "Tooling & DevEx"
+```
+
+Without `--sync-improvement-issues`, the audit still emits the exact dry-run plan
+under `improvement_issue_sync`.
 
 Optional DSPy routing knobs for `linear_hygiene`:
 - `MOLT_SYMPHONY_DSPY_ENABLE=1`

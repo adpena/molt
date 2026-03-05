@@ -7,6 +7,17 @@ license = "Apache-2.0"
 owner = "adpena"
 repo = "molt"
 
+[ecosystem_names]
+canonical = "molt-python"
+cargo = "molt-python"
+pypi = "molt-python"
+npm = "molt-python"
+npx = "molt-python"
+github_repo = "molt-python"
+homebrew_formula = "molt-python"
+homebrew_repo = "homebrew-molt-python"
+validated_on = "2026-03-05"
+
 [homebrew]
 owner = "adpena"
 repo = "homebrew-molt"
