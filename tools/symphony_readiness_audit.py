@@ -51,6 +51,8 @@ REQUIRED_DOCS = (
     "docs/SYMPHONY_OPERATOR_PLAYBOOK.md",
     "docs/LINEAR_WORKSPACE_BOOTSTRAP.md",
     "docs/SYMPHONY_CANONICAL_ALIGNMENT.md",
+    "docs/HARNESS_ENGINEERING.md",
+    "docs/QUALITY_SCORE.md",
     "docs/spec/STATUS.md",
     "ROADMAP.md",
 )
@@ -65,6 +67,26 @@ REQUIRED_TOOLS = (
     "tools/symphony_perf.py",
 )
 
+REQUIRED_HARNESS_ARTIFACTS = (
+    "docs/HARNESS_ENGINEERING.md",
+    "docs/QUALITY_SCORE.md",
+    "docs/exec-plans/TEMPLATE.md",
+    "docs/exec-plans/active/README.md",
+    "docs/exec-plans/completed/README.md",
+)
+CRITICAL_HARNESS_ARTIFACTS = {
+    "docs/HARNESS_ENGINEERING.md",
+    "docs/QUALITY_SCORE.md",
+}
+HARNESS_PRINCIPLE_MARKERS: dict[str, tuple[str, ...]] = {
+    "agent_repo_legibility": ("agent-first", "repository legibility"),
+    "executable_quality_gates": ("quality gate", "deterministic"),
+    "execution_plan_discipline": ("execution plan", "docs/exec-plans"),
+    "observability_and_intervention": ("observability", "intervention"),
+    "entropy_cleanup_loop": ("doc gardening", "entropy cleanup"),
+    "recursive_learning_loop": ("recursive", "continual learning"),
+}
+
 REQUIRED_METADATA_KEYS = ("area", "owner", "milestone", "priority", "status", "source")
 SEED_HEADER = "Auto-seeded from Molt roadmap/status TODO contracts."
 _META_LINE_RE = re.compile(r"^\s*[-*]\s*([a-z_]+)\s*:\s*(.+?)\s*$")
@@ -74,6 +96,7 @@ STRICT_AUTONOMY_FAIL_CODES = {
     "linear_seeded_metadata_gaps",
     "linear_titles_malformed",
     "linear_no_active_flow",
+    "harness_score_below_target",
 }
 FORMAL_SUITE_MODES = ("off", "inventory", "lean", "quint", "all")
 
@@ -344,6 +367,69 @@ def _audit_docs_and_tools(repo_root: Path) -> dict[str, Any]:
         "missing_docs": missing_docs,
         "missing_tools": missing_tools,
         "has_human_authority_gate": has_human_authority_gate,
+    }
+
+
+def _audit_harness_engineering(repo_root: Path) -> dict[str, Any]:
+    artifact_states: list[dict[str, Any]] = []
+    missing_artifacts: list[str] = []
+    critical_missing_artifacts: list[str] = []
+
+    for rel in REQUIRED_HARNESS_ARTIFACTS:
+        exists = (repo_root / rel).exists()
+        artifact_states.append({"path": rel, "exists": exists})
+        if exists:
+            continue
+        missing_artifacts.append(rel)
+        if rel in CRITICAL_HARNESS_ARTIFACTS:
+            critical_missing_artifacts.append(rel)
+
+    harness_doc = repo_root / "docs" / "HARNESS_ENGINEERING.md"
+    harness_text = (
+        harness_doc.read_text(encoding="utf-8").lower() if harness_doc.exists() else ""
+    )
+    principle_coverage: dict[str, bool] = {}
+    missing_principles: list[str] = []
+    for key, markers in HARNESS_PRINCIPLE_MARKERS.items():
+        covered = all(marker in harness_text for marker in markers)
+        principle_coverage[key] = covered
+        if not covered:
+            missing_principles.append(key)
+
+    artifact_total = len(REQUIRED_HARNESS_ARTIFACTS)
+    principle_total = len(HARNESS_PRINCIPLE_MARKERS)
+    artifact_present = artifact_total - len(missing_artifacts)
+    principle_present = principle_total - len(missing_principles)
+    artifact_score = (
+        int(round((60 * artifact_present) / artifact_total)) if artifact_total else 60
+    )
+    principle_score = (
+        int(round((40 * principle_present) / principle_total))
+        if principle_total
+        else 40
+    )
+    score = artifact_score + principle_score
+
+    if critical_missing_artifacts:
+        status = "fail"
+    elif score >= 90:
+        status = "pass"
+    elif score >= 70:
+        status = "warn"
+    else:
+        status = "fail"
+
+    return {
+        "status": status,
+        "score": score,
+        "target_score": 90,
+        "artifact_score": artifact_score,
+        "principle_score": principle_score,
+        "artifact_states": artifact_states,
+        "missing_artifacts": missing_artifacts,
+        "critical_missing_artifacts": critical_missing_artifacts,
+        "principle_coverage": principle_coverage,
+        "missing_principles": missing_principles,
     }
 
 
@@ -880,6 +966,58 @@ def _collect_findings(report: dict[str, Any]) -> list[dict[str, Any]]:
             ),
         )
 
+    harness = (report.get("sections") or {}).get("harness_engineering") or {}
+    missing_harness_artifacts = harness.get("missing_artifacts") or []
+    critical_harness_artifacts = harness.get("critical_missing_artifacts") or []
+    if missing_harness_artifacts:
+        _record_finding(
+            findings,
+            severity="fail" if critical_harness_artifacts else "warn",
+            code="harness_artifacts_missing",
+            message=(
+                "Harness engineering artifacts are missing; recursive improvement "
+                "infrastructure is incomplete."
+            ),
+            details={
+                "missing": missing_harness_artifacts,
+                "critical_missing": critical_harness_artifacts,
+            },
+        )
+    missing_principles = harness.get("missing_principles") or []
+    if missing_principles:
+        _record_finding(
+            findings,
+            severity="warn",
+            code="harness_principles_missing",
+            message=(
+                "Harness engineering document is missing one or more required "
+                "principle mappings."
+            ),
+            details=missing_principles,
+        )
+    score = harness.get("score")
+    target_score = harness.get("target_score")
+    if isinstance(score, int):
+        if score < int(target_score or 90):
+            _record_finding(
+                findings,
+                severity="warn",
+                code="harness_score_below_target",
+                message=(
+                    "Harness engineering score is below target; strengthen artifacts "
+                    "and principle coverage before autonomous scale-up."
+                ),
+                details={"score": score, "target_score": target_score},
+            )
+        else:
+            _record_finding(
+                findings,
+                severity="info",
+                code="harness_score_meets_target",
+                message="Harness engineering score meets target.",
+                details={"score": score, "target_score": target_score},
+            )
+
     launchd = report["sections"]["launchd"]
     if not bool(launchd.get("main_loaded")):
         _record_finding(
@@ -1236,6 +1374,7 @@ def run_audit(
         "sections": {
             "environment": _audit_env_and_volume(env_file=env_file, ext_root=ext_root),
             "docs_and_tools": _audit_docs_and_tools(repo_root),
+            "harness_engineering": _audit_harness_engineering(repo_root),
             "launchd": _audit_launchd(),
             "durable_memory": _audit_durable_memory(durable_root),
             "manifest_index": _audit_manifest_index(index_path),
@@ -1257,7 +1396,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Comprehensive Symphony readiness audit for Linear, docs/tools, "
-            "launchd wiring, and durable telemetry."
+            "harness engineering quality, launchd wiring, and durable telemetry."
         )
     )
     parser.add_argument("--team", default="Moltlang")

@@ -15,6 +15,8 @@ Use these documents as planning source-of-truth before creating/updating issues:
 - `docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md`
 - `docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md`
 - `docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md`
+- `docs/HARNESS_ENGINEERING.md` (harness architecture + recursive learning loop)
+- `docs/QUALITY_SCORE.md` (quality score rubric and thresholds)
 
 ## 2. Prerequisites
 
@@ -204,7 +206,8 @@ This emits:
 - `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.md`
 
 The audit checks Linear hygiene, manifest quality, launchd/watchdog wiring,
-durable memory readability, and required docs/tooling coverage.
+durable memory readability, required docs/tooling coverage, and harness
+engineering score coverage (`sections.harness_engineering.score`, target `>= 90`).
 
 For hard autonomy gating (includes formal-suite inventory by default):
 

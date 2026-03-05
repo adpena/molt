@@ -22609,9 +22609,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if self._try_emit_counted_while_bytearray_fill(index_name, bound, body):
                 return None
             assigned = self._collect_assigned_names(node.body)
+            carry_in_counted = self._identify_carry_candidates(
+                assigned, exclude={index_name}
+            )
             for name in sorted(assigned):
-                self._box_local(name)
-            self._emit_counted_while(index_name, bound, body)
+                if name not in carry_in_counted:
+                    self._box_local(name)
+            self._emit_counted_while_with_carry(
+                index_name, bound, body, carry_in_counted
+            )
             return None
         counted_name_bound = (
             None
@@ -22623,9 +22629,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if self._try_emit_counted_while_bytearray_fill(index_name, bound_val, body):
                 return None
             assigned = self._collect_assigned_names(node.body)
+            carry_in_counted = self._identify_carry_candidates(
+                assigned, exclude={index_name}
+            )
             for name in sorted(assigned):
-                self._box_local(name)
-            self._emit_counted_while(index_name, bound_val, body)
+                if name not in carry_in_counted:
+                    self._box_local(name)
+            self._emit_counted_while_with_carry(
+                index_name, bound_val, body, carry_in_counted
+            )
             return None
         assigned = self._collect_assigned_names(node.body)
         assigned |= self._collect_namedexpr_names(node.test)
@@ -22650,6 +22662,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 hint = self.explicit_type_hints.get(name)
                 if hint == "int":
                     carry_candidates.add(name)
+        import sys
+
+        print(
+            f"[CARRY DEBUG] assigned={sorted(assigned)} carry_candidates={sorted(carry_candidates)} hints_enabled={self._hints_enabled()} policy={self.type_hint_policy} explicit_hints={dict(self.explicit_type_hints)}",
+            file=sys.stderr,
+        )
         for name in sorted(assigned):
             if not self.is_async():
                 if name not in carry_candidates:
@@ -28943,7 +28961,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "loop_carry_init",
-                        "args": [op.args[0].name if isinstance(op.args[0], MoltValue) else str(op.args[0])],
+                        "args": [
+                            op.args[0].name
+                            if isinstance(op.args[0], MoltValue)
+                            else str(op.args[0])
+                        ],
                         "out": op.result.name,
                     }
                 )
@@ -28953,7 +28975,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "kind": "loop_carry_update",
                         "args": [
                             str(op.args[0]),  # carry variable name
-                            op.args[1].name if isinstance(op.args[1], MoltValue) else str(op.args[1]),
+                            op.args[1].name
+                            if isinstance(op.args[1], MoltValue)
+                            else str(op.args[1]),
                         ],
                         "out": op.result.name,
                     }

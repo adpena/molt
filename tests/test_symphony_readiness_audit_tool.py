@@ -370,3 +370,104 @@ def test_collect_findings_reports_java_runtime_missing_failure() -> None:
     findings = readiness_audit._collect_findings(report)
     codes = {row["code"]: row for row in findings}
     assert codes["formal_suite_java_runtime_missing"]["severity"] == "fail"
+
+
+def test_audit_harness_engineering_scores_full_coverage(tmp_path: Path) -> None:
+    harness_doc = tmp_path / "docs" / "HARNESS_ENGINEERING.md"
+    harness_doc.parent.mkdir(parents=True, exist_ok=True)
+    harness_doc.write_text(
+        (
+            "Agent-first repository legibility.\n"
+            "Quality gate checks are deterministic.\n"
+            "Execution plan artifacts live in docs/exec-plans.\n"
+            "Observability and intervention loops are required.\n"
+            "Doc gardening and entropy cleanup run continuously.\n"
+            "Recursive and continual learning loops are enforced.\n"
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "docs" / "QUALITY_SCORE.md").write_text("# score\n", encoding="utf-8")
+    (tmp_path / "docs" / "exec-plans" / "TEMPLATE.md").parent.mkdir(
+        parents=True, exist_ok=True
+    )
+    (tmp_path / "docs" / "exec-plans" / "TEMPLATE.md").write_text(
+        "# template\n", encoding="utf-8"
+    )
+    (tmp_path / "docs" / "exec-plans" / "active" / "README.md").parent.mkdir(
+        parents=True, exist_ok=True
+    )
+    (tmp_path / "docs" / "exec-plans" / "active" / "README.md").write_text(
+        "# active\n", encoding="utf-8"
+    )
+    (tmp_path / "docs" / "exec-plans" / "completed" / "README.md").parent.mkdir(
+        parents=True, exist_ok=True
+    )
+    (tmp_path / "docs" / "exec-plans" / "completed" / "README.md").write_text(
+        "# completed\n", encoding="utf-8"
+    )
+
+    result = readiness_audit._audit_harness_engineering(tmp_path)
+    assert result["status"] == "pass"
+    assert result["score"] == 100
+    assert result["missing_artifacts"] == []
+    assert result["missing_principles"] == []
+
+
+def test_audit_harness_engineering_fails_when_core_artifacts_missing(
+    tmp_path: Path,
+) -> None:
+    result = readiness_audit._audit_harness_engineering(tmp_path)
+    assert result["status"] == "fail"
+    assert "docs/HARNESS_ENGINEERING.md" in result["critical_missing_artifacts"]
+    assert "docs/QUALITY_SCORE.md" in result["critical_missing_artifacts"]
+
+
+def test_collect_findings_reports_harness_score_gap() -> None:
+    report = {
+        "sections": {
+            "environment": {
+                "ext_root_mounted": True,
+                "missing_env_keys": [],
+                "has_linear_api_key": True,
+            },
+            "docs_and_tools": {
+                "missing_docs": [],
+                "missing_tools": [],
+                "has_human_authority_gate": True,
+            },
+            "harness_engineering": {
+                "score": 72,
+                "target_score": 90,
+                "missing_artifacts": ["docs/exec-plans/completed/README.md"],
+                "critical_missing_artifacts": [],
+                "missing_principles": ["entropy_cleanup_loop"],
+            },
+            "launchd": {"main_loaded": True, "watchdog_loaded": True},
+            "durable_memory": {
+                "checks": {
+                    "jsonl_readable": {"ok": True},
+                    "duckdb_readable": {"ok": True},
+                }
+            },
+            "manifest_index": {
+                "missing_manifest_files": [],
+                "malformed_titles": [],
+                "metadata_gaps": [],
+            },
+            "linear_workspace": {
+                "status": "pass",
+                "missing_project": [],
+                "seeded_missing_metadata": [],
+                "malformed_titles": [],
+                "active_execution_flow": True,
+                "label_count": 10,
+            },
+            "linear_cli_compat": {"status": "pass", "lin_installed": True},
+            "formal_suite": {"status": "pass", "mode": "inventory", "returncode": 0},
+        }
+    }
+    findings = readiness_audit._collect_findings(report)
+    codes = {row["code"]: row for row in findings}
+    assert codes["harness_artifacts_missing"]["severity"] == "warn"
+    assert codes["harness_principles_missing"]["severity"] == "warn"
+    assert codes["harness_score_below_target"]["severity"] == "warn"
