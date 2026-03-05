@@ -116,6 +116,25 @@ def build_parser() -> argparse.ArgumentParser:
             "If omitted, ops/linear/runtime/symphony.env is used when present."
         ),
     )
+    parser.add_argument(
+        "--wait-for-external-root-seconds",
+        type=int,
+        default=int(
+            os.environ.get("MOLT_SYMPHONY_WAIT_FOR_EXTERNAL_ROOT_SECONDS", "0")
+        ),
+        help=(
+            "How long to wait for the canonical external roots before failing. "
+            "Use -1 to wait forever."
+        ),
+    )
+    parser.add_argument(
+        "--wait-for-external-root-interval-ms",
+        type=int,
+        default=int(
+            os.environ.get("MOLT_SYMPHONY_WAIT_FOR_EXTERNAL_ROOT_INTERVAL_MS", "5000")
+        ),
+        help="Polling interval while waiting for the external roots.",
+    )
     return parser
 
 
@@ -125,6 +144,42 @@ def ensure_external_root(path: Path) -> None:
     raise RuntimeError(
         f"External workspace root is unavailable: {path}. Mount it before running Symphony."
     )
+
+
+def _wait_for_external_roots(
+    *paths: Path,
+    timeout_seconds: int,
+    poll_interval_ms: int,
+) -> None:
+    unique_paths = tuple(dict.fromkeys(path.resolve() for path in paths))
+    if not unique_paths:
+        return
+    deadline = (
+        None if timeout_seconds < 0 else time.monotonic() + max(timeout_seconds, 0)
+    )
+    poll_seconds = max(int(poll_interval_ms), 250) / 1000.0
+    last_message_at = 0.0
+    while True:
+        missing = [
+            path for path in unique_paths if not (path.exists() and path.is_dir())
+        ]
+        if not missing:
+            return
+        now = time.monotonic()
+        if deadline is not None and now >= deadline:
+            rendered = ", ".join(str(path) for path in missing)
+            raise RuntimeError(
+                f"External workspace root is unavailable: {rendered}. Mount it before running Symphony."
+            )
+        if last_message_at == 0.0 or now - last_message_at >= max(30.0, poll_seconds):
+            rendered = ", ".join(str(path) for path in missing)
+            print(
+                f"symphony_run.waiting_for_external_roots missing={rendered}",
+                file=sys.stderr,
+                flush=True,
+            )
+            last_message_at = now
+        time.sleep(poll_seconds)
 
 
 def _load_env_file(path: Path) -> dict[str, str]:
@@ -186,8 +241,13 @@ def _has_respect_pythonpath_flag(args: list[str]) -> bool:
 
 
 def _ensure_dashboard_security_defaults(
-    *, env: dict[str, str], port: int | None
+    *, env: dict[str, str], port: int | None, ext_root: Path | None = None
 ) -> None:
+    if ext_root is not None:
+        # Standalone callers (including unit tests) can pin a temporary store root
+        # without mutating the committed env file.
+        env.setdefault("MOLT_EXT_ROOT", str(ext_root))
+        env.setdefault("MOLT_SYMPHONY_STORE_ROOT", str(ext_root / "symphony"))
     env.setdefault("MOLT_SYMPHONY_SECURITY_PROFILE", "local")
     env.setdefault("MOLT_SYMPHONY_BIND_HOST", "127.0.0.1")
     env.setdefault("MOLT_SYMPHONY_ALLOW_NONLOCAL_BIND", "0")
@@ -268,6 +328,13 @@ def main(argv: list[str] | None = None) -> int:
     ext_root = resolve_molt_ext_root(env)
     symphony_parent_root = resolve_symphony_parent_root(env)
     symphony_store_root = resolve_symphony_store_root(env)
+    if int(args.wait_for_external_root_seconds) != 0:
+        _wait_for_external_roots(
+            ext_root,
+            symphony_parent_root,
+            timeout_seconds=int(args.wait_for_external_root_seconds),
+            poll_interval_ms=int(args.wait_for_external_root_interval_ms),
+        )
     ensure_external_root(ext_root)
     ensure_external_root(symphony_parent_root)
 
@@ -340,7 +407,7 @@ def main(argv: list[str] | None = None) -> int:
                     if current_path
                     else java_bin_dir
                 )
-    _ensure_dashboard_security_defaults(env=env, port=args.port)
+    _ensure_dashboard_security_defaults(env=env, port=args.port, ext_root=ext_root)
 
     if not env.get("MOLT_LINEAR_PROJECT_SLUG"):
         raise RuntimeError(

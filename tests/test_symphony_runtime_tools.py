@@ -148,6 +148,8 @@ def test_symphony_launchd_build_program_includes_env_file(tmp_path: Path) -> Non
         molt_profile="dev",
         molt_build_args=[],
         compiled_output=None,
+        wait_for_external_root_seconds=-1,
+        wait_for_external_root_interval_ms=5000,
     )
     assert args == [
         "/usr/bin/python3",
@@ -161,6 +163,10 @@ def test_symphony_launchd_build_program_includes_env_file(tmp_path: Path) -> Non
         "python",
         "--molt-profile",
         "dev",
+        "--wait-for-external-root-seconds",
+        "-1",
+        "--wait-for-external-root-interval-ms",
+        "5000",
     ]
 
 
@@ -181,6 +187,10 @@ def test_symphony_launchd_watchdog_program_includes_timing(tmp_path: Path) -> No
         perf_timeout_ms=1_800_000,
         perf_command=None,
         perf_defer_when_busy=True,
+        health_check=True,
+        health_interval_ms=10_000,
+        health_startup_grace_ms=90_000,
+        health_failure_threshold=3,
     )
     assert args == [
         "/usr/bin/python3",
@@ -203,10 +213,17 @@ def test_symphony_launchd_watchdog_program_includes_timing(tmp_path: Path) -> No
         "600",
         "--defer-log-interval-ms",
         "12000",
+        "--health-interval-ms",
+        "10000",
+        "--health-startup-grace-ms",
+        "90000",
+        "--health-failure-threshold",
+        "3",
         "--perf-interval-ms",
         "86400000",
         "--perf-timeout-ms",
         "1800000",
+        "--health-check",
         "--perf-check",
         "--perf-defer-when-busy",
         "--restart-when-idle",

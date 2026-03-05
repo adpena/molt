@@ -35,6 +35,30 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Implemented: readiness now emits deterministic next-tranche action plans
   (`next_tranche.actions`) plus dedicated artifacts under
   `logs/symphony/readiness/next_tranche.{json,md}` to drive recursive execution.
+- Implemented: readiness now audits `sections.dlq_health` so unresolved recursive-loop
+  failures, recurring fingerprints, and replay outcomes are surfaced in the same
+  strict-autonomy gate.
+- Implemented: recursive loop now records tool-promotion distillations under
+  `/Volumes/APDataStore/symphony/molt/state/tool_promotion/` and readiness now
+  exposes `sections.tool_promotion` so recurring successful actions can graduate
+  into explicit tools/hooks deterministically.
+- Implemented: tool-promotion distillation now emits reviewable manifest files for
+  ready candidates under `.../state/tool_promotion/manifests/`.
+- Implemented: readiness now derives a concrete DLQ `recommended_replay_target`
+  and injects exact replay commands into `next_tranche.actions` instead of generic
+  placeholders.
+- Implemented: readiness now emits `improvement_issue_sync` as a dry-run/apply
+  Linear issue sync plan for DLQ backlog and tool-promotion candidates, keeping
+  the self-improvement backlog externalizable without making issue mutation the
+  default behavior.
+- Implemented: launchd-managed Symphony now uses a self-healing control plane:
+  launchd keeps minimal supervisor logs under `~/Library/Logs/Molt/symphony-launchd`,
+  the main launcher waits for the canonical external roots instead of crash-looping,
+  and watchdog health repair probes the lightweight authenticated
+  `/api/v1/health` endpoint instead of the heavyweight `/api/v1/state` payload.
+  Watchdog busy/perf restart deferral now uses the lightweight authenticated
+  `/api/v1/activity` surface so launchd self-heal does not depend on full state
+  projection just to answer "is work currently in flight?".
 
 ## Rust-First Stdlib Lowering Sprint (2026-03-01)
 - Completed (2026-03-03): wasm dynamic-parse lanes are now explicitly capability-broken

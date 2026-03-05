@@ -16,8 +16,37 @@ class _Provider:
     def __init__(self) -> None:
         self.refresh_calls = 0
         self.retry_now_calls: list[str] = []
+        self.activity_calls = 0
         self.state_calls = 0
         self.state_version = 0
+
+    def snapshot_activity(self) -> dict[str, Any]:
+        self.activity_calls += 1
+        return {
+            "generated_at": f"2026-03-04T00:01:{self.state_version:02d}Z",
+            "busy": False,
+            "counts": {
+                "running": 0,
+                "retrying": 0,
+                "completed": 0,
+                "claimed": 0,
+            },
+            "suspension": None,
+            "runtime": {
+                "exec_mode": "python",
+                "max_concurrent_agents": 4,
+                "poll_interval_ms": 1000,
+                "dashboard_profile": {
+                    "mode": "normal",
+                    "stream_interval_ms": 1000,
+                    "fallback_poll_interval_ms": 2500,
+                    "stale_after_ms": 7000,
+                },
+                "perf_guard": {
+                    "running": False,
+                },
+            },
+        }
 
     def snapshot_state(self) -> dict[str, Any]:
         self.state_calls += 1
@@ -146,6 +175,38 @@ def test_api_state_response_sets_no_store_cache_headers() -> None:
             vary = str(resp.headers.get("Vary") or "")
             assert "no-store" in cache_control
             assert "authorization" in vary.lower()
+    finally:
+        server.stop()
+
+
+def test_api_health_response_is_lightweight_and_available() -> None:
+    provider = _Provider()
+    server = DashboardServer(provider=provider, port=0)
+    port = server.start()
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/v1/health", timeout=5.0
+        ) as resp:
+            assert int(resp.status) == 200
+            payload = json.loads(resp.read().decode("utf-8"))
+            assert payload["status"] == "ok"
+            assert payload["generated_at"].endswith("Z")
+        assert provider.state_calls == 0
+    finally:
+        server.stop()
+
+
+def test_api_activity_uses_lightweight_snapshot() -> None:
+    provider = _Provider()
+    server = DashboardServer(provider=provider, port=0)
+    port = server.start()
+    try:
+        status, payload = _read_json(f"http://127.0.0.1:{port}/api/v1/activity")
+        assert status == 200
+        assert payload["busy"] is False
+        assert payload["counts"]["running"] == 0
+        assert provider.activity_calls == 1
+        assert provider.state_calls == 0
     finally:
         server.stop()
 

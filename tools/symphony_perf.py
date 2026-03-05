@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from molt.symphony.paths import resolve_molt_ext_root, symphony_perf_reports_dir
+
 DEFAULT_ENV_FILE = Path("ops/linear/runtime/symphony.env")
 
 
@@ -42,6 +43,41 @@ class DashboardStateSample:
     latency_ms: float
     had_etag: bool
     state_payload: dict[str, Any] | None = None
+
+
+def _load_env_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    loaded: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        loaded[key.strip()] = value.strip().strip('"').strip("'")
+    return loaded
+
+
+def _load_dashboard_api_token(
+    env_file_values: dict[str, str], env: dict[str, str]
+) -> str | None:
+    for key in ("MOLT_SYMPHONY_API_TOKEN", "MOLT_SYMPHONY_DASHBOARD_TOKEN"):
+        token = str(env.get(key) or env_file_values.get(key) or "").strip()
+        if token:
+            return token
+    token_file_raw = str(
+        env.get("MOLT_SYMPHONY_API_TOKEN_FILE")
+        or env_file_values.get("MOLT_SYMPHONY_API_TOKEN_FILE")
+        or ""
+    ).strip()
+    if not token_file_raw:
+        return None
+    token_file = Path(token_file_raw).expanduser()
+    try:
+        token = token_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return token or None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -365,7 +401,12 @@ def _p95(values: list[float]) -> float:
 
 
 def _collect_dashboard_state_samples(
-    base_url: str, *, samples: int, interval_ms: int, timeout_seconds: int
+    base_url: str,
+    *,
+    samples: int,
+    interval_ms: int,
+    timeout_seconds: int,
+    auth_token: str | None = None,
 ) -> list[DashboardStateSample]:
     target = urllib.parse.urljoin(base_url.rstrip("/") + "/", "api/v1/state")
     etag = ""
@@ -374,6 +415,8 @@ def _collect_dashboard_state_samples(
     pause_seconds = max(int(interval_ms), 0) / 1000.0
     for idx in range(total):
         headers = {"Cache-Control": "no-cache"}
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
         if etag:
             headers["If-None-Match"] = etag
         req = urllib.request.Request(target, headers=headers, method="GET")
@@ -978,15 +1021,22 @@ def _sync_linear_regression_issues(
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    ext_root = resolve_molt_ext_root()
+    env_file = Path(args.env_file).expanduser()
+    if not env_file.is_absolute():
+        env_file = (Path.cwd() / env_file).resolve()
+    env = os.environ.copy()
+    env_file_values = _load_env_file(env_file)
+    for key, value in env_file_values.items():
+        env.setdefault(key, value)
+    ext_root = resolve_molt_ext_root(env)
     if not ext_root.exists():
         raise RuntimeError(f"External root not mounted: {ext_root}")
     modes = _parse_modes(args.modes)
     reports_dir = _resolve_reports_dir(args.reports_dir, ext_root=ext_root)
     reports_dir.mkdir(parents=True, exist_ok=True)
 
-    env = os.environ.copy()
     _ext_env_defaults(env, ext_root)
+    dashboard_api_token = _load_dashboard_api_token(env_file_values, env)
     if not shutil.which("uv"):
         raise RuntimeError("uv is required for symphony_perf")
 
@@ -1029,6 +1079,7 @@ def main(argv: list[str] | None = None) -> int:
             samples=max(args.api_samples, 1),
             interval_ms=max(args.api_interval_ms, 0),
             timeout_seconds=max(args.timeout_seconds, 1),
+            auth_token=dashboard_api_token,
         )
         dashboard_report = _summarize_dashboard_state_samples(dashboard_samples)
         print(

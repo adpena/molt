@@ -1725,6 +1725,77 @@ class SymphonyOrchestrator:
             "runtime": runtime_payload,
         }
 
+    def snapshot_activity(self) -> dict[str, Any]:
+        now = datetime.now(UTC)
+        now_mono = time.monotonic()
+        with self._state_lock:
+            running_count = len(self._state.running)
+            retrying_count = len(self._state.retry_attempts)
+            completed_count = len(self._state.completed)
+            claimed_count = len(self._state.claimed)
+            suspension_kind = self._state.suspension_kind
+            suspension_message = self._state.suspension_message
+            suspension_auto_resume = self._state.suspension_auto_resume
+            suspension_since = self._state.suspension_since_utc
+            suspension_due_in = self._suspension_due_in_locked(now_mono)
+            suspension_resume_at_epoch = self._state.suspension_resume_at_epoch_utc
+            suspension_resume_source = self._state.suspension_resume_source
+            suspension_resume_reason = self._state.suspension_resume_reason
+            max_concurrent_agents = self._state.max_concurrent_agents
+            poll_interval_ms = self._state.poll_interval_ms
+        suspension_payload: dict[str, Any] | None = None
+        if suspension_kind is not None:
+            suspension_payload = {
+                "active": True,
+                "kind": suspension_kind,
+                "message": suspension_message,
+                "auto_resume": suspension_auto_resume,
+                "due_in_seconds": (
+                    round(suspension_due_in, 3)
+                    if suspension_due_in is not None
+                    else None
+                ),
+                "resume_at_epoch_seconds": (
+                    round(suspension_resume_at_epoch, 3)
+                    if suspension_resume_at_epoch is not None
+                    else None
+                ),
+                "resume_at": (
+                    datetime.fromtimestamp(suspension_resume_at_epoch, tz=UTC)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                    if suspension_resume_at_epoch is not None
+                    else None
+                ),
+                "resume_source": suspension_resume_source,
+                "resume_reason": suspension_resume_reason,
+                "since": (
+                    suspension_since.isoformat().replace("+00:00", "Z")
+                    if suspension_since is not None
+                    else None
+                ),
+            }
+        return {
+            "generated_at": now.isoformat().replace("+00:00", "Z"),
+            "busy": running_count > 0 or retrying_count > 0,
+            "counts": {
+                "running": running_count,
+                "retrying": retrying_count,
+                "completed": completed_count,
+                "claimed": claimed_count,
+            },
+            "suspension": suspension_payload,
+            "runtime": {
+                "exec_mode": self._exec_mode,
+                "max_concurrent_agents": max_concurrent_agents,
+                "poll_interval_ms": poll_interval_ms,
+                "dashboard_profile": _dashboard_profile_for_suspension(suspension_kind),
+                "perf_guard": {
+                    "running": bool(self._perf_guard_running),
+                },
+            },
+        }
+
     def snapshot_durable_memory(self, limit: int = 120) -> dict[str, Any]:
         store = self._durable_memory
         if store is None:
