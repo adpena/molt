@@ -54,6 +54,7 @@ The human remains accountable for:
    - stdlib surface index/intrinsics audit
 4. Run a deterministic quality sweep for high-risk lanes.
 5. Prune or merge low-quality/duplicate issues.
+6. Review harness score trends (`docs/QUALITY_SCORE.md`) and restore to target when it drifts.
 
 ## Acceptance Gate The Human Must Enforce
 
