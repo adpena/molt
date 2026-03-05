@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import queue
 import shutil
@@ -47,6 +48,8 @@ class DurableMemoryStore:
         self._last_sync_monotonic = 0.0
         self._last_sync_utc: str | None = None
         self._dropped_rows = 0
+        self._last_integrity_check: dict[str, Any] | None = None
+        self._last_backup: dict[str, Any] | None = None
         self._thread.start()
 
     def record(self, row: dict[str, Any]) -> None:
@@ -78,6 +81,7 @@ class DurableMemoryStore:
             "duckdb": _file_snapshot(self._duckdb_path),
             "parquet": _file_snapshot(self._parquet_path),
         }
+        backups = self.list_backups(limit=10)
         recent_events = _tail_jsonl(self._events_jsonl, limit=max(limit, 10))
         kind_counts: dict[str, int] = {}
         for row in recent_events:
@@ -90,8 +94,110 @@ class DurableMemoryStore:
             "dropped_rows": self._dropped_rows,
             "last_sync_utc": self._last_sync_utc,
             "files": files,
+            "backups": backups,
+            "last_backup": self._last_backup,
+            "last_integrity_check": self._last_integrity_check,
             "kind_counts": kind_counts,
             "recent_events": recent_events,
+        }
+
+    def create_backup(self, *, reason: str = "manual") -> dict[str, Any]:
+        backups_root = self._root / "backups"
+        backups_root.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        backup_dir = backups_root / f"{timestamp}-{_sanitize_segment(reason)}"
+        backup_dir.mkdir(parents=True, exist_ok=False)
+        copied: list[dict[str, Any]] = []
+        for source in (self._events_jsonl, self._duckdb_path, self._parquet_path):
+            if not source.exists():
+                continue
+            destination = backup_dir / source.name
+            shutil.copy2(source, destination)
+            copied.append(
+                {
+                    "name": source.name,
+                    "size_bytes": int(destination.stat().st_size),
+                    "sha256": _sha256_file(destination),
+                }
+            )
+        payload = {
+            "ok": True,
+            "backup_dir": str(backup_dir),
+            "reason": reason,
+            "files": copied,
+            "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        }
+        (backup_dir / "metadata.json").write_text(
+            json.dumps(payload, ensure_ascii=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        self._last_backup = payload
+        return payload
+
+    def run_integrity_check(self) -> dict[str, Any]:
+        checks: dict[str, Any] = {
+            "jsonl_readable": self._check_jsonl_readable(max_lines=500),
+            "duckdb_readable": self._check_duckdb_readable(),
+            "parquet_readable": self._check_parquet_readable(),
+        }
+        ok = all(bool(value.get("ok")) for value in checks.values())
+        payload = {
+            "ok": ok,
+            "checked_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "checks": checks,
+        }
+        self._last_integrity_check = payload
+        return payload
+
+    def list_backups(self, *, limit: int = 10) -> list[dict[str, Any]]:
+        backups_root = self._root / "backups"
+        if not backups_root.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        for child in sorted(backups_root.iterdir(), reverse=True):
+            if not child.is_dir():
+                continue
+            stat = child.stat()
+            rows.append(
+                {
+                    "path": str(child),
+                    "name": child.name,
+                    "created_at": datetime.fromtimestamp(stat.st_mtime, tz=UTC)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                }
+            )
+            if len(rows) >= max(limit, 1):
+                break
+        return rows
+
+    def prune_backups(
+        self, *, keep_latest: int = 20, max_age_days: int = 30
+    ) -> dict[str, Any]:
+        backups_root = self._root / "backups"
+        if not backups_root.exists():
+            return {"ok": True, "deleted": 0, "kept": 0}
+        now = time.time()
+        keep_latest = max(int(keep_latest), 1)
+        max_age_seconds = max(int(max_age_days), 1) * 86400
+        candidates = [
+            child
+            for child in sorted(backups_root.iterdir(), reverse=True)
+            if child.is_dir()
+        ]
+        deleted = 0
+        for idx, child in enumerate(candidates):
+            if idx < keep_latest:
+                continue
+            age_seconds = max(now - child.stat().st_mtime, 0.0)
+            if age_seconds < max_age_seconds:
+                continue
+            shutil.rmtree(child, ignore_errors=True)
+            deleted += 1
+        return {
+            "ok": True,
+            "deleted": deleted,
+            "kept": max(len(candidates) - deleted, 0),
         }
 
     def _run(self) -> None:
@@ -197,6 +303,108 @@ class DurableMemoryStore:
             return
         self._last_sync_utc = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
+    def _check_jsonl_readable(self, *, max_lines: int) -> dict[str, Any]:
+        if not self._events_jsonl.exists():
+            return {"ok": True, "reason": "missing"}
+        lines = 0
+        try:
+            with self._events_jsonl.open("r", encoding="utf-8") as handle:
+                for raw in handle:
+                    if lines >= max_lines:
+                        break
+                    text = raw.strip()
+                    if not text:
+                        continue
+                    parsed = json.loads(text)
+                    if not isinstance(parsed, dict):
+                        return {
+                            "ok": False,
+                            "reason": "non_object_json",
+                            "line": lines + 1,
+                        }
+                    lines += 1
+        except Exception as exc:
+            return {"ok": False, "reason": "jsonl_parse_failed", "error": str(exc)}
+        return {"ok": True, "lines_checked": lines}
+
+    def _check_duckdb_readable(self) -> dict[str, Any]:
+        if not self._duckdb_path.exists():
+            return {"ok": True, "reason": "missing"}
+        query = "SELECT COUNT(*) AS c FROM events"
+        if _duckdb is not None:
+            try:
+                conn = _duckdb.connect(str(self._duckdb_path))
+                try:
+                    rows = conn.execute(query).fetchall()
+                finally:
+                    conn.close()
+                count = int(rows[0][0]) if rows else 0
+                return {"ok": True, "rows": count}
+            except Exception as exc:  # pragma: no cover - duckdb dependent
+                return {"ok": False, "reason": "duckdb_query_failed", "error": str(exc)}
+        if self._duckdb_bin is None:
+            return {"ok": True, "reason": "duckdb_unavailable"}
+        try:
+            proc = subprocess.run(
+                [self._duckdb_bin, str(self._duckdb_path), "-c", query],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except Exception as exc:
+            return {"ok": False, "reason": "duckdb_cli_failed", "error": str(exc)}
+        if proc.returncode != 0:
+            return {
+                "ok": False,
+                "reason": "duckdb_cli_nonzero",
+                "stderr": (proc.stderr or "").strip()[:500],
+            }
+        return {"ok": True}
+
+    def _check_parquet_readable(self) -> dict[str, Any]:
+        if not self._parquet_path.exists():
+            return {"ok": True, "reason": "missing"}
+        if _duckdb is None and self._duckdb_bin is None:
+            return {"ok": True, "reason": "duckdb_unavailable"}
+        query = (
+            "SELECT COUNT(*) AS c FROM read_parquet("
+            f"'{_sql_quote(str(self._parquet_path))}')"
+        )
+        if _duckdb is not None:
+            try:
+                conn = _duckdb.connect(":memory:")
+                try:
+                    rows = conn.execute(query).fetchall()
+                finally:
+                    conn.close()
+                count = int(rows[0][0]) if rows else 0
+                return {"ok": True, "rows": count}
+            except Exception as exc:  # pragma: no cover - duckdb dependent
+                return {
+                    "ok": False,
+                    "reason": "parquet_query_failed",
+                    "error": str(exc),
+                }
+        assert self._duckdb_bin is not None
+        try:
+            proc = subprocess.run(
+                [self._duckdb_bin, ":memory:", "-c", query],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except Exception as exc:
+            return {"ok": False, "reason": "parquet_cli_failed", "error": str(exc)}
+        if proc.returncode != 0:
+            return {
+                "ok": False,
+                "reason": "parquet_cli_nonzero",
+                "stderr": (proc.stderr or "").strip()[:500],
+            }
+        return {"ok": True}
+
 
 def _file_snapshot(path: Path) -> dict[str, Any]:
     if not path.exists():
@@ -245,3 +453,22 @@ def _tail_jsonl(path: Path, *, limit: int) -> list[dict[str, Any]]:
 
 def _sql_quote(value: str) -> str:
     return value.replace("'", "''")
+
+
+def _sanitize_segment(value: str) -> str:
+    text = value.strip().lower()
+    if not text:
+        return "manual"
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in text)
+    return safe.strip("-") or "manual"
+
+
+def _sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(8192)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()

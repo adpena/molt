@@ -22,11 +22,13 @@ use crate::{molt_db_exec_host, molt_db_query_host};
 #[cfg(not(target_arch = "wasm32"))]
 use mio::net::TcpStream as MioTcpStream;
 #[cfg(not(target_arch = "wasm32"))]
-use rustls::pki_types::{CertificateDer, ServerName};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 #[cfg(not(target_arch = "wasm32"))]
 use rustls::{
     ClientConfig, ClientConnection, RootCertStore, ServerConfig, ServerConnection, StreamOwned,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use rustls_pki_types::pem::PemObject;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs::File;
 #[cfg(not(target_arch = "wasm32"))]
@@ -45,8 +47,6 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket, connect};
 #[cfg(not(target_arch = "wasm32"))]
 use url::Url;
-#[cfg(not(target_arch = "wasm32"))]
-use webpki_roots::TLS_SERVER_ROOTS;
 
 // --- Channels ---
 
@@ -1470,7 +1470,13 @@ extern "C" fn tls_stream_close_native_hook(ctx: *mut u8) {
 #[cfg(not(target_arch = "wasm32"))]
 fn tls_client_wrap_stream_native(tcp: TcpStream, server_name: &str) -> *mut u8 {
     let mut roots = RootCertStore::empty();
-    roots.extend(TLS_SERVER_ROOTS.iter().cloned());
+    let native_certs = rustls_native_certs::load_native_certs();
+    if native_certs.certs.is_empty() && !native_certs.errors.is_empty() {
+        return std::ptr::null_mut();
+    }
+    for cert in native_certs.certs {
+        let _ = roots.add(cert);
+    }
     let config = Arc::new(
         ClientConfig::builder()
             .with_root_certificates(roots)
@@ -1502,7 +1508,13 @@ fn tls_client_wrap_stream_native(tcp: TcpStream, server_name: &str) -> *mut u8 {
 #[cfg(all(not(target_arch = "wasm32"), unix))]
 fn tls_client_wrap_unix_stream_native(unix: UnixStream, server_name: &str) -> *mut u8 {
     let mut roots = RootCertStore::empty();
-    roots.extend(TLS_SERVER_ROOTS.iter().cloned());
+    let native_certs = rustls_native_certs::load_native_certs();
+    if native_certs.certs.is_empty() && !native_certs.errors.is_empty() {
+        return std::ptr::null_mut();
+    }
+    for cert in native_certs.certs {
+        let _ = roots.add(cert);
+    }
     let config = Arc::new(
         ClientConfig::builder()
             .with_root_certificates(roots)
@@ -1571,7 +1583,7 @@ fn tls_server_load_config(certfile: &str, keyfile: &str) -> Result<Arc<ServerCon
 
     let cert_file = File::open(certfile).map_err(|_| ())?;
     let mut cert_reader = BufReader::new(cert_file);
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_reader_iter(&mut cert_reader)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| ())?;
     if certs.is_empty() {
@@ -1580,9 +1592,7 @@ fn tls_server_load_config(certfile: &str, keyfile: &str) -> Result<Arc<ServerCon
 
     let key_file = File::open(keyfile).map_err(|_| ())?;
     let mut key_reader = BufReader::new(key_file);
-    let private_key = rustls_pemfile::private_key(&mut key_reader)
-        .map_err(|_| ())?
-        .ok_or(())?;
+    let private_key = PrivateKeyDer::from_pem_reader(&mut key_reader).map_err(|_| ())?;
 
     let config = Arc::new(
         ServerConfig::builder()

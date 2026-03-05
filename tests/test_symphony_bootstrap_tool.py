@@ -48,11 +48,21 @@ def test_sync_env_defaults_fills_external_paths(monkeypatch, tmp_path: Path) -> 
     assert loaded["MOLT_SYMPHONY_API_TOKEN_FILE"] == str(
         ext_root / "logs" / "symphony" / "secrets" / "dashboard_api_token"
     )
+    assert loaded["MOLT_SYMPHONY_SECURITY_PROFILE"] == "local"
+    assert loaded["MOLT_SYMPHONY_BIND_HOST"] == "127.0.0.1"
+    assert loaded["MOLT_SYMPHONY_ALLOW_NONLOCAL_BIND"] == "0"
+    assert loaded["MOLT_SYMPHONY_ALLOW_QUERY_TOKEN"] == "1"
+    assert loaded["MOLT_SYMPHONY_DISABLE_DASHBOARD_UI"] == "0"
+    assert loaded["MOLT_SYMPHONY_SECURITY_EVENTS_FILE"] == str(
+        ext_root / "logs" / "symphony" / "security" / "events.jsonl"
+    )
     assert loaded["MOLT_SYMPHONY_ENFORCE_ORIGIN"] == "1"
     assert loaded["MOLT_SYMPHONY_REQUIRE_CSRF_HEADER"] == "1"
     assert loaded["MOLT_SYMPHONY_MAX_HTTP_CONNECTIONS"] == "96"
     assert loaded["MOLT_SYMPHONY_MAX_STREAM_CLIENTS"] == "16"
     assert loaded["MOLT_SYMPHONY_STREAM_MAX_AGE_SECONDS"] == "300"
+    assert loaded["MOLT_SYMPHONY_HTTP_RATE_LIMIT_MAX_REQUESTS"] == "240"
+    assert loaded["MOLT_SYMPHONY_HTTP_RATE_LIMIT_WINDOW_SECONDS"] == "60"
     assert loaded["MOLT_SYMPHONY_EVENT_QUEUE_MAX"] == "8192"
     assert loaded["MOLT_SYMPHONY_EVENT_QUEUE_DROP_LOG_INTERVAL"] == "250"
     assert loaded["MOLT_EXT_ROOT"] == str(ext_root)

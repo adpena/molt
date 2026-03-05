@@ -11,9 +11,6 @@ use std::fmt::Write as _;
 use std::sync::OnceLock;
 
 pub mod wasm;
-
-#[cfg(feature = "egraphs")]
-pub mod egraph_simplify;
 mod ir_schema;
 
 const QNAN: u64 = 0x7ff8_0000_0000_0000;
