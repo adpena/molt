@@ -90,3 +90,18 @@ def test_run_formal_suite_warns_on_runtime_mismatch(
 def test_run_formal_suite_rejects_invalid_mode() -> None:
     with pytest.raises(RuntimeError):
         linear_hygiene._run_formal_suite("invalid")
+
+
+def test_project_name_for_issue_uses_title_prefix_overrides() -> None:
+    assert (
+        linear_hygiene._project_name_for_issue(
+            {"title": "orchestration: role routing cleanup"}, {}
+        )
+        == "Tooling & DevEx"
+    )
+    assert (
+        linear_hygiene._project_name_for_issue(
+            {"title": "formal: prove deterministic scheduler"}, {}
+        )
+        == "Testing & Differential"
+    )
