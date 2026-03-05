@@ -127,6 +127,23 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_dashboard_wasm.py \
 
 Kernel source is `src/molt/symphony/dashboard_kernel.py`.
 
+Dashboard JS checks for optional runtime hooks on `window.__MOLT_SYMPHONY_KERNEL__`
+(or `window.MoltSymphonyKernel`) with:
+- `classifyEventTone(eventName: str) -> str`
+- `classifyTraceStatus(status: str) -> str`
+- `compactRecentEvents(rows, limit) -> list`
+
+This allows a future WASM bridge to swap in without changing dashboard UI code.
+
+Bridge runtime:
+- static bridge asset: `/dashboard-kernel-bridge.js`
+- wasm fetch path (default): `/dashboard-kernel.wasm`
+- server env override: `MOLT_SYMPHONY_DASHBOARD_KERNEL_WASM_PATH=/abs/path/dashboard_kernel.wasm`
+- optional adapter hook: `window.__MOLT_SYMPHONY_KERNEL_WASM_ADAPTER__` (maps wasm exports to hook functions)
+
+Bridge profiling is emitted to `window.__MOLT_SYMPHONY_KERNEL_PROFILE__` and included under
+`window.__MOLT_SYMPHONY_CLIENT_TELEMETRY__.kernel`.
+
 Optional dashboard API efficiency baseline in the same run:
 
 ```bash
