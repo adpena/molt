@@ -725,11 +725,39 @@
         display: grid;
         gap: 8px;
       }
+      .profiling-wrap {
+        display: grid;
+        gap: 12px;
+      }
+      .profiling-summary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+      .profiling-group {
+        display: grid;
+        gap: 8px;
+      }
+      .profiling-group-title {
+        font-size: 0.76rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--ink-soft);
+      }
       .profiling-item {
         border: 1px solid rgba(255, 255, 255, 0.04);
         border-radius: 10px;
         background: rgba(255, 255, 255, 0.02);
         padding: 10px 12px;
+      }
+      .profiling-item.regression {
+        border-color: rgba(242, 184, 181, 0.24);
+        background: rgba(242, 184, 181, 0.06);
+      }
+      .profiling-item.candidate {
+        border-color: rgba(252, 232, 178, 0.22);
+        background: rgba(252, 232, 178, 0.05);
       }
       .profiling-item .head {
         display: flex;
