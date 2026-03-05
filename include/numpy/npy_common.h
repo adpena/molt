@@ -1,0 +1,36 @@
+#ifndef MOLT_NUMPY_NPY_COMMON_H
+#define MOLT_NUMPY_NPY_COMMON_H
+
+#include <numpy/ndarraytypes.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define PyComplex64ArrType_Type PyCFloatArrType_Type
+#define PyComplex128ArrType_Type PyCDoubleArrType_Type
+#define PyComplex160ArrType_Type PyCLongDoubleArrType_Type
+#define PyComplex192ArrType_Type PyCLongDoubleArrType_Type
+#define PyComplex256ArrType_Type PyCLongDoubleArrType_Type
+#define PyInt8ArrType_Type PyByteArrType_Type
+#define PyInt16ArrType_Type PyShortArrType_Type
+#define PyInt32ArrType_Type PyIntArrType_Type
+#define PyInt64ArrType_Type PyLongLongArrType_Type
+#define PyUInt8ArrType_Type PyUByteArrType_Type
+#define PyUInt16ArrType_Type PyUShortArrType_Type
+#define PyUInt32ArrType_Type PyUIntArrType_Type
+#define PyUInt64ArrType_Type PyULongLongArrType_Type
+#define PyIntpArrType_Type PyLongLongArrType_Type
+#define PyUIntpArrType_Type PyULongLongArrType_Type
+
+typedef PyCFloatScalarObject PyComplex64ScalarObject;
+typedef PyCDoubleScalarObject PyComplex128ScalarObject;
+typedef PyCLongDoubleScalarObject PyComplex160ScalarObject;
+typedef PyCLongDoubleScalarObject PyComplex192ScalarObject;
+typedef PyCLongDoubleScalarObject PyComplex256ScalarObject;
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

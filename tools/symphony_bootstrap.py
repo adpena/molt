@@ -11,6 +11,21 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from molt.symphony.paths import (
+    resolve_symphony_parent_root,
+    resolve_symphony_store_root,
+    symphony_api_token_file,
+    symphony_artifact_root,
+    symphony_dlq_events_file,
+    symphony_durable_root,
+    symphony_log_root,
+    symphony_security_events_file,
+    symphony_state_root,
+    symphony_taste_memory_distillations_dir,
+    symphony_taste_memory_events_file,
+    symphony_workspace_root,
+)
+
 
 DEFAULT_EXT_ROOT = Path("/Volumes/APDataStore/Molt")
 DEFAULT_ENV_FILE = Path("ops/linear/runtime/symphony.env")
@@ -290,6 +305,15 @@ def _sync_env_defaults(
     merged = dict(current)
 
     merged.setdefault("MOLT_EXT_ROOT", str(ext_root))
+    merged.setdefault(
+        "MOLT_SYMPHONY_PARENT_ROOT",
+        str(resolve_symphony_parent_root(merged)),
+    )
+    merged.setdefault("MOLT_SYMPHONY_PROJECT_KEY", "molt")
+    merged.setdefault(
+        "MOLT_SYMPHONY_STORE_ROOT",
+        str(resolve_symphony_store_root(merged)),
+    )
     merged.setdefault("CARGO_TARGET_DIR", str(ext_root / "cargo-target"))
     merged.setdefault(
         "MOLT_DIFF_CARGO_TARGET_DIR",
@@ -315,10 +339,27 @@ def _sync_env_defaults(
     merged.setdefault("MOLT_SYMPHONY_TOOL_STATE_DETAIL", "compact")
     merged.setdefault("MOLT_SYMPHONY_MAX_CODEX_EVENT_COUNTERS", "64")
     merged.setdefault("MOLT_SYMPHONY_DURABLE_MEMORY", "1")
+    merged.setdefault("MOLT_SYMPHONY_LOG_ROOT", str(symphony_log_root(merged)))
+    merged.setdefault("MOLT_SYMPHONY_STATE_ROOT", str(symphony_state_root(merged)))
     merged.setdefault(
-        "MOLT_SYMPHONY_DURABLE_ROOT",
-        str(ext_root / "logs" / "symphony" / "durable_memory"),
+        "MOLT_SYMPHONY_ARTIFACT_ROOT",
+        str(symphony_artifact_root(merged)),
     )
+    merged.setdefault(
+        "MOLT_SYMPHONY_WORKSPACE_ROOT",
+        str(symphony_workspace_root(merged)),
+    )
+    merged.setdefault("MOLT_SYMPHONY_DURABLE_ROOT", str(symphony_durable_root(merged)))
+    merged.setdefault("MOLT_SYMPHONY_DLQ_EVENTS_FILE", str(symphony_dlq_events_file(merged)))
+    merged.setdefault(
+        "MOLT_SYMPHONY_TASTE_MEMORY_EVENTS_FILE",
+        str(symphony_taste_memory_events_file(merged)),
+    )
+    merged.setdefault(
+        "MOLT_SYMPHONY_TASTE_MEMORY_DISTILLATIONS_DIR",
+        str(symphony_taste_memory_distillations_dir(merged)),
+    )
+    merged.setdefault("MOLT_SYMPHONY_LOOP_HOOK_CMD", "")
     merged.setdefault("MOLT_SYMPHONY_DURABLE_SYNC_SECONDS", "180")
     merged.setdefault("MOLT_SYMPHONY_DSPY_ENABLE", "0")
     merged.setdefault("MOLT_SYMPHONY_DSPY_MODEL", "openai/gpt-4.1-mini")
@@ -336,7 +377,7 @@ def _sync_env_defaults(
         merged.setdefault("JAVA_HOME", preferred_java_home)
     merged.setdefault(
         "MOLT_SYMPHONY_API_TOKEN_FILE",
-        str(ext_root / "logs" / "symphony" / "secrets" / "dashboard_api_token"),
+        str(symphony_api_token_file(merged)),
     )
     merged.setdefault("MOLT_SYMPHONY_ENFORCE_ORIGIN", "1")
     merged.setdefault("MOLT_SYMPHONY_REQUIRE_CSRF_HEADER", "1")
@@ -347,7 +388,7 @@ def _sync_env_defaults(
     merged.setdefault("MOLT_SYMPHONY_DISABLE_DASHBOARD_UI", "0")
     merged.setdefault(
         "MOLT_SYMPHONY_SECURITY_EVENTS_FILE",
-        str(ext_root / "logs" / "symphony" / "security" / "events.jsonl"),
+        str(symphony_security_events_file(merged)),
     )
     merged.setdefault("MOLT_SYMPHONY_MAX_HTTP_CONNECTIONS", "96")
     merged.setdefault("MOLT_SYMPHONY_MAX_STREAM_CLIENTS", "16")

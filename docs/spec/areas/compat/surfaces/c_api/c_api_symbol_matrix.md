@@ -13,11 +13,14 @@
 - **Current Status:** A `libmolt` C-API bootstrap surface is implemented with
   `molt_*` wrapper symbols (`runtime/molt-runtime/src/c_api.rs` + `include/molt/molt.h`),
   and `include/molt/Python.h` now carries a broad partial CPython source-compat
-  layer plus initial NumPy source-compat headers under `include/numpy/`.
-- **Latest scan baseline (2026-02-26):** `Py*` symbol surface exported by
+  layer plus expanded NumPy source-compat headers under `include/numpy/`
+  covering dtype/type-object exports, `PyDataType_*` and `PyDataMem_*`
+  helpers, array flag/conversion/copy/setup shims, upstream-shaped internal
+  include wrappers, and fail-fast `PyUFunc_*` constructor/registration stubs.
+- **Latest scan baseline (2026-03-05):** `Py*` symbol surface exported by
   `include/molt/Python.h` + `include/numpy/*.h` (+ `include/datetime.h`) is
-  `416` tokens. Sdist C-source scans report missing symbols: NumPy `2.4.2`
-  `1193`, pandas `3.0.1` `28`,
+  `770` tokens. C-source sdist scans report missing symbols: NumPy `2.4.2`
+  `873`, pandas `3.0.1` `28`,
   polars `1.38.1` `0`.
 - **Hollow Symbols (future):** Some symbols may exist but return generic errors or empty values if their functionality (e.g., GC inspection) is not supported (TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:planned): define hollow-symbol policy + error surface).
 

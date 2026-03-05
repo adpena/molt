@@ -21,8 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-
-DEFAULT_EXT_ROOT = Path("/Volumes/APDataStore/Molt")
+from molt.symphony.paths import resolve_molt_ext_root, symphony_perf_reports_dir
 DEFAULT_ENV_FILE = Path("ops/linear/runtime/symphony.env")
 
 
@@ -141,7 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "Directory containing symphony_perf_*.json reports. "
-            "Defaults to $MOLT_EXT_ROOT/logs/symphony."
+            "Defaults to the Symphony log root under Vertigo."
         ),
     )
     parser.add_argument(
@@ -734,7 +733,8 @@ def _maybe_add_breach(
 
 
 def _default_reports_dir(ext_root: Path) -> Path:
-    return ext_root / "logs" / "symphony"
+    del ext_root
+    return symphony_perf_reports_dir()
 
 
 def _resolve_reports_dir(raw: str, *, ext_root: Path) -> Path:
@@ -978,7 +978,7 @@ def _sync_linear_regression_issues(
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    ext_root = Path(os.environ.get("MOLT_EXT_ROOT", str(DEFAULT_EXT_ROOT))).expanduser()
+    ext_root = resolve_molt_ext_root()
     if not ext_root.exists():
         raise RuntimeError(f"External root not mounted: {ext_root}")
     modes = _parse_modes(args.modes)

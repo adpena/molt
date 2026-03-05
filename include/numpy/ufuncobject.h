@@ -9,19 +9,116 @@ extern "C" {
 
 typedef void (*PyUFuncGenericFunction)(
     char **args,
-    const npy_intp *dimensions,
-    const npy_intp *strides,
+    npy_intp const *dimensions,
+    npy_intp const *strides,
     void *innerloopdata
 );
 
+typedef void (PyUFunc_Loop1d)(
+    char **args,
+    npy_intp *dimensions,
+    npy_intp *steps,
+    void *data
+);
+
+typedef void (PyUFunc_MaskedStridedInnerLoopFunc)(
+    char **dataptrs,
+    npy_intp *strides,
+    char *maskptr,
+    npy_intp mask_stride,
+    npy_intp count,
+    void *innerloopdata
+);
+
+struct _tagPyUFuncObject;
+
+typedef int (PyUFunc_TypeResolutionFunc)(
+    struct _tagPyUFuncObject *ufunc,
+    NPY_CASTING casting,
+    PyArrayObject **operands,
+    PyObject *type_tup,
+    PyArray_Descr **out_dtypes
+);
+
+typedef int (PyUFunc_ProcessCoreDimsFunc)(
+    struct _tagPyUFuncObject *ufunc,
+    npy_intp *core_dim_sizes
+);
+
 typedef struct PyUFunc_LoopSlot {
-    int _molt_reserved;
+    int slot;
+    void *pfunc;
 } PyUFunc_LoopSlot;
 
-#define PyUFunc_Type (*_molt_numpy_builtin_type_borrowed("object"))
-#define PyUFunc_None -1
+typedef struct PyUFunc_PyFuncData {
+    PyUFuncGenericFunction func;
+    void *data;
+} PyUFunc_PyFuncData;
 
-#define PyUFunc_Check(op) PyObject_TypeCheck((PyObject *)(op), &PyArray_Type)
+static void **PyUFunc_API = NULL;
+
+#define PyUFunc_Type (*_molt_numpy_builtin_type_borrowed("object"))
+#define PyUFunc_Check(op) PyObject_TypeCheck((PyObject *)(op), &PyUFunc_Type)
+
+#define PyUFunc_None (-1)
+#define PyUFunc_Zero 0
+#define PyUFunc_One 1
+#define PyUFunc_MinusOne 2
+#define PyUFunc_ReorderableNone 3
+#define PyUFunc_IdentityValue 4
+
+static PyUFuncGenericFunction PyUFunc_O_O = NULL;
+static PyUFuncGenericFunction PyUFunc_OO_O = NULL;
+static PyUFuncGenericFunction PyUFunc_O_O_method = NULL;
+static PyUFuncGenericFunction PyUFunc_OO_O_method = NULL;
+static PyUFuncGenericFunction PyUFunc_On_Om = NULL;
+static PyUFuncGenericFunction PyUFunc_f_f = NULL;
+static PyUFuncGenericFunction PyUFunc_ff_f = NULL;
+static PyUFuncGenericFunction PyUFunc_f_f_As_d_d = NULL;
+static PyUFuncGenericFunction PyUFunc_ff_f_As_dd_d = NULL;
+static PyUFuncGenericFunction PyUFunc_d_d = NULL;
+static PyUFuncGenericFunction PyUFunc_dd_d = NULL;
+static PyUFuncGenericFunction PyUFunc_g_g = NULL;
+static PyUFuncGenericFunction PyUFunc_gg_g = NULL;
+static PyUFuncGenericFunction PyUFunc_F_F = NULL;
+static PyUFuncGenericFunction PyUFunc_FF_F = NULL;
+static PyUFuncGenericFunction PyUFunc_F_F_As_D_D = NULL;
+static PyUFuncGenericFunction PyUFunc_FF_F_As_DD_D = NULL;
+static PyUFuncGenericFunction PyUFunc_D_D = NULL;
+static PyUFuncGenericFunction PyUFunc_DD_D = NULL;
+static PyUFuncGenericFunction PyUFunc_G_G = NULL;
+static PyUFuncGenericFunction PyUFunc_GG_G = NULL;
+static PyUFuncGenericFunction PyUFunc_e_e = NULL;
+static PyUFuncGenericFunction PyUFunc_ee_e = NULL;
+static PyUFuncGenericFunction PyUFunc_e_e_As_f_f = NULL;
+static PyUFuncGenericFunction PyUFunc_e_e_As_d_d = NULL;
+static PyUFuncGenericFunction PyUFunc_ee_e_As_ff_f = NULL;
+static PyUFuncGenericFunction PyUFunc_ee_e_As_dd_d = NULL;
+
+static inline int PyUFunc_getfperr(void) {
+    return 0;
+}
+
+static inline void PyUFunc_clearfperr(void) {}
+
+static inline int PyUFunc_ImportUFuncAPI(void) {
+    return 0;
+}
+
+#define PyUFunc_FromFuncAndData(...) _molt_numpy_unavailable_obj("PyUFunc_FromFuncAndData")
+#define PyUFunc_FromFuncAndDataAndSignature(...) _molt_numpy_unavailable_obj("PyUFunc_FromFuncAndDataAndSignature")
+#define PyUFunc_FromFuncAndDataAndSignatureAndIdentity(...) _molt_numpy_unavailable_obj("PyUFunc_FromFuncAndDataAndSignatureAndIdentity")
+#define PyUFunc_RegisterLoopForType(...) _molt_numpy_unavailable_i32("PyUFunc_RegisterLoopForType")
+#define PyUFunc_RegisterLoopForDescr(...) _molt_numpy_unavailable_i32("PyUFunc_RegisterLoopForDescr")
+#define PyUFunc_ReplaceLoopBySignature(...) _molt_numpy_unavailable_i32("PyUFunc_ReplaceLoopBySignature")
+#define PyUFunc_AddLoopFromSpec(...) _molt_numpy_unavailable_i32("PyUFunc_AddLoopFromSpec")
+#define PyUFunc_AddLoopsFromSpecs(...) _molt_numpy_unavailable_i32("PyUFunc_AddLoopsFromSpecs")
+#define PyUFunc_AddPromoter(...) _molt_numpy_unavailable_i32("PyUFunc_AddPromoter")
+#define PyUFunc_AddWrappingLoop(...) _molt_numpy_unavailable_i32("PyUFunc_AddWrappingLoop")
+#define PyUFunc_DefaultTypeResolver(...) _molt_numpy_unavailable_i32("PyUFunc_DefaultTypeResolver")
+#define PyUFunc_ValidateCasting(...) _molt_numpy_unavailable_i32("PyUFunc_ValidateCasting")
+#define PyArrayMethod_TranslateGivenDescriptors(...) _molt_numpy_unavailable_i32("PyArrayMethod_TranslateGivenDescriptors")
+#define PyArrayMethod_TranslateLoopDescriptors(...) _molt_numpy_unavailable_i32("PyArrayMethod_TranslateLoopDescriptors")
 
 static inline int PyUFunc_GiveFloatingpointErrors(const char *name, int fpe_errors) {
     (void)name;

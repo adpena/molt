@@ -30,6 +30,7 @@ from .observability_presenter import (
     load_security_events_summary,
     project_state_payload,
 )
+from .paths import symphony_security_events_file
 
 
 class StateProvider(Protocol):
@@ -248,15 +249,7 @@ class DashboardServer:
                 "MOLT_SYMPHONY_API_TOKEN (or MOLT_SYMPHONY_DASHBOARD_TOKEN) or "
                 "explicitly set MOLT_SYMPHONY_ALLOW_UNAUTHENTICATED_NONLOCAL=1."
             )
-        ext_root = Path(
-            os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt")
-        ).expanduser()
-        security_events_file = Path(
-            os.environ.get(
-                "MOLT_SYMPHONY_SECURITY_EVENTS_FILE",
-                str(ext_root / "logs" / "symphony" / "security" / "events.jsonl"),
-            )
-        ).expanduser()
+        security_events_file = symphony_security_events_file()
         self._state_hasher = state_hasher
         max_stream_clients = _coerce_non_negative_int_env(
             "MOLT_SYMPHONY_MAX_STREAM_CLIENTS", default=16, minimum=1

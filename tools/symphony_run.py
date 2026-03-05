@@ -9,13 +9,24 @@ import sys
 import time
 from pathlib import Path
 
+from molt.symphony.paths import (
+    resolve_molt_ext_root,
+    symphony_api_token_file,
+    symphony_artifact_root,
+    symphony_durable_root,
+    symphony_log_root,
+    symphony_security_events_file,
+    symphony_state_root,
+    resolve_symphony_parent_root,
+    resolve_symphony_store_root,
+    symphony_workspace_root,
+)
+
 try:
     from . import compile_governor
 except ImportError:  # pragma: no cover - script execution path.
     import compile_governor  # type: ignore[no-redef]
 
-
-DEFAULT_EXT_ROOT = "/Volumes/APDataStore/Molt"
 DEFAULT_ENV_FILE = Path("ops/linear/runtime/symphony.env")
 
 
@@ -175,7 +186,7 @@ def _has_respect_pythonpath_flag(args: list[str]) -> bool:
 
 
 def _ensure_dashboard_security_defaults(
-    *, env: dict[str, str], ext_root: Path, port: int | None
+    *, env: dict[str, str], port: int | None
 ) -> None:
     env.setdefault("MOLT_SYMPHONY_SECURITY_PROFILE", "local")
     env.setdefault("MOLT_SYMPHONY_BIND_HOST", "127.0.0.1")
@@ -191,13 +202,16 @@ def _ensure_dashboard_security_defaults(
     env.setdefault("MOLT_SYMPHONY_HTTP_RATE_LIMIT_WINDOW_SECONDS", "60")
     env.setdefault("MOLT_SYMPHONY_EVENT_QUEUE_MAX", "8192")
     env.setdefault("MOLT_SYMPHONY_EVENT_QUEUE_DROP_LOG_INTERVAL", "250")
+    env.setdefault("MOLT_SYMPHONY_LOG_ROOT", str(symphony_log_root(env)))
+    env.setdefault("MOLT_SYMPHONY_STATE_ROOT", str(symphony_state_root(env)))
+    env.setdefault("MOLT_SYMPHONY_ARTIFACT_ROOT", str(symphony_artifact_root(env)))
+    env.setdefault("MOLT_SYMPHONY_WORKSPACE_ROOT", str(symphony_workspace_root(env)))
+    env.setdefault("MOLT_SYMPHONY_DURABLE_ROOT", str(symphony_durable_root(env)))
     env.setdefault(
         "MOLT_SYMPHONY_SECURITY_EVENTS_FILE",
-        str(ext_root / "logs" / "symphony" / "security" / "events.jsonl"),
+        str(symphony_security_events_file(env)),
     )
-    security_events_file = Path(
-        str(env["MOLT_SYMPHONY_SECURITY_EVENTS_FILE"])
-    ).expanduser()
+    security_events_file = symphony_security_events_file(env)
     if not security_events_file.is_absolute():
         security_events_file = (Path.cwd() / security_events_file).resolve()
     try:
@@ -211,12 +225,7 @@ def _ensure_dashboard_security_defaults(
         or str(env.get("MOLT_SYMPHONY_DASHBOARD_TOKEN") or "").strip()
     )
     if not token:
-        token_file = Path(
-            str(
-                env.get("MOLT_SYMPHONY_API_TOKEN_FILE")
-                or (ext_root / "logs" / "symphony" / "secrets" / "dashboard_api_token")
-            )
-        ).expanduser()
+        token_file = symphony_api_token_file(env)
         if not token_file.is_absolute():
             token_file = (Path.cwd() / token_file).resolve()
         token_file.parent.mkdir(parents=True, exist_ok=True)
@@ -256,10 +265,16 @@ def main(argv: list[str] | None = None) -> int:
         for key, value in _load_env_file(env_file).items():
             env.setdefault(key, value)
 
-    ext_root = Path(env.get("MOLT_EXT_ROOT", DEFAULT_EXT_ROOT)).expanduser()
+    ext_root = resolve_molt_ext_root(env)
+    symphony_parent_root = resolve_symphony_parent_root(env)
+    symphony_store_root = resolve_symphony_store_root(env)
     ensure_external_root(ext_root)
+    ensure_external_root(symphony_parent_root)
 
     env.setdefault("MOLT_EXT_ROOT", str(ext_root))
+    env.setdefault("MOLT_SYMPHONY_PARENT_ROOT", str(symphony_parent_root))
+    env.setdefault("MOLT_SYMPHONY_PROJECT_KEY", "molt")
+    env.setdefault("MOLT_SYMPHONY_STORE_ROOT", str(symphony_store_root))
     env.setdefault("CARGO_TARGET_DIR", str(ext_root / "cargo-target"))
     env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
     env.setdefault("MOLT_CACHE", str(ext_root / "molt_cache"))
@@ -274,6 +289,11 @@ def main(argv: list[str] | None = None) -> int:
     env.setdefault("MOLT_BACKEND_DAEMON_SOCKET_DIR", "/tmp/molt_backend_sockets")
     env.setdefault("TMPDIR", str(ext_root / "tmp"))
     env.setdefault("PYTHONPATH", "src")
+    env.setdefault("MOLT_SYMPHONY_LOG_ROOT", str(symphony_log_root(env)))
+    env.setdefault("MOLT_SYMPHONY_STATE_ROOT", str(symphony_state_root(env)))
+    env.setdefault("MOLT_SYMPHONY_ARTIFACT_ROOT", str(symphony_artifact_root(env)))
+    env.setdefault("MOLT_SYMPHONY_WORKSPACE_ROOT", str(symphony_workspace_root(env)))
+    env.setdefault("MOLT_SYMPHONY_DURABLE_ROOT", str(symphony_durable_root(env)))
     for key in (
         "CARGO_TARGET_DIR",
         "MOLT_CACHE",
@@ -282,6 +302,11 @@ def main(argv: list[str] | None = None) -> int:
         "MOLT_APALACHE_WORK_DIR",
         "UV_CACHE_DIR",
         "TMPDIR",
+        "MOLT_SYMPHONY_LOG_ROOT",
+        "MOLT_SYMPHONY_STATE_ROOT",
+        "MOLT_SYMPHONY_ARTIFACT_ROOT",
+        "MOLT_SYMPHONY_WORKSPACE_ROOT",
+        "MOLT_SYMPHONY_DURABLE_ROOT",
     ):
         path_value = env.get(key)
         if not path_value:
@@ -315,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
                     if current_path
                     else java_bin_dir
                 )
-    _ensure_dashboard_security_defaults(env=env, ext_root=ext_root, port=args.port)
+    _ensure_dashboard_security_defaults(env=env, port=args.port)
 
     if not env.get("MOLT_LINEAR_PROJECT_SLUG"):
         raise RuntimeError(

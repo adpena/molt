@@ -2,25 +2,17 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import sys
 from pathlib import Path
 from typing import Any
 
 from molt.symphony.durable_memory import DurableMemoryStore
+from molt.symphony.paths import symphony_durable_root
 
 
 def _default_root() -> Path:
-    ext_root = Path(
-        str(os.environ.get("MOLT_EXT_ROOT") or "/Volumes/APDataStore/Molt")
-    ).expanduser()
-    return Path(
-        str(
-            os.environ.get("MOLT_SYMPHONY_DURABLE_ROOT")
-            or (ext_root / "logs" / "symphony" / "durable_memory")
-        )
-    ).expanduser()
+    return symphony_durable_root()
 
 
 def _store(root: Path) -> DurableMemoryStore:
