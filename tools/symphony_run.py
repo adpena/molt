@@ -175,6 +175,9 @@ def main(argv: list[str] | None = None) -> int:
     repo_url = _default_repo_url(repo_root)
     if repo_url:
         env.setdefault("MOLT_SOURCE_REPO_URL", repo_url)
+    env.setdefault("MOLT_SYMPHONY_SYNC_REMOTE", "origin")
+    env.setdefault("MOLT_SYMPHONY_SYNC_BRANCH", "main")
+    env.setdefault("MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS", "adpena,symphony")
 
     if not env.get("MOLT_LINEAR_PROJECT_SLUG"):
         raise RuntimeError(

@@ -11,6 +11,11 @@ from .models import Workspace, WorkspaceConfig, WorkspaceHooks
 
 
 _SANITIZE_RE = re.compile(r"[^A-Za-z0-9._-]")
+_GIT_SYNC_CONFLICT_PATTERNS = (
+    "would be overwritten by merge",
+    "would be overwritten by checkout",
+    "please commit your changes or stash them before you merge",
+)
 
 
 def sanitize_workspace_key(issue_identifier: str) -> str:
@@ -71,9 +76,22 @@ class WorkspaceManager:
 
     def run_before_run(self, workspace_path: Path) -> None:
         if self._hooks.before_run:
-            self.run_hook(
-                "before_run", self._hooks.before_run, workspace_path, fatal=True
-            )
+            try:
+                self.run_hook(
+                    "before_run", self._hooks.before_run, workspace_path, fatal=True
+                )
+            except HookError as exc:
+                if _is_git_sync_conflict(str(exc)):
+                    # Keep worker progress in dirty issue workspaces instead of
+                    # failing/retrying in a loop when git sync hooks hit local edits.
+                    log(
+                        "WARNING",
+                        "workspace_before_run_git_conflict_ignored",
+                        cwd=workspace_path,
+                        error=str(exc),
+                    )
+                    return
+                raise
 
     def run_after_run(self, workspace_path: Path) -> None:
         if self._hooks.after_run:
@@ -144,3 +162,10 @@ def _truncate(value: str, max_chars: int = 1000) -> str:
     if len(cleaned) <= max_chars:
         return cleaned
     return cleaned[:max_chars] + "..."
+
+
+def _is_git_sync_conflict(message: str) -> bool:
+    normalized = message.strip().lower()
+    if not normalized:
+        return False
+    return any(pattern in normalized for pattern in _GIT_SYNC_CONFLICT_PATTERNS)

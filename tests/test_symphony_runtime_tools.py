@@ -78,6 +78,9 @@ def test_symphony_run_main_uses_env_file_and_launches(
     assert env["LINEAR_API_KEY"] == "abc123"
     assert env["MOLT_LINEAR_PROJECT_SLUG"] == "molt-main"
     assert env["MOLT_SYMPHONY_EXEC_MODE"] == "python"
+    assert env["MOLT_SYMPHONY_SYNC_REMOTE"] == "origin"
+    assert env["MOLT_SYMPHONY_SYNC_BRANCH"] == "main"
+    assert env["MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS"] == "adpena,symphony"
 
 
 def test_symphony_run_main_requires_linear_token(monkeypatch, tmp_path: Path) -> None:

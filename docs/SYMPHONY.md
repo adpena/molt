@@ -60,6 +60,7 @@ Human operator contract:
 - `WORKFLOW.md`: repository-owned workflow contract
 - `tools/symphony_bootstrap.py`: one-command setup for MCP/env/launchd
 - `tools/symphony_run.py`: launch helper with external-volume checks
+- `tools/symphony_git_sync.sh`: best-effort workspace git sync with author allowlist gating
 - `tools/symphony_launchd.py`: launchd lifecycle helper for Symphony + watchdog
 - `tools/symphony_watchdog.py`: file-watch daemon that auto-restarts Symphony service on changes
 
@@ -110,10 +111,13 @@ This writes a JSON report under `/Volumes/APDataStore/Molt/logs/symphony/` by de
 
 - Workspace paths are enforced under `workspace.root`.
 - Issue workspace names are sanitized to `[A-Za-z0-9._-]`.
-- `before_run` and `after_create` hook failures fail the attempt.
+- `after_create` hook failures fail the attempt.
+- `before_run` git sync is best-effort: dirty/diverged workspaces are logged and skipped (non-fatal) to avoid retry flicker loops.
 - `after_run` and `before_remove` hook failures are logged and ignored.
+- Automated sync/merge behavior is author-gated via `MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS` (default `adpena,symphony`).
 - Unknown prompt variables and unknown filters fail rendering.
 - Unsupported dynamic tool calls are rejected without stalling the session.
-- User-input-required events are treated as hard failures.
+- Rate-limit exhaustion now activates a system suspension (`rate_limited`) and auto-resume window instead of hot-loop retries.
+- Missing Codex auth / input-required states now activate a system suspension (`auth_required`) with human prompt text; Symphony retries automatically after the configured resume delay.
 - Dashboard/API state payload now includes `profiling` and `runtime.exec_mode` fields.
-- Dashboard/API state payload includes `agent_panes`, runtime role pool settings, and token throughput (`codex_totals.tokens_per_second`).
+- Dashboard/API state payload includes `agent_panes`, runtime role pool settings, token throughput (`codex_totals.tokens_per_second`), and suspension metadata (`suspension`).
