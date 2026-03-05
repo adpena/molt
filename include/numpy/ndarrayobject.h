@@ -54,7 +54,6 @@ static inline npy_intp _molt_pyarray_size(const PyArrayObject *array_obj) {
 #define PyArray_FLAGS(arr) (((PyArrayObject_fields *)(arr))->flags)
 #define PyArray_ITEMSIZE(arr) ((PyArray_DESCR(arr) != NULL) ? PyArray_DESCR(arr)->elsize : 0)
 #define PyArray_SIZE(arr) _molt_pyarray_size((PyArrayObject *)(arr))
-#define PyArray_Size(arr) _molt_pyarray_size((PyArrayObject *)(arr))
 #define PyArray_NBYTES(arr) ((npy_intp)(PyArray_SIZE(arr) * (npy_intp)PyArray_ITEMSIZE(arr)))
 #define PyArray_TYPE(arr) ((PyArray_DESCR(arr) != NULL) ? PyArray_DESCR(arr)->type_num : NPY_OBJECT)
 #define PyArray_CHKFLAGS(arr, mask) (((PyArray_FLAGS(arr)) & (mask)) == (mask))
@@ -91,7 +90,6 @@ static inline npy_intp _molt_pyarray_size(const PyArrayObject *array_obj) {
 #define PyDataType_HASFIELDS(descr) (PyDataType_NAMES((descr)) != NULL || PyDataType_FIELDS((descr)) != NULL)
 #define PyDataType_HASSUBARRAY(descr) (PyDataType_SUBARRAY(descr) != NULL)
 #define PyDataType_ISUNSIZED(descr) ((descr) != NULL && (descr)->elsize == 0 && !PyDataType_HASFIELDS(descr))
-#define PyDataType_ISNOTSWAPPED(descr) ((descr) != NULL && PyArray_ISNBO((descr)->byteorder))
 #define PyDataType_C_METADATA(descr) ((PyArray_DatetimeMetaData *)NULL)
 
 #define PyArray_malloc PyMem_Malloc
@@ -556,12 +554,14 @@ static inline PyArrayObject *PyArray_NewCopy(PyArrayObject *array_obj, int order
     return array_obj;
 }
 
-static inline npy_intp PyArray_Size(PyObject *obj) {
+static inline npy_intp _molt_PyArray_Size(PyObject *obj) {
     if (obj != NULL && PyArray_Check(obj)) {
         return PyArray_SIZE((PyArrayObject *)obj);
     }
     return (npy_intp)PySequence_Size(obj);
 }
+
+#define PyArray_Size(obj) _molt_PyArray_Size((PyObject *)(obj))
 
 static inline npy_intp PyArray_PyIntAsIntp(PyObject *obj) {
     return (npy_intp)PyLong_AsLongLong(obj);
@@ -659,10 +659,6 @@ static inline PyObject *PyArray_EnsureArray(PyObject *obj) {
 
 static inline PyObject *PyArray_EnsureAnyArray(PyObject *obj) {
     return PyArray_EnsureArray(obj);
-}
-
-static inline PyObject *PyDataMem_GetHandler(void) {
-    return NULL;
 }
 
 static inline PyObject *PyArray_FromArray(
@@ -1329,19 +1325,6 @@ static inline PyArray_Descr *PyArray_ResultType(
 static inline PyObject *PyArray_Ravel(PyArrayObject *array_obj, NPY_ORDER order) {
     (void)order;
     return PyArray_View(array_obj, NULL, NULL);
-}
-
-static inline int PyArray_SetBaseObject(PyArrayObject *array_obj, PyObject *base) {
-    if (array_obj == NULL) {
-        return -1;
-    }
-    ((PyArrayObject_fields *)array_obj)->base = base;
-    return 0;
-}
-
-static inline void PyArray_Item_INCREF(char *data, PyArray_Descr *descr) {
-    (void)data;
-    (void)descr;
 }
 
 static inline double PyArray_GetPriority(PyObject *obj, double default_priority) {
