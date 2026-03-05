@@ -104,7 +104,7 @@
     }
   },
   {
-    "title": "[P1][RT2] async I/O cancellation propagation.)",
+    "title": "[P1][RT2] async I/O cancellation propagation)",
     "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: async I/O cancellation propagation.)\nArea: async-runtime\nOwner lane: runtime\nMilestone: RT2\nStatus tag: partial",
     "priority": 2,
     "metadata": {
@@ -195,7 +195,7 @@
     }
   },
   {
-    "title": "[P1][RT2] task groups/wait/shield + I/O cancellation + hardening.)",
+    "title": "[P1][RT2] task groups/wait/shield + I/O cancellation + hardening)",
     "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: task groups/wait/shield + I/O cancellation + hardening.)\nArea: async-runtime\nOwner lane: runtime\nMilestone: RT2\nStatus tag: partial",
     "priority": 2,
     "metadata": {
@@ -247,7 +247,7 @@
     }
   },
   {
-    "title": "[P1][RT3] implement true fork support) |",
+    "title": "[P1][RT3] implement true fork support)",
     "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: implement true fork support) |\nArea: runtime\nOwner lane: runtime\nMilestone: RT3\nStatus tag: divergent",
     "priority": 2,
     "metadata": {
@@ -260,7 +260,7 @@
     }
   },
   {
-    "title": "[P1][RT3] parallel runtime tier with isolated heaps/actors and explicit message passing; shared-memory parallelism only via opt-in safe types.)",
+    "title": "[P1][RT3] parallel runtime tier with isolated heaps/actors and explicit message passing; shared-memory parallelism only via opt-in safe types)",
     "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: parallel runtime tier with isolated heaps/actors and explicit message passing; shared-memory parallelism only via opt-in safe types.)\nArea: async-runtime\nOwner lane: runtime\nMilestone: RT3\nStatus tag: planned",
     "priority": 2,
     "metadata": {
@@ -325,7 +325,7 @@
     }
   },
   {
-    "title": "[P1][SL1] fill `builtins` module attribute coverage.)",
+    "title": "[P1][SL1] fill `builtins` module attribute coverage)",
     "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: fill `builtins` module attribute coverage.)\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: partial",
     "priority": 2,
     "metadata": {
@@ -364,7 +364,7 @@
     }
   },
   {
-    "title": "[P1][SL1] finish file/open parity per ROADMAP checklist + tests, with native/wasm lockstep.)",
+    "title": "[P1][SL1] finish file/open parity per ROADMAP checklist + tests, with native/wasm lockstep)",
     "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: finish file/open parity per ROADMAP checklist + tests, with native/wasm lockstep.)\nArea: stdlib-compat\nOwner lane: runtime\nMilestone: SL1\nStatus tag: partial",
     "priority": 2,
     "metadata": {
@@ -416,7 +416,7 @@
     }
   },
   {
-    "title": "[P1][SL1] implement full struct format/alignment parity.)",
+    "title": "[P1][SL1] implement full struct format/alignment parity)",
     "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: implement full struct format/alignment parity.)\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: partial",
     "priority": 2,
     "metadata": {
@@ -468,7 +468,7 @@
     }
   },
   {
-    "title": "[P1][SL1] operator intrinsics + runtime deque + `re`/`datetime` parity.)",
+    "title": "[P1][SL1] operator intrinsics + runtime deque + `re`/`datetime` parity)",
     "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: operator intrinsics + runtime deque + `re`/`datetime` parity.)\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL1\nStatus tag: partial",
     "priority": 2,
     "metadata": {
@@ -637,7 +637,7 @@
     }
   },
   {
-    "title": "[P1][SL2] fixture partial marker. \"",
+    "title": "[P1][SL2] fixture partial marker",
     "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: fixture partial marker. \"\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: partial",
     "priority": 2,
     "metadata": {
@@ -676,7 +676,7 @@
     }
   },
   {
-    "title": "[P1][SL2] implement full gc module API + runtime cycle collector hook.) |",
+    "title": "[P1][SL2] implement full gc module API + runtime cycle collector hook)",
     "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: implement full gc module API + runtime cycle collector hook.) |\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL2\nStatus tag: partial",
     "priority": 2,
     "metadata": {
@@ -806,7 +806,7 @@
     }
   },
   {
-    "title": "[P1][SL3] asyncio loop/task APIs + task groups + I/O adapters + executor semantics.)",
+    "title": "[P1][SL3] asyncio loop/task APIs + task groups + I/O adapters + executor semantics)",
     "description": "Auto-seeded from Molt roadmap/status TODO contracts.\n\nOriginal TODO: asyncio loop/task APIs + task groups + I/O adapters + executor semantics.)\nArea: stdlib-compat\nOwner lane: stdlib\nMilestone: SL3\nStatus tag: partial",
     "priority": 2,
     "metadata": {

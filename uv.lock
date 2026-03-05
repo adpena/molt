@@ -464,41 +464,41 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "click", specifier = ">=8.1.7" },
+    { name = "click", specifier = ">=8.3.1" },
     { name = "msgpack", marker = "extra == 'accel'", specifier = ">=1.0.0" },
-    { name = "packaging", specifier = ">=25.0" },
-    { name = "pyyaml", specifier = ">=6.0.2" },
-    { name = "rich", specifier = ">=13.7.0" },
-    { name = "ty", specifier = ">=0.0.8" },
+    { name = "packaging", specifier = ">=26.0" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "rich", specifier = ">=14.3.3" },
+    { name = "ty", specifier = ">=0.0.20" },
 ]
 provides-extras = ["accel"]
 
 [package.metadata.requires-dev]
-bench = [{ name = "setuptools", specifier = ">=80.9.0" }]
+bench = [{ name = "setuptools", specifier = ">=82.0.0" }]
 demo = [
     { name = "django", specifier = ">=6.0.3" },
-    { name = "gunicorn", specifier = ">=23.0.0" },
+    { name = "gunicorn", specifier = ">=25.1.0" },
     { name = "msgpack", specifier = ">=1.1.2" },
-    { name = "uvicorn", specifier = ">=0.34.0" },
+    { name = "uvicorn", specifier = ">=0.41.0" },
 ]
 dev = [
     { name = "cbor2", specifier = ">=5.8.0" },
-    { name = "coverage", specifier = ">=7.13.1" },
+    { name = "coverage", specifier = ">=7.13.4" },
     { name = "django", specifier = ">=6.0.3" },
     { name = "duckdb", specifier = ">=1.4.4" },
-    { name = "filelock", specifier = ">=3.20.3" },
+    { name = "filelock", specifier = ">=3.25.0" },
     { name = "msgpack", specifier = ">=1.1.2" },
-    { name = "pip", specifier = ">=26.0" },
+    { name = "pip", specifier = ">=26.0.1" },
     { name = "pip-audit", specifier = ">=2.10.0" },
     { name = "pre-commit", specifier = ">=4.5.1" },
     { name = "py-spy", specifier = ">=0.4.1" },
     { name = "pyarrow", specifier = ">=23.0.1" },
     { name = "pytest", specifier = ">=9.0.2" },
-    { name = "ruff", specifier = ">=0.14.10" },
-    { name = "setuptools", specifier = ">=80.9.0" },
+    { name = "ruff", specifier = ">=0.15.4" },
+    { name = "setuptools", specifier = ">=82.0.0" },
     { name = "stdlib-list", specifier = ">=0.12.0" },
-    { name = "ty", specifier = ">=0.0.8" },
-    { name = "virtualenv", specifier = ">=20.36.1" },
+    { name = "ty", specifier = ">=0.0.20" },
+    { name = "virtualenv", specifier = ">=21.1.0" },
 ]
 
 [[package]]

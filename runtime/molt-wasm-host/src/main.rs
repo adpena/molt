@@ -106,7 +106,7 @@ fn load_or_compile_module(
     debug_log(|| format!("read {label} wasm in {:?}", read_start.elapsed()));
     let compile_start = Instant::now();
     let module = Module::new(engine, wasm_bytes)
-        .with_context(|| format!("compile {label} {wasm_path:?}"))?;
+        .map_err(|err| anyhow::anyhow!("compile {label} {wasm_path:?}: {err}"))?;
     debug_log(|| format!("compiled {label} module in {:?}", compile_start.elapsed()));
     if precompiled_write_enabled()
         && let Some(precompiled) = resolve_precompiled_path(wasm_path, override_env)
@@ -168,7 +168,7 @@ fn build_engine() -> Result<Engine> {
             "deterministic mode: NaN canonicalization and serial compilation enabled".to_string()
         });
     }
-    Engine::new(&config)
+    Ok(Engine::new(&config)?)
 }
 
 struct HostState {
@@ -887,7 +887,9 @@ fn make_call_indirect_func(
             .and_then(|map| map.get(&name).cloned())
             .flatten();
         let Some(func) = func else {
-            return Err(anyhow::anyhow!("{name} used before output instantiation"));
+            return Err(wasmtime::Error::msg(format!(
+                "{name} used before output instantiation"
+            )));
         };
         func.call(&mut caller, params, results)
     })
@@ -4505,7 +4507,7 @@ fn main() -> Result<()> {
         debug_log(|| "instantiating runtime".to_string());
         let runtime_instance = linker
             .instantiate(&mut store, &runtime_module)
-            .context("instantiate runtime")?;
+            .map_err(|err| anyhow::anyhow!("instantiate runtime: {err}"))?;
         debug_log(|| "runtime instantiated".to_string());
         for import in output_module.imports() {
             if import.module() != "molt_runtime" {
@@ -4521,7 +4523,7 @@ fn main() -> Result<()> {
         debug_log(|| "instantiating output module".to_string());
         let output_instance = linker
             .instantiate(&mut store, &output_module)
-            .context("instantiate output")?;
+            .map_err(|err| anyhow::anyhow!("instantiate output: {err}"))?;
         debug_log(|| "output module instantiated".to_string());
         register_call_indirect_exports(&mut store, &output_instance, &registry, &call_names)?;
         set_memory_from_exports(&mut store, &output_instance);
@@ -4536,7 +4538,7 @@ fn main() -> Result<()> {
         debug_log(|| "instantiating linked output".to_string());
         let output_instance = linker
             .instantiate(&mut store, &output_module)
-            .context("instantiate linked output")?;
+            .map_err(|err| anyhow::anyhow!("instantiate linked output: {err}"))?;
         debug_log(|| "linked output instantiated".to_string());
         register_call_indirect_exports(&mut store, &output_instance, &registry, &call_names)?;
         set_memory_from_exports(&mut store, &output_instance);
