@@ -249,12 +249,27 @@ Outputs are written under:
 
 - `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.json`
 - `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.md`
+- `/Volumes/APDataStore/Molt/logs/symphony/readiness/next_tranche.json`
+- `/Volumes/APDataStore/Molt/logs/symphony/readiness/next_tranche.md`
 
 The audit covers Linear workspace hygiene, manifest quality, docs/tooling coverage,
 launchd/watchdog wiring, durable memory readability, and a harness engineering
 score (`sections.harness_engineering.score`, target `>= 90`). DuckDB lock
 contention while the live service is writing is reported as warning-only
 (`duckdb_locked_by_writer`).
+
+Readiness also computes trend-aware guardrails and synthesizes deterministic
+next-tranche actions:
+- `sections.trend_analysis` includes harness score delta, active-flow ratio,
+  formal pass ratio, and recurring durable-growth pressure over a bounded window.
+- `next_tranche.actions` emits prioritized remediation commands mapped from
+  current findings (`P0`..`P3`).
+- tune thresholds with:
+  - `--trend-window`
+  - `--max-harness-score-drop`
+  - `--min-active-flow-ratio`
+  - `--min-formal-pass-ratio`
+  - `--max-durable-growth-ratio`
 
 Strict autonomy mode (promotes metadata/title drift and no-active-flow warnings
 to failures). This also runs formal-suite inventory by default:
