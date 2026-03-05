@@ -9761,21 +9761,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             stop = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[bound], result=stop))
         guard_map = self._emit_hoisted_loop_guards(body)
-        self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-        idx = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
-        # Emit carry inits for int-typed loop-carried variables AFTER LOOP_INDEX_START
+        # Pre-compute initial carry values BEFORE LOOP_INDEX_START so that
+        # LOOP_CARRY_INIT ops are emitted immediately after LOOP_INDEX_START
+        # (the backend scan-ahead requires them to be consecutive).
         prev_carry = set(self.loop_carry_vars)
         saved_cells: dict[str, MoltValue] = {}
+        carry_init_vals: list[tuple[str, MoltValue]] = []
         for name in sorted(carry_vars):
-            # Read current value from boxed cell (if boxed), then unbox for carry
             init_val = self._load_local_value(name)
             if init_val is None:
                 init_val = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="CONST", args=[0], result=init_val))
-            # Remove from boxed_locals so _store/_load use SSA path during loop
             if name in self.boxed_locals:
                 saved_cells[name] = self.boxed_locals.pop(name)
+            carry_init_vals.append((name, init_val))
+        self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+        idx = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
+        # Emit carry inits immediately after LOOP_INDEX_START (consecutive)
+        for name, init_val in carry_init_vals:
             carry_out = MoltValue(f"__carry_{name}", type_hint="int")
             self.emit(MoltOp(kind="LOOP_CARRY_INIT", args=[init_val], result=carry_out))
             self.locals[name] = carry_out
