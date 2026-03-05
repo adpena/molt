@@ -117,6 +117,7 @@ AREA_ROLE_MAP = {
 }
 
 FORMAL_REQUIRED_AREAS = {"compiler", "runtime", "wasm", "security", "stdlib", "c-api"}
+FORMAL_SUITE_MODES = ("off", "inventory", "lean", "quint", "all")
 
 LABEL_TAXONOMY = (
     ("role:executor", "#4EA7FC", "Default execution role for implementation."),
@@ -546,7 +547,11 @@ def _infer_metadata_for_routing(
     return inferred or {}
 
 
-def _run_formal_inventory() -> dict[str, Any]:
+def _run_formal_suite(mode: str) -> dict[str, Any]:
+    mode_key = mode.strip().lower()
+    if mode_key not in FORMAL_SUITE_MODES:
+        raise RuntimeError(f"invalid formal suite mode: {mode}")
+
     command = [
         "uv",
         "run",
@@ -554,14 +559,49 @@ def _run_formal_inventory() -> dict[str, Any]:
         "3.12",
         "python3",
         "tools/check_formal_methods.py",
-        "--inventory",
+        "--json-only",
     ]
+    if mode_key == "inventory":
+        command.append("--inventory")
+    elif mode_key == "lean":
+        command.append("--lean")
+    elif mode_key == "quint":
+        command.append("--quint")
+
     proc = subprocess.run(command, check=False, capture_output=True, text=True)
+    report: dict[str, Any] | None = None
+    stdout = (proc.stdout or "").strip()
+    if stdout:
+        try:
+            parsed = json.loads(stdout)
+            if isinstance(parsed, dict):
+                report = parsed
+        except Exception:
+            report = None
+
+    status = "pass"
+    if report is None:
+        status = "fail"
+    elif not bool(report.get("ok")):
+        checks = report.get("checks")
+        quint = checks.get("quint") if isinstance(checks, dict) else None
+        diagnostics = (
+            quint.get("diagnostics") if isinstance(quint, dict) else None
+        )
+        runtime_mismatch = bool(
+            isinstance(diagnostics, dict)
+            and diagnostics.get("runtime_mismatch_detected")
+        )
+        status = "warn" if runtime_mismatch else "fail"
+
     return {
+        "mode": mode_key,
+        "status": status,
         "command": command,
         "returncode": int(proc.returncode),
-        "stdout": (proc.stdout or "").strip()[-2000:],
+        "stdout": stdout[-2000:],
         "stderr": (proc.stderr or "").strip()[-2000:],
+        "report": report,
     }
 
 
@@ -765,9 +805,12 @@ def cmd_apply_routing(args: argparse.Namespace) -> int:
             if _update_issue(row["id"], row["input"]):
                 updated += 1
 
-    formal_inventory: dict[str, Any] | None = None
-    if bool(args.run_formal_inventory):
-        formal_inventory = _run_formal_inventory()
+    formal_suite_mode = str(getattr(args, "formal_suite", "off")).strip().lower()
+    if bool(getattr(args, "run_formal_inventory", False)) and formal_suite_mode == "off":
+        formal_suite_mode = "inventory"
+    formal_suite: dict[str, Any] | None = None
+    if formal_suite_mode != "off":
+        formal_suite = _run_formal_suite(formal_suite_mode)
 
     result = {
         "team": args.team,
@@ -781,7 +824,9 @@ def cmd_apply_routing(args: argparse.Namespace) -> int:
         "planned_updates": len(planned),
         "updated": updated if args.apply else 0,
         "formal_required_issues": sorted(set(formal_required_issue_ids)),
-        "formal_inventory": formal_inventory,
+        "formal_suite_mode": formal_suite_mode,
+        "formal_suite": formal_suite,
+        "formal_inventory": formal_suite if formal_suite_mode == "inventory" else None,
         "changes": planned,
     }
     print(json.dumps(result, indent=2, sort_keys=True))
@@ -894,6 +939,7 @@ def cmd_full_pass(args: argparse.Namespace) -> int:
             states=args.states,
             apply=bool(args.apply),
             run_formal_inventory=bool(args.run_formal_inventory),
+            formal_suite=str(getattr(args, "formal_suite", "off")),
         )
     )
 
@@ -935,6 +981,12 @@ def build_parser() -> argparse.ArgumentParser:
     apply_routing.add_argument("--states", default="Backlog,Todo,In Progress")
     apply_routing.add_argument("--apply", action="store_true")
     apply_routing.add_argument("--run-formal-inventory", action="store_true")
+    apply_routing.add_argument(
+        "--formal-suite",
+        choices=list(FORMAL_SUITE_MODES),
+        default="off",
+        help="Formalization suite mode to run after routing.",
+    )
     apply_routing.set_defaults(func=cmd_apply_routing)
 
     ensure_active = sub.add_parser("ensure-active-flow")
@@ -948,6 +1000,12 @@ def build_parser() -> argparse.ArgumentParser:
     full.add_argument("--states", default="Backlog,Todo,In Progress")
     full.add_argument("--apply", action="store_true")
     full.add_argument("--run-formal-inventory", action="store_true")
+    full.add_argument(
+        "--formal-suite",
+        choices=list(FORMAL_SUITE_MODES),
+        default="off",
+        help="Formalization suite mode to run during routing.",
+    )
     full.set_defaults(func=cmd_full_pass)
 
     return parser

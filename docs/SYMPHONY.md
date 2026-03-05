@@ -195,10 +195,22 @@ launchd/watchdog wiring, and durable memory readability. DuckDB lock contention
 while the live service is writing is reported as warning-only (`duckdb_locked_by_writer`).
 
 Strict autonomy mode (promotes metadata/title drift and no-active-flow warnings
-to failures):
+to failures). This also runs formal-suite inventory by default:
 
 ```bash
 PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --team Moltlang --strict-autonomy --fail-on warn
+```
+
+For full formalization signal (Lean + Quint) in readiness:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --team Moltlang --strict-autonomy --fail-on warn --formal-suite all
+```
+
+If Quint fails due Node/Quint loader mismatch on Node `>=25`, set:
+
+```bash
+export MOLT_QUINT_NODE_FALLBACK='npx -y node@22'
 ```
 
 ### Linear Hygiene + Swarm Routing
@@ -207,7 +219,7 @@ Run the full Linear hygiene pass (manifest title repair, seeded metadata backfil
 label taxonomy bootstrap, role-label routing, and active-flow promotion):
 
 ```bash
-PYTHONPATH=src uv run --python 3.12 python3 tools/linear_hygiene.py full-pass --team Moltlang --apply --run-formal-inventory
+PYTHONPATH=src uv run --python 3.12 python3 tools/linear_hygiene.py full-pass --team Moltlang --apply --formal-suite all
 ```
 
 `tools/linear_hygiene.py` supports optional DSPy-assisted role routing.
