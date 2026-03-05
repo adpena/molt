@@ -12,6 +12,8 @@ extern "C" {
 #define NPY_NO_DEPRECATED_API NPY_API_VERSION
 #endif
 
+#define Py_ARRAYOBJECT_H 1
+
 static void **PyArray_API = NULL;
 
 static inline int _import_array(void) {
@@ -27,6 +29,7 @@ static inline int PyArray_ImportNumPyAPI(void) {
     return _import_array();
 }
 
+#define PyArray_RUNTIME_VERSION NPY_FEATURE_VERSION
 #define import_array()                                                             \
     do {                                                                           \
         if (_import_array() < 0) {                                                 \

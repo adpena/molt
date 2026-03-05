@@ -279,9 +279,11 @@ class MoltClient:
                     cancel_check=cancel_check,
                 )
             except (MoltWorkerUnavailable, MoltTimeout, MoltBusy) as exc:
-                retryable = isinstance(exc, MoltWorkerUnavailable) or (
-                    retry_on_timeout and isinstance(exc, MoltTimeout)
-                ) or (retry_on_busy and isinstance(exc, MoltBusy))
+                retryable = (
+                    isinstance(exc, MoltWorkerUnavailable)
+                    or (retry_on_timeout and isinstance(exc, MoltTimeout))
+                    or (retry_on_busy and isinstance(exc, MoltBusy))
+                )
                 if (
                     not idempotent
                     or not retryable

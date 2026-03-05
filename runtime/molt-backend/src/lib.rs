@@ -12926,10 +12926,27 @@ impl SimpleBackend {
                     }
                 }
                 "loop_start" => {
-                    let indexed_loop_follows = func_ir
-                        .ops
-                        .get(op_idx + 1)
-                        .is_some_and(|next| next.kind == "loop_index_start");
+                    // Scan ahead for loop_index_start, skipping carry-var setup
+                    // ops (box_from_raw_int, unbox_to_raw_int, loop_carry_init)
+                    // that may be inserted between loop_start and loop_index_start.
+                    let mut indexed_loop_follows = false;
+                    {
+                        let mut scan = op_idx + 1;
+                        while scan < ops.len() {
+                            let kind = ops[scan].kind.as_str();
+                            match kind {
+                                "loop_index_start" => {
+                                    indexed_loop_follows = true;
+                                    break;
+                                }
+                                "box_from_raw_int" | "unbox_to_raw_int" | "loop_carry_init"
+                                | "check_exception" => {
+                                    scan += 1;
+                                }
+                                _ => break,
+                            }
+                        }
+                    }
                     if indexed_loop_follows {
                         // Indexed loops are emitted as LOOP_START + LOOP_INDEX_START.
                         // LOOP_INDEX_START owns the loop frame and IV block param.

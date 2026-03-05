@@ -204,6 +204,138 @@ def _write_extension_numpy_project(project_root: Path) -> None:
     )
 
 
+def _write_extension_numpy_batch_project(project_root: Path) -> None:
+    src_dir = project_root / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "demoext.c").write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <numpy/arrayobject.h>",
+                "#include <numpy/npy_common.h>",
+                "#include <numpy/npy_math.h>",
+                "#include <numpy/dtype_api.h>",
+                "#include <numpy/__multiarray_api.h>",
+                "#include <numpy/__ufunc_api.h>",
+                "",
+                "static int numpy_batch_probe(PyObject *obj) {",
+                "    PyArrayObject arr_storage = {0};",
+                "    PyArray_Descr descr_storage = {0};",
+                "    npy_intp dims[2] = {2, 3};",
+                "    npy_intp tuple_vals[2] = {2, 3};",
+                "    char data[6] = {0};",
+                "    npy_bool bool_flag = 0;",
+                "    NPY_ORDER order = NPY_CORDER;",
+                "    NPY_SORTKIND sortkind = NPY_QUICKSORT;",
+                "    NPY_SEARCHSIDE side = NPY_SEARCHLEFT;",
+                "    NPY_CLIPMODE clipmode = NPY_CLIP;",
+                "    char byteorder = '=';",
+                "    PyObject *capsule = PyCapsule_New((void *)data, \"demo.capsule\", NULL);",
+                "    PyObject *tuple_obj = NULL;",
+                "    PyObject *handler = NULL;",
+                "    PyObject *descr_copy = NULL;",
+                "    PyObject *ufunc_obj = NULL;",
+                "    PyThreadState *ts = NULL;",
+                "    PyUFuncGenericFunction ufunc_loop = PyUFunc_O_O;",
+                "    descr_storage.type_num = NPY_INT;",
+                "    descr_storage.elsize = 1;",
+                "    descr_storage.byteorder = '=';",
+                "    arr_storage.data = data;",
+                "    arr_storage.nd = 2;",
+                "    arr_storage.dimensions = dims;",
+                "    arr_storage.strides = dims;",
+                "    arr_storage.descr = &descr_storage;",
+                "    arr_storage.flags = NPY_ARRAY_CARRAY;",
+                "    (void)PyArray_CheckFromAny(obj, NULL, 0, 0, NPY_ARRAY_DEFAULT, NULL);",
+                "    (void)PyArray_EnsureArray(obj);",
+                "    (void)PyArray_EnsureAnyArray(obj);",
+                "    descr_copy = (PyObject *)PyArray_DescrNew(&descr_storage);",
+                "    (void)PyArray_DescrNewByteorder(&descr_storage, '<');",
+                "    (void)PyArray_DescrFromTypeObject((PyObject *)&PyLong_Type);",
+                "    (void)PyArray_DescrFromObject(obj, &descr_storage);",
+                "    (void)PyArray_ObjectType(obj, NPY_NOTYPE);",
+                "    (void)PyArray_MultiplyList(tuple_vals, 2);",
+                "    (void)PyArray_PyIntAsInt(PyLong_FromLong(3));",
+                "    (void)PyArray_PyIntAsIntp(PyLong_FromLong(4));",
+                "    tuple_obj = PyArray_IntTupleFromIntp(2, tuple_vals);",
+                "    (void)PyArray_IntpFromSequence(tuple_obj, tuple_vals, 2);",
+                "    (void)PyArray_BoolConverter(Py_True, &bool_flag);",
+                "    (void)PyArray_OrderConverter(PyLong_FromLong(NPY_CORDER), &order);",
+                "    (void)PyArray_SortkindConverter(PyLong_FromLong(NPY_QUICKSORT), &sortkind);",
+                "    (void)PyArray_SearchsideConverter(PyLong_FromLong(NPY_SEARCHLEFT), &side);",
+                "    (void)PyArray_ClipmodeConverter(PyLong_FromLong(NPY_CLIP), &clipmode);",
+                "    (void)PyArray_ByteorderConverter(PyUnicode_FromString(\"<\"), &byteorder);",
+                "    PyArray_ENABLEFLAGS(&arr_storage, NPY_ARRAY_WRITEABLE);",
+                "    (void)PyArray_CHKFLAGS(&arr_storage, NPY_ARRAY_WRITEABLE);",
+                "    PyArray_CLEARFLAGS(&arr_storage, NPY_ARRAY_WRITEBACKIFCOPY);",
+                "    PyArray_FILLWBYTE(&arr_storage, 0);",
+                "    (void)PyArray_BASE(&arr_storage);",
+                "    (void)PyArray_DTYPE(&arr_storage);",
+                "    (void)PyArray_Size(&arr_storage);",
+                "    (void)PyArray_CopyInto(&arr_storage, &arr_storage);",
+                "    (void)PyArray_CopyAnyInto(&arr_storage, &arr_storage);",
+                "    (void)PyArray_SetBaseObject(&arr_storage, obj);",
+                "    (void)PyArray_Return(&arr_storage);",
+                "    (void)PyArray_FromInterface(obj);",
+                "    (void)PyArray_FromStructInterface(obj);",
+                "    (void)PyDataType_ELSIZE(&descr_storage);",
+                "    (void)PyDataType_FLAGS(&descr_storage);",
+                "    (void)PyDataType_ISINTEGER(&descr_storage);",
+                "    handler = PyDataMem_GetHandler();",
+                "    (void)PyDataMem_SetHandler(handler);",
+                "    (void)PyCapsule_SetContext(capsule, obj);",
+                "    (void)PyCapsule_GetContext(capsule);",
+                "    ts = PyEval_SaveThread();",
+                "    PyEval_RestoreThread(ts);",
+                "    (void)PyExc_ModuleNotFoundError;",
+                "    (void)PyExc_IOError;",
+                "    (void)PyErr_Print;",
+                "    (void)PyUFunc_API;",
+                "    (void)PyUFunc_ImportUFuncAPI();",
+                "    ufunc_obj = PyUFunc_FromFuncAndData(NULL, NULL, NULL, 0, 1, 1, PyUFunc_None, \"demo\", NULL, 0);",
+                "    (void)PyUFunc_RegisterLoopForType(ufunc_obj, NPY_INT, NULL, NULL, NULL);",
+                "    (void)PyArrayMethod_GetLoop(NULL, NULL, 0, 0, NULL, NULL, NULL);",
+                "    (void)PyArrayMethod_ResolveDescriptors(NULL, NULL, NULL, NULL, NULL);",
+                "    (void)ufunc_loop;",
+                "    Py_XDECREF(handler);",
+                "    Py_XDECREF(tuple_obj);",
+                "    Py_XDECREF(descr_copy);",
+                "    Py_XDECREF(capsule);",
+                "    Py_XDECREF(ufunc_obj);",
+                "    return 0;",
+                "}",
+                "",
+                "int demoext_numpy_batch_ready(void) {",
+                "    import_array1(-1);",
+                "    return 0;",
+                "}",
+                "",
+                "int demoext_numpy_batch_touch(PyObject *obj) {",
+                "    return numpy_batch_probe(obj);",
+                "}",
+                "",
+            ]
+        )
+        + "\n"
+    )
+    (project_root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "demo-numpy-batch-ext"',
+                'version = "0.1.0"',
+                "",
+                "[tool.molt.extension]",
+                'module = "demoext_numpy_batch"',
+                'sources = ["src/demoext.c"]',
+                'capabilities = ["fs.read"]',
+                'molt_c_api_version = "1"',
+                "",
+            ]
+        )
+    )
+
+
 def _write_extension_wheel(
     root: Path,
     *,
@@ -483,6 +615,46 @@ def test_extension_scan_numpy_surface_symbols_supported(tmp_path: Path, capsys) 
     assert "PyArray_ISDATETIME" in data["supported_symbols"]
     assert "PyArray_DescrFromScalar" in data["supported_symbols"]
     assert "PyArray_CastScalarToCtype" in data["supported_symbols"]
+
+
+def test_extension_scan_numpy_surface_batch_symbols_supported(
+    tmp_path: Path, capsys
+) -> None:
+    project_root = tmp_path / "numpy_scanproj_batch"
+    project_root.mkdir()
+    _write_extension_numpy_batch_project(project_root)
+
+    rc = cli.extension_scan(
+        project=str(project_root),
+        fail_on_missing=True,
+        json_output=True,
+        verbose=False,
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    data = payload["data"]
+    assert data["missing_symbols"] == []
+    assert "PyArray_DescrNew" in data["supported_symbols"]
+    assert "PyArray_DescrFromTypeObject" in data["supported_symbols"]
+    assert "PyArray_DescrFromObject" in data["supported_symbols"]
+    assert "PyArray_MultiplyList" in data["supported_symbols"]
+    assert "PyArray_IntpFromSequence" in data["supported_symbols"]
+    assert "PyArray_PyIntAsIntp" in data["supported_symbols"]
+    assert "PyArray_CopyInto" in data["supported_symbols"]
+    assert "PyArray_SetBaseObject" in data["supported_symbols"]
+    assert "PyArray_Return" in data["supported_symbols"]
+    assert "PyDataType_ELSIZE" in data["supported_symbols"]
+    assert "PyDataType_FLAGS" in data["supported_symbols"]
+    assert "PyDataMem_GetHandler" in data["supported_symbols"]
+    assert "PyCapsule_SetContext" in data["supported_symbols"]
+    assert "PyCapsule_GetContext" in data["supported_symbols"]
+    assert "PyEval_SaveThread" in data["supported_symbols"]
+    assert "PyEval_RestoreThread" in data["supported_symbols"]
+    assert "PyExc_ModuleNotFoundError" in data["supported_symbols"]
+    assert "PyErr_Print" in data["supported_symbols"]
+    assert "PyUFunc_FromFuncAndData" in data["supported_symbols"]
+    assert "PyUFunc_RegisterLoopForType" in data["supported_symbols"]
 
 
 def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -> None:
@@ -1349,6 +1521,100 @@ def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
                 "",
                 "int main(void) {",
                 "    (void)numpy_smoke;",
+                "    return 0;",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_numpy_header_arrayobject_batch_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for NumPy batch compatibility header smoke test")
+    source = tmp_path / "numpy_h_arrayobject_batch_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <numpy/arrayobject.h>",
+                "#include <numpy/npy_common.h>",
+                "#include <numpy/npy_math.h>",
+                "#include <numpy/dtype_api.h>",
+                "#include <numpy/__multiarray_api.h>",
+                "#include <numpy/__ufunc_api.h>",
+                "#include <numpy/npy_2_compat.h>",
+                "",
+                "int main(void) {",
+                "    PyArrayObject arr = {0};",
+                "    PyArray_Descr descr = {0};",
+                "    npy_intp dims[2] = {2, 3};",
+                "    char data[6] = {0};",
+                "    npy_bool bool_flag = 0;",
+                "    NPY_ORDER order = NPY_KEEPORDER;",
+                "    NPY_SORTKIND sortkind = NPY_QUICKSORT;",
+                "    NPY_SEARCHSIDE side = NPY_SEARCHLEFT;",
+                "    NPY_CLIPMODE clipmode = NPY_CLIP;",
+                "    char byteorder = '=';",
+                "    PyObject *capsule = PyCapsule_New((void *)data, \"demo.capsule\", NULL);",
+                "    PyObject *shape = PyTuple_Pack(2, PyLong_FromLong(2), PyLong_FromLong(3));",
+                "    PyUFuncGenericFunction fn = PyUFunc_O_O;",
+                "    (void)fn;",
+                "    descr.type_num = NPY_INT;",
+                "    descr.elsize = 1;",
+                "    descr.byteorder = '=';",
+                "    arr.data = data;",
+                "    arr.nd = 2;",
+                "    arr.dimensions = dims;",
+                "    arr.strides = dims;",
+                "    arr.descr = &descr;",
+                "    arr.flags = NPY_ARRAY_CARRAY | NPY_ARRAY_WRITEABLE;",
+                "    (void)PyArray_Size(&arr);",
+                "    (void)PyArray_MAX(1, 2);",
+                "    (void)PyArray_MIN(1, 2);",
+                "    (void)PyArray_MultiplyList(dims, 2);",
+                "    (void)PyArray_IntpFromSequence(shape, dims, 2);",
+                "    (void)PyArray_BoolConverter(Py_True, &bool_flag);",
+                "    (void)PyArray_OrderConverter(PyLong_FromLong(NPY_CORDER), &order);",
+                "    (void)PyArray_SortkindConverter(PyLong_FromLong(NPY_QUICKSORT), &sortkind);",
+                "    (void)PyArray_SearchsideConverter(PyLong_FromLong(NPY_SEARCHLEFT), &side);",
+                "    (void)PyArray_ClipmodeConverter(PyLong_FromLong(NPY_CLIP), &clipmode);",
+                "    (void)PyArray_ByteorderConverter(PyUnicode_FromString(\"<\"), &byteorder);",
+                "    (void)PyArray_CopyInto(&arr, &arr);",
+                "    (void)PyArray_SetBaseObject(&arr, Py_None);",
+                "    (void)PyDataType_ELSIZE(&descr);",
+                "    (void)PyDataType_FLAGS(&descr);",
+                "    (void)PyDataType_ISINTEGER(&descr);",
+                "    (void)PyDataMem_GetHandler();",
+                "    (void)PyDataMem_SetHandler(Py_None);",
+                "    (void)PyCapsule_SetContext(capsule, data);",
+                "    (void)PyCapsule_GetContext(capsule);",
+                "    (void)PyUFunc_ImportUFuncAPI();",
+                "    (void)PyUFunc_FromFuncAndData(NULL, NULL, NULL, 0, 1, 1, PyUFunc_None, \"demo\", NULL, 0);",
+                "    (void)PyUFunc_RegisterLoopForType(Py_None, NPY_INT, fn, NULL, NULL);",
+                "    (void)PyArrayMethod_GetLoop(NULL, NULL, 0, 0, NULL, NULL, NULL);",
+                "    (void)PyArrayMethod_ResolveDescriptors(NULL, NULL, NULL, NULL, NULL);",
+                "    (void)PyExc_ModuleNotFoundError;",
+                "    (void)PyExc_IOError;",
+                "    Py_XDECREF(shape);",
+                "    Py_XDECREF(capsule);",
                 "    return 0;",
                 "}",
                 "",
