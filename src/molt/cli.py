@@ -7393,6 +7393,31 @@ def _detect_macos_deployment_target() -> str | None:
     return version or None
 
 
+def _link_args_has_framework(args: list[str], framework: str) -> bool:
+    for idx in range(len(args) - 1):
+        if args[idx] == "-framework" and args[idx + 1] == framework:
+            return True
+    return False
+
+
+def _append_darwin_runtime_frameworks(
+    args: list[str], *, target_triple: str | None
+) -> None:
+    if target_triple:
+        lowered = target_triple.lower()
+        is_darwin_target = (
+            "apple" in lowered or "darwin" in lowered or "macos" in lowered
+        )
+        if not is_darwin_target:
+            return
+    elif sys.platform != "darwin":
+        return
+
+    for framework in ("Security", "CoreFoundation"):
+        if not _link_args_has_framework(args, framework):
+            args.extend(["-framework", framework])
+
+
 def build(
     file_path: str | None,
     target: Target = "native",
@@ -10291,12 +10316,16 @@ int main(int argc, char** argv) {
     if target_triple:
         if "apple" in target_triple or "darwin" in target_triple:
             link_cmd.append("-lc++")
+            _append_darwin_runtime_frameworks(
+                link_cmd, target_triple=target_triple
+            )
         elif "linux" in target_triple:
             link_cmd.append("-lstdc++")
             link_cmd.append("-lm")
     else:
         if sys.platform == "darwin":
             link_cmd.append("-lc++")
+            _append_darwin_runtime_frameworks(link_cmd, target_triple=None)
         elif sys.platform.startswith("linux"):
             link_cmd.append("-lstdc++")
             link_cmd.append("-lm")
@@ -12291,6 +12320,9 @@ def extension_build(
         link_command.append(str(runtime_lib))
         link_command.extend(["-o", str(built_extension)])
         link_command.extend(link_args)
+        _append_darwin_runtime_frameworks(
+            link_command, target_triple=runtime_target_triple
+        )
         link_result = subprocess.run(
             link_command,
             cwd=project_root,
