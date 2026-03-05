@@ -213,15 +213,31 @@ class LatencyStats:
         avg_ms = (self.total_ms / self.count) if self.count else 0.0
         p95_ms = 0.0
         if self.recent_ms:
-            ordered = sorted(self.recent_ms)
-            idx = max(math.ceil(len(ordered) * 0.95) - 1, 0)
-            p95_ms = ordered[idx]
+            p95_ms = _percentile(self.recent_ms, ratio=0.95)
         return {
             "count": self.count,
             "total_ms": round(self.total_ms, 3),
             "avg_ms": round(avg_ms, 3),
             "p95_ms": round(p95_ms, 3),
             "max_ms": round(self.max_ms, 3),
+        }
+
+    def recent_snapshot(self, *, window: int = 48) -> dict[str, float | int]:
+        size = max(int(window), 1)
+        sample = self.recent_ms[-size:]
+        if not sample:
+            return {
+                "count": 0,
+                "avg_ms": 0.0,
+                "p95_ms": 0.0,
+                "max_ms": 0.0,
+            }
+        avg_ms = math.fsum(sample) / len(sample)
+        return {
+            "count": len(sample),
+            "avg_ms": round(avg_ms, 3),
+            "p95_ms": round(_percentile(sample, ratio=0.95), 3),
+            "max_ms": round(max(sample), 3),
         }
 
 
@@ -310,6 +326,94 @@ class ProfilingStats:
                 "rss_high_water_kb": self.process_rss_high_water_kb,
             },
         }
+
+    def compare_against_baseline(
+        self,
+        baseline_by_label: dict[str, dict[str, Any]],
+        *,
+        recent_window: int = 48,
+        limit: int = 8,
+        min_delta_ms: float = 0.5,
+        min_delta_ratio: float = 0.05,
+    ) -> dict[str, list[dict[str, float | int | str]]]:
+        regressions: list[dict[str, float | int | str]] = []
+        improvements: list[dict[str, float | int | str]] = []
+        for label, stats in self.latencies_ms.items():
+            baseline_row = baseline_by_label.get(label)
+            if not isinstance(baseline_row, dict):
+                continue
+            baseline_avg = _to_float(baseline_row.get("avg_ms"))
+            baseline_p95 = _to_float(baseline_row.get("p95_ms"))
+            if baseline_avg <= 0 and baseline_p95 <= 0:
+                continue
+            recent = stats.recent_snapshot(window=recent_window)
+            current_avg = _to_float(recent.get("avg_ms"))
+            current_p95 = _to_float(recent.get("p95_ms"))
+            if current_avg <= 0 and current_p95 <= 0:
+                continue
+            avg_delta = current_avg - baseline_avg
+            p95_delta = current_p95 - baseline_p95
+            avg_delta_ratio = avg_delta / baseline_avg if baseline_avg > 0 else 0.0
+            p95_delta_ratio = p95_delta / baseline_p95 if baseline_p95 > 0 else 0.0
+            impact_ms = max(avg_delta, 0.0) * max(stats.count, 1)
+            row = {
+                "label": label,
+                "samples": int(stats.count),
+                "recent_samples": int(recent.get("count") or 0),
+                "baseline_avg_ms": round(baseline_avg, 3),
+                "baseline_p95_ms": round(baseline_p95, 3),
+                "current_avg_ms": round(current_avg, 3),
+                "current_p95_ms": round(current_p95, 3),
+                "avg_delta_ms": round(avg_delta, 3),
+                "p95_delta_ms": round(p95_delta, 3),
+                "avg_delta_ratio": round(avg_delta_ratio, 4),
+                "p95_delta_ratio": round(p95_delta_ratio, 4),
+                "impact_ms": round(impact_ms, 3),
+            }
+            if (avg_delta >= min_delta_ms and avg_delta_ratio >= min_delta_ratio) or (
+                p95_delta >= min_delta_ms and p95_delta_ratio >= min_delta_ratio
+            ):
+                regressions.append(row)
+                continue
+            if avg_delta <= -min_delta_ms or p95_delta <= -min_delta_ms:
+                improvements.append(row)
+        regressions.sort(
+            key=lambda item: (
+                _to_float(item.get("impact_ms")),
+                _to_float(item.get("p95_delta_ms")),
+                _to_float(item.get("avg_delta_ms")),
+            ),
+            reverse=True,
+        )
+        improvements.sort(
+            key=lambda item: (
+                abs(_to_float(item.get("avg_delta_ms"))),
+                abs(_to_float(item.get("p95_delta_ms"))),
+            ),
+            reverse=True,
+        )
+        return {
+            "regressions": regressions[: max(limit, 1)],
+            "improvements": improvements[: max(limit, 1)],
+        }
+
+
+def _percentile(values: list[float], *, ratio: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(max(float(value), 0.0) for value in values)
+    idx = max(math.ceil(len(ordered) * ratio) - 1, 0)
+    return ordered[idx]
+
+
+def _to_float(value: Any) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(parsed):
+        return 0.0
+    return parsed
 
 
 @dataclass(slots=True)

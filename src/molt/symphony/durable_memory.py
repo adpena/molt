@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import queue
 import shutil
 import subprocess
@@ -50,6 +51,10 @@ class DurableMemoryStore:
         self._dropped_rows = 0
         self._last_integrity_check: dict[str, Any] | None = None
         self._last_backup: dict[str, Any] | None = None
+        self._profiling_baseline_cache_ttl_seconds = 10.0
+        self._profiling_baseline_cache: (
+            tuple[float, tuple[int, int], dict[str, Any]] | None
+        ) = None
         self._thread.start()
 
     def record(self, row: dict[str, Any]) -> None:
@@ -98,8 +103,103 @@ class DurableMemoryStore:
             "last_backup": self._last_backup,
             "last_integrity_check": self._last_integrity_check,
             "kind_counts": kind_counts,
+            "profiling_baseline": self.profiling_baseline(
+                max_events=max(limit * 20, 400),
+                max_labels=32,
+            ),
             "recent_events": recent_events,
         }
+
+    def profiling_baseline(
+        self,
+        *,
+        max_events: int = 2400,
+        min_samples: int = 3,
+        max_labels: int = 64,
+    ) -> dict[str, Any]:
+        signature = _file_signature(self._events_jsonl)
+        now_mono = time.monotonic()
+        cached = self._profiling_baseline_cache
+        if (
+            cached is not None
+            and cached[1] == signature
+            and (now_mono - cached[0]) <= self._profiling_baseline_cache_ttl_seconds
+        ):
+            return dict(cached[2])
+        rows = _tail_jsonl(self._events_jsonl, limit=max(max_events, 200))
+        by_label: dict[str, dict[str, float]] = {}
+        checkpoint_count = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("kind") or "") != "profiling_checkpoint":
+                continue
+            latencies_raw = row.get("latencies")
+            if not isinstance(latencies_raw, dict):
+                continue
+            checkpoint_count += 1
+            for raw_label, raw_stats in latencies_raw.items():
+                label = str(raw_label).strip()
+                if not label:
+                    continue
+                stats = raw_stats if isinstance(raw_stats, dict) else {}
+                agg = by_label.get(label)
+                if agg is None:
+                    agg = {
+                        "samples": 0.0,
+                        "avg_ms_sum": 0.0,
+                        "p95_ms_sum": 0.0,
+                        "max_ms_peak": 0.0,
+                        "calls_sum": 0.0,
+                        "total_ms_sum": 0.0,
+                    }
+                    by_label[label] = agg
+                agg["samples"] += 1.0
+                agg["avg_ms_sum"] += _coerce_float(stats.get("avg_ms"))
+                agg["p95_ms_sum"] += _coerce_float(stats.get("p95_ms"))
+                agg["max_ms_peak"] = max(
+                    agg["max_ms_peak"],
+                    _coerce_float(stats.get("max_ms")),
+                )
+                agg["calls_sum"] += max(_coerce_float(stats.get("count")), 0.0)
+                agg["total_ms_sum"] += max(_coerce_float(stats.get("total_ms")), 0.0)
+        labels: list[tuple[str, dict[str, Any]]] = []
+        for label, agg in by_label.items():
+            samples = int(agg["samples"])
+            if samples < max(int(min_samples), 1):
+                continue
+            avg_ms = agg["avg_ms_sum"] / max(samples, 1)
+            p95_ms = agg["p95_ms_sum"] / max(samples, 1)
+            labels.append(
+                (
+                    label,
+                    {
+                        "samples": samples,
+                        "avg_ms": round(avg_ms, 3),
+                        "p95_ms": round(p95_ms, 3),
+                        "max_ms": round(float(agg["max_ms_peak"]), 3),
+                        "avg_calls": round(agg["calls_sum"] / max(samples, 1), 3),
+                        "avg_total_ms": round(agg["total_ms_sum"] / max(samples, 1), 3),
+                    },
+                )
+            )
+        labels.sort(
+            key=lambda item: (
+                _coerce_float(item[1].get("p95_ms")),
+                _coerce_float(item[1].get("avg_ms")),
+                _coerce_float(item[1].get("avg_total_ms")),
+            ),
+            reverse=True,
+        )
+        top_labels = labels[: max(int(max_labels), 1)]
+        result = {
+            "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "checkpoint_samples": checkpoint_count,
+            "labels_count": len(top_labels),
+            "by_label": {label: row for label, row in top_labels},
+        }
+        self._profiling_baseline_cache = (now_mono, signature, result)
+        return dict(result)
 
     def create_backup(self, *, reason: str = "manual") -> dict[str, Any]:
         backups_root = self._root / "backups"
@@ -447,6 +547,14 @@ def _file_snapshot(path: Path) -> dict[str, Any]:
     return {"exists": True, "size_bytes": int(stat.st_size), "modified_at": modified}
 
 
+def _file_signature(path: Path) -> tuple[int, int]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return (0, 0)
+    return (int(stat.st_mtime_ns), int(stat.st_size))
+
+
 def _tail_jsonl(path: Path, *, limit: int) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -503,3 +611,13 @@ def _sha256_file(path: Path) -> str:
                 break
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def _coerce_float(value: Any) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(parsed):
+        return 0.0
+    return parsed

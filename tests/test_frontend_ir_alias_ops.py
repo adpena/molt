@@ -215,3 +215,33 @@ def test_invoke_ffi_bridge_lane_marker_is_emitted_for_non_allowlisted_module_cal
     invoke_ops = [op for op in ops if op["kind"] == "invoke_ffi"]
     assert invoke_ops
     assert any(op.get("s_value") == "bridge" for op in invoke_ops)
+
+
+def test_counted_while_with_trusted_int_hints_emits_loop_carry_init_after_index_start() -> (
+    None
+):
+    source = """
+def f(n: int) -> int:
+    total: int = 0
+    i: int = 0
+    while i < n:
+        total = total + 1
+        i = i + 1
+    return total
+"""
+    ir = compile_to_tir(source, type_hint_policy="trust", fallback_policy="bridge")
+    fn = next(
+        entry
+        for entry in ir["functions"]
+        if entry["name"] == "__main____f" or entry["name"].endswith("____f")
+    )
+    ops = list(fn["ops"])
+    kinds = [op["kind"] for op in ops]
+    assert "loop_index_start" in kinds
+    assert "loop_carry_init" in kinds
+    assert "loop_break_if_false" in kinds
+    idx_pos = kinds.index("loop_index_start")
+    carry_pos = kinds.index("loop_carry_init")
+    break_pos = kinds.index("loop_break_if_false")
+    assert carry_pos > idx_pos
+    assert carry_pos < break_pos

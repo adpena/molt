@@ -151,6 +151,14 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_perf.py WORKFLOW.md \
   --dashboard-url http://127.0.0.1:8089 --api-samples 80 --api-interval-ms 250
 ```
 
+Compare current run vs a previous report to detect regressions:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_perf.py WORKFLOW.md \
+  --iterations 3 \
+  --compare-with /Volumes/APDataStore/Molt/logs/symphony/symphony_perf_<previous>.json
+```
+
 Optional hasher A/B micro-benchmark (Python vs helper process):
 
 ```bash
@@ -297,6 +305,7 @@ It also reports `linear_cli_compat` to explicitly flag npm `lin` schema drift an
 - Rate-limit exhaustion now activates a system suspension (`rate_limited`) and auto-resume window instead of hot-loop retries.
 - Missing Codex auth / input-required states now activate a system suspension (`auth_required`) with human prompt text; Symphony retries automatically after the configured resume delay.
 - Dashboard/API state payload now includes `profiling` and `runtime.exec_mode` fields.
+- Dashboard/API state payload now includes `profiling_compare` (baseline checkpoint count, regressions, improvements, and optimization candidates).
 - Dashboard/API state payload includes `agent_panes`, runtime role pool settings, token throughput (`codex_totals.tokens_per_second`), and suspension metadata (`suspension`).
 - `/api/v1/state` now supports conditional reads via `ETag` + `If-None-Match` to avoid re-downloading unchanged state during fallback polling.
 - Dashboard HTTP now uses a short shared snapshot cache for `/api/v1/state` and `/api/v1/stream` to reduce duplicate serialization under concurrent readers.
@@ -310,6 +319,7 @@ It also reports `linear_cli_compat` to explicitly flag npm `lin` schema drift an
 - `symphony_state` also supports `{ "detail": "telemetry" }` for agent-native, token-efficient MCP telemetry.
 - Codex event profiling counters are cardinality-bounded (`MOLT_SYMPHONY_MAX_CODEX_EVENT_COUNTERS`, default `64`) to avoid unbounded metric growth.
 - Durable memory files are external-volume first (`MOLT_SYMPHONY_DURABLE_MEMORY=1`), with auto-materialization into DuckDB/Parquet when `duckdb` is available.
+- Profiling checkpoints are sampled periodically and persisted into durable memory (`MOLT_SYMPHONY_PROFILING_CHECKPOINT_INTERVAL_SECONDS`, default `20`), then compared against a rolling historical baseline (`MOLT_SYMPHONY_PROFILING_BASELINE_MAX_EVENTS`, `MOLT_SYMPHONY_PROFILING_BASELINE_MAX_LABELS`).
 - Dashboard/API hardening controls:
   - `MOLT_SYMPHONY_API_TOKEN` (or `MOLT_SYMPHONY_DASHBOARD_TOKEN`) enables authenticated API access (`Authorization: Bearer <token>`).
   - `tools/symphony_run.py` auto-provisions `MOLT_SYMPHONY_API_TOKEN` into `MOLT_SYMPHONY_API_TOKEN_FILE` when no token is supplied (external-volume default path, mode `0600` best-effort).

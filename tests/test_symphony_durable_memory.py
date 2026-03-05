@@ -100,3 +100,54 @@ def test_durable_memory_duckdb_lock_conflict_is_warning(
         assert check["warning"] is True
     finally:
         store.close()
+
+
+def test_durable_memory_profiling_baseline_aggregates_checkpoints(
+    tmp_path: Path,
+) -> None:
+    store = DurableMemoryStore(root=tmp_path, sync_interval_seconds=3600, max_queue=128)
+    try:
+        store.record(
+            {
+                "kind": "profiling_checkpoint",
+                "latencies": {
+                    "tick": {"count": 10, "avg_ms": 4.0, "p95_ms": 8.0, "max_ms": 10.0},
+                    "turn": {
+                        "count": 2,
+                        "avg_ms": 20.0,
+                        "p95_ms": 30.0,
+                        "max_ms": 35.0,
+                    },
+                },
+            }
+        )
+        store.record(
+            {
+                "kind": "profiling_checkpoint",
+                "latencies": {
+                    "tick": {
+                        "count": 12,
+                        "avg_ms": 6.0,
+                        "p95_ms": 10.0,
+                        "max_ms": 14.0,
+                    },
+                },
+            }
+        )
+        _wait_for(lambda: (tmp_path / "events.jsonl").exists())
+        _wait_for(
+            lambda: (
+                store.profiling_baseline(
+                    max_events=200, min_samples=1, max_labels=8
+                ).get("checkpoint_samples", 0)
+                >= 2
+            )
+        )
+        baseline = store.profiling_baseline(max_events=200, min_samples=1, max_labels=8)
+        assert baseline["checkpoint_samples"] >= 2
+        tick = baseline["by_label"]["tick"]
+        assert tick["samples"] >= 2
+        assert tick["avg_ms"] >= 5.0
+        assert "turn" in baseline["by_label"]
+    finally:
+        store.close()

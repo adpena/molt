@@ -142,6 +142,11 @@
         return Number.isFinite(num) ? num.toLocaleString() : "0";
       }
 
+      function formatPercent(value) {
+        const num = toNumber(value, 0);
+        return `${(num * 100).toFixed(1)}%`;
+      }
+
       function formatTime(value) {
         if (!value) return "n/a";
         try {
@@ -1258,39 +1263,135 @@
 
       function renderProfiling(state) {
         const profiling = toObject(state.profiling);
+        const compare = toObject(state.profiling_compare);
         const hotspots = [
           ...toArray(profiling.hotspots),
           ...toArray(state.hotspots),
           ...toArray(state.profiling_hotspots),
         ];
-        if (!hotspots.length) {
+        const hotspotByName = new Map();
+        hotspots.forEach((rowValue) => {
+          const row = toObject(rowValue);
+          const name = String(
+            row.label || row.name || row.scope || row.operation || "unknown hotspot"
+          );
+          if (!hotspotByName.has(name)) {
+            hotspotByName.set(name, row);
+          }
+        });
+        const hotspotRows = Array.from(hotspotByName.values());
+        const regressions = toArray(compare.regressions);
+        const improvements = toArray(compare.improvements);
+        const optimizations = toArray(compare.optimizations);
+        const baselineSamples = toNumber(compare.baseline_checkpoint_samples, 0);
+        if (!hotspotRows.length && !regressions.length && !optimizations.length) {
           profilingWrap.innerHTML =
             '<div class="empty">No profiling hotspot telemetry available yet.</div>';
           return;
         }
-        profilingWrap.innerHTML = `<div class="profiling-list">${hotspots
-          .slice(0, 8)
-          .map((rowValue) => {
-            const row = toObject(rowValue);
-            const name =
-              row.label || row.name || row.scope || row.operation || "unknown hotspot";
-            const p95 = toNumber(row.p95_ms || row.p95, 0);
-            const avg = toNumber(row.avg_ms || row.avg, 0);
-            const samples = toNumber(row.samples || row.count, 0);
-            const calls = toNumber(row.calls, 0);
-            return `
-              <div class="profiling-item">
-                <div class="head">
-                  <span class="name mono">${escapeHtml(name)}</span>
-                  <span class="badge warn">p95 ${escapeHtml(p95.toFixed(1))} ms</span>
-                </div>
-                <div class="meta">avg ${escapeHtml(avg.toFixed(1))} ms | samples ${formatNumber(
-              samples
-            )} | calls ${formatNumber(calls)}</div>
-              </div>
-            `;
-          })
-          .join("")}</div>`;
+        const summary = `
+          <div class="profiling-summary">
+            <span class="badge ${regressions.length ? "danger" : "ok"}">${formatNumber(
+          regressions.length
+        )} regressions</span>
+            <span class="badge ${improvements.length ? "ok" : "warn"}">${formatNumber(
+          improvements.length
+        )} improvements</span>
+            <span class="badge warn">${formatNumber(
+          optimizations.length
+        )} optimization candidates</span>
+            <span class="hint mono">baseline checkpoints: ${formatNumber(
+              baselineSamples
+            )}</span>
+          </div>
+        `;
+        const regressionsHtml = regressions.length
+          ? `<div class="profiling-group">
+              <div class="profiling-group-title">Regressions vs Baseline</div>
+              <div class="profiling-list">${regressions
+                .slice(0, 6)
+                .map((rowValue) => {
+                  const row = toObject(rowValue);
+                  const name = row.label || "unknown";
+                  const avgDelta = toNumber(row.avg_delta_ms, 0);
+                  const p95Delta = toNumber(row.p95_delta_ms, 0);
+                  const avgRatio = toNumber(row.avg_delta_ratio, 0);
+                  return `
+                    <div class="profiling-item regression">
+                      <div class="head">
+                        <span class="name mono">${escapeHtml(name)}</span>
+                        <span class="badge danger">+${escapeHtml(avgDelta.toFixed(1))} ms avg</span>
+                      </div>
+                      <div class="meta">p95 +${escapeHtml(
+                        p95Delta.toFixed(1)
+                      )} ms | ${escapeHtml(formatPercent(avgRatio))} slower | samples ${formatNumber(
+                        row.samples
+                      )}</div>
+                    </div>
+                  `;
+                })
+                .join("")}</div>
+            </div>`
+          : "";
+        const optimizationsHtml = optimizations.length
+          ? `<div class="profiling-group">
+              <div class="profiling-group-title">Optimization Queue</div>
+              <div class="profiling-list">${optimizations
+                .slice(0, 6)
+                .map((rowValue) => {
+                  const row = toObject(rowValue);
+                  const name = row.label || "unknown";
+                  const score = toNumber(row.priority_score, 0);
+                  const reason = String(row.reason || "hotspot");
+                  return `
+                    <div class="profiling-item candidate">
+                      <div class="head">
+                        <span class="name mono">${escapeHtml(name)}</span>
+                        <span class="badge warn">score ${escapeHtml(score.toFixed(1))}</span>
+                      </div>
+                      <div class="meta">${escapeHtml(reason)} | samples ${formatNumber(
+                        row.samples
+                      )}</div>
+                    </div>
+                  `;
+                })
+                .join("")}</div>
+            </div>`
+          : "";
+        const hotspotsHtml = hotspotRows.length
+          ? `<div class="profiling-group">
+              <div class="profiling-group-title">Active Hotspots</div>
+              <div class="profiling-list">${hotspotRows
+                .slice(0, 8)
+                .map((rowValue) => {
+                  const row = toObject(rowValue);
+                  const name =
+                    row.label || row.name || row.scope || row.operation || "unknown hotspot";
+                  const p95 = toNumber(row.p95_ms || row.p95, 0);
+                  const avg = toNumber(row.avg_ms || row.avg, 0);
+                  const samples = toNumber(row.samples || row.count, 0);
+                  const calls = toNumber(row.calls, 0);
+                  return `
+                    <div class="profiling-item">
+                      <div class="head">
+                        <span class="name mono">${escapeHtml(name)}</span>
+                        <span class="badge warn">p95 ${escapeHtml(p95.toFixed(1))} ms</span>
+                      </div>
+                      <div class="meta">avg ${escapeHtml(avg.toFixed(1))} ms | samples ${formatNumber(
+                    samples
+                  )} | calls ${formatNumber(calls)}</div>
+                    </div>
+                  `;
+                })
+                .join("")}</div>
+            </div>`
+          : "";
+        profilingWrap.innerHTML = `<div class="profiling-wrap">
+          ${summary}
+          ${regressionsHtml}
+          ${optimizationsHtml}
+          ${hotspotsHtml}
+        </div>`;
       }
 
       function renderSecurity(state) {
