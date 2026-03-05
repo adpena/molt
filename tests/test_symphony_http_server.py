@@ -13,10 +13,13 @@ class _Provider:
     def __init__(self) -> None:
         self.refresh_calls = 0
         self.retry_now_calls: list[str] = []
+        self.state_calls = 0
+        self.state_version = 0
 
     def snapshot_state(self) -> dict[str, Any]:
+        self.state_calls += 1
         return {
-            "generated_at": "2026-03-04T00:00:00Z",
+            "generated_at": f"2026-03-04T00:00:{self.state_version:02d}Z",
             "counts": {"running": 0, "retrying": 0},
             "running": [],
             "retrying": [],
@@ -70,6 +73,7 @@ class _Provider:
 
     def request_refresh(self) -> bool:
         self.refresh_calls += 1
+        self.state_version += 1
         return True
 
     def request_retry_now(self, issue_identifier: str) -> dict[str, Any]:
@@ -274,5 +278,58 @@ def test_state_endpoint_etag_supports_conditional_get() -> None:
         assert (resp.getheader("ETag") or "") == etag
         assert resp.read() == b""
         conn.close()
+    finally:
+        server.stop()
+
+
+def test_state_endpoint_uses_shared_snapshot_cache_for_burst_reads() -> None:
+    provider = _Provider()
+    server = DashboardServer(provider=provider, port=0)
+    port = server.start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+        conn.request("GET", "/api/v1/state")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        _ = resp.read()
+        conn.close()
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+        conn.request("GET", "/api/v1/state")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        _ = resp.read()
+        conn.close()
+        assert provider.state_calls == 1
+    finally:
+        server.stop()
+
+
+def test_refresh_invalidates_state_snapshot_cache() -> None:
+    provider = _Provider()
+    server = DashboardServer(provider=provider, port=0)
+    port = server.start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+        conn.request("GET", "/api/v1/state")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        first_payload = json.loads(resp.read().decode("utf-8"))
+        conn.close()
+
+        status, _payload = _read_json(
+            f"http://127.0.0.1:{port}/api/v1/refresh", method="POST"
+        )
+        assert status == 202
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+        conn.request("GET", "/api/v1/state")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        second_payload = json.loads(resp.read().decode("utf-8"))
+        conn.close()
+
+        assert first_payload["generated_at"] != second_payload["generated_at"]
+        assert provider.state_calls == 2
     finally:
         server.stop()

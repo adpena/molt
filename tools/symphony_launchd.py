@@ -58,8 +58,12 @@ def build_watchdog_program(
     interval_ms: int,
     quiet_ms: int,
     cooldown_ms: int,
+    *,
+    state_url: str,
+    state_timeout_ms: int,
+    restart_when_idle: bool,
 ) -> list[str]:
-    return [
+    args = [
         python_bin,
         "tools/symphony_watchdog.py",
         "--repo-root",
@@ -72,7 +76,16 @@ def build_watchdog_program(
         str(quiet_ms),
         "--cooldown-ms",
         str(cooldown_ms),
+        "--state-url",
+        state_url,
+        "--state-timeout-ms",
+        str(state_timeout_ms),
     ]
+    if restart_when_idle:
+        args.append("--restart-when-idle")
+    else:
+        args.append("--no-restart-when-idle")
+    return args
 
 
 def install(
@@ -86,6 +99,9 @@ def install(
     watchdog_interval_ms: int,
     watchdog_quiet_ms: int,
     watchdog_cooldown_ms: int,
+    watchdog_state_url: str,
+    watchdog_state_timeout_ms: int,
+    watchdog_restart_when_idle: bool,
     exec_mode: str,
     molt_profile: str,
     molt_build_args: list[str],
@@ -134,6 +150,9 @@ def install(
                 interval_ms=max(watchdog_interval_ms, 250),
                 quiet_ms=max(watchdog_quiet_ms, 250),
                 cooldown_ms=max(watchdog_cooldown_ms, 250),
+                state_url=watchdog_state_url,
+                state_timeout_ms=max(watchdog_state_timeout_ms, 100),
+                restart_when_idle=watchdog_restart_when_idle,
             ),
             "RunAtLoad": True,
             "KeepAlive": True,
@@ -252,6 +271,22 @@ def build_parser() -> argparse.ArgumentParser:
     install_p.add_argument("--watchdog-interval-ms", type=int, default=1500)
     install_p.add_argument("--watchdog-quiet-ms", type=int, default=1200)
     install_p.add_argument("--watchdog-cooldown-ms", type=int, default=5000)
+    install_p.add_argument(
+        "--watchdog-state-url", default="http://127.0.0.1:8089/api/v1/state"
+    )
+    install_p.add_argument("--watchdog-state-timeout-ms", type=int, default=600)
+    install_p.add_argument(
+        "--watchdog-restart-when-idle",
+        action="store_true",
+        default=True,
+        help="Defer watchdog restarts while Symphony has running/retrying agents.",
+    )
+    install_p.add_argument(
+        "--watchdog-force-restart",
+        dest="watchdog_restart_when_idle",
+        action="store_false",
+        help="Allow watchdog to restart immediately, even during active runs.",
+    )
 
     uninstall_p = sub.add_parser("uninstall")
     uninstall_p.add_argument(
@@ -277,6 +312,9 @@ def main(argv: list[str] | None = None) -> int:
             watchdog_interval_ms=int(args.watchdog_interval_ms),
             watchdog_quiet_ms=int(args.watchdog_quiet_ms),
             watchdog_cooldown_ms=int(args.watchdog_cooldown_ms),
+            watchdog_state_url=str(args.watchdog_state_url),
+            watchdog_state_timeout_ms=int(args.watchdog_state_timeout_ms),
+            watchdog_restart_when_idle=bool(args.watchdog_restart_when_idle),
             exec_mode=str(args.exec_mode),
             molt_profile=str(args.molt_profile),
             molt_build_args=list(args.molt_build_arg),

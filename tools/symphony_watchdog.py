@@ -6,16 +6,18 @@ import os
 import subprocess
 import time
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 
 
 DEFAULT_PATTERNS = (
     "WORKFLOW.md",
+    "ops/linear/runtime/symphony.env",
     "src/molt/symphony/**/*.py",
-    "tools/symphony_*.py",
-    "tools/linear_workspace.py",
-    "tools/linear_seed_backlog.py",
-    "docs/SYMPHONY*.md",
-    "docs/LINEAR_WORKSPACE_BOOTSTRAP.md",
+    "tools/symphony_run.py",
+    "tools/symphony_entry.py",
+    "tools/symphony_watchdog.py",
+    "tools/symphony_launchd.py",
 )
 
 
@@ -88,6 +90,41 @@ def _restart_service(service_label: str) -> None:
     _log("INFO", "watchdog_restarted_service", target=target)
 
 
+def _read_state_counts(state_url: str, timeout_seconds: float) -> dict[str, int] | None:
+    try:
+        with urlopen(state_url, timeout=max(timeout_seconds, 0.5)) as resp:
+            if int(getattr(resp, "status", 200)) != 200:
+                return None
+            raw = resp.read().decode("utf-8")
+    except (OSError, URLError):
+        return None
+    try:
+        import json
+
+        payload = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    counts = payload.get("counts")
+    if not isinstance(counts, dict):
+        return None
+    running = int(counts.get("running", 0) or 0)
+    retrying = int(counts.get("retrying", 0) or 0)
+    return {"running": max(running, 0), "retrying": max(retrying, 0)}
+
+
+def _service_is_busy(state_url: str, timeout_seconds: float) -> tuple[bool | None, str]:
+    counts = _read_state_counts(state_url, timeout_seconds)
+    if counts is None:
+        return None, "state_unavailable"
+    running = int(counts.get("running", 0))
+    retrying = int(counts.get("retrying", 0))
+    busy = running > 0 or retrying > 0
+    detail = f"running={running} retrying={retrying}"
+    return busy, detail
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -100,6 +137,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--interval-ms", type=int, default=1500)
     parser.add_argument("--quiet-ms", type=int, default=1200)
     parser.add_argument("--cooldown-ms", type=int, default=5000)
+    parser.add_argument("--state-url", default="http://127.0.0.1:8089/api/v1/state")
+    parser.add_argument("--state-timeout-ms", type=int, default=600)
+    parser.add_argument(
+        "--restart-when-idle",
+        action="store_true",
+        default=True,
+        help="Only restart service when no running/retrying agents are active.",
+    )
+    parser.add_argument(
+        "--no-restart-when-idle",
+        dest="restart_when_idle",
+        action="store_false",
+        help="Allow immediate restart even while agents are running.",
+    )
     parser.add_argument(
         "--pattern",
         action="append",
@@ -131,6 +182,7 @@ def main(argv: list[str] | None = None) -> int:
         cooldown_ms=int(cooldown_s * 1000),
         target=_launchd_target(args.service_label),
     )
+    state_timeout_s = max(int(args.state_timeout_ms), 100) / 1000.0
 
     while True:
         time.sleep(interval_s)
@@ -148,6 +200,23 @@ def main(argv: list[str] | None = None) -> int:
             continue
         if now - last_restart_at < cooldown_s:
             continue
+        if bool(args.restart_when_idle):
+            busy, detail = _service_is_busy(args.state_url, state_timeout_s)
+            if busy is True:
+                _log(
+                    "INFO",
+                    "watchdog_restart_deferred_busy",
+                    detail=detail,
+                    state_url=args.state_url,
+                )
+                continue
+            if busy is None:
+                _log(
+                    "WARNING",
+                    "watchdog_state_probe_failed",
+                    detail=detail,
+                    state_url=args.state_url,
+                )
 
         _restart_service(args.service_label)
         last_restart_at = now

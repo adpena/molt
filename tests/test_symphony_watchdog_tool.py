@@ -32,3 +32,42 @@ def test_launchd_target_uses_gui_uid() -> None:
     target = symphony_watchdog._launchd_target("com.molt.symphony")
     assert target.startswith("gui/")
     assert target.endswith("/com.molt.symphony")
+
+
+def test_service_is_busy_from_counts(monkeypatch: object) -> None:
+    monkeypatch.setattr(
+        symphony_watchdog,
+        "_read_state_counts",
+        lambda *_args, **_kwargs: {"running": 2, "retrying": 0},
+    )
+    busy, detail = symphony_watchdog._service_is_busy(
+        "http://127.0.0.1:8089/api/v1/state", 0.5
+    )
+    assert busy is True
+    assert "running=2" in detail
+
+
+def test_service_is_idle_from_counts(monkeypatch: object) -> None:
+    monkeypatch.setattr(
+        symphony_watchdog,
+        "_read_state_counts",
+        lambda *_args, **_kwargs: {"running": 0, "retrying": 0},
+    )
+    busy, detail = symphony_watchdog._service_is_busy(
+        "http://127.0.0.1:8089/api/v1/state", 0.5
+    )
+    assert busy is False
+    assert "retrying=0" in detail
+
+
+def test_service_is_busy_state_unavailable(monkeypatch: object) -> None:
+    monkeypatch.setattr(
+        symphony_watchdog,
+        "_read_state_counts",
+        lambda *_args, **_kwargs: None,
+    )
+    busy, detail = symphony_watchdog._service_is_busy(
+        "http://127.0.0.1:8089/api/v1/state", 0.5
+    )
+    assert busy is None
+    assert detail == "state_unavailable"
