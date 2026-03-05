@@ -21520,8 +21520,8 @@ pub extern "C" fn molt_string_swapcase(hay_bits: u64) -> u64 {
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             // SIMD fast path: pure-ASCII strings use bulk XOR bit-5 swapcase
             if hay_bytes.is_ascii() {
-                let mut buf = hay_bytes.to_vec();
-                bytes_ascii_swapcase(&mut buf);
+                let buf = hay_bytes.to_vec();
+                bytes_ascii_swapcase(&buf);
                 let ptr = alloc_string(_py, &buf);
                 if ptr.is_null() {
                     return MoltObject::none().bits();
@@ -21564,8 +21564,8 @@ pub extern "C" fn molt_string_capitalize(hay_bits: u64) -> u64 {
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             // SIMD fast path: pure-ASCII capitalize uses bytes_ascii_capitalize
             if hay_bytes.is_ascii() {
-                let mut buf = hay_bytes.to_vec();
-                bytes_ascii_capitalize(&mut buf);
+                let buf = hay_bytes.to_vec();
+                bytes_ascii_capitalize(&buf);
                 let ptr = alloc_string(_py, &buf);
                 if ptr.is_null() {
                     return MoltObject::none().bits();
@@ -24224,7 +24224,7 @@ fn simd_is_all_ascii_printable(bytes: &[u8]) -> bool {
 
     while i < bytes.len() {
         let b = bytes[i];
-        if b < 0x20 || b > 0x7E {
+        if !(0x20..=0x7E).contains(&b) {
             return false;
         }
         i += 1;

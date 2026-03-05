@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import queue
 import re
@@ -11,6 +12,7 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -835,16 +837,31 @@ class SymphonyOrchestrator:
         message: str,
         resume_delay_seconds: int | None,
         auto_resume: bool,
+        resume_at_epoch_seconds: float | None = None,
+        resume_source: str | None = None,
+        resume_reason: str | None = None,
     ) -> None:
         now_mono = time.monotonic()
+        now_epoch = time.time()
         resume_at: float | None = None
-        if resume_delay_seconds is not None:
-            resume_at = now_mono + float(max(resume_delay_seconds, 1))
+        resolved_epoch: float | None = None
+        if isinstance(resume_at_epoch_seconds, (int, float)):
+            candidate_epoch = float(resume_at_epoch_seconds)
+            delta_seconds = max(candidate_epoch - now_epoch, 1.0)
+            resolved_epoch = now_epoch + delta_seconds
+            resume_at = now_mono + delta_seconds
+        elif resume_delay_seconds is not None:
+            delta_seconds = float(max(resume_delay_seconds, 1))
+            resume_at = now_mono + delta_seconds
+            resolved_epoch = now_epoch + delta_seconds
         self._state.suspension_kind = kind
         self._state.suspension_message = message
         if self._state.suspension_since_utc is None:
             self._state.suspension_since_utc = now_utc()
         self._state.suspension_resume_at_monotonic = resume_at
+        self._state.suspension_resume_at_epoch_utc = resolved_epoch
+        self._state.suspension_resume_source = resume_source
+        self._state.suspension_resume_reason = resume_reason
         self._state.suspension_auto_resume = auto_resume
         self._state.profiling.incr("orchestrator_suspensions")
 
@@ -854,6 +871,9 @@ class SymphonyOrchestrator:
         self._state.suspension_message = None
         self._state.suspension_since_utc = None
         self._state.suspension_resume_at_monotonic = None
+        self._state.suspension_resume_at_epoch_utc = None
+        self._state.suspension_resume_source = None
+        self._state.suspension_resume_reason = None
         self._state.suspension_auto_resume = False
         return previous_kind
 
@@ -915,6 +935,9 @@ class SymphonyOrchestrator:
             suspension_auto_resume = self._state.suspension_auto_resume
             suspension_since = self._state.suspension_since_utc
             suspension_due_in = self._suspension_due_in_locked(now_mono)
+            suspension_resume_at_epoch = self._state.suspension_resume_at_epoch_utc
+            suspension_resume_source = self._state.suspension_resume_source
+            suspension_resume_reason = self._state.suspension_resume_reason
             profiling_snapshot = self._state.profiling.snapshot(now_monotonic=now_mono)
             totals_input = self._state.codex_totals.input_tokens
             totals_output = self._state.codex_totals.output_tokens
@@ -1139,6 +1162,20 @@ class SymphonyOrchestrator:
                     if suspension_due_in is not None
                     else None
                 ),
+                "resume_at_epoch_seconds": (
+                    round(suspension_resume_at_epoch, 3)
+                    if suspension_resume_at_epoch is not None
+                    else None
+                ),
+                "resume_at": (
+                    datetime.fromtimestamp(suspension_resume_at_epoch, tz=UTC)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                    if suspension_resume_at_epoch is not None
+                    else None
+                ),
+                "resume_source": suspension_resume_source,
+                "resume_reason": suspension_resume_reason,
                 "since": (
                     suspension_since.isoformat().replace("+00:00", "Z")
                     if suspension_since is not None
@@ -1907,6 +1944,13 @@ class SymphonyOrchestrator:
                         message=rate_pause["message"],
                         resume_delay_seconds=rate_pause["resume_seconds"],
                         auto_resume=True,
+                        resume_at_epoch_seconds=rate_pause.get(
+                            "resume_at_epoch_seconds"
+                        ),
+                        resume_source=str(rate_pause.get("source") or "rate_limits"),
+                        resume_reason=str(
+                            rate_pause.get("reason") or "window_exhausted"
+                        ),
                     )
                     self._wake_event.set()
                 elif self._state.suspension_kind == "rate_limited":
@@ -2099,6 +2143,8 @@ class SymphonyOrchestrator:
                     message=auth_message,
                     resume_delay_seconds=self._auth_resume_delay_seconds,
                     auto_resume=True,
+                    resume_source="auth",
+                    resume_reason="auth_required",
                 )
                 self._state.last_errors[issue_id] = auth_message
             self._schedule_retry(
@@ -2123,12 +2169,21 @@ class SymphonyOrchestrator:
                 "Codex rate-limit exhausted. Symphony will pause and retry"
                 " automatically when quota is expected to recover."
             )
-            parsed_from_error = _extract_retry_delay_seconds_from_error(
+            resume_at_epoch_seconds: float | None = None
+            resume_source = "rate_limit.default"
+            resume_reason = "window_exhausted"
+            parsed_from_error = _extract_retry_schedule_from_error(
                 error,
                 default_resume_seconds=resume_seconds,
             )
             if parsed_from_error is not None:
-                resume_seconds = parsed_from_error
+                resume_seconds = int(parsed_from_error["resume_seconds"])
+                resume_at_epoch_seconds = parsed_from_error.get(
+                    "resume_at_epoch_seconds"
+                )
+                resume_source = str(
+                    parsed_from_error.get("source") or "rate_limit.error"
+                )
                 message = (
                     "Codex rate-limit exhausted. Symphony will pause and retry in "
                     f"about {_format_duration_brief(resume_seconds)}."
@@ -2143,12 +2198,24 @@ class SymphonyOrchestrator:
                     if precise_pause is not None:
                         resume_seconds = int(precise_pause["resume_seconds"])
                         message = str(precise_pause["message"])
+                        resume_at_epoch_seconds = precise_pause.get(
+                            "resume_at_epoch_seconds"
+                        )
+                        resume_source = str(
+                            precise_pause.get("source") or "rate_limit.telemetry"
+                        )
+                        resume_reason = str(
+                            precise_pause.get("reason") or "window_exhausted"
+                        )
             with self._state_lock:
                 self._set_suspension_locked(
                     kind="rate_limited",
                     message=message,
                     resume_delay_seconds=resume_seconds,
                     auto_resume=True,
+                    resume_at_epoch_seconds=resume_at_epoch_seconds,
+                    resume_source=resume_source,
+                    resume_reason=resume_reason,
                 )
             self._schedule_retry(
                 issue_id,
@@ -2889,16 +2956,28 @@ def _derive_rate_limit_suspension(
         {"hascredits", "has_credits"},
     )
     if has_credits is False:
-        resume_seconds = max(default_resume_seconds, 3600)
+        credit_reset_epoch = _find_min_reset_epoch_seconds(
+            rate_limits, now_epoch_seconds=now_epoch
+        )
+        if credit_reset_epoch is not None:
+            resume_seconds = max(
+                int((credit_reset_epoch - now_epoch) + 0.999),
+                1,
+            )
+        else:
+            resume_seconds = max(default_resume_seconds, 3600)
         return {
             "resume_seconds": resume_seconds,
             "message": (
                 "Provider credits are exhausted. Symphony will pause and auto-resume in "
                 f"about {_format_duration_brief(resume_seconds)}."
             ),
+            "resume_at_epoch_seconds": credit_reset_epoch,
+            "source": "rate_limits.credits",
+            "reason": "credits_exhausted",
         }
 
-    exhausted_windows: list[int] = []
+    exhausted_windows: list[dict[str, Any]] = []
 
     def walk(node: Any) -> None:
         if isinstance(node, dict):
@@ -2917,13 +2996,17 @@ def _derive_rate_limit_suspension(
             if remaining is not None and remaining <= 0:
                 exhausted = True
             if exhausted:
-                window_seconds = _extract_window_seconds(
+                schedule = _extract_window_schedule(
                     lowered,
                     now_epoch_seconds=now_epoch,
                 )
-                if window_seconds is None:
-                    window_seconds = default_resume_seconds
-                exhausted_windows.append(window_seconds)
+                if schedule is None:
+                    schedule = {
+                        "resume_seconds": max(int(default_resume_seconds), 1),
+                        "resume_at_epoch_seconds": None,
+                        "source": "rate_limits.default",
+                    }
+                exhausted_windows.append(schedule)
             for value in node.values():
                 walk(value)
             return
@@ -2934,13 +3017,23 @@ def _derive_rate_limit_suspension(
     walk(rate_limits)
     if not exhausted_windows:
         return None
-    resume_seconds = max(min(exhausted_windows), 1)
+    best = min(
+        exhausted_windows,
+        key=lambda row: (
+            max(int(row.get("resume_seconds", default_resume_seconds)), 1),
+            0 if row.get("resume_at_epoch_seconds") is not None else 1,
+        ),
+    )
+    resume_seconds = max(int(best.get("resume_seconds", default_resume_seconds)), 1)
     return {
         "resume_seconds": resume_seconds,
         "message": (
             "Provider rate-limit window is exhausted. Symphony will pause and auto-resume in "
             f"about {_format_duration_brief(resume_seconds)}."
         ),
+        "resume_at_epoch_seconds": best.get("resume_at_epoch_seconds"),
+        "source": str(best.get("source") or "rate_limits.window"),
+        "reason": "window_exhausted",
     }
 
 
@@ -2969,12 +3062,29 @@ def _extract_first_number(
             value = candidate.get(key)
             if isinstance(value, (int, float)):
                 return float(value)
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    continue
+                try:
+                    return float(text)
+                except ValueError:
+                    continue
     return None
 
 
 def _extract_window_seconds(
     candidate: dict[str, Any], *, now_epoch_seconds: float
 ) -> int | None:
+    schedule = _extract_window_schedule(candidate, now_epoch_seconds=now_epoch_seconds)
+    if schedule is None:
+        return None
+    return int(schedule["resume_seconds"])
+
+
+def _extract_window_schedule(
+    candidate: dict[str, Any], *, now_epoch_seconds: float
+) -> dict[str, Any] | None:
     window_seconds = _extract_first_number(
         candidate,
         (
@@ -2987,7 +3097,11 @@ def _extract_window_seconds(
         ),
     )
     if window_seconds is not None and window_seconds > 0:
-        return int(window_seconds)
+        return {
+            "resume_seconds": max(int(window_seconds), 1),
+            "resume_at_epoch_seconds": None,
+            "source": "rate_limits.window_seconds",
+        }
 
     retry_after_ms = _extract_first_number(
         candidate,
@@ -2997,7 +3111,12 @@ def _extract_window_seconds(
         ),
     )
     if retry_after_ms is not None and retry_after_ms > 0:
-        return max(int((retry_after_ms / 1000.0) + 0.999), 1)
+        return {
+            "resume_seconds": max(int((retry_after_ms / 1000.0) + 0.999), 1),
+            "resume_at_epoch_seconds": now_epoch_seconds
+            + max(int((retry_after_ms / 1000.0) + 0.999), 1),
+            "source": "rate_limits.retry_after_ms",
+        }
 
     window_ms = _extract_first_number(
         candidate,
@@ -3008,14 +3127,21 @@ def _extract_window_seconds(
         ),
     )
     if window_ms is not None and window_ms > 0:
-        return max(int((window_ms / 1000.0) + 0.999), 1)
+        seconds = max(int((window_ms / 1000.0) + 0.999), 1)
+        return {
+            "resume_seconds": seconds,
+            "resume_at_epoch_seconds": now_epoch_seconds + seconds,
+            "source": "rate_limits.window_ms",
+        }
 
-    absolute_reset = _extract_absolute_reset_seconds(
-        candidate,
-        now_epoch_seconds=now_epoch_seconds,
-    )
-    if absolute_reset is not None and absolute_reset > 0:
-        return max(int(absolute_reset), 1)
+    absolute_reset_epoch = _extract_absolute_reset_epoch(candidate)
+    if absolute_reset_epoch is not None:
+        seconds = max(int((absolute_reset_epoch - now_epoch_seconds) + 0.999), 1)
+        return {
+            "resume_seconds": seconds,
+            "resume_at_epoch_seconds": absolute_reset_epoch,
+            "source": "rate_limits.reset_at",
+        }
 
     window_raw = _extract_first_number(
         candidate,
@@ -3025,16 +3151,43 @@ def _extract_window_seconds(
         ),
     )
     if window_raw is None or window_raw <= 0:
-        window_raw = _extract_absolute_reset_seconds(
-            candidate,
-            now_epoch_seconds=now_epoch_seconds,
-        )
-        if window_raw is None or window_raw <= 0:
-            return None
-        return max(int(window_raw), 1)
+        return None
     if window_raw >= 100000:
-        return int(window_raw / 1000.0)
-    return int(window_raw)
+        seconds = max(int(window_raw / 1000.0), 1)
+        return {
+            "resume_seconds": seconds,
+            "resume_at_epoch_seconds": now_epoch_seconds + seconds,
+            "source": "rate_limits.window_duration_ms",
+        }
+    seconds = max(int(window_raw), 1)
+    return {
+        "resume_seconds": seconds,
+        "resume_at_epoch_seconds": now_epoch_seconds + seconds,
+        "source": "rate_limits.window",
+    }
+
+
+def _find_min_reset_epoch_seconds(
+    value: Any, *, now_epoch_seconds: float
+) -> float | None:
+    candidates: list[float] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            lowered = {str(key).lower(): child for key, child in node.items()}
+            epoch = _extract_absolute_reset_epoch(lowered)
+            if epoch is not None and epoch > now_epoch_seconds:
+                candidates.append(epoch)
+            for child in node.values():
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(value)
+    if not candidates:
+        return None
+    return min(candidates)
 
 
 def _extract_absolute_reset_seconds(
@@ -3042,6 +3195,16 @@ def _extract_absolute_reset_seconds(
     *,
     now_epoch_seconds: float,
 ) -> int | None:
+    absolute_reset_epoch = _extract_absolute_reset_epoch(candidate)
+    if absolute_reset_epoch is None:
+        return None
+    delta = absolute_reset_epoch - float(now_epoch_seconds)
+    if delta <= 0:
+        return 0
+    return max(int(delta + 0.999), 1)
+
+
+def _extract_absolute_reset_epoch(candidate: dict[str, Any]) -> float | None:
     reset_keys = (
         "resetsat",
         "resetat",
@@ -3051,19 +3214,26 @@ def _extract_absolute_reset_seconds(
     for key in reset_keys:
         if key not in candidate:
             continue
-        seconds = _seconds_until_timestamp(
-            candidate.get(key),
-            now_epoch_seconds=now_epoch_seconds,
-        )
-        if seconds is not None:
-            return seconds
+        epoch = _coerce_timestamp_epoch_seconds(candidate.get(key))
+        if epoch is not None:
+            return epoch
     return None
 
 
 def _seconds_until_timestamp(value: Any, *, now_epoch_seconds: float) -> int | None:
+    timestamp = _coerce_timestamp_epoch_seconds(value)
+    if timestamp is None:
+        return None
+    delta = timestamp - float(now_epoch_seconds)
+    if delta <= 0:
+        return 0
+    return max(int(delta + 0.999), 1)
+
+
+def _coerce_timestamp_epoch_seconds(value: Any) -> float | None:
     if value is None:
         return None
-    timestamp = None
+    timestamp: float | None = None
     if isinstance(value, (int, float)):
         timestamp = float(value)
     elif isinstance(value, str):
@@ -3077,23 +3247,143 @@ def _seconds_until_timestamp(value: Any, *, now_epoch_seconds: float) -> int | N
             try:
                 timestamp = datetime.fromisoformat(iso_text).timestamp()
             except ValueError:
-                return None
+                try:
+                    timestamp = parsedate_to_datetime(text).timestamp()
+                except (TypeError, ValueError):
+                    return None
     if timestamp is None:
         return None
     if timestamp > 10_000_000_000:
         timestamp = timestamp / 1000.0
-    delta = timestamp - float(now_epoch_seconds)
-    if delta <= 0:
-        return 0
-    return max(int(delta + 0.999), 1)
+    return timestamp
+
+
+def _extract_retry_schedule_from_error(
+    error: Any, *, default_resume_seconds: int
+) -> dict[str, Any] | None:
+    now_epoch = time.time()
+    if isinstance(error, dict):
+        from_payload = _derive_rate_limit_suspension(
+            error,
+            default_resume_seconds=default_resume_seconds,
+            now_epoch_seconds=now_epoch,
+        )
+        if from_payload is not None:
+            return {
+                "resume_seconds": int(from_payload["resume_seconds"]),
+                "resume_at_epoch_seconds": from_payload.get("resume_at_epoch_seconds"),
+                "source": "error.payload",
+                "reason": str(from_payload.get("reason") or "window_exhausted"),
+            }
+    raw_text = str(error or "").strip()
+    if raw_text:
+        if raw_text[:1] in {"{", "["}:
+            try:
+                parsed = json.loads(raw_text)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                from_json = _derive_rate_limit_suspension(
+                    parsed,
+                    default_resume_seconds=default_resume_seconds,
+                    now_epoch_seconds=now_epoch,
+                )
+                if from_json is not None:
+                    return {
+                        "resume_seconds": int(from_json["resume_seconds"]),
+                        "resume_at_epoch_seconds": from_json.get(
+                            "resume_at_epoch_seconds"
+                        ),
+                        "source": "error.json_payload",
+                        "reason": str(from_json.get("reason") or "window_exhausted"),
+                    }
+        retry_after_epoch = _extract_retry_after_epoch_from_text(
+            raw_text,
+            now_epoch_seconds=now_epoch,
+        )
+        if retry_after_epoch is not None:
+            resume_seconds = max(int((retry_after_epoch - now_epoch) + 0.999), 1)
+            return {
+                "resume_seconds": resume_seconds,
+                "resume_at_epoch_seconds": retry_after_epoch,
+                "source": "error.retry_after",
+                "reason": "window_exhausted",
+            }
+    delay_seconds = _extract_retry_delay_seconds_from_error(
+        error,
+        default_resume_seconds=default_resume_seconds,
+    )
+    if delay_seconds is None:
+        return None
+    resume_seconds = max(int(delay_seconds), 1)
+    return {
+        "resume_seconds": resume_seconds,
+        "resume_at_epoch_seconds": now_epoch + resume_seconds,
+        "source": "error.retry_after_seconds",
+        "reason": "window_exhausted",
+    }
+
+
+def _extract_retry_after_epoch_from_text(
+    text: str, *, now_epoch_seconds: float
+) -> float | None:
+    match = re.search(
+        r"retry[_\s-]*after\s*[:=]?\s*([^\n\r;]+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    retry_after_value = match.group(1).strip()
+    if not retry_after_value:
+        return None
+    seconds = _parse_retry_after_to_seconds(
+        retry_after_value,
+        now_epoch_seconds=now_epoch_seconds,
+    )
+    if seconds is None:
+        return None
+    return now_epoch_seconds + seconds
+
+
+def _parse_retry_after_to_seconds(
+    value: str, *, now_epoch_seconds: float
+) -> int | None:
+    text = value.strip()
+    if not text:
+        return None
+    number_match = re.match(r"^([0-9]+(?:\.[0-9]+)?)$", text)
+    if number_match:
+        return max(int(float(number_match.group(1)) + 0.999), 1)
+    epoch = _coerce_timestamp_epoch_seconds(text)
+    if epoch is None:
+        return None
+    return max(int((epoch - now_epoch_seconds) + 0.999), 1)
 
 
 def _extract_retry_delay_seconds_from_error(
     error: Any, *, default_resume_seconds: int
 ) -> int | None:
-    text = str(error or "").strip().lower()
+    if isinstance(error, dict):
+        parsed = _derive_rate_limit_suspension(
+            error,
+            default_resume_seconds=default_resume_seconds,
+            now_epoch_seconds=time.time(),
+        )
+        if parsed is not None:
+            return max(int(parsed["resume_seconds"]), 1)
+
+    raw_text = str(error or "").strip()
+    text = raw_text.lower()
     if not text:
         return None
+
+    retry_after_epoch = _extract_retry_after_epoch_from_text(
+        raw_text,
+        now_epoch_seconds=time.time(),
+    )
+    if retry_after_epoch is not None:
+        return max(int(retry_after_epoch - time.time() + 0.999), 1)
 
     retry_after_match = re.search(
         r"retry[_\s-]*after[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*(ms|milliseconds?|s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?)?",

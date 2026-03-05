@@ -674,12 +674,30 @@ def _formal_suite_has_toolchain_mismatch(payload: dict[str, Any]) -> bool:
     if not isinstance(quint, dict):
         return False
     diagnostics = quint.get("diagnostics")
-    if isinstance(diagnostics, dict) and bool(diagnostics.get("runtime_mismatch_detected")):
+    if isinstance(diagnostics, dict) and bool(
+        diagnostics.get("runtime_mismatch_detected")
+    ):
         return True
     errors = quint.get("errors")
     if not isinstance(errors, list):
         return False
     return any("quint_runtime_toolchain_mismatch" in str(item) for item in errors)
+
+
+def _formal_suite_missing_java_runtime(payload: dict[str, Any]) -> bool:
+    checks = payload.get("checks")
+    if not isinstance(checks, dict):
+        return False
+    quint = checks.get("quint")
+    if not isinstance(quint, dict):
+        return False
+    diagnostics = quint.get("diagnostics")
+    if isinstance(diagnostics, dict) and bool(diagnostics.get("java_runtime_missing")):
+        return True
+    errors = quint.get("errors")
+    if not isinstance(errors, list):
+        return False
+    return any("quint_java_runtime_missing" in str(item) for item in errors)
 
 
 def _audit_formal_suite(repo_root: Path, mode: str) -> dict[str, Any]:
@@ -743,6 +761,9 @@ def _audit_formal_suite(repo_root: Path, mode: str) -> dict[str, Any]:
         if _formal_suite_has_toolchain_mismatch(report):
             status = "warn"
             reason = "toolchain_mismatch"
+        elif _formal_suite_missing_java_runtime(report):
+            status = "fail"
+            reason = "java_runtime_missing"
         else:
             status = "fail"
             reason = "gate_failed"
@@ -1039,17 +1060,33 @@ def _collect_findings(report: dict[str, Any]) -> list[dict[str, Any]]:
 
     formal = report["sections"]["formal_suite"]
     if formal.get("status") == "fail":
-        _record_finding(
-            findings,
-            severity="fail",
-            code="formal_suite_failed",
-            message="Formalization suite gate failed.",
-            details={
-                "mode": formal.get("mode"),
-                "reason": formal.get("reason"),
-                "returncode": formal.get("returncode"),
-            },
-        )
+        if formal.get("reason") == "java_runtime_missing":
+            _record_finding(
+                findings,
+                severity="fail",
+                code="formal_suite_java_runtime_missing",
+                message=(
+                    "Formalization suite failed because Java runtime is missing for "
+                    "Quint/Apalache verification."
+                ),
+                details={
+                    "mode": formal.get("mode"),
+                    "reason": formal.get("reason"),
+                    "returncode": formal.get("returncode"),
+                },
+            )
+        else:
+            _record_finding(
+                findings,
+                severity="fail",
+                code="formal_suite_failed",
+                message="Formalization suite gate failed.",
+                details={
+                    "mode": formal.get("mode"),
+                    "reason": formal.get("reason"),
+                    "returncode": formal.get("returncode"),
+                },
+            )
     elif formal.get("status") == "warn":
         _record_finding(
             findings,
@@ -1077,12 +1114,8 @@ def _collect_findings(report: dict[str, Any]) -> list[dict[str, Any]]:
         if isinstance(formal_report, dict):
             checks = formal_report.get("checks")
             quint = checks.get("quint") if isinstance(checks, dict) else None
-            diagnostics = (
-                quint.get("diagnostics") if isinstance(quint, dict) else None
-            )
-            if isinstance(diagnostics, dict) and bool(
-                diagnostics.get("fallback_used")
-            ):
+            diagnostics = quint.get("diagnostics") if isinstance(quint, dict) else None
+            if isinstance(diagnostics, dict) and bool(diagnostics.get("fallback_used")):
                 _record_finding(
                     findings,
                     severity="info",
@@ -1094,6 +1127,31 @@ def _collect_findings(report: dict[str, Any]) -> list[dict[str, Any]]:
                     details={
                         "node": diagnostics.get("node"),
                         "fallback_prefix": diagnostics.get("fallback_prefix"),
+                    },
+                )
+            node_info = (
+                diagnostics.get("node") if isinstance(diagnostics, dict) else None
+            )
+            node_major = (
+                int(node_info.get("major"))
+                if isinstance(node_info, dict)
+                and isinstance(node_info.get("major"), int)
+                else None
+            )
+            if isinstance(node_major, int) and node_major >= 25:
+                _record_finding(
+                    findings,
+                    severity="warn",
+                    code="formal_suite_node_major_mismatch",
+                    message=(
+                        "System Node version is >=25; Quint currently requires fallback "
+                        "to preserve formal-suite signal."
+                    ),
+                    details={
+                        "node": node_info,
+                        "fallback_prefix": diagnostics.get("fallback_prefix")
+                        if isinstance(diagnostics, dict)
+                        else None,
                     },
                 )
     return findings

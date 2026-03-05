@@ -1705,9 +1705,9 @@ fn clear_filehandler_registration_locked(
     let Some(registration) = app.filehandlers.remove(&fd) else {
         return Ok(());
     };
-    for (_mask, command_name) in &registration.commands {
+    for (mask, command_name) in registration.commands.iter() {
         #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
-        if let Some(event_name) = filehandler_event_name(*_mask) {
+        if let Some(event_name) = filehandler_event_name(*mask) {
             let clear_result = app_interp_eval_list(
                 py,
                 app,
@@ -2357,7 +2357,7 @@ const TTK_NOTEBOOK_TAB_OPTIONS: &[&str] = &[
 const TTK_PANEDWINDOW_PANE_OPTIONS: &[&str] = &["-weight"];
 
 fn option_allowed(option_name: &str, allowed: &[&str]) -> bool {
-    allowed.iter().any(|candidate| option_name == *candidate)
+    allowed.contains(&option_name)
 }
 
 fn clamp_index_i64(value: i64, upper: usize) -> usize {
@@ -4708,10 +4708,8 @@ fn normalize_event_subst_bool_field(value_bits: u64) -> u64 {
         Some(value != 0)
     } else if let Some(text) = string_obj_to_owned(obj) {
         parse_bool_text(&text)
-    } else if let Some(value) = to_f64(obj) {
-        Some(value != 0.0)
     } else {
-        None
+        to_f64(obj).map(|value| value != 0.0)
     };
     parsed
         .map(MoltObject::from_bool)
@@ -4748,7 +4746,7 @@ fn bind_script_line_invokes_command(line: &str, command_name: &str) -> bool {
         && normalized[command_name.len()..]
             .chars()
             .next()
-            .map_or(true, char::is_whitespace)
+            .is_none_or(char::is_whitespace)
     {
         return true;
     }
@@ -12467,7 +12465,7 @@ fn handle_generic_widget_path_command(
                     }
                     "add" => {
                         if widget.widget_command == "text" {
-                            if args.len() < 6 || (args.len() - 4) % 2 != 0 {
+                            if args.len() < 6 || !(args.len() - 4).is_multiple_of(2) {
                                 return Err(app_tcl_error_locked(
                                     py,
                                     app,

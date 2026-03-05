@@ -49,6 +49,7 @@ What this bootstraps automatically:
 - writes `ops/linear/runtime/symphony.env` with external-volume defaults
 - creates external runtime/cache/log directories under `/Volumes/APDataStore/Molt`
 - auto-seeds official `lin` CLI credentials (`~/.lin/store.apiKey.json`) from `LINEAR_API_KEY` when `lin` is installed
+- reports `formal_toolchain` status (Node/Quint/Lake direct and fallback probes)
 - optionally installs persistent launchd service via `tools/symphony_launchd.py`
 
 After bootstrap, recurring runs do not require manual setup each time.
@@ -223,10 +224,18 @@ To repair manifests/issues + ensure project assignment + bootstrap labels/routin
 PYTHONPATH=src uv run --python 3.12 python3 tools/linear_hygiene.py full-pass --team Moltlang --apply --formal-suite all
 ```
 
-If Quint fails due Node/Quint runtime mismatch (Node `>=25`), configure fallback:
+Bootstrap writes this fallback by default (prefers local Node 22 binary, otherwise
+`npx -y node@22`); if your local env is missing it, configure:
 
 ```bash
 export MOLT_QUINT_NODE_FALLBACK='npx -y node@22'
+```
+
+For full `quint verify` lanes, Java is required by Apalache. Bootstrap now
+auto-detects Homebrew OpenJDK and seeds `JAVA_HOME` when available; if needed:
+
+```bash
+export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
 ```
 
 ## 10. Human operating loop (required)

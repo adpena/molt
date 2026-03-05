@@ -1796,6 +1796,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             isinstance(arg, MoltValue) and arg.type_hint == "int" for arg in op.args
         )
 
+    @staticmethod
+    def _is_raw_int(op: MoltOp) -> bool:
+        """Check if the raw_int promotion pass marked this op for raw i64 mode."""
+        return bool(op.metadata and op.metadata.get("raw_int"))
+
     def _should_fast_float(self, op: MoltOp) -> bool:
         if not self._hints_enabled():
             return False
@@ -10006,7 +10011,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         for literal_text, field_name, format_spec, conversion in parsed:
             if literal_text:
                 if tokens and isinstance(tokens[-1], FormatLiteral):
-                    prior = cast(FormatLiteral, tokens[-1])
+                    prior = tokens[-1]
                     tokens[-1] = FormatLiteral(prior.text + literal_text)
                 else:
                     tokens.append(FormatLiteral(literal_text))
@@ -26550,8 +26555,29 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 value = op.args[0]
                 if isinstance(value, bool):
                     value = 1 if value else 0
+                const_entry: dict[str, Any] = {
+                    "kind": "const",
+                    "value": value,
+                    "out": op.result.name,
+                }
+                if self._is_raw_int(op):
+                    const_entry["raw_int"] = True
+                json_ops.append(const_entry)
+            elif op.kind == "UNBOX_TO_RAW_INT":
                 json_ops.append(
-                    {"kind": "const", "value": value, "out": op.result.name}
+                    {
+                        "kind": "unbox_to_raw_int",
+                        "args": [op.args[0].name],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "BOX_FROM_RAW_INT":
+                json_ops.append(
+                    {
+                        "kind": "box_from_raw_int",
+                        "args": [op.args[0].name],
+                        "out": op.result.name,
+                    }
                 )
             elif op.kind == "CONST_BIGINT":
                 json_ops.append(
@@ -26609,7 +26635,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if self._is_raw_int(op):
+                    add_entry["raw_int"] = True
+                elif self._should_fast_int(op):
                     add_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     add_entry["fast_float"] = True
@@ -26620,7 +26648,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if self._is_raw_int(op):
+                    add_entry["raw_int"] = True
+                elif self._should_fast_int(op):
                     add_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     add_entry["fast_float"] = True
@@ -26653,7 +26683,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if self._is_raw_int(op):
+                    mul_entry["raw_int"] = True
+                elif self._should_fast_int(op):
                     mul_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     mul_entry["fast_float"] = True
@@ -26695,7 +26727,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if self._is_raw_int(op):
+                    mod_entry["raw_int"] = True
+                elif self._should_fast_int(op):
                     mod_entry["fast_int"] = True
                 json_ops.append(mod_entry)
             elif op.kind == "POW":
@@ -26816,7 +26850,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if self._is_raw_int(op):
+                    lt_entry["raw_int"] = True
+                elif self._should_fast_int(op):
                     lt_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     lt_entry["fast_float"] = True
@@ -28838,6 +28874,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "kind": "loop_break_if_true",
                     "args": [op.args[0].name],
                 }
+                if self._is_raw_int(op):
+                    lbt_entry["raw_int"] = True
                 cond_arg = op.args[0]
                 if isinstance(cond_arg, MoltValue) and cond_arg.type_hint in {
                     "bool",
@@ -28852,6 +28890,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "kind": "loop_break_if_false",
                     "args": [op.args[0].name],
                 }
+                if self._is_raw_int(op):
+                    lbf_entry["raw_int"] = True
                 cond_arg = op.args[0]
                 if isinstance(cond_arg, MoltValue) and cond_arg.type_hint in {
                     "bool",
@@ -35998,6 +36038,245 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
         return ops
 
+    def _promote_raw_int_chains(self, ops: list[MoltOp]) -> list[MoltOp]:
+        """Promote guard_fast_int arithmetic chains to raw_int mode.
+
+        When consecutive operations all have guard_fast_int=True, we can
+        eliminate the per-operation NaN-box/unbox overhead by:
+        1. Unboxing variables once at the start of the chain
+        2. Operating on raw i64 values throughout the chain
+        3. Re-boxing only when values escape to non-raw-int consumers
+
+        This eliminates ~25 instructions per arithmetic op (unbox+box+overflow check).
+        """
+        enable_env = os.getenv("MOLT_RAW_INT_PROMOTION", "").strip().lower()
+        if enable_env in {"0", "false", "no", "off"}:
+            return ops
+
+        raw_int_ops = {
+            "ADD",
+            "SUB",
+            "MUL",
+            "INPLACE_ADD",
+            "INPLACE_SUB",
+            "INPLACE_MUL",
+            "MOD",
+            "FLOORDIV",
+            "DIV",
+            "BIT_OR",
+            "BIT_AND",
+            "BIT_XOR",
+            "INPLACE_BIT_OR",
+            "INPLACE_BIT_AND",
+            "INPLACE_BIT_XOR",
+            "LSHIFT",
+            "RSHIFT",
+            "LT",
+            "LE",
+            "GT",
+            "GE",
+            "EQ",
+            "NE",
+        }
+        loop_cond_ops = {"LOOP_BREAK_IF_TRUE", "LOOP_BREAK_IF_FALSE"}
+
+        # Phase 1: identify variables that are produced AND consumed entirely
+        # within guard_fast_int arithmetic chains.
+        int_producers: dict[str, int] = {}  # var_name -> op_index
+        int_consumers: dict[
+            str, list[int]
+        ] = {}  # var_name -> list of consuming op indices
+        fast_int_ops: set[int] = set()
+
+        for i, op in enumerate(ops):
+            is_fast = (
+                op.metadata is not None and op.metadata.get("guard_fast_int")
+            ) or (
+                op.kind == "CONST"
+                and isinstance(op.result, MoltValue)
+                and op.result.type_hint == "int"
+            ) or (
+                # Type-hint-based fast_int (--type-hints trust path):
+                # same eligibility check as _should_fast_int but without
+                # needing guard metadata from SCCP.
+                op.kind in raw_int_ops
+                and all(
+                    isinstance(a, MoltValue) and a.type_hint == "int"
+                    for a in op.args
+                )
+            )
+            if is_fast and op.kind in raw_int_ops:
+                fast_int_ops.add(i)
+                if isinstance(op.result, MoltValue) and op.result.name != "none":
+                    int_producers[op.result.name] = i
+                for arg in op.args:
+                    if isinstance(arg, MoltValue):
+                        int_consumers.setdefault(arg.name, []).append(i)
+            elif op.kind in loop_cond_ops:
+                # Loop break conditions consume the comparison result
+                for arg in op.args:
+                    if isinstance(arg, MoltValue):
+                        int_consumers.setdefault(arg.name, []).append(i)
+
+        # Phase 2: find variables that can stay in raw form.
+        # A variable can be raw if ALL its consumers are fast_int ops or loop_cond ops.
+        raw_eligible: set[str] = set()
+        for var_name, prod_idx in int_producers.items():
+            consumers = int_consumers.get(var_name, [])
+            if not consumers:
+                continue
+            all_fast = all(
+                ci in fast_int_ops or ops[ci].kind in loop_cond_ops for ci in consumers
+            )
+            if all_fast:
+                raw_eligible.add(var_name)
+
+        if not raw_eligible:
+            return ops
+
+        # Phase 3: rewrite ops using a raw/boxed variable tracking map.
+        # Never mutate MoltValue.name in place — create new MoltValue copies.
+        new_ops: list[MoltOp] = []
+        # Track which variable names currently hold raw i64 values
+        raw_vars: set[str] = set()
+        # Bridge counter for unique names
+        bridge_id = 0
+        promoted = 0
+
+        def ensure_raw(var: MoltValue) -> MoltValue:
+            """Return a MoltValue guaranteed to be in raw i64 form."""
+            nonlocal bridge_id
+            if var.name in raw_vars:
+                return MoltValue(var.name, var.type_hint)
+            # Insert unbox bridge
+            raw_name = f"__ri{bridge_id}"
+            bridge_id += 1
+            new_ops.append(
+                MoltOp(
+                    kind="UNBOX_TO_RAW_INT",
+                    args=[MoltValue(var.name, var.type_hint)],
+                    result=MoltValue(raw_name, "int"),
+                )
+            )
+            raw_vars.add(raw_name)
+            return MoltValue(raw_name, "int")
+
+        def ensure_boxed(var: MoltValue) -> MoltValue:
+            """Return a MoltValue guaranteed to be in NaN-boxed form."""
+            nonlocal bridge_id
+            if var.name not in raw_vars:
+                return MoltValue(var.name, var.type_hint)
+            # Insert box bridge
+            boxed_name = f"__bi{bridge_id}"
+            bridge_id += 1
+            new_ops.append(
+                MoltOp(
+                    kind="BOX_FROM_RAW_INT",
+                    args=[MoltValue(var.name, var.type_hint)],
+                    result=MoltValue(boxed_name, "int"),
+                )
+            )
+            return MoltValue(boxed_name, "int")
+
+        for i, op in enumerate(ops):
+            if i in fast_int_ops and op.kind in raw_int_ops:
+                # Promote this op to raw_int mode
+                new_args = []
+                can_promote = True
+                for arg in op.args:
+                    if isinstance(arg, MoltValue):
+                        if arg.name in raw_vars or arg.name in int_producers or arg.type_hint == "int":
+                            new_args.append(ensure_raw(arg))
+                        else:
+                            can_promote = False
+                            new_args.append(MoltValue(arg.name, arg.type_hint))
+                    else:
+                        new_args.append(arg)
+
+                if can_promote:
+                    meta = dict(op.metadata) if op.metadata else {}
+                    meta["raw_int"] = True
+                    result_name = op.result.name if isinstance(op.result, MoltValue) else "none"
+                    new_result = MoltValue(result_name, op.result.type_hint if isinstance(op.result, MoltValue) else "Unknown")
+                    new_op = MoltOp(
+                        kind=op.kind,
+                        args=new_args,
+                        result=new_result,
+                        metadata=meta,
+                    )
+                    if result_name != "none":
+                        raw_vars.add(result_name)
+                    promoted += 1
+                    new_ops.append(new_op)
+                else:
+                    new_ops.append(op)
+
+            elif op.kind in loop_cond_ops:
+                if (
+                    op.args
+                    and isinstance(op.args[0], MoltValue)
+                    and op.args[0].name in raw_vars
+                ):
+                    meta = dict(op.metadata) if op.metadata else {}
+                    meta["raw_int"] = True
+                    new_op = MoltOp(
+                        kind=op.kind,
+                        args=[MoltValue(op.args[0].name, op.args[0].type_hint)],
+                        result=MoltValue(op.result.name, op.result.type_hint) if isinstance(op.result, MoltValue) else op.result,
+                        metadata=meta,
+                    )
+                    promoted += 1
+                    new_ops.append(new_op)
+                else:
+                    new_ops.append(op)
+
+            elif op.kind == "CONST" and isinstance(op.result, MoltValue):
+                if op.result.name in raw_eligible:
+                    meta = dict(op.metadata) if op.metadata else {}
+                    meta["raw_int"] = True
+                    new_op = MoltOp(
+                        kind=op.kind,
+                        args=list(op.args),
+                        result=MoltValue(op.result.name, op.result.type_hint),
+                        metadata=meta,
+                    )
+                    raw_vars.add(op.result.name)
+                    promoted += 1
+                    new_ops.append(new_op)
+                else:
+                    new_ops.append(op)
+
+            else:
+                # Non-raw op — box any raw args it consumes
+                needs_boxing = False
+                for arg in getattr(op, "args", None) or []:
+                    if isinstance(arg, MoltValue) and arg.name in raw_vars:
+                        needs_boxing = True
+                        break
+
+                if needs_boxing:
+                    new_args = []
+                    for arg in op.args:
+                        if isinstance(arg, MoltValue) and arg.name in raw_vars:
+                            new_args.append(ensure_boxed(arg))
+                        else:
+                            new_args.append(arg if not isinstance(arg, MoltValue) else MoltValue(arg.name, arg.type_hint))
+                    new_op = MoltOp(
+                        kind=op.kind,
+                        args=new_args,
+                        result=MoltValue(op.result.name, op.result.type_hint) if isinstance(op.result, MoltValue) else op.result,
+                        metadata=dict(op.metadata) if op.metadata else op.metadata,
+                    )
+                    new_ops.append(new_op)
+                else:
+                    new_ops.append(op)
+
+        if promoted > 0:
+            self.midend_stats["raw_int_promoted"] = (
+                self.midend_stats.get("raw_int_promoted", 0) + promoted
+            )
+        return new_ops
+
     def _analyze_escaping_allocations(self, ops: list[MoltOp]) -> set[str]:
         """Return set of SSA variable names that are non-escaping allocations.
 
@@ -36110,6 +36389,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self._inline_small_functions()
         for _fname, fdata in self.funcs_map.items():
             fdata["ops"] = self._specialize_guarded_int_arithmetic(fdata["ops"])
+            fdata["ops"] = self._promote_raw_int_chains(fdata["ops"])
             self._analyze_escaping_allocations(fdata["ops"])
         self._finalize_code_ids()
         self._ensure_code_slots_init()

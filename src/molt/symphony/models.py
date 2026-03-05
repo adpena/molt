@@ -330,6 +330,9 @@ class OrchestratorState:
     suspension_message: str | None = None
     suspension_since_utc: datetime | None = None
     suspension_resume_at_monotonic: float | None = None
+    suspension_resume_at_epoch_utc: float | None = None
+    suspension_resume_source: str | None = None
+    suspension_resume_reason: str | None = None
     suspension_auto_resume: bool = False
 
 
