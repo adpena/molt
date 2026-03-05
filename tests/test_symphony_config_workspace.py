@@ -193,6 +193,33 @@ def test_run_before_run_raises_for_non_git_conflict_hook_failure(
         manager.run_before_run(workspace.path)
 
 
+def test_run_before_run_ignores_missing_git_sync_script(tmp_path: Path) -> None:
+    root = tmp_path / "ws"
+    config = build_runtime_config(
+        _workflow(
+            tmp_path,
+            {
+                "tracker": {
+                    "kind": "linear",
+                    "api_key": "token",
+                    "project_slug": "proj",
+                },
+                "workspace": {"root": str(root)},
+                "hooks": {
+                    "before_run": (
+                        'echo "bash: tools/symphony_git_sync.sh: No such file or '
+                        'directory" 1>&2; exit 127'
+                    ),
+                },
+            },
+        )
+    )
+    manager = WorkspaceManager(config.workspace, config.hooks)
+    workspace = manager.create_for_issue("MT-13")
+
+    manager.run_before_run(workspace.path)
+
+
 def test_tracker_project_slug_supports_comma_separated_values(tmp_path: Path) -> None:
     workflow = _workflow(
         tmp_path,
