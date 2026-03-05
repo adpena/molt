@@ -5,12 +5,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use digest::Digest;
 use getrandom::fill as getrandom_fill;
 use md5::Md5;
 use serde_json::Value as JsonValue;
 use sha1::Sha1;
 use sha2::Sha256;
+use sha2::digest::Digest;
 
 use crate::builtins::io::{
     path_basename_text, path_dirname_text, path_join_text, path_normpath_text,

@@ -62,9 +62,9 @@ pub(crate) use scheduler::{
     task_waiting_on_future, wake_task_ptr,
 };
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use scheduler::{is_block_on_task, sleep_worker, thread_task_drop, thread_task_state};
 pub(crate) use scheduler::{process_task_drop, process_task_state};
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use scheduler::{sleep_worker, thread_task_drop, thread_task_state};
 
 #[allow(unused_imports)]
 pub(crate) use generators::*;
