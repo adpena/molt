@@ -196,3 +196,75 @@ def test_cmd_list_comments_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(calls) == 2
     assert calls[0]["first"] == 2
     assert calls[1]["after"] == "cursor-1"
+
+
+def test_issue_branch_name_prefers_linear_branch_name() -> None:
+    issue = {"identifier": "MOL-7", "title": "Hello", "branchName": "adpena/mol-7"}
+    assert linear_workspace._issue_branch_name(issue) == "adpena/mol-7"
+
+
+def test_issue_branch_name_derives_slug_when_missing() -> None:
+    issue = {"identifier": "MOL-7", "title": "Fix Linear CLI Drift!!!"}
+    assert linear_workspace._issue_branch_name(issue) == "mol-7/fix-linear-cli-drift"
+
+
+def test_cmd_checkout_branch_prefers_local(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(linear_workspace, "_resolve_team_id", lambda _team: "team-id")
+    monkeypatch.setattr(
+        linear_workspace,
+        "_resolve_issue",
+        lambda _team_id, _issue: {"identifier": "MOL-7", "title": "Fix drift"},
+    )
+    monkeypatch.setattr(
+        linear_workspace, "_git_branch_exists_local", lambda _branch: True
+    )
+    monkeypatch.setattr(
+        linear_workspace, "_git_branch_exists_remote", lambda _remote, _branch: False
+    )
+    called: list[str] = []
+    monkeypatch.setattr(
+        linear_workspace,
+        "_git_checkout_local",
+        lambda branch: called.append(f"local:{branch}"),
+    )
+    args = argparse.Namespace(
+        team="MOL",
+        issue="MOL-7",
+        branch=None,
+        remote="origin",
+        create_if_missing=False,
+        dry_run=False,
+    )
+    assert linear_workspace.cmd_checkout_branch(args) == 0
+    assert called == ["local:mol-7/fix-drift"]
+
+
+def test_cmd_checkout_branch_creates_when_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(linear_workspace, "_resolve_team_id", lambda _team: "team-id")
+    monkeypatch.setattr(
+        linear_workspace,
+        "_resolve_issue",
+        lambda _team_id, _issue: {"identifier": "MOL-8", "title": "New Feature"},
+    )
+    monkeypatch.setattr(
+        linear_workspace, "_git_branch_exists_local", lambda _branch: False
+    )
+    monkeypatch.setattr(
+        linear_workspace, "_git_branch_exists_remote", lambda _remote, _branch: False
+    )
+    called: list[str] = []
+    monkeypatch.setattr(
+        linear_workspace, "_git_checkout_new", lambda branch: called.append(branch)
+    )
+    args = argparse.Namespace(
+        team="MOL",
+        issue="MOL-8",
+        branch=None,
+        remote="origin",
+        create_if_missing=True,
+        dry_run=False,
+    )
+    assert linear_workspace.cmd_checkout_branch(args) == 0
+    assert called == ["mol-8/new-feature"]

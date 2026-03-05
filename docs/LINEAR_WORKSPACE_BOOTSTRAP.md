@@ -70,6 +70,7 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/linear_workspace.py list-state
 PYTHONPATH=src uv run --python 3.12 python3 tools/linear_workspace.py list-issues --team <team-key-or-name>
 PYTHONPATH=src uv run --python 3.12 python3 tools/linear_workspace.py get-issue --team <team-key-or-name> --issue MOL-123
 PYTHONPATH=src uv run --python 3.12 python3 tools/linear_workspace.py list-comments --team <team-key-or-name> --issue MOL-123
+PYTHONPATH=src uv run --python 3.12 python3 tools/linear_workspace.py checkout-branch --team <team-key-or-name> --issue MOL-123 --create-if-missing
 ```
 
 Direct non-interactive issue operations:
