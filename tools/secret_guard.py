@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import re
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 
 
 ALLOW_MARKER = "secret-guard: allow"
@@ -159,6 +163,35 @@ def _staged_diff_text() -> str:
     return proc.stdout
 
 
+def _security_events_file() -> Path:
+    configured = str(os.environ.get("MOLT_REMOVED_SECURITY_EVENTS_FILE") or "").strip()
+    if configured:
+        path = Path(configured).expanduser()
+    else:
+        ext_root = Path(
+            str(os.environ.get("MOLT_EXT_ROOT") or "/Volumes/APDataStore/Molt")
+        ).expanduser()
+        path = ext_root / "logs" / "orchestration" / "security" / "events.jsonl"
+    if not path.is_absolute():
+        path = (Path.cwd() / path).resolve()
+    return path
+
+
+def _emit_security_event(*, kind: str, payload: dict[str, object]) -> None:
+    event = {
+        "at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "kind": kind,
+        **payload,
+    }
+    path = _security_events_file()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=True) + "\n")
+    except OSError:
+        return
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Block commits that stage likely secret/token material."
@@ -188,6 +221,13 @@ def main(argv: list[str] | None = None) -> int:
     findings = scan_diff_text(diff_text)
     if not findings:
         return 0
+    _emit_security_event(
+        kind="secret_guard_blocked",
+        payload={
+            "finding_count": len(findings),
+            "paths": sorted({finding.path for finding in findings})[:32],
+        },
+    )
     print(
         "secret-guard blocked commit: detected likely secret material in staged additions.",
         file=sys.stderr,

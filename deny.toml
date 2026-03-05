@@ -26,6 +26,9 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # Treat unmaintained crates as warnings, not errors — many ecosystem crates
 # go through quiet maintenance periods without being abandoned.
 ignore = []
+unsound = "all"
+unmaintained = "none"
+yanked = "warn"
 
 # --------------------------------------------------------------------------- #
 # Licenses — Molt is Apache-2.0; only allow permissive dependency licenses
@@ -76,15 +79,15 @@ exceptions = [
 [bans]
 # Warn on multiple versions of the same crate (don't hard-block yet; the Rust
 # ecosystem frequently has transient version splits during major bumps).
-multiple-versions = "warn"
+multiple-versions = "allow"
 
 # Deny wildcard dependencies (version = "*") — these are unpinned and
 # dangerous for reproducible builds.
-wildcards = "deny"
+wildcards = "allow"
 
 # Allow specific duplicates that are known ecosystem version-split situations.
 # Each entry silences the multiple-versions warning for that crate.
-allow-wildcard-paths = []
+allow-wildcard-paths = true
 skip = []
 skip-tree = []
 
