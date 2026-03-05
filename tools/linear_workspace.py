@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
 import json
 import os
 import re
@@ -187,6 +188,20 @@ query IssueById($id: String!) {
 }
 """.strip()
 
+QUERY_ISSUE_BY_IDENTIFIER = """
+query IssueByIdentifier($teamId: ID!, $identifier: String!) {
+  issues(
+    filter: {
+      team: { id: { eq: $teamId } }
+      identifier: { eq: $identifier }
+    }
+    first: 2
+  ) {
+    nodes { id identifier title }
+  }
+}
+""".strip()
+
 QUERY_ISSUE_COMMENTS = """
 query IssueComments($id: String!, $first: Int!, $after: String) {
   issue(id: $id) {
@@ -246,14 +261,21 @@ mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) {
 
 
 def cmd_whoami(_: argparse.Namespace) -> int:
-    data = graphql(QUERY_VIEWER)
-    print(json.dumps(data["viewer"], indent=2, sort_keys=True))
+    print(json.dumps(_viewer(), indent=2, sort_keys=True))
     return 0
 
 
-def _resolve_team_id(team_ref: str) -> str:
+@functools.lru_cache(maxsize=1)
+def _viewer() -> dict[str, Any]:
     data = graphql(QUERY_VIEWER)
-    teams = data["viewer"]["teams"]["nodes"]
+    viewer = data.get("viewer")
+    if not isinstance(viewer, dict):
+        raise RuntimeError("viewer query missing viewer payload")
+    return viewer
+
+
+def _resolve_team_id(team_ref: str) -> str:
+    teams = _viewer()["teams"]["nodes"]
     target = team_ref.strip().lower()
     for team in teams:
         if str(team.get("id", "")).lower() == target:
@@ -638,6 +660,24 @@ def _resolve_issue_id(team_id: str, issue_ref: str) -> str:
             issue_id = str(issue.get("id") or "").strip()
             if issue_id:
                 return issue_id
+    except RuntimeError:
+        pass
+
+    identifier = target.upper()
+    try:
+        data = graphql(
+            QUERY_ISSUE_BY_IDENTIFIER,
+            {"teamId": team_id, "identifier": identifier},
+        )
+        nodes = ((data.get("issues") or {}).get("nodes")) or []
+        if isinstance(nodes, list):
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                issue_id = str(node.get("id") or "").strip()
+                node_identifier = str(node.get("identifier") or "").strip().upper()
+                if issue_id and node_identifier == identifier:
+                    return issue_id
     except RuntimeError:
         pass
 

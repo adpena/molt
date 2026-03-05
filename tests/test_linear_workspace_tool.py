@@ -42,6 +42,46 @@ def test_resolve_issue_id_falls_back_to_team_scan(
     assert linear_workspace._resolve_issue_id("team-id", "MOL-101") == "issue-101"
 
 
+def test_resolve_issue_id_uses_identifier_query_before_full_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def _fake_graphql(
+        query: str, variables: dict[str, object] | None = None
+    ) -> dict[str, object]:
+        calls.append(query)
+        if query == linear_workspace.QUERY_ISSUE_BY_ID:
+            raise RuntimeError("not_by_id")
+        if query == linear_workspace.QUERY_ISSUE_BY_IDENTIFIER:
+            assert variables == {"teamId": "team-id", "identifier": "MOL-42"}
+            return {"issues": {"nodes": [{"id": "issue-42", "identifier": "MOL-42"}]}}
+        raise AssertionError(f"unexpected query {query}")
+
+    monkeypatch.setattr(linear_workspace, "graphql", _fake_graphql)
+    issue_id = linear_workspace._resolve_issue_id("team-id", "MOL-42")
+    assert issue_id == "issue-42"
+    assert linear_workspace.QUERY_ISSUE_BY_IDENTIFIER in calls
+
+
+def test_viewer_uses_lru_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    linear_workspace._viewer.cache_clear()
+    calls = {"count": 0}
+
+    def _fake_graphql(
+        query: str, variables: dict[str, object] | None = None
+    ) -> dict[str, object]:
+        assert query == linear_workspace.QUERY_VIEWER
+        calls["count"] += 1
+        return {"viewer": {"id": "u1", "teams": {"nodes": []}}}
+
+    monkeypatch.setattr(linear_workspace, "graphql", _fake_graphql)
+    linear_workspace._viewer()
+    linear_workspace._viewer()
+    assert calls["count"] == 1
+    linear_workspace._viewer.cache_clear()
+
+
 def test_cmd_update_issue_builds_expected_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
