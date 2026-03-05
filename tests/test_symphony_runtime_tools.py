@@ -253,3 +253,41 @@ def test_symphony_run_main_exec_mode_molt_bin_rebuild(
         "dev",
     ]
     assert calls[1][0] == str(tmp_path / "bin" / "symphony_molt")
+
+
+def test_dashboard_security_defaults_generate_token_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    env: dict[str, str] = {}
+    monkeypatch.setattr(symphony_run.secrets, "token_urlsafe", lambda _n: "tok-123")
+
+    symphony_run._ensure_dashboard_security_defaults(
+        env=env,
+        ext_root=tmp_path,
+        port=8089,
+    )
+
+    token_file = Path(env["MOLT_SYMPHONY_API_TOKEN_FILE"])
+    assert token_file.exists()
+    assert token_file.read_text(encoding="utf-8").strip() == "tok-123"
+    assert env["MOLT_SYMPHONY_API_TOKEN"] == "tok-123"
+    assert env["MOLT_SYMPHONY_DASHBOARD_TOKEN"] == "tok-123"
+    assert env["MOLT_SYMPHONY_ALLOWED_ORIGINS"] == (
+        "http://127.0.0.1:8089,http://localhost:8089"
+    )
+
+
+def test_dashboard_security_defaults_preserve_existing_token(
+    tmp_path: Path,
+) -> None:
+    env: dict[str, str] = {"MOLT_SYMPHONY_API_TOKEN": "preset-token"}
+
+    symphony_run._ensure_dashboard_security_defaults(
+        env=env,
+        ext_root=tmp_path,
+        port=8090,
+    )
+
+    assert env["MOLT_SYMPHONY_API_TOKEN"] == "preset-token"
+    assert env["MOLT_SYMPHONY_DASHBOARD_TOKEN"] == "preset-token"
+    assert "MOLT_SYMPHONY_API_TOKEN_FILE" not in env

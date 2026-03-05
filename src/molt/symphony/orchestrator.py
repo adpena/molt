@@ -861,6 +861,26 @@ class SymphonyOrchestrator:
             totals_total = self._state.codex_totals.total_tokens
             totals_turns = self._state.codex_totals.turns_completed
             totals_ended_seconds = self._state.codex_totals.ended_seconds_running
+            event_queue_obj = getattr(self, "_event_queue", None)
+            if event_queue_obj is not None and hasattr(event_queue_obj, "qsize"):
+                try:
+                    queue_depth = max(int(event_queue_obj.qsize()), 0)
+                except (NotImplementedError, TypeError, ValueError):
+                    queue_depth = 0
+            else:
+                queue_depth = 0
+            queue_max = max(int(getattr(self, "_event_queue_max", 0)), 0)
+            queue_utilization = (
+                round(queue_depth / float(queue_max), 4) if queue_max > 0 else 0.0
+            )
+            profiling_counters = profiling_snapshot.get("counters")
+            dropped_events = 0
+            if isinstance(profiling_counters, dict):
+                raw_dropped = profiling_counters.get("events_dropped", 0)
+                try:
+                    dropped_events = max(int(raw_dropped), 0)
+                except (TypeError, ValueError):
+                    dropped_events = 0
             runtime_payload = {
                 "exec_mode": self._exec_mode,
                 "default_role": self._config.agent.default_role,
@@ -868,6 +888,16 @@ class SymphonyOrchestrator:
                 "max_concurrent_agents": self._state.max_concurrent_agents,
                 "poll_interval_ms": self._state.poll_interval_ms,
                 "dashboard_profile": _dashboard_profile_for_suspension(suspension_kind),
+                "event_queue": {
+                    "depth": queue_depth,
+                    "max": queue_max,
+                    "utilization": queue_utilization,
+                    "dropped_events": dropped_events,
+                    "drop_log_interval": max(
+                        int(getattr(self, "_event_queue_drop_log_interval", 0)),
+                        0,
+                    ),
+                },
             }
 
         running_rows: list[dict[str, Any]] = []

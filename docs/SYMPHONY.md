@@ -160,3 +160,12 @@ export MOLT_SYMPHONY_STATE_HASH_HELPER="/Volumes/APDataStore/Molt/bin/symphony_s
 - `symphony_state` also supports `{ "detail": "telemetry" }` for agent-native, token-efficient MCP telemetry.
 - Codex event profiling counters are cardinality-bounded (`MOLT_SYMPHONY_MAX_CODEX_EVENT_COUNTERS`, default `64`) to avoid unbounded metric growth.
 - Durable memory files are external-volume first (`MOLT_SYMPHONY_DURABLE_MEMORY=1`), with auto-materialization into DuckDB/Parquet when `duckdb` is available.
+- Dashboard/API hardening controls:
+  - `MOLT_SYMPHONY_API_TOKEN` (or `MOLT_SYMPHONY_DASHBOARD_TOKEN`) enables authenticated API access (`Authorization: Bearer <token>`).
+  - `tools/symphony_run.py` auto-provisions `MOLT_SYMPHONY_API_TOKEN` into `MOLT_SYMPHONY_API_TOKEN_FILE` when no token is supplied (external-volume default path, mode `0600` best-effort).
+  - `MOLT_SYMPHONY_ENFORCE_ORIGIN=1` enforces mutating-request origin checks; `MOLT_SYMPHONY_ALLOWED_ORIGINS` can pin explicit origins.
+  - `MOLT_SYMPHONY_REQUIRE_CSRF_HEADER=1` requires `X-Symphony-CSRF: 1` on browser-origin mutating requests.
+  - `MOLT_SYMPHONY_MAX_HTTP_CONNECTIONS` bounds concurrent HTTP request handling.
+  - `MOLT_SYMPHONY_MAX_STREAM_CLIENTS` and `MOLT_SYMPHONY_STREAM_MAX_AGE_SECONDS` bound SSE fanout and stream lifetime.
+- Orchestrator event ingestion is bounded by `MOLT_SYMPHONY_EVENT_QUEUE_MAX`; dropped non-critical events are counted via profiling counters (`events_dropped*`) rather than unbounded memory growth.
+- `runtime.event_queue` in `/api/v1/state` now exposes queue depth/capacity/utilization plus dropped-event counts for fast operational diagnosis.

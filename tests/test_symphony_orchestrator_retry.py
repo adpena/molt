@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import threading
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -42,6 +43,9 @@ def _orchestrator_stub() -> SymphonyOrchestrator:
     )
     orchestrator._state_lock = threading.Lock()
     orchestrator._wake_event = threading.Event()
+    orchestrator._event_queue = queue.Queue()
+    orchestrator._event_queue_max = 8192
+    orchestrator._event_queue_drop_log_interval = 250
     orchestrator._config = SimpleNamespace(
         codex=SimpleNamespace(command="codex"),
         agent=SimpleNamespace(
@@ -132,6 +136,19 @@ def test_snapshot_state_retry_rows_handle_orphaned_claims_without_crashing() -> 
     retry_row = snapshot["retrying"][0]
     assert retry_row["issue_identifier"] == issue.identifier
     assert retry_row["title"] is None
+
+
+def test_snapshot_state_includes_event_queue_runtime_telemetry() -> None:
+    orchestrator = _orchestrator_stub()
+    orchestrator._event_queue.put(("codex_update", {"issue_id": "x"}))
+    with orchestrator._state_lock:
+        orchestrator._state.profiling.incr("events_dropped", 3)
+    snapshot = orchestrator.snapshot_state()
+    queue_payload = snapshot["runtime"]["event_queue"]
+    assert queue_payload["depth"] == 1
+    assert queue_payload["max"] == orchestrator._event_queue_max
+    assert queue_payload["dropped_events"] == 3
+    assert queue_payload["utilization"] > 0
 
 
 def test_snapshot_issue_returns_blocked_for_orphaned_issue() -> None:
