@@ -16,9 +16,7 @@ def test_secret_guard_detects_high_confidence_token() -> None:
         @@ -0,0 +1 @@
         {token_line}
         """
-    ).format(
-        token_line=token_line
-    )
+    ).format(token_line=token_line)
     findings = secret_guard.scan_diff_text(diff_text)
     assert findings
     assert any(f.reason == "Sensitive assignment value" for f in findings)
