@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -161,3 +162,46 @@ def test_prepare_wasm_binary_sets_linked_table_base(
     assert wasm is not None
     assert captured_env.get("MOLT_WASM_LINK") == "1"
     assert captured_env.get("MOLT_WASM_TABLE_BASE") == "2354"
+
+
+def test_measure_wasm_run_marks_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        bench_wasm,
+        "_run_cmd",
+        lambda *args, **kwargs: bench_wasm._RunResult(
+            returncode=124,
+            timed_out=True,
+        ),
+    )
+    result = bench_wasm.measure_wasm_run(
+        {},
+        ["node", "run_wasm.js"],
+        runner_name="node",
+        run_timeout_s=2.5,
+        log=None,
+    )
+    assert result.elapsed_s is None
+    assert result.error_class == "runner_timeout"
+    assert result.error and "2.5s" in result.error
+
+
+def test_write_failure_payload_includes_summary(tmp_path: Path) -> None:
+    out = tmp_path / "bench_wasm_failed.json"
+    bench_wasm._write_failure_payload(
+        out,
+        failure_class="runtime_build_failed",
+        failure_message="runtime build failed",
+        runner="node",
+        control_runner=None,
+        build_profile="release",
+        build_timeout_sec=300.0,
+        run_timeout_sec=120.0,
+        cache_enabled=True,
+        samples=0,
+        warmup=0,
+        results={},
+    )
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert payload["failure_class"] == "runtime_build_failed"
+    assert payload["summary"]["total_benchmarks"] == 0

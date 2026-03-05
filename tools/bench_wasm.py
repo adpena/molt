@@ -1495,11 +1495,26 @@ def measure_wasm_run(
     runner_cmd: list[str],
     *,
     runner_name: str,
+    run_timeout_s: float,
     log: TextIO | None,
 ) -> _SampleResult:
     start = time.perf_counter()
-    run_res = _run_cmd(runner_cmd, run_env, capture=True, tty=False, log=log)
+    run_res = _run_cmd(
+        runner_cmd,
+        run_env,
+        capture=True,
+        tty=False,
+        log=log,
+        timeout_s=run_timeout_s,
+    )
     end = time.perf_counter()
+    if run_res.timed_out:
+        return _SampleResult(
+            elapsed_s=None,
+            returncode=run_res.returncode,
+            error=f"runner timeout after {run_timeout_s:.1f}s",
+            error_class="runner_timeout",
+        )
     if run_res.returncode != 0:
         err = (run_res.stderr or run_res.stdout).strip()
         summarized = _summarize_error_text(err)
@@ -1534,6 +1549,7 @@ def collect_samples(
     runner_cmd: list[str],
     runner_name: str,
     *,
+    run_timeout_s: float,
     log: TextIO | None,
 ) -> tuple[list[float], bool, _SampleResult | None]:
     for _ in range(warmup):
@@ -1541,6 +1557,7 @@ def collect_samples(
             wasm.run_env,
             runner_cmd,
             runner_name=runner_name,
+            run_timeout_s=run_timeout_s,
             log=log,
         )
         if result.elapsed_s is None:
@@ -1552,6 +1569,7 @@ def collect_samples(
             wasm.run_env,
             runner_cmd,
             runner_name=runner_name,
+            run_timeout_s=run_timeout_s,
             log=log,
         )
         if result.elapsed_s is None:
@@ -1671,6 +1689,7 @@ def bench_results(
     runner_name: str,
     control_runner_cmd: list[str] | None,
     control_runner_name: str | None,
+    run_timeout_s: float,
     tty: bool,
     log: TextIO | None,
     keep_temp: bool,
@@ -1710,6 +1729,7 @@ def bench_results(
                     warmup,
                     runner_cmd,
                     runner_name,
+                    run_timeout_s=run_timeout_s,
                     log=log,
                 )
                 wasm_time = statistics.mean(wasm_samples) if ok else 0.0
@@ -1725,6 +1745,7 @@ def bench_results(
                         wasm_binary.run_env,
                         control_runner_cmd,
                         runner_name=control_runner_name,
+                        run_timeout_s=run_timeout_s,
                         log=log,
                     )
             finally:
@@ -1769,7 +1790,9 @@ def bench_results(
             data[name]["molt_wasm_failure_returncode"] = failed_sample.returncode
             data[name]["molt_wasm_failure"] = failed_sample.error
         elif not ok and _LAST_BUILD_FAILURE_DETAIL:
-            data[name]["molt_wasm_failure_class"] = "build_setup_error"
+            data[name]["molt_wasm_failure_class"] = _classify_setup_failure(
+                _LAST_BUILD_FAILURE_DETAIL
+            )
             data[name]["molt_wasm_failure_returncode"] = -1
             data[name]["molt_wasm_failure"] = _LAST_BUILD_FAILURE_DETAIL
         if control_runner_name is not None and control_sample is not None:
@@ -1795,6 +1818,111 @@ def write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
+def _classify_setup_failure(detail: str) -> str:
+    text = (detail or "").strip().lower()
+    if not text:
+        return "build_setup_error"
+    if "timeout" in text:
+        return "build_timeout"
+    if "lock" in text:
+        return "build_lock_timeout"
+    if "linked wasm required" in text or "linked_wasm_required" in text:
+        return "link_required_unavailable"
+    if "invalid output.wasm" in text:
+        return "wasm_output_invalid"
+    if "output_missing" in text or "no output.wasm" in text:
+        return "wasm_output_missing"
+    if "link" in text:
+        return "wasm_link_error"
+    return "build_setup_error"
+
+
+def _results_summary(results: dict[str, dict]) -> dict[str, object]:
+    rows = list(results.items())
+    ok_rows = [
+        (name, row)
+        for name, row in rows
+        if bool(row.get("molt_wasm_ok")) and float(row.get("molt_wasm_time_s") or 0) > 0
+    ]
+    failed_rows = [
+        (name, row) for name, row in rows if not bool(row.get("molt_wasm_ok"))
+    ]
+    slowest = sorted(
+        ok_rows,
+        key=lambda item: float(item[1].get("molt_wasm_time_s") or 0.0),
+        reverse=True,
+    )[:10]
+    build_heavy = sorted(
+        ok_rows,
+        key=lambda item: float(item[1].get("molt_wasm_build_s") or 0.0),
+        reverse=True,
+    )[:10]
+    return {
+        "total_benchmarks": len(rows),
+        "ok_benchmarks": len(ok_rows),
+        "failed_benchmarks": len(failed_rows),
+        "slowest_runtime_top10": [
+            {
+                "bench": name,
+                "molt_wasm_time_s": float(row.get("molt_wasm_time_s") or 0.0),
+            }
+            for name, row in slowest
+        ],
+        "slowest_build_top10": [
+            {
+                "bench": name,
+                "molt_wasm_build_s": float(row.get("molt_wasm_build_s") or 0.0),
+            }
+            for name, row in build_heavy
+        ],
+        "failed": [
+            {
+                "bench": name,
+                "failure_class": row.get("molt_wasm_failure_class"),
+                "failure": row.get("molt_wasm_failure"),
+                "returncode": row.get("molt_wasm_failure_returncode"),
+            }
+            for name, row in failed_rows
+        ],
+    }
+
+
+def _write_failure_payload(
+    json_out: Path,
+    *,
+    failure_class: str,
+    failure_message: str,
+    runner: str,
+    control_runner: str | None,
+    build_profile: str,
+    build_timeout_sec: float,
+    run_timeout_sec: float,
+    cache_enabled: bool,
+    samples: int,
+    warmup: int,
+    results: dict[str, dict] | None = None,
+) -> None:
+    payload = {
+        "schema_version": 1,
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "status": "failed",
+        "failure_class": failure_class,
+        "failure_message": failure_message,
+        "git_rev": _git_rev(),
+        "runner": runner,
+        "control_runner": control_runner,
+        "build_profile": build_profile,
+        "build_timeout_sec": build_timeout_sec,
+        "run_timeout_sec": run_timeout_sec,
+        "cache_enabled": cache_enabled,
+        "samples": samples,
+        "warmup": warmup,
+        "benchmarks": results or {},
+    }
+    payload["summary"] = _results_summary(payload["benchmarks"])
+    write_json(json_out, payload)
+
+
 def main() -> None:
     _enable_line_buffering()
     parser = argparse.ArgumentParser(description="Run Molt WASM benchmark suite.")
@@ -1813,6 +1941,15 @@ def main() -> None:
         help=(
             "Per-benchmark wasm compile timeout in seconds "
             "(also honors MOLT_WASM_BUILD_TIMEOUT_SEC; default: 300)."
+        ),
+    )
+    parser.add_argument(
+        "--run-timeout-sec",
+        type=float,
+        default=None,
+        help=(
+            "Per-sample wasm runner timeout in seconds "
+            "(also honors MOLT_WASM_RUN_TIMEOUT_SEC; default: 120)."
         ),
     )
     parser.add_argument(
@@ -1957,6 +2094,11 @@ def main() -> None:
         args.build_timeout_sec = env_build_timeout
     elif args.build_timeout_sec <= 0:
         parser.error("--build-timeout-sec must be > 0")
+    env_run_timeout = _parse_env_float("MOLT_WASM_RUN_TIMEOUT_SEC", default=120.0)
+    if args.run_timeout_sec is None:
+        args.run_timeout_sec = env_run_timeout
+    elif args.run_timeout_sec <= 0:
+        parser.error("--run-timeout-sec must be > 0")
     env_no_cache = os.environ.get("MOLT_WASM_BENCH_NO_CACHE") == "1"
     use_cache = not (args.no_cache or env_no_cache)
     if use_cache:
@@ -1965,6 +2107,8 @@ def main() -> None:
         os.environ["MOLT_WASM_BENCH_NO_CACHE"] = "1"
     if args.build_timeout_sec is not None:
         os.environ["MOLT_WASM_BUILD_TIMEOUT_SEC"] = f"{args.build_timeout_sec:g}"
+    if args.run_timeout_sec is not None:
+        os.environ["MOLT_WASM_RUN_TIMEOUT_SEC"] = f"{args.run_timeout_sec:g}"
 
     if args.linked or args.require_linked:
         os.environ["MOLT_WASM_LINK"] = "1"
@@ -1989,24 +2133,72 @@ def main() -> None:
     if args.keep_artifacts:
         os.environ["MOLT_WASM_KEEP"] = "1"
 
-    runner_cmd = _resolve_runner(
-        args.runner,
-        tty=use_tty,
-        log=log_file,
-        node_max_old_space_mb=args.node_max_old_space_mb,
-        node_allow_tiering=node_allow_tiering,
-    )
-    control_runner_name: str | None = None
-    control_runner_cmd: list[str] | None = None
-    if args.control_runner != "none":
-        control_runner_name = args.control_runner
-        control_runner_cmd = _resolve_runner(
-            control_runner_name,
+    json_out = args.json_out
+    if json_out is None:
+        timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
+        json_out = Path("bench/results") / f"bench_wasm_{timestamp}.json"
+
+    runner_cmd: list[str]
+    try:
+        runner_cmd = _resolve_runner(
+            args.runner,
             tty=use_tty,
             log=log_file,
             node_max_old_space_mb=args.node_max_old_space_mb,
             node_allow_tiering=node_allow_tiering,
         )
+    except RuntimeError as exc:
+        message = str(exc)
+        print(f"WASM bench setup failed: {message}", file=sys.stderr)
+        _write_failure_payload(
+            json_out,
+            failure_class="runner_setup_error",
+            failure_message=message,
+            runner=args.runner,
+            control_runner=None,
+            build_profile=args.build_profile,
+            build_timeout_sec=float(args.build_timeout_sec),
+            run_timeout_sec=float(args.run_timeout_sec),
+            cache_enabled=use_cache,
+            samples=0,
+            warmup=0,
+            results={},
+        )
+        if log_file is not None:
+            log_file.close()
+        sys.exit(1)
+    control_runner_name: str | None = None
+    control_runner_cmd: list[str] | None = None
+    if args.control_runner != "none":
+        control_runner_name = args.control_runner
+        try:
+            control_runner_cmd = _resolve_runner(
+                control_runner_name,
+                tty=use_tty,
+                log=log_file,
+                node_max_old_space_mb=args.node_max_old_space_mb,
+                node_allow_tiering=node_allow_tiering,
+            )
+        except RuntimeError as exc:
+            message = str(exc)
+            print(f"WASM control runner setup failed: {message}", file=sys.stderr)
+            _write_failure_payload(
+                json_out,
+                failure_class="control_runner_setup_error",
+                failure_message=message,
+                runner=args.runner,
+                control_runner=control_runner_name,
+                build_profile=args.build_profile,
+                build_timeout_sec=float(args.build_timeout_sec),
+                run_timeout_sec=float(args.run_timeout_sec),
+                cache_enabled=use_cache,
+                samples=0,
+                warmup=0,
+                results={},
+            )
+            if log_file is not None:
+                log_file.close()
+            sys.exit(1)
     runtime_policy = _runtime_rebuild_policy()
     shared_runtime_invalid = not _is_valid_wasm(RUNTIME_WASM)
     shared_runtime_stale = (
@@ -2023,6 +2215,22 @@ def main() -> None:
                 f"Runtime rebuild disabled but runtime artifact is missing/invalid: {RUNTIME_WASM}",
                 file=sys.stderr,
             )
+            _write_failure_payload(
+                json_out,
+                failure_class="runtime_rebuild_disabled",
+                failure_message=(
+                    f"runtime artifact missing/invalid and rebuild policy is never: {RUNTIME_WASM}"
+                ),
+                runner=args.runner,
+                control_runner=control_runner_name,
+                build_profile=args.build_profile,
+                build_timeout_sec=float(args.build_timeout_sec),
+                run_timeout_sec=float(args.run_timeout_sec),
+                cache_enabled=use_cache,
+                samples=0,
+                warmup=0,
+                results={},
+            )
             if log_file is not None:
                 log_file.close()
             sys.exit(1)
@@ -2038,6 +2246,20 @@ def main() -> None:
             tty=use_tty,
             log=log_file,
         ):
+            _write_failure_payload(
+                json_out,
+                failure_class="runtime_build_failed",
+                failure_message=f"shared runtime wasm build failed: {RUNTIME_WASM}",
+                runner=args.runner,
+                control_runner=control_runner_name,
+                build_profile=args.build_profile,
+                build_timeout_sec=float(args.build_timeout_sec),
+                run_timeout_sec=float(args.run_timeout_sec),
+                cache_enabled=use_cache,
+                samples=0,
+                warmup=0,
+                results={},
+            )
             if log_file is not None:
                 log_file.close()
             sys.exit(1)
@@ -2062,6 +2284,20 @@ def main() -> None:
                         "linked output is required.",
                         file=sys.stderr,
                     )
+                    _write_failure_payload(
+                        json_out,
+                        failure_class="reloc_runtime_rebuild_disabled",
+                        failure_message="reloc runtime missing/invalid and linked output required",
+                        runner=args.runner,
+                        control_runner=control_runner_name,
+                        build_profile=args.build_profile,
+                        build_timeout_sec=float(args.build_timeout_sec),
+                        run_timeout_sec=float(args.run_timeout_sec),
+                        cache_enabled=use_cache,
+                        samples=0,
+                        warmup=0,
+                        results={},
+                    )
                     if log_file is not None:
                         log_file.close()
                     sys.exit(1)
@@ -2084,6 +2320,20 @@ def main() -> None:
                     print(
                         "Relocatable runtime build failed; linked output is required.",
                         file=sys.stderr,
+                    )
+                    _write_failure_payload(
+                        json_out,
+                        failure_class="reloc_runtime_build_failed",
+                        failure_message="reloc runtime build failed and linked output required",
+                        runner=args.runner,
+                        control_runner=control_runner_name,
+                        build_profile=args.build_profile,
+                        build_timeout_sec=float(args.build_timeout_sec),
+                        run_timeout_sec=float(args.run_timeout_sec),
+                        cache_enabled=use_cache,
+                        samples=0,
+                        warmup=0,
+                        results={},
                     )
                     if log_file is not None:
                         log_file.close()
@@ -2156,12 +2406,27 @@ def main() -> None:
             runner_name=args.runner,
             control_runner_cmd=control_runner_cmd,
             control_runner_name=control_runner_name,
+            run_timeout_s=args.run_timeout_sec,
             tty=use_tty,
             log=log_file,
             keep_temp=keep_temp,
         )
     except RuntimeError as exc:
         print(f"WASM bench aborted: {exc}", file=sys.stderr)
+        _write_failure_payload(
+            json_out,
+            failure_class="bench_runtime_error",
+            failure_message=str(exc),
+            runner=args.runner,
+            control_runner=control_runner_name,
+            build_profile=args.build_profile,
+            build_timeout_sec=float(args.build_timeout_sec),
+            run_timeout_sec=float(args.run_timeout_sec),
+            cache_enabled=use_cache,
+            samples=samples,
+            warmup=warmup,
+            results={},
+        )
         if log_file is not None:
             log_file.close()
         sys.exit(1)
@@ -2181,6 +2446,7 @@ def main() -> None:
         "node_max_old_space_mb": args.node_max_old_space_mb,
         "build_profile": args.build_profile,
         "build_timeout_sec": args.build_timeout_sec,
+        "run_timeout_sec": args.run_timeout_sec,
         "cache_enabled": use_cache,
         "super_run": args.super,
         "samples": samples,
@@ -2194,11 +2460,8 @@ def main() -> None:
         },
         "benchmarks": results,
     }
-
-    json_out = args.json_out
-    if json_out is None:
-        timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
-        json_out = Path("bench/results") / f"bench_wasm_{timestamp}.json"
+    payload["status"] = "ok"
+    payload["summary"] = _results_summary(results)
     write_json(json_out, payload)
     if log_file is not None:
         log_file.close()
