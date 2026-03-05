@@ -459,11 +459,17 @@ def _audit_dspy_routing(env_file: Path) -> dict[str, Any]:
         env_values.get(DSPY_MODEL_ENV, os.environ.get(DSPY_MODEL_ENV, ""))
     ).strip()
     api_key_env_name = (
-        str(env_values.get(DSPY_API_KEY_ENV_ENV, os.environ.get(DSPY_API_KEY_ENV_ENV, ""))).strip()
+        str(
+            env_values.get(
+                DSPY_API_KEY_ENV_ENV, os.environ.get(DSPY_API_KEY_ENV_ENV, "")
+            )
+        ).strip()
         or DSPY_DEFAULT_API_KEY_ENV
     )
     inline_api_key = str(
-        env_values.get(DSPY_API_KEY_INLINE_ENV, os.environ.get(DSPY_API_KEY_INLINE_ENV, ""))
+        env_values.get(
+            DSPY_API_KEY_INLINE_ENV, os.environ.get(DSPY_API_KEY_INLINE_ENV, "")
+        )
     ).strip()
     scoped_api_key = str(
         env_values.get(api_key_env_name, os.environ.get(api_key_env_name, ""))
@@ -1115,7 +1121,10 @@ def _collect_findings(report: dict[str, Any]) -> list[dict[str, Any]]:
                 severity="info",
                 code="dspy_routing_ready",
                 message="DSPy routing is enabled and ready for linear_hygiene.",
-                details={"model": dspy.get("model"), "api_key_env": dspy.get("api_key_env")},
+                details={
+                    "model": dspy.get("model"),
+                    "api_key_env": dspy.get("api_key_env"),
+                },
             )
     else:
         _record_finding(

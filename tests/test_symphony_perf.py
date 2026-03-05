@@ -158,3 +158,78 @@ def test_compare_reports_emits_mode_and_dashboard_deltas() -> None:
     dashboard = report["dashboard_state_api_comparison"]
     assert dashboard["avg_latency_delta_ms"] == 2.0
     assert dashboard["p95_latency_delta_ms"] == 2.0
+
+
+def test_collect_regression_breaches_flags_mode_and_dashboard() -> None:
+    comparison = {
+        "mode_comparison": {
+            "python": {
+                "avg_delta_s": 0.3,
+                "p95_delta_s": 0.5,
+                "avg_delta_ratio": 0.2,
+                "p95_delta_ratio": 0.4,
+            }
+        },
+        "dashboard_state_api_comparison": {
+            "avg_latency_delta_ms": 3.0,
+            "p95_latency_delta_ms": 5.5,
+        },
+    }
+    breaches = symphony_perf._collect_regression_breaches(
+        comparison,
+        max_avg_regression_s=0.1,
+        max_p95_regression_s=0.4,
+        max_avg_regression_ratio=0.15,
+        max_p95_regression_ratio=0.5,
+        max_dashboard_avg_latency_regression_ms=2.0,
+        max_dashboard_p95_latency_regression_ms=4.0,
+    )
+    metrics = {(row["scope"], row["metric"]) for row in breaches}
+    assert ("mode:python", "avg_delta_s") in metrics
+    assert ("mode:python", "p95_delta_s") in metrics
+    assert ("mode:python", "avg_delta_ratio") in metrics
+    assert ("dashboard_state_api", "avg_latency_delta_ms") in metrics
+    assert ("dashboard_state_api", "p95_latency_delta_ms") in metrics
+    assert ("mode:python", "p95_delta_ratio") not in metrics
+
+
+def test_main_fail_on_regression_returns_three(
+    monkeypatch: object,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path))
+    monkeypatch.setattr(symphony_perf.shutil, "which", lambda _: "/usr/bin/uv")
+
+    def _fake_run_once(**_: object) -> symphony_perf.Sample:
+        return symphony_perf.Sample(
+            mode="python",
+            iteration=1,
+            returncode=0,
+            duration_s=2.0,
+            stdout_tail="",
+            stderr_tail="",
+        )
+
+    monkeypatch.setattr(symphony_perf, "_run_once", _fake_run_once)
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text(
+        '{"generated_at":"2026-03-04T00:00:00Z","summary":{"python":{"avg_s":1.0,"p95_s":1.0}}}',
+        encoding="utf-8",
+    )
+    rc = symphony_perf.main(
+        [
+            "WORKFLOW.md",
+            "--modes",
+            "python",
+            "--iterations",
+            "1",
+            "--output-json",
+            str(tmp_path / "out.json"),
+            "--compare-with",
+            str(baseline_path),
+            "--max-avg-regression-s",
+            "0.2",
+            "--fail-on-regression",
+        ]
+    )
+    assert rc == 3
