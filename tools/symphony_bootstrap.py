@@ -153,6 +153,7 @@ def _sync_env_defaults(
         str(ext_root / "logs" / "symphony" / "durable_memory"),
     )
     merged.setdefault("MOLT_SYMPHONY_DURABLE_SYNC_SECONDS", "180")
+    merged.setdefault("MOLT_QUINT_NODE_FALLBACK", "npx -y node@22")
     merged.setdefault(
         "MOLT_SYMPHONY_API_TOKEN_FILE",
         str(ext_root / "logs" / "symphony" / "secrets" / "dashboard_api_token"),

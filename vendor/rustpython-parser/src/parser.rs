@@ -76,7 +76,7 @@ where
     fn lex_starts_at(
         source: &str,
         offset: TextSize,
-    ) -> SoftKeywordTransformer<Lexer<std::str::Chars>>;
+    ) -> SoftKeywordTransformer<Lexer<std::str::Chars<'_>>>;
     fn parse_tokens(
         lxr: impl IntoIterator<Item = LexResult>,
         source_path: &str,
@@ -87,7 +87,7 @@ impl Parse for ast::ModModule {
     fn lex_starts_at(
         source: &str,
         offset: TextSize,
-    ) -> SoftKeywordTransformer<Lexer<std::str::Chars>> {
+    ) -> SoftKeywordTransformer<Lexer<std::str::Chars<'_>>> {
         lexer::lex_starts_at(source, Mode::Module, offset)
     }
     fn parse_tokens(
@@ -105,7 +105,7 @@ impl Parse for ast::ModExpression {
     fn lex_starts_at(
         source: &str,
         offset: TextSize,
-    ) -> SoftKeywordTransformer<Lexer<std::str::Chars>> {
+    ) -> SoftKeywordTransformer<Lexer<std::str::Chars<'_>>> {
         lexer::lex_starts_at(source, Mode::Expression, offset)
     }
     fn parse_tokens(
@@ -123,7 +123,7 @@ impl Parse for ast::ModInteractive {
     fn lex_starts_at(
         source: &str,
         offset: TextSize,
-    ) -> SoftKeywordTransformer<Lexer<std::str::Chars>> {
+    ) -> SoftKeywordTransformer<Lexer<std::str::Chars<'_>>> {
         lexer::lex_starts_at(source, Mode::Interactive, offset)
     }
     fn parse_tokens(
@@ -141,7 +141,7 @@ impl Parse for ast::Suite {
     fn lex_starts_at(
         source: &str,
         offset: TextSize,
-    ) -> SoftKeywordTransformer<Lexer<std::str::Chars>> {
+    ) -> SoftKeywordTransformer<Lexer<std::str::Chars<'_>>> {
         ast::ModModule::lex_starts_at(source, offset)
     }
     fn parse_tokens(
@@ -156,7 +156,7 @@ impl Parse for ast::Stmt {
     fn lex_starts_at(
         source: &str,
         offset: TextSize,
-    ) -> SoftKeywordTransformer<Lexer<std::str::Chars>> {
+    ) -> SoftKeywordTransformer<Lexer<std::str::Chars<'_>>> {
         ast::ModModule::lex_starts_at(source, offset)
     }
     fn parse_tokens(
@@ -189,7 +189,7 @@ impl Parse for ast::Expr {
     fn lex_starts_at(
         source: &str,
         offset: TextSize,
-    ) -> SoftKeywordTransformer<Lexer<std::str::Chars>> {
+    ) -> SoftKeywordTransformer<Lexer<std::str::Chars<'_>>> {
         ast::ModExpression::lex_starts_at(source, offset)
     }
     fn parse_tokens(
@@ -204,7 +204,7 @@ impl Parse for ast::Identifier {
     fn lex_starts_at(
         source: &str,
         offset: TextSize,
-    ) -> SoftKeywordTransformer<Lexer<std::str::Chars>> {
+    ) -> SoftKeywordTransformer<Lexer<std::str::Chars<'_>>> {
         ast::Expr::lex_starts_at(source, offset)
     }
     fn parse_tokens(
@@ -227,7 +227,7 @@ impl Parse for ast::Constant {
     fn lex_starts_at(
         source: &str,
         offset: TextSize,
-    ) -> SoftKeywordTransformer<Lexer<std::str::Chars>> {
+    ) -> SoftKeywordTransformer<Lexer<std::str::Chars<'_>>> {
         ast::Expr::lex_starts_at(source, offset)
     }
     fn parse_tokens(

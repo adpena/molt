@@ -15,12 +15,12 @@
 // Distribution algorithms follow CPython 3.12 random.py exactly.
 
 use crate::*;
-use digest::Digest;
 use getrandom::fill as getrandom_fill;
 use num_bigint::{BigInt, BigUint, Sign};
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use sha2::Sha512;
+use sha2::digest::Digest;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{LazyLock, Mutex};

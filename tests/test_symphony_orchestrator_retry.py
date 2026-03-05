@@ -14,6 +14,7 @@ from molt.symphony.models import (
 )
 from molt.symphony.orchestrator import (
     SymphonyOrchestrator,
+    _quint_command_with_fallback,
     _derive_rate_limit_suspension,
     _extract_retry_delay_seconds_from_error,
 )
@@ -215,6 +216,36 @@ def test_set_max_concurrent_agents_tool_rejects_invalid_value() -> None:
     )
     assert result["ok"] is False
     assert result["error"] == "invalid_value"
+
+
+def test_quint_command_with_fallback_uses_prefix_when_available(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("MOLT_QUINT_NODE_FALLBACK", "npx -y node@22")
+    monkeypatch.setattr(
+        "molt.symphony.orchestrator.shutil.which",
+        lambda name: "/usr/bin/npx" if name == "npx" else "/usr/bin/quint",
+    )
+    cmd = _quint_command_with_fallback(["run", "formal/quint/example.qnt"])
+    assert cmd[:4] == ["npx", "-y", "node@22", "/usr/bin/quint"]
+    assert cmd[-2:] == ["run", "formal/quint/example.qnt"]
+
+
+def test_quint_command_with_fallback_skips_missing_prefix_launcher(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(
+        "MOLT_QUINT_NODE_FALLBACK", "/definitely/missing/launcher --flag"
+    )
+
+    def _which(name: str) -> str | None:
+        if name == "quint":
+            return "/usr/bin/quint"
+        return None
+
+    monkeypatch.setattr("molt.symphony.orchestrator.shutil.which", _which)
+    cmd = _quint_command_with_fallback(["verify", "formal/quint/example.qnt"])
+    assert cmd == ["quint", "verify", "formal/quint/example.qnt"]
 
 
 def test_snapshot_state_surfaces_system_suspension_attention() -> None:
