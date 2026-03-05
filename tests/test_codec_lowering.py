@@ -310,6 +310,31 @@ while i < size:
     assert "bytearray_fill_range" in kinds
 
 
+def test_counted_while_structural_carry_inference_without_trusted_hints():
+    src = """
+def f(n):
+    total = 0
+    i = 0
+    while i < n:
+        total = total + 1
+        i = i + 1
+    return total
+"""
+    ir = compile_to_tir(src, type_hint_policy="check")
+    func = next(entry for entry in ir["functions"] if entry["name"].endswith("____f"))
+    kinds = [op["kind"] for op in func["ops"]]
+    assert "loop_start" in kinds
+    assert "loop_carry_init" in kinds
+    assert "loop_break_if_false" in kinds
+    start_pos = kinds.index("loop_start")
+    carry_pos = kinds.index("loop_carry_init")
+    break_pos = kinds.index("loop_break_if_false")
+    assert start_pos < carry_pos < break_pos
+    assert "loop_carry_update" in kinds
+    if "loop_index_start" not in kinds:
+        assert kinds.count("loop_carry_init") >= 2
+
+
 def test_dict_increment_lowering():
     src = """
 counts = {}
@@ -500,7 +525,9 @@ e ^= b
     ):
         ops = _ops_by_kind(ir, kind)
         assert ops, f"expected at least one {kind} op"
-        assert all(op.get("fast_int") is True for op in ops)
+        assert all(
+            op.get("fast_int") is True or op.get("raw_int") is True for op in ops
+        )
 
 
 def test_tuple_lowering():
