@@ -63,3 +63,24 @@ def test_main_returns_nonzero_when_any_sample_fails(
         ]
     )
     assert rc == 2
+
+
+def test_summarize_dashboard_state_samples_counts_200_and_304() -> None:
+    rows = [
+        symphony_perf.DashboardStateSample(
+            iteration=1, status=200, latency_ms=8.0, had_etag=True
+        ),
+        symphony_perf.DashboardStateSample(
+            iteration=2, status=304, latency_ms=3.0, had_etag=True
+        ),
+        symphony_perf.DashboardStateSample(
+            iteration=3, status=-1, latency_ms=5.0, had_etag=False
+        ),
+    ]
+    summary = symphony_perf._summarize_dashboard_state_samples(rows)
+    assert summary["samples"] == 3
+    assert summary["status_200"] == 1
+    assert summary["status_304"] == 1
+    assert summary["errors"] == 1
+    assert summary["etag_seen"] == 2
+    assert summary["avg_latency_ms"] is not None
