@@ -87,6 +87,7 @@ static inline PyTypeObject *_molt_numpy_builtin_type_borrowed(const char *name) 
 #define PyArray_ISFORTRAN(arr) (((PyArray_FLAGS(arr)) & NPY_ARRAY_F_CONTIGUOUS) != 0)
 #define PyArray_IS_F_CONTIGUOUS(arr) PyArray_CHKFLAGS((arr), NPY_ARRAY_F_CONTIGUOUS)
 #define PyArray_ISALIGNED(arr) PyArray_CHKFLAGS((arr), NPY_ARRAY_ALIGNED)
+#define PyArray_ISBOOL(arr) PyTypeNum_ISBOOL(PyArray_TYPE(arr))
 #define PyArray_ISINTEGER(arr) PyTypeNum_ISINTEGER(PyArray_TYPE(arr))
 #define PyArray_ISCOMPLEX(arr) PyTypeNum_ISCOMPLEX(PyArray_TYPE(arr))
 #define PyArray_ISOBJECT(arr) PyTypeNum_ISOBJECT(PyArray_TYPE(arr))
@@ -94,6 +95,8 @@ static inline PyTypeObject *_molt_numpy_builtin_type_borrowed(const char *name) 
 #define PyArray_ISONESEGMENT(arr) (PyArray_ISCONTIGUOUS(arr) || PyArray_ISFORTRAN(arr))
 #define PyArray_HANDLER(arr) ((PyObject *)((PyArrayObject_fields *)(arr))->mem_handler)
 #define PyArray_ISNBO(byteorder) ((byteorder) == '=' || (byteorder) == '|')
+#define PyArray_ISNOTSWAPPED(arr) PyArray_ISNBO(PyArray_DESCR(arr)->byteorder)
+#define PyArray_ISBYTESWAPPED(arr) (!PyArray_ISNOTSWAPPED(arr))
 #define PyArray_ISDATETIME(arr) PyTypeNum_ISDATETIME(PyArray_TYPE(arr))
 #define PyArray_ENABLEFLAGS(arr, mask) (((PyArrayObject_fields *)(arr))->flags |= (mask))
 #define PyArray_CLEARFLAGS(arr, mask) (((PyArrayObject_fields *)(arr))->flags &= ~(mask))
@@ -106,15 +109,24 @@ static inline PyTypeObject *_molt_numpy_builtin_type_borrowed(const char *name) 
 #define PyDataType_HASFIELDS(descr) (PyDataType_NAMES((descr)) != NULL || PyDataType_FIELDS((descr)) != NULL)
 #define PyDataType_HASSUBARRAY(descr) 0
 #define PyDataType_ISUNSIZED(descr) ((descr) != NULL && (descr)->elsize == 0 && !PyDataType_HASFIELDS(descr))
+#define PyDataType_ISNOTSWAPPED(descr) ((descr) != NULL && PyArray_ISNBO((descr)->byteorder))
 #define PyDataType_C_METADATA(descr) ((PyArray_DatetimeMetaData *)NULL)
 
 #define PyArray_malloc PyMem_Malloc
 #define PyArray_free PyMem_Free
 #define PyDataMem_NEW(size) PyMem_Malloc((size))
+#define PyDataMem_FREE(ptr) PyMem_Free((ptr))
 #define PyDataMem_UserNEW(handler, size) ((void)(handler), PyMem_Malloc((size)))
+#define PyDataMem_UserRENEW(handler, ptr, size) ((void)(handler), PyMem_Realloc((ptr), (size)))
 #define PyDataMem_UserFREE(handler, ptr, size) do { (void)(handler); (void)(size); PyMem_Free((ptr)); } while (0)
+#define PyArray_MIN(a, b) ((a) < (b) ? (a) : (b))
 #define PyArray_MAX(a, b) ((a) > (b) ? (a) : (b))
 #define PyArray_FROM_OF(obj, flags) ((void)(flags), PyArray_FromAny((obj), NULL, 0, 0, (flags), NULL))
+#define PyArray_SimpleNewFromDescr(nd, dims, descr) \
+    PyArray_NewFromDescr(&PyArray_Type, (descr), (nd), (dims), NULL, NULL, 0, NULL)
+#define PyArray_ToScalar(data, arr) PyArray_Scalar((data), PyArray_DESCR(arr), (PyObject *)(arr))
+#define PyBoundArrayMethod_Type PyArrayMethod_Type
+#define PyArray_IntAbstractDType PyArray_PyLongDType
 #define PyArray_DESCR_REPLACE(descr) do { \
     PyArray_Descr *_molt_new_descr = PyArray_DescrNew((descr)); \
     if ((descr) != NULL) { \
@@ -395,6 +407,13 @@ static inline PyArrayObject *PyArray_NewCopy(PyArrayObject *array_obj, int order
     return array_obj;
 }
 
+static inline npy_intp PyArray_Size(PyObject *obj) {
+    if (obj != NULL && PyArray_Check(obj)) {
+        return PyArray_SIZE((PyArrayObject *)obj);
+    }
+    return (npy_intp)PySequence_Size(obj);
+}
+
 static inline npy_intp PyArray_PyIntAsIntp(PyObject *obj) {
     return (npy_intp)PyLong_AsLongLong(obj);
 }
@@ -405,6 +424,10 @@ static inline int PyArray_PyIntAsInt(PyObject *obj) {
 
 static inline PyObject *PyArray_PythonPyIntFromInt(int value) {
     return PyLong_FromLong((long)value);
+}
+
+static inline PyObject *PyArray_PyIntFromIntp(npy_intp value) {
+    return PyLong_FromLongLong((long long)value);
 }
 
 static inline int PyArray_FailUnlessWriteable(PyArrayObject *array_obj, const char *who) {
@@ -443,6 +466,10 @@ static inline PyObject *PyArray_EnsureArray(PyObject *obj) {
 
 static inline PyObject *PyArray_EnsureAnyArray(PyObject *obj) {
     return PyArray_EnsureArray(obj);
+}
+
+static inline PyObject *PyDataMem_GetHandler(void) {
+    return NULL;
 }
 
 static inline PyObject *PyArray_FromArray(
@@ -1080,6 +1107,39 @@ static inline PyObject *PyArray_CheckAxis(
     return (PyObject *)array_obj;
 }
 
+static inline PyArray_Descr *PyArray_ResultType(
+    npy_intp narrs,
+    PyArrayObject *arrs[],
+    npy_intp ndescrs,
+    PyArray_Descr *descrs[]
+) {
+    if (ndescrs > 0 && descrs != NULL && descrs[0] != NULL) {
+        return PyArray_DescrNew(descrs[0]);
+    }
+    if (narrs > 0 && arrs != NULL && arrs[0] != NULL) {
+        return PyArray_DescrNew(PyArray_DESCR(arrs[0]));
+    }
+    return PyArray_DescrFromType(NPY_OBJECT);
+}
+
+static inline PyObject *PyArray_Ravel(PyArrayObject *array_obj, NPY_ORDER order) {
+    (void)order;
+    return PyArray_View(array_obj, NULL, NULL);
+}
+
+static inline int PyArray_SetBaseObject(PyArrayObject *array_obj, PyObject *base) {
+    if (array_obj == NULL) {
+        return -1;
+    }
+    ((PyArrayObject_fields *)array_obj)->base = base;
+    return 0;
+}
+
+static inline void PyArray_Item_INCREF(char *data, PyArray_Descr *descr) {
+    (void)data;
+    (void)descr;
+}
+
 static inline double PyArray_GetPriority(PyObject *obj, double default_priority) {
     (void)obj;
     return default_priority;
@@ -1230,6 +1290,173 @@ static inline PyArray_Descr *PyArrayDTypeMeta_FinalizeDescriptor(
     }
     Py_INCREF((PyObject *)descr);
     return descr;
+}
+
+/*
+ * Internal NumPy build helpers used while compiling NumPy itself. These
+ * declarations centralize source compatibility for libmolt without claiming
+ * that ndarray kernel/runtime semantics are implemented yet.
+ */
+static inline int PyArray_CopyObject(PyArrayObject *dst, PyObject *src_object) {
+    (void)dst;
+    (void)src_object;
+    return _molt_numpy_unavailable_i32("PyArray_CopyObject");
+}
+
+static inline PyArray_DTypeMeta *PyArray_PromoteDTypeSequence(
+    npy_intp n,
+    PyArray_DTypeMeta **dtypes
+) {
+    (void)n;
+    (void)dtypes;
+    return (PyArray_DTypeMeta *)_molt_numpy_unavailable_obj("PyArray_PromoteDTypeSequence");
+}
+
+static inline PyObject *PyArray_GenericBinaryFunction(
+    PyObject *lhs,
+    PyObject *rhs,
+    PyObject *op
+) {
+    PyObject *args;
+    PyObject *result;
+    if (op == NULL) {
+        PyErr_SetString(PyExc_TypeError, "PyArray_GenericBinaryFunction requires an operator");
+        return NULL;
+    }
+    args = PyTuple_Pack(2, lhs, rhs);
+    if (args == NULL) {
+        return NULL;
+    }
+    result = PyObject_CallObject(op, args);
+    Py_DECREF(args);
+    return result;
+}
+
+static inline PyObject *PyArray_GenericReduceFunction(
+    PyArrayObject *arr,
+    PyObject *op,
+    int axis,
+    int rtype,
+    PyArrayObject *out
+) {
+    (void)arr;
+    (void)op;
+    (void)axis;
+    (void)rtype;
+    (void)out;
+    return _molt_numpy_unavailable_obj("PyArray_GenericReduceFunction");
+}
+
+static inline PyObject *PyArray_GetCastingImpl(
+    PyArray_DTypeMeta *from,
+    PyArray_DTypeMeta *to
+) {
+    (void)from;
+    (void)to;
+    return _molt_numpy_unavailable_obj("PyArray_GetCastingImpl");
+}
+
+static inline PyArray_Descr *PyArray_CastDescrToDType(
+    PyArray_Descr *descr,
+    PyArray_DTypeMeta *given_DType
+) {
+    (void)descr;
+    (void)given_DType;
+    return (PyArray_Descr *)_molt_numpy_unavailable_obj("PyArray_CastDescrToDType");
+}
+
+static inline int PyArray_AssignRawScalar(
+    PyArrayObject *dst,
+    PyArray_Descr *src_dtype,
+    char *src_data,
+    PyArrayObject *wheremask,
+    NPY_CASTING casting
+) {
+    (void)dst;
+    (void)src_dtype;
+    (void)src_data;
+    (void)wheremask;
+    (void)casting;
+    return _molt_numpy_unavailable_i32("PyArray_AssignRawScalar");
+}
+
+static inline PyArrayMethod_StridedLoop *PyArray_GetStridedCopyFn(
+    int aligned,
+    npy_intp src_stride,
+    npy_intp dst_stride,
+    npy_intp itemsize
+) {
+    (void)aligned;
+    (void)src_stride;
+    (void)dst_stride;
+    (void)itemsize;
+    return (PyArrayMethod_StridedLoop *)_molt_numpy_unavailable_obj("PyArray_GetStridedCopyFn");
+}
+
+static inline int PyArray_CastRawArrays(
+    npy_intp count,
+    char *src,
+    char *dst,
+    npy_intp src_stride,
+    npy_intp dst_stride,
+    PyArray_Descr *src_dtype,
+    PyArray_Descr *dst_dtype,
+    int move_references
+) {
+    (void)count;
+    (void)src;
+    (void)dst;
+    (void)src_stride;
+    (void)dst_stride;
+    (void)src_dtype;
+    (void)dst_dtype;
+    (void)move_references;
+    return _molt_numpy_unavailable_i32("PyArray_CastRawArrays");
+}
+
+static inline int PyArray_PrepareTwoRawArrayIter(
+    int ndim,
+    npy_intp const *shape,
+    char *dataA,
+    npy_intp const *stridesA,
+    char *dataB,
+    npy_intp const *stridesB,
+    int *out_ndim,
+    npy_intp *out_shape,
+    char **out_dataA,
+    npy_intp *out_stridesA,
+    char **out_dataB,
+    npy_intp *out_stridesB
+) {
+    (void)ndim;
+    (void)shape;
+    (void)dataA;
+    (void)stridesA;
+    (void)dataB;
+    (void)stridesB;
+    (void)out_ndim;
+    (void)out_shape;
+    (void)out_dataA;
+    (void)out_stridesA;
+    (void)out_dataB;
+    (void)out_stridesB;
+    return _molt_numpy_unavailable_i32("PyArray_PrepareTwoRawArrayIter");
+}
+
+static inline int PyArray_LookupSpecial(
+    PyObject *obj,
+    PyObject *name_unicode,
+    PyObject **res
+) {
+    return PyObject_GetOptionalAttr((PyObject *)Py_TYPE(obj), name_unicode, res);
+}
+
+static inline int PyArray_LookupSpecial_OnInstance(
+    PyObject *obj,
+    PyObject *name_unicode,
+    PyObject **res
+) {
+    return PyObject_GetOptionalAttr(obj, name_unicode, res);
 }
 
 #ifdef __cplusplus
