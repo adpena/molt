@@ -54,13 +54,14 @@ Orchestration keeps observability and intervention surfaces always-on:
   - `POST /api/v1/interventions/retry-now`
   - `POST /api/v1/tools/run`
 - durable telemetry:
-  - `/Volumes/APDataStore/Molt/logs/orchestration/durable_memory/`
+  - `/Volumes/APDataStore/orchestration/molt/state/durable_memory/`
 
 ### 5) Entropy cleanup loop
 
 Harness health requires recurring doc gardening and entropy cleanup:
 - Linear hygiene loop: `uv run --group dev --python 3.12 python3 tools/linear_hygiene.py full-pass --apply`
 - readiness loop: `tools/symphony_readiness_audit.py`
+- recursive bundle loop: `tools/symphony_recursive_loop.py`
 - doc sync loop: update `docs/spec/STATUS.md` + `ROADMAP.md` when behavior/scope move
 
 ### 6) Recursive continual learning loop
@@ -71,8 +72,13 @@ The recursive and continual learning loop is:
 3. Execute with Orchestration (`tools/symphony_run.py`).
 4. Gather evidence (tests/perf/formal/docs updates).
 5. Score and triage via readiness audit and quality score rubric.
-6. Execute the deterministic `next_tranche.actions` emitted by readiness.
-7. Feed learnings back into docs/manifests/workflows and repeat.
+6. Run `tools/symphony_recursive_loop.py` to bundle deterministic artifacts,
+   execute optional `next_tranche.actions`, and capture hook decisions.
+7. Persist failures into DLQ and replay them deterministically with
+   `tools/symphony_dlq.py`.
+8. Distill recurring preferences/failures/tools into taste memory with
+   `tools/symphony_taste_memory.py`.
+9. Feed learnings back into docs/manifests/workflows and repeat.
 
 ## Canonical Score Target
 

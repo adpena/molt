@@ -43,6 +43,7 @@ typedef void (*PyCapsule_Destructor)(PyObject *);
 
 typedef PyObject *(*PyCFunction)(PyObject *, PyObject *);
 typedef PyObject *(*PyCFunctionWithKeywords)(PyObject *, PyObject *, PyObject *);
+typedef PyObject *(*vectorcallfunc)(PyObject *, PyObject *const *, size_t, PyObject *);
 typedef PyObject *(*getter)(PyObject *, void *);
 typedef int (*setter)(PyObject *, PyObject *, void *);
 typedef Py_ssize_t (*lenfunc)(PyObject *);
@@ -192,6 +193,11 @@ typedef struct {
     double ob_fval;
 } PyFloatObject;
 
+typedef struct {
+    PyObject *ob_base;
+    PyTypeObject *ht_type;
+} PyHeapTypeObject;
+
 static inline const char *PyUnicode_AsUTF8AndSize(PyObject *value, Py_ssize_t *size_out);
 static inline PyObject *PyType_FromSpec(PyType_Spec *spec);
 static inline PyObject *PyType_FromSpecWithBases(PyType_Spec *spec, PyObject *bases);
@@ -201,11 +207,14 @@ static inline PyObject *PyType_GetModule(PyTypeObject *type);
 static inline void *PyType_GetModuleState(PyTypeObject *type);
 static inline PyObject *PyType_GetModuleByDef(PyTypeObject *type, PyModuleDef *def);
 static inline PyModuleDef *PyModule_GetDef(PyObject *module);
+static inline PyObject *PyModule_GetDict(PyObject *module);
 static inline void *PyModule_GetState(PyObject *module);
 static inline int PyModule_AddFunctions(PyObject *module, PyMethodDef *functions);
 static inline int PyState_AddModule(PyObject *module, PyModuleDef *def);
 static inline PyObject *_molt_builtin_class_lookup_utf8(const char *name);
+static inline PyTypeObject *_molt_builtin_type_object_borrowed(const char *name);
 static inline void PyErr_Clear(void);
+static inline void PyErr_Fetch(PyObject **ptype, PyObject **pvalue, PyObject **ptraceback);
 static inline int PyErr_ExceptionMatches(PyObject *exc);
 static inline void PyErr_SetString(PyObject *exc, const char *message);
 static inline PyObject *PyErr_NoMemory(void);
@@ -221,7 +230,10 @@ static inline int PyArg_VaParseTupleAndKeywords(
     const char *format,
     char **kwlist,
     va_list vargs);
+static inline PyObject *Py_NewRef(PyObject *obj);
+static inline PyObject *PyObject_Str(PyObject *obj);
 static inline const char *PyUnicode_AsUTF8(PyObject *value);
+static inline PyObject *PyUnicode_FromString(const char *value);
 static inline int PyUnicode_Check(PyObject *obj);
 static inline PyObject *PyBytes_FromStringAndSize(const char *value, Py_ssize_t size);
 static inline long long PyLong_AsLongLong(PyObject *obj);
@@ -292,6 +304,8 @@ static inline void PyGILState_Release(PyGILState_STATE state);
 
 #define Py_SUCCESS 0
 #define Py_FAILURE -1
+#define PY_SSIZE_T_MAX ((Py_ssize_t)(SIZE_MAX >> 1))
+#define PY_SSIZE_T_MIN (-PY_SSIZE_T_MAX - 1)
 
 #define PY_MAJOR_VERSION 3
 #define PY_MINOR_VERSION 12
@@ -431,6 +445,14 @@ static inline PyObject *_molt_pyexc_import_error(void) {
     return _molt_pyobject_from_handle(cached);
 }
 
+static inline PyObject *_molt_pyexc_module_not_found_error(void) {
+    static MoltHandle cached = 0;
+    if (cached == 0) {
+        cached = _molt_exception_class_from_name("ModuleNotFoundError");
+    }
+    return _molt_pyobject_from_handle(cached);
+}
+
 static inline PyObject *_molt_pyexc_permission_error(void) {
     static MoltHandle cached = 0;
     if (cached == 0) {
@@ -511,11 +533,28 @@ static inline PyObject *_molt_pyexc_stop_iteration(void) {
     return _molt_pyobject_from_handle(cached);
 }
 
+static inline PyObject *_molt_pyexc_deprecation_warning(void) {
+    static MoltHandle cached = 0;
+    if (cached == 0) {
+        cached = _molt_exception_class_from_name("DeprecationWarning");
+    }
+    return _molt_pyobject_from_handle(cached);
+}
+
+static inline PyObject *_molt_pyexc_future_warning(void) {
+    static MoltHandle cached = 0;
+    if (cached == 0) {
+        cached = _molt_exception_class_from_name("FutureWarning");
+    }
+    return _molt_pyobject_from_handle(cached);
+}
+
 #define PyExc_TypeError _molt_pyexc_type_error()
 #define PyExc_ValueError _molt_pyexc_value_error()
 #define PyExc_RuntimeError _molt_pyexc_runtime_error()
 #define PyExc_OverflowError _molt_pyexc_overflow_error()
 #define PyExc_ImportError _molt_pyexc_import_error()
+#define PyExc_ModuleNotFoundError _molt_pyexc_module_not_found_error()
 #define PyExc_PermissionError _molt_pyexc_permission_error()
 #define PyExc_KeyError _molt_pyexc_key_error()
 #define PyExc_MemoryError _molt_pyexc_memory_error()
@@ -524,7 +563,10 @@ static inline PyObject *_molt_pyexc_stop_iteration(void) {
 #define PyExc_AttributeError _molt_pyexc_attribute_error()
 #define PyExc_RuntimeWarning _molt_pyexc_runtime_warning()
 #define PyExc_UserWarning _molt_pyexc_user_warning()
+#define PyExc_DeprecationWarning _molt_pyexc_deprecation_warning()
+#define PyExc_FutureWarning _molt_pyexc_future_warning()
 #define PyExc_OSError _molt_pyexc_os_error()
+#define PyExc_IOError PyExc_OSError
 #define PyExc_StopIteration _molt_pyexc_stop_iteration()
 
 static inline double PyOS_string_to_double(
@@ -652,6 +694,23 @@ static inline void PyMutex_Lock(PyMutex *mutex) {
 static inline void PyMutex_Unlock(PyMutex *mutex) {
     if (mutex != NULL && mutex->_molt_lock != NULL) {
         PyThread_release_lock(mutex->_molt_lock);
+    }
+}
+
+static inline PyThreadState *PyEval_SaveThread(void) {
+    PyThreadState *state = NULL;
+    if (molt_gil_is_held() != 0) {
+        state = PyThreadState_Get();
+        if (state != NULL) {
+            (void)molt_gil_release();
+        }
+    }
+    return state;
+}
+
+static inline void PyEval_RestoreThread(PyThreadState *state) {
+    if (state != NULL && molt_gil_is_held() == 0) {
+        (void)molt_gil_acquire();
     }
 }
 
@@ -895,6 +954,45 @@ static inline void PyErr_WriteUnraisable(PyObject *obj) {
     PyErr_Clear();
 }
 
+static inline void PyErr_NormalizeException(
+    PyObject **ptype,
+    PyObject **pvalue,
+    PyObject **ptraceback
+) {
+    if (ptraceback != NULL && *ptraceback != NULL) {
+        return;
+    }
+    if (ptype == NULL || *ptype == NULL) {
+        return;
+    }
+    if (pvalue != NULL && *pvalue == NULL) {
+        *pvalue = Py_NewRef(*ptype);
+    }
+}
+
+static inline void PyErr_Print(void) {
+    PyObject *ptype = NULL;
+    PyObject *pvalue = NULL;
+    PyObject *ptraceback = NULL;
+    const char *text = NULL;
+    PyErr_Fetch(&ptype, &pvalue, &ptraceback);
+    PyErr_NormalizeException(&ptype, &pvalue, &ptraceback);
+    if (pvalue != NULL) {
+        PyObject *rendered = PyObject_Str(pvalue);
+        if (rendered != NULL) {
+            text = PyUnicode_AsUTF8(rendered);
+            if (text != NULL) {
+                (void)fprintf(stderr, "%s\n", text);
+            }
+            Py_DECREF(rendered);
+        }
+    }
+    Py_XDECREF(ptype);
+    Py_XDECREF(pvalue);
+    Py_XDECREF(ptraceback);
+    PyErr_Clear();
+}
+
 static inline void *PyMem_Malloc(size_t size) {
     void *ptr = malloc(size == 0 ? (size_t)1 : size);
     if (ptr == NULL) {
@@ -991,6 +1089,25 @@ static inline void PyErr_Restore(PyObject *type, PyObject *value, PyObject *trac
     } else {
         (void)molt_err_clear();
     }
+}
+
+static inline void PyException_SetCause(PyObject *self, PyObject *cause) {
+    if (self != NULL && cause != NULL) {
+        (void)PyObject_SetAttrString(self, "__cause__", cause);
+    }
+}
+
+static inline void PyException_SetContext(PyObject *self, PyObject *context) {
+    if (self != NULL && context != NULL) {
+        (void)PyObject_SetAttrString(self, "__context__", context);
+    }
+}
+
+static inline int PyException_SetTraceback(PyObject *self, PyObject *traceback) {
+    if (self != NULL && traceback != NULL) {
+        return PyObject_SetAttrString(self, "__traceback__", traceback);
+    }
+    return 0;
 }
 
 static inline PyObject *PyObject_GetAttr(PyObject *obj, PyObject *name) {
@@ -2409,6 +2526,28 @@ static inline long PyLong_AsLong(PyObject *obj) {
     return (long)molt_int_as_i64(_molt_py_handle(obj));
 }
 
+static inline long PyLong_AsLongAndOverflow(PyObject *obj, int *overflow) {
+    long long value = PyLong_AsLongLongAndOverflow(obj, overflow);
+    if (overflow != NULL && *overflow != 0) {
+        return (long)value;
+    }
+    if (value < LONG_MIN) {
+        if (overflow != NULL) {
+            *overflow = -1;
+        }
+        PyErr_SetString(PyExc_OverflowError, "Python int too large to convert to C long");
+        return -1;
+    }
+    if (value > LONG_MAX) {
+        if (overflow != NULL) {
+            *overflow = 1;
+        }
+        PyErr_SetString(PyExc_OverflowError, "Python int too large to convert to C long");
+        return -1;
+    }
+    return (long)value;
+}
+
 static inline long long PyLong_AsLongLong(PyObject *obj) {
     return (long long)molt_int_as_i64(_molt_py_handle(obj));
 }
@@ -2483,6 +2622,20 @@ static inline Py_ssize_t PySequence_Size(PyObject *seq) {
 }
 
 #define PySequence_Length PySequence_Size
+
+static inline Py_ssize_t PyNumber_AsSsize_t(PyObject *obj, PyObject *exc) {
+    long long value = PyLong_AsLongLong(obj);
+    if (molt_err_pending() != 0) {
+        return (Py_ssize_t)-1;
+    }
+    if (value < (long long)PY_SSIZE_T_MIN || value > (long long)PY_SSIZE_T_MAX) {
+        PyErr_SetString(
+            exc != NULL ? exc : PyExc_OverflowError,
+            "Python int too large to convert to Py_ssize_t");
+        return (Py_ssize_t)-1;
+    }
+    return (Py_ssize_t)value;
+}
 
 static inline PyObject *PySequence_GetItem(PyObject *seq, Py_ssize_t index) {
     MoltHandle key = molt_int_from_i64((int64_t)index);
@@ -2625,6 +2778,19 @@ static inline int PyDict_GetItemRef(PyObject *dict, PyObject *key, PyObject **re
         *result = item;
     }
     return 1;
+}
+
+static inline int PyDict_DelItemString(PyObject *dict, const char *key) {
+    (void)dict;
+    if (key == NULL) {
+        PyErr_SetString(PyExc_TypeError, "dict key must not be NULL");
+        return -1;
+    }
+    PyErr_Format(
+        PyExc_RuntimeError,
+        "PyDict_DelItemString is not yet implemented in Molt's C-API shim for key '%s'",
+        key);
+    return -1;
 }
 
 static inline int PyDict_Next(
@@ -3515,6 +3681,18 @@ static inline int PySequence_Check(PyObject *obj) {
     return has_getitem;
 }
 
+static inline int PyObject_AsFileDescriptor(PyObject *obj) {
+    long fd = PyLong_AsLong(obj);
+    if (molt_err_pending() != 0) {
+        return -1;
+    }
+    if (fd < INT_MIN || fd > INT_MAX) {
+        PyErr_SetString(PyExc_OverflowError, "file descriptor out of range");
+        return -1;
+    }
+    return (int)fd;
+}
+
 static inline int PyCallable_Check(PyObject *obj) {
     int has_call;
     if (obj == NULL) {
@@ -4183,6 +4361,20 @@ static inline PyObject *PyObject_CallMethod(
     return out;
 }
 
+static inline PyObject *PyEval_GetBuiltins(void) {
+    PyObject *module = PyImport_ImportModule("builtins");
+    PyObject *dict;
+    if (module == NULL) {
+        return NULL;
+    }
+    dict = PyModule_GetDict(module);
+    if (dict != NULL) {
+        Py_INCREF(dict);
+    }
+    Py_DECREF(module);
+    return dict;
+}
+
 static inline PyObject *PyImport_ImportModule(const char *name) {
     MoltHandle name_bits;
     MoltHandle module_bits;
@@ -4202,6 +4394,7 @@ static inline PyObject *PyImport_ImportModule(const char *name) {
 #define _MOLT_CAPSULE_PTR_KEY "__molt_capsule_ptr__"
 #define _MOLT_CAPSULE_NAME_KEY "__molt_capsule_name__"
 #define _MOLT_CAPSULE_DESTRUCTOR_KEY "__molt_capsule_destructor__"
+#define _MOLT_CAPSULE_CONTEXT_KEY "__molt_capsule_context__"
 
 static inline PyObject *PyCapsule_New(
     void *pointer,
@@ -4320,6 +4513,43 @@ static inline int PyCapsule_IsValid(PyObject *capsule, const char *name) {
 
 static inline int PyCapsule_CheckExact(PyObject *capsule) {
     return PyCapsule_IsValid(capsule, NULL);
+}
+
+static inline void *PyCapsule_GetContext(PyObject *capsule) {
+    PyObject *context_obj;
+    long long raw_ptr;
+    if (!PyCapsule_IsValid(capsule, NULL)) {
+        return NULL;
+    }
+    context_obj = PyDict_GetItemString(capsule, _MOLT_CAPSULE_CONTEXT_KEY);
+    if (context_obj == NULL || _molt_py_handle(context_obj) == molt_none()) {
+        return NULL;
+    }
+    raw_ptr = PyLong_AsLongLong(context_obj);
+    if (molt_err_pending() != 0) {
+        return NULL;
+    }
+    return (void *)(uintptr_t)raw_ptr;
+}
+
+static inline int PyCapsule_SetContext(PyObject *capsule, void *context) {
+    PyObject *context_obj;
+    int rc;
+    if (!PyCapsule_IsValid(capsule, NULL)) {
+        PyErr_SetString(PyExc_TypeError, "object is not a valid capsule");
+        return -1;
+    }
+    if (context == NULL) {
+        context_obj = Py_NewRef(Py_None);
+    } else {
+        context_obj = PyLong_FromLongLong((long long)(uintptr_t)context);
+    }
+    if (context_obj == NULL) {
+        return -1;
+    }
+    rc = PyDict_SetItemString(capsule, _MOLT_CAPSULE_CONTEXT_KEY, context_obj);
+    Py_DECREF(context_obj);
+    return rc;
 }
 
 static inline void *PyCapsule_Import(const char *name, int no_block) {

@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from molt.orchestration_removed.paths import symphony_security_events_file
+
 
 ALLOW_MARKER = "secret-guard: allow"
 PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
@@ -171,10 +173,7 @@ def _security_events_file() -> Path:
     if configured:
         path = Path(configured).expanduser()
     else:
-        ext_root = Path(
-            str(os.environ.get("MOLT_EXT_ROOT") or "/Volumes/APDataStore/Molt")
-        ).expanduser()
-        path = ext_root / "logs" / "orchestration" / "security" / "events.jsonl"
+        path = symphony_security_events_file()
     if not path.is_absolute():
         path = (Path.cwd() / path).resolve()
     return path
