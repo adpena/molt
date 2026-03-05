@@ -93,6 +93,9 @@ set +a
 PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_run.py WORKFLOW.md --port 8089
 ```
 
+Bootstrap output now includes `formal_toolchain` with direct/fallback probes for
+Node + Quint + Lake so you can confirm formal tooling health before long runs.
+
 `MOLT_LINEAR_PROJECT_SLUG` supports a comma-separated list of Linear `project.slugId` values, so one Symphony service can dispatch across multiple projects.
 For scripted Linear operations, use `tools/linear_workspace.py` as the canonical CLI path.
 
@@ -207,10 +210,19 @@ For full formalization signal (Lean + Quint) in readiness:
 PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --team Moltlang --strict-autonomy --fail-on warn --formal-suite all
 ```
 
-If Quint fails due Node/Quint loader mismatch on Node `>=25`, set:
+Bootstrap/env defaults now set this automatically (and use a local Node 22 binary
+path when available, otherwise `npx -y node@22`):
 
 ```bash
 export MOLT_QUINT_NODE_FALLBACK='npx -y node@22'
+```
+
+This remains the recommended override if local environment drift removes the key.
+For full Quint verify runs, Java is also required (Apalache backend). Bootstrap now
+auto-detects Homebrew OpenJDK and sets `JAVA_HOME` when possible; if needed:
+
+```bash
+export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
 ```
 
 ### Linear Hygiene + Swarm Routing

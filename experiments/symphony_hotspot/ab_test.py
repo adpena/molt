@@ -55,8 +55,17 @@ def compile_molt() -> Path | None:
     print("Compiling with Molt (--profile dev)...")
     result = subprocess.run(
         [
-            "uv", "run", "--python", "3.12", "python3", "-m", "molt.cli",
-            "build", "--profile", "dev", str(HOTSPOT),
+            "uv",
+            "run",
+            "--python",
+            "3.12",
+            "python3",
+            "-m",
+            "molt.cli",
+            "build",
+            "--profile",
+            "dev",
+            str(HOTSPOT),
         ],
         capture_output=True,
         text=True,
@@ -76,13 +85,16 @@ def compile_molt() -> Path | None:
         REPO_ROOT / "normalize_issue",
         REPO_ROOT / "normalize_issue.bin",
         BUILD_DIR / "normalize_issue",
-        Path(result.stdout.strip().split("\n")[-1]) if result.stdout.strip() else Path("/dev/null"),
+        Path(result.stdout.strip().split("\n")[-1])
+        if result.stdout.strip()
+        else Path("/dev/null"),
     ]:
         if candidate.exists() and candidate.is_file():
             return candidate
 
     # Search for it
     import glob
+
     for pattern in [
         str(REPO_ROOT / "normalize_issue*"),
         str(EXT_ROOT / "**" / "normalize_issue*"),
@@ -111,7 +123,9 @@ def run_molt(binary: Path, samples: int = 10) -> list[float]:
         )
         elapsed = time.perf_counter() - start
         if result.returncode != 0:
-            print(f"Molt run {i} FAILED (exit {result.returncode}): {result.stderr[:200]}")
+            print(
+                f"Molt run {i} FAILED (exit {result.returncode}): {result.stderr[:200]}"
+            )
             continue
         times.append(elapsed)
         if "Processed 5000 issues" not in result.stdout:
@@ -126,7 +140,11 @@ def stats(times: list[float]) -> dict[str, float]:
     sorted_t = sorted(times)
     n = len(sorted_t)
     mean = sum(sorted_t) / n
-    median = sorted_t[n // 2] if n % 2 == 1 else (sorted_t[n // 2 - 1] + sorted_t[n // 2]) / 2
+    median = (
+        sorted_t[n // 2]
+        if n % 2 == 1
+        else (sorted_t[n // 2 - 1] + sorted_t[n // 2]) / 2
+    )
     return {
         "mean": round(mean * 1000, 2),
         "min": round(sorted_t[0] * 1000, 2),
@@ -193,7 +211,7 @@ def main() -> int:
         elif speedup > 0.9:
             verdict = "PARITY (within 10%)"
         else:
-            verdict = f"CPYTHON_FASTER ({1/speedup:.1f}x)"
+            verdict = f"CPYTHON_FASTER ({1 / speedup:.1f}x)"
         print(f"Verdict:      {verdict}")
     else:
         verdict = "INSUFFICIENT_DATA"

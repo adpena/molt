@@ -78,7 +78,7 @@ const IC_TLS_SIZE: usize = 256; // Must be power of 2
 
 thread_local! {
     static IC_TLS: std::cell::RefCell<[(u64, CallBindIcEntry); IC_TLS_SIZE]> =
-        std::cell::RefCell::new([(0u64, CallBindIcEntry { fn_ptr: 0, arity: 0, kind: 0 }); IC_TLS_SIZE]);
+        const { std::cell::RefCell::new([(0u64, CallBindIcEntry { fn_ptr: 0, arity: 0, kind: 0 }); IC_TLS_SIZE]) };
 }
 
 #[inline]

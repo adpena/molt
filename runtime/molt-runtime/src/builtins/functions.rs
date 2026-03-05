@@ -21801,6 +21801,115 @@ pub extern "C" fn molt_zipfile_normalize_member_path(member_bits: u64) -> u64 {
     })
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_imghdr_what(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
+        };
+        let Some(header) = (unsafe { bytes_like_slice(data_ptr) }) else {
+            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
+        };
+        let Some(kind) = imghdr_detect_kind(header) else {
+            return MoltObject::none().bits();
+        };
+        let ptr = alloc_string(_py, kind.as_bytes());
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_imghdr_test(kind_bits: u64, data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(kind) = string_obj_to_owned(obj_from_bits(kind_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "imghdr kind must be str");
+        };
+        let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
+        };
+        let Some(header) = (unsafe { bytes_like_slice(data_ptr) }) else {
+            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
+        };
+        let matches = imghdr_detect_kind(header)
+            .map(|detected| detected == kind.as_str())
+            .unwrap_or(false);
+        MoltObject::from_bool(matches).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_logging_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_wsgiref_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+pub extern "C" fn molt_zoneinfo_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_zipapp_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_zlib_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_xmlrpc_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_datetime_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tokenize_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tomllib_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_trace_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_unicodedata_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_subprocess_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_symtable_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_import_smoke_runtime_ready() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
 #[cfg(test)]
 mod zipfile_path_lowering_tests {
     use super::{
@@ -21929,113 +22038,4 @@ mod zipfile_path_lowering_tests {
             ]
         );
     }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_imghdr_what(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
-        };
-        let Some(header) = (unsafe { bytes_like_slice(data_ptr) }) else {
-            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
-        };
-        let Some(kind) = imghdr_detect_kind(header) else {
-            return MoltObject::none().bits();
-        };
-        let ptr = alloc_string(_py, kind.as_bytes());
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_imghdr_test(kind_bits: u64, data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(kind) = string_obj_to_owned(obj_from_bits(kind_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "imghdr kind must be str");
-        };
-        let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
-        };
-        let Some(header) = (unsafe { bytes_like_slice(data_ptr) }) else {
-            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
-        };
-        let matches = imghdr_detect_kind(header)
-            .map(|detected| detected == kind.as_str())
-            .unwrap_or(false);
-        MoltObject::from_bool(matches).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_wsgiref_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-pub extern "C" fn molt_zoneinfo_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipapp_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xmlrpc_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_datetime_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tokenize_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tomllib_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_trace_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_unicodedata_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_subprocess_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_symtable_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_import_smoke_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
 }

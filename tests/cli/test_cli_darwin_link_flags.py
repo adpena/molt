@@ -14,9 +14,7 @@ def test_append_darwin_runtime_frameworks_for_host_darwin(
 
 def test_append_darwin_runtime_frameworks_for_cross_target() -> None:
     args = ["zig", "cc", "-target", "aarch64-macos"]
-    cli._append_darwin_runtime_frameworks(
-        args, target_triple="aarch64-apple-darwin"
-    )
+    cli._append_darwin_runtime_frameworks(args, target_triple="aarch64-apple-darwin")
     assert args[-4:] == ["-framework", "Security", "-framework", "CoreFoundation"]
 
 
@@ -26,4 +24,3 @@ def test_append_darwin_runtime_frameworks_skips_non_darwin_target() -> None:
         args, target_triple="x86_64-unknown-linux-gnu"
     )
     assert "-framework" not in args
-

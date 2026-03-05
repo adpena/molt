@@ -16,6 +16,7 @@ from molt.symphony.orchestrator import (
     SymphonyOrchestrator,
     _quint_command_with_fallback,
     _derive_rate_limit_suspension,
+    _extract_retry_schedule_from_error,
     _extract_retry_delay_seconds_from_error,
 )
 
@@ -88,8 +89,8 @@ def test_handle_retry_timer_dispatches_due_issue() -> None:
     orchestrator._has_available_global_slot = lambda: True
     orchestrator._is_dispatch_eligible = lambda candidate, from_retry: True
     orchestrator._release_claim = lambda issue_id: None
-    orchestrator._dispatch_issue = (
-        lambda candidate, attempt: dispatched.append(  # type: ignore[assignment]
+    orchestrator._dispatch_issue = lambda candidate, attempt: (
+        dispatched.append(  # type: ignore[assignment]
             (candidate.id, attempt)
         )
         or True
@@ -256,9 +257,15 @@ def test_snapshot_state_surfaces_system_suspension_attention() -> None:
             message="Please run codex login.",
             resume_delay_seconds=300,
             auto_resume=True,
+            resume_source="auth",
+            resume_reason="auth_required",
         )
     snapshot = orchestrator.snapshot_state()
     assert snapshot["suspension"]["active"] is True
+    assert snapshot["suspension"]["resume_source"] == "auth"
+    assert snapshot["suspension"]["resume_reason"] == "auth_required"
+    assert snapshot["suspension"]["resume_at_epoch_seconds"] is not None
+    assert snapshot["suspension"]["resume_at"] is not None
     attention = snapshot["attention"]
     assert attention
     assert attention[0]["issue_identifier"] == "SYSTEM"
@@ -282,20 +289,16 @@ def test_on_worker_exit_turn_input_required_sets_auth_pause() -> None:
         orchestrator._state.claimed.add(issue.id)
     scheduled: list[tuple[str, str, int, str | None, bool, int | None]] = []
     orchestrator._schedule_retry = (  # type: ignore[assignment]
-        lambda issue_id,
-        identifier,
-        attempt,
-        *,
-        error,
-        continuation,
-        delay_override_ms=None: scheduled.append(
-            (
-                issue_id,
-                identifier,
-                attempt,
-                error,
-                continuation,
-                delay_override_ms,
+        lambda issue_id, identifier, attempt, *, error, continuation, delay_override_ms=None: (
+            scheduled.append(
+                (
+                    issue_id,
+                    identifier,
+                    attempt,
+                    error,
+                    continuation,
+                    delay_override_ms,
+                )
             )
         )
     )
@@ -334,6 +337,24 @@ def test_rate_limit_suspension_derivation() -> None:
     assert suspension["resume_seconds"] == 3600
 
 
+def test_rate_limit_suspension_credit_pause_prefers_reset_epoch() -> None:
+    payload = {
+        "credits": {
+            "hasCredits": False,
+            "resetsAt": 1125,
+        }
+    }
+    suspension = _derive_rate_limit_suspension(
+        payload,
+        default_resume_seconds=900,
+        now_epoch_seconds=1000,
+    )
+    assert suspension is not None
+    assert suspension["reason"] == "credits_exhausted"
+    assert suspension["resume_seconds"] == 125
+    assert suspension["resume_at_epoch_seconds"] == 1125
+
+
 def test_worker_exit_rate_limited_sets_suspension_and_retry_delay() -> None:
     orchestrator = _orchestrator_stub()
     issue = _issue("MOL-11", "issue-11")
@@ -354,20 +375,16 @@ def test_worker_exit_rate_limited_sets_suspension_and_retry_delay() -> None:
         }
     scheduled: list[tuple[str, str, int, str | None, bool, int | None]] = []
     orchestrator._schedule_retry = (  # type: ignore[assignment]
-        lambda issue_id,
-        identifier,
-        attempt,
-        *,
-        error,
-        continuation,
-        delay_override_ms=None: scheduled.append(
-            (
-                issue_id,
-                identifier,
-                attempt,
-                error,
-                continuation,
-                delay_override_ms,
+        lambda issue_id, identifier, attempt, *, error, continuation, delay_override_ms=None: (
+            scheduled.append(
+                (
+                    issue_id,
+                    identifier,
+                    attempt,
+                    error,
+                    continuation,
+                    delay_override_ms,
+                )
             )
         )
     )
@@ -428,6 +445,28 @@ def test_extract_retry_delay_seconds_from_error_hint() -> None:
         default_resume_seconds=900,
     )
     assert seconds == 75
+
+
+def test_extract_retry_delay_seconds_from_error_http_date(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("molt.symphony.orchestrator.time.time", lambda: 1000.0)
+    seconds = _extract_retry_delay_seconds_from_error(
+        "429 Too Many Requests; Retry-After: Thu, 01 Jan 1970 00:20:00 GMT",
+        default_resume_seconds=900,
+    )
+    assert seconds == 200
+
+
+def test_extract_retry_schedule_from_payload_reset_epoch() -> None:
+    payload = {"primary": {"remaining": 0, "resetsAt": 1120}}
+    schedule = _extract_retry_schedule_from_error(
+        payload,
+        default_resume_seconds=900,
+    )
+    assert schedule is not None
+    assert schedule["resume_seconds"] >= 1
+    assert schedule["source"] == "error.payload"
 
 
 def test_codex_event_counter_cardinality_caps_to_other() -> None:

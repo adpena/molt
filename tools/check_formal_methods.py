@@ -90,11 +90,22 @@ QUINT_MODELS = [
     ("molt_midend_pipeline.qnt", "inv"),
 ]
 
+JAVA_HOME_CANDIDATES = (
+    Path("/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"),
+    Path("/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home"),
+    Path("/usr/local/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"),
+    Path("/usr/local/opt/openjdk/libexec/openjdk.jdk/Contents/Home"),
+    Path("/Library/Java/JavaVirtualMachines/openjdk-21.jdk/Contents/Home"),
+    Path("/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home"),
+)
+
+
 def _safe_run(
     cmd: list[str],
     *,
     cwd: Path | None = None,
     timeout: int,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         cmd,
@@ -102,6 +113,7 @@ def _safe_run(
         capture_output=True,
         text=True,
         timeout=timeout,
+        env=env,
         check=False,
     )
 
@@ -146,9 +158,66 @@ def _resolve_quint_fallback_prefix() -> list[str] | None:
     if raw:
         parts = [part for part in shlex.split(raw) if part]
         return parts if parts else None
+    for candidate in (
+        Path("/opt/homebrew/opt/node@22/bin/node"),
+        Path("/usr/local/opt/node@22/bin/node"),
+    ):
+        if candidate.exists():
+            return [str(candidate)]
     if not shutil.which("npx"):
         return None
     return ["npx", "-y", "node@22"]
+
+
+def _resolve_java_home() -> str | None:
+    for env_key in ("JAVA_HOME", "MOLT_JAVA_HOME"):
+        raw = os.environ.get(env_key, "").strip()
+        if raw and (Path(raw) / "bin" / "java").exists():
+            return raw
+    for candidate in JAVA_HOME_CANDIDATES:
+        if (candidate / "bin" / "java").exists():
+            return str(candidate)
+    return None
+
+
+def _resolve_java_bin(java_home: str | None) -> str | None:
+    if java_home:
+        java_path = Path(java_home) / "bin" / "java"
+        if java_path.exists():
+            return str(java_path)
+    discovered = shutil.which("java")
+    if discovered:
+        return discovered
+    return None
+
+
+def _build_quint_env(java_home: str | None) -> dict[str, str] | None:
+    if not java_home:
+        return None
+    env = dict(os.environ)
+    env["JAVA_HOME"] = java_home
+    java_bin_dir = str(Path(java_home) / "bin")
+    current_path = env.get("PATH", "")
+    path_parts = [part for part in current_path.split(os.pathsep) if part]
+    if java_bin_dir not in path_parts:
+        env["PATH"] = (
+            f"{java_bin_dir}{os.pathsep}{current_path}" if current_path else java_bin_dir
+        )
+    return env
+
+
+def _detect_missing_java_runtime(output: str) -> bool:
+    text = output.lower()
+    return any(
+        marker in text
+        for marker in (
+            "unable to locate a java runtime",
+            "no java runtime present",
+            "java: command not found",
+            "could not find java",
+            "java_home is not defined correctly",
+        )
+    )
 
 
 def check_inventory() -> list[str]:
@@ -211,6 +280,12 @@ def check_quint(*, verbose: bool = True) -> tuple[list[str], dict[str, Any]]:
     errors: list[str] = []
     diagnostics: dict[str, Any] = {
         "node": _node_info(),
+        "java": {
+            "home": None,
+            "path": None,
+            "version": None,
+        },
+        "java_runtime_missing": False,
         "quint_path": None,
         "fallback_prefix": None,
         "fallback_used": False,
@@ -228,6 +303,19 @@ def check_quint(*, verbose: bool = True) -> tuple[list[str], dict[str, Any]]:
 
     diagnostics["quint_path"] = quint
     diagnostics["fallback_prefix"] = _resolve_quint_fallback_prefix()
+    java_home = _resolve_java_home()
+    java_bin = _resolve_java_bin(java_home)
+    diagnostics["java"]["home"] = java_home
+    diagnostics["java"]["path"] = java_bin
+    if java_bin:
+        try:
+            java_probe = _safe_run([java_bin, "-version"], timeout=10)
+            diagnostics["java"]["version"] = (
+                (java_probe.stderr or java_probe.stdout or "").strip() or None
+            )
+        except Exception:
+            diagnostics["java"]["version"] = None
+    quint_env = _build_quint_env(java_home)
 
     if not QUINT_DIR.exists():
         errors.append("formal/quint/ directory does not exist")
@@ -242,6 +330,7 @@ def check_quint(*, verbose: bool = True) -> tuple[list[str], dict[str, Any]]:
             "returncode": None,
             "fallback_used": False,
             "runtime_mismatch": False,
+            "java_runtime_missing": False,
         }
         diagnostics["models"].append(model_diag)
 
@@ -261,7 +350,7 @@ def check_quint(*, verbose: bool = True) -> tuple[list[str], dict[str, Any]]:
         model_diag["attempted_commands"].append(primary_cmd)
         if verbose:
             print(f"  Running: quint run {model_file} --invariant={invariant} ...")
-        primary = _safe_run(primary_cmd, timeout=120)
+        primary = _safe_run(primary_cmd, timeout=120, env=quint_env)
 
         final_result = primary
         output = (primary.stdout or "") + (primary.stderr or "")
@@ -280,19 +369,24 @@ def check_quint(*, verbose: bool = True) -> tuple[list[str], dict[str, Any]]:
             if isinstance(fallback_prefix, list) and fallback_prefix:
                 fallback_cmd = [*fallback_prefix, quint, *args]
                 model_diag["attempted_commands"].append(fallback_cmd)
-                diagnostics["fallback_attempts"] = int(
-                    diagnostics.get("fallback_attempts", 0)
-                ) + 1
-                fallback = _safe_run(fallback_cmd, timeout=240)
+                diagnostics["fallback_attempts"] = (
+                    int(diagnostics.get("fallback_attempts", 0)) + 1
+                )
+                fallback = _safe_run(fallback_cmd, timeout=240, env=quint_env)
                 final_result = fallback
                 model_diag["fallback_used"] = True
                 diagnostics["fallback_used"] = True
 
         model_diag["returncode"] = int(final_result.returncode)
+        final_output = (final_result.stdout or "") + (final_result.stderr or "")
+        java_runtime_missing = _detect_missing_java_runtime(final_output)
+        model_diag["java_runtime_missing"] = java_runtime_missing
+        if java_runtime_missing:
+            diagnostics["java_runtime_missing"] = True
 
         if final_result.returncode != 0:
             errors.append(f"Quint model {model_file} invariant {invariant} violated")
-            output = ((final_result.stdout or "") + (final_result.stderr or "")).strip()
+            output = final_output.strip()
             for line in output.splitlines()[-10:]:
                 errors.append(f"  {line}")
 
@@ -300,6 +394,12 @@ def check_quint(*, verbose: bool = True) -> tuple[list[str], dict[str, Any]]:
         errors.append(
             "quint_runtime_toolchain_mismatch: Node >=25 with current quint may fail; "
             "set MOLT_QUINT_NODE_FALLBACK='npx -y node@22' or install a compatible Node/quint pair"
+        )
+    if diagnostics["java_runtime_missing"]:
+        errors.append(
+            "quint_java_runtime_missing: Java runtime not detected for Quint/Apalache; "
+            "install OpenJDK 21 and set JAVA_HOME (for example "
+            "/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home)"
         )
 
     return errors, diagnostics

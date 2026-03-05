@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,6 +28,9 @@ def test_symphony_run_load_env_file_parses_key_values(tmp_path: Path) -> None:
 def test_symphony_run_main_uses_env_file_and_launches(
     monkeypatch, tmp_path: Path
 ) -> None:
+    java_home = tmp_path / "jdk"
+    (java_home / "bin").mkdir(parents=True)
+
     env_file = tmp_path / "symphony.env"
     env_file.write_text(
         "LINEAR_API_KEY=abc123\n"
@@ -49,6 +53,7 @@ def test_symphony_run_main_uses_env_file_and_launches(
         "_default_repo_url",
         lambda _: "git@github.com:org/molt.git",
     )
+    monkeypatch.setattr(symphony_run, "_default_java_home", lambda: str(java_home))
     monkeypatch.setattr(symphony_run.shutil, "which", lambda _: "/usr/bin/uv")
     monkeypatch.setattr(symphony_run.subprocess, "run", _fake_run)
 
@@ -82,7 +87,11 @@ def test_symphony_run_main_uses_env_file_and_launches(
     assert env["MOLT_SYMPHONY_SYNC_REMOTE"] == "origin"
     assert env["MOLT_SYMPHONY_SYNC_BRANCH"] == "main"
     assert env["MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS"] == "adpena,symphony"
-    assert env["MOLT_QUINT_NODE_FALLBACK"] == "npx -y node@22"
+    assert (
+        env["MOLT_QUINT_NODE_FALLBACK"] == symphony_run._default_quint_node_fallback()
+    )
+    assert env["JAVA_HOME"] == str(java_home)
+    assert env["PATH"].split(os.pathsep)[0] == str(java_home / "bin")
     assert env["MOLT_SYMPHONY_ENFORCE_ORIGIN"] == "1"
     assert env["MOLT_SYMPHONY_REQUIRE_CSRF_HEADER"] == "1"
     assert env["MOLT_SYMPHONY_EVENT_QUEUE_MAX"] == "8192"

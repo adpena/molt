@@ -613,7 +613,7 @@ fn format_int_underscored(i: i64) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut result = String::with_capacity(s.len() + s.len() / 3);
     for (idx, ch) in chars.iter().enumerate() {
-        if idx > 0 && (chars.len() - idx) % 3 == 0 {
+        if idx > 0 && (chars.len() - idx).is_multiple_of(3) {
             result.push('_');
         }
         result.push(*ch);

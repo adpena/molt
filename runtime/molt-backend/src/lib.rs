@@ -261,6 +261,10 @@ pub struct OpIR {
     pub fast_float: Option<bool>,
     #[serde(default)]
     pub type_hint: Option<String>,
+    /// When true, operands are raw i64 (already unboxed) and result is raw i64.
+    /// Skips all NaN-box encode/decode — chain of raw_int ops eliminates box/unbox overhead.
+    #[serde(default)]
+    pub raw_int: Option<bool>,
 }
 
 fn is_probable_value_token(token: &str) -> bool {
@@ -711,11 +715,10 @@ fn is_inlineable(func: &FunctionIR, defined_functions: &std::collections::HashSe
             }
             // Nested internal calls would cause recursive inlining
             "call_internal" => {
-                if let Some(target) = op.s_value.as_deref() {
-                    if defined_functions.contains(target) {
+                if let Some(target) = op.s_value.as_deref()
+                    && defined_functions.contains(target) {
                         return false;
                     }
-                }
             }
             _ => {}
         }
@@ -816,8 +819,8 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
             for callee_op in callee_ops {
                 if callee_op.kind == "ret" || callee_op.kind == "ret_void" {
                     // Replace return with assignment to call output variable
-                    if callee_op.kind == "ret" {
-                        if let Some(ret_var) = callee_op.var.as_deref() {
+                    if callee_op.kind == "ret"
+                        && let Some(ret_var) = callee_op.var.as_deref() {
                             let renamed = rename_map
                                 .get(ret_var)
                                 .cloned()
@@ -837,10 +840,10 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
                                 container_type: None,
                                 stack_eligible: None,
                                 fast_float: None,
+                                raw_int: None,
                                 type_hint: None,
                             });
                         }
-                    }
                     // Skip the ret op itself (don't emit it into the caller)
                     continue;
                 }
@@ -856,9 +859,7 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
                         .unwrap_or_else(|| format!("{prefix}{out}"));
                     inlined_op.out = Some(renamed.clone());
                     // Also add to rename_map for subsequent ops
-                    if !rename_map.contains_key(&out) {
-                        rename_map.insert(out, renamed);
-                    }
+                    rename_map.entry(out).or_insert(renamed);
                 }
 
                 // Rename args
@@ -2104,9 +2105,29 @@ impl SimpleBackend {
             match op.kind.as_str() {
                 "const" => {
                     let val = op.value.unwrap();
-                    let boxed = box_int(val);
-                    let iconst = builder.ins().iconst(types::I64, boxed);
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), iconst);
+                    if op.raw_int.unwrap_or(false) {
+                        // Emit raw i64 constant — no NaN-boxing
+                        let iconst = builder.ins().iconst(types::I64, val);
+                        def_var_named(&mut builder, &vars, op.out.unwrap(), iconst);
+                    } else {
+                        let boxed = box_int(val);
+                        let iconst = builder.ins().iconst(types::I64, boxed);
+                        def_var_named(&mut builder, &vars, op.out.unwrap(), iconst);
+                    }
+                }
+                "unbox_to_raw_int" => {
+                    // Bridge: NaN-boxed int → raw i64
+                    let args = op.args.as_ref().unwrap();
+                    let val = var_get(&mut builder, &vars, &args[0]).expect("value not found");
+                    let raw = unbox_int(&mut builder, *val);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), raw);
+                }
+                "box_from_raw_int" => {
+                    // Bridge: raw i64 → NaN-boxed int
+                    let args = op.args.as_ref().unwrap();
+                    let val = var_get(&mut builder, &vars, &args[0]).expect("value not found");
+                    let boxed = box_int_value(&mut builder, *val);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), boxed);
                 }
                 "const_bigint" => {
                     let s = op.s_value.as_ref().expect("BigInt string not found");
@@ -2262,7 +2283,11 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op.raw_int.unwrap_or(false) {
+                        // Raw i64 path: operands are already unboxed, result stays unboxed.
+                        // No NaN-boxing overhead — just a single iadd instruction.
+                        builder.ins().iadd(*lhs, *rhs)
+                    } else if op.fast_int.unwrap_or(false) {
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
@@ -2353,7 +2378,9 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op.raw_int.unwrap_or(false) {
+                        builder.ins().iadd(*lhs, *rhs)
+                    } else if op.fast_int.unwrap_or(false) {
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
@@ -3000,7 +3027,9 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op.raw_int.unwrap_or(false) {
+                        builder.ins().imul(*lhs, *rhs)
+                    } else if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
                         let prod = builder.ins().imul(lhs_val, rhs_val);
@@ -4139,7 +4168,20 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op.raw_int.unwrap_or(false) {
+                        // Python mod: result = lhs - (lhs / rhs) * rhs, with sign matching rhs
+                        let quot = builder.ins().sdiv(*lhs, *rhs);
+                        let prod = builder.ins().imul(quot, *rhs);
+                        let rem = builder.ins().isub(*lhs, prod);
+                        // Adjust sign: if rem != 0 and (rem ^ rhs) < 0, add rhs
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        let rem_nonzero = builder.ins().icmp(IntCC::NotEqual, rem, zero);
+                        let xor = builder.ins().bxor(rem, *rhs);
+                        let sign_diff = builder.ins().icmp(IntCC::SignedLessThan, xor, zero);
+                        let need_adjust = builder.ins().band(rem_nonzero, sign_diff);
+                        let adjusted = builder.ins().iadd(rem, *rhs);
+                        builder.ins().select(need_adjust, adjusted, rem)
+                    } else if op.fast_int.unwrap_or(false) {
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
@@ -7365,7 +7407,12 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op.raw_int.unwrap_or(false) {
+                        // Raw comparison: returns raw i64 (0 or 1) — NOT NaN-boxed bool.
+                        // The consumer must handle this as raw_int too.
+                        let cmp = builder.ins().icmp(IntCC::SignedLessThan, *lhs, *rhs);
+                        builder.ins().uextend(types::I64, cmp)
+                    } else if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, rhs_val);
@@ -12946,17 +12993,22 @@ impl SimpleBackend {
                         .get(&current_block)
                         .map(|names| collect_cleanup_tracked(names, &last_use, op_idx, None))
                         .unwrap_or_default();
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_is_truthy", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*cond]);
-                    let truthy = builder.inst_results(call)[0];
-                    let cond_bool = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
+                    let cond_bool = if op.raw_int.unwrap_or(false) {
+                        // raw_int: cond is already 0 or 1, skip molt_is_truthy call
+                        builder.ins().icmp_imm(IntCC::NotEqual, *cond, 0)
+                    } else {
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_is_truthy", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*cond]);
+                        let truthy = builder.inst_results(call)[0];
+                        builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0)
+                    };
                     let cleanup_block = builder.create_block();
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(cleanup_block, current_block);
@@ -13006,17 +13058,21 @@ impl SimpleBackend {
                         .get(&current_block)
                         .map(|names| collect_cleanup_tracked(names, &last_use, op_idx, None))
                         .unwrap_or_default();
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_is_truthy", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*cond]);
-                    let truthy = builder.inst_results(call)[0];
-                    let cond_bool = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
+                    let cond_bool = if op.raw_int.unwrap_or(false) {
+                        builder.ins().icmp_imm(IntCC::NotEqual, *cond, 0)
+                    } else {
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_is_truthy", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*cond]);
+                        let truthy = builder.inst_results(call)[0];
+                        builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0)
+                    };
                     let cleanup_block = builder.create_block();
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(cleanup_block, current_block);
@@ -13993,7 +14049,7 @@ impl SimpleBackend {
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
 
                     let site_id_val = stable_ic_site_id(func_ir.name.as_str(), op_idx, "setattr");
-                    let site_id_const = builder.ins().iconst(types::I64, site_id_val as i64);
+                    let site_id_const = builder.ins().iconst(types::I64, site_id_val);
 
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));

@@ -114,11 +114,33 @@ def normalize_issue(
 
 # --- Benchmark driver ---
 
-def make_test_payload(index: int) -> tuple[str, str, str, str, int, list[str], list[str], list[str], list[str], str, str, str, str, str]:
+
+def make_test_payload(
+    index: int,
+) -> tuple[
+    str,
+    str,
+    str,
+    str,
+    int,
+    list[str],
+    list[str],
+    list[str],
+    list[str],
+    str,
+    str,
+    str,
+    str,
+    str,
+]:
     """Generate a realistic Linear issue payload for benchmarking."""
     issue_id = "id-" + str(index) + "-abcdef1234567890"
     identifier = "MOL-" + str(index)
-    title = "  fix: resolve edge case in string normalization for module " + str(index) + "  "
+    title = (
+        "  fix: resolve edge case in string normalization for module "
+        + str(index)
+        + "  "
+    )
     state_name = "  In Progress  "
     raw_priority = (index % 4) + 1
     label_names = [
@@ -131,26 +153,61 @@ def make_test_payload(index: int) -> tuple[str, str, str, str, int, list[str], l
     blocker_ids = ["blocker-id-" + str(index)]
     blocker_identifiers = ["MOL-" + str(index + 100)]
     blocker_states = ["  Todo  "]
-    description = "This is a detailed description for issue " + str(index) + " with various edge cases."
+    description = (
+        "This is a detailed description for issue "
+        + str(index)
+        + " with various edge cases."
+    )
     branch_name = "  feat/mol-" + str(index) + "-fix  "
     url = "https://linear.app/moltlang/issue/MOL-" + str(index)
     created_at = "2026-03-04T12:00:00.000Z"
     updated_at = "2026-03-05T08:30:00.000Z"
-    return (issue_id, identifier, title, state_name, raw_priority, label_names,
-            blocker_ids, blocker_identifiers, blocker_states,
-            description, branch_name, url, created_at, updated_at)
+    return (
+        issue_id,
+        identifier,
+        title,
+        state_name,
+        raw_priority,
+        label_names,
+        blocker_ids,
+        blocker_identifiers,
+        blocker_states,
+        description,
+        branch_name,
+        url,
+        created_at,
+        updated_at,
+    )
 
 
 def clock_ns() -> int:
     """Monotonic clock in nanoseconds. Uses time.perf_counter_ns if available."""
     import time
+
     return time.perf_counter_ns()
 
 
 def run_benchmark(iterations: int) -> None:
     """Run normalize_issue N times and print results with internal timing."""
     # Pre-generate all payloads to exclude from timing
-    payloads: list[tuple[str, str, str, str, int, list[str], list[str], list[str], list[str], str, str, str, str, str]] = []
+    payloads: list[
+        tuple[
+            str,
+            str,
+            str,
+            str,
+            int,
+            list[str],
+            list[str],
+            list[str],
+            list[str],
+            str,
+            str,
+            str,
+            str,
+            str,
+        ]
+    ] = []
     i = 0
     while i < 200:
         payloads.append(make_test_payload(i))
@@ -161,9 +218,20 @@ def run_benchmark(iterations: int) -> None:
     wi = 0
     while wi < 100:
         normalize_issue(
-            warmup_payload[0], warmup_payload[1], warmup_payload[2], warmup_payload[3], warmup_payload[4],
-            warmup_payload[5], warmup_payload[6], warmup_payload[7], warmup_payload[8],
-            warmup_payload[9], warmup_payload[10], warmup_payload[11], warmup_payload[12], warmup_payload[13],
+            warmup_payload[0],
+            warmup_payload[1],
+            warmup_payload[2],
+            warmup_payload[3],
+            warmup_payload[4],
+            warmup_payload[5],
+            warmup_payload[6],
+            warmup_payload[7],
+            warmup_payload[8],
+            warmup_payload[9],
+            warmup_payload[10],
+            warmup_payload[11],
+            warmup_payload[12],
+            warmup_payload[13],
         )
         wi += 1
 
@@ -174,9 +242,20 @@ def run_benchmark(iterations: int) -> None:
     while i < iterations:
         payload = payloads[i % 200]
         issue = normalize_issue(
-            payload[0], payload[1], payload[2], payload[3], payload[4],
-            payload[5], payload[6], payload[7], payload[8],
-            payload[9], payload[10], payload[11], payload[12], payload[13],
+            payload[0],
+            payload[1],
+            payload[2],
+            payload[3],
+            payload[4],
+            payload[5],
+            payload[6],
+            payload[7],
+            payload[8],
+            payload[9],
+            payload[10],
+            payload[11],
+            payload[12],
+            payload[13],
         )
         results.append(issue)
         i += 1

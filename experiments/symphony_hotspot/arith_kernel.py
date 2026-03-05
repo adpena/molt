@@ -1,4 +1,5 @@
 """Pure arithmetic loop — Molt's best case."""
+
 import time
 
 

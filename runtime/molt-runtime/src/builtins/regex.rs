@@ -1185,12 +1185,12 @@ impl ReParser {
             }
             let node = self.parse_factor()?;
             // Coalesce adjacent literals.
-            if let ReNode::Literal(ref new_text) = node {
-                if let Some(ReNode::Literal(prev_text)) = nodes.last_mut() {
-                    let combined = prev_text.clone() + new_text;
-                    *prev_text = combined;
-                    continue;
-                }
+            if let ReNode::Literal(ref new_text) = node
+                && let Some(ReNode::Literal(prev_text)) = nodes.last_mut()
+            {
+                let combined = prev_text.clone() + new_text;
+                *prev_text = combined;
+                continue;
             }
             nodes.push(node);
         }
@@ -1266,10 +1266,10 @@ impl ReParser {
                     return Ok(node);
                 }
                 self.next_ch()?; // consume '}'
-                if let Some(max) = max_count {
-                    if max < min_count {
-                        return Err("invalid quantifier range".to_string());
-                    }
+                if let Some(max) = max_count
+                    && max < min_count
+                {
+                    return Err("invalid quantifier range".to_string());
                 }
                 let greedy = if self.peek() == Some('?') {
                     self.next_ch()?;
@@ -2595,11 +2595,11 @@ fn char_class_matches(
     // Check literal chars.
     for c_str in chars {
         // Each entry is a single-char string.
-        if let Some(c) = c_str.chars().next() {
-            if state.char_eq(ch, c) {
-                hit = true;
-                break;
-            }
+        if let Some(c) = c_str.chars().next()
+            && state.char_eq(ch, c)
+        {
+            hit = true;
+            break;
         }
     }
 

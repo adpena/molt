@@ -1,4 +1,5 @@
 """Minimal string processing kernel — isolates string.strip/lower/sort."""
+
 import time
 
 

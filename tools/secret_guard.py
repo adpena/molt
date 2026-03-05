@@ -39,9 +39,7 @@ PLACEHOLDER_TOKENS = (
     "none",
     "null",
 )
-ALLOW_PATH_PREFIXES = (
-    "vendor/rustpython-parser/",
-)
+ALLOW_PATH_PREFIXES = ("vendor/rustpython-parser/",)
 
 
 @dataclass(frozen=True, slots=True)

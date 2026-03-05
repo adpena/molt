@@ -6,7 +6,7 @@ from typing import Any
 
 msgpack: Any | None
 try:
-    import msgpack as _msgpack  # type: ignore
+    import msgpack as _msgpack
 except Exception:  # pragma: no cover - optional dependency
     msgpack = None
 else:

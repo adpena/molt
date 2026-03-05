@@ -194,7 +194,7 @@ impl MoltObject {
                 "Non-canonical pointer for MoltObject"
             );
             let masked = addr & POINTER_MASK;
-            return Self(QNAN | TAG_PTR | masked);
+            Self(QNAN | TAG_PTR | masked)
         }
         #[cfg(not(debug_assertions))]
         {

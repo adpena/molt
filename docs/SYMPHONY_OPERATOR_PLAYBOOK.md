@@ -172,8 +172,12 @@ Escalate immediately when:
 - Before major merges that alter dispatch/scheduling/retry/state-machine behavior, require:
   - `quint verify formal/quint/molt_build_determinism.qnt --invariant=Inv`
 - Default policy: bounded checks in normal turns, full verify before major merges.
-- If Quint fails on Node `>=25` with ESM/CJS loader errors, set:
+- Bootstrap now sets this by default (prefers local Node 22 binary, otherwise `npx`);
+  if missing locally, set:
   - `export MOLT_QUINT_NODE_FALLBACK='npx -y node@22'`
+- Full `quint verify` requires Java (Apalache). Bootstrap now auto-detects Homebrew
+  OpenJDK and sets `JAVA_HOME` when available; if your shell still lacks Java, set:
+  - `export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home`
 
 ## 13. Canonical Symphony Compliance
 

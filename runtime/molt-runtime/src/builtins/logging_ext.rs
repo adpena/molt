@@ -403,19 +403,20 @@ impl FormatterState {
         let result = self.apply_format(record, &message, &asctime);
 
         let mut s = result;
-        if !record.exc_info.is_empty() && record.exc_info != "None" && record.exc_info != "False" {
-            if let Some(ref exc_text) = record.exc_text {
-                if !exc_text.is_empty() {
-                    s.push('\n');
-                    s.push_str(exc_text);
-                }
-            }
+        if !record.exc_info.is_empty()
+            && record.exc_info != "None"
+            && record.exc_info != "False"
+            && let Some(ref exc_text) = record.exc_text
+            && !exc_text.is_empty()
+        {
+            s.push('\n');
+            s.push_str(exc_text);
         }
-        if let Some(ref stack_info) = record.stack_info {
-            if !stack_info.is_empty() {
-                s.push('\n');
-                s.push_str(stack_info);
-            }
+        if let Some(ref stack_info) = record.stack_info
+            && !stack_info.is_empty()
+        {
+            s.push('\n');
+            s.push_str(stack_info);
         }
         s
     }
@@ -1008,8 +1009,8 @@ pub extern "C" fn molt_logging_handler_flush(handler_bits: u64) -> u64 {
             let Some(handler) = registry.get_mut(&h_id) else {
                 return raise_exception::<u64>(_py, "ValueError", "invalid Handler handle");
             };
-            let msgs = handler.buffer.drain(..).collect();
-            msgs
+
+            handler.buffer.drain(..).collect()
         };
         for msg in &messages {
             eprintln!("{msg}");
@@ -1174,10 +1175,10 @@ impl LoggerState {
         if self.level != NOTSET {
             return self.level;
         }
-        if let Some(parent_id) = self.parent {
-            if let Some(parent) = registry.get(&parent_id) {
-                return parent.get_effective_level(registry);
-            }
+        if let Some(parent_id) = self.parent
+            && let Some(parent) = registry.get(&parent_id)
+        {
+            return parent.get_effective_level(registry);
         }
         NOTSET
     }
@@ -1545,10 +1546,10 @@ pub extern "C" fn molt_logging_basic_config(
         // (matching CPython behavior).
         {
             let registry = LOGGER_REGISTRY.lock().unwrap();
-            if let Some(logger) = registry.get(&root_id) {
-                if !logger.handlers.is_empty() {
-                    return MoltObject::none().bits();
-                }
+            if let Some(logger) = registry.get(&root_id)
+                && !logger.handlers.is_empty()
+            {
+                return MoltObject::none().bits();
             }
         }
 
