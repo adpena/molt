@@ -31,6 +31,7 @@ def test_symphony_run_main_uses_env_file_and_launches(
     env_file.write_text(
         "LINEAR_API_KEY=abc123\n"
         "MOLT_LINEAR_PROJECT_SLUG=molt-main\n"
+        f"MOLT_EXT_ROOT={tmp_path / 'ext'}\n"
         "MOLT_SOURCE_REPO_URL=git@github.com:org/molt.git\n",
         encoding="utf-8",
     )
@@ -81,11 +82,19 @@ def test_symphony_run_main_uses_env_file_and_launches(
     assert env["MOLT_SYMPHONY_SYNC_REMOTE"] == "origin"
     assert env["MOLT_SYMPHONY_SYNC_BRANCH"] == "main"
     assert env["MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS"] == "adpena,symphony"
+    assert env["MOLT_SYMPHONY_ENFORCE_ORIGIN"] == "1"
+    assert env["MOLT_SYMPHONY_REQUIRE_CSRF_HEADER"] == "1"
+    assert env["MOLT_SYMPHONY_EVENT_QUEUE_MAX"] == "8192"
+    assert env["MOLT_SYMPHONY_API_TOKEN"]
+    assert Path(env["MOLT_SYMPHONY_API_TOKEN_FILE"]).exists()
 
 
 def test_symphony_run_main_requires_linear_token(monkeypatch, tmp_path: Path) -> None:
     env_file = tmp_path / "symphony.env"
-    env_file.write_text("MOLT_LINEAR_PROJECT_SLUG=molt-main\n", encoding="utf-8")
+    env_file.write_text(
+        f"MOLT_EXT_ROOT={tmp_path / 'ext'}\nMOLT_LINEAR_PROJECT_SLUG=molt-main\n",
+        encoding="utf-8",
+    )
     monkeypatch.setattr(symphony_run, "ensure_external_root", lambda _: None)
     monkeypatch.setattr(symphony_run, "_default_repo_url", lambda _: None)
     monkeypatch.setattr(symphony_run.shutil, "which", lambda _: "/usr/bin/uv")
@@ -157,7 +166,9 @@ def test_symphony_launchd_watchdog_program_includes_timing(tmp_path: Path) -> No
 def test_symphony_run_main_exec_mode_molt_run(monkeypatch, tmp_path: Path) -> None:
     env_file = tmp_path / "symphony.env"
     env_file.write_text(
-        "LINEAR_API_KEY=abc123\nMOLT_LINEAR_PROJECT_SLUG=molt-main\n",
+        "LINEAR_API_KEY=abc123\n"
+        "MOLT_LINEAR_PROJECT_SLUG=molt-main\n"
+        f"MOLT_EXT_ROOT={tmp_path / 'ext'}\n",
         encoding="utf-8",
     )
     launched: dict[str, object] = {}
@@ -210,7 +221,9 @@ def test_symphony_run_main_exec_mode_molt_bin_rebuild(
 ) -> None:
     env_file = tmp_path / "symphony.env"
     env_file.write_text(
-        "LINEAR_API_KEY=abc123\nMOLT_LINEAR_PROJECT_SLUG=molt-main\n",
+        "LINEAR_API_KEY=abc123\n"
+        "MOLT_LINEAR_PROJECT_SLUG=molt-main\n"
+        f"MOLT_EXT_ROOT={tmp_path / 'ext'}\n",
         encoding="utf-8",
     )
     calls: list[list[str]] = []

@@ -136,6 +136,8 @@ export MOLT_SYMPHONY_STATE_HASH_HELPER="/Volumes/APDataStore/Molt/bin/symphony_s
 - Do not commit `.env` or token files.
 - Do not put raw secrets in `WORKFLOW.md`, docs, or Linear issue descriptions.
 - Use `.gitignore`-protected local files for machine-specific overrides (`WORKFLOW.local.md`, `.env`, `ops/linear/*.secret*`).
+- `tools/secret_guard.py --staged` is enforced by `.githooks/pre-commit` (installed by `tools/symphony_bootstrap.py` via `core.hooksPath=.githooks` unless a custom hooks path already exists).
+- For intentional fake fixtures, add `# secret-guard: allow` on the specific test line.
 
 ## Operational notes
 

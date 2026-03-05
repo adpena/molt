@@ -144,6 +144,17 @@ def _sync_env_defaults(
     merged.setdefault("MOLT_SYMPHONY_SYNC_REMOTE", "origin")
     merged.setdefault("MOLT_SYMPHONY_SYNC_BRANCH", "main")
     merged.setdefault("MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS", "adpena,symphony")
+    merged.setdefault(
+        "MOLT_SYMPHONY_API_TOKEN_FILE",
+        str(ext_root / "logs" / "symphony" / "secrets" / "dashboard_api_token"),
+    )
+    merged.setdefault("MOLT_SYMPHONY_ENFORCE_ORIGIN", "1")
+    merged.setdefault("MOLT_SYMPHONY_REQUIRE_CSRF_HEADER", "1")
+    merged.setdefault("MOLT_SYMPHONY_MAX_HTTP_CONNECTIONS", "96")
+    merged.setdefault("MOLT_SYMPHONY_MAX_STREAM_CLIENTS", "16")
+    merged.setdefault("MOLT_SYMPHONY_STREAM_MAX_AGE_SECONDS", "300")
+    merged.setdefault("MOLT_SYMPHONY_EVENT_QUEUE_MAX", "8192")
+    merged.setdefault("MOLT_SYMPHONY_EVENT_QUEUE_DROP_LOG_INTERVAL", "250")
 
     if os.environ.get("LINEAR_API_KEY"):
         merged.setdefault("LINEAR_API_KEY", os.environ["LINEAR_API_KEY"])
@@ -176,6 +187,7 @@ def _ensure_ext_dirs(ext_root: Path) -> list[str]:
         ext_root / "diff",
         ext_root / "symphony_workspaces",
         ext_root / "logs" / "symphony",
+        ext_root / "logs" / "symphony" / "secrets",
     ]
     created: list[str] = []
     for path in dirs:
@@ -184,6 +196,36 @@ def _ensure_ext_dirs(ext_root: Path) -> list[str]:
         path.mkdir(parents=True, exist_ok=True)
         created.append(str(path))
     return created
+
+
+def _ensure_git_hooks_path(
+    *, repo_root: Path, force_path: bool
+) -> dict[str, str | bool | None]:
+    hooks_path = ".githooks"
+    get_proc = _run(
+        ["git", "config", "--local", "--get", "core.hooksPath"], cwd=repo_root
+    )
+    current = get_proc.stdout.strip() if get_proc.returncode == 0 else ""
+    normalized = current.strip()
+    should_set = force_path or normalized in {"", ".git/hooks"}
+    if not should_set:
+        return {
+            "ok": True,
+            "updated": False,
+            "path": normalized,
+            "reason": "preserved_existing",
+        }
+    set_proc = _run(
+        ["git", "config", "--local", "core.hooksPath", hooks_path],
+        cwd=repo_root,
+    )
+    return {
+        "ok": set_proc.returncode == 0,
+        "updated": set_proc.returncode == 0,
+        "path": hooks_path if set_proc.returncode == 0 else normalized or None,
+        "reason": "set_default" if set_proc.returncode == 0 else "git_config_failed",
+        "stderr": set_proc.stderr.strip() if set_proc.returncode != 0 else "",
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -200,6 +242,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-repo-url", default=None)
     parser.add_argument("--install-launchd", action="store_true")
     parser.add_argument("--launchd-port", type=int, default=8089)
+    parser.add_argument("--force-git-hooks-path", action="store_true")
     parser.add_argument("--python", default=sys.executable)
     return parser
 
@@ -230,6 +273,10 @@ def main(argv: list[str] | None = None) -> int:
         env_file=env_file,
         project_slug=args.project_slug,
         source_repo_url=args.source_repo_url,
+    )
+    hooks_summary = _ensure_git_hooks_path(
+        repo_root=repo_root,
+        force_path=bool(args.force_git_hooks_path),
     )
 
     launchd_summary: dict[str, Any] = {"installed": False}
@@ -264,6 +311,7 @@ def main(argv: list[str] | None = None) -> int:
         "created_dirs": created_dirs,
         "mcp_linear": mcp,
         "env": env_summary,
+        "git_hooks": hooks_summary,
         "launchd": launchd_summary,
         "notes": [
             "LINEAR_API_KEY is still required in env file for direct GraphQL tracker access.",
