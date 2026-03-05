@@ -254,13 +254,13 @@ def acquire_compile_slot(
         last_active = active_builds
         last_load = load_1m
 
+        slots_supported = os.name == "posix" and fcntl is not None
         reasons: list[str] = []
         if active_builds is not None and active_builds >= max_active_procs:
             reasons.append(f"active_builds={active_builds} >= limit={max_active_procs}")
-        if load_1m is not None and max_load > 0.0 and load_1m >= max_load:
-            reasons.append(f"load1={load_1m:.2f} >= limit={max_load:.2f}")
 
-        if not reasons:
+        acquired: tuple[int, Path, TextIO] | None = None
+        if slots_supported and not reasons:
             acquired = _try_acquire_slot(lock_root, max_slots=max_slots)
             if acquired is not None:
                 slot_index, lock_path, handle = acquired
@@ -272,6 +272,20 @@ def acquire_compile_slot(
                     load_1m=load_1m,
                     _lock_handle=handle,
                 )
+
+        load_gated = (
+            load_1m is not None
+            and max_load > 0.0
+            and load_1m >= max_load
+            and (
+                not slots_supported
+                or active_builds is None
+                or active_builds >= max_slots
+            )
+        )
+        if load_gated:
+            reasons.append(f"load1={load_1m:.2f} >= limit={max_load:.2f}")
+        if slots_supported and acquired is None:
             reasons.append(f"all compile slots busy (max_slots={max_slots})")
 
         last_reason = ", ".join(reasons)
