@@ -89,7 +89,17 @@ class SymphonyOrchestrator:
         self._state_lock = threading.Lock()
 
         self._worker_controls: dict[str, WorkerControl] = {}
-        self._event_queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
+        self._event_queue_max = max(
+            int(os.environ.get("MOLT_SYMPHONY_EVENT_QUEUE_MAX", "8192")),
+            512,
+        )
+        self._event_queue_drop_log_interval = max(
+            int(os.environ.get("MOLT_SYMPHONY_EVENT_QUEUE_DROP_LOG_INTERVAL", "250")),
+            1,
+        )
+        self._event_queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue(
+            maxsize=self._event_queue_max
+        )
 
         self._active_states = normalize_state_list(self._config.tracker.active_states)
         self._terminal_states = normalize_state_list(
@@ -818,259 +828,283 @@ class SymphonyOrchestrator:
         return _clamp_wait(wait_seconds, minimum=0.0, maximum=5.0)
 
     def snapshot_state(self) -> dict[str, Any]:
+        now = datetime.now(UTC)
+        now_mono = time.monotonic()
+        usage = _sample_process_usage()
         with self._state_lock:
-            now = datetime.now(UTC)
-            now_mono = time.monotonic()
-            usage = _sample_process_usage()
             if usage is not None:
                 self._state.profiling.observe_resource_usage(
                     cpu_user_s=usage["cpu_user_s"],
                     cpu_system_s=usage["cpu_system_s"],
                     rss_high_water_kb=int(usage["rss_high_water_kb"]),
                 )
-            running_rows = []
-            agent_panes = []
-            active_seconds = 0.0
-            recent_events: list[dict[str, str | None]] = []
-            for issue_id, entry in self._state.running.items():
-                active_seconds += max(now_mono - entry.started_at_monotonic, 0.0)
-                session = entry.session
-                last_event_at = (
-                    session.last_codex_timestamp.isoformat().replace("+00:00", "Z")
-                    if session.last_codex_timestamp
-                    else None
-                )
-                last_turn_duration_ms = (
-                    round(session.last_turn_duration_ms, 3)
-                    if session.last_turn_duration_ms is not None
-                    else None
-                )
-                dispatch_to_first_event_ms = (
-                    round(entry.dispatch_to_first_event_ms, 3)
-                    if entry.dispatch_to_first_event_ms is not None
-                    else None
-                )
-                running_rows.append(
+            running_items = list(self._state.running.items())
+            retry_entries = list(self._state.retry_attempts.values())
+            last_errors = dict(self._state.last_errors)
+            issue_identifiers = dict(self._state.issue_identifiers)
+            manual_actions = list(self._state.manual_actions[-40:])
+            completed_count = len(self._state.completed)
+            claimed_count = len(self._state.claimed)
+            codex_rate_limits = (
+                dict(self._state.codex_rate_limits)
+                if isinstance(self._state.codex_rate_limits, dict)
+                else self._state.codex_rate_limits
+            )
+            suspension_kind = self._state.suspension_kind
+            suspension_message = self._state.suspension_message
+            suspension_auto_resume = self._state.suspension_auto_resume
+            suspension_since = self._state.suspension_since_utc
+            suspension_due_in = self._suspension_due_in_locked(now_mono)
+            profiling_snapshot = self._state.profiling.snapshot(now_monotonic=now_mono)
+            totals_input = self._state.codex_totals.input_tokens
+            totals_output = self._state.codex_totals.output_tokens
+            totals_total = self._state.codex_totals.total_tokens
+            totals_turns = self._state.codex_totals.turns_completed
+            totals_ended_seconds = self._state.codex_totals.ended_seconds_running
+            runtime_payload = {
+                "exec_mode": self._exec_mode,
+                "default_role": self._config.agent.default_role,
+                "role_pools": dict(self._config.agent.role_pools),
+                "max_concurrent_agents": self._state.max_concurrent_agents,
+                "poll_interval_ms": self._state.poll_interval_ms,
+                "dashboard_profile": _dashboard_profile_for_suspension(suspension_kind),
+            }
+
+        running_rows: list[dict[str, Any]] = []
+        agent_panes: list[dict[str, Any]] = []
+        recent_events: list[dict[str, str | None]] = []
+        active_seconds = 0.0
+        running_titles_by_id: dict[str, str] = {}
+        for issue_id, entry in running_items:
+            active_seconds += max(now_mono - entry.started_at_monotonic, 0.0)
+            running_titles_by_id[issue_id] = entry.issue.title
+            session = entry.session
+            last_event_at = (
+                session.last_codex_timestamp.isoformat().replace("+00:00", "Z")
+                if session.last_codex_timestamp
+                else None
+            )
+            last_turn_duration_ms = (
+                round(session.last_turn_duration_ms, 3)
+                if session.last_turn_duration_ms is not None
+                else None
+            )
+            dispatch_to_first_event_ms = (
+                round(entry.dispatch_to_first_event_ms, 3)
+                if entry.dispatch_to_first_event_ms is not None
+                else None
+            )
+            running_rows.append(
+                {
+                    "issue_id": issue_id,
+                    "issue_identifier": entry.issue_identifier,
+                    "title": entry.issue.title,
+                    "state": entry.issue.state,
+                    "worker_role": entry.worker_role,
+                    "worker_name": entry.worker_name,
+                    "session_id": session.session_id,
+                    "turn_count": session.turn_count,
+                    "last_event": session.last_codex_event,
+                    "last_message": session.last_codex_message,
+                    "started_at": entry.started_at_utc.isoformat().replace(
+                        "+00:00", "Z"
+                    ),
+                    "last_event_at": last_event_at,
+                    "last_turn_duration_ms": last_turn_duration_ms,
+                    "max_turn_duration_ms": round(session.max_turn_duration_ms, 3),
+                    "dispatch_to_first_event_ms": dispatch_to_first_event_ms,
+                    "tokens": {
+                        "input_tokens": session.codex_input_tokens,
+                        "output_tokens": session.codex_output_tokens,
+                        "total_tokens": session.codex_total_tokens,
+                    },
+                    "url": entry.issue.url,
+                }
+            )
+            agent_panes.append(
+                {
+                    "pane_id": (
+                        session.session_id
+                        or entry.issue_identifier
+                        or entry.worker_name
+                        or issue_id
+                    ),
+                    "agent_name": entry.worker_name,
+                    "worker_name": entry.worker_name,
+                    "role": entry.worker_role,
+                    "issue_id": issue_id,
+                    "issue_identifier": entry.issue_identifier,
+                    "state": entry.issue.state,
+                    "status": entry.issue.state,
+                    "session_id": session.session_id,
+                    "turn_count": session.turn_count,
+                    "started_at": entry.started_at_utc.isoformat().replace(
+                        "+00:00", "Z"
+                    ),
+                    "last_event": session.last_codex_event,
+                    "last_message": session.last_codex_message,
+                    "last_event_at": last_event_at,
+                    "last_turn_duration_ms": last_turn_duration_ms,
+                    "max_turn_duration_ms": round(session.max_turn_duration_ms, 3),
+                    "dispatch_to_first_event_ms": dispatch_to_first_event_ms,
+                    "tokens": {
+                        "input_tokens": session.codex_input_tokens,
+                        "output_tokens": session.codex_output_tokens,
+                        "total_tokens": session.codex_total_tokens,
+                    },
+                    "recent_events": list(session.recent_events[-20:]),
+                }
+            )
+            for event in session.recent_events[-3:]:
+                recent_events.append(
                     {
                         "issue_id": issue_id,
                         "issue_identifier": entry.issue_identifier,
-                        "title": entry.issue.title,
-                        "state": entry.issue.state,
-                        "worker_role": entry.worker_role,
-                        "worker_name": entry.worker_name,
-                        "session_id": session.session_id,
-                        "turn_count": session.turn_count,
-                        "last_event": session.last_codex_event,
-                        "last_message": session.last_codex_message,
-                        "started_at": entry.started_at_utc.isoformat().replace(
-                            "+00:00", "Z"
-                        ),
-                        "last_event_at": last_event_at,
-                        "last_turn_duration_ms": last_turn_duration_ms,
-                        "max_turn_duration_ms": round(session.max_turn_duration_ms, 3),
-                        "dispatch_to_first_event_ms": dispatch_to_first_event_ms,
-                        "tokens": {
-                            "input_tokens": session.codex_input_tokens,
-                            "output_tokens": session.codex_output_tokens,
-                            "total_tokens": session.codex_total_tokens,
-                        },
-                        "url": entry.issue.url,
-                    }
-                )
-                agent_panes.append(
-                    {
-                        "pane_id": (
-                            session.session_id
-                            or entry.issue_identifier
-                            or entry.worker_name
-                            or issue_id
-                        ),
-                        "agent_name": entry.worker_name,
-                        "worker_name": entry.worker_name,
-                        "role": entry.worker_role,
-                        "issue_id": issue_id,
-                        "issue_identifier": entry.issue_identifier,
-                        "state": entry.issue.state,
-                        "status": entry.issue.state,
-                        "session_id": session.session_id,
-                        "turn_count": session.turn_count,
-                        "started_at": entry.started_at_utc.isoformat().replace(
-                            "+00:00", "Z"
-                        ),
-                        "last_event": session.last_codex_event,
-                        "last_message": session.last_codex_message,
-                        "last_event_at": last_event_at,
-                        "last_turn_duration_ms": last_turn_duration_ms,
-                        "max_turn_duration_ms": round(session.max_turn_duration_ms, 3),
-                        "dispatch_to_first_event_ms": dispatch_to_first_event_ms,
-                        "tokens": {
-                            "input_tokens": session.codex_input_tokens,
-                            "output_tokens": session.codex_output_tokens,
-                            "total_tokens": session.codex_total_tokens,
-                        },
-                        "recent_events": list(session.recent_events[-20:]),
-                    }
-                )
-                for event in session.recent_events[-3:]:
-                    recent_events.append(
-                        {
-                            "issue_id": issue_id,
-                            "issue_identifier": entry.issue_identifier,
-                            "at": event.get("at"),
-                            "event": event.get("event"),
-                            "message": event.get("message"),
-                            "detail": event.get("detail"),
-                        }
-                    )
-
-            retry_rows = []
-            for entry in self._state.retry_attempts.values():
-                due_seconds = max(entry.due_at_monotonic - now_mono, 0.0)
-                due_at = now + timedelta(seconds=due_seconds)
-                title = None
-                running_entry = self._state.running.get(entry.issue_id)
-                if running_entry is not None:
-                    title = running_entry.issue.title
-
-                retry_rows.append(
-                    {
-                        "issue_id": entry.issue_id,
-                        "issue_identifier": entry.identifier,
-                        "title": title,
-                        "attempt": entry.attempt,
-                        "due_at": due_at.isoformat().replace("+00:00", "Z"),
-                        "due_in_seconds": round(due_seconds, 3),
-                        "error": entry.error,
+                        "at": event.get("at"),
+                        "event": event.get("event"),
+                        "message": event.get("message"),
+                        "detail": event.get("detail"),
                     }
                 )
 
-            retry_id_to_identifier = {
-                row["issue_id"]: row["issue_identifier"] for row in retry_rows
-            }
-            running_id_to_identifier = {
-                row["issue_id"]: row["issue_identifier"] for row in running_rows
-            }
-            attention = []
-            for row in retry_rows:
-                if row["error"]:
-                    attention.append(
-                        {
-                            "issue_id": row["issue_id"],
-                            "issue_identifier": row["issue_identifier"],
-                            "title": row.get("title"),
-                            "kind": "retry_error",
-                            "message": str(row["error"]),
-                            "suggested_action": "Inspect issue logs and decide whether to unblock, edit issue scope, or retry with workflow changes.",
-                        }
-                    )
-            for issue_id, error in self._state.last_errors.items():
-                identifier = (
-                    running_id_to_identifier.get(issue_id)
-                    or retry_id_to_identifier.get(issue_id)
-                    or self._state.issue_identifiers.get(issue_id)
-                    or issue_id
-                )
-                title = None
-                running_entry = self._state.running.get(issue_id)
-                if running_entry is not None:
-                    title = running_entry.issue.title
+        retry_rows: list[dict[str, Any]] = []
+        for entry in retry_entries:
+            due_seconds = max(entry.due_at_monotonic - now_mono, 0.0)
+            due_at = now + timedelta(seconds=due_seconds)
+            retry_rows.append(
+                {
+                    "issue_id": entry.issue_id,
+                    "issue_identifier": entry.identifier,
+                    "title": running_titles_by_id.get(entry.issue_id),
+                    "attempt": entry.attempt,
+                    "due_at": due_at.isoformat().replace("+00:00", "Z"),
+                    "due_in_seconds": round(due_seconds, 3),
+                    "error": entry.error,
+                }
+            )
 
+        retry_id_to_identifier = {
+            str(row["issue_id"]): str(row["issue_identifier"]) for row in retry_rows
+        }
+        running_id_to_identifier = {
+            str(row["issue_id"]): str(row["issue_identifier"]) for row in running_rows
+        }
+        attention: list[dict[str, Any]] = []
+        for row in retry_rows:
+            if row["error"]:
                 attention.append(
                     {
-                        "issue_id": issue_id,
-                        "issue_identifier": identifier,
-                        "title": title,
-                        "kind": "last_error",
-                        "message": error,
-                        "suggested_action": "Review failure context and provide human guidance if the agent is blocked.",
+                        "issue_id": row["issue_id"],
+                        "issue_identifier": row["issue_identifier"],
+                        "title": row.get("title"),
+                        "kind": "retry_error",
+                        "message": str(row["error"]),
+                        "suggested_action": (
+                            "Inspect issue logs and decide whether to unblock, edit issue"
+                            " scope, or retry with workflow changes."
+                        ),
                     }
                 )
-            unique_attention: list[dict[str, str]] = []
-            seen_attention: set[tuple[str, str, str]] = set()
-            for item in attention:
-                key = (
-                    str(item["issue_id"]),
-                    str(item["kind"]),
-                    str(item["message"]),
-                )
-                if key in seen_attention:
-                    continue
-                seen_attention.add(key)
-                unique_attention.append(item)
-            suspension_payload = None
-            if self._state.suspension_kind is not None:
-                due_in = self._suspension_due_in_locked(now_mono)
-                suspension_payload = {
-                    "active": True,
-                    "kind": self._state.suspension_kind,
-                    "message": self._state.suspension_message,
-                    "auto_resume": self._state.suspension_auto_resume,
-                    "due_in_seconds": (
-                        round(due_in, 3) if due_in is not None else None
-                    ),
-                    "since": (
-                        self._state.suspension_since_utc.isoformat().replace(
-                            "+00:00", "Z"
-                        )
-                        if self._state.suspension_since_utc is not None
-                        else None
+        for issue_id, error in last_errors.items():
+            identifier = (
+                running_id_to_identifier.get(issue_id)
+                or retry_id_to_identifier.get(issue_id)
+                or issue_identifiers.get(issue_id)
+                or issue_id
+            )
+            attention.append(
+                {
+                    "issue_id": issue_id,
+                    "issue_identifier": identifier,
+                    "title": running_titles_by_id.get(issue_id),
+                    "kind": "last_error",
+                    "message": error,
+                    "suggested_action": (
+                        "Review failure context and provide human guidance if the agent"
+                        " is blocked."
                     ),
                 }
-                unique_attention.insert(
-                    0,
-                    {
-                        "issue_id": "system",
-                        "issue_identifier": "SYSTEM",
-                        "kind": self._state.suspension_kind,
-                        "message": str(self._state.suspension_message or ""),
-                        "suggested_action": (
-                            "If this is an auth pause, run codex authentication and wait"
-                            " for auto-resume. If this is a rate-limit pause, Symphony"
-                            " will resume automatically when quota returns."
-                        ),
-                    },
-                )
-
-            recent_events.sort(key=lambda row: str(row.get("at") or ""), reverse=True)
-            recent_events = recent_events[:30]
-            agent_panes.sort(
-                key=lambda row: str(row.get("last_event_at") or ""), reverse=True
             )
-            profiling_snapshot = self._state.profiling.snapshot(now_monotonic=now_mono)
-            totals_snapshot = self._state.codex_totals.snapshot(active_seconds)
-
-            return {
-                "generated_at": now.isoformat().replace("+00:00", "Z"),
-                "counts": {
-                    "running": len(running_rows),
-                    "retrying": len(retry_rows),
-                    "completed": len(self._state.completed),
-                    "claimed": len(self._state.claimed),
-                },
-                "running": running_rows,
-                "agent_panes": agent_panes,
-                "retrying": retry_rows,
-                "codex_totals": totals_snapshot,
-                "tokens_per_second": totals_snapshot.get("tokens_per_second", 0.0),
-                "rate_limits": self._state.codex_rate_limits,
-                "recent_events": recent_events,
-                "manual_actions": list(self._state.manual_actions[-40:]),
-                "attention": unique_attention,
-                "needs_human_attention": bool(unique_attention),
-                "suspension": suspension_payload,
-                "profiling": profiling_snapshot,
-                "runtime": {
-                    "exec_mode": self._exec_mode,
-                    "codex_command": self._config.codex.command,
-                    "default_role": self._config.agent.default_role,
-                    "role_pools": dict(self._config.agent.role_pools),
-                    "max_concurrent_agents": self._state.max_concurrent_agents,
-                    "poll_interval_ms": self._state.poll_interval_ms,
-                    "dashboard_profile": _dashboard_profile_for_suspension(
-                        self._state.suspension_kind
+        unique_attention: list[dict[str, Any]] = []
+        seen_attention: set[tuple[str, str, str]] = set()
+        for item in attention:
+            key = (
+                str(item["issue_id"]),
+                str(item["kind"]),
+                str(item["message"]),
+            )
+            if key in seen_attention:
+                continue
+            seen_attention.add(key)
+            unique_attention.append(item)
+        suspension_payload: dict[str, Any] | None = None
+        if suspension_kind is not None:
+            suspension_payload = {
+                "active": True,
+                "kind": suspension_kind,
+                "message": suspension_message,
+                "auto_resume": suspension_auto_resume,
+                "due_in_seconds": (
+                    round(suspension_due_in, 3)
+                    if suspension_due_in is not None
+                    else None
+                ),
+                "since": (
+                    suspension_since.isoformat().replace("+00:00", "Z")
+                    if suspension_since is not None
+                    else None
+                ),
+            }
+            unique_attention.insert(
+                0,
+                {
+                    "issue_id": "system",
+                    "issue_identifier": "SYSTEM",
+                    "kind": suspension_kind,
+                    "message": str(suspension_message or ""),
+                    "suggested_action": (
+                        "If this is an auth pause, run codex authentication and wait for"
+                        " auto-resume. If this is a rate-limit pause, Symphony will"
+                        " resume automatically when quota returns."
                     ),
                 },
-            }
+            )
+
+        recent_events.sort(key=lambda row: str(row.get("at") or ""), reverse=True)
+        recent_events = recent_events[:30]
+        agent_panes.sort(
+            key=lambda row: str(row.get("last_event_at") or ""), reverse=True
+        )
+        totals_snapshot = _codex_totals_snapshot(
+            input_tokens=totals_input,
+            output_tokens=totals_output,
+            total_tokens=totals_total,
+            turns_completed=totals_turns,
+            ended_seconds_running=totals_ended_seconds,
+            active_seconds=active_seconds,
+        )
+        return {
+            "generated_at": now.isoformat().replace("+00:00", "Z"),
+            "counts": {
+                "running": len(running_rows),
+                "retrying": len(retry_rows),
+                "completed": completed_count,
+                "claimed": claimed_count,
+            },
+            "running": running_rows,
+            "agent_panes": agent_panes,
+            "retrying": retry_rows,
+            "codex_totals": totals_snapshot,
+            "tokens_per_second": totals_snapshot.get("tokens_per_second", 0.0),
+            "rate_limits": codex_rate_limits,
+            "recent_events": recent_events,
+            "manual_actions": manual_actions,
+            "attention": unique_attention,
+            "needs_human_attention": bool(unique_attention),
+            "suspension": suspension_payload,
+            "profiling": profiling_snapshot,
+            "runtime": runtime_payload,
+        }
 
     def snapshot_durable_memory(self, limit: int = 120) -> dict[str, Any]:
         store = self._durable_memory
@@ -1495,8 +1529,10 @@ class SymphonyOrchestrator:
             first_prompt = self._build_first_turn_prompt(issue, attempt)
 
             def event_callback(payload: dict[str, Any]) -> None:
-                self._event_queue.put(
-                    ("codex_update", {"issue_id": issue.id, "payload": payload})
+                self._enqueue_event(
+                    "codex_update",
+                    {"issue_id": issue.id, "payload": payload},
+                    critical=False,
                 )
                 self._wake_event.set()
 
@@ -1620,18 +1656,17 @@ class SymphonyOrchestrator:
                 elif not error:
                     error = after_run_error
 
-            self._event_queue.put(
-                (
-                    "worker_exit",
-                    {
-                        "issue_id": issue.id,
-                        "issue_identifier": issue.identifier,
-                        "reason": reason,
-                        "error": error,
-                        "duration_seconds": max(time.monotonic() - start_mono, 0.0),
-                        "final_issue": final_issue,
-                    },
-                )
+            self._enqueue_event(
+                "worker_exit",
+                {
+                    "issue_id": issue.id,
+                    "issue_identifier": issue.identifier,
+                    "reason": reason,
+                    "error": error,
+                    "duration_seconds": max(time.monotonic() - start_mono, 0.0),
+                    "final_issue": final_issue,
+                },
+                critical=True,
             )
             self._wake_event.set()
 
@@ -1656,6 +1691,31 @@ class SymphonyOrchestrator:
                 self._state.profiling.observe_latency(
                     f"event_handler_{event_type}", duration_ms
                 )
+
+    def _enqueue_event(
+        self, event_type: str, payload: dict[str, Any], *, critical: bool
+    ) -> bool:
+        item = (event_type, payload)
+        if critical:
+            self._event_queue.put(item)
+            return True
+        try:
+            self._event_queue.put_nowait(item)
+            return True
+        except queue.Full:
+            with self._state_lock:
+                self._state.profiling.incr("events_dropped")
+                self._state.profiling.incr(f"events_dropped_{event_type}")
+                dropped = int(self._state.profiling.counters.get("events_dropped", 0))
+            if dropped <= 10 or dropped % self._event_queue_drop_log_interval == 0:
+                log(
+                    "WARNING",
+                    "event_queue_drop",
+                    event_type=event_type,
+                    dropped=dropped,
+                    queue_max=self._event_queue_max,
+                )
+            return False
 
     def _on_codex_update(self, issue_id: str, payload: dict[str, Any]) -> None:
         with self._state_lock:
@@ -2602,6 +2662,29 @@ def _issue_to_template_payload(issue: Issue) -> dict[str, Any]:
             if issue.updated_at
             else None
         ),
+    }
+
+
+def _codex_totals_snapshot(
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    total_tokens: int,
+    turns_completed: int,
+    ended_seconds_running: float,
+    active_seconds: float,
+) -> dict[str, Any]:
+    seconds_running = max(float(ended_seconds_running) + float(active_seconds), 0.0)
+    tokens_per_second = (
+        float(total_tokens) / seconds_running if seconds_running > 0 else 0.0
+    )
+    return {
+        "input_tokens": int(input_tokens),
+        "output_tokens": int(output_tokens),
+        "total_tokens": int(total_tokens),
+        "turns_completed": int(turns_completed),
+        "seconds_running": round(seconds_running, 3),
+        "tokens_per_second": round(tokens_per_second, 3),
     }
 
 
