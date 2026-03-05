@@ -71,6 +71,60 @@ def test_workspace_root_preserves_bare_relative_value(tmp_path: Path) -> None:
     assert str(config.workspace.root) == "symphony_workspaces"
 
 
+def test_workspace_root_defaults_to_external_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ext_root = tmp_path / "ext"
+    ext_root.mkdir(parents=True)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
+    monkeypatch.delenv("MOLT_SYMPHONY_WORKSPACE_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_WORKSPACE_ROOT", raising=False)
+    monkeypatch.delenv("TMPDIR", raising=False)
+    monkeypatch.setattr(
+        "molt.symphony.config.tempfile.gettempdir",
+        lambda: str(tmp_path / "ignored-temp"),
+    )
+
+    workflow = _workflow(
+        tmp_path,
+        {
+            "tracker": {
+                "kind": "linear",
+                "api_key": "token",
+                "project_slug": "proj",
+            },
+        },
+    )
+    config = build_runtime_config(workflow)
+    assert config.workspace.root == (ext_root / "symphony_workspaces").resolve()
+
+
+def test_workspace_root_fallback_survives_missing_system_tempdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_SYMPHONY_WORKSPACE_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_WORKSPACE_ROOT", raising=False)
+    monkeypatch.delenv("TMPDIR", raising=False)
+    monkeypatch.setattr(
+        "molt.symphony.config.tempfile.gettempdir",
+        lambda: (_ for _ in ()).throw(FileNotFoundError("no tempdir")),
+    )
+
+    workflow = _workflow(
+        tmp_path,
+        {
+            "tracker": {
+                "kind": "linear",
+                "api_key": "token",
+                "project_slug": "proj",
+            },
+        },
+    )
+    config = build_runtime_config(workflow)
+    assert config.workspace.root == Path("/tmp/symphony_workspaces").resolve()
+
+
 def test_workspace_creation_and_after_create_only_once(tmp_path: Path) -> None:
     root = tmp_path / "ws"
     manager = WorkspaceManager(
