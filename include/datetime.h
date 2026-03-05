@@ -43,6 +43,11 @@ static inline int PyDelta_Check(PyObject *obj) {
     return 0;
 }
 
+static inline int PyTime_Check(PyObject *obj) {
+    (void)obj;
+    return 0;
+}
+
 #ifdef __cplusplus
 }
 #endif

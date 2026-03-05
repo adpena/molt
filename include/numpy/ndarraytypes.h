@@ -90,6 +90,12 @@ typedef enum {
 } NPY_ORDER;
 
 typedef enum {
+    NPY_VALID = 0,
+    NPY_SAME = 1,
+    NPY_FULL = 2
+} NPY_CORRELATEMODE;
+
+typedef enum {
     NPY_QUICKSORT = 0,
     NPY_HEAPSORT = 1,
     NPY_MERGESORT = 2,
@@ -194,6 +200,15 @@ typedef struct PyArray_DatetimeMetaData {
 } PyArray_DatetimeMetaData;
 
 typedef PyArray_DatetimeMetaData PyArray_DatetimeDTypeMetaData;
+
+typedef enum {
+    NPY_DEVICE_CPU = 0,
+} NPY_DEVICE;
+
+typedef struct {
+    struct PyArray_DTypeMeta *dtype;
+    PyArray_Descr *descr;
+} npy_dtype_info;
 
 typedef int (*PyArray_CompareFunc)(const void *, const void *, PyArrayObject *);
 typedef int (*PyArray_ArgFunc)(const void *, npy_intp, void *);
@@ -414,6 +429,40 @@ struct NpyAuxData_tag {
 };
 
 typedef PyObject *(PyArray_GetItemFunc)(void *, void *);
+typedef void (PyArray_BinSearchFunc)(
+    const char *,
+    const char *,
+    char *,
+    npy_intp,
+    npy_intp,
+    npy_intp,
+    npy_intp,
+    npy_intp,
+    PyArrayObject *
+);
+typedef int (PyArray_ArgBinSearchFunc)(
+    const char *,
+    const char *,
+    const char *,
+    char *,
+    npy_intp,
+    npy_intp,
+    npy_intp,
+    npy_intp,
+    npy_intp,
+    npy_intp,
+    PyArrayObject *
+);
+typedef int (PyArray_ArgPartitionFunc)(
+    void *,
+    npy_intp *,
+    npy_intp,
+    npy_intp,
+    npy_intp *,
+    npy_intp *,
+    npy_intp,
+    void *
+);
 typedef void (PyArray_VectorUnaryFunc)(void *, void *, npy_intp, void *, void *);
 typedef struct npy_unpacked_static_string {
     size_t size;
@@ -447,6 +496,11 @@ typedef struct {
     npy_static_string na_name;
     npy_string_allocator *allocator;
 } PyArray_StringDTypeObject;
+
+typedef enum {
+    NPY_AS_TYPE_COPY_IF_NEEDED = 0,
+    NPY_AS_TYPE_COPY_ALWAYS = 1,
+} NPY_ASTYPECOPYMODE;
 
 #define NPY_API_VERSION 0x00000012
 #define NPY_FEATURE_VERSION 0x00000012
@@ -590,6 +644,7 @@ static inline int PyDataType_ALIGNMENT(const PyArray_Descr *descr) {
 #define PyArray_UnicodeDType PyArray_StringDType
 #define PyArray_ObjectDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("object"))
 #define PyArray_PyComplexDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("complex"))
+#define PyArray_ComplexAbstractDType PyArray_PyComplexDType
 #define PyArray_DefaultIntDType PyArray_PyLongDType
 
 static PyDataMem_Handler PyDataMem_DefaultHandler = {
