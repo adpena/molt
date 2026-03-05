@@ -448,6 +448,57 @@ def test_state_endpoint_etag_supports_conditional_get() -> None:
         server.stop()
 
 
+def test_state_etag_ignores_generated_at_and_suspension_countdown_churn() -> None:
+    class _VolatileProvider(_Provider):
+        def snapshot_state(self) -> dict[str, Any]:
+            self.state_calls += 1
+            now_seq = self.state_calls
+            return {
+                "generated_at": f"2026-03-04T00:00:{now_seq:02d}Z",
+                "counts": {"running": 0, "retrying": 0},
+                "running": [],
+                "retrying": [],
+                "codex_totals": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                    "seconds_running": 0.0,
+                },
+                "suspension": {
+                    "active": True,
+                    "kind": "rate_limited",
+                    "message": "paused",
+                    "due_in_seconds": max(90 - now_seq, 0),
+                    "resume_at_epoch_seconds": 1772689658,
+                },
+                "rate_limits": {"primary": {"usedPercent": 100.0}},
+            }
+
+    provider = _VolatileProvider()
+    server = DashboardServer(provider=provider, port=0)
+    port = server.start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+        conn.request("GET", "/api/v1/state")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        etag = resp.getheader("ETag") or ""
+        _ = resp.read()
+        conn.close()
+        assert etag
+
+        # Snapshot payload churns generated_at + due_in_seconds, but ETag should remain stable.
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+        conn.request("GET", "/api/v1/state", headers={"If-None-Match": etag})
+        resp = conn.getresponse()
+        assert resp.status == 304
+        assert (resp.getheader("ETag") or "") == etag
+        _ = resp.read()
+        conn.close()
+    finally:
+        server.stop()
+
+
 def test_state_endpoint_uses_shared_snapshot_cache_for_burst_reads() -> None:
     provider = _Provider()
     server = DashboardServer(provider=provider, port=0)

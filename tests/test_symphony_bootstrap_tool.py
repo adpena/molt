@@ -98,6 +98,7 @@ def test_sync_env_defaults_fills_external_paths(monkeypatch, tmp_path: Path) -> 
     assert loaded["MOLT_SYMPHONY_HTTP_RATE_LIMIT_WINDOW_SECONDS"] == "60"
     assert loaded["MOLT_SYMPHONY_EVENT_QUEUE_MAX"] == "8192"
     assert loaded["MOLT_SYMPHONY_EVENT_QUEUE_DROP_LOG_INTERVAL"] == "250"
+    assert loaded["MOLT_APALACHE_WORK_DIR"] == str(ext_root / "tmp" / "apalache")
     assert loaded["MOLT_EXT_ROOT"] == str(ext_root)
 
 
@@ -133,8 +134,7 @@ def test_formal_toolchain_report_detects_fallback_viability(
 ) -> None:
     env_file = tmp_path / "symphony.env"
     env_file.write_text(
-        "MOLT_QUINT_NODE_FALLBACK=npx -y node@22\n"
-        "JAVA_HOME=/opt/java/home\n",
+        "MOLT_QUINT_NODE_FALLBACK=npx -y node@22\nJAVA_HOME=/opt/java/home\n",
         encoding="utf-8",
     )
 

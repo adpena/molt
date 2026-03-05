@@ -279,13 +279,27 @@ class SymphonyOrchestrator:
                 "message": "issue_identifier is required.",
             }
 
+        issue_id_hint: str | None = None
+        with self._state_lock:
+            mapped_identifier = self._state.issue_identifiers.get(identifier_norm)
+            if mapped_identifier:
+                issue_id_hint = identifier_norm
+                identifier_norm = str(mapped_identifier)
+            elif (
+                identifier_norm in self._state.retry_attempts
+                or identifier_norm in self._state.running
+                or identifier_norm in self._state.claimed
+                or identifier_norm in self._state.last_errors
+            ):
+                issue_id_hint = identifier_norm
+
         now_mono = time.monotonic()
         orphan_issue_id: str | None = None
         orphan_issue_claimed = False
         orphan_issue_has_last_error = False
         with self._state_lock:
             for issue_id, entry in self._state.retry_attempts.items():
-                if entry.identifier != identifier_norm:
+                if entry.identifier != identifier_norm and issue_id != issue_id_hint:
                     continue
                 entry.due_at_monotonic = now_mono
                 self._state.profiling.incr("manual_retry_now_requests")
@@ -316,7 +330,10 @@ class SymphonyOrchestrator:
         running_issue_id: str | None = None
         with self._state_lock:
             for issue_id, entry in self._state.running.items():
-                if entry.issue_identifier == identifier_norm:
+                if (
+                    entry.issue_identifier == identifier_norm
+                    or issue_id == issue_id_hint
+                ):
                     running_issue_id = issue_id
                     break
 
@@ -481,13 +498,29 @@ class SymphonyOrchestrator:
                 "error": "missing_issue_identifier",
                 "message": "issue_identifier is required.",
             }
+        issue_id_hint: str | None = None
+        with self._state_lock:
+            mapped_identifier = self._state.issue_identifiers.get(identifier_norm)
+            if mapped_identifier:
+                issue_id_hint = identifier_norm
+                identifier_norm = str(mapped_identifier)
+            elif (
+                identifier_norm in self._state.running
+                or identifier_norm in self._state.claimed
+                or identifier_norm in self._state.last_errors
+            ):
+                issue_id_hint = identifier_norm
         target_issue_id: str | None = None
         with self._state_lock:
             for issue_id, entry in self._state.running.items():
-                if entry.issue_identifier != identifier_norm:
+                if (
+                    entry.issue_identifier != identifier_norm
+                    and issue_id != issue_id_hint
+                ):
                     continue
                 self._state.profiling.incr("manual_stop_requests")
                 target_issue_id = issue_id
+                identifier_norm = entry.issue_identifier
                 break
         if target_issue_id is not None:
             self._request_stop(
@@ -970,6 +1003,13 @@ class SymphonyOrchestrator:
                 "role_pools": dict(self._config.agent.role_pools),
                 "max_concurrent_agents": self._state.max_concurrent_agents,
                 "poll_interval_ms": self._state.poll_interval_ms,
+                "rate_limit_policy": {
+                    "default_resume_seconds": self._rate_limit_resume_default_seconds,
+                    "auth_resume_seconds": self._auth_resume_delay_seconds,
+                    "max_retry_backoff_ms": int(
+                        getattr(self._config.agent, "max_retry_backoff_ms", 300000)
+                    ),
+                },
                 "dashboard_profile": _dashboard_profile_for_suspension(suspension_kind),
                 "event_queue": {
                     "depth": queue_depth,
@@ -1262,12 +1302,28 @@ class SymphonyOrchestrator:
 
     def snapshot_issue(self, issue_identifier: str) -> dict[str, Any] | None:
         identifier_norm = issue_identifier.strip()
+        issue_id_hint: str | None = None
         with self._state_lock:
+            mapped_identifier = self._state.issue_identifiers.get(identifier_norm)
+            if mapped_identifier:
+                issue_id_hint = identifier_norm
+                identifier_norm = str(mapped_identifier)
+            elif (
+                identifier_norm in self._state.running
+                or identifier_norm in self._state.retry_attempts
+                or identifier_norm in self._state.claimed
+                or identifier_norm in self._state.last_errors
+            ):
+                issue_id_hint = identifier_norm
+
             for issue_id, entry in self._state.running.items():
-                if entry.issue_identifier == identifier_norm:
+                if (
+                    entry.issue_identifier == identifier_norm
+                    or issue_id == issue_id_hint
+                ):
                     session = entry.session
                     return {
-                        "issue_identifier": identifier_norm,
+                        "issue_identifier": entry.issue_identifier,
                         "issue_id": issue_id,
                         "status": "running",
                         "workspace": {
@@ -1319,9 +1375,12 @@ class SymphonyOrchestrator:
                     }
 
             for entry in self._state.retry_attempts.values():
-                if entry.identifier == identifier_norm:
+                if (
+                    entry.identifier == identifier_norm
+                    or entry.issue_id == issue_id_hint
+                ):
                     return {
-                        "issue_identifier": identifier_norm,
+                        "issue_identifier": entry.identifier,
                         "issue_id": entry.issue_id,
                         "status": "retrying",
                         "attempts": {
@@ -1346,9 +1405,22 @@ class SymphonyOrchestrator:
 
             issue_id_from_index = None
             for issue_id, identifier in self._state.issue_identifiers.items():
-                if identifier == identifier_norm:
+                if identifier == identifier_norm or issue_id == issue_id_hint:
                     issue_id_from_index = issue_id
+                    identifier_norm = str(identifier)
                     break
+            if (
+                issue_id_from_index is None
+                and issue_id_hint is not None
+                and (
+                    issue_id_hint in self._state.last_errors
+                    or issue_id_hint in self._state.claimed
+                )
+            ):
+                issue_id_from_index = issue_id_hint
+                identifier_norm = str(
+                    self._state.issue_identifiers.get(issue_id_hint, identifier_norm)
+                )
             if issue_id_from_index is not None and (
                 issue_id_from_index in self._state.last_errors
                 or issue_id_from_index in self._state.claimed
@@ -2117,13 +2189,8 @@ class SymphonyOrchestrator:
             running_entry.stop_requested
             and running_entry.cleanup_reason == "manual_stop"
         ):
-            self._schedule_retry(
-                issue_id,
-                running_entry.issue_identifier,
-                max(running_entry.retry_attempt, 1),
-                error="manual_stop",
-                continuation=True,
-            )
+            with self._state_lock:
+                self._state.last_errors[issue_id] = "paused_by_operator"
             log(
                 "INFO",
                 "worker_stopped_manual_stop",
@@ -2362,11 +2429,6 @@ class SymphonyOrchestrator:
         return True
 
     def _request_stop(self, issue_id: str, cleanup_on_exit: bool, reason: str) -> None:
-        control = self._worker_controls.get(issue_id)
-        if control is not None:
-            control.stop_event.set()
-            self._wake_event.set()
-
         with self._state_lock:
             entry = self._state.running.get(issue_id)
             if entry is None:
@@ -2374,6 +2436,10 @@ class SymphonyOrchestrator:
             entry.stop_requested = True
             entry.cleanup_on_exit = cleanup_on_exit
             entry.cleanup_reason = reason
+        control = self._worker_controls.get(issue_id)
+        if control is not None:
+            control.stop_event.set()
+            self._wake_event.set()
 
     @profiled("reload_workflow")
     def _reload_workflow_if_changed(self) -> None:
@@ -2532,29 +2598,31 @@ class SymphonyOrchestrator:
                 timeout_seconds=900,
             )
         if suite == "quint-run":
+            resolved_spec_path = _resolve_formal_spec_path(workspace_path, spec_path)
             return _run_tool_command(
                 _quint_command_with_fallback(
                     [
                         "run",
-                        spec_path,
+                        resolved_spec_path,
                         f"--invariant={invariant}",
                         f"--max-steps={max_steps}",
                     ]
                 ),
-                cwd=workspace_path,
+                cwd=_resolve_quint_workdir(),
                 max_output_chars=max_output_chars,
                 timeout_seconds=600,
             )
         if suite == "quint-verify":
+            resolved_spec_path = _resolve_formal_spec_path(workspace_path, spec_path)
             return _run_tool_command(
                 _quint_command_with_fallback(
                     [
                         "verify",
-                        spec_path,
+                        resolved_spec_path,
                         f"--invariant={invariant}",
                     ]
                 ),
-                cwd=workspace_path,
+                cwd=_resolve_quint_workdir(),
                 max_output_chars=max_output_chars,
                 timeout_seconds=900,
             )
@@ -2651,8 +2719,12 @@ class SymphonyOrchestrator:
                 "issue_id": row.get("issue_id"),
                 "issue_identifier": row.get("issue_identifier"),
                 "attempt": row.get("attempt"),
-                "retry_due_in_seconds": row.get("retry_due_in_seconds"),
-                "last_error": row.get("last_error"),
+                "retry_due_in_seconds": row.get("retry_due_in_seconds")
+                if row.get("retry_due_in_seconds") is not None
+                else row.get("due_in_seconds"),
+                "last_error": row.get("last_error")
+                if row.get("last_error") is not None
+                else row.get("error"),
             }
             for row in list(state.get("retrying") or [])[: self._tool_state_retry_limit]
             if isinstance(row, dict)
@@ -2900,6 +2972,30 @@ def _quint_command_with_fallback(args: list[str]) -> list[str]:
         return ["quint", *args]
     quint_bin = shutil.which("quint") or "quint"
     return [*prefix, quint_bin, *args]
+
+
+def _resolve_formal_spec_path(workspace_path: Any, spec_path: str) -> str:
+    candidate = Path(spec_path)
+    if candidate.is_absolute():
+        return str(candidate)
+    return str((Path(workspace_path) / candidate).resolve())
+
+
+def _resolve_quint_workdir() -> Path:
+    candidates: list[Path] = []
+    for env_key in ("MOLT_APALACHE_WORK_DIR", "MOLT_DIFF_TMPDIR", "TMPDIR"):
+        raw = str(os.environ.get(env_key, "")).strip()
+        if raw:
+            candidates.append(Path(raw).expanduser())
+    candidates.append(Path("/Volumes/APDataStore/Molt/tmp/apalache"))
+    candidates.append(Path("/tmp/molt_apalache"))
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            return candidate.resolve()
+        except OSError:
+            continue
+    return Path.cwd()
 
 
 def _run_tool_command(

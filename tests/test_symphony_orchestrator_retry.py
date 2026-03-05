@@ -18,6 +18,8 @@ from molt.symphony.orchestrator import (
     _derive_rate_limit_suspension,
     _extract_retry_schedule_from_error,
     _extract_retry_delay_seconds_from_error,
+    _resolve_formal_spec_path,
+    _resolve_quint_workdir,
 )
 
 
@@ -168,6 +170,21 @@ def test_snapshot_issue_returns_blocked_for_orphaned_issue() -> None:
     assert payload["last_error"] == "hook_failed"
 
 
+def test_snapshot_issue_accepts_issue_id_lookup_for_orphaned_issue() -> None:
+    orchestrator = _orchestrator_stub()
+    issue_id = "d0bc450d-8b47-47b5-ad51-839222bf5d9a"
+    with orchestrator._state_lock:
+        orchestrator._state.claimed.add(issue_id)
+        orchestrator._state.last_errors[issue_id] = "hook_failed"
+        orchestrator._state.issue_identifiers[issue_id] = "MOL-7"
+
+    payload = orchestrator.snapshot_issue(issue_id)
+    assert payload is not None
+    assert payload["status"] == "blocked"
+    assert payload["issue_id"] == issue_id
+    assert payload["issue_identifier"] == "MOL-7"
+
+
 def test_request_retry_now_recovers_orphaned_claim() -> None:
     orchestrator = _orchestrator_stub()
     issue_id = "d0bc450d-8b47-47b5-ad51-839222bf5d9a"
@@ -190,6 +207,90 @@ def test_request_retry_now_recovers_orphaned_claim() -> None:
     assert scheduled == [
         (issue_id, "MOL-7", 1, "manual_retry_recovered", True),
     ]
+
+
+def test_request_retry_now_accepts_issue_id_lookup() -> None:
+    orchestrator = _orchestrator_stub()
+    issue_id = "d0bc450d-8b47-47b5-ad51-839222bf5d9a"
+    scheduled: list[tuple[str, str, int, str | None, bool]] = []
+    orchestrator._schedule_retry = (  # type: ignore[assignment]
+        lambda issue_id, identifier, attempt, *, error, continuation: scheduled.append(
+            (issue_id, identifier, attempt, error, continuation)
+        )
+    )
+
+    with orchestrator._state_lock:
+        orchestrator._state.claimed.add(issue_id)
+        orchestrator._state.last_errors[issue_id] = "hook_failed"
+        orchestrator._state.issue_identifiers[issue_id] = "MOL-7"
+
+    payload = orchestrator.request_retry_now(issue_id)
+
+    assert payload["ok"] is True
+    assert payload["status"] == "retrying"
+    assert payload["issue_identifier"] == "MOL-7"
+    assert scheduled == [
+        (issue_id, "MOL-7", 1, "manual_retry_recovered", True),
+    ]
+
+
+def test_request_stop_now_accepts_issue_id_lookup() -> None:
+    orchestrator = _orchestrator_stub()
+    issue = _issue("MOL-21", "issue-21")
+    running_entry = RunningEntry(
+        issue=issue,
+        issue_identifier=issue.identifier,
+        worker_name="symphony-executor-MOL-21",
+        worker_role="executor",
+        started_at_utc=now_utc(),
+        started_at_monotonic=0.0,
+        retry_attempt=1,
+    )
+    with orchestrator._state_lock:
+        orchestrator._state.running[issue.id] = running_entry
+        orchestrator._state.claimed.add(issue.id)
+        orchestrator._state.issue_identifiers[issue.id] = issue.identifier
+
+    payload = orchestrator.request_stop_now(issue.id)
+    assert payload["ok"] is True
+    assert payload["issue_identifier"] == issue.identifier
+    with orchestrator._state_lock:
+        assert orchestrator._state.running[issue.id].stop_requested is True
+        assert orchestrator._state.running[issue.id].cleanup_reason == "manual_stop"
+
+
+def test_on_worker_exit_manual_stop_pauses_until_manual_retry() -> None:
+    orchestrator = _orchestrator_stub()
+    issue = _issue("MOL-22", "issue-22")
+    running_entry = RunningEntry(
+        issue=issue,
+        issue_identifier=issue.identifier,
+        worker_name="symphony-executor-MOL-22",
+        worker_role="executor",
+        started_at_utc=now_utc(),
+        started_at_monotonic=0.0,
+        retry_attempt=2,
+        stop_requested=True,
+        cleanup_reason="manual_stop",
+    )
+    with orchestrator._state_lock:
+        orchestrator._state.running[issue.id] = running_entry
+        orchestrator._state.claimed.add(issue.id)
+        orchestrator._state.issue_identifiers[issue.id] = issue.identifier
+
+    orchestrator._on_worker_exit(
+        {
+            "issue_id": issue.id,
+            "reason": "cancelled",
+            "error": "manual_stop",
+            "duration_seconds": 0.25,
+        }
+    )
+
+    with orchestrator._state_lock:
+        assert issue.id not in orchestrator._state.retry_attempts
+        assert orchestrator._state.last_errors[issue.id] == "paused_by_operator"
+        assert issue.id in orchestrator._state.claimed
 
 
 def test_set_max_concurrent_agents_tool_updates_limits() -> None:
@@ -247,6 +348,21 @@ def test_quint_command_with_fallback_skips_missing_prefix_launcher(
     monkeypatch.setattr("molt.symphony.orchestrator.shutil.which", _which)
     cmd = _quint_command_with_fallback(["verify", "formal/quint/example.qnt"])
     assert cmd == ["quint", "verify", "formal/quint/example.qnt"]
+
+
+def test_resolve_formal_spec_path_returns_absolute(tmp_path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    resolved = _resolve_formal_spec_path(workspace, "formal/quint/example.qnt")
+    assert resolved == str((workspace / "formal/quint/example.qnt").resolve())
+
+
+def test_resolve_quint_workdir_prefers_env(monkeypatch, tmp_path) -> None:
+    workdir = tmp_path / "apalache"
+    monkeypatch.setenv("MOLT_APALACHE_WORK_DIR", str(workdir))
+    resolved = _resolve_quint_workdir()
+    assert resolved == workdir.resolve()
+    assert resolved.exists()
 
 
 def test_snapshot_state_surfaces_system_suspension_attention() -> None:

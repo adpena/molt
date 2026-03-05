@@ -88,6 +88,31 @@ def test_extract_usage_prefers_delta_for_token_count_events() -> None:
     }
 
 
+def test_extract_usage_prefers_total_token_usage_map_over_token_usage() -> None:
+    payload = {
+        "method": "codex/event/notification",
+        "params": {
+            "token_usage": {
+                "input_tokens": 3,
+                "output_tokens": 4,
+                "total_tokens": 7,
+            },
+            "total_token_usage": {
+                "input_tokens": 300,
+                "output_tokens": 400,
+                "total_tokens": 700,
+            },
+        },
+    }
+    usage = _extract_usage(payload)
+    assert usage == {
+        "input_tokens": 300,
+        "output_tokens": 400,
+        "total_tokens": 700,
+        "delta": False,
+    }
+
+
 def test_extract_usage_ignores_unrelated_token_strings() -> None:
     payload = {
         "method": "codex/event/notification",

@@ -260,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
     env.setdefault("MOLT_CACHE", str(ext_root / "molt_cache"))
     env.setdefault("MOLT_DIFF_ROOT", str(ext_root / "diff"))
     env.setdefault("MOLT_DIFF_TMPDIR", str(ext_root / "tmp"))
+    env.setdefault("MOLT_APALACHE_WORK_DIR", str(ext_root / "tmp" / "apalache"))
     env.setdefault("UV_CACHE_DIR", str(ext_root / "uv-cache"))
     env.setdefault("MOLT_BACKEND_DAEMON_SOCKET_DIR", "/tmp/molt_backend_sockets")
     env.setdefault("TMPDIR", str(ext_root / "tmp"))
@@ -269,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
         "MOLT_CACHE",
         "MOLT_DIFF_ROOT",
         "MOLT_DIFF_TMPDIR",
+        "MOLT_APALACHE_WORK_DIR",
         "UV_CACHE_DIR",
         "TMPDIR",
     ):

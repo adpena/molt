@@ -178,6 +178,9 @@ Escalate immediately when:
 - Full `quint verify` requires Java (Apalache). Bootstrap now auto-detects Homebrew
   OpenJDK and sets `JAVA_HOME` when available; if your shell still lacks Java, set:
   - `export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home`
+- Quint/Apalache artifacts are routed to `MOLT_APALACHE_WORK_DIR` (default:
+  `/Volumes/APDataStore/Molt/tmp/apalache`) so `_apalache-out` does not grow in
+  the repo root.
 
 ## 13. Canonical Symphony Compliance
 

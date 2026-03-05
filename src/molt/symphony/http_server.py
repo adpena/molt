@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -229,6 +230,20 @@ class DashboardServer:
         if security.startup_error:
             raise RuntimeError(security.startup_error)
         bind_host, nonlocal_bind = _bind_host_from_env()
+        allow_unauthenticated_nonlocal = _coerce_bool_env(
+            "MOLT_SYMPHONY_ALLOW_UNAUTHENTICATED_NONLOCAL",
+            default=False,
+        )
+        if (
+            nonlocal_bind
+            and not security.api_token
+            and not allow_unauthenticated_nonlocal
+        ):
+            raise RuntimeError(
+                "Refusing non-loopback dashboard bind without API token. Set "
+                "MOLT_SYMPHONY_API_TOKEN (or MOLT_SYMPHONY_DASHBOARD_TOKEN) or "
+                "explicitly set MOLT_SYMPHONY_ALLOW_UNAUTHENTICATED_NONLOCAL=1."
+            )
         ext_root = Path(
             os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt")
         ).expanduser()
@@ -371,7 +386,9 @@ class DashboardServer:
                 http_security=_http_security_snapshot(),
             )
             encoded = _encode_json_bytes(payload)
-            etag = _state_etag_for_payload(encoded, hasher=state_hasher)
+            etag_payload = _normalize_state_payload_for_etag(payload)
+            etag_encoded = _encode_json_bytes(etag_payload)
+            etag = _state_etag_for_payload(etag_encoded, hasher=state_hasher)
             with state_cache_lock:
                 state_cache["captured_at_monotonic"] = now_mono
                 state_cache["payload"] = payload
@@ -461,13 +478,20 @@ class DashboardServer:
                 )
 
             def _rate_limit_principal(
-                self, *, query: str, allow_query_token: bool
+                self,
+                *,
+                query: str,
+                allow_query_token: bool,
+                expected_api_token: str | None,
             ) -> str:
                 supplied = self._auth_token_from_request(
                     query=query,
                     allow_query=allow_query_token,
                 )
-                if supplied:
+                if supplied and (
+                    expected_api_token is None
+                    or hmac.compare_digest(supplied, expected_api_token)
+                ):
                     digest = hashlib.sha256(
                         supplied.encode("utf-8", errors="ignore")
                     ).hexdigest()[:16]
@@ -479,7 +503,11 @@ class DashboardServer:
                 return f"ip:{peer_host}"
 
             def _consume_rate_limit(
-                self, *, query: str, allow_query_token: bool
+                self,
+                *,
+                query: str,
+                allow_query_token: bool,
+                expected_api_token: str | None,
             ) -> int | None:
                 if rate_limit_max_requests <= 0:
                     return None
@@ -488,6 +516,7 @@ class DashboardServer:
                 principal = self._rate_limit_principal(
                     query=query,
                     allow_query_token=allow_query_token,
+                    expected_api_token=expected_api_token,
                 )
                 with rate_limit_lock:
                     previous = rate_limit_state.get(principal)
@@ -525,11 +554,26 @@ class DashboardServer:
                     str(self.headers.get("Authorization") or "").strip()
                     or str(self.headers.get("X-Symphony-Token") or "").strip()
                 )
+                retry_after_seconds = self._consume_rate_limit(
+                    query=query,
+                    allow_query_token=allow_query_token,
+                    expected_api_token=security.api_token,
+                )
+                if retry_after_seconds is not None:
+                    _incr_security_counter("rate_limited")
+                    _invalidate_state_cache()
+                    self._deny_json(
+                        HTTPStatus.TOO_MANY_REQUESTS,
+                        "rate_limited",
+                        "Request rate limit exceeded. Retry later.",
+                        headers={"Retry-After": str(retry_after_seconds)},
+                    )
+                    return False
                 if security.api_token:
                     supplied = self._auth_token_from_request(
                         query=query, allow_query=allow_query_token
                     )
-                    if supplied != security.api_token:
+                    if not hmac.compare_digest(str(supplied), security.api_token):
                         _incr_security_counter("unauthorized")
                         self._deny_json(
                             HTTPStatus.UNAUTHORIZED,
@@ -568,20 +612,6 @@ class DashboardServer:
                                 "Missing X-Symphony-CSRF header.",
                             )
                             return False
-                retry_after_seconds = self._consume_rate_limit(
-                    query=query,
-                    allow_query_token=allow_query_token,
-                )
-                if retry_after_seconds is not None:
-                    _incr_security_counter("rate_limited")
-                    _invalidate_state_cache()
-                    self._deny_json(
-                        HTTPStatus.TOO_MANY_REQUESTS,
-                        "rate_limited",
-                        "Request rate limit exceeded. Retry later.",
-                        headers={"Retry-After": str(retry_after_seconds)},
-                    )
-                    return False
                 return True
 
             def _write_json(
@@ -601,13 +631,19 @@ class DashboardServer:
                 *,
                 headers: dict[str, str] | None = None,
             ) -> None:
+                merged_headers = {
+                    "Cache-Control": "no-store, private",
+                    "Pragma": "no-cache",
+                    "Vary": "Authorization, X-Symphony-Token, Cookie",
+                }
+                if headers:
+                    merged_headers.update(headers)
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self._write_common_security_headers(frame_options="DENY")
-                if headers:
-                    for key, value in headers.items():
-                        self.send_header(key, value)
+                for key, value in merged_headers.items():
+                    self.send_header(key, value)
                 self.end_headers()
                 self.wfile.write(data)
 
@@ -878,6 +914,8 @@ class DashboardServer:
                     ):
                         return
                     payload = self._read_json_payload()
+                    if payload is None:
+                        return
                     issue_identifier = str(payload.get("issue_identifier", "")).strip()
                     result = provider.request_retry_now(issue_identifier)
                     status = (
@@ -896,6 +934,8 @@ class DashboardServer:
                     ):
                         return
                     payload = self._read_json_payload()
+                    if payload is None:
+                        return
                     tool_name = str(payload.get("tool") or "").strip()
                     result = provider.run_dashboard_tool(tool_name, payload)
                     status = (
@@ -924,7 +964,7 @@ class DashboardServer:
             def do_OPTIONS(self) -> None:  # noqa: N802
                 self._handle_unsupported_method("OPTIONS")
 
-            def _read_json_payload(self) -> dict[str, Any]:
+            def _read_json_payload(self) -> dict[str, Any] | None:
                 content_length_raw = self.headers.get("Content-Length") or "0"
                 try:
                     content_length = int(content_length_raw)
@@ -933,7 +973,15 @@ class DashboardServer:
                 if content_length <= 0:
                     return {}
                 if content_length > 262_144:
-                    return {}
+                    self._drain_request_body(content_length)
+                    self._deny_json(
+                        HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                        "payload_too_large",
+                        "Request body exceeds 262144 bytes.",
+                        headers={"Connection": "close"},
+                    )
+                    self.close_connection = True
+                    return None
                 body = self.rfile.read(content_length)
                 if not body:
                     return {}
@@ -961,6 +1009,14 @@ class DashboardServer:
                     return decoded
                 return {}
 
+            def _drain_request_body(self, content_length: int) -> None:
+                remaining = max(int(content_length), 0)
+                while remaining > 0:
+                    chunk = self.rfile.read(min(remaining, 65_536))
+                    if not chunk:
+                        return
+                    remaining -= len(chunk)
+
             def _handle_dashboard(self) -> None:
                 self._write_html(HTTPStatus.OK, DASHBOARD_HTML)
 
@@ -985,7 +1041,9 @@ class DashboardServer:
                 interval_ms = _coerce_stream_interval_ms(query)
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Cache-Control", "no-store, private, no-transform")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("X-Accel-Buffering", "no")
                 self.send_header("Connection", "keep-alive")
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("X-Frame-Options", "DENY")
@@ -1088,6 +1146,17 @@ def _state_etag_for_payload(
             return external
     digest = hashlib.blake2s(payload_bytes, digest_size=8).hexdigest()
     return f'W/"{digest}"'
+
+
+def _normalize_state_payload_for_etag(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    normalized.pop("generated_at", None)
+    suspension_raw = normalized.get("suspension")
+    if isinstance(suspension_raw, dict):
+        suspension = dict(suspension_raw)
+        suspension.pop("due_in_seconds", None)
+        normalized["suspension"] = suspension
+    return normalized
 
 
 def _state_hasher_from_env() -> _ExternalStateHasher | None:

@@ -131,7 +131,9 @@ def _java_probe_env(java_home: str | None) -> dict[str, str] | None:
     path_parts = [part for part in current_path.split(os.pathsep) if part]
     if java_bin_dir not in path_parts:
         env["PATH"] = (
-            f"{java_bin_dir}{os.pathsep}{current_path}" if current_path else java_bin_dir
+            f"{java_bin_dir}{os.pathsep}{current_path}"
+            if current_path
+            else java_bin_dir
         )
     return env
 
@@ -165,7 +167,9 @@ def _formal_toolchain_report(repo_root: Path, env_file: Path) -> dict[str, Any]:
             lake_bin = str(elan_lake)
 
     node_version = _probe_command([node_bin, "--version"]) if node_bin else None
-    java_version = _probe_command([java_bin, "-version"], env=probe_env) if java_bin else None
+    java_version = (
+        _probe_command([java_bin, "-version"], env=probe_env) if java_bin else None
+    )
     formal_lean_dir = repo_root / "formal" / "lean"
     lake_probe = (
         _probe_command([lake_bin, "--version"], cwd=formal_lean_dir)
@@ -294,6 +298,7 @@ def _sync_env_defaults(
     merged.setdefault("MOLT_CACHE", str(ext_root / "molt_cache"))
     merged.setdefault("MOLT_DIFF_ROOT", str(ext_root / "diff"))
     merged.setdefault("MOLT_DIFF_TMPDIR", str(ext_root / "tmp"))
+    merged.setdefault("MOLT_APALACHE_WORK_DIR", str(ext_root / "tmp" / "apalache"))
     merged.setdefault("UV_CACHE_DIR", str(ext_root / "uv-cache"))
     merged.setdefault("TMPDIR", str(ext_root / "tmp"))
 

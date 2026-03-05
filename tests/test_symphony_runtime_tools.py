@@ -90,6 +90,9 @@ def test_symphony_run_main_uses_env_file_and_launches(
     assert (
         env["MOLT_QUINT_NODE_FALLBACK"] == symphony_run._default_quint_node_fallback()
     )
+    assert env["MOLT_APALACHE_WORK_DIR"] == str(
+        Path(env["MOLT_EXT_ROOT"]) / "tmp" / "apalache"
+    )
     assert env["JAVA_HOME"] == str(java_home)
     assert env["PATH"].split(os.pathsep)[0] == str(java_home / "bin")
     assert env["MOLT_SYMPHONY_ENFORCE_ORIGIN"] == "1"

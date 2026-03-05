@@ -238,6 +238,10 @@ auto-detects Homebrew OpenJDK and seeds `JAVA_HOME` when available; if needed:
 export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
 ```
 
+Quint/Apalache output is also routed via `MOLT_APALACHE_WORK_DIR` (default:
+`/Volumes/APDataStore/Molt/tmp/apalache`) to keep `_apalache-out` artifacts off
+the repo root.
+
 ## 10. Human operating loop (required)
 
 - Human role and responsibilities are defined in:
