@@ -23,6 +23,10 @@ static inline int _import_array(void) {
     return 0;
 }
 
+static inline int PyArray_ImportNumPyAPI(void) {
+    return _import_array();
+}
+
 #define import_array()                                                             \
     do {                                                                           \
         if (_import_array() < 0) {                                                 \
