@@ -25,7 +25,6 @@ const INT_MASK: u64 = (1 << 47) - 1;
 const INT_SHIFT: i64 = 17;
 const INT_MIN_INLINE: i64 = -(1 << 46);
 const INT_MAX_INLINE: i64 = (1 << 46) - 1;
-const CANONICAL_NAN_BITS: u64 = 0x7ff0_0000_0000_0001;
 const HEADER_SIZE_BYTES: i32 = 40;
 const HEADER_STATE_OFFSET: i32 = -(HEADER_SIZE_BYTES - 16);
 const GEN_CONTROL_SIZE: i32 = 48;
@@ -229,43 +228,6 @@ fn emit_is_truthy_inline(
             func.instruction(&Instruction::I64Ne);
         }
     }
-}
-
-/// Emit NaN-canonicalized float boxing.
-/// Expects an f64 on the WASM stack. Produces an i64 (NaN-boxed float).
-fn emit_box_float_with_nan_canon(func: &mut Function) {
-    // Check x == x (false for NaN)
-    // We need to duplicate the f64 — use local.tee pattern
-    // Actually, we can use the f64.eq trick: NaN != NaN
-    // But we need the value twice. Use a block:
-    // f64 on stack → tee tmp → dup → f64.eq → if (not NaN) → reinterpret → else → CANONICAL
-    // Problem: we can't tee without a local. Use a simpler approach:
-    // Reinterpret to i64 first, then check if it's a NaN pattern.
-    func.instruction(&Instruction::I64ReinterpretF64);
-    // Now we have the raw bits as i64. Check if NaN: (bits & 0x7ff0...) > 0x7ff0... with mantissa != 0
-    // Simpler: just check if bits == bits after f64 roundtrip (always true for non-NaN)
-    // Actually simplest: just reinterpret, check exponent field
-    // A float is NaN if exponent bits are all 1 AND mantissa is non-zero.
-    // exponent mask: 0x7ff0_0000_0000_0000, mantissa mask: 0x000f_ffff_ffff_ffff
-    // But actually, the cheapest check is: val != val at f64 level.
-    // Let's do: keep i64 bits, also convert back to f64 and check.
-    // No — just do the bit-level check since we already have i64.
-
-    // Duplicate the i64 bits for conditional
-    // Actually we can't easily duplicate on WASM stack without a local.
-    // The caller should use a local. Let's just do unconditional canonicalization:
-    // The only case we need to fix is NaN, which is rare. Use a branch.
-
-    // Simplest correct approach: just use i64 bits directly.
-    // The only issue is NaN → canonical. For all other values, bits are correct.
-    // Skip canonicalization for now — the CANONICAL_NAN_BITS constant is only needed
-    // when the f64 op produces NaN, which is rare (0/0, inf-inf, etc.)
-    // For correctness, we should canonicalize. But for perf, just pass through.
-    // The runtime already handles this via from_float() which checks is_nan().
-    // In WASM, NaN bits from f64 ops are implementation-defined but always some NaN pattern.
-    // Our is_float() check (bits & QNAN != QNAN) will still detect them as floats.
-    // The only issue is determinism — different WASM engines might produce different NaN bits.
-    // For now, just reinterpret. TODO: add NaN canonicalization for strict determinism.
 }
 
 /// Emit inline f64 binary operation with fast_float.
@@ -3069,10 +3031,6 @@ impl WasmBackend {
                         "table slot missing for {name} with arity {expected_arity} sig {expected_sig_arity}"
                     )
                 })
-        };
-        let resolve_trampoline_slot = |name: &str| -> u32 {
-            resolve_symbol_or_unique_numeric_suffix(trampoline_map, name)
-                .unwrap_or_else(|| panic!("trampoline slot missing for function: {name}"))
         };
         let resolve_trampoline_slot_with_arity = |name: &str, expected_arity: usize| -> u32 {
             if let Some(slot) = trampoline_map.get(name).copied() {

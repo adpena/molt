@@ -53,6 +53,7 @@ def test_sync_env_defaults_fills_external_paths(monkeypatch, tmp_path: Path) -> 
         ext_root / "logs" / "symphony" / "durable_memory"
     )
     assert loaded["MOLT_SYMPHONY_DURABLE_SYNC_SECONDS"] == "180"
+    assert loaded["MOLT_QUINT_NODE_FALLBACK"] == "npx -y node@22"
     assert loaded["MOLT_SYMPHONY_API_TOKEN_FILE"] == str(
         ext_root / "logs" / "symphony" / "secrets" / "dashboard_api_token"
     )
