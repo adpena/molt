@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import time
@@ -14,6 +15,8 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 class StateProvider(Protocol):
     def snapshot_state(self) -> dict[str, Any]: ...
+
+    def snapshot_durable_memory(self, limit: int = 120) -> dict[str, Any]: ...
 
     def snapshot_issue(self, issue_identifier: str) -> dict[str, Any] | None: ...
 
@@ -50,11 +53,29 @@ class DashboardServer:
             def log_message(self, format: str, *args: object) -> None:  # noqa: A003
                 return
 
-            def _write_json(self, status: int, payload: dict[str, Any]) -> None:
-                data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+            def _write_json(
+                self,
+                status: int,
+                payload: dict[str, Any],
+                *,
+                headers: dict[str, str] | None = None,
+            ) -> None:
+                data = _encode_json_bytes(payload)
+                self._write_json_bytes(status, data, headers=headers)
+
+            def _write_json_bytes(
+                self,
+                status: int,
+                data: bytes,
+                *,
+                headers: dict[str, str] | None = None,
+            ) -> None:
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
+                if headers:
+                    for key, value in headers.items():
+                        self.send_header(key, value)
                 self.end_headers()
                 self.wfile.write(data)
 
@@ -75,7 +96,26 @@ class DashboardServer:
                     self._handle_dashboard()
                     return
                 if path == "/api/v1/state":
-                    self._write_json(HTTPStatus.OK, provider.snapshot_state())
+                    payload = provider.snapshot_state()
+                    encoded = _encode_json_bytes(payload)
+                    etag = _state_etag_for_payload(encoded)
+                    if self.headers.get("If-None-Match") == etag:
+                        self.send_response(HTTPStatus.NOT_MODIFIED)
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("ETag", etag)
+                        self.end_headers()
+                        return
+                    self._write_json_bytes(
+                        HTTPStatus.OK,
+                        encoded,
+                        headers={"Cache-Control": "no-store", "ETag": etag},
+                    )
+                    return
+                if path == "/api/v1/durable":
+                    limit = _coerce_limit_param(parsed.query, default=120)
+                    self._write_json(
+                        HTTPStatus.OK, provider.snapshot_durable_memory(limit=limit)
+                    )
                     return
                 if path == "/api/v1/stream":
                     self._handle_state_stream(parsed.query)
@@ -152,6 +192,7 @@ class DashboardServer:
                 if (
                     path == "/"
                     or path == "/api/v1/state"
+                    or path == "/api/v1/durable"
                     or path == "/api/v1/stream"
                     or path == "/api/v1/interventions/retry-now"
                     or path == "/api/v1/tools/run"
@@ -213,12 +254,20 @@ class DashboardServer:
                     self.wfile.write(b": stream-open\n\n")
                     self.wfile.flush()
                     next_heartbeat = time.monotonic() + 15.0
+                    previous_etag = ""
                     while True:
                         payload = provider.snapshot_state()
-                        encoded = json.dumps(payload, ensure_ascii=True)
-                        event = f"event: state\ndata: {encoded}\n\n".encode("utf-8")
-                        self.wfile.write(event)
-                        self.wfile.flush()
+                        encoded = _encode_json_bytes(payload)
+                        etag = _state_etag_for_payload(encoded)
+                        if etag != previous_etag:
+                            event = (
+                                f"id: {etag}\nevent: state\ndata: "
+                                + encoded.decode("utf-8")
+                                + "\n\n"
+                            ).encode("utf-8")
+                            self.wfile.write(event)
+                            self.wfile.flush()
+                            previous_etag = etag
                         deadline = time.monotonic() + (interval_ms / 1000.0)
                         while True:
                             remaining = deadline - time.monotonic()
@@ -261,6 +310,27 @@ def _coerce_stream_interval_ms(query: str) -> int:
     return max(250, min(parsed, 10000))
 
 
+def _encode_json_bytes(payload: dict[str, Any]) -> bytes:
+    return json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+
+
+def _state_etag_for_payload(payload_bytes: bytes) -> str:
+    digest = hashlib.blake2s(payload_bytes, digest_size=8).hexdigest()
+    return f'W/"{digest}"'
+
+
+def _coerce_limit_param(query: str, *, default: int) -> int:
+    values = parse_qs(query).get("limit", [])
+    if not values:
+        return default
+    raw = values[0]
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(10, min(parsed, 1000))
+
+
 _DASHBOARD_HTML = """<!doctype html>
 <html lang="en">
   <head>
@@ -291,141 +361,278 @@ _DASHBOARD_HTML = """<!doctype html>
       body {
         margin: 0;
         color: var(--ink);
-        font-family: "Aptos", "Avenir Next", "Segoe UI", sans-serif;
-        background:
-          radial-gradient(1150px 620px at 12% -8%, #2a2a2a 0%, transparent 62%),
-          radial-gradient(960px 520px at 92% 0%, #1f1f1f 0%, transparent 60%),
-          var(--bg);
+        font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        background: var(--bg);
         min-height: 100vh;
+        -webkit-font-smoothing: antialiased;
       }
       .dashboard-shell {
-        max-width: min(1960px, calc(100vw - 24px));
+        max-width: min(1600px, calc(100vw - 48px));
         margin: 0 auto;
-        padding: 24px 16px 44px;
+        padding: 16px 0 60px;
         animation: fade-in 420ms ease-out;
       }
-      .topbar {
+      .dashboard-header {
+        position: sticky;
+        top: 16px;
+        z-index: 100;
+        background: rgba(20, 20, 20, 0.7);
+        backdrop-filter: blur(24px);
+        -webkit-backdrop-filter: blur(24px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 16px;
+        padding: 12px 16px;
+        margin-bottom: 24px;
         display: flex;
         flex-wrap: wrap;
-        gap: 14px;
+        gap: 16px;
         align-items: center;
         justify-content: space-between;
-        margin-bottom: 14px;
+        box-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.6);
+      }
+      .header-left {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        flex-wrap: wrap;
       }
       .title-wrap {
-        display: grid;
-        gap: 6px;
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
       }
       h1 {
         margin: 0;
-        font-family: "Avenir Next", "Trebuchet MS", sans-serif;
-        font-weight: 700;
-        letter-spacing: -0.025em;
-        line-height: 1.1;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        font-size: 1.15rem;
+        color: #ffffff;
       }
       .subtitle {
         color: var(--ink-soft);
-        font-size: 0.95rem;
+        font-size: 0.85rem;
+        padding-left: 10px;
+        border-left: 1px solid rgba(255, 255, 255, 0.15);
       }
       .controls {
         display: flex;
-        gap: 8px;
+        gap: 10px;
         align-items: center;
         flex-wrap: wrap;
+        flex: 1 1 auto;
+        justify-content: flex-end;
       }
       .top-nav {
-        display: inline-flex;
-        flex-wrap: wrap;
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
         gap: 8px;
-        margin: 0 0 12px;
+        width: min(860px, 100%);
       }
       .view-tab {
         appearance: none;
-        border: 1px solid var(--line);
-        background: #111111;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        background: linear-gradient(
+          180deg,
+          rgba(255, 255, 255, 0.045),
+          rgba(255, 255, 255, 0.01)
+        );
         color: var(--ink-soft);
-        border-radius: 999px;
-        padding: 6px 12px;
-        font-size: 0.83rem;
-        font-weight: 600;
+        border-radius: 12px;
+        padding: 10px 12px;
+        font-size: 0.82rem;
+        font-weight: 500;
         cursor: pointer;
-        transition: background 180ms ease, color 180ms ease, border-color 180ms ease;
+        text-align: left;
+        display: grid;
+        gap: 3px;
+        position: relative;
+        transition:
+          transform 160ms ease,
+          border-color 220ms ease,
+          background 220ms ease,
+          color 220ms ease,
+          box-shadow 240ms ease;
+      }
+      .view-tab::after {
+        content: "";
+        position: absolute;
+        left: 12px;
+        right: 12px;
+        bottom: 7px;
+        height: 2px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.16);
+        transform: scaleX(0);
+        transform-origin: left center;
+        transition: transform 220ms ease;
+      }
+      .view-tab .tab-title {
+        font-size: 0.84rem;
+        font-weight: 600;
+        color: #f6f6f6;
+        letter-spacing: 0.01em;
+      }
+      .view-tab .tab-meta {
+        font-size: 0.72rem;
+        color: var(--ink-soft);
+      }
+      .view-tab:hover {
+        transform: translateY(-1px);
+        border-color: rgba(255, 255, 255, 0.2);
+        color: var(--ink);
+        background: linear-gradient(
+          180deg,
+          rgba(255, 255, 255, 0.08),
+          rgba(255, 255, 255, 0.02)
+        );
+        box-shadow: 0 16px 24px -20px rgba(0, 0, 0, 0.92);
       }
       .view-tab.active {
-        border-color: var(--brand);
-        background: var(--brand-soft);
+        border-color: rgba(255, 255, 255, 0.28);
+        background: linear-gradient(
+          180deg,
+          rgba(255, 255, 255, 0.16),
+          rgba(255, 255, 255, 0.05)
+        );
         color: #ffffff;
+        box-shadow: 0 18px 30px -24px rgba(0, 0, 0, 0.9);
+      }
+      .view-tab.active::after {
+        transform: scaleX(1);
+      }
+      .view-tab.active .tab-meta {
+        color: #d8d8d8;
       }
       .status-chip {
-        border: 1px solid var(--line);
-        background: #111111;
-        border-radius: 999px;
-        padding: 6px 11px;
-        font-size: 0.82rem;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 6px;
+        padding: 4px 10px;
+        font-size: 0.8rem;
         color: var(--ink-soft);
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        transition: all 300ms ease;
+      }
+      .status-chip::before {
+        content: "";
+        display: block;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background-color: currentColor;
+        opacity: 0.4;
+        transition: all 300ms ease;
       }
       .status-chip.live {
-        border-color: #777777;
-        color: #f0f0f0;
-        background: var(--brand-soft);
+        border-color: rgba(159, 230, 203, 0.3);
+        color: #9fe6cb;
+        background: rgba(159, 230, 203, 0.08);
+      }
+      .status-chip.live::before {
+        opacity: 1;
+        box-shadow: 0 0 6px currentColor;
       }
       .status-chip.warn {
-        border-color: #5d5d5d;
-        color: #d0d0d0;
-        background: var(--warn-soft);
+        border-color: rgba(255, 160, 100, 0.3);
+        color: #ffb880;
+        background: rgba(255, 160, 100, 0.1);
+      }
+      .status-chip.warn::before {
+        opacity: 1;
+        box-shadow: 0 0 6px currentColor;
+      }
+      .status-chip.connecting {
+        border-color: rgba(139, 180, 247, 0.4);
+        color: #8bb4f7;
+        background: rgba(139, 180, 247, 0.1);
+      }
+      .status-chip.connecting::before {
+        opacity: 1;
+        animation: pulse-dot 1s infinite alternate ease-in-out;
+      }
+      @keyframes pulse-dot {
+        0% { transform: scale(0.8); opacity: 0.5; box-shadow: 0 0 0 transparent; }
+        100% { transform: scale(1.5); opacity: 1; box-shadow: 0 0 6px currentColor; }
       }
       button {
         appearance: none;
-        border: 1px solid var(--brand);
-        background: #f2f2f2;
-        color: #050505;
-        border-radius: 11px;
-        padding: 8px 12px;
-        font-size: 0.9rem;
-        font-weight: 600;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        background: rgba(255, 255, 255, 0.1);
+        color: #f2f2f2;
+        border-radius: 8px;
+        padding: 6px 14px;
+        font-size: 0.85rem;
+        font-weight: 500;
         cursor: pointer;
-        transition: transform 120ms ease, box-shadow 140ms ease;
+        transition: all 150ms ease;
       }
       button:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 14px 22px -16px rgba(255, 255, 255, 0.28);
+        background: rgba(255, 255, 255, 0.18);
+        border-color: rgba(255, 255, 255, 0.25);
       }
       button.secondary {
-        border-color: var(--line);
-        background: #151515;
+        border-color: transparent;
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--ink-soft);
+      }
+      button.secondary:hover {
+        background: rgba(255, 255, 255, 0.1);
         color: var(--ink);
       }
       button:disabled {
-        opacity: 0.65;
-        cursor: default;
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      input[type="text"],
+      select {
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.25);
+        color: #eeeeee;
+        padding: 6px 10px;
+        font-size: 0.85rem;
+        font-family: inherit;
+        transition: border-color 150ms ease, background 150ms ease;
+      }
+      input[type="text"]::placeholder {
+        color: rgba(255, 255, 255, 0.3);
+      }
+      input[type="text"]:focus,
+      select:focus {
+        outline: none;
+        border-color: rgba(255, 255, 255, 0.35);
+        background: rgba(0, 0, 0, 0.4);
       }
       select {
-        border: 1px solid var(--line);
-        border-radius: 9px;
-        background: #141414;
-        color: var(--ink);
-        padding: 6px 8px;
-        font-size: 0.84rem;
+        appearance: none;
+        padding-right: 28px;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='rgba(255,255,255,0.4)'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M8 9l4-4 4 4m0 6l-4 4-4-4'%3E%3C/path%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 8px center;
+        background-size: 14px;
       }
       .control-group {
         display: inline-flex;
         align-items: center;
         gap: 6px;
-        font-size: 0.82rem;
+        font-size: 0.8rem;
         color: var(--ink-soft);
       }
       a {
-        color: #efefef;
+        color: #8bb4f7;
+        text-decoration: none;
       }
       a:hover {
-        color: #ffffff;
+        color: #a4c6fa;
+        text-decoration: underline;
       }
       .panel {
-        background: linear-gradient(180deg, var(--surface) 0%, var(--surface-alt) 100%);
-        border: 1px solid var(--line);
-        border-radius: 16px;
-        padding: 14px;
-        box-shadow: var(--shadow);
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-radius: 12px;
+        padding: 20px;
       }
       .panel.hidden-view {
         display: none;
@@ -435,13 +642,13 @@ _DASHBOARD_HTML = """<!doctype html>
         align-items: baseline;
         justify-content: space-between;
         gap: 8px;
-        margin-bottom: 10px;
+        margin-bottom: 16px;
       }
       .section-head h2 {
         margin: 0;
-        font-family: "Trebuchet MS", "Avenir Next", sans-serif;
-        letter-spacing: -0.015em;
-        font-size: 1rem;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        font-size: 1.05rem;
       }
       .section-head .hint {
         color: var(--ink-soft);
@@ -457,10 +664,10 @@ _DASHBOARD_HTML = """<!doctype html>
         gap: 12px;
       }
       .kpi {
-        background: #111111;
-        border: 1px solid var(--line);
-        border-radius: 13px;
-        padding: 14px;
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid rgba(255, 255, 255, 0.04);
+        border-radius: 12px;
+        padding: 16px;
         min-height: 104px;
         animation: fade-in 260ms ease-out;
       }
@@ -473,7 +680,7 @@ _DASHBOARD_HTML = """<!doctype html>
       }
       .kpi .value {
         font-size: 1.5rem;
-        font-weight: 700;
+        font-weight: 600;
         line-height: 1.08;
       }
       .kpi .meta {
@@ -485,14 +692,14 @@ _DASHBOARD_HTML = """<!doctype html>
         margin-top: 9px;
         height: 4px;
         border-radius: 999px;
-        background: #1f1f1f;
+        background: rgba(255, 255, 255, 0.1);
         overflow: hidden;
       }
       .meter-fill {
         height: 100%;
         width: 0%;
         border-radius: 999px;
-        background: linear-gradient(90deg, #7f7f7f, #f0f0f0);
+        background: #f2f2f2;
         transition: width 320ms ease;
       }
       .dashboard-grid {
@@ -500,6 +707,20 @@ _DASHBOARD_HTML = """<!doctype html>
         display: grid;
         grid-template-columns: repeat(12, minmax(0, 1fr));
         gap: 12px;
+      }
+      .dashboard-grid[data-layout="columns"] {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+      }
+      .dashboard-grid[data-layout="columns"] > .panel {
+        grid-column: span 1 !important;
+      }
+      .dashboard-grid[data-layout="rows"] {
+        display: grid;
+        grid-template-columns: 1fr;
+      }
+      .dashboard-grid[data-layout="rows"] > .panel {
+        grid-column: span 1 !important;
       }
       .panel-queue {
         grid-column: span 8;
@@ -527,6 +748,9 @@ _DASHBOARD_HTML = """<!doctype html>
       }
       .panel-workspace {
         grid-column: span 12;
+      }
+      .panel-durable {
+        grid-column: span 6;
       }
       .workspace-controls {
         display: inline-flex;
@@ -576,15 +800,79 @@ _DASHBOARD_HTML = """<!doctype html>
         overflow: auto;
       }
       .activity-item {
-        border: 1px solid #2e2e2e;
-        border-radius: 9px;
-        background: #0e0e0e;
-        padding: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.04);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.02);
+        padding: 10px 12px;
       }
       .activity-item .head {
         display: flex;
         justify-content: space-between;
         gap: 8px;
+      }
+      .durable-summary {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      .durable-kpi {
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.02);
+        padding: 10px 12px;
+      }
+      .durable-kpi .label {
+        color: var(--ink-soft);
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+      }
+      .durable-kpi .value {
+        margin-top: 6px;
+        font-size: 0.98rem;
+        font-weight: 600;
+      }
+      .durable-files {
+        display: grid;
+        gap: 6px;
+        margin-top: 8px;
+        margin-bottom: 10px;
+      }
+      .durable-file {
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 9px;
+        background: rgba(255, 255, 255, 0.018);
+        padding: 8px 10px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+      .durable-events {
+        display: grid;
+        gap: 7px;
+        max-height: 280px;
+        overflow: auto;
+      }
+      .durable-event {
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-left: 3px solid rgba(255, 255, 255, 0.26);
+        border-radius: 9px;
+        background: rgba(255, 255, 255, 0.015);
+        padding: 9px 11px;
+      }
+      .durable-event .head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+      }
+      .durable-event .msg {
+        margin-top: 4px;
+        color: var(--ink-soft);
+        font-size: 0.81rem;
+        white-space: pre-wrap;
       }
       .workspace-meta {
         color: var(--ink-soft);
@@ -605,21 +893,22 @@ _DASHBOARD_HTML = """<!doctype html>
         grid-template-columns: 1fr;
       }
       .agent-pane {
-        border: 1px solid #323232;
+        border: 1px solid rgba(255, 255, 255, 0.06);
         border-radius: 12px;
-        background: #0d0d0d;
-        padding: 10px;
-        transition: transform 160ms ease, border-color 200ms ease;
+        background: rgba(255, 255, 255, 0.015);
+        padding: 14px;
+        transition: transform 160ms ease, border-color 200ms ease, background 200ms ease;
       }
       .agent-pane:hover {
         transform: translateY(-1px);
-        border-color: #4a4a4a;
+        border-color: rgba(255, 255, 255, 0.15);
+        background: rgba(255, 255, 255, 0.03);
       }
       .agent-pane.dragging {
         opacity: 0.55;
       }
       .agent-pane.drop-target {
-        outline: 2px dashed #b8b8b8;
+        outline: 2px dashed rgba(255, 255, 255, 0.2);
         outline-offset: 2px;
       }
       .agent-pane-head {
@@ -627,15 +916,15 @@ _DASHBOARD_HTML = """<!doctype html>
         justify-content: space-between;
         gap: 8px;
         align-items: flex-start;
-        margin-bottom: 8px;
+        margin-bottom: 12px;
       }
       .agent-pane-title {
-        font-weight: 700;
-        font-size: 0.88rem;
+        font-weight: 600;
+        font-size: 0.9rem;
       }
       .agent-pane-sub {
-        margin-top: 3px;
-        font-size: 0.78rem;
+        margin-top: 4px;
+        font-size: 0.8rem;
         color: var(--ink-soft);
       }
       .agent-pane-badges {
@@ -644,85 +933,89 @@ _DASHBOARD_HTML = """<!doctype html>
         align-items: center;
       }
       .drag-tag {
-        border: 1px dashed #4a4a4a;
-        border-radius: 999px;
-        padding: 2px 7px;
+        border: 1px dashed rgba(255, 255, 255, 0.1);
+        border-radius: 6px;
+        padding: 2px 6px;
         color: var(--ink-soft);
         font-size: 0.72rem;
       }
       .agent-lines {
         display: grid;
-        gap: 4px;
+        gap: 6px;
       }
       .agent-line {
-        font-size: 0.81rem;
+        font-size: 0.84rem;
         color: var(--ink-soft);
       }
       .agent-json {
-        margin-top: 8px;
+        margin-top: 10px;
         max-height: 200px;
         overflow: auto;
-        background: #090909;
-        border: 1px solid #333333;
+        background: rgba(0, 0, 0, 0.2);
+        border: 1px solid rgba(255, 255, 255, 0.05);
         border-radius: 8px;
-        padding: 8px;
+        padding: 10px;
         white-space: pre-wrap;
       }
       .attention-list {
         display: grid;
-        gap: 8px;
+        gap: 10px;
       }
       .attention-item {
-        border: 1px solid #3d3d3d;
-        background: var(--danger-soft);
-        border-radius: 10px;
-        padding: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        background: rgba(255, 255, 255, 0.02);
+        border-radius: 12px;
+        padding: 16px;
       }
       .attention-item .head {
         display: flex;
         justify-content: space-between;
         gap: 8px;
-        font-weight: 700;
-        font-size: 0.88rem;
+        font-weight: 600;
+        font-size: 0.9rem;
       }
       .attention-item .msg {
-        margin-top: 6px;
-        font-size: 0.85rem;
+        margin-top: 8px;
+        font-size: 0.88rem;
+        line-height: 1.4;
       }
       .attention-item .hint {
-        margin-top: 6px;
-        font-size: 0.79rem;
-        color: #b4b4b4;
+        margin-top: 8px;
+        font-size: 0.82rem;
+        color: var(--ink-soft);
       }
       .attention-tools {
-        margin-top: 8px;
+        margin-top: 12px;
         display: flex;
         gap: 8px;
         flex-wrap: wrap;
       }
       .attention-tools a,
       .attention-tools button {
-        border-radius: 8px;
-        border: 1px solid var(--line);
-        background: #141414;
+        border-radius: 6px;
+        border: none;
+        background: rgba(255, 255, 255, 0.08);
         color: var(--ink);
-        padding: 5px 8px;
-        font-size: 0.75rem;
+        padding: 6px 12px;
+        font-size: 0.8rem;
+        font-weight: 500;
         text-decoration: none;
+        transition: background 150ms ease;
       }
       .attention-tools button {
         cursor: pointer;
       }
       .attention-tools button:hover,
       .attention-tools a:hover {
-        border-color: #8a8a8a;
+        background: rgba(255, 255, 255, 0.15);
       }
       .empty {
-        border: 1px dashed var(--line);
-        border-radius: 10px;
-        padding: 14px;
+        border: 1px dashed rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        padding: 20px;
         color: var(--ink-soft);
-        background: #0d0d0d;
+        background: rgba(255, 255, 255, 0.01);
+        text-align: center;
       }
       table {
         width: 100%;
@@ -732,8 +1025,8 @@ _DASHBOARD_HTML = """<!doctype html>
       th,
       td {
         text-align: left;
-        padding: 8px;
-        border-bottom: 1px solid #303030;
+        padding: 10px 12px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
         vertical-align: top;
       }
       th {
@@ -741,37 +1034,38 @@ _DASHBOARD_HTML = """<!doctype html>
         font-size: 0.75rem;
         letter-spacing: 0.04em;
         text-transform: uppercase;
+        font-weight: 500;
       }
       .table-scroll {
         width: 100%;
         overflow-x: auto;
       }
       .mono {
-        font-family: "Consolas", "IBM Plex Mono", "SFMono-Regular", monospace;
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
         font-size: 0.82rem;
       }
       .badge {
         display: inline-block;
-        border-radius: 999px;
-        padding: 2px 8px;
-        font-size: 0.74rem;
-        font-weight: 700;
+        border-radius: 6px;
+        padding: 4px 8px;
+        font-size: 0.72rem;
+        font-weight: 600;
         border: 1px solid transparent;
       }
       .badge.ok {
-        color: var(--ok);
-        border-color: #575757;
-        background: var(--ok-soft);
+        color: #a8d5c4;
+        border-color: rgba(168, 213, 196, 0.2);
+        background: rgba(168, 213, 196, 0.1);
       }
       .badge.warn {
-        color: var(--warn);
-        border-color: #545454;
-        background: var(--warn-soft);
+        color: #fce8b2;
+        border-color: rgba(252, 232, 178, 0.2);
+        background: rgba(252, 232, 178, 0.1);
       }
       .badge.danger {
-        color: var(--danger);
-        border-color: #454545;
-        background: var(--danger-soft);
+        color: #f2b8b5;
+        border-color: rgba(242, 184, 181, 0.2);
+        background: rgba(242, 184, 181, 0.1);
       }
       .kv-list {
         display: grid;
@@ -780,25 +1074,30 @@ _DASHBOARD_HTML = """<!doctype html>
       .kv-item {
         display: grid;
         grid-template-columns: minmax(120px, 36%) 1fr;
-        gap: 8px;
-        padding: 7px 8px;
+        gap: 12px;
+        padding: 8px 12px;
         border-radius: 8px;
-        background: #0f0f0f;
-        border: 1px solid #2e2e2e;
+        background: rgba(255, 255, 255, 0.015);
+        border: 1px solid rgba(255, 255, 255, 0.04);
         font-size: 0.84rem;
       }
       .kv-item .key {
         color: var(--ink-soft);
+      }
+      .kv-item .value {
+        word-break: break-all;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
       }
       .profiling-list {
         display: grid;
         gap: 8px;
       }
       .profiling-item {
-        border: 1px solid #2f2f2f;
+        border: 1px solid rgba(255, 255, 255, 0.04);
         border-radius: 10px;
-        background: #0f0f0f;
-        padding: 9px 10px;
+        background: rgba(255, 255, 255, 0.02);
+        padding: 10px 12px;
       }
       .profiling-item .head {
         display: flex;
@@ -808,12 +1107,12 @@ _DASHBOARD_HTML = """<!doctype html>
       }
       .profiling-item .name {
         font-size: 0.86rem;
-        font-weight: 700;
+        font-weight: 600;
       }
       .profiling-item .meta {
-        margin-top: 5px;
+        margin-top: 6px;
         color: var(--ink-soft);
-        font-size: 0.79rem;
+        font-size: 0.8rem;
       }
       .events {
         max-height: 440px;
@@ -821,8 +1120,8 @@ _DASHBOARD_HTML = """<!doctype html>
         padding-right: 4px;
       }
       .event {
-        border-bottom: 1px solid #2f2f2f;
-        padding: 8px 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        padding: 10px 0;
       }
       .event:last-child {
         border-bottom: 0;
@@ -831,21 +1130,23 @@ _DASHBOARD_HTML = """<!doctype html>
         font-size: 0.86rem;
       }
       .event .meta {
-        margin-top: 2px;
-        font-size: 0.78rem;
+        margin-top: 4px;
+        font-size: 0.8rem;
         color: var(--ink-soft);
       }
       .agent-ref {
-        border: 1px solid #3a3a3a;
-        border-radius: 999px;
-        background: #141414;
+        border: none;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.08);
         color: var(--ink);
-        padding: 3px 8px;
+        padding: 4px 8px;
         font-size: 0.74rem;
+        font-weight: 500;
         cursor: pointer;
+        transition: background 150ms ease;
       }
       .agent-ref:hover {
-        border-color: #8c8c8c;
+        background: rgba(255, 255, 255, 0.15);
       }
       .trace-modal {
         position: fixed;
@@ -853,7 +1154,8 @@ _DASHBOARD_HTML = """<!doctype html>
         display: none;
         align-items: stretch;
         justify-content: flex-end;
-        background: rgba(0, 0, 0, 0.58);
+        background: rgba(0, 0, 0, 0.6);
+        backdrop-filter: blur(4px);
         z-index: 200;
       }
       .trace-modal.open {
@@ -863,38 +1165,39 @@ _DASHBOARD_HTML = """<!doctype html>
       .trace-panel {
         width: min(760px, 96vw);
         height: 100%;
-        background: linear-gradient(180deg, #101010, #090909);
-        border-left: 1px solid #2f2f2f;
+        background: #111111;
+        border-left: 1px solid rgba(255, 255, 255, 0.1);
         display: grid;
         grid-template-rows: auto auto 1fr;
         box-shadow: -22px 0 48px -30px rgba(0, 0, 0, 0.8);
       }
       .trace-head {
-        padding: 14px 16px 10px;
-        border-bottom: 1px solid #2b2b2b;
+        padding: 20px 24px 16px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
         display: flex;
         justify-content: space-between;
-        gap: 10px;
+        gap: 12px;
         align-items: flex-start;
       }
       .trace-title {
         margin: 0;
-        font-size: 1.05rem;
+        font-size: 1.15rem;
+        font-weight: 600;
       }
       .trace-sub {
         margin-top: 6px;
         color: var(--ink-soft);
-        font-size: 0.8rem;
+        font-size: 0.85rem;
       }
       .trace-controls {
         display: inline-flex;
         gap: 8px;
       }
       .trace-summary {
-        padding: 10px 16px;
-        border-bottom: 1px solid #2b2b2b;
+        padding: 16px 24px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
         display: grid;
-        gap: 10px;
+        gap: 12px;
       }
       .trace-status-row {
         display: flex;
@@ -905,63 +1208,61 @@ _DASHBOARD_HTML = """<!doctype html>
       .trace-status-pill {
         display: inline-flex;
         align-items: center;
-        border-radius: 999px;
-        padding: 3px 10px;
+        border-radius: 6px;
+        padding: 4px 10px;
         font-size: 0.78rem;
-        font-weight: 700;
-        border: 1px solid #3b3b3b;
-        background: #161616;
+        font-weight: 600;
+        border: 1px solid transparent;
       }
       .trace-status-pill.status-running {
-        border-color: #2f7f67;
-        background: rgba(27, 72, 58, 0.35);
+        background: rgba(159, 230, 203, 0.1);
         color: #9fe6cb;
       }
       .trace-status-pill.status-retrying {
-        border-color: #7f6b3e;
-        background: rgba(84, 66, 30, 0.35);
+        background: rgba(244, 211, 159, 0.1);
         color: #f4d39f;
       }
       .trace-status-pill.status-blocked {
-        border-color: #7f4a4a;
-        background: rgba(89, 40, 40, 0.35);
+        background: rgba(240, 178, 178, 0.1);
         color: #f0b2b2;
       }
       .trace-summary-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(142px, 1fr));
-        gap: 8px;
+        gap: 10px;
       }
       .trace-stat {
-        border: 1px solid #2f2f2f;
-        border-radius: 9px;
-        background: #0d0d0d;
-        padding: 7px 8px;
+        border: 1px solid rgba(255, 255, 255, 0.04);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.015);
+        padding: 10px 12px;
       }
       .trace-stat .label {
         color: var(--ink-soft);
         font-size: 0.72rem;
         text-transform: uppercase;
         letter-spacing: 0.05em;
+        font-weight: 500;
       }
       .trace-stat .value {
-        margin-top: 4px;
-        font-size: 0.82rem;
+        margin-top: 6px;
+        font-size: 0.85rem;
+        font-weight: 500;
       }
       .trace-stream {
-        padding: 10px 16px 16px;
+        padding: 16px 24px 24px;
         overflow: auto;
       }
       .trace-events {
         display: grid;
-        gap: 8px;
+        gap: 10px;
       }
       .trace-event {
-        border: 1px solid #2f2f2f;
-        border-left: 3px solid #444444;
-        border-radius: 10px;
-        background: #0f0f0f;
-        padding: 8px 9px;
+        border: 1px solid rgba(255, 255, 255, 0.04);
+        border-left: 3px solid rgba(255, 255, 255, 0.2);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.02);
+        padding: 12px 14px;
       }
       .trace-event.ok {
         border-left-color: #3b8f74;
@@ -983,29 +1284,31 @@ _DASHBOARD_HTML = """<!doctype html>
       .trace-event .event-tags {
         display: inline-flex;
         align-items: center;
-        gap: 6px;
+        gap: 8px;
         flex-wrap: wrap;
       }
       .trace-event .event-type {
-        border: 1px solid #333333;
-        border-radius: 999px;
-        padding: 2px 7px;
-        font-size: 0.69rem;
+        border: none;
+        background: rgba(255, 255, 255, 0.06);
+        border-radius: 6px;
+        padding: 2px 8px;
+        font-size: 0.7rem;
+        font-weight: 500;
         color: var(--ink-soft);
       }
       .trace-event .event-name {
-        font-size: 0.8rem;
-        font-weight: 700;
+        font-size: 0.82rem;
+        font-weight: 600;
       }
       .trace-event .event-body {
-        margin-top: 4px;
-        font-size: 0.81rem;
+        margin-top: 6px;
+        font-size: 0.85rem;
         color: var(--ink);
         white-space: pre-wrap;
       }
       .trace-event .event-detail {
-        margin-top: 4px;
-        font-size: 0.79rem;
+        margin-top: 6px;
+        font-size: 0.8rem;
         color: var(--ink-soft);
         white-space: pre-wrap;
       }
@@ -1036,6 +1339,9 @@ _DASHBOARD_HTML = """<!doctype html>
         .panel-profiling {
           grid-column: span 6;
         }
+        .panel-durable {
+          grid-column: span 6;
+        }
         .panel-events {
           grid-column: span 5;
         }
@@ -1047,6 +1353,9 @@ _DASHBOARD_HTML = """<!doctype html>
         }
       }
       @media (max-width: 1180px) {
+        .top-nav {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
         .kpi-grid {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
@@ -1056,6 +1365,7 @@ _DASHBOARD_HTML = """<!doctype html>
         .panel-running,
         .panel-retry,
         .panel-profiling,
+        .panel-durable,
         .panel-events,
         .panel-activity {
           grid-column: span 12;
@@ -1071,6 +1381,7 @@ _DASHBOARD_HTML = """<!doctype html>
         }
         .top-nav {
           width: 100%;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
         }
         .controls {
           width: 100%;
@@ -1106,18 +1417,43 @@ _DASHBOARD_HTML = """<!doctype html>
   </head>
   <body>
     <div class="dashboard-shell">
-      <div class="topbar">
-        <div class="title-wrap">
-          <h1>Molt Symphony Control</h1>
-          <div class="subtitle">
-            Realtime orchestration command center with resilient stream telemetry.
+      <header class="dashboard-header">
+        <div class="header-left">
+          <div class="title-wrap">
+            <h1>Molt Symphony</h1>
+            <div class="subtitle">Realtime Control</div>
+          </div>
+          <div class="top-nav" role="tablist" aria-label="dashboard views">
+            <button type="button" role="tab" class="view-tab active" data-view="overview">
+              <span class="tab-title">Overview</span>
+              <span class="tab-meta">mission posture</span>
+            </button>
+            <button type="button" role="tab" class="view-tab" data-view="interventions">
+              <span class="tab-title">Interventions</span>
+              <span class="tab-meta">human action lane</span>
+            </button>
+            <button type="button" role="tab" class="view-tab" data-view="agents">
+              <span class="tab-title">Agents</span>
+              <span class="tab-meta">live workers</span>
+            </button>
+            <button type="button" role="tab" class="view-tab" data-view="performance">
+              <span class="tab-title">Performance</span>
+              <span class="tab-meta">throughput + hotspots</span>
+            </button>
+            <button type="button" role="tab" class="view-tab" data-view="memory">
+              <span class="tab-title">Memory</span>
+              <span class="tab-meta">durable telemetry</span>
+            </button>
+            <button type="button" role="tab" class="view-tab" data-view="all">
+              <span class="tab-title">All</span>
+              <span class="tab-meta">full command center</span>
+            </button>
           </div>
         </div>
         <div class="controls">
           <span id="stream-chip" class="status-chip">Connecting...</span>
           <span id="updated-chip" class="status-chip">No updates yet</span>
           <label class="control-group" for="workspace-layout">
-            <span>layout</span>
             <select id="workspace-layout" aria-label="layout">
               <option value="columns">columns</option>
               <option value="rows">rows</option>
@@ -1125,25 +1461,16 @@ _DASHBOARD_HTML = """<!doctype html>
             </select>
           </label>
           <label class="control-group" for="workspace-verbosity">
-            <span>verbosity</span>
             <select id="workspace-verbosity" aria-label="verbosity">
               <option value="compact">compact</option>
               <option value="normal" selected>normal</option>
               <option value="verbose">verbose</option>
             </select>
           </label>
-          <button id="refresh-btn" type="button">Run Refresh Cycle</button>
-          <button id="reload-btn" type="button" class="secondary">Reconnect Stream</button>
+          <button id="refresh-btn" type="button">Refresh</button>
+          <button id="reload-btn" type="button" class="secondary">Reconnect</button>
         </div>
-      </div>
-
-      <div class="top-nav" role="tablist" aria-label="dashboard views">
-        <button type="button" class="view-tab active" data-view="overview">Overview</button>
-        <button type="button" class="view-tab" data-view="interventions">Interventions</button>
-        <button type="button" class="view-tab" data-view="agents">Agents</button>
-        <button type="button" class="view-tab" data-view="performance">Performance</button>
-        <button type="button" class="view-tab" data-view="all">All Panels</button>
-      </div>
+      </header>
 
       <div class="panel kpi-band" data-views="overview performance all">
         <div class="section-head">
@@ -1219,7 +1546,9 @@ _DASHBOARD_HTML = """<!doctype html>
                 class="mono"
                 placeholder="Issue identifier (e.g. MOL-42)"
                 aria-label="tool-issue-identifier"
+                list="tool-issue-datalist"
               />
+              <datalist id="tool-issue-datalist"></datalist>
               <button id="tool-run-btn" type="button" class="secondary">Run Tool</button>
             </div>
             <div class="hint">
@@ -1257,6 +1586,15 @@ _DASHBOARD_HTML = """<!doctype html>
             <div class="hint">Latency concentration and execution heat</div>
           </div>
           <div id="profiling-wrap"></div>
+        </div>
+        <div class="panel panel-durable" data-views="memory performance all">
+          <div class="section-head">
+            <h2>Durable Memory</h2>
+            <div class="hint">Historical telemetry persisted on external volume</div>
+          </div>
+          <div id="durable-summary" class="durable-summary"></div>
+          <div id="durable-files" class="durable-files"></div>
+          <div id="durable-events" class="durable-events"></div>
         </div>
         <div class="panel panel-events" data-views="interventions performance all">
           <div class="section-head">
@@ -1312,6 +1650,7 @@ _DASHBOARD_HTML = """<!doctype html>
 
       <div class="footer">
         Endpoints: <span class="mono">/api/v1/state</span>,
+        <span class="mono">/api/v1/durable</span>,
         <span class="mono">/api/v1/stream</span>,
         <span class="mono">/api/v1/refresh</span>,
         <span class="mono">/api/v1/interventions/retry-now</span>,
@@ -1343,6 +1682,9 @@ _DASHBOARD_HTML = """<!doctype html>
       const eventsWrap = document.getElementById("events");
       const interventionActivity = document.getElementById("intervention-activity");
       const rateWrap = document.getElementById("rate-wrap");
+      const durableSummary = document.getElementById("durable-summary");
+      const durableFiles = document.getElementById("durable-files");
+      const durableEvents = document.getElementById("durable-events");
       const workspaceWrap = document.getElementById("agent-workspace");
       const workspaceMeta = document.getElementById("workspace-meta");
       const layoutSelect = document.getElementById("workspace-layout");
@@ -1351,7 +1693,14 @@ _DASHBOARD_HTML = """<!doctype html>
       const viewPanels = Array.from(document.querySelectorAll("[data-views]"));
       const LAYOUT_CHOICES = ["columns", "rows", "grid"];
       const VERBOSITY_CHOICES = ["compact", "normal", "verbose"];
-      const VIEW_CHOICES = ["overview", "interventions", "agents", "performance", "all"];
+      const VIEW_CHOICES = [
+        "overview",
+        "interventions",
+        "agents",
+        "performance",
+        "memory",
+        "all",
+      ];
       const STORAGE_KEY = "molt.symphony.dashboard.workspace.v1";
       const VIEW_STORAGE_KEY = "molt.symphony.dashboard.view.v1";
       let stream = null;
@@ -1372,6 +1721,10 @@ _DASHBOARD_HTML = """<!doctype html>
       let tracePollTimer = null;
       let traceFetchSerial = 0;
       let latestGeneratedAt = "";
+      let latestStateEtag = "";
+      let durableMemoryState = {};
+      let durablePollTimer = null;
+      let durableFetchInFlight = false;
       let streamIntervalMs = 1000;
       let fallbackPollIntervalMs = 2500;
       let staleAfterMs = 7000;
@@ -1557,7 +1910,6 @@ _DASHBOARD_HTML = """<!doctype html>
             .filter((value) => value.length > 0);
           const visible =
             activeDashboardView === "all" ||
-            allowed.includes("all") ||
             allowed.includes(activeDashboardView);
           panel.classList.toggle("hidden-view", !visible);
           panel.style.display = visible ? "" : "none";
@@ -1566,6 +1918,7 @@ _DASHBOARD_HTML = """<!doctype html>
           const tabView = normalizeDashboardView(tab.dataset.view || "overview");
           tab.classList.toggle("active", tabView === activeDashboardView);
           tab.setAttribute("aria-selected", tabView === activeDashboardView ? "true" : "false");
+          tab.setAttribute("tabindex", tabView === activeDashboardView ? "0" : "-1");
         });
       }
 
@@ -1839,6 +2192,7 @@ _DASHBOARD_HTML = """<!doctype html>
         streamChip.className = "status-chip";
         if (mode === "live") streamChip.classList.add("live");
         if (mode === "warn") streamChip.classList.add("warn");
+        if (mode === "connecting") streamChip.classList.add("connecting");
       }
 
       function stopPolling() {
@@ -2025,6 +2379,168 @@ _DASHBOARD_HTML = """<!doctype html>
               </div>
             `;
           })
+          .join("");
+      }
+
+      function formatBytes(bytes) {
+        const value = toNumber(bytes, 0);
+        if (!Number.isFinite(value) || value <= 0) return "0 B";
+        const units = ["B", "KB", "MB", "GB", "TB"];
+        let size = value;
+        let idx = 0;
+        while (size >= 1024 && idx < units.length - 1) {
+          size /= 1024;
+          idx += 1;
+        }
+        return `${size.toFixed(size >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`;
+      }
+
+      function renderDurableMemory() {
+        if (!durableSummary || !durableFiles || !durableEvents) {
+          return;
+        }
+        const payload = toObject(durableMemoryState);
+        const enabled = Boolean(payload.enabled);
+        const files = toObject(payload.files);
+        const jsonl = toObject(files.jsonl);
+        const duckdb = toObject(files.duckdb);
+        const parquet = toObject(files.parquet);
+        const root = String(payload.root || "");
+        const events = toArray(payload.recent_events);
+        const kindCounts = toObject(payload.kind_counts);
+        const statusText = enabled ? "Enabled" : "Disabled";
+        const statusClass = enabled ? "ok" : "warn";
+        durableSummary.innerHTML = `
+          <div class="durable-kpi">
+            <div class="label">Status</div>
+            <div class="value"><span class="badge ${statusClass}">${escapeHtml(
+              statusText
+            )}</span></div>
+          </div>
+          <div class="durable-kpi">
+            <div class="label">Root</div>
+            <div class="value mono">${escapeHtml(root || "n/a")}</div>
+          </div>
+          <div class="durable-kpi">
+            <div class="label">Queue Depth</div>
+            <div class="value">${formatNumber(payload.queue_depth || 0)}</div>
+          </div>
+          <div class="durable-kpi">
+            <div class="label">Dropped Rows</div>
+            <div class="value">${formatNumber(payload.dropped_rows || 0)}</div>
+          </div>
+        `;
+        durableFiles.innerHTML = `
+          <div class="durable-file">
+            <span class="mono">events.jsonl</span>
+            <span>${formatBytes(jsonl.size_bytes)} · ${escapeHtml(relTime(
+              jsonl.modified_at
+            ))}</span>
+          </div>
+          <div class="durable-file">
+            <span class="mono">events.duckdb</span>
+            <span>${formatBytes(duckdb.size_bytes)} · ${escapeHtml(relTime(
+              duckdb.modified_at
+            ))}</span>
+          </div>
+          <div class="durable-file">
+            <span class="mono">events.parquet</span>
+            <span>${formatBytes(parquet.size_bytes)} · ${escapeHtml(relTime(
+              parquet.modified_at
+            ))}</span>
+          </div>
+          <div class="durable-file">
+            <span class="mono">last sync</span>
+            <span>${escapeHtml(relTime(payload.last_sync_utc))}</span>
+          </div>
+        `;
+        if (!events.length) {
+          durableEvents.innerHTML =
+            '<div class="empty">No durable telemetry events recorded yet.</div>';
+          return;
+        }
+        const kindSummary = Object.entries(kindCounts)
+          .map(([kind, count]) => `${kind}:${formatNumber(count)}`)
+          .join(" · ");
+        durableEvents.innerHTML = `
+          <div class="hint">${escapeHtml(kindSummary || "recent event trail")}</div>
+          ${events
+            .slice()
+            .reverse()
+            .slice(0, 80)
+            .map((eventValue) => {
+              const event = toObject(eventValue);
+              const issueIdentifier = String(event.issue_identifier || "");
+              const canTrace = issueIdentifier && issueIdentifier.toUpperCase() !== "SYSTEM";
+              const issueBadge = canTrace
+                ? `<button type="button" class="agent-ref mono" data-agent-issue="${escapeHtml(
+                    issueIdentifier
+                  )}">${escapeHtml(issueIdentifier)}</button>`
+                : `<span class="mono">${escapeHtml(issueIdentifier || "SYSTEM")}</span>`;
+              const kind = String(event.kind || "event");
+              const message = String(
+                event.message || event.detail || event.error || event.status || ""
+              );
+              return `
+                <article class="durable-event">
+                  <div class="head">
+                    <div class="event-tags">
+                      ${issueBadge}
+                      <span class="badge">${escapeHtml(kind)}</span>
+                    </div>
+                    <div class="meta">${escapeHtml(relTime(event.recorded_at || event.at))}</div>
+                  </div>
+                  <div class="msg">${escapeHtml(message)}</div>
+                </article>
+              `;
+            })
+            .join("")}
+        `;
+      }
+
+      function renderToolLauncher(state) {
+        const issues = new Map();
+
+        toArray(state.attention).forEach(item => {
+          const obj = toObject(item);
+          const id = String(obj.issue_identifier || obj.issue_id || "");
+          if (id && id !== "SYSTEM") {
+            const kind = obj.kind || "alert";
+            const title = obj.title ? ` "${obj.title}"` : "";
+            const msg = obj.message || "Needs intervention";
+            issues.set(id, `Attention: [${kind}]${title} - ${msg}`);
+          }
+        });
+
+        toArray(state.running).forEach(item => {
+          const obj = toObject(item);
+          const id = String(obj.issue_identifier || obj.issue_id || "");
+          if (id && !issues.has(id)) {
+            const role = obj.role || obj.worker_role || "worker";
+            const st = obj.state || obj.status || "active";
+            const title = obj.title ? ` "${obj.title}"` : "";
+            const turns = obj.turn_count || obj.turns || 0;
+            const event = obj.last_event || obj.event || "processing";
+            issues.set(id, `Running: [${role}]${title} - state=${st} · turns=${turns} · event=${event}`);
+          }
+        });
+
+        toArray(state.retrying).forEach(item => {
+          const obj = toObject(item);
+          const id = String(obj.issue_identifier || obj.issue_id || "");
+          if (id && !issues.has(id)) {
+            const attempt = obj.attempt || 1;
+            const title = obj.title ? ` "${obj.title}"` : "";
+            const err = obj.error || obj.message || "unknown error";
+            issues.set(id, `Retrying:${title} attempt=${attempt} · error=${err}`);
+          }
+        });
+
+        const datalist = document.getElementById("tool-issue-datalist");
+        if (!datalist) return;
+
+        datalist.innerHTML = Array.from(issues.entries())
+          .map(([id, desc]) => `<option value="${escapeHtml(id)}">${escapeHtml(desc)}</option>`)
           .join("");
       }
 
@@ -2231,7 +2747,7 @@ _DASHBOARD_HTML = """<!doctype html>
         if (creditExhausted) {
           headline = "Provider credits are exhausted (not a local concurrency cap).";
           detail =
-            `Codex reports \`credits.hasCredits=false\`, so work is paused until credits return. ` +
+            `Codex reports credits.hasCredits=false, so work is paused until credits return. ` +
             `Auto-resume in about ${dueIn}.`;
           level = "danger";
         } else if (windowSaturated || suspended) {
@@ -2455,6 +2971,20 @@ _DASHBOARD_HTML = """<!doctype html>
           },
           () => renderAgentWorkspace(safeState)
         );
+        updatePanel(
+          "tool_launcher",
+          {
+            attention: safeState.attention,
+            running: safeState.running,
+            retrying: safeState.retrying,
+          },
+          () => renderToolLauncher(safeState)
+        );
+        updatePanel(
+          "durable_memory",
+          { durable: durableMemoryState },
+          () => renderDurableMemory()
+        );
         const updatedText = `Updated ${formatTime(safeState.generated_at)}`;
         if (updatedChip.textContent !== updatedText) {
           updatedChip.textContent = updatedText;
@@ -2485,10 +3015,42 @@ _DASHBOARD_HTML = """<!doctype html>
       }
 
       async function fetchState() {
-        const resp = await fetch("/api/v1/state");
+        const headers = { "Cache-Control": "no-cache" };
+        if (latestStateEtag) {
+          headers["If-None-Match"] = latestStateEtag;
+        }
+        const resp = await fetch("/api/v1/state", { headers });
+        if (resp.status === 304) {
+          return false;
+        }
         if (!resp.ok) throw new Error(`state_fetch_failed:${resp.status}`);
+        const etag = String(resp.headers.get("ETag") || "").trim();
+        if (etag) {
+          latestStateEtag = etag;
+        }
         const data = await resp.json();
         renderState(data);
+        return true;
+      }
+
+      async function fetchDurableMemory() {
+        if (durableFetchInFlight) return false;
+        durableFetchInFlight = true;
+        try {
+          const resp = await fetch("/api/v1/durable?limit=140", {
+            headers: { "Cache-Control": "no-cache" },
+          });
+          if (!resp.ok) {
+            throw new Error(`durable_fetch_failed:${resp.status}`);
+          }
+          durableMemoryState = await resp.json();
+          renderState(latestState);
+          return true;
+        } catch (_err) {
+          return false;
+        } finally {
+          durableFetchInFlight = false;
+        }
       }
 
       async function triggerRefresh() {
@@ -2797,7 +3359,7 @@ _DASHBOARD_HTML = """<!doctype html>
         if (manual) {
           reconnectAttempts = 0;
         }
-        setStreamStatus(`Connecting live stream (${streamIntervalMs}ms)...`);
+        setStreamStatus(`Connecting live stream (${streamIntervalMs}ms)...`, "connecting");
         ensureWatchdog();
         stream = new EventSource(`/api/v1/stream?interval_ms=${streamIntervalMs}`);
         stream.onopen = () => {
@@ -2814,6 +3376,9 @@ _DASHBOARD_HTML = """<!doctype html>
         stream.addEventListener("state", (event) => {
           try {
             lastFrameAt = Date.now();
+            if (event.lastEventId) {
+              latestStateEtag = String(event.lastEventId);
+            }
             renderState(JSON.parse(event.data));
             stopPolling();
             setStreamStatus(`Live stream (${streamIntervalMs}ms)`, "live");
@@ -2823,11 +3388,22 @@ _DASHBOARD_HTML = """<!doctype html>
         });
       }
 
+      function startDurablePolling() {
+        if (durablePollTimer) return;
+        const run = async () => {
+          await fetchDurableMemory();
+        };
+        durablePollTimer = setInterval(run, 10000);
+        run();
+      }
+
       loadWorkspacePrefs();
       loadDashboardView();
       setDashboardView(activeDashboardView, false);
       layoutSelect.value = workspaceLayout;
       verbositySelect.value = workspaceVerbosity;
+      const dashboardGrid = document.querySelector(".dashboard-grid");
+      if (dashboardGrid) dashboardGrid.dataset.layout = workspaceLayout;
       workspaceWrap.addEventListener("dragstart", handlePaneDragStart);
       workspaceWrap.addEventListener("dragover", handlePaneDragOver);
       workspaceWrap.addEventListener("drop", handlePaneDrop);
@@ -2835,6 +3411,8 @@ _DASHBOARD_HTML = """<!doctype html>
       layoutSelect.addEventListener("change", () => {
         workspaceLayout = normalizeLayout(layoutSelect.value);
         layoutSelect.value = workspaceLayout;
+        const dashboardGrid = document.querySelector(".dashboard-grid");
+        if (dashboardGrid) dashboardGrid.dataset.layout = workspaceLayout;
         persistWorkspacePrefs();
         renderState(latestState);
       });
@@ -2851,6 +3429,15 @@ _DASHBOARD_HTML = """<!doctype html>
         if (!(target instanceof Element)) return;
         const tab = target.closest(".view-tab");
         if (!(tab instanceof HTMLButtonElement)) return;
+        setDashboardView(tab.dataset.view || "overview", true);
+      });
+      document.querySelector(".top-nav")?.addEventListener("keydown", (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const tab = target.closest(".view-tab");
+        if (!(tab instanceof HTMLButtonElement)) return;
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
         setDashboardView(tab.dataset.view || "overview", true);
       });
       attentionList.addEventListener("click", (event) => {
@@ -2902,6 +3489,7 @@ _DASHBOARD_HTML = """<!doctype html>
       });
       connectStream(false);
       fetchState().catch(() => startPollingFallback());
+      startDurablePolling();
     </script>
   </body>
 </html>

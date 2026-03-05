@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -26,6 +27,40 @@ class _Provider:
                 "seconds_running": 0.0,
             },
             "rate_limits": None,
+        }
+
+    def snapshot_durable_memory(self, limit: int = 120) -> dict[str, Any]:
+        return {
+            "enabled": True,
+            "root": "/Volumes/APDataStore/Molt/logs/symphony/durable_memory",
+            "queue_depth": 0,
+            "dropped_rows": 0,
+            "last_sync_utc": "2026-03-04T00:00:00Z",
+            "files": {
+                "jsonl": {
+                    "exists": True,
+                    "size_bytes": 2048,
+                    "modified_at": "2026-03-04T00:00:00Z",
+                },
+                "duckdb": {
+                    "exists": True,
+                    "size_bytes": 4096,
+                    "modified_at": "2026-03-04T00:00:00Z",
+                },
+                "parquet": {
+                    "exists": True,
+                    "size_bytes": 1024,
+                    "modified_at": "2026-03-04T00:00:00Z",
+                },
+            },
+            "recent_events": [
+                {
+                    "recorded_at": "2026-03-04T00:00:00Z",
+                    "kind": "codex_event",
+                    "issue_identifier": "MOL-1",
+                    "message": "turn_completed",
+                }
+            ][: max(limit, 1)],
         }
 
     def snapshot_issue(self, issue_identifier: str) -> dict[str, Any] | None:
@@ -121,10 +156,27 @@ def test_dashboard_contains_realtime_ui() -> None:
         assert "Agent Telemetry Workspace" in body
         assert "verbosity" in body
         assert "Interventions" in body
+        assert "Durable Memory" in body
+        assert "durable telemetry" in body
         assert "view-tab" in body
         assert "set_max_concurrent_agents" in body
+        assert "/api/v1/durable" in body
         assert "/api/v1/stream" in body
         assert "EventSource" in body
+    finally:
+        server.stop()
+
+
+def test_durable_endpoint_returns_payload() -> None:
+    provider = _Provider()
+    server = DashboardServer(provider=provider, port=0)
+    port = server.start()
+    try:
+        status, payload = _read_json(f"http://127.0.0.1:{port}/api/v1/durable?limit=25")
+        assert status == 200
+        assert payload["enabled"] is True
+        assert payload["files"]["jsonl"]["exists"] is True
+        assert payload["recent_events"][0]["issue_identifier"] == "MOL-1"
     finally:
         server.stop()
 
@@ -183,14 +235,44 @@ def test_state_stream_emits_sse_payload() -> None:
             assert int(resp.status) == 200
             assert "text/event-stream" in (resp.headers.get("Content-Type") or "")
             data_line = ""
+            id_line = ""
             for _ in range(16):
                 line = resp.readline().decode("utf-8").strip()
+                if line.startswith("id: "):
+                    id_line = line.removeprefix("id: ")
                 if line.startswith("data: "):
                     data_line = line.removeprefix("data: ")
                     break
+            assert id_line
             assert data_line
             payload = json.loads(data_line)
             assert payload["counts"]["running"] == 0
             assert payload["counts"]["retrying"] == 0
+    finally:
+        server.stop()
+
+
+def test_state_endpoint_etag_supports_conditional_get() -> None:
+    provider = _Provider()
+    server = DashboardServer(provider=provider, port=0)
+    port = server.start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+        conn.request("GET", "/api/v1/state")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        etag = resp.getheader("ETag") or ""
+        body = resp.read()
+        conn.close()
+        assert etag
+        assert body
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+        conn.request("GET", "/api/v1/state", headers={"If-None-Match": etag})
+        resp = conn.getresponse()
+        assert resp.status == 304
+        assert (resp.getheader("ETag") or "") == etag
+        assert resp.read() == b""
+        conn.close()
     finally:
         server.stop()
