@@ -117,6 +117,17 @@ _WHEEL_TOKEN_RE = re.compile(r"[^A-Za-z0-9_.]+")
 _WHEEL_VERSION_RE = re.compile(r"[^A-Za-z0-9._]+")
 _PY_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _PY_C_API_TOKEN_RE = re.compile(r"\bPy[A-Za-z_][A-Za-z0-9_]*\b")
+_PY_C_API_DEFINE_RE = re.compile(
+    r"^\s*#\s*define\s+(Py[A-Za-z_][A-Za-z0-9_]*)\b", flags=re.MULTILINE
+)
+_PY_C_API_STATIC_FUNC_RE = re.compile(
+    r"^\s*static\b[^\n;{}]*\b(Py[A-Za-z_][A-Za-z0-9_]*)\s*\([^;\n{}]*\)\s*(?:;|\{)",
+    flags=re.MULTILINE,
+)
+_PY_C_API_STATIC_VAR_RE = re.compile(
+    r"^\s*static\b[^\n;{}]*\b(Py[A-Za-z_][A-Za-z0-9_]*)\b\s*(?:=|;)",
+    flags=re.MULTILINE,
+)
 _C_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", flags=re.DOTALL)
 _C_LINE_COMMENT_RE = re.compile(r"//.*?$", flags=re.MULTILINE)
 _C_STRING_LITERAL_RE = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
@@ -11815,6 +11826,20 @@ def _extract_py_c_api_tokens(text: str) -> set[str]:
     return {match.group(0) for match in _PY_C_API_TOKEN_RE.finditer(sanitized)}
 
 
+def _extract_locally_defined_py_c_api_tokens(text: str) -> set[str]:
+    sanitized = _strip_c_like_comments_and_literals(text)
+    local_symbols: set[str] = {
+        match.group(1) for match in _PY_C_API_DEFINE_RE.finditer(sanitized)
+    }
+    local_symbols.update(
+        match.group(1) for match in _PY_C_API_STATIC_FUNC_RE.finditer(sanitized)
+    )
+    local_symbols.update(
+        match.group(1) for match in _PY_C_API_STATIC_VAR_RE.finditer(sanitized)
+    )
+    return local_symbols
+
+
 def _load_supported_py_c_api_surface(
     molt_root: Path,
 ) -> tuple[set[str], Path, str | None]:
@@ -12113,13 +12138,21 @@ def extension_scan(
 
     required_by_file: dict[str, list[str]] = {}
     missing_by_file: dict[str, list[str]] = {}
+    locally_defined_by_file: dict[str, list[str]] = {}
     required_symbols: set[str] = set()
     missing_symbol_frequency: dict[str, int] = {}
     chars_scanned = 0
     for source_unit in source_units:
         source_text = source_unit.text
         chars_scanned += len(source_text)
-        file_required = sorted(_extract_py_c_api_tokens(source_text))
+        file_local_symbols = _extract_locally_defined_py_c_api_tokens(source_text)
+        if file_local_symbols:
+            locally_defined_by_file[source_unit.label] = sorted(file_local_symbols)
+        file_required = sorted(
+            symbol
+            for symbol in _extract_py_c_api_tokens(source_text)
+            if symbol not in file_local_symbols
+        )
         required_by_file[source_unit.label] = file_required
         required_symbols.update(file_required)
         file_missing = sorted(
@@ -12178,6 +12211,7 @@ def extension_scan(
                 "top_missing_symbols": top_missing_symbols,
                 "required_by_file": required_by_file,
                 "missing_by_file": missing_by_file,
+                "locally_defined_by_file": locally_defined_by_file,
                 "fail_on_missing": fail_on_missing,
             },
             warnings=warnings,

@@ -64,6 +64,8 @@ Outputs:
 - Required/supported/missing symbol sets.
 - Per-symbol missing frequency and ranked `top_missing_symbols`.
 - `coverage_ratio` to quantify extension C-API surface fit.
+- Local helper symbol filtering (`#define Py*`, `static Py*`) with
+  `locally_defined_by_file` diagnostics to reduce false-positive gap reports.
 
 ---
 
