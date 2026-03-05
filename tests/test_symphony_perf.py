@@ -1,0 +1,65 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import tools.symphony_perf as symphony_perf
+
+
+def test_summary_uses_success_samples_for_latency_stats() -> None:
+    samples = [
+        symphony_perf.Sample(
+            mode="python",
+            iteration=1,
+            returncode=0,
+            duration_s=1.25,
+            stdout_tail="",
+            stderr_tail="",
+        ),
+        symphony_perf.Sample(
+            mode="python",
+            iteration=2,
+            returncode=1,
+            duration_s=9.5,
+            stdout_tail="",
+            stderr_tail="boom",
+        ),
+    ]
+    summary = symphony_perf._summary(samples)
+    lane = summary["python"]
+    assert lane["samples"] == 2
+    assert lane["successes"] == 1
+    assert lane["failures"] == 1
+    assert lane["avg_s"] == 1.25
+    assert lane["max_s"] == 1.25
+
+
+def test_main_returns_nonzero_when_any_sample_fails(
+    monkeypatch: object,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path))
+    monkeypatch.setattr(symphony_perf.shutil, "which", lambda _: "/usr/bin/uv")
+
+    def _fake_run_once(**_: object) -> symphony_perf.Sample:
+        return symphony_perf.Sample(
+            mode="python",
+            iteration=1,
+            returncode=1,
+            duration_s=2.0,
+            stdout_tail="",
+            stderr_tail="failed",
+        )
+
+    monkeypatch.setattr(symphony_perf, "_run_once", _fake_run_once)
+    rc = symphony_perf.main(
+        [
+            "WORKFLOW.md",
+            "--modes",
+            "python",
+            "--iterations",
+            "1",
+            "--output-json",
+            str(tmp_path / "out.json"),
+        ]
+    )
+    assert rc == 2

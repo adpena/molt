@@ -1211,6 +1211,7 @@ _DASHBOARD_HTML = """<!doctype html>
                 <option value="retry_now">retry_now</option>
                 <option value="stop_worker">stop_worker</option>
                 <option value="inspect_issue">inspect_issue</option>
+                <option value="set_max_concurrent_agents">set_max_concurrent_agents</option>
               </select>
               <input
                 id="tool-issue"
@@ -1222,7 +1223,7 @@ _DASHBOARD_HTML = """<!doctype html>
               <button id="tool-run-btn" type="button" class="secondary">Run Tool</button>
             </div>
             <div class="hint">
-              `refresh_cycle` ignores issue identifier; others use it.
+              `set_max_concurrent_agents` expects a numeric value (for example: `2`).
             </div>
             <pre id="tool-result" class="tool-result mono">No tool run yet.</pre>
           </div>
@@ -1371,6 +1372,12 @@ _DASHBOARD_HTML = """<!doctype html>
       let tracePollTimer = null;
       let traceFetchSerial = 0;
       let latestGeneratedAt = "";
+      let streamIntervalMs = 1000;
+      let fallbackPollIntervalMs = 2500;
+      let staleAfterMs = 7000;
+      let pendingRenderState = null;
+      let renderFrame = 0;
+      const panelSignatures = new Map();
 
       function toObject(value) {
         return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -1428,6 +1435,29 @@ _DASHBOARD_HTML = """<!doctype html>
         return `${Math.floor(sec / 3600)}h`;
       }
 
+      function formatEpochSeconds(value) {
+        const num = toNumber(value, NaN);
+        if (!Number.isFinite(num) || num <= 0) return "n/a";
+        const date = new Date(num * 1000);
+        if (Number.isNaN(date.getTime())) return "n/a";
+        return date.toLocaleString();
+      }
+
+      function deriveDashboardCadence(state) {
+        const runtime = toObject(state.runtime);
+        const profile = toObject(runtime.dashboard_profile);
+        const mode = String(profile.mode || "normal").toLowerCase();
+        return {
+          mode,
+          streamIntervalMs: Math.max(500, toNumber(profile.stream_interval_ms, mode === "gentle" ? 5000 : 1000)),
+          fallbackPollIntervalMs: Math.max(
+            1000,
+            toNumber(profile.fallback_poll_interval_ms, mode === "gentle" ? 15000 : 2500)
+          ),
+          staleAfterMs: Math.max(3000, toNumber(profile.stale_after_ms, mode === "gentle" ? 20000 : 7000)),
+        };
+      }
+
       function setMeter(id, ratio) {
         const node = document.getElementById(id);
         if (!node) return;
@@ -1452,6 +1482,22 @@ _DASHBOARD_HTML = """<!doctype html>
         for (let idx = 0; idx < left.length; idx += 1) {
           if (left[idx] !== right[idx]) return false;
         }
+        return true;
+      }
+
+      function stableSignature(value) {
+        try {
+          return JSON.stringify(value) || "";
+        } catch (_err) {
+          return String(value ?? "");
+        }
+      }
+
+      function updatePanel(key, value, renderFn) {
+        const sig = stableSignature(value);
+        if (panelSignatures.get(key) === sig) return false;
+        panelSignatures.set(key, sig);
+        renderFn();
         return true;
       }
 
@@ -1820,12 +1866,29 @@ _DASHBOARD_HTML = """<!doctype html>
         if (staleWatchdog) return;
         staleWatchdog = setInterval(() => {
           if (!stream || !lastFrameAt) return;
-          if (Date.now() - lastFrameAt > 7000) {
+          if (Date.now() - lastFrameAt > staleAfterMs) {
             setStreamStatus("Live stream stale, using fallback", "warn");
             startPollingFallback();
             scheduleReconnect();
           }
         }, 2000);
+      }
+
+      function applyTransportCadence(state) {
+        const cadence = deriveDashboardCadence(state);
+        const changed =
+          cadence.streamIntervalMs !== streamIntervalMs ||
+          cadence.fallbackPollIntervalMs !== fallbackPollIntervalMs ||
+          cadence.staleAfterMs !== staleAfterMs;
+        streamIntervalMs = cadence.streamIntervalMs;
+        fallbackPollIntervalMs = cadence.fallbackPollIntervalMs;
+        staleAfterMs = cadence.staleAfterMs;
+        if (!changed) return;
+        if (stream) {
+          connectStream(false);
+        } else if (pollTimer) {
+          startPollingFallback(true);
+        }
       }
 
       function renderAttention(state) {
@@ -2142,28 +2205,105 @@ _DASHBOARD_HTML = """<!doctype html>
           .join("");
       }
 
+      function describeRateLimitState(state) {
+        const suspension = toObject(state.suspension);
+        const limits = toObject(state.rate_limits);
+        const credits = toObject(limits.credits);
+        const primary = toObject(limits.primary);
+        const secondary = toObject(limits.secondary);
+        const runtime = toObject(state.runtime);
+        const cadence = deriveDashboardCadence(state);
+        const pollIntervalMs = Math.max(1000, toNumber(runtime.poll_interval_ms, 30000));
+        const creditExhausted = credits.hasCredits === false;
+        const primaryUsed = toNumber(primary.usedPercent, 0);
+        const secondaryUsed = toNumber(secondary.usedPercent, 0);
+        const windowSaturated = primaryUsed >= 99.9 || secondaryUsed >= 99.9;
+        const suspended = Boolean(suspension.active);
+        const dueIn = suspension.due_in_seconds != null ? `${Math.round(toNumber(suspension.due_in_seconds, 0))}s` : "n/a";
+        const primaryResetAt = primary.resetsAt || primary.resetAt || null;
+        const secondaryResetAt = secondary.resetsAt || secondary.resetAt || null;
+
+        let headline = "No provider throttle detected.";
+        let detail =
+          "Symphony is running in normal cadence. Polling and stream intervals are set for responsiveness.";
+        let level = "ok";
+
+        if (creditExhausted) {
+          headline = "Provider credits are exhausted (not a local concurrency cap).";
+          detail =
+            `Codex reports \`credits.hasCredits=false\`, so work is paused until credits return. ` +
+            `Auto-resume in about ${dueIn}.`;
+          level = "danger";
+        } else if (windowSaturated || suspended) {
+          headline = "Provider rate-limit window is active.";
+          detail =
+            `Symphony is in gentle mode and will auto-resume in about ${dueIn}. ` +
+            `Primary reset: ${formatEpochSeconds(primaryResetAt)} · Secondary reset: ${formatEpochSeconds(
+              secondaryResetAt
+            )}.`;
+          level = "warn";
+        }
+
+        return {
+          headline,
+          detail,
+          level,
+          cadence,
+          pollIntervalMs,
+          dueIn,
+          primaryResetAt,
+          secondaryResetAt,
+        };
+      }
+
       function renderRateLimits(state) {
         const limits = state.rate_limits;
+        const runtime = toObject(state.runtime);
+        const status = describeRateLimitState(state);
+        const cadence = status.cadence;
+        const summaryHtml = `
+          <div class="attention-item">
+            <div class="head">
+              <span class="mono">${escapeHtml(status.headline)}</span>
+              <span class="badge ${status.level === "danger" ? "warn" : "ok"}">${escapeHtml(
+                cadence.mode
+              )} cadence</span>
+            </div>
+            <div class="msg">${escapeHtml(status.detail)}</div>
+            <div class="hint">
+              Orchestrator poll: ${formatNumber(status.pollIntervalMs)}ms ·
+              Dashboard stream: ${formatNumber(cadence.streamIntervalMs)}ms ·
+              Fallback poll: ${formatNumber(cadence.fallbackPollIntervalMs)}ms ·
+              Stale timeout: ${formatNumber(cadence.staleAfterMs)}ms
+            </div>
+            <div class="hint">
+              Max concurrent agents: ${formatNumber(runtime.max_concurrent_agents || 0)}
+            </div>
+          </div>
+        `;
         if (!limits) {
-          rateWrap.innerHTML = '<div class="empty">No rate limit payload received yet.</div>';
+          rateWrap.innerHTML =
+            summaryHtml + '<div class="empty">No rate limit payload received yet.</div>';
           return;
         }
         if (Array.isArray(limits)) {
-          rateWrap.innerHTML = `<pre class="mono" style="margin:0;white-space:pre-wrap;">${escapeHtml(
+          rateWrap.innerHTML = `${summaryHtml}<pre class="mono" style="margin:0;white-space:pre-wrap;">${escapeHtml(
             JSON.stringify(limits, null, 2)
           )}</pre>`;
           return;
         }
         if (typeof limits !== "object") {
-          rateWrap.innerHTML = `<div class="empty mono">${escapeHtml(limits)}</div>`;
+          rateWrap.innerHTML = `${summaryHtml}<div class="empty mono">${escapeHtml(
+            limits
+          )}</div>`;
           return;
         }
         const entries = Object.entries(toObject(limits));
         if (!entries.length) {
-          rateWrap.innerHTML = '<div class="empty">Rate limit payload is empty.</div>';
+          rateWrap.innerHTML = `${summaryHtml}<div class="empty">Rate limit payload is empty.</div>`;
           return;
         }
-        rateWrap.innerHTML = `<div class="kv-list">${entries
+        rateWrap.innerHTML = `${summaryHtml}<div class="kv-list">${entries
           .slice(0, 16)
           .map(
             ([key, value]) => `
@@ -2231,7 +2371,7 @@ _DASHBOARD_HTML = """<!doctype html>
         setMeter("meter-health", 0.22);
       }
 
-      function renderState(state) {
+      function commitRenderState(state) {
         const safeState = toObject(state);
         const generatedAt = String(safeState.generated_at || "");
         if (generatedAt && latestGeneratedAt && generatedAt < latestGeneratedAt) {
@@ -2241,17 +2381,107 @@ _DASHBOARD_HTML = """<!doctype html>
           latestGeneratedAt = generatedAt;
         }
         latestState = safeState;
+        applyTransportCadence(safeState);
         applyDashboardView();
-        renderKpis(safeState);
-        renderAttention(safeState);
-        renderRunning(safeState);
-        renderRetry(safeState);
-        renderProfiling(safeState);
-        renderEvents(safeState);
-        renderInterventionActivity(safeState);
-        renderRateLimits(safeState);
-        renderAgentWorkspace(safeState);
-        updatedChip.textContent = `Updated ${formatTime(safeState.generated_at)}`;
+        updatePanel(
+          "kpis",
+          {
+            counts: safeState.counts,
+            codex_totals: safeState.codex_totals,
+            attention_count: toArray(safeState.attention).length,
+            retry_count: toArray(safeState.retrying).length,
+            generated_at: generatedAt,
+          },
+          () => renderKpis(safeState)
+        );
+        updatePanel(
+          "attention",
+          {
+            attention: safeState.attention,
+            manual_actions: safeState.manual_actions,
+            running: safeState.running,
+            retrying: safeState.retrying,
+            local_status: Array.from(localActionStatus.entries()),
+            pending_retries: Array.from(pendingRetries.values()).sort(),
+          },
+          () => renderAttention(safeState)
+        );
+        updatePanel(
+          "running",
+          { running: safeState.running, generated_at: generatedAt },
+          () => renderRunning(safeState)
+        );
+        updatePanel(
+          "retry",
+          { retrying: safeState.retrying, generated_at: generatedAt },
+          () => renderRetry(safeState)
+        );
+        updatePanel(
+          "profiling",
+          {
+            profiling: safeState.profiling,
+            hotspots: safeState.hotspots,
+            profiling_hotspots: safeState.profiling_hotspots,
+          },
+          () => renderProfiling(safeState)
+        );
+        updatePanel(
+          "events",
+          { recent_events: safeState.recent_events, generated_at: generatedAt },
+          () => renderEvents(safeState)
+        );
+        updatePanel(
+          "intervention_activity",
+          { manual_actions: safeState.manual_actions, generated_at: generatedAt },
+          () => renderInterventionActivity(safeState)
+        );
+        updatePanel(
+          "rate_limits",
+          {
+            rate_limits: safeState.rate_limits,
+            suspension: safeState.suspension,
+            runtime: safeState.runtime,
+          },
+          () => renderRateLimits(safeState)
+        );
+        updatePanel(
+          "agent_workspace",
+          {
+            agent_panes: safeState.agent_panes,
+            running: safeState.running,
+            layout: workspaceLayout,
+            verbosity: workspaceVerbosity,
+            pane_order: paneOrder,
+          },
+          () => renderAgentWorkspace(safeState)
+        );
+        const updatedText = `Updated ${formatTime(safeState.generated_at)}`;
+        if (updatedChip.textContent !== updatedText) {
+          updatedChip.textContent = updatedText;
+        }
+      }
+
+      function renderState(state) {
+        const safeState = toObject(state);
+        const generatedAt = String(safeState.generated_at || "");
+        if (generatedAt && latestGeneratedAt && generatedAt < latestGeneratedAt) {
+          return;
+        }
+        pendingRenderState = safeState;
+        if (renderFrame) {
+          return;
+        }
+        const schedule =
+          typeof window.requestAnimationFrame === "function"
+            ? window.requestAnimationFrame.bind(window)
+            : (callback) => window.setTimeout(callback, 16);
+        renderFrame = schedule(() => {
+          renderFrame = 0;
+          const nextState = pendingRenderState;
+          pendingRenderState = null;
+          if (!nextState) return;
+          commitRenderState(nextState);
+        });
       }
 
       async function fetchState() {
@@ -2282,7 +2512,7 @@ _DASHBOARD_HTML = """<!doctype html>
           message: "Submitting retry request...",
           at: new Date().toISOString(),
         });
-        renderAttention(latestState);
+        renderState(latestState);
         try {
           const resp = await fetch("/api/v1/interventions/retry-now", {
             method: "POST",
@@ -2296,7 +2526,7 @@ _DASHBOARD_HTML = """<!doctype html>
               message: payload.message || `retry_now_failed:${resp.status}`,
               at: new Date().toISOString(),
             });
-            renderAttention(latestState);
+            renderState(latestState);
             throw new Error(`retry_now_failed:${resp.status}`);
           }
           localActionStatus.set(issueIdentifier, {
@@ -2310,7 +2540,7 @@ _DASHBOARD_HTML = """<!doctype html>
           setStreamStatus("Retry-now action failed", "warn");
         } finally {
           pendingRetries.delete(issueIdentifier);
-          renderAttention(latestState);
+          renderState(latestState);
         }
       }
 
@@ -2321,14 +2551,18 @@ _DASHBOARD_HTML = """<!doctype html>
         if (toolRunButton) {
           toolRunButton.disabled = true;
         }
+        const body = {
+          tool,
+          issue_identifier: issueIdentifier,
+        };
+        if (tool === "set_max_concurrent_agents") {
+          body.value = issueIdentifier;
+        }
         try {
           const resp = await fetch("/api/v1/tools/run", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              tool,
-              issue_identifier: issueIdentifier,
-            }),
+            body: JSON.stringify(body),
           });
           const payload = await resp.json();
           toolResult.textContent = JSON.stringify(payload, null, 2);
@@ -2523,9 +2757,14 @@ _DASHBOARD_HTML = """<!doctype html>
         tracePollTimer = setInterval(fetchTraceIssue, 1200);
       }
 
-      function startPollingFallback() {
-        if (pollTimer) return;
-        setStreamStatus("Polling fallback", "warn");
+      function startPollingFallback(forceRestart = false) {
+        if (pollTimer && !forceRestart) {
+          return;
+        }
+        if (pollTimer) {
+          stopPolling();
+        }
+        setStreamStatus(`Polling fallback (${fallbackPollIntervalMs}ms)`, "warn");
         const run = async () => {
           try {
             await fetchState();
@@ -2533,7 +2772,7 @@ _DASHBOARD_HTML = """<!doctype html>
             // keep polling
           }
         };
-        pollTimer = setInterval(run, 2500);
+        pollTimer = setInterval(run, fallbackPollIntervalMs);
         run();
       }
 
@@ -2558,14 +2797,14 @@ _DASHBOARD_HTML = """<!doctype html>
         if (manual) {
           reconnectAttempts = 0;
         }
-        setStreamStatus("Connecting live stream...");
+        setStreamStatus(`Connecting live stream (${streamIntervalMs}ms)...`);
         ensureWatchdog();
-        stream = new EventSource("/api/v1/stream?interval_ms=1000");
+        stream = new EventSource(`/api/v1/stream?interval_ms=${streamIntervalMs}`);
         stream.onopen = () => {
           reconnectAttempts = 0;
           lastFrameAt = Date.now();
           stopPolling();
-          setStreamStatus("Live stream", "live");
+          setStreamStatus(`Live stream (${streamIntervalMs}ms)`, "live");
         };
         stream.onerror = () => {
           setStreamStatus("Stream reconnecting...", "warn");
@@ -2577,7 +2816,7 @@ _DASHBOARD_HTML = """<!doctype html>
             lastFrameAt = Date.now();
             renderState(JSON.parse(event.data));
             stopPolling();
-            setStreamStatus("Live stream", "live");
+            setStreamStatus(`Live stream (${streamIntervalMs}ms)`, "live");
           } catch (_err) {
             // ignore malformed frames
           }
@@ -2597,13 +2836,13 @@ _DASHBOARD_HTML = """<!doctype html>
         workspaceLayout = normalizeLayout(layoutSelect.value);
         layoutSelect.value = workspaceLayout;
         persistWorkspacePrefs();
-        renderAgentWorkspace(latestState);
+        renderState(latestState);
       });
       verbositySelect.addEventListener("change", () => {
         workspaceVerbosity = normalizeVerbosity(verbositySelect.value);
         verbositySelect.value = workspaceVerbosity;
         persistWorkspacePrefs();
-        renderAgentWorkspace(latestState);
+        renderState(latestState);
       });
       refreshBtn.addEventListener("click", triggerRefresh);
       reloadBtn.addEventListener("click", () => connectStream(true));
@@ -2652,6 +2891,14 @@ _DASHBOARD_HTML = """<!doctype html>
       });
       toolRunButton?.addEventListener("click", () => {
         runDashboardTool();
+      });
+      toolSelect?.addEventListener("change", () => {
+        const selected = String(toolSelect?.value || "").trim();
+        if (!toolIssueInput) return;
+        toolIssueInput.placeholder =
+          selected === "set_max_concurrent_agents"
+            ? "Max concurrent agents (e.g. 2)"
+            : "Issue identifier (e.g. MOL-42)";
       });
       connectStream(false);
       fetchState().catch(() => startPollingFallback());

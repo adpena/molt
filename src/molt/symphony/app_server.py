@@ -4,6 +4,7 @@ import json
 import re
 import select
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,44 @@ EventCallback = Callable[[dict[str, Any]], None]
 ToolHandler = Callable[[str, dict[str, Any] | str | None], dict[str, Any]]
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_USAGE_KEYS = (
+    "input_tokens",
+    "inputtokens",
+    "prompt_tokens",
+    "prompttokens",
+    "input_token_count",
+    "inputtokencount",
+    "output_tokens",
+    "outputtokens",
+    "completion_tokens",
+    "completiontokens",
+    "output_token_count",
+    "outputtokencount",
+    "total_tokens",
+    "totaltokens",
+    "token_count",
+    "tokencount",
+    "total_token_count",
+    "totaltokencount",
+)
+_DELTA_USAGE_KEYS = (
+    "input_tokens_delta",
+    "inputtokensdelta",
+    "delta_input_tokens",
+    "deltainputtokens",
+    "output_tokens_delta",
+    "outputtokensdelta",
+    "delta_output_tokens",
+    "deltaoutputtokens",
+    "total_tokens_delta",
+    "totaltokensdelta",
+    "delta_total_tokens",
+    "deltatotaltokens",
+    "delta_token_count",
+    "deltatokencount",
+    "token_count_delta",
+    "tokencountdelta",
+)
 
 
 @dataclass(slots=True)
@@ -56,6 +95,8 @@ class CodexAppServerClient:
         self._next_id = 1
         self._response_cache: dict[int, dict[str, Any]] = {}
         self._thread_id: str | None = None
+        self._stderr_thread: threading.Thread | None = None
+        self._stderr_stop = Event()
 
     def start(self) -> None:
         if self._proc is not None:
@@ -69,6 +110,15 @@ class CodexAppServerClient:
             text=True,
             bufsize=1,
         )
+        self._stderr_stop.clear()
+        if self._proc.stderr is not None:
+            self._stderr_thread = threading.Thread(
+                target=self._pump_stderr,
+                args=(self._proc,),
+                name="symphony-codex-stderr",
+                daemon=True,
+            )
+            self._stderr_thread.start()
         self._emit("startup", message="codex process started")
 
         init_id = self._send_request(
@@ -99,6 +149,7 @@ class CodexAppServerClient:
     def stop(self) -> None:
         proc = self._proc
         self._proc = None
+        self._stderr_stop.set()
         if proc is None:
             return
         if proc.poll() is None:
@@ -108,6 +159,10 @@ class CodexAppServerClient:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=2.0)
+        thread = self._stderr_thread
+        self._stderr_thread = None
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=0.25)
         self._emit("shutdown", message="codex process stopped")
 
     def run_turn(self, issue: Issue, prompt: str) -> SessionInfo:
@@ -349,6 +404,22 @@ class CodexAppServerClient:
         base.update(payload)
         self._event_callback(base)
 
+    def _pump_stderr(self, proc: subprocess.Popen[str]) -> None:
+        stderr = proc.stderr
+        if stderr is None:
+            return
+        while not self._stderr_stop.is_set():
+            line = stderr.readline()
+            if line == "":
+                if proc.poll() is not None:
+                    return
+                time.sleep(0.01)
+                continue
+            text = line.strip()
+            if not text:
+                continue
+            self._emit("stderr_output", message=text[:4000])
+
 
 def _coerce_id(value: Any) -> int | None:
     try:
@@ -378,39 +449,96 @@ def _extract_turn_id(response: dict[str, Any]) -> str | None:
 
 
 def _extract_usage(message: dict[str, Any]) -> dict[str, int | bool] | None:
-    candidates: list[Any] = []
-    for key in (
-        "usage",
-        "token_usage",
-        "total_token_usage",
-        "totalTokenUsage",
+    method = str(message.get("method") or "").lower()
+    prefer_delta = ("token_count" in method) or ("delta" in method)
+    candidates: list[dict[str, Any]] = []
+    seen: set[int] = set()
+
+    for path in (
+        ("usage",),
+        ("token_usage",),
+        ("total_token_usage",),
+        ("totalTokenUsage",),
+        ("params", "usage"),
+        ("params", "token_usage"),
+        ("params", "total_token_usage"),
+        ("params", "totalTokenUsage"),
+        ("params", "event", "usage"),
+        ("params", "event", "token_usage"),
+        ("params", "event", "totalTokenUsage"),
+        ("params", "event", "total_token_usage"),
+        ("params", "event", "metrics"),
+        ("params", "event", "stats"),
+        ("params", "metrics"),
+        ("params", "stats"),
     ):
-        if key in message:
-            candidates.append(message.get(key))
+        candidate = _resolve_map_path(message, path)
+        if candidate is None:
+            continue
+        key = id(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
+
     params = message.get("params")
     if isinstance(params, dict):
-        for key in ("usage", "token_usage", "total_token_usage", "totalTokenUsage"):
-            if key in params:
-                candidates.append(params.get(key))
-        candidates.extend(_iter_token_maps(params))
-    candidates.extend(_iter_token_maps(message))
+        for candidate in _iter_token_maps(params):
+            key = id(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(candidate)
+    if not candidates:
+        for candidate in _iter_token_maps(message):
+            key = id(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(candidate)
 
     for candidate in candidates:
-        parsed = _coerce_usage_candidate(candidate)
+        parsed = _coerce_usage_candidate(candidate, prefer_delta=prefer_delta)
         if parsed is not None:
             return parsed
     return None
 
 
+def _resolve_map_path(root: Any, path: tuple[str, ...]) -> dict[str, Any] | None:
+    current = root
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    if isinstance(current, dict):
+        return current
+    return None
+
+
 def _iter_token_maps(value: Any, depth: int = 0) -> list[dict[str, Any]]:
-    if depth > 6:
+    if depth > 5:
         return []
     rows: list[dict[str, Any]] = []
     if isinstance(value, dict):
-        lowered_keys = [str(key).lower() for key in value]
-        if any("token" in key for key in lowered_keys):
+        lowered_keys = {str(key).lower() for key in value}
+        if lowered_keys & (set(_USAGE_KEYS) | set(_DELTA_USAGE_KEYS)):
             rows.append(value)
-        for child in value.values():
+        for key, child in value.items():
+            key_lower = str(key).lower()
+            if depth > 0 and not any(
+                token in key_lower
+                for token in (
+                    "token",
+                    "usage",
+                    "metric",
+                    "stats",
+                    "event",
+                    "turn",
+                    "thread",
+                    "data",
+                )
+            ):
+                continue
             rows.extend(_iter_token_maps(child, depth + 1))
     elif isinstance(value, list):
         for child in value:
@@ -418,75 +546,90 @@ def _iter_token_maps(value: Any, depth: int = 0) -> list[dict[str, Any]]:
     return rows
 
 
-def _coerce_usage_candidate(candidate: Any) -> dict[str, int | bool] | None:
+def _coerce_usage_candidate(
+    candidate: Any, *, prefer_delta: bool = False
+) -> dict[str, int | bool] | None:
     if not isinstance(candidate, dict):
         return None
-    input_tokens = _first_int(
-        candidate,
-        (
-            "input_tokens",
-            "inputTokens",
-            "prompt_tokens",
-            "promptTokens",
-            "input_token_count",
-            "inputTokenCount",
-        ),
+    input_total_keys = (
+        "input_tokens",
+        "inputTokens",
+        "prompt_tokens",
+        "promptTokens",
+        "input_token_count",
+        "inputTokenCount",
     )
-    output_tokens = _first_int(
-        candidate,
-        (
-            "output_tokens",
-            "outputTokens",
-            "completion_tokens",
-            "completionTokens",
-            "output_token_count",
-            "outputTokenCount",
-        ),
+    output_total_keys = (
+        "output_tokens",
+        "outputTokens",
+        "completion_tokens",
+        "completionTokens",
+        "output_token_count",
+        "outputTokenCount",
     )
-    total_tokens = _first_int(
-        candidate,
-        (
-            "total_tokens",
-            "totalTokens",
-            "token_count",
-            "tokenCount",
-            "total_token_count",
-            "totalTokenCount",
-        ),
+    total_keys = (
+        "total_tokens",
+        "totalTokens",
+        "token_count",
+        "tokenCount",
+        "total_token_count",
+        "totalTokenCount",
     )
-    delta_input = _first_int(
-        candidate,
-        (
-            "input_tokens_delta",
-            "inputTokensDelta",
-            "delta_input_tokens",
-            "deltaInputTokens",
-        ),
+    input_delta_keys = (
+        "input_tokens_delta",
+        "inputTokensDelta",
+        "delta_input_tokens",
+        "deltaInputTokens",
     )
-    delta_output = _first_int(
-        candidate,
-        (
-            "output_tokens_delta",
-            "outputTokensDelta",
-            "delta_output_tokens",
-            "deltaOutputTokens",
-        ),
+    output_delta_keys = (
+        "output_tokens_delta",
+        "outputTokensDelta",
+        "delta_output_tokens",
+        "deltaOutputTokens",
     )
-    delta_total = _first_int(
-        candidate,
-        (
-            "total_tokens_delta",
-            "totalTokensDelta",
-            "delta_total_tokens",
-            "deltaTokenCount",
-            "token_count_delta",
-            "tokenCountDelta",
-        ),
+    total_delta_keys = (
+        "total_tokens_delta",
+        "totalTokensDelta",
+        "delta_total_tokens",
+        "delta_total_token_count",
+        "deltaTokenCount",
+        "delta_token_count",
+        "tokenCountDelta",
+        "token_count_delta",
     )
-    has_totals = any((input_tokens, output_tokens, total_tokens))
-    has_deltas = any((delta_input, delta_output, delta_total))
+    input_tokens = _first_int(candidate, input_total_keys)
+    output_tokens = _first_int(candidate, output_total_keys)
+    total_tokens = _first_int(candidate, total_keys)
+    delta_input = _first_int(candidate, input_delta_keys)
+    delta_output = _first_int(candidate, output_delta_keys)
+    delta_total = _first_int(candidate, total_delta_keys)
+
+    has_totals = _has_any_key(
+        candidate, input_total_keys + output_total_keys + total_keys
+    )
+    has_deltas = _has_any_key(
+        candidate, input_delta_keys + output_delta_keys + total_delta_keys
+    )
     if not has_totals and not has_deltas:
         return None
+    delta_nonzero = any(value > 0 for value in (delta_input, delta_output, delta_total))
+    totals_nonzero = any(
+        value > 0 for value in (input_tokens, output_tokens, total_tokens)
+    )
+    choose_delta = has_deltas and (
+        (prefer_delta and (delta_nonzero or not totals_nonzero)) or not has_totals
+    )
+
+    if choose_delta:
+        if delta_total == 0 and (delta_input or delta_output):
+            delta_total = delta_input + delta_output
+        return {
+            "input_tokens": delta_input,
+            "output_tokens": delta_output,
+            "total_tokens": delta_total,
+            "delta": True,
+        }
+
     if has_totals:
         if total_tokens == 0 and (input_tokens or output_tokens):
             total_tokens = input_tokens + output_tokens
@@ -504,6 +647,11 @@ def _coerce_usage_candidate(candidate: Any) -> dict[str, int | bool] | None:
         "total_tokens": delta_total,
         "delta": True,
     }
+
+
+def _has_any_key(candidate: dict[str, Any], keys: tuple[str, ...]) -> bool:
+    present = {str(key).lower() for key in candidate}
+    return any(str(key).lower() in present for key in keys)
 
 
 def _extract_rate_limits(message: dict[str, Any]) -> dict[str, Any] | None:

@@ -6,7 +6,7 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -23,6 +23,7 @@ from .config import (
     normalize_state_name,
     validate_dispatch_config,
 )
+from .durable_memory import DurableMemoryStore
 from .errors import (
     AgentRunnerError,
     ConfigValidationError,
@@ -107,6 +108,65 @@ class SymphonyOrchestrator:
             int(os.environ.get("MOLT_SYMPHONY_RATE_LIMIT_RESUME_SECONDS", "900")),
             60,
         )
+        self._max_codex_event_counters = max(
+            int(os.environ.get("MOLT_SYMPHONY_MAX_CODEX_EVENT_COUNTERS", "64")),
+            8,
+        )
+        self._tool_state_default_detail = (
+            str(os.environ.get("MOLT_SYMPHONY_TOOL_STATE_DETAIL", "compact"))
+            .strip()
+            .lower()
+            or "compact"
+        )
+        self._tool_state_running_limit = max(
+            int(os.environ.get("MOLT_SYMPHONY_TOOL_STATE_RUNNING_LIMIT", "8")),
+            1,
+        )
+        self._tool_state_retry_limit = max(
+            int(os.environ.get("MOLT_SYMPHONY_TOOL_STATE_RETRY_LIMIT", "8")),
+            1,
+        )
+        self._tool_state_attention_limit = max(
+            int(os.environ.get("MOLT_SYMPHONY_TOOL_STATE_ATTENTION_LIMIT", "8")),
+            1,
+        )
+        self._tool_state_events_limit = max(
+            int(os.environ.get("MOLT_SYMPHONY_TOOL_STATE_EVENTS_LIMIT", "12")),
+            1,
+        )
+        ext_root = Path(
+            os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt")
+        ).expanduser()
+        durable_enabled = str(
+            os.environ.get("MOLT_SYMPHONY_DURABLE_MEMORY", "1")
+        ).strip().lower() not in {"0", "false", "no", "off"}
+        durable_root = Path(
+            os.environ.get(
+                "MOLT_SYMPHONY_DURABLE_ROOT",
+                str(ext_root / "logs" / "symphony" / "durable_memory"),
+            )
+        ).expanduser()
+        self._durable_memory: DurableMemoryStore | None = None
+        if durable_enabled and ext_root.exists():
+            self._durable_memory = DurableMemoryStore(
+                root=durable_root,
+                sync_interval_seconds=max(
+                    int(
+                        os.environ.get(
+                            "MOLT_SYMPHONY_DURABLE_SYNC_SECONDS",
+                            "180",
+                        )
+                    ),
+                    30,
+                ),
+            )
+        elif durable_enabled:
+            log(
+                "WARNING",
+                "durable_memory_disabled_external_root_missing",
+                ext_root=str(ext_root),
+                durable_root=str(durable_root),
+            )
 
     def run(self) -> int:
         self._startup_terminal_workspace_cleanup()
@@ -164,6 +224,9 @@ class SymphonyOrchestrator:
 
         if self._server is not None:
             self._server.stop()
+        if self._durable_memory is not None:
+            self._durable_memory.close()
+            self._durable_memory = None
 
     def request_refresh(self) -> bool:
         was_set = self._refresh_event.is_set()
@@ -441,6 +504,116 @@ class SymphonyOrchestrator:
             "message": "Issue is not currently running.",
         }
 
+    def request_set_max_concurrent_agents(self, raw_value: Any) -> dict[str, Any]:
+        try:
+            requested = int(str(raw_value).strip())
+        except (TypeError, ValueError):
+            with self._state_lock:
+                self._record_manual_action_locked(
+                    action="set_max_concurrent_agents",
+                    issue_identifier=None,
+                    ok=False,
+                    status="invalid_value",
+                    message="max_concurrent_agents must be an integer.",
+                )
+            return {
+                "ok": False,
+                "error": "invalid_value",
+                "message": "max_concurrent_agents must be an integer.",
+            }
+
+        if requested < 1 or requested > 128:
+            with self._state_lock:
+                self._record_manual_action_locked(
+                    action="set_max_concurrent_agents",
+                    issue_identifier=None,
+                    ok=False,
+                    status="out_of_range",
+                    message="max_concurrent_agents must be between 1 and 128.",
+                )
+            return {
+                "ok": False,
+                "error": "out_of_range",
+                "message": "max_concurrent_agents must be between 1 and 128.",
+            }
+
+        with self._state_lock:
+            current = int(self._state.max_concurrent_agents)
+            running_now = len(self._state.running)
+            if requested == current:
+                self._record_manual_action_locked(
+                    action="set_max_concurrent_agents",
+                    issue_identifier=None,
+                    ok=True,
+                    status="unchanged",
+                    message=f"max_concurrent_agents already set to {requested}.",
+                )
+                return {
+                    "ok": True,
+                    "status": "unchanged",
+                    "max_concurrent_agents": requested,
+                    "running_now": running_now,
+                    "message": f"max_concurrent_agents already set to {requested}.",
+                }
+
+            self._apply_concurrency_override_locked(requested)
+            self._state.max_concurrent_agents = requested
+            self._state.profiling.incr("manual_concurrency_updates")
+            self._record_manual_action_locked(
+                action="set_max_concurrent_agents",
+                issue_identifier=None,
+                ok=True,
+                status="updated",
+                message=(
+                    f"Updated max_concurrent_agents from {current} to {requested}. "
+                    f"Currently running: {running_now}."
+                ),
+            )
+
+        self._wake_event.set()
+        return {
+            "ok": True,
+            "status": "updated",
+            "max_concurrent_agents": requested,
+            "previous_max_concurrent_agents": current,
+            "running_now": running_now,
+            "message": (
+                f"Updated max_concurrent_agents from {current} to {requested}. "
+                f"Currently running: {running_now}."
+            ),
+        }
+
+    def _apply_concurrency_override_locked(self, requested: int) -> None:
+        agent_cfg = self._config.agent
+        per_state_raw = getattr(agent_cfg, "max_concurrent_agents_by_state", {})
+        clamped_per_state: dict[str, int] = {}
+        if isinstance(per_state_raw, dict):
+            for key, raw in per_state_raw.items():
+                try:
+                    parsed = int(raw)
+                except (TypeError, ValueError):
+                    continue
+                if parsed <= 0:
+                    continue
+                clamped_per_state[str(key)] = min(parsed, requested)
+
+        if hasattr(agent_cfg, "__dataclass_fields__"):
+            new_agent = replace(
+                agent_cfg,
+                max_concurrent_agents=requested,
+                max_concurrent_agents_by_state=clamped_per_state,
+            )
+            self._config = replace(self._config, agent=new_agent)
+            return
+
+        # Test/dummy configuration fallback for non-dataclass stubs.
+        try:
+            setattr(agent_cfg, "max_concurrent_agents", requested)
+        except Exception:  # pragma: no cover - defensive
+            pass
+        if isinstance(getattr(agent_cfg, "max_concurrent_agents_by_state", None), dict):
+            setattr(agent_cfg, "max_concurrent_agents_by_state", clamped_per_state)
+
     def run_dashboard_tool(
         self, tool_name: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
@@ -460,6 +633,13 @@ class SymphonyOrchestrator:
             return result
         if tool == "stop_worker":
             result = self.request_stop_now(issue_identifier)
+            result["tool"] = tool
+            return result
+        if tool == "set_max_concurrent_agents":
+            raw = payload.get("value")
+            if raw is None:
+                raw = issue_identifier
+            result = self.request_set_max_concurrent_agents(raw)
             result["tool"] = tool
             return result
         if tool == "inspect_issue":
@@ -539,10 +719,38 @@ class SymphonyOrchestrator:
         )
         if len(self._state.manual_actions) > 80:
             del self._state.manual_actions[: len(self._state.manual_actions) - 80]
+        store = self._durable_memory
+        if store is not None:
+            store.record(
+                {
+                    "kind": "manual_action",
+                    "action": action,
+                    "issue_identifier": issue_identifier,
+                    "ok": ok,
+                    "status": status,
+                    "message": message,
+                }
+            )
 
     def _record_profile_duration(self, label: str, duration_ms: float) -> None:
         with self._state_lock:
             self._state.profiling.observe_latency(label, duration_ms)
+
+    def _record_codex_event_counter_locked(self, event_name: str) -> None:
+        counters = self._state.profiling.counters
+        counter_name = f"codex_event_{event_name}"
+        if counter_name in counters:
+            self._state.profiling.incr(counter_name)
+            return
+        distinct = sum(
+            1
+            for name in counters
+            if name.startswith("codex_event_") and name != "codex_event_other"
+        )
+        if distinct >= self._max_codex_event_counters:
+            self._state.profiling.incr("codex_event_other")
+            return
+        self._state.profiling.incr(counter_name)
 
     def _set_suspension_locked(
         self,
@@ -836,6 +1044,11 @@ class SymphonyOrchestrator:
                     "codex_command": self._config.codex.command,
                     "default_role": self._config.agent.default_role,
                     "role_pools": dict(self._config.agent.role_pools),
+                    "max_concurrent_agents": self._state.max_concurrent_agents,
+                    "poll_interval_ms": self._state.poll_interval_ms,
+                    "dashboard_profile": _dashboard_profile_for_suspension(
+                        self._state.suspension_kind
+                    ),
                 },
             }
 
@@ -1406,7 +1619,7 @@ class SymphonyOrchestrator:
             session = entry.session
             event_name = str(payload.get("event") or "other_message")
             self._state.profiling.incr("codex_events_total")
-            self._state.profiling.incr(f"codex_event_{event_name}")
+            self._record_codex_event_counter_locked(event_name)
             session.last_codex_event = event_name
             message = payload.get("message")
             if message is not None:
@@ -1519,6 +1732,28 @@ class SymphonyOrchestrator:
                     session_id=session.session_id,
                     event=event_name,
                 )
+            store = self._durable_memory
+            if store is not None:
+                store.record(
+                    {
+                        "kind": "codex_event",
+                        "issue_id": issue_id,
+                        "issue_identifier": entry.issue_identifier,
+                        "worker_name": entry.worker_name,
+                        "worker_role": entry.worker_role,
+                        "session_id": session.session_id,
+                        "thread_id": session.thread_id,
+                        "turn_id": session.turn_id,
+                        "event": event_name,
+                        "message": session.last_codex_message,
+                        "detail": detail_text_str,
+                        "usage": usage if isinstance(usage, dict) else None,
+                        "rate_limits": rate_limits
+                        if isinstance(rate_limits, dict)
+                        else None,
+                        "state": entry.issue.state,
+                    }
+                )
 
     def _accumulate_usage(self, session: Any, usage: dict[str, Any]) -> None:
         is_delta = bool(usage.get("delta"))
@@ -1575,6 +1810,21 @@ class SymphonyOrchestrator:
 
         if running_entry is None:
             return
+        store = self._durable_memory
+        if store is not None:
+            store.record(
+                {
+                    "kind": "worker_exit",
+                    "issue_id": issue_id,
+                    "issue_identifier": running_entry.issue_identifier,
+                    "worker_name": running_entry.worker_name,
+                    "worker_role": running_entry.worker_role,
+                    "reason": reason,
+                    "error": error,
+                    "duration_seconds": round(duration, 3),
+                    "retry_attempt": running_entry.retry_attempt,
+                }
+            )
 
         if running_entry.cleanup_on_exit:
             try:
@@ -2027,12 +2277,14 @@ class SymphonyOrchestrator:
         self, tool_input: dict[str, Any] | str | None
     ) -> dict[str, Any]:
         issue_identifier: str | None = None
+        detail = self._tool_state_default_detail
         if isinstance(tool_input, str):
             issue_identifier = tool_input.strip() or None
         elif isinstance(tool_input, dict):
             issue_identifier = (
                 str(tool_input.get("issue_identifier") or "").strip() or None
             )
+            detail = str(tool_input.get("detail") or detail).strip().lower() or detail
         if issue_identifier:
             payload = self.snapshot_issue(issue_identifier)
             if payload is None:
@@ -2042,7 +2294,101 @@ class SymphonyOrchestrator:
                     "issue_identifier": issue_identifier,
                 }
             return {"success": True, "state": payload}
-        return {"success": True, "state": self.snapshot_state()}
+        state = self.snapshot_state()
+        if detail in {"full", "verbose", "raw"}:
+            return {"success": True, "state": state}
+        return {"success": True, "state": self._compact_tool_state_payload(state)}
+
+    def _compact_tool_state_payload(self, state: dict[str, Any]) -> dict[str, Any]:
+        running = [
+            {
+                "issue_id": row.get("issue_id"),
+                "issue_identifier": row.get("issue_identifier"),
+                "state": row.get("state"),
+                "worker_role": row.get("worker_role"),
+                "worker_name": row.get("worker_name"),
+                "turn_count": row.get("turn_count"),
+                "last_event": row.get("last_event"),
+                "tokens": row.get("tokens"),
+            }
+            for row in list(state.get("running") or [])[
+                : self._tool_state_running_limit
+            ]
+            if isinstance(row, dict)
+        ]
+        retrying = [
+            {
+                "issue_id": row.get("issue_id"),
+                "issue_identifier": row.get("issue_identifier"),
+                "attempt": row.get("attempt"),
+                "retry_due_in_seconds": row.get("retry_due_in_seconds"),
+                "last_error": row.get("last_error"),
+            }
+            for row in list(state.get("retrying") or [])[: self._tool_state_retry_limit]
+            if isinstance(row, dict)
+        ]
+        recent_events = [
+            {
+                "at": row.get("at"),
+                "issue_identifier": row.get("issue_identifier"),
+                "event": row.get("event"),
+                "message": row.get("message"),
+                "detail": row.get("detail"),
+            }
+            for row in list(state.get("recent_events") or [])[
+                : self._tool_state_events_limit
+            ]
+            if isinstance(row, dict)
+        ]
+        manual_actions = [
+            {
+                "at": row.get("at"),
+                "action": row.get("action"),
+                "issue_identifier": row.get("issue_identifier"),
+                "status": row.get("status"),
+                "message": row.get("message"),
+            }
+            for row in list(state.get("manual_actions") or [])[
+                : self._tool_state_events_limit
+            ]
+            if isinstance(row, dict)
+        ]
+        attention = [
+            {
+                "issue_identifier": row.get("issue_identifier"),
+                "kind": row.get("kind"),
+                "message": row.get("message"),
+                "suggested_action": row.get("suggested_action"),
+            }
+            for row in list(state.get("attention") or [])[
+                : self._tool_state_attention_limit
+            ]
+            if isinstance(row, dict)
+        ]
+        profiling = state.get("profiling")
+        profiling_hotspots: list[dict[str, Any]] = []
+        if isinstance(profiling, dict):
+            for row in list(profiling.get("hotspots") or [])[:8]:
+                if isinstance(row, dict):
+                    profiling_hotspots.append(row)
+
+        return {
+            "generated_at": state.get("generated_at"),
+            "counts": state.get("counts"),
+            "codex_totals": state.get("codex_totals"),
+            "tokens_per_second": state.get("tokens_per_second"),
+            "rate_limits": state.get("rate_limits"),
+            "needs_human_attention": state.get("needs_human_attention"),
+            "suspension": state.get("suspension"),
+            "attention": attention,
+            "running": running,
+            "retrying": retrying,
+            "recent_events": recent_events,
+            "manual_actions": manual_actions,
+            "profiling_hotspots": profiling_hotspots,
+            "runtime": state.get("runtime"),
+            "compact": True,
+        }
 
 
 def create_orchestrator(
@@ -2330,6 +2676,23 @@ def _looks_like_rate_limit_error(error: Any) -> bool:
     if "credit" in text and ("exhaust" in text or "deplet" in text):
         return True
     return False
+
+
+def _dashboard_profile_for_suspension(suspension_kind: str | None) -> dict[str, Any]:
+    kind = (suspension_kind or "").strip().lower()
+    if kind in {"rate_limited", "auth_required"}:
+        return {
+            "mode": "gentle",
+            "stream_interval_ms": 5000,
+            "fallback_poll_interval_ms": 15000,
+            "stale_after_ms": 20000,
+        }
+    return {
+        "mode": "normal",
+        "stream_interval_ms": 1000,
+        "fallback_poll_interval_ms": 2500,
+        "stale_after_ms": 7000,
+    }
 
 
 def _dispatch_sort_key(issue: Issue) -> tuple[int, float, str]:
