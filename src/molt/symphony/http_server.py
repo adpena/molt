@@ -1701,8 +1701,10 @@ _DASHBOARD_HTML = """<!doctype html>
         "memory",
         "all",
       ];
+      const TRANSPORT_CHOICES = ["auto", "sse", "poll"];
       const STORAGE_KEY = "molt.symphony.dashboard.workspace.v1";
       const VIEW_STORAGE_KEY = "molt.symphony.dashboard.view.v1";
+      const TRANSPORT_STORAGE_KEY = "molt.symphony.dashboard.transport.v1";
       let stream = null;
       let pollTimer = null;
       let reconnectTimer = null;
@@ -1731,6 +1733,20 @@ _DASHBOARD_HTML = """<!doctype html>
       let pendingRenderState = null;
       let renderFrame = 0;
       const panelSignatures = new Map();
+      const transportMetrics = {
+        stateFetchTotal: 0,
+        stateFetch200: 0,
+        stateFetch304: 0,
+        stateFetchErrors: 0,
+        sseFrames: 0,
+        sseReconnects: 0,
+        fallbackPollTicks: 0,
+        renderCommits: 0,
+        renderFrames: 0,
+      };
+      let requestedTransport = "auto";
+      let activeTransport = "idle";
+      let stateTransport = null;
 
       function toObject(value) {
         return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -1828,6 +1844,27 @@ _DASHBOARD_HTML = """<!doctype html>
 
       function normalizeDashboardView(value) {
         return VIEW_CHOICES.includes(value) ? value : "overview";
+      }
+
+      function normalizeTransportChoice(value) {
+        const normalized = String(value || "").trim().toLowerCase();
+        return TRANSPORT_CHOICES.includes(normalized) ? normalized : "auto";
+      }
+
+      function resolveTransportPreference() {
+        const params = new URLSearchParams(window.location.search || "");
+        const fromQuery = normalizeTransportChoice(params.get("transport"));
+        if (fromQuery !== "auto") {
+          return fromQuery;
+        }
+        try {
+          const fromStorage = normalizeTransportChoice(
+            window.localStorage.getItem(TRANSPORT_STORAGE_KEY)
+          );
+          return fromStorage;
+        } catch (_err) {
+          return "auto";
+        }
       }
 
       function arraysEqual(left, right) {
@@ -2195,6 +2232,36 @@ _DASHBOARD_HTML = """<!doctype html>
         if (mode === "connecting") streamChip.classList.add("connecting");
       }
 
+      function buildClientTelemetrySnapshot() {
+        return {
+          generated_at: new Date().toISOString(),
+          requested_transport: requestedTransport,
+          active_transport: activeTransport,
+          stream_interval_ms: streamIntervalMs,
+          fallback_poll_interval_ms: fallbackPollIntervalMs,
+          stale_after_ms: staleAfterMs,
+          render: {
+            commits: transportMetrics.renderCommits,
+            frames: transportMetrics.renderFrames,
+          },
+          fetch: {
+            total: transportMetrics.stateFetchTotal,
+            ok_200: transportMetrics.stateFetch200,
+            not_modified_304: transportMetrics.stateFetch304,
+            errors: transportMetrics.stateFetchErrors,
+          },
+          stream: {
+            frames: transportMetrics.sseFrames,
+            reconnects: transportMetrics.sseReconnects,
+            fallback_poll_ticks: transportMetrics.fallbackPollTicks,
+          },
+        };
+      }
+
+      function publishClientTelemetry() {
+        window.__MOLT_SYMPHONY_CLIENT_TELEMETRY__ = buildClientTelemetrySnapshot();
+      }
+
       function stopPolling() {
         if (pollTimer) {
           clearInterval(pollTimer);
@@ -2228,6 +2295,44 @@ _DASHBOARD_HTML = """<!doctype html>
         }, 2000);
       }
 
+      function createStateTransportController() {
+        return {
+          start(manual = false) {
+            if (requestedTransport === "poll") {
+              startPollingFallback(true);
+              return;
+            }
+            connectStream(manual);
+          },
+          restart(manual = false) {
+            if (requestedTransport === "poll") {
+              startPollingFallback(true);
+              return;
+            }
+            connectStream(manual);
+          },
+          stop() {
+            stopReconnectTimer();
+            stopStream();
+            stopPolling();
+            activeTransport = "idle";
+          },
+          refreshCadence() {
+            if (requestedTransport === "poll") {
+              startPollingFallback(true);
+              return;
+            }
+            if (stream) {
+              connectStream(false);
+              return;
+            }
+            if (pollTimer) {
+              startPollingFallback(true);
+            }
+          },
+        };
+      }
+
       function applyTransportCadence(state) {
         const cadence = deriveDashboardCadence(state);
         const changed =
@@ -2238,10 +2343,8 @@ _DASHBOARD_HTML = """<!doctype html>
         fallbackPollIntervalMs = cadence.fallbackPollIntervalMs;
         staleAfterMs = cadence.staleAfterMs;
         if (!changed) return;
-        if (stream) {
-          connectStream(false);
-        } else if (pollTimer) {
-          startPollingFallback(true);
+        if (stateTransport) {
+          stateTransport.refreshCadence();
         }
       }
 
@@ -2795,6 +2898,19 @@ _DASHBOARD_HTML = """<!doctype html>
             <div class="hint">
               Max concurrent agents: ${formatNumber(runtime.max_concurrent_agents || 0)}
             </div>
+            <div class="hint">
+              Transport: requested=${escapeHtml(requestedTransport)} · active=${escapeHtml(activeTransport)} ·
+              state fetches ${formatNumber(transportMetrics.stateFetchTotal)} (200=${formatNumber(
+                transportMetrics.stateFetch200
+              )}, 304=${formatNumber(transportMetrics.stateFetch304)}, err=${formatNumber(
+                transportMetrics.stateFetchErrors
+              )}) ·
+              sse frames ${formatNumber(transportMetrics.sseFrames)} · reconnects ${formatNumber(
+                transportMetrics.sseReconnects
+              )} ·
+              poll ticks ${formatNumber(transportMetrics.fallbackPollTicks)} ·
+              render commits ${formatNumber(transportMetrics.renderCommits)}
+            </div>
           </div>
         `;
         if (!limits) {
@@ -2888,6 +3004,7 @@ _DASHBOARD_HTML = """<!doctype html>
       }
 
       function commitRenderState(state) {
+        transportMetrics.renderCommits += 1;
         const safeState = toObject(state);
         const generatedAt = String(safeState.generated_at || "");
         if (generatedAt && latestGeneratedAt && generatedAt < latestGeneratedAt) {
@@ -3006,6 +3123,7 @@ _DASHBOARD_HTML = """<!doctype html>
             ? window.requestAnimationFrame.bind(window)
             : (callback) => window.setTimeout(callback, 16);
         renderFrame = schedule(() => {
+          transportMetrics.renderFrames += 1;
           renderFrame = 0;
           const nextState = pendingRenderState;
           pendingRenderState = null;
@@ -3015,22 +3133,36 @@ _DASHBOARD_HTML = """<!doctype html>
       }
 
       async function fetchState() {
-        const headers = { "Cache-Control": "no-cache" };
-        if (latestStateEtag) {
-          headers["If-None-Match"] = latestStateEtag;
+        transportMetrics.stateFetchTotal += 1;
+        try {
+          const headers = { "Cache-Control": "no-cache" };
+          if (latestStateEtag) {
+            headers["If-None-Match"] = latestStateEtag;
+          }
+          const resp = await fetch("/api/v1/state", { headers });
+          if (resp.status === 304) {
+            transportMetrics.stateFetch304 += 1;
+            publishClientTelemetry();
+            return false;
+          }
+          if (!resp.ok) {
+            transportMetrics.stateFetchErrors += 1;
+            throw new Error(`state_fetch_failed:${resp.status}`);
+          }
+          transportMetrics.stateFetch200 += 1;
+          const etag = String(resp.headers.get("ETag") || "").trim();
+          if (etag) {
+            latestStateEtag = etag;
+          }
+          const data = await resp.json();
+          renderState(data);
+          publishClientTelemetry();
+          return true;
+        } catch (_err) {
+          transportMetrics.stateFetchErrors += 1;
+          publishClientTelemetry();
+          throw _err;
         }
-        const resp = await fetch("/api/v1/state", { headers });
-        if (resp.status === 304) {
-          return false;
-        }
-        if (!resp.ok) throw new Error(`state_fetch_failed:${resp.status}`);
-        const etag = String(resp.headers.get("ETag") || "").trim();
-        if (etag) {
-          latestStateEtag = etag;
-        }
-        const data = await resp.json();
-        renderState(data);
-        return true;
       }
 
       async function fetchDurableMemory() {
@@ -3326,8 +3458,10 @@ _DASHBOARD_HTML = """<!doctype html>
         if (pollTimer) {
           stopPolling();
         }
+        activeTransport = "poll";
         setStreamStatus(`Polling fallback (${fallbackPollIntervalMs}ms)`, "warn");
         const run = async () => {
+          transportMetrics.fallbackPollTicks += 1;
           try {
             await fetchState();
           } catch (_err) {
@@ -3341,24 +3475,36 @@ _DASHBOARD_HTML = """<!doctype html>
       function scheduleReconnect() {
         if (reconnectTimer) return;
         const delayMs = Math.min(12000, 1000 * Math.pow(2, Math.min(reconnectAttempts, 4)));
+        activeTransport = "reconnecting";
+        transportMetrics.sseReconnects += 1;
         reconnectTimer = setTimeout(() => {
           reconnectTimer = null;
           reconnectAttempts += 1;
+          if (stateTransport) {
+            stateTransport.start(false);
+            return;
+          }
           connectStream();
         }, delayMs);
       }
 
       function connectStream(manual = false) {
+        if (requestedTransport === "poll") {
+          startPollingFallback(true);
+          return;
+        }
         stopReconnectTimer();
         stopStream();
         lastFrameAt = 0;
         if (!window.EventSource || typeof EventSource !== "function") {
+          activeTransport = "poll";
           startPollingFallback();
           return;
         }
         if (manual) {
           reconnectAttempts = 0;
         }
+        activeTransport = "sse";
         setStreamStatus(`Connecting live stream (${streamIntervalMs}ms)...`, "connecting");
         ensureWatchdog();
         stream = new EventSource(`/api/v1/stream?interval_ms=${streamIntervalMs}`);
@@ -3366,9 +3512,11 @@ _DASHBOARD_HTML = """<!doctype html>
           reconnectAttempts = 0;
           lastFrameAt = Date.now();
           stopPolling();
+          activeTransport = "sse";
           setStreamStatus(`Live stream (${streamIntervalMs}ms)`, "live");
         };
         stream.onerror = () => {
+          activeTransport = "reconnecting";
           setStreamStatus("Stream reconnecting...", "warn");
           startPollingFallback();
           scheduleReconnect();
@@ -3376,11 +3524,13 @@ _DASHBOARD_HTML = """<!doctype html>
         stream.addEventListener("state", (event) => {
           try {
             lastFrameAt = Date.now();
+            transportMetrics.sseFrames += 1;
             if (event.lastEventId) {
               latestStateEtag = String(event.lastEventId);
             }
             renderState(JSON.parse(event.data));
             stopPolling();
+            activeTransport = "sse";
             setStreamStatus(`Live stream (${streamIntervalMs}ms)`, "live");
           } catch (_err) {
             // ignore malformed frames
@@ -3399,6 +3549,13 @@ _DASHBOARD_HTML = """<!doctype html>
 
       loadWorkspacePrefs();
       loadDashboardView();
+      requestedTransport = resolveTransportPreference();
+      try {
+        window.localStorage.setItem(TRANSPORT_STORAGE_KEY, requestedTransport);
+      } catch (_err) {
+        // ignore storage write failures
+      }
+      stateTransport = createStateTransportController();
       setDashboardView(activeDashboardView, false);
       layoutSelect.value = workspaceLayout;
       verbositySelect.value = workspaceVerbosity;
@@ -3423,7 +3580,7 @@ _DASHBOARD_HTML = """<!doctype html>
         renderState(latestState);
       });
       refreshBtn.addEventListener("click", triggerRefresh);
-      reloadBtn.addEventListener("click", () => connectStream(true));
+      reloadBtn.addEventListener("click", () => stateTransport?.restart(true));
       document.querySelector(".top-nav")?.addEventListener("click", (event) => {
         const target = event.target;
         if (!(target instanceof Element)) return;
@@ -3487,8 +3644,8 @@ _DASHBOARD_HTML = """<!doctype html>
             ? "Max concurrent agents (e.g. 2)"
             : "Issue identifier (e.g. MOL-42)";
       });
-      connectStream(false);
-      fetchState().catch(() => startPollingFallback());
+      stateTransport.start(false);
+      fetchState().catch(() => stateTransport?.start(false));
       startDurablePolling();
     </script>
   </body>

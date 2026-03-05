@@ -170,6 +170,22 @@ def main(argv: list[str] | None = None) -> int:
     env.setdefault("MOLT_BACKEND_DAEMON_SOCKET_DIR", "/tmp/molt_backend_sockets")
     env.setdefault("TMPDIR", str(ext_root / "tmp"))
     env.setdefault("PYTHONPATH", "src")
+    for key in (
+        "CARGO_TARGET_DIR",
+        "MOLT_CACHE",
+        "MOLT_DIFF_ROOT",
+        "MOLT_DIFF_TMPDIR",
+        "UV_CACHE_DIR",
+        "TMPDIR",
+    ):
+        path_value = env.get(key)
+        if not path_value:
+            continue
+        try:
+            Path(path_value).expanduser().mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # Keep launcher resilient; downstream commands will surface hard failures.
+            pass
     env["MOLT_SYMPHONY_EXEC_MODE"] = args.exec_mode
 
     repo_url = _default_repo_url(repo_root)

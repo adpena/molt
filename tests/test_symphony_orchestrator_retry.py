@@ -14,6 +14,7 @@ from molt.symphony.models import (
 from molt.symphony.orchestrator import (
     SymphonyOrchestrator,
     _derive_rate_limit_suspension,
+    _extract_retry_delay_seconds_from_error,
 )
 
 
@@ -59,6 +60,8 @@ def _orchestrator_stub() -> SymphonyOrchestrator:
     orchestrator._tool_state_retry_limit = 8
     orchestrator._tool_state_attention_limit = 8
     orchestrator._tool_state_events_limit = 12
+    orchestrator._tool_state_cache_ttl_seconds = 60.0
+    orchestrator._tool_state_cache = {}
     orchestrator._durable_memory = None
     orchestrator._exec_mode = "python"
     return orchestrator
@@ -263,6 +266,46 @@ def test_rate_limit_suspension_derivation() -> None:
     assert suspension["resume_seconds"] == 3600
 
 
+def test_rate_limit_suspension_uses_reset_epoch_precisely() -> None:
+    payload = {
+        "primary": {
+            "usedPercent": 100.0,
+            "resetsAt": 1123,
+        }
+    }
+    suspension = _derive_rate_limit_suspension(
+        payload,
+        default_resume_seconds=900,
+        now_epoch_seconds=1000,
+    )
+    assert suspension is not None
+    assert suspension["resume_seconds"] == 123
+
+
+def test_rate_limit_suspension_uses_retry_after_ms() -> None:
+    payload = {
+        "primary": {
+            "remaining": 0,
+            "retry_after_ms": 4500,
+        }
+    }
+    suspension = _derive_rate_limit_suspension(
+        payload,
+        default_resume_seconds=900,
+        now_epoch_seconds=1000,
+    )
+    assert suspension is not None
+    assert suspension["resume_seconds"] == 5
+
+
+def test_extract_retry_delay_seconds_from_error_hint() -> None:
+    seconds = _extract_retry_delay_seconds_from_error(
+        "HTTP 429 rate limit hit, retry after 75s",
+        default_resume_seconds=900,
+    )
+    assert seconds == 75
+
+
 def test_codex_event_counter_cardinality_caps_to_other() -> None:
     orchestrator = _orchestrator_stub()
     orchestrator._max_codex_event_counters = 2
@@ -298,6 +341,25 @@ def test_tool_symphony_state_returns_compact_payload_by_default() -> None:
     assert state["compact"] is True
     assert "agent_panes" not in state
     assert state["running"]
+
+
+def test_tool_symphony_state_supports_agent_telemetry_detail() -> None:
+    orchestrator = _orchestrator_stub()
+    payload = orchestrator._tool_symphony_state({"detail": "telemetry"})
+    assert payload["success"] is True
+    state = payload["state"]
+    assert state["telemetry"] is True
+    assert state["compact"] is True
+    assert "throughput" in state
+
+
+def test_tool_symphony_state_compact_cache_hit() -> None:
+    orchestrator = _orchestrator_stub()
+    first = orchestrator._tool_symphony_state({"detail": "compact"})
+    second = orchestrator._tool_symphony_state({"detail": "compact"})
+    assert first["success"] is True
+    assert second["success"] is True
+    assert second.get("cached") is True
 
 
 def test_snapshot_durable_memory_disabled_payload() -> None:

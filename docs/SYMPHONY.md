@@ -40,6 +40,7 @@ Human operator contract:
 - Optional HTTP observability endpoints:
   - `/`
   - `/api/v1/state`
+  - `/api/v1/durable` (durable telemetry summary + recent historical events)
   - `/api/v1/stream` (Server-Sent Events realtime state feed)
   - `/api/v1/<issue_identifier>`
   - `/api/v1/refresh`
@@ -48,9 +49,11 @@ Human operator contract:
 
 - Dashboard UX:
   - OpenAI-style dark mode by default
-  - top-level view tabs (`Overview`, `Interventions`, `Agents`, `Performance`, `All Panels`)
+  - top-level command-nav views (`Overview`, `Interventions`, `Agents`, `Performance`, `Memory`, `All`)
   - intervention action center with one-click retry + tool launcher panel
+  - durable memory panel (JSONL/DuckDB/Parquet file health + recent persisted event trail)
   - live concurrency tuning via `set_max_concurrent_agents` in the tool launcher
+  - transport controller (`auto|sse|poll`) with frame-coalesced rendering and low-flicker panel diffing
 
 - Agent role orchestration:
   - role tags can be inferred from Linear labels like `role:triage` or `swarm:formalizer`
@@ -102,6 +105,13 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_perf.py WORKFLOW.md -
 
 This writes a JSON report under `/Volumes/APDataStore/Molt/logs/symphony/` by default.
 
+Optional dashboard API efficiency baseline in the same run:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_perf.py WORKFLOW.md \
+  --dashboard-url http://127.0.0.1:8089 --api-samples 80 --api-interval-ms 250
+```
+
 ## Security + Secret Hygiene
 
 - Keep secrets in environment variables only.
@@ -125,6 +135,7 @@ This writes a JSON report under `/Volumes/APDataStore/Molt/logs/symphony/` by de
 - Dashboard/API state payload includes `agent_panes`, runtime role pool settings, token throughput (`codex_totals.tokens_per_second`), and suspension metadata (`suspension`).
 - `/api/v1/state` now supports conditional reads via `ETag` + `If-None-Match` to avoid re-downloading unchanged state during fallback polling.
 - `/api/v1/stream` now emits `state` events only when the serialized snapshot changes (plus heartbeats), reducing UI churn and endpoint pressure.
-- `symphony_state` tool defaults to compact payload mode for lower token burn; use `{ "detail": "full" }` when agents need full raw state.
+- `symphony_state` defaults to compact payload mode with short TTL caching for lower token burn; use `{ "detail": "full" }` when agents need full raw state.
+- `symphony_state` also supports `{ "detail": "telemetry" }` for agent-native, token-efficient MCP telemetry.
 - Codex event profiling counters are cardinality-bounded (`MOLT_SYMPHONY_MAX_CODEX_EVENT_COUNTERS`, default `64`) to avoid unbounded metric growth.
 - Durable memory files are external-volume first (`MOLT_SYMPHONY_DURABLE_MEMORY=1`), with auto-materialization into DuckDB/Parquet when `duckdb` is available.

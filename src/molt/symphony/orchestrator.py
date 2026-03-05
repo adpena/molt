@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -134,6 +135,11 @@ class SymphonyOrchestrator:
             int(os.environ.get("MOLT_SYMPHONY_TOOL_STATE_EVENTS_LIMIT", "12")),
             1,
         )
+        self._tool_state_cache_ttl_seconds = max(
+            float(os.environ.get("MOLT_SYMPHONY_TOOL_STATE_CACHE_TTL_SECONDS", "1.0")),
+            0.0,
+        )
+        self._tool_state_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         ext_root = Path(
             os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt")
         ).expanduser()
@@ -1957,13 +1963,34 @@ class SymphonyOrchestrator:
 
         if _looks_like_rate_limit_error(error):
             resume_seconds = self._rate_limit_resume_default_seconds
+            message = (
+                "Codex rate-limit exhausted. Symphony will pause and retry"
+                " automatically when quota is expected to recover."
+            )
+            parsed_from_error = _extract_retry_delay_seconds_from_error(
+                error,
+                default_resume_seconds=resume_seconds,
+            )
+            if parsed_from_error is not None:
+                resume_seconds = parsed_from_error
+                message = (
+                    "Codex rate-limit exhausted. Symphony will pause and retry in "
+                    f"about {_format_duration_brief(resume_seconds)}."
+                )
+            with self._state_lock:
+                rate_limits = self._state.codex_rate_limits
+                if isinstance(rate_limits, dict):
+                    precise_pause = _derive_rate_limit_suspension(
+                        rate_limits,
+                        default_resume_seconds=resume_seconds,
+                    )
+                    if precise_pause is not None:
+                        resume_seconds = int(precise_pause["resume_seconds"])
+                        message = str(precise_pause["message"])
             with self._state_lock:
                 self._set_suspension_locked(
                     kind="rate_limited",
-                    message=(
-                        "Codex rate-limit exhausted. Symphony will pause and retry"
-                        " automatically when quota is expected to recover."
-                    ),
+                    message=message,
                     resume_delay_seconds=resume_seconds,
                     auto_resume=True,
                 )
@@ -2320,6 +2347,8 @@ class SymphonyOrchestrator:
                 str(tool_input.get("issue_identifier") or "").strip() or None
             )
             detail = str(tool_input.get("detail") or detail).strip().lower() or detail
+        compact_details = {"compact", "summary", "default", ""}
+        telemetry_details = {"telemetry", "metrics", "agent"}
         if issue_identifier:
             payload = self.snapshot_issue(issue_identifier)
             if payload is None:
@@ -2329,10 +2358,51 @@ class SymphonyOrchestrator:
                     "issue_identifier": issue_identifier,
                 }
             return {"success": True, "state": payload}
+        cache_key: str | None = None
+        if detail in compact_details:
+            cache_key = "compact"
+        elif detail in telemetry_details:
+            cache_key = "telemetry"
+        if cache_key is not None:
+            cached = self._tool_state_cached(cache_key)
+            if cached is not None:
+                with self._state_lock:
+                    self._state.profiling.incr("tool_state_cache_hit")
+                return {"success": True, "state": cached, "cached": True}
         state = self.snapshot_state()
         if detail in {"full", "verbose", "raw"}:
             return {"success": True, "state": state}
-        return {"success": True, "state": self._compact_tool_state_payload(state)}
+        if detail in telemetry_details:
+            payload = self._agent_native_telemetry_payload(state)
+            if cache_key is not None:
+                self._store_tool_state_cache(cache_key, payload)
+            return {"success": True, "state": payload}
+        payload = self._compact_tool_state_payload(state)
+        if cache_key is not None:
+            self._store_tool_state_cache(cache_key, payload)
+        return {"success": True, "state": payload}
+
+    def _tool_state_cached(self, cache_key: str) -> dict[str, Any] | None:
+        ttl = self._tool_state_cache_ttl_seconds
+        if ttl <= 0:
+            return None
+        now_mono = time.monotonic()
+        with self._state_lock:
+            cached = self._tool_state_cache.get(cache_key)
+            if cached is None:
+                return None
+            created_at, payload = cached
+            if (now_mono - created_at) > ttl:
+                self._tool_state_cache.pop(cache_key, None)
+                return None
+            return payload
+
+    def _store_tool_state_cache(self, cache_key: str, payload: dict[str, Any]) -> None:
+        ttl = self._tool_state_cache_ttl_seconds
+        if ttl <= 0:
+            return
+        with self._state_lock:
+            self._tool_state_cache[cache_key] = (time.monotonic(), payload)
 
     def _compact_tool_state_payload(self, state: dict[str, Any]) -> dict[str, Any]:
         running = [
@@ -2423,6 +2493,45 @@ class SymphonyOrchestrator:
             "profiling_hotspots": profiling_hotspots,
             "runtime": state.get("runtime"),
             "compact": True,
+        }
+
+    def _agent_native_telemetry_payload(self, state: dict[str, Any]) -> dict[str, Any]:
+        counts = state.get("counts") if isinstance(state.get("counts"), dict) else {}
+        totals = (
+            state.get("codex_totals")
+            if isinstance(state.get("codex_totals"), dict)
+            else {}
+        )
+        runtime = state.get("runtime") if isinstance(state.get("runtime"), dict) else {}
+        suspension = (
+            state.get("suspension") if isinstance(state.get("suspension"), dict) else {}
+        )
+        return {
+            "generated_at": state.get("generated_at"),
+            "counts": {
+                "running": counts.get("running", 0),
+                "retrying": counts.get("retrying", 0),
+                "completed": counts.get("completed", 0),
+                "claimed": counts.get("claimed", 0),
+            },
+            "throughput": {
+                "tokens_per_second": state.get("tokens_per_second", 0),
+                "total_tokens": totals.get("total_tokens", 0),
+                "turns_completed": totals.get("turns_completed", 0),
+                "seconds_running": totals.get("seconds_running", 0),
+            },
+            "runtime": {
+                "exec_mode": runtime.get("exec_mode"),
+                "default_role": runtime.get("default_role"),
+                "max_concurrent_agents": runtime.get("max_concurrent_agents"),
+                "poll_interval_ms": runtime.get("poll_interval_ms"),
+                "dashboard_profile": runtime.get("dashboard_profile"),
+            },
+            "suspension": suspension,
+            "needs_human_attention": state.get("needs_human_attention", False),
+            "attention_count": len(state.get("attention") or []),
+            "compact": True,
+            "telemetry": True,
         }
 
 
@@ -2567,8 +2676,16 @@ def _run_tool_command(
 
 
 def _derive_rate_limit_suspension(
-    rate_limits: dict[str, Any], *, default_resume_seconds: int
+    rate_limits: dict[str, Any],
+    *,
+    default_resume_seconds: int,
+    now_epoch_seconds: float | None = None,
 ) -> dict[str, Any] | None:
+    now_epoch = (
+        float(now_epoch_seconds)
+        if isinstance(now_epoch_seconds, (int, float))
+        else time.time()
+    )
     has_credits = _find_bool_key_recursive(
         rate_limits,
         {"hascredits", "has_credits"},
@@ -2602,7 +2719,10 @@ def _derive_rate_limit_suspension(
             if remaining is not None and remaining <= 0:
                 exhausted = True
             if exhausted:
-                window_seconds = _extract_window_seconds(lowered)
+                window_seconds = _extract_window_seconds(
+                    lowered,
+                    now_epoch_seconds=now_epoch,
+                )
                 if window_seconds is None:
                     window_seconds = default_resume_seconds
                 exhausted_windows.append(window_seconds)
@@ -2616,7 +2736,7 @@ def _derive_rate_limit_suspension(
     walk(rate_limits)
     if not exhausted_windows:
         return None
-    resume_seconds = max(min(exhausted_windows), 60)
+    resume_seconds = max(min(exhausted_windows), 1)
     return {
         "resume_seconds": resume_seconds,
         "message": (
@@ -2654,7 +2774,9 @@ def _extract_first_number(
     return None
 
 
-def _extract_window_seconds(candidate: dict[str, Any]) -> int | None:
+def _extract_window_seconds(
+    candidate: dict[str, Any], *, now_epoch_seconds: float
+) -> int | None:
     window_seconds = _extract_first_number(
         candidate,
         (
@@ -2663,27 +2785,158 @@ def _extract_window_seconds(candidate: dict[str, Any]) -> int | None:
             "resetinseconds",
             "retryafterseconds",
             "retry_after_seconds",
+            "windowduration",
         ),
     )
     if window_seconds is not None and window_seconds > 0:
         return int(window_seconds)
 
-    window_raw = _extract_first_number(
+    retry_after_ms = _extract_first_number(
         candidate,
         (
-            "windowduration",
-            "window_ms",
-            "windowmilliseconds",
-            "resetinms",
             "retryafterms",
             "retry_after_ms",
         ),
     )
+    if retry_after_ms is not None and retry_after_ms > 0:
+        return max(int((retry_after_ms / 1000.0) + 0.999), 1)
+
+    window_ms = _extract_first_number(
+        candidate,
+        (
+            "window_ms",
+            "windowmilliseconds",
+            "resetinms",
+        ),
+    )
+    if window_ms is not None and window_ms > 0:
+        return max(int((window_ms / 1000.0) + 0.999), 1)
+
+    absolute_reset = _extract_absolute_reset_seconds(
+        candidate,
+        now_epoch_seconds=now_epoch_seconds,
+    )
+    if absolute_reset is not None and absolute_reset > 0:
+        return max(int(absolute_reset), 1)
+
+    window_raw = _extract_first_number(
+        candidate,
+        (
+            "window",
+            "windowdurationms",
+        ),
+    )
     if window_raw is None or window_raw <= 0:
-        return None
+        window_raw = _extract_absolute_reset_seconds(
+            candidate,
+            now_epoch_seconds=now_epoch_seconds,
+        )
+        if window_raw is None or window_raw <= 0:
+            return None
+        return max(int(window_raw), 1)
     if window_raw >= 100000:
         return int(window_raw / 1000.0)
     return int(window_raw)
+
+
+def _extract_absolute_reset_seconds(
+    candidate: dict[str, Any],
+    *,
+    now_epoch_seconds: float,
+) -> int | None:
+    reset_keys = (
+        "resetsat",
+        "resetat",
+        "resets_at",
+        "reset_at",
+    )
+    for key in reset_keys:
+        if key not in candidate:
+            continue
+        seconds = _seconds_until_timestamp(
+            candidate.get(key),
+            now_epoch_seconds=now_epoch_seconds,
+        )
+        if seconds is not None:
+            return seconds
+    return None
+
+
+def _seconds_until_timestamp(value: Any, *, now_epoch_seconds: float) -> int | None:
+    if value is None:
+        return None
+    timestamp = None
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            timestamp = float(text)
+        except ValueError:
+            iso_text = text.replace("Z", "+00:00")
+            try:
+                timestamp = datetime.fromisoformat(iso_text).timestamp()
+            except ValueError:
+                return None
+    if timestamp is None:
+        return None
+    if timestamp > 10_000_000_000:
+        timestamp = timestamp / 1000.0
+    delta = timestamp - float(now_epoch_seconds)
+    if delta <= 0:
+        return 0
+    return max(int(delta + 0.999), 1)
+
+
+def _extract_retry_delay_seconds_from_error(
+    error: Any, *, default_resume_seconds: int
+) -> int | None:
+    text = str(error or "").strip().lower()
+    if not text:
+        return None
+
+    retry_after_match = re.search(
+        r"retry[_\s-]*after[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*(ms|milliseconds?|s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?)?",
+        text,
+    )
+    if retry_after_match:
+        value = float(retry_after_match.group(1))
+        unit = (retry_after_match.group(2) or "s").lower()
+        return _duration_to_seconds(value, unit, default=default_resume_seconds)
+
+    in_match = re.search(
+        r"(?:in|wait)[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*(ms|milliseconds?|s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?)",
+        text,
+    )
+    if in_match:
+        value = float(in_match.group(1))
+        unit = in_match.group(2).lower()
+        return _duration_to_seconds(value, unit, default=default_resume_seconds)
+
+    reset_epoch_match = re.search(r"(?:resets?at|reset_at)[^0-9]*([0-9]{10,13})", text)
+    if reset_epoch_match:
+        timestamp = float(reset_epoch_match.group(1))
+        seconds = _seconds_until_timestamp(
+            timestamp,
+            now_epoch_seconds=time.time(),
+        )
+        if seconds is not None:
+            return max(seconds, 1)
+    return None
+
+
+def _duration_to_seconds(value: float, unit: str, *, default: int) -> int:
+    if value <= 0:
+        return max(int(default), 1)
+    if unit.startswith("ms"):
+        return max(int((value / 1000.0) + 0.999), 1)
+    if unit.startswith("h"):
+        return max(int((value * 3600.0) + 0.999), 1)
+    if unit.startswith("m"):
+        return max(int((value * 60.0) + 0.999), 1)
+    return max(int(value + 0.999), 1)
 
 
 def _format_duration_brief(seconds: int) -> str:

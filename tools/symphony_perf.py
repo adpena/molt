@@ -8,6 +8,9 @@ import statistics
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,6 +29,14 @@ class Sample:
     duration_s: float
     stdout_tail: str
     stderr_tail: str
+
+
+@dataclass(slots=True)
+class DashboardStateSample:
+    iteration: int
+    status: int
+    latency_ms: float
+    had_etag: bool
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,6 +74,23 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=600,
         help="Per-sample timeout for tools/symphony_run.py execution.",
+    )
+    parser.add_argument(
+        "--dashboard-url",
+        default=None,
+        help="Optional Symphony dashboard base URL for API polling benchmark (e.g. http://127.0.0.1:8089).",
+    )
+    parser.add_argument(
+        "--api-samples",
+        type=int,
+        default=40,
+        help="Number of /api/v1/state samples to collect when --dashboard-url is set.",
+    )
+    parser.add_argument(
+        "--api-interval-ms",
+        type=int,
+        default=250,
+        help="Delay between /api/v1/state benchmark samples.",
     )
     return parser
 
@@ -201,6 +229,85 @@ def _p95(values: list[float]) -> float:
     return ordered[idx]
 
 
+def _collect_dashboard_state_samples(
+    base_url: str, *, samples: int, interval_ms: int, timeout_seconds: int
+) -> list[DashboardStateSample]:
+    target = urllib.parse.urljoin(base_url.rstrip("/") + "/", "api/v1/state")
+    etag = ""
+    rows: list[DashboardStateSample] = []
+    total = max(int(samples), 1)
+    pause_seconds = max(int(interval_ms), 0) / 1000.0
+    for idx in range(total):
+        headers = {"Cache-Control": "no-cache"}
+        if etag:
+            headers["If-None-Match"] = etag
+        req = urllib.request.Request(target, headers=headers, method="GET")
+        started = time.perf_counter()
+        status = 0
+        had_etag = False
+        try:
+            with urllib.request.urlopen(
+                req, timeout=max(int(timeout_seconds), 1)
+            ) as resp:
+                status = int(resp.status)
+                response_etag = (resp.headers.get("ETag") or "").strip()
+                if response_etag:
+                    etag = response_etag
+                    had_etag = True
+                _ = resp.read()
+        except urllib.error.HTTPError as exc:
+            status = int(exc.code)
+            response_etag = (
+                (exc.headers.get("ETag") or "").strip() if exc.headers else ""
+            )
+            if response_etag:
+                etag = response_etag
+                had_etag = True
+            _ = exc.read()
+        except urllib.error.URLError:
+            status = -1
+        latency_ms = max((time.perf_counter() - started) * 1000.0, 0.0)
+        rows.append(
+            DashboardStateSample(
+                iteration=idx + 1,
+                status=status,
+                latency_ms=latency_ms,
+                had_etag=had_etag,
+            )
+        )
+        if pause_seconds > 0 and idx + 1 < total:
+            time.sleep(pause_seconds)
+    return rows
+
+
+def _summarize_dashboard_state_samples(
+    rows: list[DashboardStateSample],
+) -> dict[str, Any]:
+    if not rows:
+        return {
+            "samples": 0,
+            "status_200": 0,
+            "status_304": 0,
+            "errors": 0,
+            "etag_seen": 0,
+            "avg_latency_ms": None,
+            "p95_latency_ms": None,
+        }
+    latencies = [row.latency_ms for row in rows if row.status >= 0]
+    ok_200 = sum(1 for row in rows if row.status == 200)
+    not_modified = sum(1 for row in rows if row.status == 304)
+    errors = sum(1 for row in rows if row.status < 0 or row.status >= 400)
+    return {
+        "samples": len(rows),
+        "status_200": ok_200,
+        "status_304": not_modified,
+        "errors": errors,
+        "etag_seen": sum(1 for row in rows if row.had_etag),
+        "avg_latency_ms": round(statistics.fmean(latencies), 3) if latencies else None,
+        "p95_latency_ms": round(_p95(latencies), 3) if latencies else None,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     modes = _parse_modes(args.modes)
@@ -235,6 +342,25 @@ def main(argv: list[str] | None = None) -> int:
     summary = _summary(samples)
     print(json.dumps(summary, indent=2))
 
+    dashboard_report: dict[str, Any] | None = None
+    dashboard_samples: list[DashboardStateSample] = []
+    if args.dashboard_url:
+        dashboard_samples = _collect_dashboard_state_samples(
+            args.dashboard_url,
+            samples=max(args.api_samples, 1),
+            interval_ms=max(args.api_interval_ms, 0),
+            timeout_seconds=max(args.timeout_seconds, 1),
+        )
+        dashboard_report = _summarize_dashboard_state_samples(dashboard_samples)
+        print(
+            "dashboard_state_api "
+            f"samples={dashboard_report['samples']} "
+            f"200={dashboard_report['status_200']} "
+            f"304={dashboard_report['status_304']} "
+            f"errors={dashboard_report['errors']} "
+            f"avg_latency_ms={dashboard_report['avg_latency_ms']}"
+        )
+
     output_path: Path | None = None
     if args.output_json:
         output_path = Path(args.output_json).expanduser()
@@ -253,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
                     "modes": modes,
                     "iterations": int(args.iterations),
                     "summary": summary,
+                    "dashboard_state_api": dashboard_report,
                     "samples": [
                         {
                             "mode": s.mode,
@@ -263,6 +390,15 @@ def main(argv: list[str] | None = None) -> int:
                             "stderr_tail": s.stderr_tail,
                         }
                         for s in samples
+                    ],
+                    "dashboard_samples": [
+                        {
+                            "iteration": row.iteration,
+                            "status": row.status,
+                            "latency_ms": round(row.latency_ms, 3),
+                            "had_etag": row.had_etag,
+                        }
+                        for row in dashboard_samples
                     ],
                 },
                 indent=2,
