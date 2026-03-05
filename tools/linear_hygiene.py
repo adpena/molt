@@ -102,6 +102,18 @@ AREA_FROM_PROJECT = {
     "security & supply chain": "security",
     "offload & data ecosystem": "offload",
 }
+PROJECT_FROM_AREA = {
+    "compiler": "Compiler & Frontend",
+    "runtime": "Runtime & Intrinsics",
+    "stdlib": "Runtime & Intrinsics",
+    "wasm": "WASM Parity",
+    "performance": "Performance & Benchmarking",
+    "testing": "Testing & Differential",
+    "tooling": "Tooling & DevEx",
+    "security": "Security & Supply Chain",
+    "offload": "Offload & Data Ecosystem",
+    "c-api": "Runtime & Intrinsics",
+}
 
 AREA_ROLE_MAP = {
     "compiler": "formalizer",
@@ -427,6 +439,29 @@ def _build_area_label(*, issue: dict[str, Any], metadata: dict[str, str]) -> str
     return "area:runtime"
 
 
+def _infer_area_hint(issue: dict[str, Any], metadata: dict[str, str]) -> str:
+    area = str(metadata.get("area") or "").strip()
+    if area:
+        return area
+    title = str(issue.get("title") or "")
+    if ":" in title:
+        return title.split(":", 1)[0].strip()
+    return ""
+
+
+def _project_name_for_issue(issue: dict[str, Any], metadata: dict[str, str]) -> str:
+    area_hint = _infer_area_hint(issue, metadata).lower()
+    if area_hint in {"formal", "proof", "verification"}:
+        return "Testing & Differential"
+    if area_hint in {"orchestration", "agent", "orchestration"}:
+        return "Tooling & DevEx"
+    if area_hint in {"moltlib"}:
+        return "Offload & Data Ecosystem"
+    area_label = _build_area_label(issue=issue, metadata={"area": area_hint})
+    area_key = area_label.removeprefix("area:")
+    return PROJECT_FROM_AREA.get(area_key, "Runtime & Intrinsics")
+
+
 def _risk_label(priority: int | None) -> str:
     if priority == 1:
         return "risk:blocker"
@@ -728,6 +763,67 @@ def cmd_ensure_labels(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ensure_projects(args: argparse.Namespace) -> int:
+    team_id = linear_workspace._resolve_team_id(args.team)
+    projects = linear_workspace._fetch_projects(team_id)
+    project_name_to_id = {
+        str(project.get("name") or "").strip().lower(): str(project.get("id") or "").strip()
+        for project in projects
+        if str(project.get("name") or "").strip() and str(project.get("id") or "").strip()
+    }
+    manifest_lookup = _build_manifest_lookup(Path(args.index).resolve())
+    issues = _fetch_issues_for_hygiene(team_id)
+
+    planned: list[dict[str, Any]] = []
+    updated = 0
+    skipped: list[dict[str, str]] = []
+
+    for issue in issues:
+        project = issue.get("project")
+        if isinstance(project, dict) and str(project.get("id") or "").strip():
+            continue
+        metadata = _infer_metadata_for_routing(issue, manifest_lookup)
+        project_name = _project_name_for_issue(issue, metadata)
+        project_id = project_name_to_id.get(project_name.lower())
+        if not project_id:
+            skipped.append(
+                {
+                    "identifier": str(issue.get("identifier") or ""),
+                    "reason": f"missing_project_named:{project_name}",
+                }
+            )
+            continue
+        planned.append(
+            {
+                "id": str(issue.get("id") or ""),
+                "identifier": str(issue.get("identifier") or ""),
+                "project_name": project_name,
+                "input": {"projectId": project_id},
+            }
+        )
+
+    if args.apply:
+        for row in planned:
+            if _update_issue(row["id"], row["input"]):
+                updated += 1
+
+    print(
+        json.dumps(
+            {
+                "team": args.team,
+                "apply": bool(args.apply),
+                "planned_updates": len(planned),
+                "updated": updated if args.apply else 0,
+                "skipped": skipped,
+                "changes": planned,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def cmd_apply_routing(args: argparse.Namespace) -> int:
     team_id = linear_workspace._resolve_team_id(args.team)
     _ensure_label_taxonomy(team_id, apply=bool(args.apply))
@@ -931,6 +1027,11 @@ def cmd_full_pass(args: argparse.Namespace) -> int:
     print("=== ensure-labels ===")
     cmd_ensure_labels(argparse.Namespace(team=args.team, apply=bool(args.apply)))
 
+    print("=== ensure-projects ===")
+    cmd_ensure_projects(
+        argparse.Namespace(team=args.team, index=args.index, apply=bool(args.apply))
+    )
+
     print("=== apply-routing ===")
     cmd_apply_routing(
         argparse.Namespace(
@@ -974,6 +1075,12 @@ def build_parser() -> argparse.ArgumentParser:
     ensure_labels.add_argument("--team", default="Moltlang")
     ensure_labels.add_argument("--apply", action="store_true")
     ensure_labels.set_defaults(func=cmd_ensure_labels)
+
+    ensure_projects = sub.add_parser("ensure-projects")
+    ensure_projects.add_argument("--team", default="Moltlang")
+    ensure_projects.add_argument("--index", default="ops/linear/manifests/index.json")
+    ensure_projects.add_argument("--apply", action="store_true")
+    ensure_projects.set_defaults(func=cmd_ensure_projects)
 
     apply_routing = sub.add_parser("apply-routing")
     apply_routing.add_argument("--team", default="Moltlang")

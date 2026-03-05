@@ -172,7 +172,7 @@ def check_inventory() -> list[str]:
     return errors
 
 
-def check_lean() -> list[str]:
+def check_lean(*, verbose: bool = True) -> list[str]:
     """Build Lean proofs via `lake build`."""
     errors: list[str] = []
 
@@ -192,7 +192,8 @@ def check_lean() -> list[str]:
         errors.append("formal/lean/ directory does not exist")
         return errors
 
-    print("  Running: lake build (formal/lean/) ...")
+    if verbose:
+        print("  Running: lake build (formal/lean/) ...")
     result = _safe_run([lake, "build"], cwd=LEAN_DIR, timeout=600)
 
     if result.returncode != 0:
@@ -205,7 +206,7 @@ def check_lean() -> list[str]:
     return errors
 
 
-def check_quint() -> tuple[list[str], dict[str, Any]]:
+def check_quint(*, verbose: bool = True) -> tuple[list[str], dict[str, Any]]:
     """Run Quint model verification with Node toolchain diagnostics/fallback."""
     errors: list[str] = []
     diagnostics: dict[str, Any] = {
@@ -258,7 +259,8 @@ def check_quint() -> tuple[list[str], dict[str, Any]]:
         ]
         primary_cmd = [quint, *args]
         model_diag["attempted_commands"].append(primary_cmd)
-        print(f"  Running: quint run {model_file} --invariant={invariant} ...")
+        if verbose:
+            print(f"  Running: quint run {model_file} --invariant={invariant} ...")
         primary = _safe_run(primary_cmd, timeout=120)
 
         final_result = primary
@@ -303,7 +305,13 @@ def check_quint() -> tuple[list[str], dict[str, Any]]:
     return errors, diagnostics
 
 
-def run_gate(*, run_inventory: bool, run_lean: bool, run_quint: bool) -> dict[str, Any]:
+def run_gate(
+    *,
+    run_inventory: bool,
+    run_lean: bool,
+    run_quint: bool,
+    verbose: bool = True,
+) -> dict[str, Any]:
     report: dict[str, Any] = {
         "ok": True,
         "checks": {},
@@ -319,7 +327,7 @@ def run_gate(*, run_inventory: bool, run_lean: bool, run_quint: bool) -> dict[st
         report["errors"].extend(inv_errors)
 
     if run_lean:
-        lean_errors = check_lean()
+        lean_errors = check_lean(verbose=verbose)
         report["checks"]["lean"] = {
             "ok": not bool(lean_errors),
             "errors": lean_errors,
@@ -327,7 +335,7 @@ def run_gate(*, run_inventory: bool, run_lean: bool, run_quint: bool) -> dict[st
         report["errors"].extend(lean_errors)
 
     if run_quint:
-        quint_errors, quint_diag = check_quint()
+        quint_errors, quint_diag = check_quint(verbose=verbose)
         report["checks"]["quint"] = {
             "ok": not bool(quint_errors),
             "errors": quint_errors,
@@ -375,6 +383,7 @@ def main() -> int:
         run_inventory=run_inventory,
         run_lean=run_lean,
         run_quint=run_quint,
+        verbose=log_enabled,
     )
 
     if log_enabled and report["errors"]:

@@ -146,3 +146,53 @@ def test_cmd_comment_issue_posts_expected_payload(
             {"input": {"issueId": "issue-id", "body": "hello"}},
         )
     ]
+
+
+def test_cmd_get_issue_returns_resolved_issue(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(linear_workspace, "_resolve_team_id", lambda _team: "team-id")
+    monkeypatch.setattr(
+        linear_workspace,
+        "_resolve_issue",
+        lambda _team_id, _issue: {"id": "issue-id", "identifier": "MOL-1"},
+    )
+    args = argparse.Namespace(team="MOL", issue="MOL-1")
+    assert linear_workspace.cmd_get_issue(args) == 0
+
+
+def test_cmd_list_comments_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(linear_workspace, "_resolve_team_id", lambda _team: "team-id")
+    monkeypatch.setattr(
+        linear_workspace, "_resolve_issue_id", lambda _team_id, _issue: "issue-id"
+    )
+    calls: list[dict[str, object]] = []
+
+    def _fake_graphql(
+        query: str, variables: dict[str, object] | None = None
+    ) -> dict[str, object]:
+        assert query == linear_workspace.QUERY_ISSUE_COMMENTS
+        payload = variables or {}
+        calls.append(payload)
+        if payload.get("after") is None:
+            return {
+                "issue": {
+                    "comments": {
+                        "nodes": [{"id": "c1"}, {"id": "c2"}],
+                        "pageInfo": {"hasNextPage": True, "endCursor": "cursor-1"},
+                    }
+                }
+            }
+        return {
+            "issue": {
+                "comments": {
+                    "nodes": [{"id": "c3"}],
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                }
+            }
+        }
+
+    monkeypatch.setattr(linear_workspace, "graphql", _fake_graphql)
+    args = argparse.Namespace(team="MOL", issue="MOL-1", limit=3, page_size=2)
+    assert linear_workspace.cmd_list_comments(args) == 0
+    assert len(calls) == 2
+    assert calls[0]["first"] == 2
+    assert calls[1]["after"] == "cursor-1"
