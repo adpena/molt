@@ -39,6 +39,28 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
 - Implemented: readiness audit now emits deterministic next-tranche plans
   (`next_tranche.actions`) with prioritized remediation commands and dedicated
   artifacts (`readiness/next_tranche.json|md`) for recursive execution loops.
+- Implemented: readiness audit now includes `sections.dlq_health` so unresolved
+  recursive-loop failures and replay backlog are first-class autonomy signals.
+- Implemented: recursive loop now writes tool-promotion events/distillations
+  under the canonical Orchestration state root and readiness exposes
+  `sections.tool_promotion` for promotion-ready recurring actions.
+- Implemented: tool-promotion distillation now emits reviewable manifest files
+  so candidate abstractions can be promoted through a spec-first lane instead of
+  ad hoc shell reuse.
+- Implemented: readiness next-tranche generation now injects the exact
+  `tools/symphony_dlq.py replay --fingerprint ... --dry-run` command for the
+  recommended replay target.
+- Implemented: readiness now emits a dry-run/apply `improvement_issue_sync`
+  plan so DLQ backlog and promotion-ready candidates can be externalized into
+  Linear without making workspace mutation implicit.
+- Implemented: launchd-managed Orchestration is now self-healing under operator
+  restarts and transient mount loss: launchd supervisor logs moved to a tiny
+  local control-plane root, `tools/symphony_run.py` waits for canonical external
+  roots before work begins, and watchdog liveness repair now targets a new
+  lightweight authenticated `/api/v1/health` endpoint instead of full state
+  projection. Busy/perf deferral now targets a separate lightweight
+  authenticated `/api/v1/activity` surface so restart decisions stay cheap even
+  when the dashboard state payload is large.
 - Next: keep nightly strict-autonomy lane green (`--strict-autonomy --fail-on warn`)
   by holding harness score at target and repairing drift immediately.
 
