@@ -201,7 +201,9 @@ def _build_quint_env(java_home: str | None) -> dict[str, str] | None:
     path_parts = [part for part in current_path.split(os.pathsep) if part]
     if java_bin_dir not in path_parts:
         env["PATH"] = (
-            f"{java_bin_dir}{os.pathsep}{current_path}" if current_path else java_bin_dir
+            f"{java_bin_dir}{os.pathsep}{current_path}"
+            if current_path
+            else java_bin_dir
         )
     return env
 
@@ -218,6 +220,23 @@ def _detect_missing_java_runtime(output: str) -> bool:
             "java_home is not defined correctly",
         )
     )
+
+
+def _resolve_apalache_work_dir() -> Path:
+    candidates: list[Path] = []
+    for env_key in ("MOLT_APALACHE_WORK_DIR", "MOLT_DIFF_TMPDIR", "TMPDIR"):
+        raw = os.environ.get(env_key, "").strip()
+        if raw:
+            candidates.append(Path(raw).expanduser())
+    candidates.append(Path("/Volumes/APDataStore/Molt/tmp/apalache"))
+    candidates.append(Path("/tmp/molt_apalache"))
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            return candidate.resolve()
+        except OSError:
+            continue
+    return ROOT
 
 
 def check_inventory() -> list[str]:
@@ -303,6 +322,8 @@ def check_quint(*, verbose: bool = True) -> tuple[list[str], dict[str, Any]]:
 
     diagnostics["quint_path"] = quint
     diagnostics["fallback_prefix"] = _resolve_quint_fallback_prefix()
+    work_dir = _resolve_apalache_work_dir()
+    diagnostics["apalache_work_dir"] = str(work_dir)
     java_home = _resolve_java_home()
     java_bin = _resolve_java_bin(java_home)
     diagnostics["java"]["home"] = java_home
@@ -311,8 +332,8 @@ def check_quint(*, verbose: bool = True) -> tuple[list[str], dict[str, Any]]:
         try:
             java_probe = _safe_run([java_bin, "-version"], timeout=10)
             diagnostics["java"]["version"] = (
-                (java_probe.stderr or java_probe.stdout or "").strip() or None
-            )
+                java_probe.stderr or java_probe.stdout or ""
+            ).strip() or None
         except Exception:
             diagnostics["java"]["version"] = None
     quint_env = _build_quint_env(java_home)
@@ -350,7 +371,7 @@ def check_quint(*, verbose: bool = True) -> tuple[list[str], dict[str, Any]]:
         model_diag["attempted_commands"].append(primary_cmd)
         if verbose:
             print(f"  Running: quint run {model_file} --invariant={invariant} ...")
-        primary = _safe_run(primary_cmd, timeout=120, env=quint_env)
+        primary = _safe_run(primary_cmd, timeout=120, env=quint_env, cwd=work_dir)
 
         final_result = primary
         output = (primary.stdout or "") + (primary.stderr or "")
@@ -372,7 +393,12 @@ def check_quint(*, verbose: bool = True) -> tuple[list[str], dict[str, Any]]:
                 diagnostics["fallback_attempts"] = (
                     int(diagnostics.get("fallback_attempts", 0)) + 1
                 )
-                fallback = _safe_run(fallback_cmd, timeout=240, env=quint_env)
+                fallback = _safe_run(
+                    fallback_cmd,
+                    timeout=240,
+                    env=quint_env,
+                    cwd=work_dir,
+                )
                 final_result = fallback
                 model_diag["fallback_used"] = True
                 diagnostics["fallback_used"] = True
