@@ -62,7 +62,9 @@ bench = [
 ]
 dev = [
     "cbor2>=5.8.0",
+    "dspy-ai>=3.0.3",
     "msgpack>=1.1.2",
+    "pydantic>=2.12.0",
     "pre-commit>=4.5.1",
     "pytest>=9.0.2",
     "ruff>=0.15.4",
