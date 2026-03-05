@@ -244,7 +244,7 @@ fn json_encode_basestring_impl(value: &str, ensure_ascii: bool) -> String {
                 '\r' => out.push_str("\\r"),
                 '\t' => out.push_str("\\t"),
                 _ => {
-                    if code < 0x20 || code > 0x7E {
+                    if !(0x20..=0x7E).contains(&code) {
                         json_escape_codepoint(code, &mut out);
                     } else {
                         out.push(ch);
@@ -1535,10 +1535,10 @@ fn object_to_json_with_options(
             }
             out.push(']');
 
-            if options.check_circular {
-                if let Some(popped) = stack.pop() {
-                    stack_set.remove(&popped);
-                }
+            if options.check_circular
+                && let Some(popped) = stack.pop()
+            {
+                stack_set.remove(&popped);
             }
             Ok(())
         }
@@ -1600,10 +1600,10 @@ fn object_to_json_with_options(
             }
             out.push('}');
 
-            if options.check_circular {
-                if let Some(popped) = stack.pop() {
-                    stack_set.remove(&popped);
-                }
+            if options.check_circular
+                && let Some(popped) = stack.pop()
+            {
+                stack_set.remove(&popped);
             }
             Ok(())
         }

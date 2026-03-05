@@ -289,12 +289,13 @@ pub extern "C" fn molt_string_template_get_identifiers(
                 if let Some(brace_end_rel) = text[brace_start..].iter().position(|&b| b == b'}') {
                     let brace_end = brace_start + brace_end_rel;
                     let name = &text[brace_start..brace_end];
-                    if !name.is_empty() && scan_identifier(name, 0).is_some() {
-                        if !seen.iter().any(|s| s == name) {
-                            seen.push(name.to_vec());
-                            let ptr = alloc_string(_py, name);
-                            result_bits.push(MoltObject::from_ptr(ptr).bits());
-                        }
+                    if !name.is_empty()
+                        && scan_identifier(name, 0).is_some()
+                        && !seen.iter().any(|s| s == name)
+                    {
+                        seen.push(name.to_vec());
+                        let ptr = alloc_string(_py, name);
+                        result_bits.push(MoltObject::from_ptr(ptr).bits());
                     }
                     idx = brace_end + 1;
                     continue;

@@ -2933,18 +2933,16 @@ impl WasmBackend {
         let table_base = ctx.table_base;
         let import_ids = ctx.import_ids;
         let resolve_func_idx = |name: &str, expected_arity: usize| -> u32 {
-            if let Some(idx) = func_indices.get(name).copied() {
-                if func_sig_arities.get(name).copied() == Some(expected_arity) {
+            if let Some(idx) = func_indices.get(name).copied()
+                && func_sig_arities.get(name).copied() == Some(expected_arity) {
                     return idx;
                 }
-            }
-            if let Some(idx) = import_ids.get(name).copied() {
-                if !func_sig_arities.contains_key(name)
-                    || func_sig_arities.get(name).copied() == Some(expected_arity)
+            if let Some(idx) = import_ids.get(name).copied()
+                && (!func_sig_arities.contains_key(name)
+                    || func_sig_arities.get(name).copied() == Some(expected_arity))
                 {
                     return idx;
                 }
-            }
             let prefix = format!("{name}_");
             let mut match_idx: Option<u32> = None;
             for (candidate, idx) in func_indices {
@@ -2969,11 +2967,10 @@ impl WasmBackend {
                 .unwrap_or_else(|| panic!("table slot missing for function: {name}"))
         };
         let resolve_table_slot_with_arity = |name: &str, expected_arity: usize| -> u32 {
-            if let Some(slot) = func_map.get(name).copied() {
-                if func_arities.get(name).copied() == Some(expected_arity) {
+            if let Some(slot) = func_map.get(name).copied()
+                && func_arities.get(name).copied() == Some(expected_arity) {
                     return slot;
                 }
-            }
             let prefix = format!("{name}_");
             let mut match_slot: Option<u32> = None;
             for (candidate, slot) in func_map {
@@ -3033,11 +3030,10 @@ impl WasmBackend {
                 })
         };
         let resolve_trampoline_slot_with_arity = |name: &str, expected_arity: usize| -> u32 {
-            if let Some(slot) = trampoline_map.get(name).copied() {
-                if func_arities.get(name).copied() == Some(expected_arity) {
+            if let Some(slot) = trampoline_map.get(name).copied()
+                && func_arities.get(name).copied() == Some(expected_arity) {
                     return slot;
                 }
-            }
             let prefix = format!("{name}_");
             let mut match_slot: Option<u32> = None;
             for (candidate, slot) in trampoline_map {
@@ -6695,8 +6691,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(val));
 
                         let site_bits =
-                            crate::stable_ic_site_id(func_ir.name.as_str(), op_idx, "setattr")
-                                as i64;
+                            crate::stable_ic_site_id(func_ir.name.as_str(), op_idx, "setattr");
                         func.instruction(&Instruction::I64Const(site_bits));
 
                         emit_call(func, reloc_enabled, import_ids["set_attr_object_ic"]);
