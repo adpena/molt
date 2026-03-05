@@ -29,6 +29,12 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   keys (`MOLT_SYMPHONY_DSPY_ENABLE`, `MOLT_SYMPHONY_DSPY_MODEL`,
   `MOLT_SYMPHONY_DSPY_API_KEY_ENV`) and docs now run `linear_hygiene` via
   `uv run --group dev` to guarantee optional routing deps are available.
+- Implemented: readiness now includes trend-aware regression analysis
+  (`sections.trend_analysis`) over baseline history for harness score,
+  active-flow ratio, formal pass ratio, and recurring durable-growth pressure.
+- Implemented: readiness now emits deterministic next-tranche action plans
+  (`next_tranche.actions`) plus dedicated artifacts under
+  `logs/symphony/readiness/next_tranche.{json,md}` to drive recursive execution.
 
 ## Rust-First Stdlib Lowering Sprint (2026-03-01)
 - Completed (2026-03-03): wasm dynamic-parse lanes are now explicitly capability-broken

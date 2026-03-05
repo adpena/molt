@@ -703,3 +703,122 @@ def test_post_growth_alert_comment_skips_without_breach(tmp_path: Path) -> None:
         env_file=env_file,
     )
     assert out["status"] == "skipped"
+
+
+def test_calculate_trend_analysis_detects_regressions() -> None:
+    history = [
+        {
+            "captured_at": "2026-03-05T10:00:00Z",
+            "harness_score": 100,
+            "linear_active_execution_flow": True,
+            "formal_suite_status": "pass",
+            "durable_jsonl_size": 100,
+            "durable_duckdb_size": 100,
+            "durable_parquet_size": 100,
+        },
+        {
+            "captured_at": "2026-03-05T11:00:00Z",
+            "harness_score": 99,
+            "linear_active_execution_flow": False,
+            "formal_suite_status": "warn",
+            "durable_jsonl_size": 120,
+            "durable_duckdb_size": 120,
+            "durable_parquet_size": 120,
+        },
+    ]
+    current = {
+        "captured_at": "2026-03-05T12:00:00Z",
+        "harness_score": 90,
+        "linear_active_execution_flow": False,
+        "formal_suite_status": "fail",
+        "durable_jsonl_size": 150,
+        "durable_duckdb_size": 160,
+        "durable_parquet_size": 170,
+    }
+    trend = readiness_audit._calculate_trend_analysis(
+        current_snapshot=current,
+        baseline_history=history,
+        trend_window=12,
+        max_harness_score_drop=5,
+        min_active_flow_ratio=0.7,
+        min_formal_pass_ratio=0.8,
+        max_durable_growth_ratio=0.05,
+    )
+    assert trend["status"] == "warn"
+    assert trend["harness"]["regressed"] is True
+    assert trend["active_flow"]["ratio_low"] is True
+    assert trend["formal_suite"]["ratio_low"] is True
+    assert trend["durable_growth"]["recurring"] is True
+
+
+def test_calculate_trend_analysis_does_not_mark_single_interval_as_recurring() -> None:
+    history = [
+        {
+            "captured_at": "2026-03-05T10:00:00Z",
+            "harness_score": 100,
+            "linear_active_execution_flow": True,
+            "formal_suite_status": "pass",
+            "durable_jsonl_size": 100,
+            "durable_duckdb_size": 100,
+            "durable_parquet_size": 100,
+        }
+    ]
+    current = {
+        "captured_at": "2026-03-05T11:00:00Z",
+        "harness_score": 100,
+        "linear_active_execution_flow": True,
+        "formal_suite_status": "pass",
+        "durable_jsonl_size": 200,
+        "durable_duckdb_size": 200,
+        "durable_parquet_size": 200,
+    }
+    trend = readiness_audit._calculate_trend_analysis(
+        current_snapshot=current,
+        baseline_history=history,
+        trend_window=12,
+        max_harness_score_drop=5,
+        min_active_flow_ratio=0.7,
+        min_formal_pass_ratio=0.8,
+        max_durable_growth_ratio=0.05,
+    )
+    assert trend["durable_growth"]["breach_interval_count"] == 1
+    assert trend["durable_growth"]["recurring"] is False
+
+
+def test_synthesize_next_tranche_prioritizes_actionable_findings() -> None:
+    report = {
+        "generated_at": "2026-03-05T12:00:00Z",
+        "overall_status": "warn",
+        "findings": [
+            {"severity": "warn", "code": "active_flow_ratio_low"},
+            {"severity": "warn", "code": "durable_growth_budget_exceeded"},
+            {"severity": "info", "code": "dspy_routing_disabled"},
+        ],
+    }
+    plan = readiness_audit._synthesize_next_tranche(report)
+    assert plan["status"] == "action_required"
+    assert plan["action_count"] >= 2
+    ids = [row["id"] for row in plan["actions"]]
+    assert "restore_execution_flow" in ids
+    assert "trim_durable_growth" in ids
+
+
+def test_as_markdown_includes_next_tranche_actions() -> None:
+    report = {
+        "generated_at": "2026-03-05T12:00:00Z",
+        "overall_status": "pass",
+        "sections": {"environment": {"status": "pass"}},
+        "findings": [{"severity": "info", "code": "readiness_trend_stable", "message": "stable"}],
+        "next_tranche": {
+            "actions": [
+                {
+                    "priority": "P1",
+                    "title": "Restore active execution flow ratio",
+                    "why": "Queue-heavy states reduce throughput.",
+                }
+            ]
+        },
+    }
+    md = readiness_audit._as_markdown(report)
+    assert "## Next Tranche" in md
+    assert "Restore active execution flow ratio" in md

@@ -95,6 +95,8 @@ Artifacts are written to:
 
 - `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.json`
 - `/Volumes/APDataStore/Molt/logs/symphony/readiness/latest.md`
+- `/Volumes/APDataStore/Molt/logs/symphony/readiness/next_tranche.json`
+- `/Volumes/APDataStore/Molt/logs/symphony/readiness/next_tranche.md`
 - `/Volumes/APDataStore/Molt/logs/symphony/readiness/history/baseline_*.json`
 - `/Volumes/APDataStore/Molt/logs/symphony/metrics/harness_baseline_latest.md`
 - `/Volumes/APDataStore/Molt/logs/symphony/metrics/harness_timeseries.csv`
@@ -103,6 +105,8 @@ Artifacts are written to:
 Use this report to drive cleanup of malformed Linear issues, metadata gaps,
 launchd/durable-memory wiring drift, and harness score regressions. Keep
 `sections.harness_engineering.score >= 90` before scaling unattended autonomy.
+Use `next_tranche.actions` as the canonical prioritized remediation queue for
+the next significant execution wave.
 
 Readiness now includes a run-over-run durable-memory growth budget signal:
 
@@ -111,6 +115,20 @@ Readiness now includes a run-over-run durable-memory growth budget signal:
   readiness baseline.
 - if no previous baseline exists yet, the report emits
   `durable_growth_baseline_missing` (info) until the second baseline is captured.
+
+Readiness now includes trend-aware policy checks:
+
+- harness-score regression (`harness_score_regressed`)
+- low active-flow ratio (`active_flow_ratio_low`)
+- low formal pass ratio (`formal_pass_ratio_low`)
+- recurring durable growth breaches (`durable_growth_recurring`)
+
+Tune thresholds when needed:
+- `--trend-window`
+- `--max-harness-score-drop`
+- `--min-active-flow-ratio`
+- `--min-formal-pass-ratio`
+- `--max-durable-growth-ratio`
 
 For autonomy hard-gating (CI/nightly), run:
 

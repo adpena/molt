@@ -55,6 +55,7 @@ def build_program(
 def build_watchdog_program(
     repo_root: Path,
     python_bin: str,
+    env_file: Path,
     interval_ms: int,
     quiet_ms: int,
     cooldown_ms: int,
@@ -63,12 +64,19 @@ def build_watchdog_program(
     state_timeout_ms: int,
     defer_log_interval_ms: int,
     restart_when_idle: bool,
+    perf_check: bool,
+    perf_interval_ms: int,
+    perf_timeout_ms: int,
+    perf_command: str | None,
+    perf_defer_when_busy: bool,
 ) -> list[str]:
     args = [
         python_bin,
         "tools/symphony_watchdog.py",
         "--repo-root",
         str(repo_root),
+        "--env-file",
+        str(env_file),
         "--service-label",
         LABEL,
         "--interval-ms",
@@ -83,7 +91,21 @@ def build_watchdog_program(
         str(state_timeout_ms),
         "--defer-log-interval-ms",
         str(defer_log_interval_ms),
+        "--perf-interval-ms",
+        str(perf_interval_ms),
+        "--perf-timeout-ms",
+        str(perf_timeout_ms),
     ]
+    if perf_check:
+        args.append("--perf-check")
+    else:
+        args.append("--no-perf-check")
+    if perf_defer_when_busy:
+        args.append("--perf-defer-when-busy")
+    else:
+        args.append("--perf-run-when-busy")
+    if perf_command:
+        args.extend(["--perf-command", perf_command])
     if restart_when_idle:
         args.append("--restart-when-idle")
     else:
@@ -106,6 +128,11 @@ def install(
     watchdog_state_timeout_ms: int,
     watchdog_defer_log_interval_ms: int,
     watchdog_restart_when_idle: bool,
+    watchdog_perf_check: bool,
+    watchdog_perf_interval_ms: int,
+    watchdog_perf_timeout_ms: int,
+    watchdog_perf_command: str | None,
+    watchdog_perf_defer_when_busy: bool,
     exec_mode: str,
     molt_profile: str,
     molt_build_args: list[str],
@@ -151,6 +178,7 @@ def install(
             "ProgramArguments": build_watchdog_program(
                 repo_root=repo_root,
                 python_bin=python_bin,
+                env_file=env_file,
                 interval_ms=max(watchdog_interval_ms, 250),
                 quiet_ms=max(watchdog_quiet_ms, 250),
                 cooldown_ms=max(watchdog_cooldown_ms, 250),
@@ -158,6 +186,11 @@ def install(
                 state_timeout_ms=max(watchdog_state_timeout_ms, 100),
                 defer_log_interval_ms=max(watchdog_defer_log_interval_ms, 500),
                 restart_when_idle=watchdog_restart_when_idle,
+                perf_check=watchdog_perf_check,
+                perf_interval_ms=max(watchdog_perf_interval_ms, 60_000),
+                perf_timeout_ms=max(watchdog_perf_timeout_ms, 5_000),
+                perf_command=watchdog_perf_command,
+                perf_defer_when_busy=watchdog_perf_defer_when_busy,
             ),
             "RunAtLoad": True,
             "KeepAlive": True,
@@ -282,6 +315,47 @@ def build_parser() -> argparse.ArgumentParser:
     install_p.add_argument("--watchdog-state-timeout-ms", type=int, default=600)
     install_p.add_argument("--watchdog-defer-log-interval-ms", type=int, default=12000)
     install_p.add_argument(
+        "--watchdog-perf-check",
+        action="store_true",
+        default=True,
+        help="Enable watchdog startup/nightly perf guard (default: enabled).",
+    )
+    install_p.add_argument(
+        "--watchdog-no-perf-check",
+        dest="watchdog_perf_check",
+        action="store_false",
+        help="Disable watchdog perf guard scheduler.",
+    )
+    install_p.add_argument(
+        "--watchdog-perf-interval-ms",
+        type=int,
+        default=86_400_000,
+        help="Watchdog perf guard interval (default: 24h).",
+    )
+    install_p.add_argument(
+        "--watchdog-perf-timeout-ms",
+        type=int,
+        default=1_800_000,
+        help="Watchdog perf guard timeout per run (default: 30m).",
+    )
+    install_p.add_argument(
+        "--watchdog-perf-command",
+        default=None,
+        help="Optional custom perf guard command string for watchdog.",
+    )
+    install_p.add_argument(
+        "--watchdog-perf-defer-when-busy",
+        action="store_true",
+        default=True,
+        help="Defer watchdog perf checks while running/retrying agents are active.",
+    )
+    install_p.add_argument(
+        "--watchdog-perf-run-when-busy",
+        dest="watchdog_perf_defer_when_busy",
+        action="store_false",
+        help="Allow watchdog perf checks even while active runs exist.",
+    )
+    install_p.add_argument(
         "--watchdog-restart-when-idle",
         action="store_true",
         default=True,
@@ -322,6 +396,15 @@ def main(argv: list[str] | None = None) -> int:
             watchdog_state_timeout_ms=int(args.watchdog_state_timeout_ms),
             watchdog_defer_log_interval_ms=int(args.watchdog_defer_log_interval_ms),
             watchdog_restart_when_idle=bool(args.watchdog_restart_when_idle),
+            watchdog_perf_check=bool(args.watchdog_perf_check),
+            watchdog_perf_interval_ms=int(args.watchdog_perf_interval_ms),
+            watchdog_perf_timeout_ms=int(args.watchdog_perf_timeout_ms),
+            watchdog_perf_command=(
+                str(args.watchdog_perf_command)
+                if args.watchdog_perf_command is not None
+                else None
+            ),
+            watchdog_perf_defer_when_busy=bool(args.watchdog_perf_defer_when_busy),
             exec_mode=str(args.exec_mode),
             molt_profile=str(args.molt_profile),
             molt_build_args=list(args.molt_build_arg),

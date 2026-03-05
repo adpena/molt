@@ -153,6 +153,7 @@ def test_symphony_launchd_watchdog_program_includes_timing(tmp_path: Path) -> No
     args = symphony_launchd.build_watchdog_program(
         repo_root=tmp_path,
         python_bin="/usr/bin/python3",
+        env_file=tmp_path / "symphony.env",
         interval_ms=1500,
         quiet_ms=1200,
         cooldown_ms=5000,
@@ -160,12 +161,19 @@ def test_symphony_launchd_watchdog_program_includes_timing(tmp_path: Path) -> No
         state_timeout_ms=600,
         defer_log_interval_ms=12000,
         restart_when_idle=True,
+        perf_check=True,
+        perf_interval_ms=86_400_000,
+        perf_timeout_ms=1_800_000,
+        perf_command=None,
+        perf_defer_when_busy=True,
     )
     assert args == [
         "/usr/bin/python3",
         "tools/symphony_watchdog.py",
         "--repo-root",
         str(tmp_path),
+        "--env-file",
+        str(tmp_path / "symphony.env"),
         "--service-label",
         "com.molt.symphony",
         "--interval-ms",
@@ -180,6 +188,12 @@ def test_symphony_launchd_watchdog_program_includes_timing(tmp_path: Path) -> No
         "600",
         "--defer-log-interval-ms",
         "12000",
+        "--perf-interval-ms",
+        "86400000",
+        "--perf-timeout-ms",
+        "1800000",
+        "--perf-check",
+        "--perf-defer-when-busy",
         "--restart-when-idle",
     ]
 
