@@ -13314,15 +13314,19 @@ impl SimpleBackend {
                     if !is_block_filled {
                         ensure_block_in_layout(&mut builder, frame.loop_block);
                         reachable_blocks.insert(frame.loop_block);
+                        let mut jump_args: Vec<Value> = Vec::new();
                         if let Some(next_idx) = frame.next_index.take() {
-                            jump_block(&mut builder, frame.loop_block, &[next_idx]);
+                            jump_args.push(next_idx);
                         } else if let Some(name) = frame.index_name.as_ref() {
                             let current_idx =
                                 var_get(&mut builder, &vars, name).expect("Loop index not found");
-                            jump_block(&mut builder, frame.loop_block, &[*current_idx]);
-                        } else {
-                            jump_block(&mut builder, frame.loop_block, &[]);
+                            jump_args.push(*current_idx);
                         }
+                        // Append carry values so the jump matches the block params
+                        for val in &frame.carry_values {
+                            jump_args.push(*val);
+                        }
+                        jump_block(&mut builder, frame.loop_block, &jump_args);
                     }
                     if builder.func.layout.is_block_inserted(frame.loop_block) {
                         builder.seal_block(frame.loop_block);
