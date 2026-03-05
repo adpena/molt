@@ -3,6 +3,7 @@ from __future__ import annotations
 import queue
 import threading
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 from molt.symphony.models import (
@@ -77,6 +78,16 @@ def _orchestrator_stub() -> SymphonyOrchestrator:
     orchestrator._last_profiling_checkpoint_monotonic = 0.0
     orchestrator._durable_memory = None
     orchestrator._exec_mode = "python"
+    orchestrator._server_port = 8089
+    orchestrator._perf_reports_dir = Path("/tmp")
+    orchestrator._perf_verdict_path = Path("/tmp/molt_symphony_perf_verdict.json")
+    orchestrator._perf_verdict_cache_ttl_seconds = 2.0
+    orchestrator._perf_verdict_cache = None
+    orchestrator._perf_guard_timeout_seconds = 30
+    orchestrator._perf_guard_running = False
+    orchestrator._perf_guard_last_started_at = None
+    orchestrator._perf_guard_last_finished_at = None
+    orchestrator._perf_guard_last_result = None
     return orchestrator
 
 
@@ -396,6 +407,27 @@ def test_snapshot_state_surfaces_system_suspension_attention() -> None:
     assert attention[0]["kind"] == "auth_required"
 
 
+def test_snapshot_state_surfaces_perf_guard_breach_attention(tmp_path) -> None:
+    orchestrator = _orchestrator_stub()
+    verdict_path = tmp_path / "verdict.json"
+    verdict_path.write_text(
+        '{"status":"breach","breaches_count":2,"report_path":"x"}',
+        encoding="utf-8",
+    )
+    orchestrator._perf_verdict_path = verdict_path
+    orchestrator._perf_verdict_cache = None
+    snapshot = orchestrator.snapshot_state()
+    attention = snapshot["attention"]
+    assert attention
+    assert any(
+        str(row.get("kind") or "").startswith("perf_guard_")
+        for row in attention
+        if isinstance(row, dict)
+    )
+    perf_guard = snapshot["runtime"]["perf_guard"]
+    assert perf_guard["verdict"]["status"] == "breach"
+
+
 def test_on_worker_exit_turn_input_required_sets_auth_pause() -> None:
     orchestrator = _orchestrator_stub()
     issue = _issue("MOL-19", "issue-19")
@@ -696,3 +728,24 @@ def test_run_dashboard_tool_durable_integrity_check_success() -> None:
     assert payload["ok"] is True
     assert payload["tool"] == "durable_integrity_check"
     assert "checks" in payload
+
+
+def test_run_dashboard_tool_run_perf_guard_starts_background_job(monkeypatch) -> None:
+    orchestrator = _orchestrator_stub()
+
+    def _fake_job() -> None:
+        with orchestrator._state_lock:
+            orchestrator._perf_guard_running = False
+            orchestrator._perf_guard_last_finished_at = (
+                now_utc().isoformat().replace("+00:00", "Z")
+            )
+            orchestrator._perf_guard_last_result = {
+                "status": "pass",
+                "message": "ok",
+                "finished_at": orchestrator._perf_guard_last_finished_at,
+            }
+
+    monkeypatch.setattr(orchestrator, "_run_perf_guard_job", _fake_job)
+    payload = orchestrator.run_dashboard_tool("run_perf_guard", {})
+    assert payload["ok"] is True
+    assert payload["status"] == "started"

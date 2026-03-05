@@ -35,7 +35,10 @@ def _load_rows(path: Path) -> list[dict[str, Any]]:
             captured_at = str(row.get("captured_at") or "").strip()
             if not captured_at:
                 continue
-            parsed: dict[str, Any] = {"captured_at": captured_at, "_dt": _parse_iso(captured_at)}
+            parsed: dict[str, Any] = {
+                "captured_at": captured_at,
+                "_dt": _parse_iso(captured_at),
+            }
             for key, value in row.items():
                 if key == "captured_at":
                     continue
@@ -64,7 +67,11 @@ def _summary_payload(rows: list[dict[str, Any]], *, days: int) -> dict[str, Any]
     latest_dt = latest["_dt"]
     window_start = latest_dt - timedelta(days=max(1, days))
     window_rows = [row for row in rows if row["_dt"] >= window_start]
-    baseline = window_rows[0] if len(window_rows) >= 2 else (rows[-2] if len(rows) >= 2 else latest)
+    baseline = (
+        window_rows[0]
+        if len(window_rows) >= 2
+        else (rows[-2] if len(rows) >= 2 else latest)
+    )
 
     metrics = (
         "harness_score",
@@ -177,7 +184,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.json_out:
         out_path = Path(str(args.json_out)).expanduser().resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        out_path.write_text(
+            json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
     print(_as_markdown(summary))
     return 0
 

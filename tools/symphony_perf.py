@@ -917,7 +917,11 @@ def _sync_linear_regression_issues(
     import tools.linear_workspace as linear_workspace
 
     if not candidates:
-        return {"ok": True, "planned": 0, "result": {"created_count": 0, "updated_count": 0}}
+        return {
+            "ok": True,
+            "planned": 0,
+            "result": {"created_count": 0, "updated_count": 0},
+        }
     team_id = linear_workspace._resolve_team_id(team)
     project_id = linear_workspace._resolve_project_id(team_id, project)
     existing = linear_workspace._fetch_issues(team_id, project_id)
@@ -1176,9 +1180,7 @@ def main(argv: list[str] | None = None) -> int:
     verdict = {
         "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "status": (
-            "run_failed"
-            if exit_code == 2
-            else ("breach" if exit_code == 3 else "pass")
+            "run_failed" if exit_code == 2 else ("breach" if exit_code == 3 else "pass")
         ),
         "exit_code": exit_code,
         "report_path": str(output_path),
