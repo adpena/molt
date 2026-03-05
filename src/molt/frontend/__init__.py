@@ -9776,7 +9776,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if init_val is None:
                     init_val = MoltValue(self.next_var(), type_hint="int")
                     self.emit(MoltOp(kind="CONST", args=[0], result=init_val))
-                carry_init_vals.append((name, init_val))
+                # Unbox to raw i64 BEFORE the loop so the carry var stays raw
+                # throughout, avoiding per-iteration box/unbox overhead.
+                raw_init = MoltValue(f"__carry_raw_init_{name}", type_hint="int")
+                self.emit(MoltOp(kind="UNBOX_TO_RAW_INT", args=[init_val], result=raw_init))
+                carry_init_vals.append((name, raw_init))
             if name in self.boxed_locals:
                 saved_cells[name] = self.boxed_locals.pop(name)
         self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
@@ -36473,6 +36477,31 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     raw_vars.add(op.result.name)
                     promoted += 1
                     new_ops.append(new_op)
+                else:
+                    new_ops.append(op)
+
+            elif op.kind == "UNBOX_TO_RAW_INT" and isinstance(op.result, MoltValue):
+                # UNBOX_TO_RAW_INT by definition produces a raw i64 value,
+                # whether emitted by the frontend or by this pass's ensure_raw.
+                raw_vars.add(op.result.name)
+                new_ops.append(op)
+
+            elif op.kind in ("LOOP_CARRY_INIT", "LOOP_CARRY_UPDATE"):
+                # If the input value is raw, propagate raw-ness to the carry var.
+                last_arg = op.args[-1] if op.args else None
+                if (
+                    last_arg is not None
+                    and isinstance(last_arg, MoltValue)
+                    and last_arg.name in raw_vars
+                ):
+                    out_name = (
+                        op.result.name
+                        if isinstance(op.result, MoltValue)
+                        else "none"
+                    )
+                    if out_name != "none":
+                        raw_vars.add(out_name)
+                    new_ops.append(op)
                 else:
                     new_ops.append(op)
 
