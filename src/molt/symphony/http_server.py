@@ -34,6 +34,8 @@ from .paths import symphony_security_events_file
 
 
 class StateProvider(Protocol):
+    def snapshot_activity(self) -> dict[str, Any]: ...
+
     def snapshot_state(self) -> dict[str, Any]: ...
 
     def snapshot_durable_memory(self, limit: int = 120) -> dict[str, Any]: ...
@@ -720,6 +722,8 @@ class DashboardServer:
                     or path == "/dashboard-kernel-bridge.js"
                     or path == "/dashboard-kernel.wasm"
                     or path == "/dashboard.js"
+                    or path == "/api/v1/activity"
+                    or path == "/api/v1/health"
                     or path == "/api/v1/state"
                     or path == "/api/v1/durable"
                     or path == "/api/v1/stream"
@@ -837,6 +841,16 @@ class DashboardServer:
                         return
                     self._handle_dashboard()
                     return
+                if path == "/api/v1/activity":
+                    if not self._authorize_request(
+                        method="GET",
+                        query=parsed.query,
+                        mutating=False,
+                        allow_query_token=security.allow_query_token,
+                    ):
+                        return
+                    self._write_json(HTTPStatus.OK, provider.snapshot_activity())
+                    return
                 if path == "/api/v1/state":
                     if not self._authorize_request(
                         method="GET",
@@ -857,6 +871,24 @@ class DashboardServer:
                         HTTPStatus.OK,
                         encoded,
                         headers={"Cache-Control": "no-store", "ETag": etag},
+                    )
+                    return
+                if path == "/api/v1/health":
+                    if not self._authorize_request(
+                        method="GET",
+                        query=parsed.query,
+                        mutating=False,
+                        allow_query_token=security.allow_query_token,
+                    ):
+                        return
+                    self._write_json(
+                        HTTPStatus.OK,
+                        {
+                            "status": "ok",
+                            "generated_at": datetime.now(UTC)
+                            .isoformat()
+                            .replace("+00:00", "Z"),
+                        },
                     )
                     return
                 if path == "/api/v1/durable":

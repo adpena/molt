@@ -25,6 +25,7 @@ Canonical status lives in [docs/spec/STATUS.md](docs/spec/STATUS.md) (README and
 - Linear workspace bootstrap guide: [docs/LINEAR_WORKSPACE_BOOTSTRAP.md](docs/LINEAR_WORKSPACE_BOOTSTRAP.md)
 - Bench guides: [bench/README.md](bench/README.md), [bench/friends/README.md](bench/friends/README.md)
 - Packaging guides: [packaging/README.md](packaging/README.md), [packaging/templates/linux/README.md](packaging/templates/linux/README.md)
+- Cargo front-door crate: [runtime/molt-python/README.md](runtime/molt-python/README.md)
 
 ## Optimization Program Kickoff
 
@@ -288,7 +289,7 @@ export MOLT_WORKER_CMD="molt-worker --stdio --exports demo/molt_worker_app/molt_
 - Native backend daemon: native backend compiles run through a persistent daemon by default (`MOLT_BACKEND_DAEMON=1`) to amortize Cranelift startup; tune with `MOLT_BACKEND_DAEMON_START_TIMEOUT` and `MOLT_BACKEND_DAEMON_CACHE_MB`.
 - Cranelift backend tuning knobs: release builds default to minimum 16-byte function alignment (`log2_min_function_alignment=4`) and debug/dev builds default to `regalloc_algorithm=single_pass`; override with `MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2`, `MOLT_BACKEND_REGALLOC_ALGORITHM`, and `MOLT_BACKEND_LIBCALL_CALL_CONV`.
 - Multi-agent throughput tooling: bootstrap with `tools/throughput_env.sh --apply`, benchmark with `tools/throughput_matrix.py`, run compile KPI snapshots with `tools/compile_progress.py`, and enforce cache retention with `tools/molt_cache_prune.py`.
-- Symphony orchestration: run `PYTHONPATH=src python3 tools/symphony_bootstrap.py --project-slug <slug> --install-launchd` once, then `PYTHONPATH=src python3 tools/symphony_run.py WORKFLOW.md --port 8089` (runtime env in `ops/linear/runtime/symphony.env`).
+- Symphony orchestration: run `PYTHONPATH=src python3 tools/symphony_bootstrap.py --project-slug <slug> --install-launchd` once, then `PYTHONPATH=src python3 tools/symphony_run.py WORKFLOW.md --port 8089` (runtime env in `ops/linear/runtime/symphony.env`). launchd now keeps a small local control-plane log root at `~/Library/Logs/Molt/symphony-launchd`, waits for the canonical external volume instead of crash-looping, uses `/api/v1/health` for liveness repair, and uses `/api/v1/activity` for lightweight busy/idle restart decisions.
 - Shared diff target: keep `MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR` (set automatically by throughput bootstrap) so diff workers reuse the same Cargo artifacts instead of triggering duplicate rebuilds.
 - Diff run lock: full diff runs coordinate via `<CARGO_TARGET_DIR>/.molt_state/diff_run.lock`; tune queue wait with `MOLT_DIFF_RUN_LOCK_WAIT_SEC` and `MOLT_DIFF_RUN_LOCK_POLL_SEC`.
 - `molt build --output <path|dir>`: directory outputs use the default filename; `--out-dir` only affects final outputs (intermediates remain under `$MOLT_HOME/build/<entry>`).
