@@ -1,6 +1,8 @@
 #ifndef MOLT_C_API_MOLT_H
 #define MOLT_C_API_MOLT_H
 
+/* Stable libmolt extension ABI: versioned by MOLT_C_API_VERSION. */
+
 #include <stddef.h>
 #include <stdint.h>
 
