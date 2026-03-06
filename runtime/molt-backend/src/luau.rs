@@ -9,6 +9,7 @@
 //! or stub markers for unsupported semantics.
 
 use crate::{FunctionIR, OpIR, SimpleIR};
+use std::collections::HashMap;
 use std::fmt::Write;
 
 /// Transpiles Molt `SimpleIR` into Luau source text.
@@ -63,6 +64,7 @@ impl LuauBackend {
         self.emit_line("molt_main()");
         self.pop_indent();
         self.emit_line("end");
+        inline_single_use_constants(&mut self.output);
         std::mem::take(&mut self.output)
     }
 
@@ -2542,6 +2544,151 @@ fn escape_luau_string(s: &str) -> String {
     out
 }
 
+/// Post-processing pass: inline single-use constants.
+///
+/// Finds patterns like:
+///   local v42 = <literal>
+/// where v42 appears exactly once more in the source, and replaces
+/// that single use with the literal value, removing the declaration.
+fn inline_single_use_constants(source: &mut String) {
+    let lines: Vec<&str> = source.lines().collect();
+
+    // Phase 1: Identify constant declarations and count variable uses.
+    let mut const_decls: HashMap<String, (usize, String)> = HashMap::new(); // var -> (line_idx, rhs)
+    let mut var_use_count: HashMap<String, usize> = HashMap::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+
+        // Match "local vNNN = <literal>"
+        if let Some(rest) = trimmed.strip_prefix("local v") {
+            if let Some(eq_pos) = rest.find(" = ") {
+                let var_suffix = &rest[..eq_pos];
+                if var_suffix.chars().all(|c| c.is_ascii_digit()) {
+                    let var_name = format!("v{var_suffix}");
+                    let rhs = rest[eq_pos + 3..].to_string();
+                    // Check if RHS is a simple literal.
+                    let is_literal = is_simple_literal(&rhs);
+                    if is_literal {
+                        const_decls.insert(var_name, (i, rhs));
+                    }
+                }
+            }
+        }
+
+        // Count all vNNN references in this line.
+        let bytes = line.as_bytes();
+        let mut pos = 0;
+        while pos < bytes.len() {
+            if bytes[pos] == b'v' && (pos == 0 || !is_ident_char(bytes[pos - 1])) {
+                let start = pos;
+                pos += 1;
+                while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+                    pos += 1;
+                }
+                if pos > start + 1 && (pos >= bytes.len() || !is_ident_char(bytes[pos])) {
+                    let var = std::str::from_utf8(&bytes[start..pos]).unwrap_or("");
+                    *var_use_count.entry(var.to_string()).or_insert(0) += 1;
+                }
+            } else {
+                pos += 1;
+            }
+        }
+    }
+
+    // Phase 2: Find single-use constants (declared once + used once = count 2).
+    let mut inline_map: HashMap<String, String> = HashMap::new();
+    let mut remove_lines: Vec<usize> = Vec::new();
+
+    for (var, (line_idx, rhs)) in &const_decls {
+        if var_use_count.get(var).copied().unwrap_or(0) == 2 {
+            // Exactly 2 occurrences: 1 declaration + 1 use.
+            // Only inline short literals to avoid code bloat.
+            if rhs.len() <= 80 {
+                inline_map.insert(var.clone(), rhs.clone());
+                remove_lines.push(*line_idx);
+            }
+        }
+    }
+
+    if inline_map.is_empty() {
+        return;
+    }
+
+    // Phase 3: Rebuild source with inlining.
+    let mut result = String::with_capacity(source.len());
+    for (i, line) in lines.iter().enumerate() {
+        if remove_lines.contains(&i) {
+            continue; // Skip the declaration line.
+        }
+        let mut new_line = (*line).to_string();
+        // Replace variable references with their literal values.
+        for (var, literal) in &inline_map {
+            if new_line.contains(var.as_str()) {
+                new_line = replace_whole_word(&new_line, var, literal);
+            }
+        }
+        result.push_str(&new_line);
+        result.push('\n');
+    }
+
+    *source = result;
+    eprintln!(
+        "[molt-luau] Inlined {} single-use constants",
+        inline_map.len()
+    );
+}
+
+fn is_simple_literal(s: &str) -> bool {
+    if s == "nil" || s == "true" || s == "false" {
+        return true;
+    }
+    // Numeric: optional minus, digits, optional decimal
+    let bytes = s.as_bytes();
+    if !bytes.is_empty() {
+        let start = if bytes[0] == b'-' { 1 } else { 0 };
+        if start < bytes.len() && bytes[start].is_ascii_digit() {
+            return bytes[start..].iter().all(|&b| b.is_ascii_digit() || b == b'.');
+        }
+    }
+    // String: starts and ends with "
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        return true;
+    }
+    false
+}
+
+fn is_ident_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Replace whole-word occurrences of `needle` with `replacement` in `haystack`.
+fn replace_whole_word(haystack: &str, needle: &str, replacement: &str) -> String {
+    let bytes = haystack.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    let mut result = String::with_capacity(haystack.len() + replacement.len());
+    let mut pos = 0;
+
+    while pos < bytes.len() {
+        if pos + needle_bytes.len() <= bytes.len()
+            && &bytes[pos..pos + needle_bytes.len()] == needle_bytes
+        {
+            let before_ok =
+                pos == 0 || !is_ident_char(bytes[pos - 1]);
+            let after_ok = pos + needle_bytes.len() >= bytes.len()
+                || !is_ident_char(bytes[pos + needle_bytes.len()]);
+            if before_ok && after_ok {
+                result.push_str(replacement);
+                pos += needle_bytes.len();
+                continue;
+            }
+        }
+        result.push(bytes[pos] as char);
+        pos += 1;
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2621,8 +2768,8 @@ mod tests {
         let mut backend = LuauBackend::new();
         let output = backend.compile(&ir);
         assert!(output.contains("function molt_main()"));
-        assert!(output.contains("local v0 = 42"));
-        assert!(output.contains("print(v0)"));
+        // v0 is a single-use constant inlined into the print call.
+        assert!(output.contains("print(42)"));
     }
 
     #[test]
@@ -2724,9 +2871,9 @@ mod tests {
         let mut backend = LuauBackend::new();
         let output = backend.compile(&ir);
         assert!(output.contains("local function test_func(p0)"));
-        assert!(output.contains("local v0 = 3.14"));
-        assert!(output.contains("local v1 = \"hello\""));
-        assert!(output.contains("local v2 = p0 + v0"));
+        // v0 (3.14) is single-use, inlined into the add.
+        assert!(output.contains("local v2 = p0 + 3.14"));
+        // v1 ("hello") is dead, may be removed.
         assert!(output.contains("local v3 = v2 < p0"));
         assert!(output.contains("return v3"));
     }
