@@ -491,3 +491,29 @@ Use a single, explicit TODO format everywhere (code + docs + tests). This is how
 - `runtime/molt-runtime/src/builtins/*`: runtime
 - `runtime/molt-runtime/src/call/*`: runtime
 - `runtime/molt-runtime/src/wasm/*`: runtime
+
+## Fleet Agent Network
+
+Molt development is supported by a fleet of Qwen AI agents. The fleet MCP server
+can be added to any MCP client for direct fleet access.
+
+### Fleet MCP Server Setup
+
+Add to your `.mcp.json`:
+```json
+{
+  "mcpServers": {
+    "vertigo-fleet": {
+      "command": "python3",
+      "args": ["/Users/adpena/PycharmProjects/fleet/scripts/mcp/fleet-mcp-server.py"]
+    }
+  }
+}
+```
+
+Key tools: `agent_health`, `agent_smart`, `fleet_exec`, `council_status`, `ollama_models`.
+
+### Fleet CLI
+
+`fleet-cli status` — health check all machines.
+`fleet-cli smart "prompt"` — run through Qwen smart agent on BAT00 GPU.
