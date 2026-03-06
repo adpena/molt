@@ -1706,6 +1706,8 @@ fn clear_filehandler_registration_locked(
         return Ok(());
     };
     for (mask, command_name) in registration.commands.iter() {
+        #[cfg(not(all(not(target_arch = "wasm32"), feature = "molt_tk_native")))]
+        let _ = mask;
         #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
         if let Some(event_name) = filehandler_event_name(*mask) {
             let clear_result = app_interp_eval_list(
