@@ -39,7 +39,7 @@ Canonical status lives in [docs/spec/STATUS.md](docs/spec/STATUS.md) (README and
 - Stdlib coverage gate status: top-level + submodule CPython union coverage (3.12/3.13/3.14) is enforced by `tools/check_stdlib_intrinsics.py` against `tools/stdlib_module_union.py` (missing names, package-kind mismatches, and duplicate mappings are hard failures).
 - Stdlib ratchet gate status: `tools/check_stdlib_intrinsics.py` enforces intrinsic-partial budget via `tools/stdlib_intrinsics_ratchet.json`.
 - Stdlib lowering audit snapshot: `intrinsic-backed=177`, `intrinsic-partial=696`, `probe-only=0`, `python-only=0`; bootstrap/critical strict-import gates are still active blockers during ongoing lowering burn-down.
-- Stdlib namespace hygiene: non-CPython top-level extras are constrained to `_intrinsics` and `test`; Molt-specific helpers now live under `moltlib` (`moltlib.molt_db`, `moltlib.concurrency`, `moltlib.net`, `moltlib.asgi`) with `molt.molt_db`, `molt.net`, `molt.concurrency`, and `molt.asgi` retained as compatibility shims.
+- Namespace layering: `molt` is compiler/runtime core, `builtins` plus `molt.stdlib.*` carry CPython-compatible builtins/stdlib surfaces, and Molt-specific user APIs live under `moltlib` (`moltlib.molt_db`, `moltlib.concurrency`, `moltlib.net`, `moltlib.asgi`). Compatibility shims remain in `molt.molt_db`, `molt.net`, `molt.concurrency`, and `molt.asgi`, but the root `molt` package does not re-export those helper symbols.
 - Stdlib union maintenance guide: [docs/spec/areas/compat/surfaces/stdlib/stdlib_union_baseline.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_union_baseline.md).
 - Stdlib execution plan: [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md).
 
@@ -51,7 +51,7 @@ Canonical status lives in [docs/spec/STATUS.md](docs/spec/STATUS.md) (README and
 - **Async iteration**: Supports `__aiter__`/`__anext__`, `aiter`/`anext`, and `async for` (sync-iter fallback enabled for now).
 - **Async context managers**: `async with` lowering for `__aenter__`/`__aexit__`.
 - **Async defaults**: `anext(..., default)` awaitable creation outside `await`.
-- **Cancellation tokens**: request-scoped defaults with task overrides; cooperative checks via `molt.cancelled()`.
+- **Cancellation tokens**: request-scoped defaults with task overrides; cooperative checks via `moltlib.concurrency.cancelled()` (or the `molt.concurrency` compatibility shim).
 - **Molt Packages**: First-class support for Rust-backed packages, with production wire formats (MsgPack/CBOR) and Arrow IPC for tabular data; JSON is a compatibility/debug format.
 - **AOT Compilation**: Uses Cranelift to generate high-performance machine code.
 - **Differential Testing**: Verified against CPython 3.12+.

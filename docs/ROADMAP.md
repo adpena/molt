@@ -315,7 +315,7 @@ Language feature TODOs tracked here for parity:
 ### Concurrency & I/O
 - [x] Async/Await Syntax Support
 - [x] Unified Task ABI for futures/generators across native + WASM backends
-- [x] Molt-native channel/spawn wrappers (`molt.channel`, `molt.spawn`) with no CPython fallback
+- [x] Molt-native channel/spawn wrappers (`moltlib.concurrency.channel`, `moltlib.concurrency.spawn`) with no CPython fallback (`molt.concurrency` remains as a compatibility shim)
 - [ ] Task-based Concurrency (No GIL) (TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): task-based concurrency).
 - [ ] Per-runtime GIL strategy + runtime instance ownership model (TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:planned): define per-runtime GIL strategy and runtime instance ownership model).
 - [ ] PyToken enforcement across runtime mutation entrypoints (TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): thread PyToken through runtime mutation entrypoints).

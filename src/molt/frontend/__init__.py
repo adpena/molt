@@ -724,37 +724,33 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
 }
 
 MOLT_REEXPORT_FUNCTIONS = {
-    "cancel_current": "molt.concurrency",
-    "cancelled": "molt.concurrency",
-    "CancellationToken": "molt.concurrency",
-    "Channel": "molt.concurrency",
-    "channel": "molt.concurrency",
-    "current_token": "molt.concurrency",
-    "set_current_token": "molt.concurrency",
-    "spawn": "molt.concurrency",
-    "Request": "molt.net",
-    "Response": "molt.net",
-    "Stream": "molt.net",
-    "StreamSender": "molt.net",
-    "WebSocket": "molt.net",
-    "stream": "molt.net",
-    "stream_channel": "molt.net",
-    "ws_connect": "molt.net",
-    "ws_pair": "molt.net",
+    "cancel_current": "moltlib.concurrency",
+    "cancelled": "moltlib.concurrency",
+    "CancellationToken": "moltlib.concurrency",
+    "Channel": "moltlib.concurrency",
+    "channel": "moltlib.concurrency",
+    "current_token": "moltlib.concurrency",
+    "set_current_token": "moltlib.concurrency",
+    "spawn": "moltlib.concurrency",
+    "Request": "moltlib.net",
+    "Response": "moltlib.net",
+    "Stream": "moltlib.net",
+    "StreamSender": "moltlib.net",
+    "WebSocket": "moltlib.net",
+    "stream": "moltlib.net",
+    "stream_channel": "moltlib.net",
+    "ws_connect": "moltlib.net",
+    "ws_pair": "moltlib.net",
 }
 
 MOLT_DIRECT_CALLS = {
-    "molt": {
+    "moltlib.concurrency": {
         "cancel_current",
         "cancelled",
         "channel",
         "current_token",
         "set_current_token",
         "spawn",
-        "stream",
-        "stream_channel",
-        "ws_connect",
-        "ws_pair",
     },
     "molt.concurrency": {
         "cancel_current",
@@ -763,6 +759,12 @@ MOLT_DIRECT_CALLS = {
         "current_token",
         "set_current_token",
         "spawn",
+    },
+    "moltlib.net": {
+        "stream",
+        "stream_channel",
+        "ws_connect",
+        "ws_pair",
     },
     "molt.net": {
         "stream",
@@ -888,7 +890,9 @@ MOLT_DIRECT_CALL_BIND_ALWAYS = {
 }
 
 STDLIB_DIRECT_CALL_MODULES = {
-    module for module in MOLT_DIRECT_CALLS if not module.startswith("molt.")
+    module
+    for module in MOLT_DIRECT_CALLS
+    if not module.startswith(("molt.", "moltlib."))
 }
 
 
@@ -5144,7 +5148,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return False
         if module_name == "molt.stdlib" or module_name.startswith("molt.stdlib."):
             return False
-        return module_name == "molt" or module_name.startswith("molt.")
+        return module_name in {"molt", "moltlib"} or module_name.startswith(
+            ("molt.", "moltlib.")
+        )
 
     @staticmethod
     def _display_allowlist_module(module_name: str) -> str:

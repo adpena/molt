@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import pytest
 
+import molt
 from molt import intrinsics as _intrinsics
 
 import moltlib
@@ -24,15 +25,19 @@ def test_moltlib_asgi_surface_exposes_compat_adapter() -> None:
     assert compat_asgi.asgi_adapter is molt_asgi.asgi_adapter
 
 
+def test_molt_root_package_keeps_moltlib_helpers_out_of_core_namespace() -> None:
+    assert "channel" not in dir(molt)
+    with pytest.raises(AttributeError, match="moltlib\\.concurrency\\.channel"):
+        getattr(molt, "channel")
+
+
 def test_moltlib_concurrency_reexports_runtime_channel_surface() -> None:
     if not _intrinsics.runtime_active():
         pytest.skip("Molt runtime intrinsics not active")
-    from molt import channel as root_channel
 
     compat_concurrency = importlib.import_module("molt.concurrency")
 
     assert concurrency.channel is not None
-    assert concurrency.channel is root_channel
     assert compat_concurrency.Channel is concurrency.Channel
     assert compat_concurrency.channel is concurrency.channel
     chan = concurrency.channel(1)
