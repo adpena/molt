@@ -88,37 +88,19 @@ __all__ = [
 
 def _bootstrap() -> None:
     import sys
-    try:
-        intrinsic = _require_intrinsic("molt_types_bootstrap", globals())
-    except Exception as e:
-        print(f"[molt-types-debug] _require_intrinsic failed: {e}", file=sys.stderr)
-        raise
-    try:
-        data = intrinsic()
-    except Exception as e:
-        print(f"[molt-types-debug] intrinsic() call failed: {e}", file=sys.stderr)
-        raise
+
+    intrinsic = _require_intrinsic("molt_types_bootstrap", None)
+    data = intrinsic()
     if not isinstance(data, dict):
-        print(f"[molt-types-debug] intrinsic returned non-dict: {type(data)}", file=sys.stderr)
         raise RuntimeError("types intrinsics unavailable")
-    print(f"[molt-types-debug] bootstrap OK, got {len(data)} entries: {list(data.keys())[:5]}...", file=sys.stderr)
-    g = globals()
-    print(f"[molt-types-debug] globals() id={id(g)} type={type(g).__name__} keys_before={len(g)}", file=sys.stderr)
-    g.update(data)
-    print(f"[molt-types-debug] keys_after={len(g)} ModuleType_in_globals={'ModuleType' in g}", file=sys.stderr)
-    # Also try direct assignment as fallback
-    if 'ModuleType' not in g:
-        print("[molt-types-debug] ModuleType NOT in globals after update, trying setattr", file=sys.stderr)
+    # In compiled Molt binaries, globals() may not return the module's __dict__.
+    # Inject directly into the module object via sys.modules to ensure attributes
+    # are visible to importers (e.g. `from types import ModuleType`).
+    mod = sys.modules.get("types")
+    if mod is not None:
+        mod.__dict__.update(data)
+    else:
+        globals().update(data)
 
 
 _bootstrap()
-
-import sys as _sys_check
-_mod = _sys_check.modules.get(__name__)
-if _mod is not None:
-    print(f"[molt-types-debug] post-bootstrap: hasattr(mod, 'ModuleType')={hasattr(_mod, 'ModuleType')}", file=_sys_check.stderr)
-    print(f"[molt-types-debug] mod.__dict__ is globals()={_mod.__dict__ is globals()}", file=_sys_check.stderr)
-    if not hasattr(_mod, 'ModuleType'):
-        print(f"[molt-types-debug] FIXING: injecting into mod.__dict__", file=_sys_check.stderr)
-        _mod.__dict__.update(globals())
-del _sys_check, _mod

@@ -154,6 +154,72 @@ GEN_CLOSED_OFFSET = 16
 GEN_YIELD_FROM_OFFSET = 32
 GEN_CONTROL_SIZE = 48
 
+INLINE_INT_MIN = -(1 << 46)
+INLINE_INT_MAX = (1 << 46) - 1
+
+FAST_INT_BINARY_OPS = {
+    "ADD",
+    "SUB",
+    "MUL",
+    "INPLACE_ADD",
+    "INPLACE_SUB",
+    "INPLACE_MUL",
+    "BIT_OR",
+    "BIT_AND",
+    "BIT_XOR",
+    "INPLACE_BIT_OR",
+    "INPLACE_BIT_AND",
+    "INPLACE_BIT_XOR",
+    "LSHIFT",
+    "RSHIFT",
+    "DIV",
+    "FLOORDIV",
+    "MOD",
+    "LT",
+    "LE",
+    "GT",
+    "GE",
+    "EQ",
+    "NE",
+}
+
+FAST_INT_UNARY_OPS = {"ABS", "INVERT"}
+
+FAST_INT_INT_RESULT_OPS = {
+    "ADD",
+    "SUB",
+    "MUL",
+    "INPLACE_ADD",
+    "INPLACE_SUB",
+    "INPLACE_MUL",
+    "BIT_OR",
+    "BIT_AND",
+    "BIT_XOR",
+    "INPLACE_BIT_OR",
+    "INPLACE_BIT_AND",
+    "INPLACE_BIT_XOR",
+    "LSHIFT",
+    "RSHIFT",
+    "FLOORDIV",
+    "MOD",
+    "ABS",
+    "INVERT",
+}
+
+FAST_INT_BOOL_RESULT_OPS = {"LT", "LE", "GT", "GE", "EQ", "NE"}
+FAST_INT_FLOAT_RESULT_OPS = {"DIV"}
+INLINE_SAFE_INT_RESULT_OPS = {
+    "BIT_OR",
+    "BIT_AND",
+    "BIT_XOR",
+    "INPLACE_BIT_OR",
+    "INPLACE_BIT_AND",
+    "INPLACE_BIT_XOR",
+    "RSHIFT",
+    "MOD",
+    "INVERT",
+}
+
 BUILTIN_TYPE_TAGS = {
     "int": 1,
     "float": 2,
@@ -1767,43 +1833,91 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _hints_enabled(self) -> bool:
         return self.type_hint_policy in {"trust", "check"} or self.stdlib_hint_trust
 
-    def _should_fast_int(self, op: MoltOp) -> bool:
-        # Guard-proven ops bypass the hint policy gate — guards provide
-        # runtime type proof that is strictly stronger than static hints.
-        if op.metadata and op.metadata.get("guard_fast_int"):
-            return True
-        if not self._fast_int_enabled():
+    @staticmethod
+    def _is_inline_int_literal(value: Any) -> bool:
+        return (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and INLINE_INT_MIN <= value <= INLINE_INT_MAX
+        )
+
+    def _compute_inline_int_safe_names(self, ops: list[MoltOp]) -> set[str]:
+        """Names whose current value can be blindly unboxed by fast-int lanes.
+
+        This is stricter than `type_hint == "int"`: it models values that are
+        guaranteed to remain inside Molt's inline-int representation, so
+        downstream fast_int/raw_int consumers cannot accidentally unbox a boxed
+        bigint or other non-inline integer payload.
+        """
+        inline_safe: set[str] = set()
+
+        def args_are_inline_safe(*, count: int | None = None) -> bool:
+            if count is not None and len(op.args) != count:
+                return False
+            return all(
+                isinstance(arg, MoltValue)
+                and arg.type_hint == "int"
+                and arg.name in inline_safe
+                for arg in op.args
+            )
+
+        for op in ops:
+            if not isinstance(op.result, MoltValue):
+                continue
+            result_name = op.result.name
+            if result_name == "none":
+                continue
+
+            result_safe = False
+            if op.kind == "CONST":
+                result_safe = bool(op.args) and self._is_inline_int_literal(op.args[0])
+            elif op.kind == "UNBOX_TO_RAW_INT" and len(op.args) == 1:
+                arg = op.args[0]
+                result_safe = isinstance(arg, MoltValue) and arg.name in inline_safe
+            elif op.kind == "BOX_FROM_RAW_INT" and len(op.args) == 1:
+                arg = op.args[0]
+                result_safe = isinstance(arg, MoltValue) and arg.name in inline_safe
+            elif op.kind == "PHI":
+                result_safe = op.result.type_hint == "int" and args_are_inline_safe()
+            elif op.kind in {"LOOP_CARRY_INIT", "LOOP_CARRY_UPDATE"} and op.args:
+                src = op.args[-1]
+                result_safe = (
+                    op.result.type_hint == "int"
+                    and isinstance(src, MoltValue)
+                    and src.name in inline_safe
+                )
+            elif op.kind in INLINE_SAFE_INT_RESULT_OPS:
+                expected_count = 1 if op.kind in FAST_INT_UNARY_OPS else 2
+                result_safe = op.result.type_hint == "int" and args_are_inline_safe(
+                    count=expected_count
+                )
+
+            if result_safe:
+                inline_safe.add(result_name)
+            else:
+                inline_safe.discard(result_name)
+
+        return inline_safe
+
+    def _should_fast_int(
+        self, op: MoltOp, inline_int_safe_names: set[str] | None = None
+    ) -> bool:
+        # Guard-proven ops bypass the hint policy gate, but they still need
+        # representation proof that the operands remain inline-int safe.
+        if (
+            not (op.metadata and op.metadata.get("guard_fast_int"))
+            and not self._fast_int_enabled()
+        ):
             return False
-        if op.kind not in {
-            "ADD",
-            "SUB",
-            "MUL",
-            "INPLACE_ADD",
-            "INPLACE_SUB",
-            "INPLACE_MUL",
-            "BIT_OR",
-            "BIT_AND",
-            "BIT_XOR",
-            "INPLACE_BIT_OR",
-            "INPLACE_BIT_AND",
-            "INPLACE_BIT_XOR",
-            "LSHIFT",
-            "RSHIFT",
-            "DIV",
-            "FLOORDIV",
-            "MOD",
-            "LT",
-            "LE",
-            "GT",
-            "GE",
-            "EQ",
-            "NE",
-            "ABS",
-            "INVERT",
-        }:
+        if op.kind not in FAST_INT_BINARY_OPS | FAST_INT_UNARY_OPS:
             return False
+        if inline_int_safe_names is None:
+            inline_int_safe_names = set()
         return all(
-            isinstance(arg, MoltValue) and arg.type_hint == "int" for arg in op.args
+            isinstance(arg, MoltValue)
+            and arg.type_hint == "int"
+            and arg.name in inline_int_safe_names
+            for arg in op.args
         )
 
     @staticmethod
@@ -14242,12 +14356,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="IF", args=[matches], result=MoltValue("none")))
                 direct_res = MoltValue(self.next_var(), type_hint=res_hint)
                 direct_call_kind = (
-                    "CALL_INTERNAL"
-                    if func_symbol in self.funcs_map
-                    else "CALL"
+                    "CALL_INTERNAL" if func_symbol in self.funcs_map else "CALL"
                 )
                 self.emit(
-                    MoltOp(kind=direct_call_kind, args=[func_symbol] + args, result=direct_res)
+                    MoltOp(
+                        kind=direct_call_kind,
+                        args=[func_symbol] + args,
+                        result=direct_res,
+                    )
                 )
                 self.emit(
                     MoltOp(
@@ -14279,11 +14395,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             res = MoltValue(self.next_var(), type_hint=res_hint)
             # Use CALL_INTERNAL for calls to functions defined in this module —
             # skips recursion guard and trace overhead for direct calls.
-            call_kind = (
-                "CALL_INTERNAL"
-                if func_symbol in self.funcs_map
-                else "CALL"
-            )
+            call_kind = "CALL_INTERNAL" if func_symbol in self.funcs_map else "CALL"
             self.emit(MoltOp(kind=call_kind, args=[func_symbol] + args, result=res))
             return res
         callargs = self._emit_call_args_builder(node)
@@ -26988,7 +27100,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         else:
             self._active_midend_function_name = "<direct>"
         ops = self._run_ir_midend_passes(ops)
+        inline_int_safe_names = self._compute_inline_int_safe_names(ops)
         json_ops: list[dict[str, Any]] = []
+
+        def should_fast_int(op: MoltOp) -> bool:
+            return self._should_fast_int(op, inline_int_safe_names)
 
         def field_offset(expected_class: str, attr: str) -> int | None:
             class_info = self.classes.get(expected_class)
@@ -27102,7 +27218,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._is_raw_int(op):
                     add_entry["raw_int"] = True
-                elif self._should_fast_int(op):
+                elif should_fast_int(op):
                     add_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     add_entry["fast_float"] = True
@@ -27115,7 +27231,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._is_raw_int(op):
                     add_entry["raw_int"] = True
-                elif self._should_fast_int(op):
+                elif should_fast_int(op):
                     add_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     add_entry["fast_float"] = True
@@ -27126,7 +27242,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     sub_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     sub_entry["fast_float"] = True
@@ -27137,7 +27253,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     sub_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     sub_entry["fast_float"] = True
@@ -27150,7 +27266,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._is_raw_int(op):
                     mul_entry["raw_int"] = True
-                elif self._should_fast_int(op):
+                elif should_fast_int(op):
                     mul_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     mul_entry["fast_float"] = True
@@ -27161,7 +27277,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     mul_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     mul_entry["fast_float"] = True
@@ -27172,7 +27288,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     div_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     div_entry["fast_float"] = True
@@ -27183,7 +27299,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     floordiv_entry["fast_int"] = True
                 json_ops.append(floordiv_entry)
             elif op.kind == "MOD":
@@ -27194,7 +27310,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._is_raw_int(op):
                     mod_entry["raw_int"] = True
-                elif self._should_fast_int(op):
+                elif should_fast_int(op):
                     mod_entry["fast_int"] = True
                 json_ops.append(mod_entry)
             elif op.kind == "POW":
@@ -27211,7 +27327,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     bit_or_entry["fast_int"] = True
                 json_ops.append(bit_or_entry)
             elif op.kind == "INPLACE_BIT_OR":
@@ -27220,7 +27336,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     bit_or_entry["fast_int"] = True
                 json_ops.append(bit_or_entry)
             elif op.kind == "BIT_AND":
@@ -27229,7 +27345,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     bit_and_entry["fast_int"] = True
                 json_ops.append(bit_and_entry)
             elif op.kind == "INPLACE_BIT_AND":
@@ -27238,7 +27354,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     bit_and_entry["fast_int"] = True
                 json_ops.append(bit_and_entry)
             elif op.kind == "BIT_XOR":
@@ -27247,7 +27363,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     bit_xor_entry["fast_int"] = True
                 json_ops.append(bit_xor_entry)
             elif op.kind == "INPLACE_BIT_XOR":
@@ -27256,7 +27372,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     bit_xor_entry["fast_int"] = True
                 json_ops.append(bit_xor_entry)
             elif op.kind == "LSHIFT":
@@ -27265,7 +27381,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     lshift_entry["fast_int"] = True
                 json_ops.append(lshift_entry)
             elif op.kind == "RSHIFT":
@@ -27274,7 +27390,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     rshift_entry["fast_int"] = True
                 json_ops.append(rshift_entry)
             elif op.kind == "MATMUL":
@@ -27317,7 +27433,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._is_raw_int(op):
                     lt_entry["raw_int"] = True
-                elif self._should_fast_int(op):
+                elif should_fast_int(op):
                     lt_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     lt_entry["fast_float"] = True
@@ -27328,7 +27444,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     le_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     le_entry["fast_float"] = True
@@ -27339,7 +27455,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     gt_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     gt_entry["fast_float"] = True
@@ -27350,7 +27466,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     ge_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     ge_entry["fast_float"] = True
@@ -27361,7 +27477,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     eq_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     eq_entry["fast_float"] = True
@@ -27372,7 +27488,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     ne_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     ne_entry["fast_float"] = True
@@ -27399,7 +27515,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [op.args[0].name],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     invert_entry["fast_int"] = True
                 json_ops.append(invert_entry)
             elif op.kind == "NOT":
@@ -27423,7 +27539,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [op.args[0].name],
                     "out": op.result.name,
                 }
-                if self._should_fast_int(op):
+                if should_fast_int(op):
                     abs_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     abs_entry["fast_float"] = True
@@ -36406,14 +36522,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
 
     def _specialize_guarded_int_arithmetic(self, ops: list[MoltOp]) -> list[MoltOp]:
-        """Mark arithmetic ops as fast_int when both operands are
-        guard-proven integers.
+        """Mark arithmetic ops as fast_int when both operands are guard-proven
+        inline-safe integers.
 
-        Scans for GUARD_TAG ops that prove a variable has tag=1 (int).
-        For subsequent arithmetic/comparison ops where both operands
-        are int-proven, sets type_hint="int" on the MoltValues and adds
-        guard_fast_int metadata. This integrates with the existing
-        fast_int infrastructure in map_ops_to_json and the backend.
+        Scans for GUARD_TAG ops that prove a variable is an integer and then
+        tracks the stricter subset that still fits Molt's inline-int
+        representation. Only inline-safe operands may bypass tag checks in the
+        backend fast_int path.
         """
         enable_env = os.getenv("MOLT_ENABLE_INT_SPECIALIZATION", "").strip().lower()
         if enable_env in {"0", "false", "no", "off"}:
@@ -36429,32 +36544,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if op.args and isinstance(op.args[0], (int, float)):
                     const_values[op.result.name] = op.args[0]
 
-        specializable_ops = {
-            "ADD",
-            "SUB",
-            "MUL",
-            "DIV",
-            "FLOORDIV",
-            "MOD",
-            "INPLACE_ADD",
-            "INPLACE_SUB",
-            "INPLACE_MUL",
-            "BIT_OR",
-            "BIT_AND",
-            "BIT_XOR",
-            "INPLACE_BIT_OR",
-            "INPLACE_BIT_AND",
-            "INPLACE_BIT_XOR",
-            "LSHIFT",
-            "RSHIFT",
-            "LT",
-            "LE",
-            "GT",
-            "GE",
-            "EQ",
-            "NE",
-        }
-        unary_specializable = {"ABS", "INVERT"}
+        specializable_ops = FAST_INT_BINARY_OPS
+        unary_specializable = FAST_INT_UNARY_OPS
         control_flow_ops = {
             "IF",
             "ELSE",
@@ -36468,11 +36559,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         }
 
         int_proven: set[str] = set()
+        inline_int_safe: set[str] = set()
         applied = 0
 
         for op in ops:
             if op.kind in control_flow_ops:
                 int_proven.clear()
+                inline_int_safe.clear()
 
             # Track GUARD_TAG ops: GUARD_TAG(value, tag_const).
             if op.kind == "GUARD_TAG" and len(op.args) >= 2:
@@ -36487,8 +36580,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
             # CONST int ops produce int-proven results.
             if op.kind == "CONST" and isinstance(op.result, MoltValue):
-                if op.args and isinstance(op.args[0], int):
+                if (
+                    op.args
+                    and isinstance(op.args[0], int)
+                    and not isinstance(op.args[0], bool)
+                ):
                     int_proven.add(op.result.name)
+                    if self._is_inline_int_literal(op.args[0]):
+                        inline_int_safe.add(op.result.name)
+                    else:
+                        inline_int_safe.discard(op.result.name)
 
             # Binary: specialize when both operands are int-proven.
             if op.kind in specializable_ops and len(op.args) == 2:
@@ -36501,12 +36602,29 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 ):
                     left.type_hint = "int"
                     right.type_hint = "int"
-                    if op.metadata is None:
-                        op.metadata = {}
-                    op.metadata["guard_fast_int"] = True
+                    can_fast_int = (
+                        left.name in inline_int_safe and right.name in inline_int_safe
+                    )
+                    if can_fast_int:
+                        if op.metadata is None:
+                            op.metadata = {}
+                        op.metadata["guard_fast_int"] = True
                     if isinstance(op.result, MoltValue) and op.result.name != "none":
-                        op.result.type_hint = "int"
-                        int_proven.add(op.result.name)
+                        if op.kind in FAST_INT_INT_RESULT_OPS:
+                            op.result.type_hint = "int"
+                            int_proven.add(op.result.name)
+                            if can_fast_int and op.kind in INLINE_SAFE_INT_RESULT_OPS:
+                                inline_int_safe.add(op.result.name)
+                            else:
+                                inline_int_safe.discard(op.result.name)
+                        elif op.kind in FAST_INT_BOOL_RESULT_OPS:
+                            op.result.type_hint = "bool"
+                            int_proven.discard(op.result.name)
+                            inline_int_safe.discard(op.result.name)
+                        elif op.kind in FAST_INT_FLOAT_RESULT_OPS:
+                            op.result.type_hint = "float"
+                            int_proven.discard(op.result.name)
+                            inline_int_safe.discard(op.result.name)
                     applied += 1
 
             # Unary: specialize when operand is int-proven.
@@ -36514,12 +36632,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 arg = op.args[0]
                 if isinstance(arg, MoltValue) and arg.name in int_proven:
                     arg.type_hint = "int"
-                    if op.metadata is None:
-                        op.metadata = {}
-                    op.metadata["guard_fast_int"] = True
+                    can_fast_int = arg.name in inline_int_safe
+                    if can_fast_int:
+                        if op.metadata is None:
+                            op.metadata = {}
+                        op.metadata["guard_fast_int"] = True
                     if isinstance(op.result, MoltValue) and op.result.name != "none":
                         op.result.type_hint = "int"
                         int_proven.add(op.result.name)
+                        if can_fast_int and op.kind in INLINE_SAFE_INT_RESULT_OPS:
+                            inline_int_safe.add(op.result.name)
+                        else:
+                            inline_int_safe.discard(op.result.name)
                     applied += 1
 
         if applied > 0:
@@ -36571,6 +36695,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         loop_cond_ops = {"LOOP_BREAK_IF_TRUE", "LOOP_BREAK_IF_FALSE"}
         # Ops that safely consume raw i64 values (don't need boxing)
         raw_safe_consumers = loop_cond_ops | {"LOOP_CARRY_UPDATE"}
+        inline_int_safe_names = self._compute_inline_int_safe_names(ops)
 
         # Phase 1: identify variables that are produced AND consumed entirely
         # within guard_fast_int arithmetic chains.
@@ -36581,20 +36706,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         fast_int_ops: set[int] = set()
 
         for i, op in enumerate(ops):
+            for arg in op.args:
+                if isinstance(arg, MoltValue):
+                    int_consumers.setdefault(arg.name, []).append(i)
+
             is_fast = (
                 (op.metadata is not None and op.metadata.get("guard_fast_int"))
                 or (
                     op.kind == "CONST"
                     and isinstance(op.result, MoltValue)
-                    and op.result.type_hint == "int"
+                    and op.result.name in inline_int_safe_names
                 )
                 or (
-                    # Type-hint-based fast_int (--type-hints trust path):
-                    # same eligibility check as _should_fast_int but without
-                    # needing guard metadata from SCCP.
                     op.kind in raw_int_ops
                     and all(
-                        isinstance(a, MoltValue) and a.type_hint == "int"
+                        isinstance(a, MoltValue)
+                        and a.type_hint == "int"
+                        and a.name in inline_int_safe_names
                         for a in op.args
                     )
                 )
@@ -36603,18 +36731,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 fast_int_ops.add(i)
                 if isinstance(op.result, MoltValue) and op.result.name != "none":
                     int_producers[op.result.name] = i
-                for arg in op.args:
-                    if isinstance(arg, MoltValue):
-                        int_consumers.setdefault(arg.name, []).append(i)
             elif is_fast and op.kind == "CONST" and isinstance(op.result, MoltValue):
                 # Track CONST int results as producers so Phase 2 can mark them
                 # raw_eligible when all their consumers are fast_int ops.
                 int_producers[op.result.name] = i
-            elif op.kind in raw_safe_consumers:
-                # Loop break conditions and carry updates consume raw values safely
-                for arg in op.args:
-                    if isinstance(arg, MoltValue):
-                        int_consumers.setdefault(arg.name, []).append(i)
 
         # Phase 2: find variables that can stay in raw form.
         # A variable can be raw if ALL its consumers are fast_int ops or loop_cond ops.
@@ -36684,11 +36804,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 can_promote = True
                 for arg in op.args:
                     if isinstance(arg, MoltValue):
-                        if (
-                            arg.name in raw_vars
-                            or arg.name in int_producers
-                            or arg.type_hint == "int"
-                        ):
+                        if arg.name in raw_vars or arg.name in inline_int_safe_names:
                             new_args.append(ensure_raw(arg))
                         else:
                             can_promote = False
@@ -36697,27 +36813,40 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         new_args.append(arg)
 
                 if can_promote:
-                    meta = dict(op.metadata) if op.metadata else {}
-                    meta["raw_int"] = True
                     result_name = (
                         op.result.name if isinstance(op.result, MoltValue) else "none"
                     )
-                    new_result = MoltValue(
-                        result_name,
-                        op.result.type_hint
-                        if isinstance(op.result, MoltValue)
-                        else "Unknown",
-                    )
-                    new_op = MoltOp(
-                        kind=op.kind,
-                        args=new_args,
-                        result=new_result,
-                        metadata=meta,
-                    )
-                    if result_name != "none":
-                        raw_vars.add(result_name)
-                    promoted += 1
-                    new_ops.append(new_op)
+                    # Only keep the result raw when every consumer is raw-safe.
+                    # This prevents compare chains from leaking raw 0/1 integers
+                    # across normal Python value boundaries like RETURN/CALL/STORE.
+                    if result_name == "none" or result_name in raw_eligible:
+                        if (
+                            result_name != "none"
+                            and op.kind not in {"LT", "LE", "GT", "GE", "EQ", "NE"}
+                            and result_name not in inline_int_safe_names
+                        ):
+                            new_ops.append(op)
+                            continue
+                        meta = dict(op.metadata) if op.metadata else {}
+                        meta["raw_int"] = True
+                        new_result = MoltValue(
+                            result_name,
+                            op.result.type_hint
+                            if isinstance(op.result, MoltValue)
+                            else "Unknown",
+                        )
+                        new_op = MoltOp(
+                            kind=op.kind,
+                            args=new_args,
+                            result=new_result,
+                            metadata=meta,
+                        )
+                        if result_name != "none":
+                            raw_vars.add(result_name)
+                        promoted += 1
+                        new_ops.append(new_op)
+                    else:
+                        new_ops.append(op)
                 else:
                     new_ops.append(op)
 
