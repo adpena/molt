@@ -187,6 +187,9 @@ performance-first C-extension compatibility without embedding CPython.
   `include/molt/Python.h`.
 - NumPy compatibility headers under `include/numpy/` and the small top-level
   forwarding/config bridge headers are bounded source-compat overlays.
+- Current public overlay coverage explicitly includes NumPy dtype/half/compat,
+  endian/os, and `numpy/random/*` header families plus the small
+  `templ_common.h` bridge used by generated-source probes.
 - `molt extension build` and `molt extension scan` use the declared libmolt
   header contract instead of treating every header under `include/` as equally
   stable.
@@ -208,9 +211,13 @@ Extensions should declare:
 
 ## 7. Testing and Validation
 - Per-symbol conformance tests.
+- Compile-focused `clang -fsyntax-only` regression probes for the declared
+  public overlay headers and representative NumPy/pandas source files.
 - Differential tests comparing extension outputs to CPython for supported APIs.
 - Fuzz tests for buffer and bytes interfaces.
 - Benchmarks for hot-path extension calls.
+- Real native-load/import execution remains the next required proof point for
+  the `libmolt` extension story; header coverage alone is not sufficient.
 
 ---
 

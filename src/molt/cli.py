@@ -10127,6 +10127,7 @@ def build(
                                 ir=ir,
                                 backend_output=backend_output,
                                 is_wasm=is_wasm,
+                                is_luau=is_luau,
                                 target_triple=target_triple,
                                 cache_key=cache_key,
                                 function_cache_key=function_cache_key,
@@ -15664,7 +15665,7 @@ def main() -> int:
     build_parser.add_argument(
         "--target",
         default=None,
-        help="Target backend: native, wasm, or a target triple.",
+        help="Target backend: native, wasm, luau, or a target triple.",
     )
     build_parser.add_argument(
         "--codec",
@@ -15718,9 +15719,9 @@ def main() -> int:
     )
     build_parser.add_argument(
         "--emit",
-        choices=["bin", "obj", "wasm"],
+        choices=["bin", "obj", "wasm", "luau"],
         default=None,
-        help="Select which artifact to emit (native: bin/obj, wasm: wasm).",
+        help="Select which artifact to emit (native: bin/obj, wasm: wasm, luau: luau).",
     )
     build_parser.add_argument(
         "--linked",

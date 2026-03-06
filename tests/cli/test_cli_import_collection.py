@@ -843,6 +843,51 @@ def test_compile_with_backend_daemon_surfaces_cache_telemetry(
     assert captured_payload.get("config_digest") == "digest123"
 
 
+def test_compile_with_backend_daemon_carries_luau_flag(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend_output = tmp_path / "output.luau"
+    captured_payload: dict[str, object] = {}
+
+    def _fake_request(
+        socket_path: Path,
+        payload: dict[str, object],
+        *,
+        timeout: float | None,
+    ) -> tuple[dict[str, object], None]:
+        del socket_path, timeout
+        captured_payload.update(payload)
+        backend_output.write_text("--!strict\n")
+        return (
+            {
+                "ok": True,
+                "jobs": [{"id": "job0", "ok": True, "cached": False}],
+                "health": {"pid": 7},
+            },
+            None,
+        )
+
+    monkeypatch.setattr(cli, "_backend_daemon_request", _fake_request)
+    result = cli._compile_with_backend_daemon(
+        Path("/tmp/fake.sock"),
+        ir={"functions": []},
+        backend_output=backend_output,
+        is_wasm=False,
+        is_luau=True,
+        target_triple=None,
+        cache_key=None,
+        function_cache_key=None,
+        config_digest=None,
+        env_overrides=None,
+        timeout=0.1,
+    )
+    assert result.ok is True
+    jobs = captured_payload.get("jobs")
+    assert isinstance(jobs, list)
+    assert jobs[0]["is_luau"] is True
+
+
 def test_cached_backend_artifact_validity_guard(tmp_path: Path) -> None:
     wasm_bad = tmp_path / "bad.wasm"
     wasm_bad.write_bytes(b"not-wasm")

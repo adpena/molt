@@ -283,8 +283,8 @@ impl SimpleIR {
                             }
                         }
                     }
-                    "call_func" | "call_indirect" | "call_async" | "block_on"
-                    | "spawn" | "call_bind" => {
+                    "call_func" | "call_indirect" | "call_async" | "block_on" | "spawn"
+                    | "call_bind" => {
                         if let Some(ref args) = op.args {
                             if let Some(first) = args.first() {
                                 refs.insert(first.clone());
@@ -365,6 +365,106 @@ impl SimpleIR {
                 "[molt-dce] Tree shake: {total} functions → {} kept, {removed} removed",
                 self.functions.len()
             );
+        }
+    }
+
+    /// Aggressive Luau-specific DCE: rewrites `molt_main` to skip runtime
+    /// bootstrap and directly call user code, then runs standard tree_shake.
+    ///
+    /// This exploits the fact that the Luau prelude provides native equivalents
+    /// for Python builtins (math, json, range, etc.), so the entire stdlib init
+    /// chain can be elided.
+    pub fn tree_shake_luau(&mut self) {
+        // Phase 1: Rewrite molt_main to only call molt_init___main__().
+        // The original molt_main calls:
+        //   molt_runtime_init() → molt_sys_set_version_info() → ...string constants...
+        //   → molt_init_sys() → molt_init___main__() → molt_runtime_shutdown()
+        // We replace it with just: molt_init___main__().
+        let has_init_main = self
+            .functions
+            .iter()
+            .any(|f| f.name == "molt_init___main__");
+        if has_init_main {
+            if let Some(main_func) = self.functions.iter_mut().find(|f| f.name == "molt_main") {
+                main_func.ops = vec![
+                    OpIR {
+                        kind: "call".to_string(),
+                        s_value: Some("molt_init___main__".to_string()),
+                        out: Some("__init_result".to_string()),
+                        args: Some(vec![]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ];
+                eprintln!("[molt-dce] Rewrote molt_main to skip runtime bootstrap");
+            }
+        }
+
+        // Phase 2: In molt_init___main__, stub out calls to stdlib init
+        // functions. These set up Python module objects that aren't needed
+        // when the Luau prelude provides native equivalents.
+        if let Some(init_main) = self
+            .functions
+            .iter_mut()
+            .find(|f| f.name == "molt_init___main__")
+        {
+            let mut stubbed = 0;
+            for op in &mut init_main.ops {
+                let is_stdlib_init_call = match op.kind.as_str() {
+                    "call" | "call_guarded" | "call_internal" | "call_func" => {
+                        // Check if the call target is a stdlib init function.
+                        let target = op
+                            .s_value
+                            .as_deref()
+                            .or_else(|| {
+                                op.args.as_ref().and_then(|a| a.first().map(|s| s.as_str()))
+                            })
+                            .unwrap_or("");
+                        target.starts_with("molt_init_") && target != "molt_init___main__"
+                            || target.starts_with("molt_runtime_")
+                            || target.starts_with("molt_sys_")
+                    }
+                    _ => false,
+                };
+                if is_stdlib_init_call {
+                    // Replace with a nop.
+                    op.kind = "nop".to_string();
+                    op.s_value = None;
+                    op.args = None;
+                    stubbed += 1;
+                }
+            }
+            if stubbed > 0 {
+                eprintln!("[molt-dce] Stubbed {stubbed} stdlib init calls in molt_init___main__");
+            }
+        }
+
+        // Phase 3: Run standard tree_shake to remove now-unreachable functions.
+        self.tree_shake();
+    }
+}
+
+impl Default for OpIR {
+    fn default() -> Self {
+        OpIR {
+            kind: String::new(),
+            value: None,
+            f_value: None,
+            s_value: None,
+            bytes: None,
+            var: None,
+            args: None,
+            out: None,
+            fast_int: None,
+            task_kind: None,
+            container_type: None,
+            stack_eligible: None,
+            fast_float: None,
+            type_hint: None,
+            raw_int: None,
         }
     }
 }

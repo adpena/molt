@@ -190,3 +190,96 @@ fn validate_simple_ir_accepts_raw_loop_index_carriers() {
 
     assert!(validate_simple_ir(&ir).is_ok());
 }
+
+#[test]
+fn tree_shake_luau_rewrites_main_and_drops_runtime_bootstrap_helpers() {
+    let mut main_runtime_init = op("call");
+    main_runtime_init.s_value = Some("molt_runtime_init".to_string());
+    main_runtime_init.out = Some("v0".to_string());
+
+    let mut main_init = op("call");
+    main_init.s_value = Some("molt_init___main__".to_string());
+    main_init.out = Some("v1".to_string());
+
+    let main_ret = op("ret_void");
+
+    let mut init_sys = op("call");
+    init_sys.s_value = Some("molt_init_sys".to_string());
+    init_sys.out = Some("v2".to_string());
+
+    let mut user_call = op("call");
+    user_call.s_value = Some("user_kernel".to_string());
+    user_call.out = Some("v3".to_string());
+
+    let init_ret = op("ret_void");
+
+    let user_ret = op("ret_void");
+    let helper_ret = op("ret_void");
+
+    let mut ir = SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "molt_main".to_string(),
+                params: Vec::new(),
+                ops: vec![main_runtime_init, main_init, main_ret],
+            },
+            FunctionIR {
+                name: "molt_init___main__".to_string(),
+                params: Vec::new(),
+                ops: vec![init_sys, user_call, init_ret],
+            },
+            FunctionIR {
+                name: "molt_runtime_init".to_string(),
+                params: Vec::new(),
+                ops: vec![helper_ret.clone()],
+            },
+            FunctionIR {
+                name: "molt_init_sys".to_string(),
+                params: Vec::new(),
+                ops: vec![helper_ret.clone()],
+            },
+            FunctionIR {
+                name: "user_kernel".to_string(),
+                params: Vec::new(),
+                ops: vec![user_ret],
+            },
+            FunctionIR {
+                name: "unused_helper".to_string(),
+                params: Vec::new(),
+                ops: vec![helper_ret],
+            },
+        ],
+        profile: None,
+    };
+
+    ir.tree_shake_luau();
+
+    let names = ir
+        .functions
+        .iter()
+        .map(|func| func.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        vec!["molt_main", "molt_init___main__", "user_kernel"]
+    );
+
+    let main = ir
+        .functions
+        .iter()
+        .find(|func| func.name == "molt_main")
+        .expect("molt_main should remain");
+    assert_eq!(main.ops.len(), 2);
+    assert_eq!(main.ops[0].kind, "call");
+    assert_eq!(main.ops[0].s_value.as_deref(), Some("molt_init___main__"));
+    assert_eq!(main.ops[1].kind, "ret_void");
+
+    let init_main = ir
+        .functions
+        .iter()
+        .find(|func| func.name == "molt_init___main__")
+        .expect("molt_init___main__ should remain");
+    assert_eq!(init_main.ops[0].kind, "nop");
+    assert_eq!(init_main.ops[1].kind, "call");
+    assert_eq!(init_main.ops[1].s_value.as_deref(), Some("user_kernel"));
+}

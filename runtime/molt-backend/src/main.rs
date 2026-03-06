@@ -363,9 +363,20 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
         let job_id = job.id.clone();
         let output_path = job.output.clone();
         let mut ir = job.ir;
-        ir.tree_shake();
+        ir.tree_shake_luau();
         let mut backend = LuauBackend::new();
-        let luau_source = backend.compile(&ir);
+        let luau_source = match backend.compile_checked(&ir) {
+            Ok(source) => source,
+            Err(err) => {
+                return DaemonJobResponse {
+                    id: job_id,
+                    ok: false,
+                    cached: false,
+                    cache_tier: None,
+                    message: Some(err),
+                };
+            }
+        };
         if let Err(err) = write_output(&output_path, luau_source.as_bytes()) {
             return DaemonJobResponse {
                 id: job_id,
@@ -864,9 +875,15 @@ fn main() -> io::Result<()> {
     let mut file = File::create(output_file)?;
 
     if is_luau {
-        ir.tree_shake();
+        ir.tree_shake_luau();
         let mut backend = LuauBackend::new();
-        let luau_source = backend.compile(&ir);
+        let luau_source = match backend.compile_checked(&ir) {
+            Ok(source) => source,
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        };
         file.write_all(luau_source.as_bytes())?;
         println!("Successfully compiled to {output_file}");
     } else if is_wasm {
