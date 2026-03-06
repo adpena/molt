@@ -1240,7 +1240,7 @@ local molt_string = {
             // ================================================================
             // Indexing / subscript
             // ================================================================
-            "get_item" | "subscript" => {
+            "get_item" | "subscript" | "index" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -1249,13 +1249,21 @@ local molt_string = {
                     self.emit_line(&format!("local {out} = {container}[{key}]"));
                 }
             }
-            "set_item" | "store_subscript" => {
+            "set_item" | "store_subscript" | "store_index" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 3 {
                     let container = sanitize_ident(&args[0]);
                     let key = sanitize_ident(&args[1]);
                     let value = sanitize_ident(&args[2]);
                     self.emit_line(&format!("{container}[{key}] = {value}"));
+                }
+            }
+            "del_index" | "del_item" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let container = sanitize_ident(&args[0]);
+                    let key = sanitize_ident(&args[1]);
+                    self.emit_line(&format!("{container}[{key}] = nil"));
                 }
             }
 
@@ -1787,10 +1795,285 @@ local molt_string = {
             }
 
             // ================================================================
-            // String ops (specialized — emit stubs)
+            // String ops
             // ================================================================
+            "string_join" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let sep = sanitize_ident(&args[0]);
+                    let list = sanitize_ident(&args[1]);
+                    self.emit_line(&format!("local {out} = table.concat({list}, {sep})"));
+                }
+            }
+            "string_format" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if !args.is_empty() {
+                    let fmt_str = sanitize_ident(&args[0]);
+                    let fmt_args = args[1..]
+                        .iter()
+                        .map(|a| sanitize_ident(a))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    if fmt_args.is_empty() {
+                        self.emit_line(&format!("local {out} = {fmt_str}"));
+                    } else {
+                        self.emit_line(&format!("local {out} = string.format({fmt_str}, {fmt_args})"));
+                    }
+                }
+            }
+            "string_strip" | "string_lstrip" | "string_rstrip" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(s) = args.first() {
+                    let s = sanitize_ident(s);
+                    self.emit_line(&format!("local {out} = ({s}:match(\"^%s*(.-)%s*$\"))"));
+                }
+            }
+            "string_upper" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(s) = args.first() {
+                    self.emit_line(&format!("local {out} = string.upper({})", sanitize_ident(s)));
+                }
+            }
+            "string_lower" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(s) = args.first() {
+                    self.emit_line(&format!("local {out} = string.lower({})", sanitize_ident(s)));
+                }
+            }
+            "string_startswith" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let s = sanitize_ident(&args[0]);
+                    let prefix = sanitize_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "local {out} = (string.sub({s}, 1, #{prefix}) == {prefix})"
+                    ));
+                }
+            }
+            "string_endswith" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let s = sanitize_ident(&args[0]);
+                    let suffix = sanitize_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "local {out} = (string.sub({s}, -#{suffix}) == {suffix})"
+                    ));
+                }
+            }
+            "string_replace" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 3 {
+                    let s = sanitize_ident(&args[0]);
+                    let old = sanitize_ident(&args[1]);
+                    let new = sanitize_ident(&args[2]);
+                    self.emit_line(&format!(
+                        "local {out} = (string.gsub({s}, {old}, {new}))"
+                    ));
+                }
+            }
+            "string_find" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let s = sanitize_ident(&args[0]);
+                    let sub = sanitize_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "local {out} = (string.find({s}, {sub}, 1, true) or 0) - 1"
+                    ));
+                }
+            }
+            "string_split" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(s) = args.first() {
+                    let s = sanitize_ident(s);
+                    let sep = if args.len() >= 2 {
+                        sanitize_ident(&args[1])
+                    } else {
+                        "\" \"".to_string()
+                    };
+                    self.emit_line(&format!("local {out} = molt_string.split({s}, {sep})"));
+                }
+            }
+            "string_concat" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let a = sanitize_ident(&args[0]);
+                    let b = sanitize_ident(&args[1]);
+                    self.emit_line(&format!("local {out} = {a} .. {b}"));
+                }
+            }
+            "string_repeat" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let s = sanitize_ident(&args[0]);
+                    let n = sanitize_ident(&args[1]);
+                    self.emit_line(&format!("local {out} = string.rep({s}, {n})"));
+                }
+            }
             "string_split_ws_dict_inc" | "string_split_sep_dict_inc" | "taq_ingest_line" => {
                 self.emit_line(&format!("-- [string op: {}]", op.kind));
+            }
+
+            // ================================================================
+            // Iterator ops
+            // ================================================================
+            "iter" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(iterable) = args.first() {
+                    // In Luau, iterating a table is done via ipairs/pairs.
+                    // Store the iterable itself as the "iterator".
+                    self.emit_line(&format!("local {out} = {}", sanitize_ident(iterable)));
+                }
+            }
+            "iter_next" => {
+                // iter_next is handled by for loops in structured IR; stub for unstructured.
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(iter_var) = args.first() {
+                    let iter_var = sanitize_ident(iter_var);
+                    self.emit_line(&format!("local {out} = next({iter_var})"));
+                }
+            }
+
+            // ================================================================
+            // Indirect / bound calls
+            // ================================================================
+            "call_indirect" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if !args.is_empty() {
+                    let func_ref = sanitize_ident(&args[0]);
+                    let call_args = args[1..]
+                        .iter()
+                        .map(|a| sanitize_ident(a))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    if let Some(ref out_name) = op.out {
+                        let out = sanitize_ident(out_name);
+                        self.emit_line(&format!("local {out} = {func_ref}({call_args})"));
+                    } else {
+                        self.emit_line(&format!("{func_ref}({call_args})"));
+                    }
+                }
+            }
+            "call_bind" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let func = sanitize_ident(&args[0]);
+                    let bound_args = args[1..]
+                        .iter()
+                        .map(|a| sanitize_ident(a))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.emit_line(&format!(
+                        "local {out} = function(...) return {func}({bound_args}, ...) end"
+                    ));
+                } else if let Some(func) = args.first() {
+                    self.emit_line(&format!("local {out} = {}", sanitize_ident(func)));
+                }
+            }
+            "is_callable" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(val) = args.first() {
+                    self.emit_line(&format!(
+                        "local {out} = (type({}) == \"function\")",
+                        sanitize_ident(val)
+                    ));
+                }
+            }
+
+            // ================================================================
+            // Try/except blocks
+            // ================================================================
+            "try_start" => {
+                // In Luau, use pcall for try blocks.
+                self.emit_line("-- [try_start]");
+            }
+            "try_end" => {
+                self.emit_line("-- [try_end]");
+            }
+
+            // ================================================================
+            // Slice
+            // ================================================================
+            "slice" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 3 {
+                    let obj = sanitize_ident(&args[0]);
+                    let start = sanitize_ident(&args[1]);
+                    let stop = sanitize_ident(&args[2]);
+                    self.emit_line(&format!(
+                        "local {out} = {{table.unpack({obj}, {start} + 1, {stop})}}"
+                    ));
+                } else if args.len() >= 2 {
+                    let obj = sanitize_ident(&args[0]);
+                    let start = sanitize_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "local {out} = {{table.unpack({obj}, {start} + 1)}}"
+                    ));
+                }
+            }
+
+            // ================================================================
+            // Enumerate op (distinct from call to enumerate builtin)
+            // ================================================================
+            "enumerate" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(iterable) = args.first() {
+                    self.emit_line(&format!(
+                        "local {out} = molt_enumerate({})",
+                        sanitize_ident(iterable)
+                    ));
+                }
+            }
+
+            // ================================================================
+            // Dict key/value/items ops
+            // ================================================================
+            "dict_keys" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(d) = args.first() {
+                    self.emit_line(&format!(
+                        "local {out} = molt_dict_keys({})",
+                        sanitize_ident(d)
+                    ));
+                }
+            }
+            "dict_values" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(d) = args.first() {
+                    self.emit_line(&format!(
+                        "local {out} = molt_dict_values({})",
+                        sanitize_ident(d)
+                    ));
+                }
+            }
+            "dict_items" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(d) = args.first() {
+                    self.emit_line(&format!(
+                        "local {out} = molt_dict_items({})",
+                        sanitize_ident(d)
+                    ));
+                }
             }
 
             // ================================================================
