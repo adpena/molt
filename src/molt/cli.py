@@ -120,13 +120,23 @@ _PY_C_API_TOKEN_RE = re.compile(r"\bPy[A-Za-z_][A-Za-z0-9_]*\b")
 _PY_C_API_DEFINE_RE = re.compile(
     r"^\s*#\s*define\s+(Py[A-Za-z_][A-Za-z0-9_]*)\b", flags=re.MULTILINE
 )
-_PY_C_API_STATIC_FUNC_RE = re.compile(
-    r"^\s*static\b[^\n;{}]*\b(Py[A-Za-z_][A-Za-z0-9_]*)\s*\([^;\n{}]*\)\s*(?:;|\{)",
+_PY_C_API_FUNC_DEF_RE = re.compile(
+    r"(^|[;{}])\s*(?P<prefix>[A-Za-z_][A-Za-z0-9_\s\*]*?)\b"
+    r"(?P<name>Py[A-Za-z_][A-Za-z0-9_]*)\s*\([^{};]*\)\s*\{",
     flags=re.MULTILINE,
 )
 _PY_C_API_STATIC_VAR_RE = re.compile(
     r"^\s*static\b[^\n;{}]*\b(Py[A-Za-z_][A-Za-z0-9_]*)\b\s*(?:=|;)",
     flags=re.MULTILINE,
+)
+_PY_C_API_SIMPLE_TYPEDEF_RE = re.compile(
+    r"\btypedef\b[^;{}]*\b(Py[A-Za-z_][A-Za-z0-9_]*)\b\s*;",
+    flags=re.MULTILINE,
+)
+_PY_C_API_STRUCT_BLOCK_RE = re.compile(
+    r"\b(?:typedef\s+)?(?:struct|union)\b[^{};]*\{(?P<body>.*?)\}"
+    r"\s*(?P<alias>Py[A-Za-z_][A-Za-z0-9_]*)?\s*;",
+    flags=re.DOTALL,
 )
 _C_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", flags=re.DOTALL)
 _C_LINE_COMMENT_RE = re.compile(r"//.*?$", flags=re.MULTILINE)
@@ -5568,6 +5578,7 @@ def _compile_with_backend_daemon(
     ir: dict[str, Any],
     backend_output: Path,
     is_wasm: bool,
+    is_luau: bool = False,
     target_triple: str | None,
     cache_key: str | None,
     function_cache_key: str | None,
@@ -5578,6 +5589,7 @@ def _compile_with_backend_daemon(
     job_payload: dict[str, Any] = {
         "id": "job0",
         "is_wasm": is_wasm,
+        "is_luau": is_luau,
         "target_triple": target_triple,
         "output": str(backend_output),
         "cache_key": cache_key or "",
@@ -8161,6 +8173,7 @@ def build(
                     _record_module_reason(module_reasons, name, "namespace_stub")
     namespace_module_names = set(namespace_modules)
     is_wasm = target == "wasm"
+    is_luau = target == "luau"
     if trusted and is_wasm:
         return _fail(
             "Trusted mode is not supported for wasm targets",
@@ -8195,9 +8208,9 @@ def build(
             linked = True
     if linked is None:
         linked = False
-    target_triple = None if target in {"native", "wasm"} else target
-    emit_mode = emit or ("wasm" if is_wasm else "bin")
-    if emit_mode not in {"bin", "obj", "wasm"}:
+    target_triple = None if target in {"native", "wasm", "luau"} else target
+    emit_mode = emit or ("luau" if is_luau else "wasm" if is_wasm else "bin")
+    if emit_mode not in {"bin", "obj", "wasm", "luau"}:
         return _fail(
             f"Invalid emit mode: {emit_mode}",
             json_output,
@@ -8217,7 +8230,15 @@ def build(
         )
     output_binary: Path | None = None
     linked_output_path: Path | None = None
-    if is_wasm:
+    if is_luau:
+        output_luau = _resolve_output_path(
+            output,
+            output_root / "output.luau",
+            out_dir=out_dir_path,
+            project_root=project_root,
+        )
+        output_artifact = output_luau
+    elif is_wasm:
         output_wasm = _resolve_output_path(
             output,
             output_root / "output.wasm",
@@ -9714,7 +9735,7 @@ def build(
             warnings.append(f"Cache disabled: {exc}")
             cache = False
         else:
-            ext = "wasm" if is_wasm else "o"
+            ext = "luau" if is_luau else "wasm" if is_wasm else "o"
             cache_path = cache_root / f"{cache_key}.{ext}"
 
             if function_cache_key and function_cache_key != cache_key:
@@ -9941,7 +9962,7 @@ def build(
             ) as backend_dir:
                 backend_dir_path = Path(backend_dir)
                 backend_output = backend_dir_path / (
-                    "output.wasm" if is_wasm else "output.o"
+                    "output.luau" if is_luau else "output.wasm" if is_wasm else "output.o"
                 )
                 backend_compiled = False
                 daemon_error: str | None = None
@@ -9956,6 +9977,7 @@ def build(
                         ir=ir,
                         backend_output=backend_output,
                         is_wasm=is_wasm,
+                        is_luau=is_luau,
                         target_triple=target_triple,
                         cache_key=cache_key,
                         function_cache_key=function_cache_key,
@@ -10042,7 +10064,9 @@ def build(
                     ):
                         phase_starts["backend_subprocess_compile"] = time.perf_counter()
                     cmd = [str(backend_bin)]
-                    if is_wasm:
+                    if is_luau:
+                        cmd.extend(["--target", "luau"])
+                    elif is_wasm:
                         cmd.extend(["--target", "wasm"])
                     elif target_triple:
                         cmd.extend(["--target-triple", target_triple])
@@ -10121,6 +10145,43 @@ def build(
                             _atomic_copy_file(output_artifact, function_cache_path)
                         except OSError as exc:
                             warnings.append(f"Function cache write failed: {exc}")
+
+    if is_luau:
+        # Luau transpilation complete — no linking step needed.
+        diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
+        if json_output:
+            cache_info_luau: dict[str, Any] = _attach_daemon_cache_info(
+                {"enabled": cache, "hit": cache_hit}
+            )
+            if cache_key:
+                cache_info_luau["key"] = cache_key
+            if function_cache_key:
+                cache_info_luau["function_key"] = function_cache_key
+            data = {
+                "target": target,
+                "target_triple": target_triple,
+                "entry": str(source_path),
+                "output": str(output_artifact),
+                "emit": emit_mode,
+                "cache": cache_info_luau,
+            }
+            if diagnostics_payload is not None:
+                data["compile_diagnostics"] = diagnostics_payload
+            payload = _json_payload(
+                "build",
+                "ok",
+                data=data,
+                warnings=warnings,
+            )
+            _emit_json(payload, json_output)
+        else:
+            print(f"Successfully built {output_artifact}")
+        _emit_build_diagnostics(
+            diagnostics=diagnostics_payload,
+            diagnostics_path=diagnostics_path,
+            json_output=json_output,
+        )
+        return 0
 
     if is_wasm:
         output_wasm = output_artifact
@@ -11941,18 +12002,108 @@ def _extract_py_c_api_tokens(text: str) -> set[str]:
     return {match.group(0) for match in _PY_C_API_TOKEN_RE.finditer(sanitized)}
 
 
+def _extract_py_c_api_struct_member_names(text: str) -> set[str]:
+    member_names: set[str] = set()
+    for match in _PY_C_API_STRUCT_BLOCK_RE.finditer(text):
+        alias = match.group("alias")
+        if alias:
+            member_names.add(alias)
+        body = match.group("body")
+        for statement in body.split(";"):
+            stripped = statement.strip()
+            if not stripped:
+                continue
+            member_match = re.search(
+                r"\b(Py[A-Za-z_][A-Za-z0-9_]*)\b\s*(?:\[[^\]]*\])?\s*$",
+                stripped,
+            )
+            if member_match is not None:
+                member_names.add(member_match.group(1))
+    return member_names
+
+
+def _extract_py_c_api_function_definitions(text: str) -> list[tuple[str, bool]]:
+    definitions: list[tuple[str, bool]] = []
+    for match in _PY_C_API_FUNC_DEF_RE.finditer(text):
+        prefix = match.group("prefix")
+        name = match.group("name")
+        is_static = bool(re.search(r"\bstatic\b", prefix))
+        definitions.append((name, is_static))
+    return definitions
+
+
 def _extract_locally_defined_py_c_api_tokens(text: str) -> set[str]:
     sanitized = _strip_c_like_comments_and_literals(text)
     local_symbols: set[str] = {
         match.group(1) for match in _PY_C_API_DEFINE_RE.finditer(sanitized)
     }
     local_symbols.update(
-        match.group(1) for match in _PY_C_API_STATIC_FUNC_RE.finditer(sanitized)
-    )
-    local_symbols.update(
         match.group(1) for match in _PY_C_API_STATIC_VAR_RE.finditer(sanitized)
     )
+    local_symbols.update(
+        match.group(1) for match in _PY_C_API_SIMPLE_TYPEDEF_RE.finditer(sanitized)
+    )
+    local_symbols.update(_extract_py_c_api_struct_member_names(sanitized))
+    local_symbols.update(
+        name for name, _is_static in _extract_py_c_api_function_definitions(sanitized)
+    )
     return local_symbols
+
+
+def _extract_project_shared_py_c_api_tokens(text: str) -> set[str]:
+    sanitized = _strip_c_like_comments_and_literals(text)
+    return {
+        name
+        for name, is_static in _extract_py_c_api_function_definitions(sanitized)
+        if not is_static
+    }
+
+
+def _is_extension_scan_header_like_name(name: str) -> bool:
+    return Path(name).suffix.lower() in {".h", ".hh", ".hpp", ".hxx"}
+
+
+def _collect_extension_scan_local_symbols(
+    source_units: list[ExtensionScanSourceUnit],
+) -> tuple[dict[str, list[str]], dict[str, set[str]], set[str]]:
+    locally_defined_by_file: dict[str, list[str]] = {}
+    file_local_symbols: dict[str, set[str]] = {}
+    project_shared_symbols: set[str] = set()
+    for source_unit in source_units:
+        local_symbols = _extract_locally_defined_py_c_api_tokens(source_unit.text)
+        file_local_symbols[source_unit.label] = local_symbols
+        if local_symbols:
+            locally_defined_by_file[source_unit.label] = sorted(local_symbols)
+        project_shared_symbols.update(
+            _extract_project_shared_py_c_api_tokens(source_unit.text)
+        )
+        if _is_extension_scan_header_like_name(source_unit.label):
+            project_shared_symbols.update(local_symbols)
+    return locally_defined_by_file, file_local_symbols, project_shared_symbols
+
+
+def _effective_extension_scan_local_symbols(
+    label: str,
+    file_local_symbols: dict[str, set[str]],
+    project_shared_symbols: set[str],
+) -> set[str]:
+    return file_local_symbols.get(label, set()) | project_shared_symbols
+
+
+def _scan_extension_source_unit(
+    source_unit: ExtensionScanSourceUnit,
+    effective_local_symbols: set[str],
+    supported_surface: set[str],
+) -> tuple[list[str], list[str]]:
+    file_required = sorted(
+        symbol
+        for symbol in _extract_py_c_api_tokens(source_unit.text)
+        if symbol not in effective_local_symbols
+    )
+    file_missing = sorted(
+        symbol for symbol in file_required if symbol not in supported_surface
+    )
+    return file_required, file_missing
 
 
 def _load_supported_py_c_api_surface(
@@ -12249,26 +12400,28 @@ def extension_scan(
 
     required_by_file: dict[str, list[str]] = {}
     missing_by_file: dict[str, list[str]] = {}
-    locally_defined_by_file: dict[str, list[str]] = {}
+    (
+        locally_defined_by_file,
+        file_local_symbols,
+        project_shared_symbols,
+    ) = _collect_extension_scan_local_symbols(source_units)
     required_symbols: set[str] = set()
     missing_symbol_frequency: dict[str, int] = {}
     chars_scanned = 0
     for source_unit in source_units:
-        source_text = source_unit.text
-        chars_scanned += len(source_text)
-        file_local_symbols = _extract_locally_defined_py_c_api_tokens(source_text)
-        if file_local_symbols:
-            locally_defined_by_file[source_unit.label] = sorted(file_local_symbols)
-        file_required = sorted(
-            symbol
-            for symbol in _extract_py_c_api_tokens(source_text)
-            if symbol not in file_local_symbols
+        chars_scanned += len(source_unit.text)
+        effective_local_symbols = _effective_extension_scan_local_symbols(
+            source_unit.label,
+            file_local_symbols,
+            project_shared_symbols,
+        )
+        file_required, file_missing = _scan_extension_source_unit(
+            source_unit,
+            effective_local_symbols,
+            supported_surface,
         )
         required_by_file[source_unit.label] = file_required
         required_symbols.update(file_required)
-        file_missing = sorted(
-            symbol for symbol in file_required if symbol not in supported_surface
-        )
         if file_missing:
             missing_by_file[source_unit.label] = file_missing
             for symbol in file_missing:

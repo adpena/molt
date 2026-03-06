@@ -1,0 +1,72 @@
+name: Molt WASM CI
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'runtime/molt-backend/src/**'
+      - 'src/molt/frontend/**'
+      - 'src/molt/cli.py'
+      - 'tests/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'runtime/molt-backend/src/**'
+      - 'src/molt/frontend/**'
+      - 'src/molt/cli.py'
+      - 'tests/**'
+
+permissions:
+  contents: read
+
+jobs:
+  wasm-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen --python 3.12
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Build Molt backend
+        run: cargo build --release --manifest-path runtime/molt-backend/Cargo.toml
+
+      - name: Install wasmtime
+        run: |
+          curl https://wasmtime.dev/install.sh -sSf | bash
+          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+
+      - name: Compile test script to WASM
+        run: |
+          PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build \
+            examples/hello.py --target wasm --output /tmp/test_hello.wasm
+        env:
+          MOLT_EXT_ROOT: /tmp/molt-ext
+          RUSTC_WRAPPER: ""
+
+      - name: Validate WASM output is non-zero
+        run: |
+          WASM_SIZE=$(stat --format=%s /tmp/test_hello.wasm)
+          echo "WASM size: ${WASM_SIZE} bytes"
+          if [ "$WASM_SIZE" -lt 100 ]; then
+            echo "ERROR: WASM output is suspiciously small (${WASM_SIZE} bytes) — possible ExFAT zeroing regression"
+            exit 1
+          fi
+
+      - name: Run WASM with wasmtime
+        run: wasmtime run /tmp/test_hello.wasm
