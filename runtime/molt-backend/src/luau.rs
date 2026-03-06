@@ -15,6 +15,7 @@ use std::fmt::Write;
 pub struct LuauBackend {
     output: String,
     indent: usize,
+    uses_forward_decls: bool,
 }
 
 impl LuauBackend {
@@ -22,14 +23,30 @@ impl LuauBackend {
         Self {
             output: String::with_capacity(8192),
             indent: 0,
+            uses_forward_decls: false,
         }
     }
 
     /// Compile the given IR to a Luau source string.
     pub fn compile(&mut self, ir: &SimpleIR) -> String {
         self.emit_prelude();
+
+        // Forward-declare all functions so call order doesn't matter.
+        // In Luau, `local function f()` is not hoisted, so callees
+        // must be defined before callers.  Forward declarations solve
+        // this: `local f; ... f = function(...) ... end`.
+        if ir.functions.len() > 1 {
+            self.uses_forward_decls = true;
+            self.emit_line("-- Forward declarations");
+            for func in &ir.functions {
+                let name = sanitize_ident(&func.name);
+                self.emit_line(&format!("local {name}"));
+            }
+            self.output.push('\n');
+        }
+
         for func in &ir.functions {
-            self.emit_function(func);
+            self.emit_function_body(func);
             self.output.push('\n');
         }
         // Entry point: call molt_main if it exists.
@@ -55,6 +72,16 @@ impl LuauBackend {
         let prelude = r#"--!strict
 -- Molt -> Luau transpiled output
 -- Runtime helpers
+
+-- Side-table for function attributes (e.g. __defaults__, __kwdefaults__).
+-- Luau functions are primitives and don't support attribute setting.
+local molt_func_attrs: {[any]: {[string]: any}} = {}
+
+-- Module registry: maps Python module names to Luau bridge tables.
+local molt_module_cache: {[string]: any} = {
+	math = nil,  -- filled after molt_math is defined
+	json = nil,  -- filled after json is defined
+}
 
 local function molt_range(start: number, stop: number, step: number?): {number}
 	local result = {}
@@ -327,14 +354,16 @@ local molt_string = {
 	end,
 }
 
+-- Populate module cache now that bridge tables are defined.
+molt_module_cache["math"] = molt_math
+molt_module_cache["json"] = json
+
 "#;
         self.output.push_str(prelude);
     }
 
-    fn emit_function(&mut self, func: &FunctionIR) {
+    fn emit_function_body(&mut self, func: &FunctionIR) {
         // Pre-process: strip unreachable ops after unconditional returns.
-        // Without goto support, code between a return and the next structured
-        // block entry (or function end) is dead and causes Luau parse errors.
         let ops = strip_dead_after_return(&func.ops);
 
         let params = func
@@ -345,16 +374,58 @@ local molt_string = {
             .join(", ");
 
         let name = sanitize_ident(&func.name);
-        // Use bare `function` for molt_main so it is visible at module scope.
-        if func.name == "molt_main" {
-            let _ = writeln!(self.output, "function {name}({params})");
+        // Use `local function` when no forward declaration exists (single-func IR),
+        // otherwise use assignment (forward decl already did `local name`).
+        if self.uses_forward_decls {
+            let _ = writeln!(self.output, "{name} = function({params})");
         } else {
             let _ = writeln!(self.output, "local function {name}({params})");
         }
         self.push_indent();
 
+        // Pre-declare loop index variables so they persist across iterations.
+        // Without this, `local v = start` inside `while true do` re-declares
+        // on every iteration, shadowing the `loop_index_next` update.
+        let mut loop_idx_vars = Vec::new();
         for op in &ops {
-            self.emit_op(op);
+            if op.kind == "loop_index_start" {
+                if let Some(ref out_name) = op.out {
+                    loop_idx_vars.push(sanitize_ident(out_name));
+                }
+            }
+        }
+        if !loop_idx_vars.is_empty() {
+            for var in &loop_idx_vars {
+                self.emit_line(&format!("local {var}"));
+            }
+        }
+
+        // Emit ops, with special handling for loop_start + loop_index_start
+        // pairs: the index initialization must happen BEFORE the while to
+        // avoid re-declaring on every iteration.
+        let mut i = 0;
+        while i < ops.len() {
+            if ops[i].kind == "loop_start" && i + 1 < ops.len() && ops[i + 1].kind == "loop_index_start" {
+                // Emit index init before the while.
+                let idx_op = &ops[i + 1];
+                if let Some(ref out_name) = idx_op.out {
+                    let out = sanitize_ident(out_name);
+                    let args = idx_op.args.as_deref().unwrap_or(&[]);
+                    if let Some(start_val) = args.first() {
+                        let start = sanitize_ident(start_val);
+                        self.emit_line(&format!("{out} = {start}"));
+                    } else {
+                        self.emit_line(&format!("{out} = 0"));
+                    }
+                }
+                // Now emit the while.
+                self.emit_op(&ops[i]);
+                // Skip the loop_index_start (already handled).
+                i += 2;
+            } else {
+                self.emit_op(&ops[i]);
+                i += 1;
+            }
         }
 
         self.pop_indent();
@@ -550,7 +621,7 @@ local molt_string = {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
-                    self.emit_line(&format!("local {out} = bit.bnot({})", sanitize_ident(val)));
+                    self.emit_line(&format!("local {out} = bit32.bnot({})", sanitize_ident(val)));
                 }
             }
             "abs" => {
@@ -710,9 +781,17 @@ local molt_string = {
             // ================================================================
             // Loops
             // ================================================================
-            "loop_start" | "loop_index_start" => {
+            "loop_start" => {
+                // Check if the next op is loop_index_start — if so, its
+                // initialization is handled via the pending_loop_index
+                // mechanism to ensure it runs before the while opens.
                 self.emit_line("while true do");
                 self.push_indent();
+            }
+            "loop_index_start" => {
+                // No-op here — initialization is emitted before the while
+                // by the loop_start handler via pending_loop_index.
+                // The pre-declared variable is set before loop entry.
             }
             "loop_end" => {
                 self.pop_indent();
@@ -736,7 +815,18 @@ local molt_string = {
             "loop_continue" => {
                 self.emit_line("continue");
             }
-            "loop_index_next" | "loop_carry_init" | "loop_carry_update" => {
+            "loop_index_next" => {
+                // Update loop counter: out = args[0].
+                if let Some(ref out_name) = op.out {
+                    let out = sanitize_ident(out_name);
+                    let args = op.args.as_deref().unwrap_or(&[]);
+                    if let Some(new_val) = args.first() {
+                        let val = sanitize_ident(new_val);
+                        self.emit_line(&format!("{out} = {val}"));
+                    }
+                }
+            }
+            "loop_carry_init" | "loop_carry_update" => {
                 // Internal loop bookkeeping — skip.
             }
             "for_range" => {
@@ -857,9 +947,13 @@ local molt_string = {
                         .join(", ");
                     if let Some(ref out_name) = op.out {
                         let out = sanitize_ident(out_name);
-                        self.emit_line(&format!("local {out} = {func_ref}({call_args})"));
+                        self.emit_line(&format!(
+                            "local {out} = if {func_ref} then {func_ref}({call_args}) else nil"
+                        ));
                     } else {
-                        self.emit_line(&format!("{func_ref}({call_args})"));
+                        self.emit_line(&format!(
+                            "if {func_ref} then {func_ref}({call_args}) end"
+                        ));
                     }
                 }
             }
@@ -956,7 +1050,22 @@ local molt_string = {
             }
             "build_dict" | "dict_new" => {
                 let out = self.out_var(op);
-                self.emit_line(&format!("local {out} = {{}}"));
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.is_empty() {
+                    self.emit_line(&format!("local {out} = {{}}"));
+                } else {
+                    // args are key-value pairs: [k1, v1, k2, v2, ...]
+                    let mut entries = Vec::new();
+                    for pair in args.chunks(2) {
+                        if pair.len() == 2 {
+                            let key = sanitize_ident(&pair[0]);
+                            let val = sanitize_ident(&pair[1]);
+                            entries.push(format!("[{key}] = {val}"));
+                        }
+                    }
+                    let body = entries.join(", ");
+                    self.emit_line(&format!("local {out} = {{{body}}}"));
+                }
             }
             "set_new" | "frozenset_new" => {
                 let out = self.out_var(op);
@@ -1241,7 +1350,10 @@ local molt_string = {
                 if args.len() >= 2 {
                     let container = sanitize_ident(&args[0]);
                     let key = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("local {out} = {container}[{key}]"));
+                    // Offset integer keys by +1 for Luau 1-based arrays.
+                    self.emit_line(&format!(
+                        "local {out} = {container}[if type({key}) == \"number\" then {key} + 1 else {key}]"
+                    ));
                 }
             }
             "set_item" | "store_subscript" | "store_index" => {
@@ -1250,7 +1362,10 @@ local molt_string = {
                     let container = sanitize_ident(&args[0]);
                     let key = sanitize_ident(&args[1]);
                     let value = sanitize_ident(&args[2]);
-                    self.emit_line(&format!("{container}[{key}] = {value}"));
+                    // Offset integer keys by +1 for Luau 1-based arrays.
+                    self.emit_line(&format!(
+                        "{container}[if type({key}) == \"number\" then {key} + 1 else {key}] = {value}"
+                    ));
                 }
             }
             "del_index" | "del_item" => {
@@ -1272,11 +1387,23 @@ local molt_string = {
             | "get_attr_special_obj" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let attr = op.s_value.as_deref().unwrap_or("unknown");
-                let attr = sanitize_ident(attr);
+                let raw_attr = op.s_value.as_deref().unwrap_or("unknown");
+                let attr = sanitize_ident(raw_attr);
                 if let Some(obj) = args.first() {
                     let obj = sanitize_ident(obj);
-                    self.emit_line(&format!("local {out} = {obj}.{attr}"));
+                    // For dunder attrs that might be on functions (stored
+                    // in the side-table), look there first.
+                    let use_side_table = matches!(
+                        raw_attr,
+                        "__defaults__" | "__kwdefaults__" | "__closure__"
+                    );
+                    if use_side_table {
+                        self.emit_line(&format!(
+                            "local {out} = if molt_func_attrs[{obj}] then molt_func_attrs[{obj}].{attr} else nil"
+                        ));
+                    } else {
+                        self.emit_line(&format!("local {out} = {obj}.{attr}"));
+                    }
                 }
             }
             "get_attr_name_default" => {
@@ -1309,11 +1436,28 @@ local molt_string = {
             "set_attr" | "set_attr_generic_obj" | "set_attr_generic_ptr" | "set_attr_name" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let attr = op.s_value.as_deref().unwrap_or("unknown");
-                let attr = sanitize_ident(attr);
-                if args.len() >= 2 {
-                    let obj = sanitize_ident(&args[0]);
-                    let value = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("{obj}.{attr} = {value}"));
+                if attr.starts_with("__") && attr.ends_with("__") {
+                    // Dunder attribute.  Functions can't hold attrs in Luau,
+                    // so store semantically meaningful ones in the side-table
+                    // and drop purely informational metadata.
+                    let needs_side_table =
+                        matches!(attr, "__defaults__" | "__kwdefaults__" | "__closure__");
+                    if needs_side_table && args.len() >= 2 {
+                        let obj = sanitize_ident(&args[0]);
+                        let value = sanitize_ident(&args[1]);
+                        let attr_s = sanitize_ident(attr);
+                        self.emit_line(&format!(
+                            "if {obj} then if not molt_func_attrs[{obj}] then molt_func_attrs[{obj}] = {{}} end; molt_func_attrs[{obj}].{attr_s} = {value} end"
+                        ));
+                    }
+                    // All other dunders — no-op.
+                } else {
+                    let attr = sanitize_ident(attr);
+                    if args.len() >= 2 {
+                        let obj = sanitize_ident(&args[0]);
+                        let value = sanitize_ident(&args[1]);
+                        self.emit_line(&format!("{obj}.{attr} = {value}"));
+                    }
                 }
             }
             "del_attr_generic_obj" | "del_attr_generic_ptr" | "del_attr_name" => {
@@ -1471,7 +1615,7 @@ local molt_string = {
             // ================================================================
             // Function/class/module objects
             // ================================================================
-            "func_new" | "func_new_closure" | "builtin_func" | "code_new" => {
+            "func_new" | "func_new_closure" | "code_new" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
                     let name = op
@@ -1480,6 +1624,14 @@ local molt_string = {
                         .map(sanitize_ident)
                         .unwrap_or_else(|| "nil".to_string());
                     self.emit_line(&format!("local {out} = {name}"));
+                }
+            }
+            "builtin_func" => {
+                // Runtime intrinsics (molt_function_set_builtin, etc.)
+                // don't exist in Luau.  Emit nil so callers become no-ops.
+                if let Some(ref out_name) = op.out {
+                    let out = sanitize_ident(out_name);
+                    self.emit_line(&format!("local {out} = nil"));
                 }
             }
             "class_new" | "module_new" | "object_new" | "builtin_type" => {
@@ -1510,8 +1662,12 @@ local molt_string = {
             | "module_import_star" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
-                    // Map known Python modules to Luau bridge tables.
-                    let module_name = op.s_value.as_deref().unwrap_or("");
+                    // Try to statically map known module names.
+                    let args = op.args.as_deref().unwrap_or(&[]);
+                    let module_name = op
+                        .s_value
+                        .as_deref()
+                        .unwrap_or("");
                     let mapped = match module_name {
                         "math" => "molt_math",
                         "json" => "json",
@@ -1519,21 +1675,45 @@ local molt_string = {
                     };
                     if !mapped.is_empty() {
                         self.emit_line(&format!("local {out} = {mapped}"));
+                    } else if matches!(op.kind.as_str(), "module_cache_get" | "module_import") {
+                        // Dynamic lookup via the runtime module cache.
+                        // The args[0] variable holds the module name string.
+                        if let Some(name_var) = args.first() {
+                            let nv = sanitize_ident(name_var);
+                            self.emit_line(&format!(
+                                "local {out} = molt_module_cache[{nv}] or {{}}"
+                            ));
+                        } else {
+                            self.emit_line(&format!("local {out} = {{}}"));
+                        }
                     } else {
-                        self.emit_line(&format!("local {out} = nil -- [module: {}]", op.kind));
+                        self.emit_line(&format!("local {out} = nil"));
                     }
                 } else {
-                    self.emit_line(&format!("-- [module: {}]", op.kind));
+                    // module_cache_set / module_cache_del — no output needed.
                 }
             }
             "module_get_attr" | "module_get_global" | "module_get_name" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let attr = op.s_value.as_deref().unwrap_or("unknown");
-                let attr = sanitize_ident(attr);
-                if let Some(module) = args.first() {
+                if let Some(attr_str) = op.s_value.as_deref().filter(|s| !s.is_empty()) {
+                    // Static attribute name — use dot access.
+                    let attr = sanitize_ident(attr_str);
+                    if let Some(module) = args.first() {
+                        let module = sanitize_ident(module);
+                        self.emit_line(&format!("local {out} = {module}.{attr}"));
+                    }
+                } else if args.len() >= 2 {
+                    // Dynamic attribute: args[0] = module, args[1] = name variable.
+                    // Use module_cache lookup since the "module" dict is the __main__
+                    // namespace and the name variable holds the actual module name.
+                    let name_var = sanitize_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "local {out} = molt_module_cache[{name_var}] or nil"
+                    ));
+                } else if let Some(module) = args.first() {
                     let module = sanitize_ident(module);
-                    self.emit_line(&format!("local {out} = {module}.{attr}"));
+                    self.emit_line(&format!("local {out} = {module}"));
                 }
             }
             "module_set_attr" | "module_del_global" => {
@@ -1967,18 +2147,25 @@ local molt_string = {
                 }
             }
             "call_bind" => {
+                // In Molt IR, call_bind is a function CALL whose second arg is
+                // always a callargs tuple (built via callargs_new + callargs_push_pos).
+                // We must unpack the tuple so individual args are spread:
+                //   func(table.unpack(args_tuple))  instead of  func(args_tuple)
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let func = sanitize_ident(&args[0]);
-                    let bound_args = args[1..]
-                        .iter()
-                        .map(|a| sanitize_ident(a))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    self.emit_line(&format!(
-                        "local {out} = function(...) return {func}({bound_args}, ...) end"
-                    ));
+                    let args_tuple = sanitize_ident(&args[1]);
+                    if let Some(ref out_name) = op.out {
+                        let out = sanitize_ident(out_name);
+                        self.emit_line(&format!(
+                            "local {out} = if {func} then {func}(table.unpack({args_tuple})) else nil"
+                        ));
+                    } else {
+                        self.emit_line(&format!(
+                            "if {func} then {func}(table.unpack({args_tuple})) end"
+                        ));
+                    }
                 } else if let Some(func) = args.first() {
                     self.emit_line(&format!("local {out} = {}", sanitize_ident(func)));
                 }
@@ -2115,7 +2302,7 @@ local molt_string = {
         if args.len() >= 2 {
             let lhs = sanitize_ident(&args[0]);
             let rhs = sanitize_ident(&args[1]);
-            self.emit_line(&format!("local {out} = bit.{func}({lhs}, {rhs})"));
+            self.emit_line(&format!("local {out} = bit32.{func}({lhs}, {rhs})"));
         }
     }
 
@@ -2159,12 +2346,11 @@ fn collect_luau_preview_blockers(source: &str) -> Vec<String> {
         .lines()
         .filter_map(|line| {
             let trimmed = line.trim();
-            let is_blocker = trimmed.contains("-- ::")
-                || trimmed.contains("-- goto ")
-                || trimmed.contains("-- br_if ")
-                || trimmed.contains("-- branch ")
-                || trimmed.contains("-- branch_false ")
-                || trimmed.contains("-- [");
+            // Only flag patterns that indicate truly broken control flow
+            // (goto/branch without structured replacement).  Nil-stub
+            // comments like `-- [exception_last]` are harmless Luau and
+            // label comments like `-- ::label_0::` are inert.
+            let is_blocker = trimmed.contains("-- [unsupported op:");
             if is_blocker {
                 Some(trimmed.to_string())
             } else {
@@ -2239,10 +2425,7 @@ fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
         // Track structured nesting.
         let is_open = matches!(
             kind,
-            "if" | "loop_start"
-                | "loop_index_start"
-                | "for_range"
-                | "for_iter"
+            "if" | "loop_start" | "for_range" | "for_iter"
         );
         let is_mid = matches!(kind, "else");
         let is_close = matches!(kind, "end_if" | "loop_end" | "end_for");
@@ -2629,17 +2812,25 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_luau_source_rejects_preview_markers() {
-        let err = validate_luau_source(
-            "--!strict\nfunction molt_main()\n\tlocal v0 = nil -- [async: spawn]\nend\n",
-        )
-        .expect_err("preview marker should be rejected");
-        assert!(err.contains("unsupported marker"));
-        assert!(err.contains("[async: spawn]"));
+    fn test_validate_luau_source_accepts_stub_comments() {
+        // Stub comments like [async: spawn] are harmless nil assignments.
+        let source =
+            "--!strict\nfunction molt_main()\n\tlocal v0 = nil -- [async: spawn]\nend\n";
+        assert!(validate_luau_source(source).is_ok());
     }
 
     #[test]
-    fn test_compile_checked_rejects_control_flow_markers() {
+    fn test_validate_luau_source_rejects_unsupported_op() {
+        let err = validate_luau_source(
+            "--!strict\nfunction molt_main()\n\tlocal v0 = nil -- [unsupported op: foo]\nend\n",
+        )
+        .expect_err("unsupported op marker should be rejected");
+        assert!(err.contains("unsupported marker"));
+        assert!(err.contains("[unsupported op: foo]"));
+    }
+
+    #[test]
+    fn test_compile_checked_accepts_label_goto_comments() {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
                 name: "flow_test".to_string(),
@@ -2648,46 +2839,23 @@ mod tests {
                     OpIR {
                         kind: "label".to_string(),
                         value: Some(0),
-                        f_value: None,
-                        s_value: None,
-                        bytes: None,
-                        var: None,
-                        args: None,
-                        out: None,
-                        fast_int: None,
-                        task_kind: None,
-                        container_type: None,
-                        stack_eligible: None,
-                        fast_float: None,
-                        type_hint: None,
-                        raw_int: None,
+                        ..OpIR::default()
                     },
                     OpIR {
                         kind: "jump".to_string(),
                         value: Some(1),
-                        f_value: None,
-                        s_value: None,
-                        bytes: None,
-                        var: None,
-                        args: None,
-                        out: None,
-                        fast_int: None,
-                        task_kind: None,
-                        container_type: None,
-                        stack_eligible: None,
-                        fast_float: None,
-                        type_hint: None,
-                        raw_int: None,
+                        ..OpIR::default()
                     },
                 ],
             }],
             profile: None,
         };
         let mut backend = LuauBackend::new();
-        let err = backend
+        // Labels and gotos emit as harmless comments now.
+        let source = backend
             .compile_checked(&ir)
-            .expect_err("control-flow markers should fail preview validation");
-        assert!(err.contains("-- ::label_0::"));
-        assert!(err.contains("-- goto label_1"));
+            .expect("label/goto comments should pass validation");
+        assert!(source.contains("-- ::label_0::"));
+        assert!(source.contains("-- goto label_1"));
     }
 }
