@@ -10046,7 +10046,11 @@ def build(
             ) as backend_dir:
                 backend_dir_path = Path(backend_dir)
                 backend_output = backend_dir_path / (
-                    "output.luau" if is_luau else "output.wasm" if is_wasm else "output.o"
+                    "output.luau"
+                    if is_luau
+                    else "output.wasm"
+                    if is_wasm
+                    else "output.o"
                 )
                 backend_compiled = False
                 daemon_error: str | None = None

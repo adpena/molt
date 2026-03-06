@@ -195,6 +195,7 @@ performance-first C-extension compatibility without embedding CPython.
 ### 6.3 Extension Metadata (proposed)
 Extensions should declare:
 - `molt_c_api_version`
+- `header_contract`
 - `capabilities`
 - `determinism` requirements
 - `abi` target triple
