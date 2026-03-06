@@ -145,18 +145,22 @@ performance-first C-extension compatibility without embedding CPython.
 - NumPy source-compat include lane (`#include <numpy/arrayobject.h>` /
   `#include <numpy/ndarrayobject.h>`) with type/shape/flag macros, typenum
   predicates, dtype/type-object exports, `PyDataType_*` and `PyDataMem_*`
-  helpers, `import_array*` capsule wiring, `arrayscalars.h`,
-  `numpyconfig.h`, `utils.h`, generated-config bridge headers
+  helpers, `import_array*` capsule wiring, the upstream-shipped public contract
+  headers (`arrayobject.h`, `dtype_api.h`, `npy_2_compat.h`, `npy_cpu.h`,
+  `npy_math.h`, `numpyconfig.h`, `utils.h`), upstream-derived overlay headers
+  (`_public_dtype_api_table.h`, `halffloat.h`, `npy_2_complexcompat.h`,
+  `npy_3kcompat.h`, `npy_endian.h`, `npy_no_deprecated_api.h`, `npy_os.h`,
+  `random/bitgen.h`, `random/distributions.h`), top-level `arrayobject.h`,
+  `pymem.h`, `frameobject.h`, generated-config bridge headers
   (`_numpyconfig.h`, `config.h`, `npy_cpu_dispatch_config.h`,
-  `numpy/npy_cpu.h`), top-level `arrayobject.h`, `pymem.h`, `frameobject.h`,
-  upstream-shaped internal include wrappers (`npy_common.h`, `dtype_api.h`,
-  `__multiarray_api.h`, `__ufunc_api.h`, `npy_2_compat.h`, `npy_math.h`),
-  utility/visibility helpers (`NPY_UNUSED`, `NPY_VISIBILITY_HIDDEN`,
-  `NPY_NO_EXPORT`, `NPY_TLS`), `NpyAuxData` lifecycle macros, legacy
-  `PyUFunc_Loop1d` / `PyUFuncObject` source shapes, and fail-fast stubs for
-  unsupported heavy ndarray/ufunc APIs. Private/generated NumPy build
-  artifacts such as `arraytypes.h` and dispatch-generated internal headers are
-  outside the public `libmolt` compatibility contract.
+  `numpy/npy_cpu.h`), arrayscalar/object source shapes, utility/visibility
+  helpers (`NPY_UNUSED`, `NPY_VISIBILITY_HIDDEN`, `NPY_NO_EXPORT`, `NPY_TLS`),
+  `NpyAuxData` lifecycle macros, legacy `PyUFunc_Loop1d` / `PyUFuncObject`
+  source shapes, and fail-fast stubs for unsupported heavy ndarray/ufunc APIs.
+  Internal generated/source-only bridges such as `templ_common.h` exist to
+  keep real NumPy core syntax-only probes moving, but private/generated NumPy
+  build artifacts such as `arraytypes.h` and dispatch-generated internal
+  headers remain outside the public `libmolt` compatibility contract.
 - Datetime source-compat include lane (`#include <datetime.h>`) with
   `PyDateTimeAPI`, `PyDateTime_IMPORT`, and basic date/datetime/timedelta
   checker shims

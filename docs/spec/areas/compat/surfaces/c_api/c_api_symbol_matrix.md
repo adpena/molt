@@ -16,31 +16,36 @@
   `molt_*` wrapper symbols (`runtime/molt-runtime/src/c_api.rs` + `include/molt/molt.h`),
   and `include/molt/Python.h` now carries a broad partial CPython source-compat
   layer plus expanded NumPy source-compat headers under `include/numpy/`
-  covering dtype/type-object exports, `PyDataType_*` and `PyDataMem_*`
-  helpers, array flag/conversion/copy/setup shims, generated-config bridge
-  headers (`_numpyconfig.h`, `config.h`, `npy_cpu_dispatch_config.h`,
-  `numpy/npy_cpu.h`), `numpyconfig.h` / `utils.h`, `NPY_UNUSED` / `NPY_TLS` /
-  visibility helpers, `NpyAuxData` lifecycle macros, legacy
-  `PyUFunc_Loop1d`/`PyUFuncObject` source shapes, and fail-fast `PyUFunc_*`
-  constructor/registration stubs. `include/molt/Python.h` also now covers
-  `inttypes.h`, `PY_VERSION_HEX`, `PyErr_BadInternalCall`, selected
-  weakref/unicode/private-helper shims, and NumPy-core `PYTHONCAPI_COMPAT`
-  suppression so vendored `pythoncapi-compat` does not collide with
-  libmolt-owned helpers during `_MULTIARRAYMODULE` / `_UMATHMODULE` builds.
+  covering public NumPy contract headers (`arrayobject.h`, `dtype_api.h`,
+  `npy_2_compat.h`, `npy_cpu.h`, `npy_math.h`, `numpyconfig.h`, `utils.h`),
+  upstream-derived overlay headers (`_public_dtype_api_table.h`,
+  `halffloat.h`, `npy_2_complexcompat.h`, `npy_3kcompat.h`,
+  `npy_endian.h`, `npy_no_deprecated_api.h`, `npy_os.h`,
+  `random/bitgen.h`, `random/distributions.h`), arrayscalar/source-shape
+  fixes (`PyArray_ArrFuncs`, dtype flags, `NPY_SELECTKIND`,
+  `NPY_DATETIME_NUMUNITS`, prototype-only internal-build lanes for
+  NumPy-owned functions), generated-config bridges, and the internal
+  `templ_common.h` bridge for generated NumPy source probes. `include/molt/Python.h`
+  also now covers `inttypes.h`, `PY_VERSION_HEX`, `PyErr_BadInternalCall`,
+  selected weakref/unicode/private-helper shims, `Py_SET_SIZE`, and
+  NumPy-core `PYTHONCAPI_COMPAT` suppression so vendored `pythoncapi-compat`
+  does not collide with libmolt-owned helpers during `_MULTIARRAYMODULE` /
+  `_UMATHMODULE` builds.
 - **Latest scan baseline (2026-03-06):** archived C-source sdist scans report
-  missing symbols: NumPy `2.4.2` `239` (coverage `0.631`), pandas `3.0.1` `0`
-  (coverage `1.000`). Real `clang -fsyntax-only` checks now pass NumPy
+  missing symbols: NumPy `2.4.2` `227` (coverage `0.649`, `420/647`,
+  `34` contract headers consulted), pandas `3.0.1` `0` (coverage `1.000`,
+  `160/160`). Real `clang -fsyntax-only` checks now pass NumPy
   `limited_api1.c` / `limited_api_latest.c`, NumPy
   `numpy/_core/src/multiarray/npy_static_data.c` (with `-Wno-sign-compare` to
   ignore upstream warning noise), NumPy
-  `numpy/_core/src/umath/ufunc_type_resolution.c`, and all checked pandas
-  `_libs/src` translation units including `parser/tokenizer.c` without any
-  forced `inttypes.h` include. The checked NumPy-core frontier is now split
-  between private/generated NumPy build artifacts (`arraytypes.h` after the
-  config-header bridge in `conversion_utils.c`) and deeper internal source
-  closure in `scalarapi.c` (for example `PyArray_DiscoverDTypeAndShape`,
-  `PyArray_AssignFromCache`, `PyArray_NewFromDescr*`, `npy_dtype_info`,
-  `NPY_NSCALARKINDS`, and `PyArrayScalar_VAL` macro-family gaps).
+  `numpy/_core/src/umath/ufunc_type_resolution.c`, NumPy
+  `numpy/_core/src/multiarray/scalarapi.c`, and all checked pandas `_libs/src`
+  translation units including `parser/tokenizer.c`. The checked NumPy-core
+  frontier is now split between deeper internal source closure in
+  `descriptor.c` (`npy_packed_static_string`, `PyDict_Merge`,
+  `PyArray_DescrNewFromType`, `PyArray_DescrConverter2`,
+  `PyDataType_ISDATETIME`, `PyMemoryView_Type`) and broader private/generated
+  build artifacts such as `arraytypes.h`.
 - **Tooling Boundary:** `molt extension scan` now consults an explicit
   libmolt header-contract list and `molt extension build` records that contract
   in extension manifests, so stable ABI headers and compatibility overlays are

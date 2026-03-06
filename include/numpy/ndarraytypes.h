@@ -45,11 +45,38 @@ typedef npy_ulong npy_uint64;
 typedef npy_longlong npy_int64;
 typedef npy_ulonglong npy_uint64;
 #endif
+typedef npy_uint16 npy_half;
+typedef npy_half npy_float16;
 typedef Py_ssize_t npy_intp;
 typedef size_t npy_uintp;
 typedef intptr_t npy_hash_t;
 typedef npy_int64 npy_datetime;
 typedef npy_int64 npy_timedelta;
+
+#if !defined(__STDC_NO_COMPLEX__)
+typedef float _Complex _molt_npy_cfloat_value;
+typedef double _Complex _molt_npy_cdouble_value;
+#if NPY_SIZEOF_LONGDOUBLE == NPY_SIZEOF_DOUBLE
+typedef double _Complex _molt_npy_clongdouble_value;
+#else
+typedef long double _Complex _molt_npy_clongdouble_value;
+#endif
+#else
+typedef struct {
+    npy_float real;
+    npy_float imag;
+} _molt_npy_cfloat_value;
+
+typedef struct {
+    npy_double real;
+    npy_double imag;
+} _molt_npy_cdouble_value;
+
+typedef struct {
+    npy_longdouble real;
+    npy_longdouble imag;
+} _molt_npy_clongdouble_value;
+#endif
 
 #ifndef NPY_INT64_FMT
 #define NPY_INT64_FMT PRId64
@@ -153,6 +180,15 @@ typedef enum {
     NPY_SORT_DESCENDING = 4
 } NPY_SORTKIND;
 
+#define NPY_NSORTS (NPY_STABLESORT + 1)
+#define NPY_NTYPES_ABI_COMPATIBLE 21
+
+typedef enum {
+    NPY_INTROSELECT = 0,
+} NPY_SELECTKIND;
+
+#define NPY_NSELECTS (NPY_INTROSELECT + 1)
+
 typedef enum {
     NPY_CLIP = 0,
     NPY_WRAP = 1,
@@ -174,6 +210,8 @@ typedef enum {
     NPY_OBJECT_SCALAR = 5
 } NPY_SCALARKIND;
 
+#define NPY_NSCALARKINDS (NPY_OBJECT_SCALAR + 1)
+
 typedef enum {
     NPY_FR_Y = 0,
     NPY_FR_M = 1,
@@ -190,6 +228,8 @@ typedef enum {
     NPY_FR_as = 13,
     NPY_FR_GENERIC = 14
 } NPY_DATETIMEUNIT;
+
+#define NPY_DATETIME_NUMUNITS (NPY_FR_GENERIC + 1)
 
 typedef struct PyArray_Descr {
     _MOLT_NUMPY_OBJECT_HEAD;
@@ -214,7 +254,16 @@ typedef struct _arr_descr {
 } PyArray_ArrayDescr;
 
 typedef struct {
-    PyArray_Descr base;
+    _MOLT_NUMPY_OBJECT_HEAD;
+    PyTypeObject *typeobj;
+    char kind;
+    char type;
+    char byteorder;
+    char flags;
+    int type_num;
+    int elsize;
+    int alignment;
+    PyArray_ArrayDescr *subarray;
     PyObject *fields;
     PyObject *names;
     PyArray_ArrFuncs *f;
@@ -223,7 +272,25 @@ typedef struct {
     npy_hash_t hash;
 } PyArray_DescrProto;
 
-typedef PyArray_DescrProto _PyArray_LegacyDescr;
+typedef struct {
+    _MOLT_NUMPY_OBJECT_HEAD;
+    PyTypeObject *typeobj;
+    char kind;
+    char type;
+    char byteorder;
+    char _former_flags;
+    int type_num;
+    npy_uint64 flags;
+    npy_intp elsize;
+    npy_intp alignment;
+    PyObject *metadata;
+    npy_hash_t hash;
+    void *reserved_null[2];
+    PyArray_ArrayDescr *subarray;
+    PyObject *fields;
+    PyObject *names;
+    NpyAuxData *c_metadata;
+} _PyArray_LegacyDescr;
 
 typedef struct PyArrayObject_fields {
     _MOLT_NUMPY_OBJECT_HEAD;
@@ -272,30 +339,60 @@ typedef struct {
     npy_int32 as;
 } npy_timedeltastruct;
 
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
 typedef enum {
     NPY_DEVICE_CPU = 0,
 } NPY_DEVICE;
+#endif
 
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
 typedef struct {
     struct PyArray_DTypeMeta *dtype;
     PyArray_Descr *descr;
 } npy_dtype_info;
+#endif
 
-typedef int (*PyArray_CompareFunc)(const void *, const void *, PyArrayObject *);
-typedef int (*PyArray_ArgFunc)(const void *, npy_intp, void *);
-typedef int (*PyArray_ArgSortFunc)(void *, npy_intp *, npy_intp, void *);
-typedef void (*PyArray_CopySwapFunc)(void *, const void *, int, void *);
-typedef void (*PyArray_CopySwapNFunc)(void *, npy_intp, const void *, npy_intp, npy_intp, int, void *);
+typedef PyObject *(PyArray_GetItemFunc)(void *, void *);
+typedef int (PyArray_SetItemFunc)(PyObject *, void *, void *);
+typedef void (PyArray_CopySwapNFunc)(void *, npy_intp, void *, npy_intp, npy_intp, int, void *);
+typedef void (PyArray_CopySwapFunc)(void *, void *, int, void *);
+typedef npy_bool (PyArray_NonzeroFunc)(void *, void *);
+typedef int (PyArray_CompareFunc)(const void *, const void *, void *);
+typedef int (PyArray_ArgFunc)(void *, npy_intp, npy_intp *, void *);
+typedef void (PyArray_DotFunc)(void *, npy_intp, void *, npy_intp, void *, npy_intp, void *);
+typedef int (PyArray_ScanFunc)(FILE *, void *, char *, PyArray_Descr *);
+typedef int (PyArray_FromStrFunc)(char *, void *, char **, PyArray_Descr *);
+typedef int (PyArray_FillFunc)(void *, npy_intp, void *);
+typedef int (PyArray_SortFunc)(void *, npy_intp, void *);
+typedef int (PyArray_FillWithScalarFunc)(void *, npy_intp, void *, void *);
+typedef int (PyArray_ScalarKindFunc)(void *);
+typedef int (PyArray_ArgSortFunc)(void *, npy_intp *, npy_intp, void *);
+typedef void (PyArray_VectorUnaryFunc)(void *, void *, npy_intp, void *, void *);
 
 typedef struct PyArray_ArrFuncs {
-    PyArray_CompareFunc compare;
-    PyArray_ArgFunc argmax;
-    PyArray_ArgFunc argmin;
-    PyArray_ArgSortFunc argsort;
-    PyArray_CopySwapFunc copyswap;
-    PyArray_CopySwapNFunc copyswapn;
-    PyObject *(*getitem)(void *, PyArrayObject *);
-    int (*setitem)(PyObject *, void *, PyArrayObject *);
+    PyArray_VectorUnaryFunc *cast[NPY_NTYPES_ABI_COMPATIBLE];
+    PyArray_GetItemFunc *getitem;
+    PyArray_SetItemFunc *setitem;
+    PyArray_CopySwapNFunc *copyswapn;
+    PyArray_CopySwapFunc *copyswap;
+    PyArray_CompareFunc *compare;
+    PyArray_ArgFunc *argmax;
+    PyArray_DotFunc *dotfunc;
+    PyArray_ScanFunc *scanfunc;
+    PyArray_FromStrFunc *fromstr;
+    PyArray_NonzeroFunc *nonzero;
+    PyArray_FillFunc *fill;
+    PyArray_FillWithScalarFunc *fillwithscalar;
+    PyArray_SortFunc *sort[NPY_NSORTS];
+    PyArray_ArgSortFunc *argsort[NPY_NSORTS];
+    PyObject *castdict;
+    PyArray_ScalarKindFunc *scalarkind;
+    int **cancastscalarkindto;
+    int *cancastto;
+    void *_unused1;
+    void *_unused2;
+    void *_unused3;
+    PyArray_ArgFunc *argmin;
 } PyArray_ArrFuncs;
 
 typedef struct PyArrayFlagsObject {
@@ -516,11 +613,13 @@ typedef struct _tagPyUFuncObject {
     PyObject *identity_value;
 } PyUFuncObject;
 
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
 typedef enum {
     NPY_COPY_NEVER = 0,
     NPY_COPY_ALWAYS = 1,
     NPY_COPY_IF_NEEDED = 2
 } NPY_COPYMODE;
+#endif
 
 #define _MOLT_NUMPY_DEFINE_SCALAR_OBJECT(name, field_type) \
     typedef struct name {                                  \
@@ -539,18 +638,41 @@ _MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyLongScalarObject, npy_long);
 _MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyULongScalarObject, npy_ulong);
 _MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyLongLongScalarObject, npy_longlong);
 _MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyULongLongScalarObject, npy_ulonglong);
-_MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyHalfScalarObject, npy_short);
+_MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyHalfScalarObject, npy_half);
 _MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyFloatScalarObject, npy_float);
 _MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyDoubleScalarObject, npy_double);
 _MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyLongDoubleScalarObject, npy_longdouble);
-_MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyCFloatScalarObject, Py_complex);
-_MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyCDoubleScalarObject, Py_complex);
-_MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyCLongDoubleScalarObject, Py_complex);
-_MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyVoidScalarObject, int);
-_MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyDatetimeScalarObject, int);
-_MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyTimedeltaScalarObject, int);
+_MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyCFloatScalarObject, _molt_npy_cfloat_value);
+_MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyCDoubleScalarObject, _molt_npy_cdouble_value);
+_MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyCLongDoubleScalarObject, _molt_npy_clongdouble_value);
+_MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyObjectScalarObject, PyObject *);
+_MOLT_NUMPY_DEFINE_SCALAR_OBJECT(PyScalarObject, char);
 
 #undef _MOLT_NUMPY_DEFINE_SCALAR_OBJECT
+
+typedef struct {
+    _MOLT_NUMPY_OBJECT_HEAD;
+    Py_ssize_t ob_size;
+    char *obval;
+    _PyArray_LegacyDescr *descr;
+    int flags;
+    PyObject *base;
+#if NPY_FEATURE_VERSION >= NPY_1_20_API_VERSION
+    void *_buffer_info;
+#endif
+} PyVoidScalarObject;
+
+typedef struct {
+    _MOLT_NUMPY_OBJECT_HEAD;
+    npy_datetime obval;
+    PyArray_DatetimeMetaData obmeta;
+} PyDatetimeScalarObject;
+
+typedef struct {
+    _MOLT_NUMPY_OBJECT_HEAD;
+    npy_timedelta obval;
+    PyArray_DatetimeMetaData obmeta;
+} PyTimedeltaScalarObject;
 
 typedef void (NpyAuxData_FreeFunc)(NpyAuxData *);
 typedef NpyAuxData *(NpyAuxData_CloneFunc)(NpyAuxData *);
@@ -611,7 +733,6 @@ typedef int (PyArray_ArgPartitionFunc)(
     npy_intp,
     void *
 );
-typedef void (PyArray_VectorUnaryFunc)(void *, void *, npy_intp, void *, void *);
 typedef struct npy_unpacked_static_string {
     size_t size;
     const char *buf;
@@ -645,10 +766,12 @@ typedef struct {
     npy_string_allocator *allocator;
 } PyArray_StringDTypeObject;
 
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
 typedef enum {
     NPY_AS_TYPE_COPY_IF_NEEDED = 0,
     NPY_AS_TYPE_COPY_ALWAYS = 1,
 } NPY_ASTYPECOPYMODE;
+#endif
 
 #define NPY_FAIL 0
 #define NPY_SUCCEED 1
@@ -692,8 +815,17 @@ typedef enum {
 #define NPY_ARRAY_UPDATE_ALL (NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_F_CONTIGUOUS | NPY_ARRAY_ALIGNED)
 
 #define NPY_ITEM_REFCOUNT 0x01
-#define NPY_NEEDS_PYAPI 0x02
-#define NPY_LIST_PICKLE 0x04
+#define NPY_ITEM_HASOBJECT 0x01
+#define NPY_LIST_PICKLE 0x02
+#define NPY_ITEM_IS_POINTER 0x04
+#define NPY_NEEDS_INIT 0x08
+#define NPY_NEEDS_PYAPI 0x10
+#define NPY_USE_GETITEM 0x20
+#define NPY_USE_SETITEM 0x40
+#define NPY_ALIGNED_STRUCT 0x80
+#define NPY_FROM_FIELDS (NPY_NEEDS_INIT | NPY_LIST_PICKLE | NPY_ITEM_REFCOUNT | NPY_NEEDS_PYAPI)
+#define NPY_OBJECT_DTYPE_FLAGS \
+    (NPY_LIST_PICKLE | NPY_USE_GETITEM | NPY_ITEM_IS_POINTER | NPY_ITEM_REFCOUNT | NPY_NEEDS_INIT | NPY_NEEDS_PYAPI)
 
 #define PyTypeNum_ISBOOL(t) ((t) == NPY_BOOL)
 #define PyTypeNum_ISINTEGER(t) ((t) >= NPY_BYTE && (t) <= NPY_ULONGLONG)
@@ -798,17 +930,42 @@ static inline int PyDataType_ALIGNMENT(const PyArray_Descr *descr) {
 
 #if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
 #define PyArray_BoolDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("bool"))
+#define PyArray_ByteDType PyArray_PyLongDType
+#define PyArray_UByteDType PyArray_PyLongDType
+#define PyArray_ShortDType PyArray_PyLongDType
+#define PyArray_UShortDType PyArray_PyLongDType
+#define PyArray_IntDType PyArray_PyLongDType
+#define PyArray_UIntDType PyArray_PyLongDType
+#define PyArray_LongDType PyArray_PyLongDType
+#define PyArray_ULongDType PyArray_PyLongDType
+#define PyArray_LongLongDType PyArray_PyLongDType
+#define PyArray_ULongLongDType PyArray_PyLongDType
+#define PyArray_Int8DType PyArray_PyLongDType
+#define PyArray_UInt8DType PyArray_PyLongDType
+#define PyArray_Int16DType PyArray_PyLongDType
+#define PyArray_UInt16DType PyArray_PyLongDType
+#define PyArray_Int32DType PyArray_PyLongDType
+#define PyArray_UInt32DType PyArray_PyLongDType
+#define PyArray_Int64DType PyArray_PyLongDType
+#define PyArray_UInt64DType PyArray_PyLongDType
 #define PyArray_PyLongDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("int"))
 #define PyArray_PyFloatDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("float"))
+#define PyArray_HalfDType PyArray_PyFloatDType
+#define PyArray_FloatDType PyArray_PyFloatDType
 #define PyArray_StringDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("str"))
 #define PyArray_IntpDType PyArray_PyLongDType
 #define PyArray_UIntpDType PyArray_PyLongDType
 #define PyArray_BytesDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("bytes"))
 #define PyArray_UnicodeDType PyArray_StringDType
 #define PyArray_ObjectDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("object"))
+#define PyArray_VoidDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("object"))
 #define PyArray_PyComplexDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("complex"))
+#define PyArray_LongDoubleDType PyArray_PyFloatDType
 #define PyArray_ComplexAbstractDType PyArray_PyComplexDType
 #define PyArray_DefaultIntDType PyArray_PyLongDType
+#define PyArray_TimedeltaDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("object"))
+#define PyArray_IntAbstractDType PyArray_PyLongDType
+#define PyArray_FloatAbstractDType PyArray_PyFloatDType
 #endif
 
 #ifndef NPY_BEGIN_THREADS_DEF
