@@ -39,7 +39,7 @@ Canonical status lives in [docs/spec/STATUS.md](docs/spec/STATUS.md) (README and
 - Stdlib coverage gate status: top-level + submodule CPython union coverage (3.12/3.13/3.14) is enforced by `tools/check_stdlib_intrinsics.py` against `tools/stdlib_module_union.py` (missing names, package-kind mismatches, and duplicate mappings are hard failures).
 - Stdlib ratchet gate status: `tools/check_stdlib_intrinsics.py` enforces intrinsic-partial budget via `tools/stdlib_intrinsics_ratchet.json`.
 - Stdlib lowering audit snapshot: `intrinsic-backed=177`, `intrinsic-partial=696`, `probe-only=0`, `python-only=0`; bootstrap/critical strict-import gates are still active blockers during ongoing lowering burn-down.
-- Stdlib namespace hygiene: non-CPython top-level extras are constrained to `_intrinsics` and `test`; Molt-specific DB helpers now live in `moltlib.molt_db` (with `molt.molt_db` compatibility shim).
+- Stdlib namespace hygiene: non-CPython top-level extras are constrained to `_intrinsics` and `test`; Molt-specific helpers now live under `moltlib` (`moltlib.molt_db`, `moltlib.concurrency`, `moltlib.net`, `moltlib.asgi`) with `molt.molt_db`, `molt.net`, `molt.concurrency`, and `molt.asgi` retained as compatibility shims.
 - Stdlib union maintenance guide: [docs/spec/areas/compat/surfaces/stdlib/stdlib_union_baseline.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_union_baseline.md).
 - Stdlib execution plan: [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md).
 
@@ -320,21 +320,21 @@ export MOLT_WORKER_CMD="molt-worker --stdio --exports demo/molt_worker_app/molt_
 
 ## ASGI shim (CPython)
 
-Wrap a `molt.net` handler into an ASGI app for local integration testing:
+Wrap a `moltlib.net` handler into an ASGI app for local integration testing:
 
 ```python
-from molt.asgi import asgi_adapter
-from molt.net import Request, Response
+from moltlib.asgi import asgi_adapter
+from moltlib.net import Request, Response
 
 
 def handler(request: Request) -> Response:
-    return Response.text("ok")
+    return Response(body="ok")
 
 
 app = asgi_adapter(handler)
 ```
 
-The adapter is capability-gated and calls `capabilities.require("net")` per request.
+The adapter is capability-gated and calls `capabilities.require("net")` per request. `molt.asgi` and `molt.net` remain available as compatibility shims for existing imports.
 
 ## Documentation & Architecture
 

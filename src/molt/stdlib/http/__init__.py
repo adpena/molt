@@ -91,7 +91,9 @@ class HTTPStatus(IntEnum):
 def __getattr__(name: str):
     if name in {"client", "cookiejar", "cookies", "server"}:
         module = importlib.import_module(f"{__name__}.{name}")
-        globals()[name] = module
+        import sys as _http_sys
+        _http_mod_dict = getattr(_http_sys.modules.get(__name__), "__dict__", None) or globals()
+        _http_mod_dict[name] = module
         return module
     raise AttributeError(name)
 

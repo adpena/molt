@@ -55,7 +55,9 @@ def __getattr__(name):
                 raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
         obj = getattr(_resources_abc, name)
         warnings._deprecated(f"{__name__}.{name}", remove=(3, 14))
-        globals()[name] = obj
+        import sys as _abc_sys
+        _abc_mod_dict = getattr(_abc_sys.modules.get(__name__), "__dict__", None) or globals()
+        _abc_mod_dict[name] = obj
         return obj
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
