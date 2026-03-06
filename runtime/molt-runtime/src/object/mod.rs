@@ -1622,7 +1622,9 @@ mod tests {
 
     #[test]
     fn object_pool_reuses_object_allocations() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         crate::with_gil_entry!(_py, {
             let total_size = std::mem::size_of::<MoltHeader>() + 16;
             drain_pool(_py, total_size);
@@ -1637,7 +1639,9 @@ mod tests {
 
     #[test]
     fn non_object_allocations_do_not_fill_pool() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         crate::with_gil_entry!(_py, {
             let total_size = std::mem::size_of::<MoltHeader>() + 16;
             drain_pool(_py, total_size);

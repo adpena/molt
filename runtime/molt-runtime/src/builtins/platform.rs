@@ -5810,13 +5810,25 @@ fn importlib_module_should_retry_empty(
     // (for example they expose __all__) while still missing required runtime
     // symbols. Treat these as retryable so we re-enter spec loading.
     if module_name == "types" {
-        static MODULE_TYPE_NAME: AtomicU64 = AtomicU64::new(0);
-        let module_type_name = intern_static_name(_py, &MODULE_TYPE_NAME, b"ModuleType");
+        // This helper runs across explicit `molt_runtime_shutdown()` cycles in
+        // tests and bootstrap paths, so avoid process-global interned-name
+        // caches whose bits outlive a runtime generation.
+        let module_type_name_bits = {
+            let ptr = alloc_string(_py, b"ModuleType");
+            if ptr.is_null() {
+                0
+            } else {
+                MoltObject::from_ptr(ptr).bits()
+            }
+        };
         let has_module_type = if let Some(dict_ptr) = importlib_module_dict_ptr(module_bits) {
-            importlib_dict_get_string_key_bits(_py, dict_ptr, module_type_name)?.is_some()
+            importlib_dict_get_string_key_bits(_py, dict_ptr, module_type_name_bits)?.is_some()
         } else {
             false
         };
+        if module_type_name_bits != 0 {
+            dec_ref_bits(_py, module_type_name_bits);
+        }
         if !has_module_type {
             return Ok(true);
         }
