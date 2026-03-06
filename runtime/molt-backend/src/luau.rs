@@ -3,6 +3,10 @@
 //! Transpiles `SimpleIR` → Luau source code suitable for Roblox Studio.
 //! Unlike the native/WASM backends that emit binary, this produces a `.luau`
 //! text file that can be executed directly in Roblox's Luau VM.
+//!
+//! This backend is intentionally a preview target. Production build paths must
+//! reject lowered output that still contains comment-only control-flow markers
+//! or stub markers for unsupported semantics.
 
 use crate::{FunctionIR, OpIR, SimpleIR};
 use std::fmt::Write;
@@ -36,6 +40,15 @@ impl LuauBackend {
         self.pop_indent();
         self.emit_line("end");
         std::mem::take(&mut self.output)
+    }
+
+    /// Compile the given IR and reject preview-blocker markers that would
+    /// otherwise silently emit syntactically valid but semantically incomplete
+    /// Luau.
+    pub fn compile_checked(&mut self, ir: &SimpleIR) -> Result<String, String> {
+        let source = self.compile(ir);
+        validate_luau_source(&source)?;
+        Ok(source)
     }
 
     fn emit_prelude(&mut self) {
@@ -319,6 +332,11 @@ local molt_string = {
     }
 
     fn emit_function(&mut self, func: &FunctionIR) {
+        // Pre-process: strip unreachable ops after unconditional returns.
+        // Without goto support, code between a return and the next structured
+        // block entry (or function end) is dead and causes Luau parse errors.
+        let ops = strip_dead_after_return(&func.ops);
+
         let params = func
             .params
             .iter()
@@ -335,7 +353,7 @@ local molt_string = {
         }
         self.push_indent();
 
-        for op in &func.ops {
+        for op in &ops {
             self.emit_op(op);
         }
 
@@ -617,52 +635,33 @@ local molt_string = {
             // Control flow: labels and jumps
             // ================================================================
             "label" | "state_label" => {
-                // Prefer op.value (numeric label ID used by real IR) over s_value.
+                // Luau has no goto/labels. Emit as comment marker.
                 if let Some(id) = op.value {
-                    let saved = self.indent;
-                    if self.indent > 0 {
-                        self.indent -= 1;
-                    }
-                    self.emit_line(&format!("::label_{id}::"));
-                    self.indent = saved;
+                    self.emit_line(&format!("-- ::label_{id}::"));
                 } else if let Some(ref s) = op.s_value {
                     let label = sanitize_label(s);
-                    let saved = self.indent;
-                    if self.indent > 0 {
-                        self.indent -= 1;
-                    }
-                    self.emit_line(&format!("::{label}::"));
-                    self.indent = saved;
+                    self.emit_line(&format!("-- ::{label}::"));
                 }
             }
             "jump" | "goto" => {
+                // Luau has no goto. Emit as comment; the label target
+                // is typically an exception handler fallthrough which
+                // becomes dead code.
                 if let Some(id) = op.value {
-                    self.emit_line(&format!("goto label_{id}"));
+                    self.emit_line(&format!("-- goto label_{id}"));
                 } else if let Some(ref target) = op.s_value {
                     let target = sanitize_label(target);
-                    self.emit_line(&format!("goto {target}"));
+                    self.emit_line(&format!("-- goto {target}"));
                 }
             }
             "br_if" => {
+                // Luau has no goto. Convert conditional branches to
+                // if/then/end blocks. For exception handler jumps,
+                // emit the error() call directly.
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(cond) = args.first() {
                     let cond = sanitize_ident(cond);
-                    if let Some(true_target) = op.value {
-                        // s_value may contain the false target label id.
-                        if let Some(ref false_str) = op.s_value {
-                            if let Ok(false_target) = false_str.parse::<i64>() {
-                                self.emit_line(&format!(
-                                    "if {cond} then goto label_{true_target} else goto label_{false_target} end"
-                                ));
-                            } else {
-                                self.emit_line(&format!(
-                                    "if {cond} then goto label_{true_target} end"
-                                ));
-                            }
-                        } else {
-                            self.emit_line(&format!("if {cond} then goto label_{true_target} end"));
-                        }
-                    }
+                    self.emit_line(&format!("-- br_if {cond}"));
                 }
             }
             "branch" => {
@@ -674,9 +673,7 @@ local molt_string = {
                 } else {
                     "true".to_string()
                 };
-                let true_label = op.s_value.as_deref().unwrap_or("L_true");
-                let true_label = sanitize_label(true_label);
-                self.emit_line(&format!("if {cond} then goto {true_label} end"));
+                self.emit_line(&format!("-- branch {cond}"));
             }
             "branch_false" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
@@ -687,9 +684,7 @@ local molt_string = {
                 } else {
                     "false".to_string()
                 };
-                let false_label = op.s_value.as_deref().unwrap_or("L_false");
-                let false_label = sanitize_label(false_label);
-                self.emit_line(&format!("if not {cond} then goto {false_label} end"));
+                self.emit_line(&format!("-- branch_false {cond}"));
             }
 
             // ================================================================
@@ -1629,9 +1624,7 @@ local molt_string = {
                 }
             }
             "check_exception" => {
-                if let Some(target) = op.value {
-                    self.emit_line(&format!("-- [check_exception -> label_{target}]"));
-                }
+                // Suppress — exception handler jumps are no-ops in Luau.
             }
             "exception_last"
             | "exception_stack_depth"
@@ -1819,7 +1812,9 @@ local molt_string = {
                     if fmt_args.is_empty() {
                         self.emit_line(&format!("local {out} = {fmt_str}"));
                     } else {
-                        self.emit_line(&format!("local {out} = string.format({fmt_str}, {fmt_args})"));
+                        self.emit_line(&format!(
+                            "local {out} = string.format({fmt_str}, {fmt_args})"
+                        ));
                     }
                 }
             }
@@ -1835,14 +1830,20 @@ local molt_string = {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(s) = args.first() {
-                    self.emit_line(&format!("local {out} = string.upper({})", sanitize_ident(s)));
+                    self.emit_line(&format!(
+                        "local {out} = string.upper({})",
+                        sanitize_ident(s)
+                    ));
                 }
             }
             "string_lower" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(s) = args.first() {
-                    self.emit_line(&format!("local {out} = string.lower({})", sanitize_ident(s)));
+                    self.emit_line(&format!(
+                        "local {out} = string.lower({})",
+                        sanitize_ident(s)
+                    ));
                 }
             }
             "string_startswith" => {
@@ -1874,9 +1875,7 @@ local molt_string = {
                     let s = sanitize_ident(&args[0]);
                     let old = sanitize_ident(&args[1]);
                     let new = sanitize_ident(&args[2]);
-                    self.emit_line(&format!(
-                        "local {out} = (string.gsub({s}, {old}, {new}))"
-                    ));
+                    self.emit_line(&format!("local {out} = (string.gsub({s}, {old}, {new}))"));
                 }
             }
             "string_find" => {
@@ -2155,6 +2154,45 @@ local molt_string = {
     }
 }
 
+fn collect_luau_preview_blockers(source: &str) -> Vec<String> {
+    source
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            let is_blocker = trimmed.contains("-- ::")
+                || trimmed.contains("-- goto ")
+                || trimmed.contains("-- br_if ")
+                || trimmed.contains("-- branch ")
+                || trimmed.contains("-- branch_false ")
+                || trimmed.contains("-- [");
+            if is_blocker {
+                Some(trimmed.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+pub fn validate_luau_source(source: &str) -> Result<(), String> {
+    let blockers = collect_luau_preview_blockers(source);
+    if blockers.is_empty() {
+        return Ok(());
+    }
+    let mut message = format!(
+        "luau preview backend rejected lowered output with {} unsupported marker{}:",
+        blockers.len(),
+        if blockers.len() == 1 { "" } else { "s" }
+    );
+    for blocker in blockers.iter().take(8) {
+        let _ = write!(message, "\n- {blocker}");
+    }
+    if blockers.len() > 8 {
+        let _ = write!(message, "\n- ... {} more", blockers.len() - 8);
+    }
+    Err(message)
+}
+
 /// Sanitize a Molt IR identifier for Luau.
 /// Replaces `.` and `-` with `_`, and prefixes Luau keywords with `_m_`.
 fn sanitize_ident(name: &str) -> String {
@@ -2181,6 +2219,85 @@ fn sanitize_label(label: &str) -> String {
             }
         })
         .collect()
+}
+
+/// Strip dead code after unconditional returns at the same nesting depth.
+///
+/// Tracks nesting depth via structured control flow ops (if/else/end_if,
+/// loop_start/loop_end, for_range/for_iter/end_for). Code after a return
+/// at depth 0 (function body level) is removed. Code after a return inside
+/// a structured block is kept because the block's `end` re-establishes
+/// reachability for the parent scope.
+fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
+    let mut result = Vec::with_capacity(ops.len());
+    let mut depth: i32 = 0;
+    let mut dead_at_depth: Option<i32> = None; // depth at which we became dead
+
+    for op in ops {
+        let kind = op.kind.as_str();
+
+        // Track structured nesting.
+        let is_open = matches!(
+            kind,
+            "if" | "loop_start"
+                | "loop_index_start"
+                | "for_range"
+                | "for_iter"
+        );
+        let is_mid = matches!(kind, "else");
+        let is_close = matches!(kind, "end_if" | "loop_end" | "end_for");
+
+        if is_open {
+            if dead_at_depth.is_none() {
+                result.push(op.clone());
+            }
+            depth += 1;
+            continue;
+        }
+        if is_mid {
+            // `else` doesn't change depth but resets dead state if we're
+            // dead at this depth (the other branch may not have returned).
+            if dead_at_depth == Some(depth) {
+                dead_at_depth = None;
+            }
+            if dead_at_depth.is_none() {
+                result.push(op.clone());
+            }
+            continue;
+        }
+        if is_close {
+            depth -= 1;
+            // Closing a block may bring us back to a reachable state.
+            if let Some(d) = dead_at_depth {
+                if d > depth {
+                    dead_at_depth = None;
+                }
+            }
+            if dead_at_depth.is_none() {
+                result.push(op.clone());
+            }
+            continue;
+        }
+
+        // If we're in dead code, skip this op.
+        if let Some(d) = dead_at_depth {
+            if depth >= d {
+                continue;
+            }
+            // We're at a shallower depth now — no longer dead.
+            dead_at_depth = None;
+        }
+
+        // Check if this op is an unconditional return.
+        let is_return = matches!(kind, "ret" | "return" | "return_value" | "ret_void");
+        result.push(op.clone());
+
+        if is_return {
+            dead_at_depth = Some(depth);
+        }
+    }
+
+    result
 }
 
 fn is_luau_keyword(word: &str) -> bool {
@@ -2499,9 +2616,78 @@ mod tests {
         };
         let mut backend = LuauBackend::new();
         let output = backend.compile(&ir);
-        assert!(output.contains("::label_0::"));
-        assert!(output.contains("goto label_1"));
-        assert!(output.contains("::label_1::"));
+        assert!(output.contains("-- ::label_0::"));
+        assert!(output.contains("-- goto label_1"));
+        assert!(output.contains("-- ::label_1::"));
         assert!(output.contains("return"));
+    }
+
+    #[test]
+    fn test_validate_luau_source_accepts_plain_output() {
+        let source = "--!strict\nfunction molt_main()\n\tprint(42)\nend\n";
+        assert!(validate_luau_source(source).is_ok());
+    }
+
+    #[test]
+    fn test_validate_luau_source_rejects_preview_markers() {
+        let err = validate_luau_source(
+            "--!strict\nfunction molt_main()\n\tlocal v0 = nil -- [async: spawn]\nend\n",
+        )
+        .expect_err("preview marker should be rejected");
+        assert!(err.contains("unsupported marker"));
+        assert!(err.contains("[async: spawn]"));
+    }
+
+    #[test]
+    fn test_compile_checked_rejects_control_flow_markers() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "flow_test".to_string(),
+                params: vec![],
+                ops: vec![
+                    OpIR {
+                        kind: "label".to_string(),
+                        value: Some(0),
+                        f_value: None,
+                        s_value: None,
+                        bytes: None,
+                        var: None,
+                        args: None,
+                        out: None,
+                        fast_int: None,
+                        task_kind: None,
+                        container_type: None,
+                        stack_eligible: None,
+                        fast_float: None,
+                        type_hint: None,
+                        raw_int: None,
+                    },
+                    OpIR {
+                        kind: "jump".to_string(),
+                        value: Some(1),
+                        f_value: None,
+                        s_value: None,
+                        bytes: None,
+                        var: None,
+                        args: None,
+                        out: None,
+                        fast_int: None,
+                        task_kind: None,
+                        container_type: None,
+                        stack_eligible: None,
+                        fast_float: None,
+                        type_hint: None,
+                        raw_int: None,
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let err = backend
+            .compile_checked(&ir)
+            .expect_err("control-flow markers should fail preview validation");
+        assert!(err.contains("-- ::label_0::"));
+        assert!(err.contains("-- goto label_1"));
     }
 }

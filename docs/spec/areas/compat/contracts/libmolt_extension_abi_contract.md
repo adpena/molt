@@ -51,6 +51,11 @@ for C/C++ extensions recompiled against Molt.
   - top-level NumPy forwarding/config bridge headers such as
     `arrayobject.h`, `_numpyconfig.h`, `config.h`, and
     `npy_cpu_dispatch_config.h`
+  - explicitly shipped public overlay families such as
+    `_public_dtype_api_table.h`, `halffloat.h`, `npy_2_complexcompat.h`,
+    `npy_3kcompat.h`, `npy_endian.h`, `npy_no_deprecated_api.h`,
+    `npy_os.h`, `numpy/random/*`, and the compile-focused `templ_common.h`
+    bridge for generated-source probes
 - Contract:
   - unblock real-world ecosystem builds such as NumPy and pandas source trees
   - provide source-shape compatibility for selected public include lanes
@@ -79,6 +84,8 @@ for C/C++ extensions recompiled against Molt.
   `extension_manifest.json`.
 - `molt extension scan` must evaluate support against an explicit, curated list
   of contract headers rather than an unbounded recursive header crawl.
+- Public overlay growth must stay compile-validated with representative source
+  probes; adding a header to the contract does not imply runtime/ABI parity.
 - Tooling must report the distinction between:
   - stable ABI headers
   - source-compat headers
