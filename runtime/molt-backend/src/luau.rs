@@ -35,17 +35,24 @@ impl LuauBackend {
         // In Luau, `local function f()` is not hoisted, so callees
         // must be defined before callers.  Forward declarations solve
         // this: `local f; ... f = function(...) ... end`.
-        if ir.functions.len() > 1 {
+        // Filter out dead annotation functions and unused runtime helpers.
+        let emit_funcs: Vec<&FunctionIR> = ir
+            .functions
+            .iter()
+            .filter(|f| !f.name.contains("__annotate__"))
+            .collect();
+
+        if emit_funcs.len() > 1 {
             self.uses_forward_decls = true;
             self.emit_line("-- Forward declarations");
-            for func in &ir.functions {
+            for func in &emit_funcs {
                 let name = sanitize_ident(&func.name);
                 self.emit_line(&format!("local {name}"));
             }
             self.output.push('\n');
         }
 
-        for func in &ir.functions {
+        for func in &emit_funcs {
             self.emit_function_body(func);
             self.output.push('\n');
         }
