@@ -31,7 +31,7 @@ Rules:
 
 ## 3. Core API Surface (Python)
 ```python
-from molt import net
+from moltlib import net
 
 async def handler(req):
     async for chunk in req.body:

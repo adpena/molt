@@ -5,6 +5,8 @@
 **Scope:** `libmolt` C-API contract and symbol coverage map.
 
 ## Canonical C-API Surface Files
+- libmolt extension ABI/header contract:
+  - `docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md`
 - `libmolt` C-API v0 contract:
   - `docs/spec/areas/compat/surfaces/c_api/libmolt_c_api_surface.md`
 - C-API symbol matrix:
