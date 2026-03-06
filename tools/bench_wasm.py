@@ -67,6 +67,7 @@ BENCHMARKS = [
     "tests/benchmarks/bench_str_endswith.py",
     "tests/benchmarks/bench_memoryview_tobytes.py",
     "tests/benchmarks/bench_parse_msgpack.py",
+    "tests/benchmarks/bench_procedural_gen.py",
 ]
 
 SMOKE_BENCHMARKS = [
