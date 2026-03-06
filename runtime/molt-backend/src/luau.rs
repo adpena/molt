@@ -98,6 +98,222 @@ end
 local math_floor = math.floor
 local bit = bit32 or bit
 
+-- Python enumerate(iterable) -> {{index, value}, ...}
+local function molt_enumerate(t: {any}, start: number?): {{any}}
+	local result = {}
+	local s = start or 0
+	for i, v in ipairs(t) do
+		table.insert(result, {s + i - 1, v})
+	end
+	return result
+end
+
+-- Python zip(a, b) -> {{a[i], b[i]}, ...}
+local function molt_zip(a: {any}, b: {any}): {{any}}
+	local result = {}
+	local n = math.min(#a, #b)
+	for i = 1, n do
+		table.insert(result, {a[i], b[i]})
+	end
+	return result
+end
+
+-- Python sorted(iterable)
+local function molt_sorted(t: {any}): {any}
+	local copy = table.clone(t)
+	table.sort(copy)
+	return copy
+end
+
+-- Python reversed(iterable)
+local function molt_reversed(t: {any}): {any}
+	local result = {}
+	for i = #t, 1, -1 do
+		table.insert(result, t[i])
+	end
+	return result
+end
+
+-- Python sum(iterable, start=0)
+local function molt_sum(t: {number}, start: number?): number
+	local s = start or 0
+	for _, v in ipairs(t) do s = s + v end
+	return s
+end
+
+-- Python any(iterable)
+local function molt_any(t: {any}): boolean
+	for _, v in ipairs(t) do
+		if v then return true end
+	end
+	return false
+end
+
+-- Python all(iterable)
+local function molt_all(t: {any}): boolean
+	for _, v in ipairs(t) do
+		if not v then return false end
+	end
+	return true
+end
+
+-- Python map(func, iterable)
+local function molt_map(func: (any) -> any, t: {any}): {any}
+	local result = {}
+	for _, v in ipairs(t) do
+		table.insert(result, func(v))
+	end
+	return result
+end
+
+-- Python filter(func, iterable)
+local function molt_filter(func: ((any) -> boolean)?, t: {any}): {any}
+	local result = {}
+	for _, v in ipairs(t) do
+		if func then
+			if func(v) then table.insert(result, v) end
+		elseif v then
+			table.insert(result, v)
+		end
+	end
+	return result
+end
+
+-- Python dict.keys() / dict.values() / dict.items()
+local function molt_dict_keys(d: {[any]: any}): {any}
+	local result = {}
+	for k in pairs(d) do table.insert(result, k) end
+	return result
+end
+
+local function molt_dict_values(d: {[any]: any}): {any}
+	local result = {}
+	for _, v in pairs(d) do table.insert(result, v) end
+	return result
+end
+
+local function molt_dict_items(d: {[any]: any}): {{any}}
+	local result = {}
+	for k, v in pairs(d) do table.insert(result, {k, v}) end
+	return result
+end
+
+-- math module bridge
+local molt_math = {
+	floor = math.floor,
+	ceil = math.ceil,
+	sqrt = math.sqrt,
+	abs = math.abs,
+	sin = math.sin,
+	cos = math.cos,
+	tan = math.tan,
+	asin = math.asin,
+	acos = math.acos,
+	atan = math.atan,
+	atan2 = math.atan2,
+	exp = math.exp,
+	log = math.log,
+	log10 = math.log,
+	pi = math.pi,
+	e = 2.718281828459045,
+	inf = math.huge,
+	nan = 0/0,
+}
+
+-- Minimal JSON serializer for Luau (Python json.dumps equivalent)
+local molt_json_dumps
+do
+	local function serialize(val: any, depth: number): string
+		if depth > 50 then return '"[max depth]"' end
+		local t = type(val)
+		if t == "nil" then
+			return "null"
+		elseif t == "boolean" then
+			return val and "true" or "false"
+		elseif t == "number" then
+			if val ~= val then return "null" end
+			if val == math.huge then return "1e308" end
+			if val == -math.huge then return "-1e308" end
+			if val == math_floor(val) and math.abs(val) < 1e15 then
+				return string.format("%d", val)
+			end
+			return tostring(val)
+		elseif t == "string" then
+			local escaped = val:gsub('[\\"]', function(c) return "\\" .. c end)
+			escaped = escaped:gsub("\n", "\\n"):gsub("\r", "\\r"):gsub("\t", "\\t")
+			return '"' .. escaped .. '"'
+		elseif t == "table" then
+			-- Detect array vs object: array if sequential integer keys from 1
+			local is_array = true
+			local n = #val
+			if n == 0 then
+				-- Check if it has any keys at all
+				if next(val) ~= nil then is_array = false end
+			else
+				for k in pairs(val) do
+					if type(k) ~= "number" or k < 1 or k > n or k ~= math_floor(k) then
+						is_array = false
+						break
+					end
+				end
+			end
+			local parts = {}
+			if is_array then
+				for i = 1, n do
+					table.insert(parts, serialize(val[i], depth + 1))
+				end
+				return "[" .. table.concat(parts, ", ") .. "]"
+			else
+				for k, v in pairs(val) do
+					local ks = type(k) == "string" and k or tostring(k)
+					local escaped = ks:gsub('[\\"]', function(c) return "\\" .. c end)
+					table.insert(parts, '"' .. escaped .. '": ' .. serialize(v, depth + 1))
+				end
+				return "{" .. table.concat(parts, ", ") .. "}"
+			end
+		end
+		return '"' .. tostring(val) .. '"'
+	end
+	molt_json_dumps = function(val: any): string
+		return serialize(val, 0)
+	end
+end
+
+-- json module bridge
+local json = {
+	dumps = molt_json_dumps,
+}
+
+-- String method helpers (for call_method on strings)
+local molt_string = {
+	format = string.format,
+	join = function(sep: string, t: {string}): string
+		return table.concat(t, sep)
+	end,
+	split = function(s: string, sep: string?): {string}
+		local result = {}
+		local pattern = sep and sep or "%s+"
+		if sep then
+			local pos = 1
+			while pos <= #s do
+				local i, j = string.find(s, pattern, pos, true)
+				if i then
+					table.insert(result, string.sub(s, pos, i - 1))
+					pos = j + 1
+				else
+					table.insert(result, string.sub(s, pos))
+					break
+				end
+			end
+		else
+			for w in string.gmatch(s, "%S+") do
+				table.insert(result, w)
+			end
+		end
+		return result
+	end,
+}
+
 "#;
         self.output.push_str(prelude);
     }
@@ -585,6 +801,16 @@ local bit = bit32 or bit
                         "min" => format!("math.min({call_args})"),
                         "max" => format!("math.max({call_args})"),
                         "round" => format!("math.round({call_args})"),
+                        "enumerate" | "molt_enumerate" => format!("molt_enumerate({call_args})"),
+                        "zip" | "molt_zip" => format!("molt_zip({call_args})"),
+                        "sorted" | "molt_sorted" => format!("molt_sorted({call_args})"),
+                        "reversed" | "molt_reversed" => format!("molt_reversed({call_args})"),
+                        "sum" | "molt_sum" => format!("molt_sum({call_args})"),
+                        "any" | "molt_any" => format!("molt_any({call_args})"),
+                        "all" | "molt_all" => format!("molt_all({call_args})"),
+                        "map" | "molt_map" => format!("molt_map({call_args})"),
+                        "filter" | "molt_filter" => format!("molt_filter({call_args})"),
+                        "print" => format!("print({call_args})"),
                         _ => format!("{func_name}({call_args})"),
                     };
                     self.emit_line(&format!("local {out} = {mapped}"));
@@ -1281,7 +1507,18 @@ local bit = bit32 or bit
             | "module_import_star" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = nil -- [module: {}]", op.kind));
+                    // Map known Python modules to Luau bridge tables.
+                    let module_name = op.s_value.as_deref().unwrap_or("");
+                    let mapped = match module_name {
+                        "math" => "molt_math",
+                        "json" => "json",
+                        _ => "",
+                    };
+                    if !mapped.is_empty() {
+                        self.emit_line(&format!("local {out} = {mapped}"));
+                    } else {
+                        self.emit_line(&format!("local {out} = nil -- [module: {}]", op.kind));
+                    }
                 } else {
                     self.emit_line(&format!("-- [module: {}]", op.kind));
                 }

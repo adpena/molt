@@ -204,6 +204,26 @@ def test_allowlisted_module_attr_call_uses_direct_symbol_when_known() -> None:
     )
 
 
+def test_moltlib_concurrency_attr_call_uses_direct_symbol_when_known() -> None:
+    gen = SimpleTIRGenerator(
+        known_modules={"__main__", "moltlib.concurrency"},
+        known_func_defaults={
+            "moltlib.concurrency": {
+                "channel": {"params": 1, "kwonly": 0, "defaults": []}
+            }
+        },
+    )
+    gen.visit(ast.parse("import moltlib.concurrency as mc\nmc.channel(1)\n"))
+    ir = gen.to_json()
+    main_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
+    )
+    assert any(
+        op.get("kind") == "call" and op.get("s_value") == "moltlib_concurrency__channel"
+        for op in main_ops
+    )
+
+
 def test_module_chunking_resets_module_cache_temporaries_per_chunk() -> None:
     source = """
 import math

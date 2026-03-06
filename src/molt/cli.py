@@ -733,6 +733,90 @@ def _default_molt_c_api_version(molt_root: Path) -> str:
     return match.group(1)
 
 
+def _extension_header_contract() -> dict[str, Any]:
+    stable_abi_headers = ("molt/molt.h",)
+    cpython_source_compat_headers = (
+        "Python.h",
+        "molt/Python.h",
+        "datetime.h",
+        "frameobject.h",
+        "pymem.h",
+        "structmember.h",
+    )
+    numpy_source_compat_headers = (
+        "arrayobject.h",
+        "_numpyconfig.h",
+        "config.h",
+        "npy_cpu_dispatch_config.h",
+        "numpy/__multiarray_api.h",
+        "numpy/__ufunc_api.h",
+        "numpy/arrayobject.h",
+        "numpy/arrayscalars.h",
+        "numpy/dtype_api.h",
+        "numpy/ndarrayobject.h",
+        "numpy/ndarraytypes.h",
+        "numpy/npy_2_compat.h",
+        "numpy/npy_common.h",
+        "numpy/npy_cpu.h",
+        "numpy/npy_math.h",
+        "numpy/numpyconfig.h",
+        "numpy/ufuncobject.h",
+        "numpy/utils.h",
+    )
+    source_compat_headers = (
+        *cpython_source_compat_headers,
+        *numpy_source_compat_headers,
+    )
+    return {
+        "version": "v0",
+        "include_root": "include",
+        "stable_abi_headers": list(stable_abi_headers),
+        "source_compat_headers": list(source_compat_headers),
+        "header_groups": [
+            {"name": "stable_abi", "headers": list(stable_abi_headers)},
+            {
+                "name": "cpython_source_compat",
+                "headers": list(cpython_source_compat_headers),
+            },
+            {
+                "name": "numpy_source_compat",
+                "headers": list(numpy_source_compat_headers),
+            },
+        ],
+        "excluded_private_headers": [
+            "numpy/arraytypes.h",
+            "numpy/_core/src/**",
+            "numpy/**/generated/**",
+        ],
+        "notes": [
+            "Only molt/molt.h is the stable libmolt ABI header.",
+            "Python.h, datetime.h, structmember.h, frameobject.h, pymem.h, "
+            "arrayobject.h, and numpy/* are bounded source-compat overlays.",
+            "Private/generated third-party build headers are outside the libmolt "
+            "contract and must not be treated as stable ABI.",
+        ],
+    }
+
+
+def _extension_header_contract_paths(
+    molt_root: Path,
+) -> tuple[dict[str, Any], list[Path], list[str]]:
+    contract = _extension_header_contract()
+    include_root = molt_root / str(contract["include_root"])
+    consulted_paths: list[Path] = []
+    missing_headers: list[str] = []
+    for rel_path in [
+        *contract["stable_abi_headers"],
+        *contract["source_compat_headers"],
+    ]:
+        header_path = include_root / str(rel_path)
+        if header_path.exists():
+            consulted_paths.append(header_path)
+        else:
+            missing_headers.append(str(rel_path))
+    return contract, consulted_paths, missing_headers
+
+
 def _wheel_filename_tags(path: Path) -> tuple[str, str, str] | None:
     if path.suffix != ".whl":
         return None
@@ -12108,31 +12192,46 @@ def _scan_extension_source_unit(
 
 def _load_supported_py_c_api_surface(
     molt_root: Path,
-) -> tuple[set[str], Path, str | None]:
+) -> tuple[set[str], Path, str | None, dict[str, Any], list[str], list[str]]:
     header_path = molt_root / "include" / "molt" / "Python.h"
     supported_tokens: set[str] = set()
-    try:
-        header_text = header_path.read_text()
-    except OSError as exc:
-        return set(), header_path, str(exc)
-    supported_tokens.update(_extract_py_c_api_tokens(header_text))
-    datetime_header = molt_root / "include" / "datetime.h"
-    if datetime_header.exists():
+    contract, consulted_paths, missing_headers = _extension_header_contract_paths(
+        molt_root
+    )
+    if not header_path.exists():
+        return (
+            set(),
+            header_path,
+            f"No such file: {header_path}",
+            contract,
+            [],
+            missing_headers,
+        )
+    consulted_headers: list[str] = []
+    for contract_header in consulted_paths:
         try:
-            datetime_text = datetime_header.read_text()
-        except OSError:
-            datetime_text = ""
-        if datetime_text:
-            supported_tokens.update(_extract_py_c_api_tokens(datetime_text))
-    numpy_include_root = molt_root / "include" / "numpy"
-    if numpy_include_root.exists():
-        for numpy_header in sorted(numpy_include_root.rglob("*.h")):
-            try:
-                numpy_text = numpy_header.read_text()
-            except OSError:
-                continue
-            supported_tokens.update(_extract_py_c_api_tokens(numpy_text))
-    return supported_tokens, header_path, None
+            header_text = contract_header.read_text()
+        except OSError as exc:
+            return (
+                set(),
+                header_path,
+                f"Failed to read header {contract_header}: {exc}",
+                contract,
+                consulted_headers,
+                missing_headers,
+            )
+        consulted_headers.append(
+            str(contract_header.relative_to(molt_root / "include")).replace("\\", "/")
+        )
+        supported_tokens.update(_extract_py_c_api_tokens(header_text))
+    return (
+        supported_tokens,
+        header_path,
+        None,
+        contract,
+        consulted_headers,
+        missing_headers,
+    )
 
 
 def _is_extension_scan_c_like_path(path: Path) -> bool:
@@ -12388,9 +12487,14 @@ def extension_scan(
     if root_error is not None:
         return root_error
 
-    supported_surface, header_path, header_error = _load_supported_py_c_api_surface(
-        molt_root
-    )
+    (
+        supported_surface,
+        header_path,
+        header_error,
+        header_contract,
+        consulted_headers,
+        missing_contract_headers,
+    ) = _load_supported_py_c_api_surface(molt_root)
     if header_error is not None:
         return _fail(
             f"Failed to read libmolt Python.h surface ({header_path}): {header_error}",
@@ -12441,6 +12545,11 @@ def extension_scan(
         warnings.append(
             "Unsupported Py* C-API symbols detected (run with --fail-on-missing to gate)."
         )
+    if missing_contract_headers:
+        warnings.append(
+            "Extension header contract is missing shipped headers: "
+            + ", ".join(missing_contract_headers)
+        )
     status = "ok"
     if fail_on_missing and missing_sorted:
         status = "error"
@@ -12462,6 +12571,10 @@ def extension_scan(
             data={
                 "project": str(project_root),
                 "header": str(header_path),
+                "header_contract": header_contract,
+                "headers_consulted": consulted_headers,
+                "headers_consulted_count": len(consulted_headers),
+                "missing_contract_headers": missing_contract_headers,
                 "source_count": len(source_units),
                 "chars_scanned": chars_scanned,
                 "required_symbol_count": len(required_sorted),
@@ -12484,6 +12597,13 @@ def extension_scan(
         _emit_json(payload, json_output=True)
     else:
         print(f"Extension C-API scan header: {header_path}")
+        print(
+            "Header contract: "
+            f"{header_contract['version']} "
+            f"({len(header_contract['stable_abi_headers'])} stable ABI, "
+            f"{len(header_contract['source_compat_headers'])} source-compat; "
+            f"{len(consulted_headers)} consulted)"
+        )
         print(f"Scanned source files: {len(source_units)}")
         print(f"Scanned source characters: {chars_scanned}")
         print(f"Required Py* symbols: {len(required_sorted)}")
@@ -12674,6 +12794,7 @@ def extension_build(
     root_error = _require_molt_root(molt_root, json_output, "extension-build")
     if root_error is not None:
         return root_error
+    header_contract = _extension_header_contract()
 
     lock_error = _check_lockfiles(
         molt_root,
@@ -12921,6 +13042,7 @@ def extension_build(
             "deterministic": deterministic,
             "determinism": determinism_mode,
             "effects": effects,
+            "header_contract": header_contract,
             "wheel": wheel_name,
             "extension": extension_archive_path,
             "build": {
@@ -13008,6 +13130,7 @@ def extension_build(
                 "determinism": determinism_mode,
                 "capabilities": capabilities_list,
                 "capability_profiles": capability_profiles,
+                "header_contract": header_contract,
                 "wheel_sha256": wheel_sha,
                 "extension_sha256": extension_sha,
             },
@@ -15786,7 +15909,7 @@ def main() -> int:
         "scan",
         help=(
             "Scan extension sources for unsupported Py* C-API usage "
-            "against include/molt/Python.h."
+            "against the declared libmolt header contract."
         ),
     )
     extension_scan_parser.add_argument(

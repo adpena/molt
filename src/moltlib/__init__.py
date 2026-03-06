@@ -1,4 +1,4 @@
-"""Molt-specific library modules outside the CPython stdlib namespace."""
+"""Molt-specific user-facing libraries outside the CPython stdlib namespace."""
 
 from __future__ import annotations
 
