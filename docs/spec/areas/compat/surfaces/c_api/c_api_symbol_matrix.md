@@ -10,6 +10,8 @@
 - **Primary Path:** `libmolt` is the primary C-extension compatibility path; CPython bridge modes are explicit, opt-in escape hatches.
 - **V0 Contract:** The target surface area and semantics are defined in
   `docs/spec/areas/compat/surfaces/c_api/libmolt_c_api_surface.md`.
+- **Header Contract:** The stable-vs-compat header boundary is defined in
+  `docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md`.
 - **Current Status:** A `libmolt` C-API bootstrap surface is implemented with
   `molt_*` wrapper symbols (`runtime/molt-runtime/src/c_api.rs` + `include/molt/molt.h`),
   and `include/molt/Python.h` now carries a broad partial CPython source-compat
@@ -39,6 +41,11 @@
   closure in `scalarapi.c` (for example `PyArray_DiscoverDTypeAndShape`,
   `PyArray_AssignFromCache`, `PyArray_NewFromDescr*`, `npy_dtype_info`,
   `NPY_NSCALARKINDS`, and `PyArrayScalar_VAL` macro-family gaps).
+- **Tooling Boundary:** `molt extension scan` now consults an explicit
+  libmolt header-contract list and `molt extension build` records that contract
+  in extension manifests, so stable ABI headers and compatibility overlays are
+  reported separately instead of being treated as one undifferentiated header
+  tree.
 - **Hollow Symbols (future):** Some symbols may exist but return generic errors or empty values if their functionality (e.g., GC inspection) is not supported (TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:planned): define hollow-symbol policy + error surface).
 
 ## 2. Symbol Matrix

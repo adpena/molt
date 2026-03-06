@@ -28,6 +28,15 @@ performance-first C-extension compatibility without embedding CPython.
   Molt object layouts directly.
 - All handles are `u64`-compatible values (opaque to the extension).
 - A versioned C header defines `MOLT_C_API_VERSION` and symbol availability.
+- Header-tiering is normative per
+  `docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md`:
+  - stable ABI: `include/molt/molt.h`
+  - CPython source-compat facade: `include/Python.h`,
+    `include/molt/Python.h`, and the small legacy forwarding headers
+  - ecosystem overlays: bounded compatibility headers such as `include/numpy/*`
+    and the top-level NumPy bridge headers
+- `MOLT_C_API_VERSION` versions the stable ABI tier only; source-compat overlay
+  growth does not imply CPython ABI compatibility.
 - Symbol availability is tracked in `docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md`.
 - Current bootstrap implementation:
   - Runtime symbols: `runtime/molt-runtime/src/c_api.rs`
@@ -167,15 +176,17 @@ performance-first C-extension compatibility without embedding CPython.
 ## 6. Packaging and Build Flow
 ### 6.1 Headers and Tooling
 - Provide `molt-config --cflags --libs` for build integration.
-- Ship headers under `include/molt/` with stable symbol naming.
-- Current shipped bootstrap header: `include/molt/molt.h`.
-- CPython-compat include path is also available via `#include <Python.h>`,
-  implemented by `include/Python.h` forwarding to `include/molt/Python.h`.
-- Initial NumPy compatibility headers ship under `include/numpy/` and are
-  intentionally partial while we close remaining NumPy C-API gaps; libmolt
-  does not ship NumPy's private/generated build graph.
-- Initial datetime compatibility header ships as `include/datetime.h` with a
-  partial `PyDateTime` C-API bootstrap.
+- Stable ABI headers live under `include/molt/`; the current canonical ABI
+  header is `include/molt/molt.h`.
+- CPython-compat include paths are compatibility facades, not ABI promises:
+  `#include <Python.h>` is implemented by `include/Python.h` forwarding to
+  `include/molt/Python.h`.
+- NumPy compatibility headers under `include/numpy/` and the small top-level
+  forwarding/config bridge headers are bounded source-compat overlays.
+- `molt extension build` and `molt extension scan` use the declared libmolt
+  header contract instead of treating every header under `include/` as equally
+  stable.
+- libmolt does not ship NumPy's private/generated build graph.
 
 ### 6.2 Wheel Tags (proposed)
 - Wheels for `libmolt` are tagged distinctly from CPython wheels.

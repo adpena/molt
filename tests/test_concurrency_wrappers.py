@@ -7,7 +7,7 @@ from molt import intrinsics as _intrinsics
 if not _intrinsics.runtime_active():
     pytest.skip("Molt runtime intrinsics not active", allow_module_level=True)
 
-from molt import channel, spawn
+from moltlib.concurrency import channel, spawn
 
 
 def test_channel_send_recv():
