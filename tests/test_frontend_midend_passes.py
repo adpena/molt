@@ -179,7 +179,7 @@ def test_raw_int_promotion_does_not_leave_compare_results_unboxed() -> None:
         MoltOp(kind="CONST", args=[1], result=MoltValue("lhs", "int")),
         MoltOp(kind="CONST", args=[0], result=MoltValue("rhs", "int")),
         MoltOp(
-            kind="GT",
+            kind="LT",
             args=[MoltValue("lhs", "int"), MoltValue("rhs", "int")],
             result=MoltValue("cmp", "bool"),
         ),
@@ -190,7 +190,7 @@ def test_raw_int_promotion_does_not_leave_compare_results_unboxed() -> None:
 
     promoted = gen._promote_raw_int_chains(ops)
 
-    gt = next(op for op in promoted if op.kind == "GT")
+    gt = next(op for op in promoted if op.kind == "LT")
     assert not (gt.metadata and gt.metadata.get("raw_int"))
     assert all(op.kind != "BOX_FROM_RAW_INT" for op in promoted)
     assert all(op.kind != "UNBOX_TO_RAW_INT" for op in promoted)
@@ -202,7 +202,7 @@ def test_raw_int_promotion_keeps_compare_loop_conditions_raw() -> None:
         MoltOp(kind="CONST", args=[1], result=MoltValue("lhs", "int")),
         MoltOp(kind="CONST", args=[0], result=MoltValue("rhs", "int")),
         MoltOp(
-            kind="GT",
+            kind="LT",
             args=[MoltValue("lhs", "int"), MoltValue("rhs", "int")],
             result=MoltValue("cmp", "bool"),
         ),
@@ -215,7 +215,7 @@ def test_raw_int_promotion_keeps_compare_loop_conditions_raw() -> None:
 
     promoted = gen._promote_raw_int_chains(ops)
 
-    gt = next(op for op in promoted if op.kind == "GT")
+    gt = next(op for op in promoted if op.kind == "LT")
     loop_break = next(op for op in promoted if op.kind == "LOOP_BREAK_IF_TRUE")
     assert gt.metadata and gt.metadata.get("raw_int") is True
     assert loop_break.metadata and loop_break.metadata.get("raw_int") is True
@@ -247,6 +247,84 @@ def test_raw_int_promotion_rejects_mixed_fast_and_python_value_consumers() -> No
     mul = next(op for op in promoted if op.kind == "MUL")
     assert not (mul.metadata and mul.metadata.get("raw_int"))
     assert all(op.kind != "BOX_FROM_RAW_INT" for op in promoted)
+
+
+def test_specialized_int_verifier_rejects_unsupported_raw_int_kinds() -> None:
+    gen = SimpleTIRGenerator()
+    ops = [
+        MoltOp(
+            kind="CONST",
+            args=[7],
+            result=MoltValue("lhs", "int"),
+            metadata={"raw_int": True},
+        ),
+        MoltOp(
+            kind="CONST",
+            args=[3],
+            result=MoltValue("rhs", "int"),
+            metadata={"raw_int": True},
+        ),
+        MoltOp(
+            kind="SUB",
+            args=[MoltValue("lhs", "int"), MoltValue("rhs", "int")],
+            result=MoltValue("out", "int"),
+            metadata={"raw_int": True},
+        ),
+    ]
+
+    failures = gen._collect_specialized_int_failures(ops)
+    assert failures
+    assert any(
+        detail == "raw_int is not supported for this op kind"
+        for _, _, detail in failures
+    )
+
+
+def test_specialized_int_verifier_rejects_non_inline_guard_fast_int_args() -> None:
+    gen = SimpleTIRGenerator()
+    ops = [
+        MoltOp(kind="CONST", args=[1 << 60], result=MoltValue("lhs", "int")),
+        MoltOp(kind="CONST", args=[3], result=MoltValue("rhs", "int")),
+        MoltOp(
+            kind="ADD",
+            args=[MoltValue("lhs", "int"), MoltValue("rhs", "int")],
+            result=MoltValue("out", "int"),
+            metadata={"guard_fast_int": True},
+        ),
+    ]
+
+    failures = gen._collect_specialized_int_failures(ops)
+    assert failures
+    assert any(
+        "guard_fast_int operands are not inline-int safe" in detail
+        for _, _, detail in failures
+    )
+
+
+def test_specialized_int_verifier_rejects_unproven_raw_operands() -> None:
+    gen = SimpleTIRGenerator()
+    ops = [
+        MoltOp(
+            kind="CONST",
+            args=[7],
+            result=MoltValue("lhs", "int"),
+            metadata={"raw_int": True},
+        ),
+        MoltOp(kind="CONST", args=[3], result=MoltValue("rhs", "int")),
+        MoltOp(
+            kind="ADD",
+            args=[MoltValue("lhs", "int"), MoltValue("rhs", "int")],
+            result=MoltValue("out", "int"),
+            metadata={"raw_int": True},
+        ),
+    ]
+
+    failures = gen._collect_specialized_int_failures(ops)
+    assert failures
+    assert any(
+        "raw_int operands are not proven raw values" in detail
+        for _, _, detail in failures
+    )
 
 
 def test_guarded_int_specialization_preserves_non_int_result_hints() -> None:
@@ -292,6 +370,43 @@ def test_compile_to_tir_does_not_chain_fast_int_through_widening_mul_result() ->
         op.get("kind") == "add"
         and prod in (op.get("args") or [])
         and op.get("fast_int") is True
+        for op in ops
+    )
+
+
+def test_compile_to_tir_keeps_counted_loop_raw_index_carriers_verified() -> None:
+    ir = compile_to_tir(
+        """
+def hot(n: int) -> int:
+    total: int = 0
+    i: int = 0
+    while i < n:
+        total += (i * 3) % 7
+        i += 1
+    return total
+"""
+    )
+    hot_func = next(func for func in ir["functions"] if func["name"].endswith("hot"))
+    ops = hot_func["ops"]
+
+    assert any(op["kind"] == "loop_index_start" for op in ops)
+    assert any(op["kind"] == "loop_index_next" for op in ops)
+    assert any(op["kind"] == "lt" and op.get("raw_int") is True for op in ops)
+    assert any(op["kind"] == "add" and op.get("raw_int") is True for op in ops)
+    assert any(
+        op["kind"] == "box_from_raw_int" and op.get("args") == ["__carry_total"]
+        for op in ops
+    )
+    assert any(
+        op["kind"] == "box_from_raw_int" and op.get("args") == ["__carry_i"]
+        for op in ops
+    )
+    assert all(
+        not (op["kind"] == "store_index" and "__carry_total" in (op.get("args") or []))
+        for op in ops
+    )
+    assert all(
+        not (op["kind"] == "store_index" and "__carry_i" in (op.get("args") or []))
         for op in ops
     )
 

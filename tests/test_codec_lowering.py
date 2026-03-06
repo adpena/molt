@@ -1,4 +1,4 @@
-from molt.frontend import compile_to_tir
+from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
 
 
 def _op_kinds(ir: dict, func_name: str = "molt_main") -> list[str]:
@@ -528,6 +528,71 @@ e ^= b
         assert all(
             op.get("fast_int") is True or op.get("raw_int") is True for op in ops
         )
+
+
+def test_type_hint_raw_int_boundary_keeps_unsupported_ops_boxed() -> None:
+    src = """
+a: int = 9
+b: int = 4
+sumv = a + b
+subv = a - b
+mulv = a * b
+modv = a % b
+ltv = a < b
+"""
+    ir = compile_to_tir(src, type_hint_policy="check")
+    add_ops = _ops_by_kind(ir, "add")
+    sub_ops = _ops_by_kind(ir, "sub")
+    mul_ops = _ops_by_kind(ir, "mul")
+    mod_ops = _ops_by_kind(ir, "mod")
+    lt_ops = _ops_by_kind(ir, "lt")
+
+    assert all(
+        op.get("fast_int") is True or op.get("raw_int") is True for op in add_ops
+    )
+    assert all(
+        op.get("fast_int") is True or op.get("raw_int") is True for op in mul_ops
+    )
+    assert all(
+        op.get("fast_int") is True or op.get("raw_int") is True for op in mod_ops
+    )
+    assert all(
+        op.get("fast_int") is True or op.get("raw_int") is True for op in lt_ops
+    )
+    assert all(op.get("raw_int") is not True for op in sub_ops)
+    assert all(op.get("fast_int") is True for op in sub_ops)
+
+
+def test_specialized_int_verifier_reports_invalid_annotations() -> None:
+    gen = SimpleTIRGenerator()
+    failures = gen._collect_specialized_int_failures(
+        [
+            MoltOp(
+                kind="CONST",
+                args=[7],
+                result=MoltValue("lhs", "int"),
+                metadata={"raw_int": True},
+            ),
+            MoltOp(
+                kind="CONST",
+                args=[3],
+                result=MoltValue("rhs", "int"),
+                metadata={"raw_int": True},
+            ),
+            MoltOp(
+                kind="SUB",
+                args=[MoltValue("lhs", "int"), MoltValue("rhs", "int")],
+                result=MoltValue("out", "int"),
+                metadata={"raw_int": True},
+            ),
+        ]
+    )
+
+    assert failures
+    assert any(
+        detail == "raw_int is not supported for this op kind"
+        for _, _, detail in failures
+    )
 
 
 def test_tuple_lowering():

@@ -704,6 +704,11 @@ impl WasmBackend {
             crate::elide_dead_struct_allocs(func_ir);
         }
         crate::inline_functions(&mut ir);
+        if cfg!(debug_assertions) {
+            if let Err(err) = crate::validate_simple_ir(&ir) {
+                panic!("WasmBackend::compile received invalid simple IR: {err}");
+            }
+        }
         // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
         let mut func_trampoline_spec: BTreeMap<String, (usize, bool)> = BTreeMap::new();
         let mut task_kinds: BTreeMap<String, TrampolineKind> = BTreeMap::new();
