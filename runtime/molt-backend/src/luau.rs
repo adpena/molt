@@ -77,6 +77,7 @@ impl LuauBackend {
         self.output.push_str(&func_body);
 
         inline_single_use_constants(&mut self.output);
+        eliminate_nil_missing_wrappers(&mut self.output);
         std::mem::take(&mut self.output)
     }
 
@@ -2853,6 +2854,87 @@ fn replace_whole_word(haystack: &str, needle: &str, replacement: &str) -> String
         pos += 1;
     }
     result
+}
+
+/// Eliminate `local vN = nil -- [missing]` / `local vM = {vN}` pairs.
+///
+/// These arise from Python's default-argument mechanism: the IR creates
+/// a `missing` sentinel wrapped in a single-element callargs table.
+/// When the nil variable is only used in the wrapper, we can replace the
+/// wrapper with `{nil}` and remove the nil declaration entirely.
+fn eliminate_nil_missing_wrappers(source: &mut String) {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut var_use_count: HashMap<String, usize> = HashMap::new();
+
+    // Count uses of all vNNN variables.
+    for line in &lines {
+        let bytes = line.as_bytes();
+        let mut pos = 0;
+        while pos < bytes.len() {
+            if bytes[pos] == b'v' && (pos == 0 || !is_ident_char(bytes[pos - 1])) {
+                let start = pos;
+                pos += 1;
+                while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+                    pos += 1;
+                }
+                if pos > start + 1 && (pos >= bytes.len() || !is_ident_char(bytes[pos])) {
+                    let var = std::str::from_utf8(&bytes[start..pos]).unwrap_or("");
+                    *var_use_count.entry(var.to_string()).or_insert(0) += 1;
+                }
+            } else {
+                pos += 1;
+            }
+        }
+    }
+
+    // Find lines matching `local vN = nil -- [missing]` where vN has exactly
+    // 2 uses (declaration + one wrapper).  Mark the line for removal and record
+    // the variable for replacement in the wrapper line.
+    let mut remove_lines: HashSet<usize> = HashSet::new();
+    let mut nil_vars: HashSet<String> = HashSet::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("local v") {
+            if let Some(suffix) = rest.strip_suffix(" = nil -- [missing]") {
+                if suffix.chars().all(|c| c.is_ascii_digit()) {
+                    let var = format!("v{suffix}");
+                    if var_use_count.get(&var).copied().unwrap_or(0) == 2 {
+                        remove_lines.insert(i);
+                        nil_vars.insert(var);
+                    }
+                }
+            }
+        }
+    }
+
+    if nil_vars.is_empty() {
+        return;
+    }
+
+    // Rebuild source, replacing `{vN}` with `{nil}` for eliminated vars.
+    let mut result = String::with_capacity(source.len());
+    for (i, line) in lines.iter().enumerate() {
+        if remove_lines.contains(&i) {
+            continue;
+        }
+        let mut new_line = (*line).to_string();
+        for var in &nil_vars {
+            let wrapper = format!("{{{var}}}");
+            if new_line.contains(&wrapper) {
+                new_line = new_line.replace(&wrapper, "{nil}");
+            }
+        }
+        result.push_str(&new_line);
+        result.push('\n');
+    }
+
+    let removed = remove_lines.len();
+    *source = result;
+    eprintln!(
+        "[molt-luau] Eliminated {} nil-missing wrappers",
+        removed
+    );
 }
 
 #[cfg(test)]
