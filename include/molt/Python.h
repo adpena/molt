@@ -335,7 +335,10 @@ static inline PyObject *PyUnicode_AsEncodedString(
 static inline int PyUnicode_Check(PyObject *obj);
 static inline PyObject *PyUnicode_FromString(const char *value);
 static inline PyObject *PyUnicode_InternFromString(const char *value);
+static inline PyObject *PyUnicode_FromKindAndData(
+    int kind, const void *buffer, Py_ssize_t size);
 static inline PyObject *PyUnicode_FromWideChar(const wchar_t *value, Py_ssize_t size);
+static inline Py_UCS4 *PyUnicode_AsUCS4Copy(PyObject *value);
 static inline PyObject *PyBytes_FromStringAndSize(const char *value, Py_ssize_t size);
 static inline long long PyLong_AsLongLong(PyObject *obj);
 static inline long long PyLong_AsLongLongAndOverflow(PyObject *obj, int *overflow);
@@ -470,7 +473,7 @@ static inline void *_molt_pyunicode_data(PyObject *unicode);
 #define NOWAIT_LOCK 0
 #define PY_TIMEOUT_MAX LLONG_MAX
 
-#ifndef Py_LIMITED_API
+#if !defined(Py_LIMITED_API) && !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
 #define Py_LIMITED_API 0x030C0000
 #endif
 
@@ -497,6 +500,7 @@ static inline void *_molt_pyunicode_data(PyObject *unicode);
 #define PyObject_HEAD PyObject ob_base;
 #define PyObject_VAR_HEAD PyObject ob_base;
 #define Py_SIZE(ob) (((PyVarObject *)(ob))->ob_size)
+#define Py_SET_SIZE(ob, size) (((PyVarObject *)(ob))->ob_size = (Py_ssize_t)(size))
 
 #if defined(__GNUC__) || defined(__clang__)
 #define Py_UNUSED(name) name __attribute__((unused))
@@ -3365,6 +3369,30 @@ static inline PyObject *PyUnicode_FromWideChar(const wchar_t *value, Py_ssize_t 
     PyErr_SetString(
         PyExc_RuntimeError,
         "PyUnicode_FromWideChar is not yet implemented in Molt's C-API layer");
+    return NULL;
+}
+
+static inline PyObject *PyUnicode_FromKindAndData(
+    int kind, const void *buffer, Py_ssize_t size) {
+    (void)buffer;
+    (void)size;
+    if (kind != 4) {
+        PyErr_SetString(
+            PyExc_RuntimeError,
+            "PyUnicode_FromKindAndData currently only supports 4-byte kind stubs");
+        return NULL;
+    }
+    PyErr_SetString(
+        PyExc_RuntimeError,
+        "PyUnicode_FromKindAndData is not yet implemented in Molt's C-API layer");
+    return NULL;
+}
+
+static inline Py_UCS4 *PyUnicode_AsUCS4Copy(PyObject *value) {
+    (void)value;
+    PyErr_SetString(
+        PyExc_RuntimeError,
+        "PyUnicode_AsUCS4Copy is not yet implemented in Molt's C-API layer");
     return NULL;
 }
 

@@ -2431,13 +2431,102 @@ def test_numpy_generated_header_surface_smoke(tmp_path: Path) -> None:
                 "#include <_numpyconfig.h>",
                 "#include <npy_cpu_dispatch_config.h>",
                 "#include <numpy/npy_cpu.h>",
+                "#include <templ_common.h>",
                 "",
                 "int main(void) {",
                 "    const char *dispatch_info[] = NPY_CPU_DISPATCH_INFO();",
+                "    npy_intp total = 0;",
+                "    int overflowed = npy_mul_sizes_with_overflow(&total, 4, 8);",
                 "    (void)dispatch_info;",
+                "    (void)total;",
+                "    (void)overflowed;",
                 "    (void)NPY_WITH_CPU_BASELINE_N;",
                 "    (void)NPY_WITH_CPU_DISPATCH_N;",
                 "    return (int)(NPY_SIZEOF_OFF_T + NPY_SIZEOF_PY_INTPTR_T + NPY_NO_SMP);",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_numpy_public_overlay_header_surface_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for NumPy public overlay header smoke test")
+    source = tmp_path / "numpy_public_overlay_header_surface_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <numpy/arrayobject.h>",
+                "#include <numpy/_public_dtype_api_table.h>",
+                "#include <numpy/arrayscalars.h>",
+                "#include <numpy/halffloat.h>",
+                "#include <numpy/npy_2_complexcompat.h>",
+                "#include <numpy/npy_3kcompat.h>",
+                "#include <numpy/npy_endian.h>",
+                "#include <numpy/npy_no_deprecated_api.h>",
+                "#include <numpy/npy_os.h>",
+                "#include <numpy/random/bitgen.h>",
+                "#include <numpy/random/distributions.h>",
+                "",
+                "static PyObject *bool_return(int value) {",
+                "    PyArrayScalar_RETURN_BOOL_FROM_LONG(value);",
+                "}",
+                "",
+                "int main(void) {",
+                "    bitgen_t bitgen = {0};",
+                "    binomial_t binomial = {0};",
+                "    Py_complex legacy_complex = {0.0, 0.0};",
+                "    npy_half half_zero = NPY_HALF_ZERO;",
+                "    npy_half half_from_float = npy_float_to_half(1.0f);",
+                "    NPY_SELECTKIND selectkind = NPY_INTROSELECT;",
+                "    int scalarkinds = NPY_NSCALARKINDS;",
+                "    int datetime_numunits = NPY_DATETIME_NUMUNITS;",
+                "    int small_int = Npy__PyLong_AsInt(PyLong_FromLong(3));",
+                "    double uniform = random_standard_uniform(&bitgen);",
+                "    PyObject *bool_scalar = PyArrayScalar_True;",
+                "    PyObject *kind_text = PyUnicode_FromKindAndData(PyUnicode_4BYTE_KIND, NULL, 0);",
+                "    Py_UCS4 *ucs4_copy = PyUnicode_AsUCS4Copy(Py_None);",
+                "    PyObject *returned_bool = bool_return(1);",
+                "    NPY_CSETREAL(&legacy_complex, 1.0);",
+                "    NPY_CSETIMAG(&legacy_complex, -1.0);",
+                "    (void)binomial;",
+                "    (void)half_zero;",
+                "    (void)half_from_float;",
+                "    (void)selectkind;",
+                "    (void)datetime_numunits;",
+                "    (void)small_int;",
+                "    (void)uniform;",
+                "    (void)bool_scalar;",
+                "    (void)kind_text;",
+                "    (void)ucs4_copy;",
+                "    (void)returned_bool;",
+                "    (void)PyArray_BoolDType;",
+                "    (void)PyArray_StringDType;",
+                "    (void)PyArray_FloatAbstractDType;",
+                "    (void)NPY_BYTE_ORDER;",
+                "#if !defined(NPY_OS_LINUX) && !defined(NPY_OS_DARWIN) && !defined(NPY_OS_WIN32) && !defined(NPY_OS_WIN64) && !defined(NPY_OS_MINGW) && !defined(NPY_OS_BSD) && !defined(NPY_OS_CYGWIN) && !defined(NPY_OS_SOLARIS) && !defined(NPY_OS_HAIKU) && !defined(NPY_OS_UNKNOWN)",
+                '#error "npy_os.h did not define a platform macro"',
+                "#endif",
+                "    return scalarkinds == 0 || legacy_complex.real == 0.0 ? 0 : 0;",
                 "}",
                 "",
             ]
@@ -2573,6 +2662,73 @@ def test_numpy_internal_pythoncapi_skip_smoke(tmp_path: Path) -> None:
                 '#error "PYTHONCAPI_COMPAT should be pre-defined for NumPy core builds"',
                 "#endif",
                 "    return 0;",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_numpy_arrayscalar_source_shape_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for NumPy arrayscalar source-shape smoke test")
+    source = tmp_path / "numpy_arrayscalar_source_shape_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#define _MULTIARRAYMODULE",
+                "#include <Python.h>",
+                "#include <numpy/arrayobject.h>",
+                "#include <numpy/arrayscalars.h>",
+                "",
+                "static PyObject *bool_return(int value) {",
+                "    PyArrayScalar_RETURN_BOOL_FROM_LONG(value);",
+                "}",
+                "",
+                "int main(void) {",
+                "    PyHalfScalarObject half_scalar = {0};",
+                "    PyDatetimeScalarObject dt_scalar = {0};",
+                "    PyVoidScalarObject void_scalar = {0};",
+                "    PyArray_ArrFuncs arrfuncs = {0};",
+                "    PyObject *returned_bool = bool_return(1);",
+                "    PyArray_Descr *(*descr_from_type_object)(PyObject *) = PyArray_DescrFromTypeObject;",
+                "    PyArray_Descr *(*default_descr)(PyArray_DTypeMeta *) = PyArray_GetDefaultDescr;",
+                "    PyObject *(*scalar_fn)(void *, PyArray_Descr *, PyObject *) = PyArray_Scalar;",
+                "    PyObject *(*return_fn)(PyArrayObject *) = PyArray_Return;",
+                "    PyArray_GetItemFunc *getitem = arrfuncs.getitem;",
+                "    PyArray_CopySwapFunc *copyswap = arrfuncs.copyswap;",
+                "    int dtype_flags = NPY_USE_GETITEM | NPY_OBJECT_DTYPE_FLAGS | NPY_ALIGNED_STRUCT;",
+                "    PyArrayScalar_ASSIGN(&half_scalar, Half, (npy_half)0);",
+                "    dt_scalar.obmeta.base = NPY_FR_s;",
+                "    dt_scalar.obmeta.num = 1;",
+                "    void_scalar.flags = NPY_ARRAY_CARRAY;",
+                "    void_scalar.descr = NULL;",
+                "    Py_SET_SIZE(&void_scalar, 4);",
+                "    (void)returned_bool;",
+                "    (void)descr_from_type_object;",
+                "    (void)default_descr;",
+                "    (void)scalar_fn;",
+                "    (void)return_fn;",
+                "    (void)getitem;",
+                "    (void)copyswap;",
+                "    return (int)Py_SIZE(&void_scalar) + (dtype_flags == 0);",
                 "}",
                 "",
             ]
