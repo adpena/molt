@@ -1,3 +1,4 @@
+use molt_backend::luau::LuauBackend;
 use molt_backend::wasm::WasmBackend;
 use molt_backend::{
     SIMPLE_IR_CONTRACT_NAME, SIMPLE_IR_CONTRACT_VERSION, SimpleBackend, SimpleIR,
@@ -22,6 +23,8 @@ const BACKEND_DAEMON_DEFAULT_MAX_JOBS: usize = 8;
 struct DaemonJobRequest {
     id: String,
     is_wasm: bool,
+    #[serde(default)]
+    is_luau: bool,
     target_triple: Option<String>,
     output: String,
     cache_key: String,
@@ -356,6 +359,27 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
     }
 
     let _env_guard = DaemonEnvOverridesGuard::apply(job.env_overrides.as_ref());
+    if job.is_luau {
+        let mut backend = LuauBackend::new();
+        let luau_source = backend.compile(&job.ir);
+        if let Err(err) = write_output(&job.output, luau_source.as_bytes()) {
+            return DaemonJobResponse {
+                id: job.id,
+                ok: false,
+                cached: false,
+                cache_tier: None,
+                message: Some(format!("failed to write output: {err}")),
+            };
+        }
+        return DaemonJobResponse {
+            id: job.id,
+            ok: true,
+            cached: false,
+            cache_tier: None,
+            message: None,
+        };
+    }
+
     let output_bytes = if job.is_wasm {
         let backend = WasmBackend::new();
         backend.compile(job.ir)
@@ -785,6 +809,7 @@ fn main() -> io::Result<()> {
         return run_daemon(socket_path);
     }
     let is_wasm = args.contains(&"--target".to_string()) && args.contains(&"wasm".to_string());
+    let is_luau = args.contains(&"--target".to_string()) && args.contains(&"luau".to_string());
     let target_triple = args
         .iter()
         .position(|arg| arg == "--target-triple")
@@ -825,10 +850,21 @@ fn main() -> io::Result<()> {
         std::process::exit(1);
     }
 
-    let output_file = output_path.unwrap_or(if is_wasm { "output.wasm" } else { "output.o" });
+    let output_file = output_path.unwrap_or(if is_luau {
+        "output.luau"
+    } else if is_wasm {
+        "output.wasm"
+    } else {
+        "output.o"
+    });
     let mut file = File::create(output_file)?;
 
-    if is_wasm {
+    if is_luau {
+        let mut backend = LuauBackend::new();
+        let luau_source = backend.compile(&ir);
+        file.write_all(luau_source.as_bytes())?;
+        println!("Successfully compiled to {output_file}");
+    } else if is_wasm {
         let backend = WasmBackend::new();
         let wasm_bytes = backend.compile(ir);
         file.write_all(&wasm_bytes)?;
