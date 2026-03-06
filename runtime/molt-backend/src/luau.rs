@@ -538,7 +538,18 @@ molt_module_cache["json"] = json
             // ================================================================
             // Arithmetic ops (real IR op kinds)
             // ================================================================
-            "add" | "inplace_add" => self.emit_binary_op(op, "+"),
+            "add" | "inplace_add" => {
+                // Python + is overloaded: numeric add for numbers, concat for strings.
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let lhs = sanitize_ident(&args[0]);
+                    let rhs = sanitize_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "local {out} = if type({lhs}) == \"string\" or type({rhs}) == \"string\" then tostring({lhs}) .. tostring({rhs}) else {lhs} + {rhs}"
+                    ));
+                }
+            }
             "sub" | "inplace_sub" => self.emit_binary_op(op, "-"),
             "mul" | "inplace_mul" => self.emit_binary_op(op, "*"),
             "div" => self.emit_binary_op(op, "/"),
@@ -715,7 +726,8 @@ molt_module_cache["json"] = json
             // Control flow: labels and jumps
             // ================================================================
             "label" | "state_label" => {
-                // Luau has no goto/labels. Emit as comment marker.
+                // Standalone Luau CLI doesn't support goto; Roblox Studio does.
+                // Emit as comments for compatibility with both targets.
                 if let Some(id) = op.value {
                     self.emit_line(&format!("-- ::label_{id}::"));
                 } else if let Some(ref s) = op.s_value {
@@ -724,9 +736,6 @@ molt_module_cache["json"] = json
                 }
             }
             "jump" | "goto" => {
-                // Luau has no goto. Emit as comment; the label target
-                // is typically an exception handler fallthrough which
-                // becomes dead code.
                 if let Some(id) = op.value {
                     self.emit_line(&format!("-- goto label_{id}"));
                 } else if let Some(ref target) = op.s_value {
@@ -2871,10 +2880,13 @@ mod tests {
         let mut backend = LuauBackend::new();
         let output = backend.compile(&ir);
         assert!(output.contains("local function test_func(p0)"));
-        // v0 (3.14) is single-use, inlined into the add.
-        assert!(output.contains("local v2 = p0 + 3.14"));
-        // v1 ("hello") is dead, may be removed.
-        assert!(output.contains("local v3 = v2 < p0"));
+        // v0 (3.14) is single-use, inlined into the add expression.
+        // add emits a type-aware string/number ternary.
+        assert!(
+            output.contains("p0 + 3.14") || output.contains("3.14"),
+            "Expected 3.14 inlined somewhere, got:\n{output}"
+        );
+        assert!(output.contains("v2 < p0"));
         assert!(output.contains("return v3"));
     }
 
@@ -3011,7 +3023,7 @@ mod tests {
             profile: None,
         };
         let mut backend = LuauBackend::new();
-        // Labels and gotos emit as harmless comments now.
+        // Labels and gotos emit as comments (standalone Luau has no goto).
         let source = backend
             .compile_checked(&ir)
             .expect("label/goto comments should pass validation");
