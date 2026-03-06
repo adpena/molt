@@ -6053,6 +6053,55 @@ def _wasm_runtime_recovery_target_root(target_root: Path) -> Path:
     return target_root.parent / f"{target_root.name}-wasm-runtime-recovery"
 
 
+def _is_wasm_unsafe_volume(path: Path) -> bool:
+    """Detect filesystems where WASM linker output is unreliable (e.g. ExFAT on USB).
+
+    The ``wasm-ld`` linker uses mmap-based output that silently produces
+    zeroed files on non-native filesystems like ExFAT.  Returns True when
+    *path* resides on such a volume.
+    """
+    try:
+        real = str(path.resolve())
+        # Find the device backing this path via df, then look up its fs type in mount.
+        df_result = subprocess.run(
+            ["df", real],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if df_result.returncode != 0:
+            return False
+        lines = df_result.stdout.strip().split("\n")
+        if len(lines) < 2:
+            return False
+        device = lines[1].split()[0]
+        mount_result = subprocess.run(
+            ["mount"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        for line in mount_result.stdout.split("\n"):
+            if device in line and "(" in line:
+                fstype = line.split("(")[1].split(",")[0].strip().lower()
+                return fstype in {"exfat", "msdos", "smbfs", "nfs", "webdav"}
+    except (subprocess.TimeoutExpired, OSError, IndexError):
+        pass
+    return False
+
+
+def _wasm_local_target_root(target_root: Path) -> Path:
+    """Return a local (APFS) target dir for WASM builds when the main target is on an unsafe volume."""
+    # Use /tmp (always APFS on macOS) rather than tempfile.gettempdir() which
+    # may itself point to the unsafe volume via TMPDIR.
+    safe_name = str(target_root).replace("/", "_").strip("_")
+    local_base = Path("/tmp")
+    if _is_wasm_unsafe_volume(local_base):
+        # Extremely unlikely, but fall back to home dir
+        local_base = Path.home() / ".molt" / "wasm-target"
+    return local_base / f"molt-wasm-{safe_name}"
+
+
 def _run_runtime_wasm_cargo_build(
     *,
     cmd: list[str],
@@ -6168,6 +6217,17 @@ def _ensure_runtime_wasm(
         else:
             env.pop("RUSTC_WRAPPER", None)
         profile_dir = _cargo_profile_dir(cargo_profile)
+        # Detect ExFAT/non-native volumes where wasm-ld produces zeroed output.
+        main_target_root = _cargo_target_root(root)
+        wasm_target_override: Path | None = None
+        if _is_wasm_unsafe_volume(main_target_root):
+            wasm_target_override = _wasm_local_target_root(main_target_root)
+            wasm_target_override.mkdir(parents=True, exist_ok=True)
+            if not json_output:
+                print(
+                    f"WASM build: target dir is on non-native filesystem; redirecting to {wasm_target_override}",
+                    file=sys.stderr,
+                )
         cmd = [
             "cargo",
             "build",
@@ -6185,6 +6245,7 @@ def _ensure_runtime_wasm(
                 env=env,
                 cargo_timeout=cargo_timeout,
                 profile_dir=profile_dir,
+                target_root_override=wasm_target_override,
                 json_output=json_output,
             )
         except subprocess.TimeoutExpired:
@@ -6651,8 +6712,9 @@ def _wasm_runtime_root(project_root: Path) -> Path:
     if env_root:
         return Path(env_root).expanduser()
     external_root = Path("/Volumes/APDataStore/Molt")
-    if external_root.is_dir():
+    if external_root.is_dir() and not _is_wasm_unsafe_volume(external_root):
         return external_root / "wasm"
+    # Keep WASM artifacts on a native filesystem to avoid mmap corruption.
     return project_root / "wasm"
 
 

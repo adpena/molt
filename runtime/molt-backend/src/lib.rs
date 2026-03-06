@@ -174,6 +174,24 @@ fn int_value_fits_inline(builder: &mut FunctionBuilder, val: Value) -> Value {
     builder.ins().icmp(IntCC::Equal, val, unboxed)
 }
 
+fn mul_value_fits_inline(
+    builder: &mut FunctionBuilder,
+    lhs: Value,
+    rhs: Value,
+    prod: Value,
+) -> Value {
+    // `smulhi` exposes the high 64 bits of the full 128-bit signed product.
+    // When those bits equal the sign-extension of the low 64 bits, the multiply
+    // did not overflow `i64`. We also require the product to fit Molt's inline
+    // int payload before boxing it on the fast path.
+    let hi = builder.ins().smulhi(lhs, rhs);
+    let sixty_three = builder.ins().iconst(types::I64, 63);
+    let sign_ext = builder.ins().sshr(prod, sixty_three);
+    let no_overflow = builder.ins().icmp(IntCC::Equal, hi, sign_ext);
+    let fits_inline = int_value_fits_inline(builder, prod);
+    builder.ins().band(no_overflow, fits_inline)
+}
+
 fn box_bool_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     let one = builder.ins().iconst(types::I64, 1);
     let zero = builder.ins().iconst(types::I64, 0);
@@ -3040,7 +3058,40 @@ impl SimpleBackend {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
                         let prod = builder.ins().imul(lhs_val, rhs_val);
-                        box_int_value(&mut builder, prod)
+                        let can_inline =
+                            mul_value_fits_inline(&mut builder, lhs_val, rhs_val, prod);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        builder.set_cold_block(slow_block);
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder
+                            .ins()
+                            .brif(can_inline, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        builder.seal_block(fast_block);
+                        let fast_res = box_int_value(&mut builder, prod);
+                        jump_block(&mut builder, merge_block, &[fast_res]);
+
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_mul", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(call)[0];
+                        jump_block(&mut builder, merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
                     } else {
                         let lhs_is_int = is_int_tag(&mut builder, *lhs);
                         let rhs_is_int = is_int_tag(&mut builder, *rhs);
@@ -3059,6 +3110,15 @@ impl SimpleBackend {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
                         let prod = builder.ins().imul(lhs_val, rhs_val);
+                        let can_inline =
+                            mul_value_fits_inline(&mut builder, lhs_val, rhs_val, prod);
+                        let inline_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(can_inline, inline_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(inline_block);
+                        builder.seal_block(inline_block);
                         let fast_res = box_int_value(&mut builder, prod);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
@@ -3091,7 +3151,40 @@ impl SimpleBackend {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
                         let prod = builder.ins().imul(lhs_val, rhs_val);
-                        box_int_value(&mut builder, prod)
+                        let can_inline =
+                            mul_value_fits_inline(&mut builder, lhs_val, rhs_val, prod);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        builder.set_cold_block(slow_block);
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder
+                            .ins()
+                            .brif(can_inline, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        builder.seal_block(fast_block);
+                        let fast_res = box_int_value(&mut builder, prod);
+                        jump_block(&mut builder, merge_block, &[fast_res]);
+
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_inplace_mul", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(call)[0];
+                        jump_block(&mut builder, merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
                     } else {
                         let lhs_is_int = is_int_tag(&mut builder, *lhs);
                         let rhs_is_int = is_int_tag(&mut builder, *rhs);
@@ -3110,6 +3203,15 @@ impl SimpleBackend {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
                         let prod = builder.ins().imul(lhs_val, rhs_val);
+                        let can_inline =
+                            mul_value_fits_inline(&mut builder, lhs_val, rhs_val, prod);
+                        let inline_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(can_inline, inline_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(inline_block);
+                        builder.seal_block(inline_block);
                         let fast_res = box_int_value(&mut builder, prod);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 

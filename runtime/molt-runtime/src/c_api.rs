@@ -6435,9 +6435,7 @@ mod tests {
             let v1 = MoltObject::from_int(100).bits();
             assert_eq!(PyDict_SetItem(dict, k1, v1), 0);
 
-            let got = unsafe {
-                PyDict_GetItemString(dict, b"hello\0".as_ptr() as *const std::ffi::c_char)
-            };
+            let got = PyDict_GetItemString(dict, b"hello\0".as_ptr() as *const std::ffi::c_char);
             assert_ne!(got, 0);
 
             assert_eq!(PyDict_DelItem(dict, k1), 0);
@@ -6500,9 +6498,7 @@ mod tests {
         let _ = molt_runtime_init();
         assert_eq!(PyErr_Occurred(), 0);
 
-        unsafe {
-            PyErr_SetString(0, b"test error\0".as_ptr() as *const std::ffi::c_char);
-        }
+        PyErr_SetString(0, b"test error\0".as_ptr() as *const std::ffi::c_char);
         assert_ne!(PyErr_Occurred(), 0);
 
         PyErr_Clear();
@@ -6568,9 +6564,8 @@ mod tests {
             assert_eq!(PyUnicode_GetLength(concat), 11);
             dec_ref_bits(_py, concat);
 
-            let cmp = unsafe {
-                PyUnicode_CompareWithASCIIString(s, b"hello\0".as_ptr() as *const std::ffi::c_char)
-            };
+            let cmp =
+                PyUnicode_CompareWithASCIIString(s, b"hello\0".as_ptr() as *const std::ffi::c_char);
             assert_eq!(cmp, 0);
 
             dec_ref_bits(_py, s2);

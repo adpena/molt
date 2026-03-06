@@ -181,6 +181,29 @@ fn emit_inline_int_range_check(func: &mut Function, val_local: u32) {
     func.instruction(&Instruction::I32And);
 }
 
+fn emit_inline_mul_range_check(
+    func: &mut Function,
+    lhs_local: u32,
+    rhs_local: u32,
+    prod_local: u32,
+) {
+    // Inline ints are 46-bit signed values, so `i64.div_s` is safe here:
+    // the problematic `i64::MIN / -1` case cannot be produced by inline inputs.
+    func.instruction(&Instruction::LocalGet(rhs_local));
+    func.instruction(&Instruction::I64Eqz);
+    func.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+    func.instruction(&Instruction::I32Const(1));
+    func.instruction(&Instruction::Else);
+    func.instruction(&Instruction::LocalGet(prod_local));
+    func.instruction(&Instruction::LocalGet(rhs_local));
+    func.instruction(&Instruction::I64DivS);
+    func.instruction(&Instruction::LocalGet(lhs_local));
+    func.instruction(&Instruction::I64Eq);
+    func.instruction(&Instruction::End);
+    emit_inline_int_range_check(func, prod_local);
+    func.instruction(&Instruction::I32And);
+}
+
 fn emit_box_bool_from_i32(func: &mut Function) {
     func.instruction(&Instruction::I64ExtendI32U);
     func.instruction(&Instruction::I64Const((QNAN | TAG_BOOL) as i64));
@@ -3817,7 +3840,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Mul);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
-                            emit_inline_int_range_check(func, tmp_raw);
+                            emit_inline_mul_range_check(func, tmp_lhs, tmp_rhs, tmp_raw);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
                             emit_box_int_from_local(func, tmp_raw);
                             func.instruction(&Instruction::Else);
@@ -3881,7 +3904,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Mul);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
-                            emit_inline_int_range_check(func, tmp_raw);
+                            emit_inline_mul_range_check(func, tmp_lhs, tmp_rhs, tmp_raw);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
                             emit_box_int_from_local(func, tmp_raw);
                             func.instruction(&Instruction::Else);
