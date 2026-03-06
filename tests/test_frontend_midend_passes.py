@@ -7,13 +7,21 @@ from contextlib import contextmanager
 
 import pytest
 
-from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
+from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
 from molt.frontend.cfg_analysis import build_cfg
 
 
 def _lower_ops(ops: list[MoltOp]) -> list[dict]:
     gen = SimpleTIRGenerator()
     return gen.map_ops_to_json(ops)
+
+
+def _main_ops_from_source(source: str, **kwargs: object) -> list[dict[str, object]]:
+    ir = compile_to_tir(source, **kwargs)
+    for func in ir["functions"]:
+        if func["name"] == "molt_main":
+            return func["ops"]
+    raise AssertionError("molt_main not found")
 
 
 def _undefined_args(lowered: list[dict]) -> list[tuple[int, str, str]]:
@@ -163,6 +171,129 @@ def _eval_simple_ops(ops: list[MoltOp]) -> int | None:
             return int(ret)
         raise AssertionError(f"unsupported op in simple evaluator: {op.kind}")
     raise AssertionError("simple evaluator reached end without RETURN")
+
+
+def test_raw_int_promotion_does_not_leave_compare_results_unboxed() -> None:
+    gen = SimpleTIRGenerator()
+    ops = [
+        MoltOp(kind="CONST", args=[1], result=MoltValue("lhs", "int")),
+        MoltOp(kind="CONST", args=[0], result=MoltValue("rhs", "int")),
+        MoltOp(
+            kind="GT",
+            args=[MoltValue("lhs", "int"), MoltValue("rhs", "int")],
+            result=MoltValue("cmp", "bool"),
+        ),
+        MoltOp(
+            kind="RETURN", args=[MoltValue("cmp", "bool")], result=MoltValue("none")
+        ),
+    ]
+
+    promoted = gen._promote_raw_int_chains(ops)
+
+    gt = next(op for op in promoted if op.kind == "GT")
+    assert not (gt.metadata and gt.metadata.get("raw_int"))
+    assert all(op.kind != "BOX_FROM_RAW_INT" for op in promoted)
+    assert all(op.kind != "UNBOX_TO_RAW_INT" for op in promoted)
+
+
+def test_raw_int_promotion_keeps_compare_loop_conditions_raw() -> None:
+    gen = SimpleTIRGenerator()
+    ops = [
+        MoltOp(kind="CONST", args=[1], result=MoltValue("lhs", "int")),
+        MoltOp(kind="CONST", args=[0], result=MoltValue("rhs", "int")),
+        MoltOp(
+            kind="GT",
+            args=[MoltValue("lhs", "int"), MoltValue("rhs", "int")],
+            result=MoltValue("cmp", "bool"),
+        ),
+        MoltOp(
+            kind="LOOP_BREAK_IF_TRUE",
+            args=[MoltValue("cmp", "bool")],
+            result=MoltValue("none"),
+        ),
+    ]
+
+    promoted = gen._promote_raw_int_chains(ops)
+
+    gt = next(op for op in promoted if op.kind == "GT")
+    loop_break = next(op for op in promoted if op.kind == "LOOP_BREAK_IF_TRUE")
+    assert gt.metadata and gt.metadata.get("raw_int") is True
+    assert loop_break.metadata and loop_break.metadata.get("raw_int") is True
+
+
+def test_raw_int_promotion_rejects_mixed_fast_and_python_value_consumers() -> None:
+    gen = SimpleTIRGenerator()
+    ops = [
+        MoltOp(kind="CONST", args=[1], result=MoltValue("lhs", "int")),
+        MoltOp(kind="CONST", args=[2], result=MoltValue("rhs", "int")),
+        MoltOp(
+            kind="MUL",
+            args=[MoltValue("lhs", "int"), MoltValue("rhs", "int")],
+            result=MoltValue("prod", "int"),
+        ),
+        MoltOp(kind="CONST", args=[1], result=MoltValue("one", "int")),
+        MoltOp(
+            kind="ADD",
+            args=[MoltValue("prod", "int"), MoltValue("one", "int")],
+            result=MoltValue("sum", "int"),
+        ),
+        MoltOp(
+            kind="RETURN", args=[MoltValue("prod", "int")], result=MoltValue("none")
+        ),
+    ]
+
+    promoted = gen._promote_raw_int_chains(ops)
+
+    mul = next(op for op in promoted if op.kind == "MUL")
+    assert not (mul.metadata and mul.metadata.get("raw_int"))
+    assert all(op.kind != "BOX_FROM_RAW_INT" for op in promoted)
+
+
+def test_guarded_int_specialization_preserves_non_int_result_hints() -> None:
+    gen = SimpleTIRGenerator()
+    ops = [
+        MoltOp(kind="CONST", args=[10], result=MoltValue("value", "int")),
+        MoltOp(kind="CONST", args=[1], result=MoltValue("int_tag", "int")),
+        MoltOp(
+            kind="GUARD_TAG",
+            args=[MoltValue("value", "int"), MoltValue("int_tag", "int")],
+            result=MoltValue("none"),
+        ),
+        MoltOp(kind="CONST", args=[2], result=MoltValue("two", "int")),
+        MoltOp(
+            kind="DIV",
+            args=[MoltValue("value", "int"), MoltValue("two", "int")],
+            result=MoltValue("quot", "Unknown"),
+        ),
+        MoltOp(
+            kind="LT",
+            args=[MoltValue("value", "int"), MoltValue("two", "int")],
+            result=MoltValue("cmp", "Unknown"),
+        ),
+    ]
+
+    specialized = gen._specialize_guarded_int_arithmetic(ops)
+
+    div_op = next(op for op in specialized if op.kind == "DIV")
+    lt_op = next(op for op in specialized if op.kind == "LT")
+    assert div_op.result.type_hint == "float"
+    assert lt_op.result.type_hint == "bool"
+
+
+def test_compile_to_tir_does_not_chain_fast_int_through_widening_mul_result() -> None:
+    ops = _main_ops_from_source(
+        "a = 1 << 45\nb = 4\nc = a * b\nprint(c + 1)\n",
+        type_hint_policy="trust",
+    )
+
+    mul = next(op for op in ops if op.get("kind") == "mul")
+    prod = mul["out"]
+    assert not any(
+        op.get("kind") == "add"
+        and prod in (op.get("args") or [])
+        and op.get("fast_int") is True
+        for op in ops
+    )
 
 
 def test_trivial_phi_elides_and_rewrites_users() -> None:

@@ -34,6 +34,7 @@ pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
 }
 
 #[cfg(feature = "molt_hosted_extension")]
+#[cfg_attr(test, allow(dead_code))]
 fn hosted_extension_isolate_unavailable(symbol: &str) -> u64 {
     crate::concurrency::with_gil(|py| {
         crate::builtins::exceptions::raise_exception::<u64>(
