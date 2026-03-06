@@ -1696,6 +1696,7 @@ molt_module_cache["json"] = json
             "module_get_attr" | "module_get_global" | "module_get_name" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
+                let is_global = matches!(op.kind.as_str(), "module_get_global" | "module_get_name");
                 if let Some(attr_str) = op.s_value.as_deref().filter(|s| !s.is_empty()) {
                     // Static attribute name — use dot access.
                     let attr = sanitize_ident(attr_str);
@@ -1704,13 +1705,23 @@ molt_module_cache["json"] = json
                         self.emit_line(&format!("local {out} = {module}.{attr}"));
                     }
                 } else if args.len() >= 2 {
-                    // Dynamic attribute: args[0] = module, args[1] = name variable.
-                    // Use module_cache lookup since the "module" dict is the __main__
-                    // namespace and the name variable holds the actual module name.
-                    let name_var = sanitize_ident(&args[1]);
-                    self.emit_line(&format!(
-                        "local {out} = molt_module_cache[{name_var}] or nil"
-                    ));
+                    if is_global {
+                        // module_get_global: args[0] = source module (often __main__),
+                        // args[1] = name var holding target module name.
+                        // Look up in module cache to resolve `import math` etc.
+                        let name_var = sanitize_ident(&args[1]);
+                        self.emit_line(&format!(
+                            "local {out} = molt_module_cache[{name_var}] or nil"
+                        ));
+                    } else {
+                        // module_get_attr: args[0] = module table, args[1] = attr name var.
+                        // Look up attribute directly on the module.
+                        let module = sanitize_ident(&args[0]);
+                        let attr_var = sanitize_ident(&args[1]);
+                        self.emit_line(&format!(
+                            "local {out} = if type({module}) == \"table\" then {module}[{attr_var}] else nil"
+                        ));
+                    }
                 } else if let Some(module) = args.first() {
                     let module = sanitize_ident(module);
                     self.emit_line(&format!("local {out} = {module}"));
