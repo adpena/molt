@@ -1,6 +1,16 @@
 #ifndef MOLT_NUMPY_NPY_COMMON_H
 #define MOLT_NUMPY_NPY_COMMON_H
 
+#include <stdio.h>
+#include <limits.h>
+
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <sys/types.h>
+#include <unistd.h>
+#endif
+
 #include <numpy/ndarraytypes.h>
 
 #ifdef __cplusplus
@@ -53,10 +63,22 @@ extern "C" {
 #define NPY_MAX_INT64 9223372036854775807LL
 #define NPY_MIN_INT64 (-NPY_MAX_INT64 - 1LL)
 #define NPY_MAX_UINT64 18446744073709551615ULL
+#define NPY_MAX_INT INT_MAX
+#define NPY_MIN_INT INT_MIN
+#define NPY_MAX_UINT UINT_MAX
+#define NPY_MAX_LONG LONG_MAX
+#define NPY_MIN_LONG LONG_MIN
+#define NPY_MAX_ULONG ULONG_MAX
+#define NPY_MAX_LONGLONG NPY_MAX_INT64
+#define NPY_MIN_LONGLONG NPY_MIN_INT64
+#define NPY_MAX_ULONGLONG NPY_MAX_UINT64
 #define NPY_MIN_DATETIME NPY_MIN_INT64
 #define NPY_MAX_DATETIME NPY_MAX_INT64
 #define NPY_MIN_TIMEDELTA NPY_MIN_INT64
 #define NPY_MAX_TIMEDELTA NPY_MAX_INT64
+#define NPY_SIZEOF_DATETIME 8
+#define NPY_SIZEOF_TIMEDELTA 8
+#define NPY_SIZEOF_HALF 2
 
 #if NPY_SIZEOF_LONGDOUBLE == NPY_SIZEOF_DOUBLE
 #define longdouble_t double
@@ -91,6 +113,9 @@ typedef npy_clongdouble npy_complex160;
 typedef npy_clongdouble npy_complex192;
 typedef npy_clongdouble npy_complex256;
 
+#define NPY_SSIZE_T_PYFMT "n"
+#define constchar char
+
 #ifndef NPY_INTP_FMT
 #if defined(_WIN64)
 #define NPY_INTP_FMT "lld"
@@ -100,6 +125,48 @@ typedef npy_clongdouble npy_complex256;
 #define NPY_INTP_FMT "d"
 #else
 #define NPY_INTP_FMT "lld"
+#endif
+#endif
+
+#if NPY_SIZEOF_INTP == NPY_SIZEOF_LONG
+#define NPY_MAX_INTP NPY_MAX_LONG
+#define NPY_MIN_INTP NPY_MIN_LONG
+#define NPY_MAX_UINTP NPY_MAX_ULONG
+#elif NPY_SIZEOF_INTP == NPY_SIZEOF_INT
+#define NPY_MAX_INTP NPY_MAX_INT
+#define NPY_MIN_INTP NPY_MIN_INT
+#define NPY_MAX_UINTP NPY_MAX_UINT
+#else
+#define NPY_MAX_INTP NPY_MAX_LONGLONG
+#define NPY_MIN_INTP NPY_MIN_LONGLONG
+#define NPY_MAX_UINTP NPY_MAX_ULONGLONG
+#endif
+
+#ifdef _WIN32
+#define npy_fseek _fseeki64
+#define npy_ftell _ftelli64
+#define npy_lseek _lseeki64
+typedef npy_int64 npy_off_t;
+#if NPY_SIZEOF_INT == 8
+#define NPY_OFF_T_PYFMT "i"
+#elif NPY_SIZEOF_LONG == 8
+#define NPY_OFF_T_PYFMT "l"
+#else
+#define NPY_OFF_T_PYFMT "L"
+#endif
+#else
+#define npy_fseek fseeko
+#define npy_ftell ftello
+#define npy_lseek lseek
+typedef off_t npy_off_t;
+#if NPY_SIZEOF_OFF_T == NPY_SIZEOF_SHORT
+#define NPY_OFF_T_PYFMT "h"
+#elif NPY_SIZEOF_OFF_T == NPY_SIZEOF_INT
+#define NPY_OFF_T_PYFMT "i"
+#elif NPY_SIZEOF_OFF_T == NPY_SIZEOF_LONG
+#define NPY_OFF_T_PYFMT "l"
+#else
+#define NPY_OFF_T_PYFMT "L"
 #endif
 #endif
 
