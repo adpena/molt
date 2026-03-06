@@ -9,7 +9,7 @@
 //! or stub markers for unsupported semantics.
 
 use crate::{FunctionIR, OpIR, SimpleIR};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 /// Transpiles Molt `SimpleIR` into Luau source text.
@@ -17,6 +17,9 @@ pub struct LuauBackend {
     output: String,
     indent: usize,
     uses_forward_decls: bool,
+    /// Variables that have been pre-declared at function scope and should use
+    /// assignment (`var = val`) instead of `local var = val` in emit_op.
+    hoisted_vars: HashSet<String>,
 }
 
 impl LuauBackend {
@@ -25,6 +28,7 @@ impl LuauBackend {
             output: String::with_capacity(8192),
             indent: 0,
             uses_forward_decls: false,
+            hoisted_vars: HashSet::new(),
         }
     }
 
@@ -383,8 +387,6 @@ molt_module_cache["json"] = json
             .join(", ");
 
         let name = sanitize_ident(&func.name);
-        // Use `local function` when no forward declaration exists (single-func IR),
-        // otherwise use assignment (forward decl already did `local name`).
         if self.uses_forward_decls {
             let _ = writeln!(self.output, "{name} = function({params})");
         } else {
@@ -392,9 +394,13 @@ molt_module_cache["json"] = json
         }
         self.push_indent();
 
+        // Mark position for post-processing hoisted var declarations.
+        let func_start = self.output.len();
+
+        // Reset hoisted vars for this function.
+        self.hoisted_vars.clear();
+
         // Pre-declare loop index variables so they persist across iterations.
-        // Without this, `local v = start` inside `while true do` re-declares
-        // on every iteration, shadowing the `loop_index_next` update.
         let mut loop_idx_vars = Vec::new();
         for op in &ops {
             if op.kind == "loop_index_start" {
@@ -409,13 +415,176 @@ molt_module_cache["json"] = json
             }
         }
 
-        // Emit ops, with special handling for loop_start + loop_index_start
-        // pairs: the index initialization must happen BEFORE the while to
-        // avoid re-declaring on every iteration.
+        // Phi hoisting: find `end_if` followed by `phi` ops and collect
+        // the phi output variables.  Also find variables first declared
+        // inside if/else blocks but referenced outside (scope escape).
+        let mut phi_assignments: HashMap<usize, Vec<(String, Vec<String>)>> = HashMap::new();
+        {
+            // Pass 1: find phi ops that follow end_if and record their
+            // output vars plus branch values.
+            let mut i = 0;
+            while i < ops.len() {
+                if ops[i].kind == "end_if" {
+                    // Scan forward for consecutive phi ops.
+                    let end_if_idx = i;
+                    let mut j = i + 1;
+                    while j < ops.len() && ops[j].kind == "phi" {
+                        if let Some(ref out_name) = ops[j].out {
+                            let phi_var = sanitize_ident(out_name);
+                            let args: Vec<String> = ops[j]
+                                .args
+                                .as_deref()
+                                .unwrap_or(&[])
+                                .iter()
+                                .map(|a| sanitize_ident(a))
+                                .collect();
+                            phi_assignments
+                                .entry(end_if_idx)
+                                .or_default()
+                                .push((phi_var.clone(), args));
+                            self.hoisted_vars.insert(phi_var);
+                        }
+                        j += 1;
+                    }
+                }
+                i += 1;
+            }
+
+            // Pass 2: find variables first declared inside if/else/loop
+            // blocks but used outside.  Track nesting depth and declaration
+            // sites.
+            let mut depth: i32 = 0;
+            let mut decl_depth: HashMap<String, i32> = HashMap::new();
+            let param_set: HashSet<String> = func
+                .params
+                .iter()
+                .map(|p| sanitize_ident(p))
+                .collect();
+
+            for op in &ops {
+                match op.kind.as_str() {
+                    "if" | "loop_start" | "for_range" | "for_iter" => depth += 1,
+                    "end_if" | "loop_end" | "end_for" => depth -= 1,
+                    _ => {}
+                }
+                // Record first declaration depth of each variable.
+                if let Some(ref out_name) = op.out {
+                    if out_name != "none" && !op.kind.starts_with("nop") {
+                        let var = sanitize_ident(out_name);
+                        decl_depth.entry(var).or_insert(depth);
+                    }
+                }
+                // Check if any referenced variable was declared at a deeper depth.
+                let refs: Vec<&str> = op
+                    .args
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|s| s.as_str())
+                    .chain(op.var.as_deref())
+                    .collect();
+                for r in refs {
+                    let var = sanitize_ident(r);
+                    if param_set.contains(&var) {
+                        continue;
+                    }
+                    if let Some(&dd) = decl_depth.get(&var) {
+                        if dd > depth {
+                            self.hoisted_vars.insert(var);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Emit pre-declarations for all hoisted variables.
+        if !self.hoisted_vars.is_empty() {
+            let mut sorted: Vec<String> = self.hoisted_vars.iter().cloned().collect();
+            sorted.sort();
+            for var in &sorted {
+                self.emit_line(&format!("local {var}"));
+            }
+        }
+
+        // Build a map: for each if block, record the phi assignments to
+        // inject into true/false branches.  We need to find the matching
+        // if/else/end_if structure for each phi group.
+        // Strategy: walk ops, track if/else/end_if nesting, and for each
+        // end_if that has phi_assignments, record the injection points.
+        //
+        // For a pattern: if(idx_a) ... else(idx_b) ... end_if(idx_c) phi
+        // We inject:
+        //   - at end of true branch (just before else): phi_var = args[0]
+        //   - at end of false branch (just before end_if): phi_var = args[1]
+        //
+        // We track: for each end_if index with phis, find the matching
+        // if and else indices.
+        let mut phi_inject_before_else: HashMap<usize, Vec<(String, String)>> = HashMap::new();
+        let mut phi_inject_before_end_if: HashMap<usize, Vec<(String, String)>> = HashMap::new();
+        if !phi_assignments.is_empty() {
+            // Walk ops to find if/else/end_if triples.
+            let mut if_stack: Vec<(usize, Option<usize>)> = Vec::new(); // (if_idx, else_idx)
+            for (idx, op) in ops.iter().enumerate() {
+                match op.kind.as_str() {
+                    "if" => {
+                        if_stack.push((idx, None));
+                    }
+                    "else" => {
+                        if let Some(last) = if_stack.last_mut() {
+                            last.1 = Some(idx);
+                        }
+                    }
+                    "end_if" => {
+                        if let Some((_if_idx, else_idx)) = if_stack.pop() {
+                            if let Some(phis) = phi_assignments.get(&idx) {
+                                for (phi_var, args) in phis {
+                                    if let Some(else_i) = else_idx {
+                                        // True branch value: inject before else.
+                                        let true_val = args.first().cloned().unwrap_or_else(|| "nil".to_string());
+                                        phi_inject_before_else
+                                            .entry(else_i)
+                                            .or_default()
+                                            .push((phi_var.clone(), true_val));
+                                        // False branch value: inject before end_if.
+                                        let false_val = args.get(1).cloned().unwrap_or_else(|| "nil".to_string());
+                                        phi_inject_before_end_if
+                                            .entry(idx)
+                                            .or_default()
+                                            .push((phi_var.clone(), false_val));
+                                    } else {
+                                        // No else branch — only true path sets value.
+                                        let true_val = args.first().cloned().unwrap_or_else(|| "nil".to_string());
+                                        phi_inject_before_end_if
+                                            .entry(idx)
+                                            .or_default()
+                                            .push((phi_var.clone(), true_val));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Emit ops with phi injection and loop_start handling.
         let mut i = 0;
         while i < ops.len() {
+            // Inject phi true-branch assignments before else.
+            if let Some(injects) = phi_inject_before_else.get(&i) {
+                for (var, val) in injects {
+                    self.emit_line(&format!("{var} = {val}"));
+                }
+            }
+            // Inject phi false-branch assignments before end_if.
+            if let Some(injects) = phi_inject_before_end_if.get(&i) {
+                for (var, val) in injects {
+                    self.emit_line(&format!("{var} = {val}"));
+                }
+            }
+
             if ops[i].kind == "loop_start" && i + 1 < ops.len() && ops[i + 1].kind == "loop_index_start" {
-                // Emit index init before the while.
                 let idx_op = &ops[i + 1];
                 if let Some(ref out_name) = idx_op.out {
                     let out = sanitize_ident(out_name);
@@ -427,9 +596,7 @@ molt_module_cache["json"] = json
                         self.emit_line(&format!("{out} = 0"));
                     }
                 }
-                // Now emit the while.
                 self.emit_op(&ops[i]);
-                // Skip the loop_index_start (already handled).
                 i += 2;
             } else {
                 self.emit_op(&ops[i]);
@@ -439,6 +606,46 @@ molt_module_cache["json"] = json
 
         self.pop_indent();
         self.emit_line("end");
+
+        // Post-process: for hoisted variables, replace `local var = ...`
+        // with `var = ...` inside the function body (the pre-declaration
+        // already emitted `local var` at the top).
+        if !self.hoisted_vars.is_empty() {
+            let func_output = &self.output[func_start..];
+            let mut patched = String::with_capacity(func_output.len());
+            for line in func_output.lines() {
+                let trimmed = line.trim_start();
+                let mut replaced = false;
+                if trimmed.starts_with("local ") {
+                    // Extract the variable name: "local vXXX = ..." or "local vXXX;"
+                    let after_local = &trimmed[6..];
+                    let var_end = after_local
+                        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                        .unwrap_or(after_local.len());
+                    let var_name = &after_local[..var_end];
+                    if self.hoisted_vars.contains(var_name) {
+                        // Check this isn't the pre-declaration line itself (no "=")
+                        let rest = after_local[var_end..].trim_start();
+                        if rest.starts_with('=') {
+                            // Replace "local var = ..." with "var = ..."
+                            let indent = &line[..line.len() - trimmed.len()];
+                            patched.push_str(indent);
+                            patched.push_str(after_local);
+                            patched.push('\n');
+                            replaced = true;
+                        }
+                    }
+                }
+                if !replaced {
+                    patched.push_str(line);
+                    patched.push('\n');
+                }
+            }
+            self.output.truncate(func_start);
+            self.output.push_str(&patched);
+        }
+
+        self.hoisted_vars.clear();
     }
 
     fn emit_op(&mut self, op: &OpIR) {
