@@ -430,8 +430,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - Follow [docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md) for stdlib scope, tiers (core vs import vs gated), and promotion rules.
 - Keep stdlib modules import-only by default; only promote to core after updating the stdlib matrix and [ROADMAP.md](ROADMAP.md).
 - Treat I/O, OS, network, and process modules as capability-gated and document the required permissions in specs.
-- NON-NEGOTIABLE (TURN COMPLETION): After finishing everything else at the end of every single turn, run this exact command before responding to the user:
-  - `REDACTED_NOTIFICATION_CMD --text “codex turn finished in molt” --service sms`
+- NON-NEGOTIABLE (TURN COMPLETION): After finishing everything else at the end of every single turn, run the turn-completion notification command before responding to the user.
 
 ## Stop-and-Ask: Dynamism & Contract Conflicts (Non-Negotiable)
 If adding functionality, tests, or coverage would require "too much dynamism" that conflicts with the vision, break policy, runtime contract, or concurrency/GIL requirements, STOP and ask the user for explicit direction before proceeding. This is mandatory.

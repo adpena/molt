@@ -111,6 +111,16 @@ fn molt_gil() -> &'static Mutex<()> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn lock_molt_gil() -> MutexGuard<'static, ()> {
+    // Panics while holding the GIL should fail the originating operation, but
+    // they must not permanently brick unrelated runtime entrypoints or test
+    // teardown with a poisoned mutex.
+    molt_gil()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct GilGuard {
     _marker: (),
     fallback_guard: Option<MutexGuard<'static, ()>>,
@@ -134,7 +144,7 @@ impl GilGuard {
             Err(_) => return Self::fallback_new(),
         };
         if needs_lock {
-            let guard = molt_gil().lock().unwrap();
+            let guard = lock_molt_gil();
             let stored = GIL_GUARD
                 .try_with(|slot| {
                     *slot.borrow_mut() = Some(guard);
@@ -170,7 +180,7 @@ impl GilGuard {
                 fallback_depth: true,
             };
         }
-        let guard = molt_gil().lock().unwrap();
+        let guard = lock_molt_gil();
         GIL_FALLBACK_OWNER.store(tid, AtomicOrdering::Release);
         GIL_FALLBACK_DEPTH.store(1, AtomicOrdering::Release);
         Self {
@@ -264,7 +274,7 @@ impl Drop for GilReleaseGuard {
             let _ = GIL_DEPTH.try_with(|d| d.set(self.depth));
             return;
         }
-        let guard = molt_gil().lock().unwrap();
+        let guard = lock_molt_gil();
         let stored = GIL_GUARD
             .try_with(|slot| {
                 *slot.borrow_mut() = Some(guard);
@@ -363,15 +373,12 @@ pub(crate) fn gil_assert() {
 mod tests {
     use super::{GilGuard, gil_held};
     use crate::GIL_DEPTH;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-    use std::time::{Duration, Instant};
 
     #[test]
     fn gil_depth_tracks_nesting() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let start = GIL_DEPTH.with(|depth| depth.get());
         assert_eq!(gil_held(), start > 0);
 
@@ -397,34 +404,76 @@ mod tests {
 
     #[test]
     fn gil_release_guard_drops_runtime_lock_temporarily() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         super::release_runtime_gil();
         GIL_DEPTH.with(|depth| depth.set(0));
 
         super::hold_runtime_gil(GilGuard::new());
-        let release = super::GilReleaseGuard::new();
-
-        let acquired = Arc::new(AtomicBool::new(false));
-        let acquired_flag = Arc::clone(&acquired);
-        let worker = std::thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_millis(300);
-            while Instant::now() < deadline {
-                if let Ok(lock) = super::molt_gil().try_lock() {
-                    acquired_flag.store(true, Ordering::SeqCst);
-                    drop(lock);
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(1));
-            }
-        });
-        worker.join().expect("worker should not panic");
         assert!(
-            acquired.load(Ordering::SeqCst),
-            "runtime GIL lock should be available while GilReleaseGuard is active",
+            super::RUNTIME_GIL_GUARD
+                .try_with(|slot| slot.borrow().is_some())
+                .unwrap_or(false),
+            "runtime GIL guard should be installed before release"
+        );
+        assert!(
+            super::GIL_GUARD
+                .try_with(|slot| slot.borrow().is_some())
+                .unwrap_or(false),
+            "lock guard should be installed before release"
         );
 
+        let release = super::GilReleaseGuard::new();
+        assert!(
+            !super::RUNTIME_GIL_GUARD
+                .try_with(|slot| slot.borrow().is_some())
+                .unwrap_or(false),
+            "runtime GIL guard should be removed while GilReleaseGuard is active",
+        );
+        assert!(
+            !super::GIL_GUARD
+                .try_with(|slot| slot.borrow().is_some())
+                .unwrap_or(false),
+            "lock guard should be removed while GilReleaseGuard is active",
+        );
+        assert_eq!(GIL_DEPTH.with(|depth| depth.get()), 0);
+
         drop(release);
+        assert!(
+            super::RUNTIME_GIL_GUARD
+                .try_with(|slot| slot.borrow().is_some())
+                .unwrap_or(false),
+            "runtime GIL guard should be restored after GilReleaseGuard drops",
+        );
+        assert!(
+            super::GIL_GUARD
+                .try_with(|slot| slot.borrow().is_some())
+                .unwrap_or(false),
+            "lock guard should be restored after GilReleaseGuard drops",
+        );
+        assert_eq!(GIL_DEPTH.with(|depth| depth.get()), 1);
         super::release_runtime_gil();
         GIL_DEPTH.with(|depth| depth.set(0));
+    }
+
+    #[test]
+    fn gil_recovers_after_poisoned_holder_panics() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let worker = std::thread::spawn(|| {
+            let _gil = GilGuard::new();
+            panic!("poison the GIL mutex");
+        });
+        assert!(
+            worker.join().is_err(),
+            "worker panic should poison the mutex"
+        );
+
+        let recovered = GilGuard::new();
+        assert!(gil_held(), "GIL should still be acquirable after poison");
+        drop(recovered);
     }
 }

@@ -82,6 +82,15 @@ pub(crate) fn clear_attr_tls_caches(_py: &PyToken<'_>) {
     });
 }
 
+pub(crate) fn clear_attr_tls_caches_without_runtime() {
+    let _ = ATTR_NAME_TLS.try_with(|cell| {
+        cell.borrow_mut().take();
+    });
+    let _ = DESCRIPTOR_CACHE_TLS.try_with(|cell| {
+        cell.borrow_mut().take();
+    });
+}
+
 pub(crate) fn debug_last_attr_name() -> Option<String> {
     ATTR_NAME_TLS
         .try_with(|cell| {
