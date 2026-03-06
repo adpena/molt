@@ -1,5 +1,5 @@
 use crate::PyToken;
-use crate::builtins::attr::clear_attr_tls_caches;
+use crate::builtins::attr::{clear_attr_tls_caches, clear_attr_tls_caches_without_runtime};
 use crate::builtins::attributes::clear_attr_site_name_cache;
 use crate::call::bind::clear_call_bind_ic_cache;
 use crate::object::utf8_cache::{
@@ -36,9 +36,22 @@ impl ThreadLocalGuard {
 
 impl Drop for ThreadLocalGuard {
     fn drop(&mut self) {
-        crate::with_gil_entry!(_py, {
-            clear_thread_local_state(_py);
-        });
+        let cleanup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if crate::state::runtime_state::runtime_state_for_gil().is_some() {
+                crate::with_gil_entry!(_py, {
+                    if crate::state::runtime_state::runtime_state_for_gil().is_some() {
+                        clear_thread_local_state(_py);
+                    } else {
+                        clear_thread_local_state_without_runtime();
+                    }
+                });
+            } else {
+                clear_thread_local_state_without_runtime();
+            }
+        }));
+        if cleanup.is_err() {
+            clear_thread_local_state_without_runtime();
+        }
         clear_object_pool_tls();
     }
 }
@@ -278,6 +291,38 @@ fn clear_thread_local_state(_py: &PyToken<'_>) {
     let _ = CURRENT_TOKEN.try_with(|cell| cell.set(1));
     let _ = PARSE_ARENA.try_with(|arena| arena.borrow_mut().clear());
     clear_attr_tls_caches(_py);
+    clear_utf8_count_tls();
+    let _ = GIL_DEPTH.try_with(|depth| depth.set(0));
+}
+
+fn clear_thread_local_state_without_runtime() {
+    let _ = CONTEXT_STACK.try_with(|stack| {
+        let _ = std::mem::take(&mut *stack.borrow_mut());
+    });
+    let _ = FRAME_STACK.try_with(|stack| {
+        let _ = std::mem::take(&mut *stack.borrow_mut());
+    });
+    let _ = ACTIVE_EXCEPTION_STACK.try_with(|stack| {
+        let _ = std::mem::take(&mut *stack.borrow_mut());
+    });
+    let _ = ACTIVE_EXCEPTION_FALLBACK.try_with(|stack| {
+        let _ = std::mem::take(&mut *stack.borrow_mut());
+    });
+    let _ = GENERATOR_EXCEPTION_STACKS.try_with(|map| {
+        let _ = std::mem::take(&mut *map.borrow_mut());
+    });
+    let _ = EXCEPTION_STACK.try_with(|stack| {
+        let _ = std::mem::take(&mut *stack.borrow_mut());
+    });
+    let _ = RECURSION_DEPTH.try_with(|depth| depth.set(0));
+    let _ = RECURSION_LIMIT.try_with(|limit| limit.set(DEFAULT_RECURSION_LIMIT));
+    let _ = GENERATOR_RAISE.try_with(|flag| flag.set(false));
+    let _ = TASK_RAISE_ACTIVE.try_with(|flag| flag.set(false));
+    let _ = BLOCK_ON_TASK.try_with(|cell| cell.set(std::ptr::null_mut()));
+    let _ = CURRENT_TASK.try_with(|cell| cell.set(std::ptr::null_mut()));
+    let _ = CURRENT_TOKEN.try_with(|cell| cell.set(1));
+    let _ = PARSE_ARENA.try_with(|arena| arena.borrow_mut().clear());
+    clear_attr_tls_caches_without_runtime();
     clear_utf8_count_tls();
     let _ = GIL_DEPTH.try_with(|depth| depth.set(0));
 }
@@ -701,12 +746,47 @@ fn clear_special_cache(_py: &PyToken<'_>, state: &RuntimeState) {
 #[cfg(test)]
 mod tests {
     use super::clear_worker_thread_state;
+    use std::sync::mpsc;
 
     #[test]
     fn clear_worker_thread_state_keeps_gil_for_tls_cleanup() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         crate::with_gil_entry!(_py, {
             clear_worker_thread_state(_py);
         });
+    }
+
+    #[test]
+    fn thread_local_guard_drop_skips_runtime_reinit_after_shutdown() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = crate::state::runtime_state::molt_runtime_shutdown();
+
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (exit_tx, exit_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            crate::with_gil_entry!(_py, {
+                let _ = crate::runtime_state(_py);
+                let ptr = crate::alloc_string(_py, b"tls-context");
+                assert!(!ptr.is_null(), "alloc worker string");
+                let bits = crate::MoltObject::from_ptr(ptr).bits();
+                crate::CONTEXT_STACK.with(|stack| stack.borrow_mut().push(bits));
+            });
+            ready_tx.send(()).expect("notify runtime initialized");
+            exit_rx.recv().expect("wait for shutdown");
+        });
+
+        ready_rx.recv().expect("wait for worker setup");
+        assert_eq!(crate::state::runtime_state::molt_runtime_shutdown(), 1);
+        exit_tx.send(()).expect("release worker");
+        worker.join().expect("worker should exit without aborting");
+
+        assert!(
+            crate::state::runtime_state::runtime_state_for_gil().is_none(),
+            "thread teardown should not reinitialize the runtime after shutdown"
+        );
     }
 }

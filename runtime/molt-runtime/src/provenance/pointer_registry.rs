@@ -20,7 +20,9 @@ mod tests {
 
     #[test]
     fn pointer_registry_resets_entries() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let boxed = Box::new(17_u8);
         let ptr = Box::into_raw(boxed);
         let handle = register_ptr(ptr);
