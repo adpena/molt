@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "vertigo-fleet": {
+      "command": "python3",
+      "args": ["/Users/adpena/PycharmProjects/fleet/scripts/mcp/fleet-mcp-server.py"],
+      "env": {}
+    }
+  }
+}
