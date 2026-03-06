@@ -251,6 +251,124 @@ pub struct SimpleIR {
     pub profile: Option<PgoProfileIR>,
 }
 
+impl SimpleIR {
+    /// Dead-code elimination: keep only functions reachable from `molt_main`.
+    ///
+    /// Walks the call graph starting from `molt_main` and any function whose
+    /// name contains `__main__` (the user's module). Removes all unreachable
+    /// functions (stdlib, unused modules).
+    pub fn tree_shake(&mut self) {
+        // Build name → index map.
+        let name_to_idx: HashMap<&str, usize> = self
+            .functions
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (f.name.as_str(), i))
+            .collect();
+
+        // Collect all function names referenced by a given function's ops.
+        let callees = |func: &FunctionIR| -> HashSet<String> {
+            let mut refs = HashSet::new();
+            for op in &func.ops {
+                match op.kind.as_str() {
+                    "call" | "call_guarded" | "call_internal" => {
+                        // s_value holds the function name in pedagogical IR.
+                        if let Some(ref s) = op.s_value {
+                            refs.insert(s.clone());
+                        }
+                        // args[0] holds the callable in real IR.
+                        if let Some(ref args) = op.args {
+                            if let Some(first) = args.first() {
+                                refs.insert(first.clone());
+                            }
+                        }
+                    }
+                    "call_func" | "call_indirect" | "call_async" | "block_on"
+                    | "spawn" | "call_bind" => {
+                        if let Some(ref args) = op.args {
+                            if let Some(first) = args.first() {
+                                refs.insert(first.clone());
+                            }
+                        }
+                    }
+                    "call_method" => {
+                        if let Some(ref args) = op.args {
+                            if let Some(first) = args.first() {
+                                refs.insert(first.clone());
+                            }
+                        }
+                    }
+                    "func_new" | "func_new_closure" | "builtin_func" | "code_new" => {
+                        if let Some(ref s) = op.s_value {
+                            refs.insert(s.clone());
+                        }
+                    }
+                    "bound_method_new" => {
+                        if let Some(ref args) = op.args {
+                            for a in args {
+                                refs.insert(a.clone());
+                            }
+                        }
+                    }
+                    _ => {
+                        // Some ops reference functions via s_value or args.
+                        // Conservatively include s_value if it matches a function name.
+                        if let Some(ref s) = op.s_value {
+                            if name_to_idx.contains_key(s.as_str()) {
+                                refs.insert(s.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            refs
+        };
+
+        // Mark phase: BFS from roots.
+        let mut live: HashSet<usize> = HashSet::new();
+        let mut worklist: Vec<usize> = Vec::new();
+
+        // Seed with molt_main and any __main__ functions (user's module).
+        for (i, f) in self.functions.iter().enumerate() {
+            if f.name == "molt_main" || f.name.contains("__main__") {
+                if live.insert(i) {
+                    worklist.push(i);
+                }
+            }
+        }
+
+        while let Some(idx) = worklist.pop() {
+            let refs = callees(&self.functions[idx]);
+            for r in &refs {
+                if let Some(&callee_idx) = name_to_idx.get(r.as_str()) {
+                    if live.insert(callee_idx) {
+                        worklist.push(callee_idx);
+                    }
+                }
+            }
+        }
+
+        // Sweep: retain only live functions.
+        let total = self.functions.len();
+        let mut kept = Vec::with_capacity(live.len());
+        for (i, f) in self.functions.drain(..).enumerate() {
+            if live.contains(&i) {
+                kept.push(f);
+            }
+        }
+        self.functions = kept;
+
+        // Log DCE stats to stderr if significant reduction.
+        let removed = total - self.functions.len();
+        if removed > 0 {
+            eprintln!(
+                "[molt-dce] Tree shake: {total} functions → {} kept, {removed} removed",
+                self.functions.len()
+            );
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FunctionIR {
     pub name: String,
