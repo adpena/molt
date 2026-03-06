@@ -1,13 +1,18 @@
 #ifndef MOLT_NUMPY_NDARRAYTYPES_H
 #define MOLT_NUMPY_NDARRAYTYPES_H
 
+#include <inttypes.h>
+#include <limits.h>
+
 #include <Python.h>
+#include <numpy/numpyconfig.h>
+#include <numpy/utils.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef signed char npy_bool;
+typedef unsigned char npy_bool;
 typedef signed char npy_byte;
 typedef unsigned char npy_ubyte;
 typedef short npy_short;
@@ -16,25 +21,60 @@ typedef int npy_int;
 typedef unsigned int npy_uint;
 typedef long npy_long;
 typedef unsigned long npy_ulong;
-typedef long long npy_longlong;
-typedef unsigned long long npy_ulonglong;
+typedef PY_LONG_LONG npy_longlong;
+typedef unsigned PY_LONG_LONG npy_ulonglong;
 typedef float npy_float;
 typedef double npy_double;
+#if NPY_SIZEOF_LONGDOUBLE == NPY_SIZEOF_DOUBLE
+typedef double npy_longdouble;
+#else
 typedef long double npy_longdouble;
+#endif
+typedef float npy_float32;
+typedef double npy_float64;
 typedef signed char npy_int8;
 typedef unsigned char npy_uint8;
 typedef short npy_int16;
 typedef unsigned short npy_uint16;
 typedef int npy_int32;
 typedef unsigned int npy_uint32;
-typedef long long npy_int64;
-typedef unsigned long long npy_uint64;
+#if NPY_SIZEOF_LONG == 8
+typedef npy_long npy_int64;
+typedef npy_ulong npy_uint64;
+#else
+typedef npy_longlong npy_int64;
+typedef npy_ulonglong npy_uint64;
+#endif
 typedef Py_ssize_t npy_intp;
 typedef size_t npy_uintp;
 typedef intptr_t npy_hash_t;
+typedef npy_int64 npy_datetime;
+typedef npy_int64 npy_timedelta;
+
+#ifndef NPY_INT64_FMT
+#define NPY_INT64_FMT PRId64
+#endif
+
+#ifndef NPY_INT32_FMT
+#define NPY_INT32_FMT PRId32
+#endif
+
+#define NPY_MAX_INT64 9223372036854775807LL
+#define NPY_MIN_INT64 (-NPY_MAX_INT64 - 1LL)
+#define NPY_MAX_UINT64 18446744073709551615ULL
+
+#ifndef NPY_DATETIME_FMT
+#define NPY_DATETIME_FMT NPY_INT64_FMT
+#endif
+
+#define NPY_DATETIME_NAT NPY_MIN_INT64
 
 #define _MOLT_NUMPY_OBJECT_HEAD PyObject *ob_base
+#define NPY_MAXDIMS 64
 #define NPY_MAXDIMS_LEGACY_ITERS 32
+#ifndef NPY_MAXARGS
+#define NPY_MAXARGS 64
+#endif
 
 static inline PyTypeObject *_molt_numpy_builtin_type_borrowed(const char *name) {
     return _molt_builtin_type_object_borrowed(name);
@@ -44,7 +84,7 @@ typedef struct NpyAuxData_tag NpyAuxData;
 typedef struct PyArray_ArrFuncs PyArray_ArrFuncs;
 typedef struct PyArrayIterObject_tag PyArrayIterObject;
 
-typedef enum {
+typedef enum NPY_TYPES {
     NPY_BOOL = 0,
     NPY_BYTE = 1,
     NPY_UBYTE = 2,
@@ -73,6 +113,14 @@ typedef enum {
     NPY_NOTYPE = 25,
     NPY_USERDEF = 256
 } NPY_TYPES;
+
+#if NPY_SIZEOF_LONG == 8
+#define NPY_INT64 NPY_LONG
+#define NPY_UINT64 NPY_ULONG
+#else
+#define NPY_INT64 NPY_LONGLONG
+#define NPY_UINT64 NPY_ULONGLONG
+#endif
 
 typedef enum {
     NPY_NO_CASTING = 0,
@@ -157,6 +205,7 @@ typedef struct PyArray_Descr {
     PyObject *names;
     PyObject *fields;
     PyObject *metadata;
+    NpyAuxData *c_metadata;
 } PyArray_Descr;
 
 typedef struct _arr_descr {
@@ -173,6 +222,8 @@ typedef struct {
     NpyAuxData *c_metadata;
     npy_hash_t hash;
 } PyArray_DescrProto;
+
+typedef PyArray_DescrProto _PyArray_LegacyDescr;
 
 typedef struct PyArrayObject_fields {
     _MOLT_NUMPY_OBJECT_HEAD;
@@ -195,11 +246,31 @@ typedef struct PyArray_Dims {
 } PyArray_Dims;
 
 typedef struct PyArray_DatetimeMetaData {
-    int base;
+    NPY_DATETIMEUNIT base;
     int num;
 } PyArray_DatetimeMetaData;
 
-typedef PyArray_DatetimeMetaData PyArray_DatetimeDTypeMetaData;
+typedef struct PyArray_DatetimeDTypeMetaData PyArray_DatetimeDTypeMetaData;
+
+typedef struct {
+    npy_int64 year;
+    npy_int32 month;
+    npy_int32 day;
+    npy_int32 hour;
+    npy_int32 min;
+    npy_int32 sec;
+    npy_int32 us;
+    npy_int32 ps;
+    npy_int32 as;
+} npy_datetimestruct;
+
+typedef struct {
+    npy_int64 day;
+    npy_int32 sec;
+    npy_int32 us;
+    npy_int32 ps;
+    npy_int32 as;
+} npy_timedeltastruct;
 
 typedef enum {
     NPY_DEVICE_CPU = 0,
@@ -223,6 +294,8 @@ typedef struct PyArray_ArrFuncs {
     PyArray_ArgSortFunc argsort;
     PyArray_CopySwapFunc copyswap;
     PyArray_CopySwapNFunc copyswapn;
+    PyObject *(*getitem)(void *, PyArrayObject *);
+    int (*setitem)(PyObject *, void *, PyArrayObject *);
 } PyArray_ArrFuncs;
 
 typedef struct PyArrayFlagsObject {
@@ -305,6 +378,9 @@ typedef struct PyArray_DTypeMeta {
 
 typedef PyArray_DTypeMeta PyArray_DTypeMeta_tag;
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+typedef struct PyArrayMethodObject_tag PyArrayMethodObject;
+#else
 typedef struct PyArrayMethodObject_tag {
     _MOLT_NUMPY_OBJECT_HEAD;
     const char *name;
@@ -322,6 +398,7 @@ typedef struct PyBoundArrayMethodObject {
     _MOLT_NUMPY_OBJECT_HEAD;
     PyArrayMethodObject *method;
 } PyBoundArrayMethodObject;
+#endif
 
 typedef struct PyArrayMethod_Context_tag {
     PyObject *caller;
@@ -377,11 +454,66 @@ typedef struct PyArrayInterface {
     PyObject *descr;
 } PyArrayInterface;
 
-typedef struct PyUFuncObject {
+#ifndef MOLT_NUMPY_UFUNC_CORE_TYPES
+#define MOLT_NUMPY_UFUNC_CORE_TYPES
+typedef void (*PyUFuncGenericFunction)(
+    char **args,
+    npy_intp const *dimensions,
+    npy_intp const *strides,
+    void *innerloopdata
+);
+
+struct _tagPyUFuncObject;
+
+typedef int (PyUFunc_TypeResolutionFunc)(
+    struct _tagPyUFuncObject *ufunc,
+    NPY_CASTING casting,
+    PyArrayObject **operands,
+    PyObject *type_tup,
+    PyArray_Descr **out_dtypes
+);
+
+typedef int (PyUFunc_ProcessCoreDimsFunc)(
+    struct _tagPyUFuncObject *ufunc,
+    npy_intp *core_dim_sizes
+);
+#endif
+
+typedef struct _tagPyUFuncObject {
     _MOLT_NUMPY_OBJECT_HEAD;
     int nin;
     int nout;
     int nargs;
+    int identity;
+    PyUFuncGenericFunction *functions;
+    void *const *data;
+    int ntypes;
+    int reserved1;
+    const char *name;
+    const char *types;
+    const char *doc;
+    void *ptr;
+    PyObject *obj;
+    PyObject *userloops;
+    int core_enabled;
+    int core_num_dim_ix;
+    int *core_num_dims;
+    int *core_dim_ixs;
+    int *core_offsets;
+    char *core_signature;
+    PyUFunc_TypeResolutionFunc *type_resolver;
+    PyObject *dict;
+#ifndef Py_LIMITED_API
+    vectorcallfunc vectorcall;
+#else
+    void *vectorcall;
+#endif
+    void *reserved3;
+    npy_uint32 *op_flags;
+    npy_uint32 iter_flags;
+    npy_intp *core_dim_sizes;
+    npy_uint32 *core_dim_flags;
+    PyObject *identity_value;
 } PyUFuncObject;
 
 typedef enum {
@@ -426,6 +558,22 @@ typedef NpyAuxData *(NpyAuxData_CloneFunc)(NpyAuxData *);
 struct NpyAuxData_tag {
     NpyAuxData_FreeFunc *free;
     NpyAuxData_CloneFunc *clone;
+    void *reserved[2];
+};
+
+#define NPY_AUXDATA_FREE(auxdata) \
+    do { \
+        if ((auxdata) != NULL) { \
+            (auxdata)->free(auxdata); \
+        } \
+    } while (0)
+
+#define NPY_AUXDATA_CLONE(auxdata) \
+    ((auxdata)->clone(auxdata))
+
+struct PyArray_DatetimeDTypeMetaData {
+    NpyAuxData base;
+    PyArray_DatetimeMetaData meta;
 };
 
 typedef PyObject *(PyArray_GetItemFunc)(void *, void *);
@@ -502,15 +650,27 @@ typedef enum {
     NPY_AS_TYPE_COPY_ALWAYS = 1,
 } NPY_ASTYPECOPYMODE;
 
-#define NPY_API_VERSION 0x00000012
-#define NPY_FEATURE_VERSION 0x00000012
 #define NPY_FAIL 0
 #define NPY_SUCCEED 1
 #define NPY_NTYPES_LEGACY 24
-#define NPY_INTP NPY_LONGLONG
-#define NPY_UINTP NPY_ULONGLONG
 #define NPY_UINT8 NPY_UBYTE
 #define NPY_DEFAULT_INT NPY_INTP
+
+#ifndef NPY_INTP
+#if defined(_WIN64)
+#define NPY_INTP NPY_LONGLONG
+#define NPY_UINTP NPY_ULONGLONG
+#elif INTPTR_MAX == LONG_MAX
+#define NPY_INTP NPY_LONG
+#define NPY_UINTP NPY_ULONG
+#elif INTPTR_MAX == INT_MAX
+#define NPY_INTP NPY_INT
+#define NPY_UINTP NPY_UINT
+#else
+#define NPY_INTP NPY_LONGLONG
+#define NPY_UINTP NPY_ULONGLONG
+#endif
+#endif
 
 #define NPY_ARRAY_C_CONTIGUOUS 0x0001
 #define NPY_ARRAY_F_CONTIGUOUS 0x0002
@@ -589,7 +749,9 @@ static inline int PyDataType_ALIGNMENT(const PyArray_Descr *descr) {
 #define PyArrayDescr_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #define PyArrayDescr_TypeFull PyArrayDescr_Type
 #define PyArrayDTypeMeta_Type (*_molt_numpy_builtin_type_borrowed("type"))
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
 #define PyArrayMethod_Type (*_molt_numpy_builtin_type_borrowed("object"))
+#endif
 #define PyGenericArrType_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #define PyArrayArrayConverter_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #define PyArrayFlags_Type (*_molt_numpy_builtin_type_borrowed("object"))
@@ -634,6 +796,7 @@ static inline int PyDataType_ALIGNMENT(const PyArray_Descr *descr) {
 #define PyObjectArrType_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #define PyTimeIntegerArrType_Type (*_molt_numpy_builtin_type_borrowed("object"))
 
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
 #define PyArray_BoolDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("bool"))
 #define PyArray_PyLongDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("int"))
 #define PyArray_PyFloatDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("float"))
@@ -646,6 +809,19 @@ static inline int PyDataType_ALIGNMENT(const PyArray_Descr *descr) {
 #define PyArray_PyComplexDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("complex"))
 #define PyArray_ComplexAbstractDType PyArray_PyComplexDType
 #define PyArray_DefaultIntDType PyArray_PyLongDType
+#endif
+
+#ifndef NPY_BEGIN_THREADS_DEF
+#define NPY_BEGIN_THREADS_DEF
+#define NPY_BEGIN_THREADS do { } while (0)
+#define NPY_END_THREADS do { } while (0)
+#define NPY_BEGIN_THREADS_DESCR(dtype) do { (void)(dtype); } while (0)
+#define NPY_END_THREADS_DESCR(dtype) do { (void)(dtype); } while (0)
+#define NPY_BEGIN_THREADS_THRESHOLDED(loop_size) do { (void)(loop_size); } while (0)
+#define NPY_ALLOW_C_API_DEF
+#define NPY_ALLOW_C_API do { } while (0)
+#define NPY_DISABLE_C_API do { } while (0)
+#endif
 
 static PyDataMem_Handler PyDataMem_DefaultHandler = {
     "molt",

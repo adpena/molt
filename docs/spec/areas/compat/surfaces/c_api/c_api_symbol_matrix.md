@@ -15,13 +15,30 @@
   and `include/molt/Python.h` now carries a broad partial CPython source-compat
   layer plus expanded NumPy source-compat headers under `include/numpy/`
   covering dtype/type-object exports, `PyDataType_*` and `PyDataMem_*`
-  helpers, array flag/conversion/copy/setup shims, upstream-shaped internal
-  include wrappers, and fail-fast `PyUFunc_*` constructor/registration stubs.
-- **Latest scan baseline (2026-03-05):** `Py*` symbol surface exported by
-  `include/molt/Python.h` + `include/numpy/*.h` (+ `include/datetime.h`) is
-  `770` tokens. C-source sdist scans report missing symbols: NumPy `2.4.2`
-  `873`, pandas `3.0.1` `28`,
-  polars `1.38.1` `0`.
+  helpers, array flag/conversion/copy/setup shims, generated-config bridge
+  headers (`_numpyconfig.h`, `config.h`, `npy_cpu_dispatch_config.h`,
+  `numpy/npy_cpu.h`), `numpyconfig.h` / `utils.h`, `NPY_UNUSED` / `NPY_TLS` /
+  visibility helpers, `NpyAuxData` lifecycle macros, legacy
+  `PyUFunc_Loop1d`/`PyUFuncObject` source shapes, and fail-fast `PyUFunc_*`
+  constructor/registration stubs. `include/molt/Python.h` also now covers
+  `inttypes.h`, `PY_VERSION_HEX`, `PyErr_BadInternalCall`, selected
+  weakref/unicode/private-helper shims, and NumPy-core `PYTHONCAPI_COMPAT`
+  suppression so vendored `pythoncapi-compat` does not collide with
+  libmolt-owned helpers during `_MULTIARRAYMODULE` / `_UMATHMODULE` builds.
+- **Latest scan baseline (2026-03-06):** archived C-source sdist scans report
+  missing symbols: NumPy `2.4.2` `239` (coverage `0.631`), pandas `3.0.1` `0`
+  (coverage `1.000`). Real `clang -fsyntax-only` checks now pass NumPy
+  `limited_api1.c` / `limited_api_latest.c`, NumPy
+  `numpy/_core/src/multiarray/npy_static_data.c` (with `-Wno-sign-compare` to
+  ignore upstream warning noise), NumPy
+  `numpy/_core/src/umath/ufunc_type_resolution.c`, and all checked pandas
+  `_libs/src` translation units including `parser/tokenizer.c` without any
+  forced `inttypes.h` include. The checked NumPy-core frontier is now split
+  between private/generated NumPy build artifacts (`arraytypes.h` after the
+  config-header bridge in `conversion_utils.c`) and deeper internal source
+  closure in `scalarapi.c` (for example `PyArray_DiscoverDTypeAndShape`,
+  `PyArray_AssignFromCache`, `PyArray_NewFromDescr*`, `npy_dtype_info`,
+  `NPY_NSCALARKINDS`, and `PyArrayScalar_VAL` macro-family gaps).
 - **Hollow Symbols (future):** Some symbols may exist but return generic errors or empty values if their functionality (e.g., GC inspection) is not supported (TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:planned): define hollow-symbol policy + error surface).
 
 ## 2. Symbol Matrix
@@ -43,8 +60,8 @@ Status legend:
 | `PyObject_IsTrue` | bool(o) | Partial | `include/molt/Python.h` maps to `molt_object_truthy`. |
 | `PyObject_RichCompare`| compare | Partial | Header shim currently routes through `PyObject_RichCompareBool` and returns `Py_True`/`Py_False` (no `NotImplemented` lane yet). |
 | `PyObject_RichCompareBool`| compare bool | Partial | `include/molt/Python.h` maps `==`/`!=` to `molt_object_equal`/`molt_object_not_equal` and falls back to dunder calls for ordered comparisons. |
-| `PyObject_GetIter` | iter(o) | Missing | - |
-| `PyObject_Next` | next(o) | Missing | - |
+| `PyObject_GetIter` | iter(o) | Partial | `include/molt/Python.h` maps to `molt_object_get_iter`. |
+| `PyIter_Next` | next(o) | Partial | `include/molt/Python.h` maps to `molt_iterator_next`. |
 
 ### 2.2 Numbers (PyNumber_*)
 | Symbol | Semantics | Status | Notes |
@@ -54,8 +71,8 @@ Status legend:
 | `PyNumber_Multiply` | a * b | Partial | `include/molt/Python.h` maps to `molt_number_mul`. |
 | `PyNumber_TrueDivide` | a / b | Partial | `include/molt/Python.h` maps to `molt_number_truediv`. |
 | `PyNumber_FloorDivide`| a // b | Partial | `include/molt/Python.h` maps to `molt_number_floordiv`. |
-| `PyNumber_Long` | int(o) | Partial | `include/molt/Python.h` maps to `molt_int_as_i64`. |
-| `PyNumber_Float` | float(o) | Partial | `include/molt/Python.h` maps to `molt_float_as_f64`. |
+| `PyNumber_Long` | int(o) | Partial | `include/molt/Python.h` maps to `molt_number_long`. |
+| `PyNumber_Float` | float(o) | Partial | runtime/native symbol exists in `runtime/molt-runtime/src/c_api.rs`; `include/molt/Python.h` does not currently expose a source-compat wrapper. |
 
 ### 2.3 Sequences (PySequence_*)
 | Symbol | Semantics | Status | Notes |
@@ -64,19 +81,31 @@ Status legend:
 | `PySequence_Size` | len(o) | Partial | `include/molt/Python.h` maps to `molt_sequence_length`. |
 | `PySequence_GetItem` | o[i] | Partial | `include/molt/Python.h` maps to `molt_sequence_getitem`. |
 | `PySequence_SetItem` | o[i] = v | Partial | `include/molt/Python.h` maps to `molt_sequence_setitem`. |
-| `PySequence_DelItem` | del o[i] | Missing | - |
-| `PySequence_List` | list(o) | Missing | - |
-| `PySequence_Tuple` | tuple(o) | Missing | - |
+| `PySequence_DelItem` | del o[i] | Partial | Header shim routes through `__delitem__` via `PyObject_CallMethod`. |
+| `PySequence_List` | list(o) | Partial | `include/molt/Python.h` maps to `molt_sequence_to_list`. |
+| `PySequence_Tuple` | tuple(o) | Partial | `include/molt/Python.h` maps to `molt_sequence_to_tuple`. |
 
 ### 2.4 Mapping (PyMapping_*)
 | Symbol | Semantics | Status | Notes |
 | --- | --- | --- | --- |
-| `PyMapping_Check` | is mapping? | Missing | - |
+| `PyMapping_Check` | is mapping? | Partial | Header shim checks `dict` or `__getitem__` + `keys` capability. |
 | `PyMapping_Size` | len(o) | Partial | `include/molt/Python.h` maps to `molt_mapping_length`. |
-| `PyMapping_GetItemKey`| o[key] | Partial | `include/molt/Python.h` maps to `molt_mapping_getitem`/`PyMapping_GetItemString`. |
+| `PyMapping_GetItemString`| o["key"] via C string | Partial | `include/molt/Python.h` maps to `molt_mapping_getitem`. |
 | `PyMapping_SetItemString`| o[key] = v | Partial | `include/molt/Python.h` maps to `molt_mapping_setitem`. |
-| `PyMapping_Keys` | o.keys() | Partial | `include/molt/Python.h` maps to `molt_mapping_keys`. |
-| `PyMapping_Values` | o.values() | Missing | Returns list. |
+| `PyMapping_Keys` | o.keys() | Partial | Header shim calls `keys()` then normalizes the result to a list; the runtime/native symbol now materializes the same list semantics. |
+| `PyMapping_Values` | o.values() | Partial | Header shim calls `values()` then normalizes the result to a list; the runtime/native symbol now materializes the same list semantics. |
+| `PyMapping_Items` | o.items() | Partial | Header shim calls `items()` then normalizes the result to a list; the runtime/native symbol now materializes the same list semantics. |
+| `PyMapping_HasKey` | `key in o` | Partial | Header shim uses containment and clears exceptions to preserve the historical always-succeeds contract. |
+| `PyMapping_HasKeyString` | `key in o` via C string | Partial | Header shim interns a temporary UTF-8 key and clears exceptions to preserve the historical always-succeeds contract. |
+
+### 2.4a Dictionaries (PyDict_*)
+| Symbol | Semantics | Status | Notes |
+| --- | --- | --- | --- |
+| `PyDict_DelItem` | delete dict[key] | Partial | Header shim now routes through `__delitem__`; runtime/native symbol is implemented. |
+| `PyDict_DelItemString` | delete dict[key] via C string | Partial | Header shim now creates a temporary Unicode key and delegates to `PyDict_DelItem`; runtime/native symbol is implemented. |
+| `PyDict_Keys` | list(dict.keys()) | Partial | Header shim delegates to `PyMapping_Keys`; runtime/native symbol now materializes a list. |
+| `PyDict_Values` | list(dict.values()) | Partial | Header shim delegates to `PyMapping_Values`; runtime/native symbol now materializes a list. |
+| `PyDict_Items` | list(dict.items()) | Partial | Header shim delegates to `PyMapping_Items`; runtime/native symbol now materializes a list. |
 
 ### 2.5 Exceptions (PyErr_*)
 | Symbol | Semantics | Status | Notes |
@@ -104,7 +133,13 @@ Status legend:
 | `PyType_GetModuleState` | Get associated module state from heap type | Partial | Header shim maps through `PyType_GetModule` + `PyModule_GetState` semantics. |
 | `PyType_GetModuleByDef` | Resolve associated module via `PyModuleDef*` across MRO | Partial | Header shim performs an O(n) MRO walk with fail-fast errors when no matching module definition is associated. |
 | `PyImport_ImportModule` | Import module by dotted name | Partial | Header shim maps to `molt_module_import` and returns imported module object on success. |
-| `PyCapsule_Import` | Import capsule pointer by dotted path | Partial | Header shim imports `module.attr` then resolves pointer via `PyCapsule_GetPointer`. |
+| `PyCapsule_New` | Create capsule from pointer + optional name | Partial | `include/molt/Python.h` maps to runtime/native `molt_capsule_new`. |
+| `PyCapsule_GetName` | Get capsule name bytes | Partial | `include/molt/Python.h` maps to runtime/native `molt_capsule_get_name_ptr`. |
+| `PyCapsule_GetPointer` | Resolve capsule pointer with optional name check | Partial | `include/molt/Python.h` maps to runtime/native `molt_capsule_get_pointer`. |
+| `PyCapsule_IsValid` | Capsule shape + optional name validation | Partial | `include/molt/Python.h` maps to runtime/native `molt_capsule_is_valid`. |
+| `PyCapsule_GetContext` | Get capsule context pointer | Partial | `include/molt/Python.h` maps to runtime/native `molt_capsule_get_context`. |
+| `PyCapsule_SetContext` | Set capsule context pointer | Partial | `include/molt/Python.h` maps to runtime/native `molt_capsule_set_context`. |
+| `PyCapsule_Import` | Import capsule pointer by dotted path | Partial | `include/molt/Python.h` maps to runtime/native `molt_capsule_import`. |
 | `PyThreadState_Get` | Current thread state | Partial | Header shim returns a singleton thread-state token when GIL is held and raises otherwise. |
 | `PyGILState_Ensure` | Acquire GIL if needed | Partial | Header shim routes to `molt_gil_is_held` + `molt_gil_acquire`. |
 | `PyGILState_Release` | Release ensured GIL | Partial | Header shim conditionally routes to `molt_gil_release`. |
@@ -152,9 +187,9 @@ Status legend:
 | --- | --- | --- | --- |
 | `PyBytes_FromStringAndSize` | bytes from data | Partial | `include/molt/Python.h` maps to `molt_bytes_from`. |
 | `PyBytes_AsStringAndSize` | bytes pointer+len | Partial | `include/molt/Python.h` maps to `molt_bytes_as_ptr`. |
-| `PyByteArray_FromStringAndSize` | bytearray from data | Planned (v0) | - |
-| `PyByteArray_AsString` | bytearray pointer | Planned (v0) | - |
-| `PyByteArray_Size` | bytearray length | Missing | Prefer buffer protocol. |
+| `PyByteArray_FromStringAndSize` | bytearray from data | Partial | `include/molt/Python.h` maps to `molt_bytearray_from`. |
+| `PyByteArray_AsString` | bytearray pointer | Partial | `include/molt/Python.h` maps to `molt_bytearray_as_ptr`. |
+| `PyByteArray_Size` | bytearray length | Partial | Header shim derives length through `molt_bytearray_as_ptr`. |
 
 ### 2.10 Argument Parsing
 | Symbol | Semantics | Status | Notes |
@@ -186,26 +221,35 @@ surface:
   `molt_err_restore`, `molt_err_matches`.
 - Object protocol: `molt_object_getattr`, `molt_object_setattr`,
   `molt_object_getattr_bytes`, `molt_object_setattr_bytes`,
-  `molt_object_hasattr`, `molt_object_call`, `molt_object_repr`,
-  `molt_object_str`, `molt_object_truthy`, `molt_object_equal`,
-  `molt_object_not_equal`, `molt_object_contains`.
+  `molt_object_hasattr`, `molt_object_call`, `molt_object_get_iter`,
+  `molt_iterator_next`, `molt_object_repr`, `molt_object_str`,
+  `molt_object_truthy`, `molt_object_equal`, `molt_object_not_equal`,
+  `molt_object_contains`, `molt_capsule_new`, `molt_capsule_get_name_ptr`,
+  `molt_capsule_get_pointer`, `molt_capsule_is_valid`,
+  `molt_capsule_get_context`, `molt_capsule_set_context`,
+  `molt_capsule_import`.
 - Numerics: `molt_number_add`, `molt_number_sub`, `molt_number_mul`,
   `molt_number_truediv`, `molt_number_floordiv`, `molt_number_long`,
   `molt_number_float`.
 - Sequence/mapping: `molt_sequence_length`, `molt_sequence_getitem`,
-  `molt_sequence_setitem`, `molt_mapping_getitem`, `molt_mapping_setitem`,
-  `molt_mapping_length`, `molt_mapping_keys`, `molt_tuple_from_array`,
-  `molt_list_from_array`, `molt_dict_from_pairs`.
+  `molt_sequence_setitem`, `molt_sequence_to_list`, `molt_sequence_to_tuple`,
+  `molt_mapping_getitem`, `molt_mapping_setitem`, `molt_mapping_length`,
+  `molt_mapping_keys`, `molt_tuple_from_array`, `molt_list_from_array`,
+  `molt_dict_from_pairs`.
 - Buffer/bytes: `molt_buffer_acquire`, `molt_buffer_release`,
   `molt_bytes_from`, `molt_bytes_as_ptr`, `molt_string_from`,
   `molt_string_as_ptr`, `molt_bytearray_from`, `molt_bytearray_as_ptr`.
 - Type/module parity: `molt_type_ready`, `molt_module_create`,
-  `molt_module_import`, `molt_module_get_dict`, `molt_module_add_object`,
+  `molt_module_import`, `molt_module_get_dict`, `molt_module_capi_register`,
+  `molt_module_capi_get_def`, `molt_module_capi_get_state`,
+  `molt_module_state_add`, `molt_module_state_find`,
+  `molt_module_state_remove`, `molt_module_add_object`,
   `molt_module_add_object_bytes`, `molt_module_get_object`,
-  `molt_module_get_object_bytes`, `molt_module_add_int_constant`,
-  `molt_module_add_string_constant`.
+  `molt_module_get_object_bytes`, `molt_module_add_type`,
+  `molt_module_add_int_constant`, `molt_module_add_string_constant`,
+  `molt_cfunction_create_bytes`, `molt_module_add_cfunction_bytes`.
 
 ## 5. TODOs
 - TODO(c-api, owner:runtime, milestone:SL3, priority:P1, status:partial): Implement the remaining `libmolt` C-API v0 surface per `0214` and keep this matrix aligned with real coverage.
 - TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:partial): Expand `PyArg_ParseTuple`/`PyArg_ParseTupleAndKeywords` shim coverage and tighten edge-case parity diagnostics.
-- TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:planned): Define the `Py_LIMITED_API` version Molt targets (3.10?).
+- TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:partial): Keep the documented `Py_LIMITED_API` target aligned with the shipped 3.12 (`0x030C0000`) compatibility lane and document any future version-gated deltas explicitly.
