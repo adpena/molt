@@ -442,6 +442,43 @@ impl SimpleIR {
             }
         }
 
+        // Phase 2.5: Strip the module-init boilerplate at the top of
+        // molt_init___main__.  The boilerplate sets up __file__, __package__,
+        // importlib.machinery, __spec__, etc. — all Python module machinery
+        // that is meaningless in Luau.  We find the first user-code op
+        // (func_new for a user-defined function) and nop everything before it,
+        // except for module_new/module_cache_set which create the module dict.
+        if let Some(init_main) = self
+            .functions
+            .iter_mut()
+            .find(|f| f.name == "molt_init___main__")
+        {
+            // Find the first func_new that defines a user function.
+            let first_user_op = init_main
+                .ops
+                .iter()
+                .position(|op| op.kind == "func_new");
+            if let Some(cutoff) = first_user_op {
+                let mut stripped = 0;
+                for op in &mut init_main.ops[..cutoff] {
+                    let kind = op.kind.as_str();
+                    // Keep the module dict creation ops.
+                    if matches!(kind, "const_str" | "module_new" | "module_cache_set" | "nop") {
+                        continue;
+                    }
+                    op.kind = "nop".to_string();
+                    op.s_value = None;
+                    op.args = None;
+                    stripped += 1;
+                }
+                if stripped > 0 {
+                    eprintln!(
+                        "[molt-dce] Stripped {stripped} module-init boilerplate ops before user code"
+                    );
+                }
+            }
+        }
+
         // Phase 3: Run standard tree_shake to remove now-unreachable functions.
         self.tree_shake();
     }
