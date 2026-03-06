@@ -434,6 +434,14 @@ def test_extension_scan_reports_missing_symbols_without_gate(
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "ok"
     data = payload["data"]
+    assert data["header_contract"]["version"] == "v0"
+    assert data["header_contract"]["stable_abi_headers"] == ["molt/molt.h"]
+    assert data["headers_consulted_count"] == len(data["headers_consulted"])
+    assert "molt/Python.h" in data["headers_consulted"]
+    assert "datetime.h" in data["headers_consulted"]
+    assert "numpy/arrayobject.h" in data["headers_consulted"]
+    assert "numpy/arraytypes.h" not in data["headers_consulted"]
+    assert data["missing_contract_headers"] == []
     assert "PyType_FromSpec" in data["supported_symbols"]
     assert "PyType_FromModuleAndSpec" in data["supported_symbols"]
     assert "PyType_GetModule" in data["supported_symbols"]
@@ -880,6 +888,7 @@ def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -
     assert manifest["molt_c_api_version"] == "1"
     assert manifest["capabilities"] == ["fs.read"]
     assert manifest["abi_tag"] == "molt_abi1"
+    assert manifest["header_contract"] == cli._extension_header_contract()
 
     with zipfile.ZipFile(wheel_path) as zf:
         names = set(zf.namelist())

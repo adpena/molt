@@ -16,7 +16,7 @@ Native concurrency is foundational to Molt. This document defines a goroutine-cl
 
 ## User Model
 ```python
-from molt import Channel, channel, spawn
+from moltlib.concurrency import Channel, channel, spawn
 
 async def worker(jobs, results):
     while True:
@@ -30,17 +30,22 @@ def main():
 ```
 
 ### Current API Surface (CPython fallback)
-- `molt.channel()` and `molt.Channel` wrap `molt_chan_*` intrinsics via shims.
-- `molt.spawn()` dispatches to `molt_spawn` or falls back to a background event loop.
+- `moltlib.concurrency.channel()` and `moltlib.concurrency.Channel` wrap
+  `molt_chan_*` intrinsics via shims.
+- `moltlib.concurrency.spawn()` dispatches to `molt_spawn` or falls back to a
+  background event loop.
 - Async-friendly helpers: `Channel.send_async()` / `Channel.recv_async()` for event-loop usage.
+- Compatibility note: `molt.concurrency.*` remains available as a shim, but the
+  root `molt` package no longer re-exports these helpers.
 
 ### Cancellation Tokens (Structured)
 - Each task runs with a **current cancellation token**; by default tasks inherit
   the token from their parent (request-scoped default).
 - Tokens can be overridden inside a task (task-scoped override) by setting a new
   current token; the new token becomes the inherited token for any spawned work.
-- Cancellation is **cooperative**: handlers should check `molt.cancelled()` or
-  call `token.cancelled()` at safe points and abort work promptly.
+- Cancellation is **cooperative**: handlers should check
+  `moltlib.concurrency.cancelled()` (or the `molt.concurrency` shim) or call
+  `token.cancelled()` at safe points and abort work promptly.
 
 ## Runtime
 - Work-stealing scheduler (multicore scaling)

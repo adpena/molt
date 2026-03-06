@@ -46,6 +46,7 @@ Long-form topic docs live under `docs/spec/areas/`.
 - Language surface index: [docs/spec/areas/compat/surfaces/language/language_surface_matrix.md](docs/spec/areas/compat/surfaces/language/language_surface_matrix.md)
 - Stdlib surface index: [docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md)
 - C-API surface index: [docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md](docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md)
+- libmolt extension ABI contract: [docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md](docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md)
 - Stdlib lowering execution plan: [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md)
 - Tkinter lowering execution plan: [docs/spec/areas/compat/plans/tkinter_lowering_plan.md](docs/spec/areas/compat/plans/tkinter_lowering_plan.md)
 - C-API v0 bootstrap symbol list (including scalar/object-bytes/array constructors, type/module parity wrappers, runtime-owned module-state registries, expanded scan-driven CPython-compat shim coverage via `include/Python.h`, mapping/dict collection materialization and delete helpers, bytearray accessors, and the widened NumPy header lane for dtype/data-memory/ufunc scaffolding, generated-config bridges, and real-source compile tracking): [docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md](docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md)
@@ -56,6 +57,7 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0211 Compatibility + fallback contract: [docs/spec/areas/compat/contracts/compatibility_fallback_contract.md](docs/spec/areas/compat/contracts/compatibility_fallback_contract.md)
 - 0216 Dynamic execution + reflection policy contract: [docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md](docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md)
 - 0213 Import system contract: [docs/spec/areas/compat/contracts/import_system_contract.md](docs/spec/areas/compat/contracts/import_system_contract.md)
+- 0217 libmolt extension ABI contract: [docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md](docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md)
 - 0215 Verified subset contract: [docs/spec/areas/compat/contracts/verified_subset_contract.md](docs/spec/areas/compat/contracts/verified_subset_contract.md)
 
 ## Security
