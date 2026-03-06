@@ -360,11 +360,15 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
 
     let _env_guard = DaemonEnvOverridesGuard::apply(job.env_overrides.as_ref());
     if job.is_luau {
+        let job_id = job.id.clone();
+        let output_path = job.output.clone();
+        let mut ir = job.ir;
+        ir.tree_shake();
         let mut backend = LuauBackend::new();
-        let luau_source = backend.compile(&job.ir);
-        if let Err(err) = write_output(&job.output, luau_source.as_bytes()) {
+        let luau_source = backend.compile(&ir);
+        if let Err(err) = write_output(&output_path, luau_source.as_bytes()) {
             return DaemonJobResponse {
-                id: job.id,
+                id: job_id,
                 ok: false,
                 cached: false,
                 cache_tier: None,
@@ -372,7 +376,7 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
             };
         }
         return DaemonJobResponse {
-            id: job.id,
+            id: job_id,
             ok: true,
             cached: false,
             cache_tier: None,
@@ -836,7 +840,7 @@ fn main() -> io::Result<()> {
     }
 
     let mut deserializer = serde_json::Deserializer::from_str(&buffer);
-    let ir: SimpleIR = match serde_path_to_error::deserialize(&mut deserializer) {
+    let mut ir: SimpleIR = match serde_path_to_error::deserialize(&mut deserializer) {
         Ok(ir) => ir,
         Err(err) => {
             let path = err.path().to_string();
@@ -860,6 +864,7 @@ fn main() -> io::Result<()> {
     let mut file = File::create(output_file)?;
 
     if is_luau {
+        ir.tree_shake();
         let mut backend = LuauBackend::new();
         let luau_source = backend.compile(&ir);
         file.write_all(luau_source.as_bytes())?;
