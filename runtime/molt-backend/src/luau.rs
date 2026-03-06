@@ -1728,14 +1728,8 @@ molt_module_cache["json"] = json
                 }
             }
             "module_set_attr" | "module_del_global" => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                let attr = op.s_value.as_deref().unwrap_or("unknown");
-                let attr = sanitize_ident(attr);
-                if args.len() >= 2 {
-                    let module = sanitize_ident(&args[0]);
-                    let val = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("{module}.{attr} = {val}"));
-                }
+                // Module dict mutations are no-ops in Luau — the __main__
+                // module dict isn't used at runtime.
             }
 
             // ================================================================
@@ -1925,9 +1919,10 @@ molt_module_cache["json"] = json
             // Line info (debug)
             // ================================================================
             "line" => {
-                if let Some(val) = op.value {
-                    self.emit_line(&format!("-- line {val}"));
-                }
+                // Skip line markers in production output — they add
+                // ~3% to file size with no runtime benefit.
+                // Uncomment for debugging: self.emit_line(&format!("-- line {val}"));
+
             }
 
             // ================================================================
