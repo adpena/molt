@@ -220,6 +220,19 @@ INLINE_SAFE_INT_RESULT_OPS = {
     "INVERT",
 }
 
+# Raw-int lowering is intentionally narrower than the general fast-int surface.
+# These ops currently have explicit raw-i64 handling end-to-end; everything else
+# must stay boxed/fast_int until the backend/runtime contract grows with tests.
+RAW_INT_PROMOTABLE_OPS = {"ADD", "INPLACE_ADD", "MUL", "MOD", "LT"}
+RAW_INT_CONTROL_CONSUMERS = {"LOOP_BREAK_IF_TRUE", "LOOP_BREAK_IF_FALSE"}
+RAW_INT_CARRIER_OPS = {
+    "LOOP_INDEX_START",
+    "LOOP_INDEX_NEXT",
+    "LOOP_CARRY_INIT",
+    "LOOP_CARRY_UPDATE",
+}
+RAW_INT_LOWERABLE_OPS = RAW_INT_PROMOTABLE_OPS | RAW_INT_CONTROL_CONSUMERS | {"CONST"}
+
 BUILTIN_TYPE_TAGS = {
     "int": 1,
     "float": 2,
@@ -1924,6 +1937,157 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _is_raw_int(op: MoltOp) -> bool:
         """Check if the raw_int promotion pass marked this op for raw i64 mode."""
         return bool(op.metadata and op.metadata.get("raw_int"))
+
+    def _collect_specialized_int_failures(
+        self,
+        ops: list[MoltOp],
+        *,
+        inline_int_safe_names: set[str] | None = None,
+    ) -> list[tuple[int, str, str]]:
+        if inline_int_safe_names is None:
+            inline_int_safe_names = self._compute_inline_int_safe_names(ops)
+
+        failures: list[tuple[int, str, str]] = []
+        raw_value_names: set[str] = set()
+
+        def raw_arg_names(op: MoltOp) -> list[str]:
+            return [
+                arg.name
+                for arg in op.args
+                if isinstance(arg, MoltValue) and arg.name != "none"
+            ]
+
+        for idx, op in enumerate(ops):
+            result_name = op.result.name
+            guard_fast_int = bool(op.metadata and op.metadata.get("guard_fast_int"))
+            raw_int = self._is_raw_int(op)
+
+            if guard_fast_int:
+                if op.kind not in FAST_INT_BINARY_OPS | FAST_INT_UNARY_OPS:
+                    failures.append(
+                        (
+                            idx,
+                            op.kind,
+                            "guard_fast_int is only legal on fast-int arithmetic/comparison ops",
+                        )
+                    )
+                unsafe_args: list[str] = []
+                for arg_index, arg in enumerate(op.args):
+                    if not isinstance(arg, MoltValue):
+                        unsafe_args.append(f"arg{arg_index}")
+                        continue
+                    if arg.type_hint != "int" or arg.name not in inline_int_safe_names:
+                        unsafe_args.append(arg.name)
+                if unsafe_args:
+                    failures.append(
+                        (
+                            idx,
+                            op.kind,
+                            "guard_fast_int operands are not inline-int safe: "
+                            + ", ".join(sorted(unsafe_args)),
+                        )
+                    )
+
+            if raw_int:
+                if op.kind not in RAW_INT_LOWERABLE_OPS:
+                    failures.append(
+                        (
+                            idx,
+                            op.kind,
+                            "raw_int is not supported for this op kind",
+                        )
+                    )
+                elif op.kind == "CONST":
+                    if (
+                        not op.args
+                        or not self._is_inline_int_literal(op.args[0])
+                        or op.result.type_hint != "int"
+                    ):
+                        failures.append(
+                            (
+                                idx,
+                                op.kind,
+                                "raw_int const must be an inline-safe int literal with int result hint",
+                            )
+                        )
+                elif op.kind in RAW_INT_PROMOTABLE_OPS:
+                    raw_inputs = raw_arg_names(op)
+                    missing_raw = [
+                        name for name in raw_inputs if name not in raw_value_names
+                    ]
+                    if missing_raw:
+                        failures.append(
+                            (
+                                idx,
+                                op.kind,
+                                "raw_int operands are not proven raw values: "
+                                + ", ".join(sorted(missing_raw)),
+                            )
+                        )
+                    if (
+                        op.kind in FAST_INT_INT_RESULT_OPS
+                        and op.result.type_hint != "int"
+                    ):
+                        failures.append(
+                            (
+                                idx,
+                                op.kind,
+                                "raw_int integer result ops must keep int result hints",
+                            )
+                        )
+                    if (
+                        op.kind in FAST_INT_BOOL_RESULT_OPS
+                        and op.result.type_hint != "bool"
+                    ):
+                        failures.append(
+                            (
+                                idx,
+                                op.kind,
+                                "raw_int comparison ops must keep bool result hints",
+                            )
+                        )
+                elif op.kind in RAW_INT_CONTROL_CONSUMERS:
+                    cond = op.args[0] if op.args else None
+                    cond_name = cond.name if isinstance(cond, MoltValue) else None
+                    if cond_name is None or cond_name not in raw_value_names:
+                        failures.append(
+                            (
+                                idx,
+                                op.kind,
+                                "raw_int loop conditions must consume raw compare values",
+                            )
+                        )
+
+            produces_raw = False
+            if op.kind == "UNBOX_TO_RAW_INT":
+                produces_raw = True
+            elif raw_int and op.kind in RAW_INT_PROMOTABLE_OPS | {"CONST"}:
+                produces_raw = True
+            elif op.kind in RAW_INT_CARRIER_OPS:
+                carrier_arg: MoltValue | None = None
+                if op.kind in {
+                    "LOOP_INDEX_START",
+                    "LOOP_INDEX_NEXT",
+                    "LOOP_CARRY_INIT",
+                }:
+                    first_arg = op.args[0] if op.args else None
+                    if isinstance(first_arg, MoltValue):
+                        carrier_arg = first_arg
+                elif op.kind == "LOOP_CARRY_UPDATE" and len(op.args) >= 2:
+                    last_arg = op.args[-1]
+                    if isinstance(last_arg, MoltValue):
+                        carrier_arg = last_arg
+                produces_raw = (
+                    carrier_arg is not None and carrier_arg.name in raw_value_names
+                )
+
+            if result_name != "none":
+                if produces_raw:
+                    raw_value_names.add(result_name)
+                else:
+                    raw_value_names.discard(result_name)
+
+        return failures
 
     def _should_fast_float(self, op: MoltOp) -> bool:
         if not self._hints_enabled():
@@ -10167,14 +10331,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.boxed_locals[name] = cell
             final_val = self.locals.get(name)
             if final_val is not None:
+                store_val = final_val
+                if name in all_carry or name == index_name:
+                    boxed_final = MoltValue(
+                        self.next_var(), type_hint=final_val.type_hint
+                    )
+                    self.emit(
+                        MoltOp(
+                            kind="BOX_FROM_RAW_INT",
+                            args=[final_val],
+                            result=boxed_final,
+                        )
+                    )
+                    store_val = boxed_final
                 idx_var = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="CONST", args=[0], result=idx_var))
-                # The raw_int pass will auto-insert BOX_FROM_RAW_INT when it
-                # sees STORE_INDEX consuming a raw carry value.
                 self.emit(
                     MoltOp(
                         kind="STORE_INDEX",
-                        args=[cell, idx_var, final_val],
+                        args=[cell, idx_var, store_val],
                         result=MoltValue("none"),
                     )
                 )
@@ -27101,6 +27276,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self._active_midend_function_name = "<direct>"
         ops = self._run_ir_midend_passes(ops)
         inline_int_safe_names = self._compute_inline_int_safe_names(ops)
+        specialization_failures = self._collect_specialized_int_failures(
+            ops, inline_int_safe_names=inline_int_safe_names
+        )
+        if specialization_failures:
+            message = [
+                "specialized-int IR verifier rejected invalid fast_int/raw_int annotations:"
+            ]
+            for idx, kind, detail in specialization_failures[:8]:
+                message.append(f"- op#{idx} {kind}: {detail}")
+            if len(specialization_failures) > 8:
+                message.append(
+                    f"- ... {len(specialization_failures) - 8} more failure(s)"
+                )
+            raise RuntimeError("\n".join(message))
         json_ops: list[dict[str, Any]] = []
 
         def should_fast_int(op: MoltOp) -> bool:
@@ -36667,34 +36856,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if enable_env in {"0", "false", "no", "off"}:
             return ops
 
-        raw_int_ops = {
-            "ADD",
-            "SUB",
-            "MUL",
-            "INPLACE_ADD",
-            "INPLACE_SUB",
-            "INPLACE_MUL",
-            "MOD",
-            "FLOORDIV",
-            "DIV",
-            "BIT_OR",
-            "BIT_AND",
-            "BIT_XOR",
-            "INPLACE_BIT_OR",
-            "INPLACE_BIT_AND",
-            "INPLACE_BIT_XOR",
-            "LSHIFT",
-            "RSHIFT",
-            "LT",
-            "LE",
-            "GT",
-            "GE",
-            "EQ",
-            "NE",
-        }
+        raw_int_ops = RAW_INT_PROMOTABLE_OPS
         loop_cond_ops = {"LOOP_BREAK_IF_TRUE", "LOOP_BREAK_IF_FALSE"}
         # Ops that safely consume raw i64 values (don't need boxing)
-        raw_safe_consumers = loop_cond_ops | {"LOOP_CARRY_UPDATE"}
+        raw_safe_consumers = loop_cond_ops | {"LOOP_CARRY_UPDATE", "LOOP_INDEX_NEXT"}
         inline_int_safe_names = self._compute_inline_int_safe_names(ops)
 
         # Phase 1: identify variables that are produced AND consumed entirely
@@ -36895,9 +37060,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 raw_vars.add(op.result.name)
                 new_ops.append(op)
 
-            elif op.kind in ("LOOP_CARRY_INIT", "LOOP_CARRY_UPDATE"):
+            elif op.kind in RAW_INT_CARRIER_OPS:
                 # If the input value is raw, propagate raw-ness to the carry var.
-                last_arg = op.args[-1] if op.args else None
+                last_arg = (
+                    op.args[-1]
+                    if op.kind == "LOOP_CARRY_UPDATE"
+                    else (op.args[0] if op.args else None)
+                )
                 if (
                     last_arg is not None
                     and isinstance(last_arg, MoltValue)

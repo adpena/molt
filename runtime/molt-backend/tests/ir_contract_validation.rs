@@ -86,3 +86,107 @@ fn validate_simple_ir_allows_dict_receiver_merge_placeholders() {
     };
     assert!(validate_simple_ir(&ir).is_ok());
 }
+
+#[test]
+fn validate_simple_ir_rejects_unsupported_raw_int_kinds() {
+    let mut lhs = op("const");
+    lhs.value = Some(7);
+    lhs.out = Some("v0".to_string());
+    lhs.raw_int = Some(true);
+
+    let mut rhs = op("const");
+    rhs.value = Some(3);
+    rhs.out = Some("v1".to_string());
+    rhs.raw_int = Some(true);
+
+    let mut sub = op("sub");
+    sub.args = Some(vec!["v0".to_string(), "v1".to_string()]);
+    sub.out = Some("v2".to_string());
+    sub.raw_int = Some(true);
+
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_test_validate_raw_int_kind".to_string(),
+            params: Vec::new(),
+            ops: vec![lhs, rhs, sub],
+        }],
+        profile: None,
+    };
+    let err = validate_simple_ir(&ir).expect_err("expected raw_int kind rejection");
+    assert!(err.contains("does not support `raw_int`"));
+}
+
+#[test]
+fn validate_simple_ir_rejects_conflicting_specialized_int_flags() {
+    let mut lhs = op("const");
+    lhs.value = Some(7);
+    lhs.out = Some("v0".to_string());
+
+    let mut rhs = op("const");
+    rhs.value = Some(3);
+    rhs.out = Some("v1".to_string());
+
+    let mut add = op("add");
+    add.args = Some(vec!["v0".to_string(), "v1".to_string()]);
+    add.out = Some("v2".to_string());
+    add.fast_int = Some(true);
+    add.raw_int = Some(true);
+
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_test_validate_specialized_int_conflict".to_string(),
+            params: Vec::new(),
+            ops: vec![lhs, rhs, add],
+        }],
+        profile: None,
+    };
+    let err = validate_simple_ir(&ir).expect_err("expected specialized-int conflict rejection");
+    assert!(err.contains("cannot set both `fast_int` and `raw_int`"));
+}
+
+#[test]
+fn validate_simple_ir_accepts_raw_loop_index_carriers() {
+    let mut start = op("const");
+    start.value = Some(0);
+    start.out = Some("v0".to_string());
+    start.raw_int = Some(true);
+
+    let mut loop_index_start = op("loop_index_start");
+    loop_index_start.args = Some(vec!["v0".to_string()]);
+    loop_index_start.out = Some("idx".to_string());
+
+    let mut one = op("const");
+    one.value = Some(1);
+    one.out = Some("v1".to_string());
+    one.raw_int = Some(true);
+
+    let mut add = op("add");
+    add.args = Some(vec!["idx".to_string(), "v1".to_string()]);
+    add.out = Some("idx_plus_1".to_string());
+    add.raw_int = Some(true);
+
+    let mut loop_index_next = op("loop_index_next");
+    loop_index_next.args = Some(vec!["idx_plus_1".to_string()]);
+    loop_index_next.out = Some("idx2".to_string());
+
+    let mut stop = op("const");
+    stop.value = Some(10);
+    stop.out = Some("v2".to_string());
+    stop.raw_int = Some(true);
+
+    let mut lt = op("lt");
+    lt.args = Some(vec!["idx2".to_string(), "v2".to_string()]);
+    lt.out = Some("cmp".to_string());
+    lt.raw_int = Some(true);
+
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_test_validate_raw_loop_index_carriers".to_string(),
+            params: Vec::new(),
+            ops: vec![start, loop_index_start, one, add, loop_index_next, stop, lt],
+        }],
+        profile: None,
+    };
+
+    assert!(validate_simple_ir(&ir).is_ok());
+}
