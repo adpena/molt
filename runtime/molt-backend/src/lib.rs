@@ -569,6 +569,87 @@ impl SimpleIR {
             }
         }
 
+        // Phase 3.5: Flatten frame-slot wrappers.
+        // Pattern: `missing:vM → list_new:vW(vM)` creates a single-element
+        // table used as a mutable cell.  All accesses use constant index 0.
+        // Replace with a plain local variable: vW becomes the value directly.
+        for func in &mut self.functions {
+            // Step 1: Identify wrapper tables (missing → list_new pairs).
+            let mut wrapper_vars: HashSet<String> = HashSet::new();
+            let mut i = 0;
+            while i < func.ops.len() {
+                if func.ops[i].kind == "missing" {
+                    // Skip check_exception ops to find the list_new.
+                    let missing_out = func.ops[i].out.clone().unwrap_or_default();
+                    let mut j = i + 1;
+                    while j < func.ops.len() && func.ops[j].kind == "check_exception" {
+                        j += 1;
+                    }
+                    if j < func.ops.len()
+                        && matches!(func.ops[j].kind.as_str(), "list_new" | "build_list")
+                    {
+                        let args = func.ops[j].args.as_deref().unwrap_or(&[]);
+                        if args.len() == 1 && args[0] == missing_out {
+                            if let Some(ref wrapper_name) = func.ops[j].out {
+                                wrapper_vars.insert(wrapper_name.clone());
+                            }
+                            // Nop the missing op.
+                            func.ops[i].kind = "nop".to_string();
+                            func.ops[i].out = None;
+                            func.ops[i].args = None;
+                            // Convert list_new to const_none (plain nil variable).
+                            func.ops[j].kind = "const_none".to_string();
+                            func.ops[j].args = None;
+                        }
+                    }
+                }
+                i += 1;
+            }
+
+            if wrapper_vars.is_empty() {
+                continue;
+            }
+
+            // Step 2: Rewrite index/store_index on wrappers to direct access.
+            let mut rewritten = 0;
+            for op in &mut func.ops {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                match op.kind.as_str() {
+                    "index" | "get_item" | "subscript" if args.len() >= 2 => {
+                        if wrapper_vars.contains(&args[0]) {
+                            // index(wrapper, idx) → load wrapper directly.
+                            let wrapper = args[0].clone();
+                            op.kind = "load_local".to_string();
+                            op.var = Some(wrapper);
+                            op.args = None;
+                            rewritten += 1;
+                        }
+                    }
+                    "store_index" | "store_subscript" | "set_item" if args.len() >= 3 => {
+                        if wrapper_vars.contains(&args[0]) {
+                            // store_index(wrapper, idx, val) → store to wrapper.
+                            let wrapper = args[0].clone();
+                            let val = args[2].clone();
+                            op.kind = "store_local".to_string();
+                            op.var = Some(wrapper);
+                            op.args = Some(vec![val]);
+                            rewritten += 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if rewritten > 0 {
+                eprintln!(
+                    "[molt-dce] Flattened {} wrapper accesses ({} wrappers) in {}",
+                    rewritten,
+                    wrapper_vars.len(),
+                    func.name
+                );
+            }
+        }
+
         // Phase 4: Run standard tree_shake to remove now-unreachable functions.
         self.tree_shake();
     }
