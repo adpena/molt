@@ -376,8 +376,9 @@ molt_module_cache["json"] = json
     }
 
     fn emit_function_body(&mut self, func: &FunctionIR) {
-        // Pre-process: strip unreachable ops after unconditional returns.
-        let ops = strip_dead_after_return(&func.ops);
+        // Pre-process: lower early returns (store+jump→ret) then strip dead code.
+        let ops = lower_early_returns(&func.ops);
+        let ops = strip_dead_after_return(&ops);
 
         let params = func
             .params
@@ -2645,6 +2646,142 @@ fn sanitize_label(label: &str) -> String {
 /// at depth 0 (function body level) is removed. Code after a return inside
 /// a structured block is kept because the block's `end` re-establishes
 /// reachability for the parent scope.
+/// Detects "store retval + jump to exit" patterns and converts them into
+/// direct return ops, eliminating the need for goto in early-return patterns.
+///
+/// Pattern detected (inside if blocks):
+///   store_index(retval_slot, return_value, value)
+///   jump(exit_label)
+/// Where exit_label leads to:
+///   label(exit_label)
+///   index(out, retval_slot, slot_index)
+///   ret(out)
+///
+/// Transformed to:
+///   ret_direct(value)      — a synthetic op that emits `return value`
+///   jump (kept for dead-code elimination to mark rest as unreachable)
+fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
+    if ops.is_empty() {
+        return ops.to_vec();
+    }
+
+    // Phase 1: Find the "return label" pattern.
+    // Look for: label(N) → ... → index(out, slot, idx) → ret(out)
+    // This tells us which label is the "return exit" and which slot holds
+    // the return value.
+    let mut return_labels: HashMap<i64, (String, String)> = HashMap::new(); // label_id → (slot_var, index_var)
+
+    for i in 0..ops.len() {
+        if ops[i].kind == "label" {
+            if let Some(label_id) = ops[i].value {
+                // Scan forward past exception boilerplate for index → ret
+                let mut j = i + 1;
+                while j < ops.len() {
+                    let k = ops[j].kind.as_str();
+                    if matches!(k, "exception_stack_set_depth" | "exception_stack_exit"
+                              | "check_exception" | "exception_last" | "const_none"
+                              | "is" | "not" | "nop" | "line") {
+                        j += 1;
+                        continue;
+                    }
+                    if k == "index" {
+                        if let (Some(out), Some(args)) = (&ops[j].out, &ops[j].args) {
+                            if args.len() >= 2 {
+                                let slot = &args[0];
+                                // Look for ret following this index
+                                let mut m = j + 1;
+                                while m < ops.len() {
+                                    let mk = ops[m].kind.as_str();
+                                    if matches!(mk, "check_exception" | "exception_stack_set_depth"
+                                              | "exception_stack_exit" | "nop" | "line") {
+                                        m += 1;
+                                        continue;
+                                    }
+                                    if mk == "ret" {
+                                        if let Some(ref ret_var) = ops[m].var {
+                                            if ret_var == out {
+                                                return_labels.insert(label_id, (slot.clone(), args[1].clone()));
+                                            }
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    if return_labels.is_empty() {
+        return ops.to_vec();
+    }
+
+    // Phase 2: Find store_index(slot, idx, value) → jump(exit_label) patterns
+    // and replace with direct return.
+    let mut result = Vec::with_capacity(ops.len());
+    let mut i = 0;
+    'outer: while i < ops.len() {
+        if ops[i].kind == "store_index" {
+            if let Some(ref args) = ops[i].args {
+                if args.len() >= 3 {
+                    let slot = &args[0];
+                    let idx = &args[1];
+                    let value = &args[2];
+
+                    // Look ahead past exception boilerplate for a jump to a return label.
+                    let mut j = i + 1;
+                    while j < ops.len() {
+                        let k = ops[j].kind.as_str();
+                        if matches!(k, "check_exception" | "exception_stack_set_depth"
+                                  | "exception_stack_exit" | "exception_last" | "const_none"
+                                  | "is" | "not" | "if" | "raise" | "end_if" | "nop" | "line") {
+                            j += 1;
+                            continue;
+                        }
+                        if k == "jump" {
+                            if let Some(target_label) = ops[j].value {
+                                if let Some((ret_slot, ret_idx)) = return_labels.get(&target_label) {
+                                    if slot == ret_slot && idx == ret_idx {
+                                        // Match! Replace store_index + jump with ret.
+                                        result.push(OpIR {
+                                            kind: "ret".to_string(),
+                                            out: None,
+                                            args: None,
+                                            var: Some(value.clone()),
+                                            value: None,
+                                            f_value: None,
+                                            s_value: None,
+                                            bytes: None,
+                                            fast_int: None,
+                                            task_kind: None,
+                                            container_type: None,
+                                            stack_eligible: None,
+                                            fast_float: None,
+                                            type_hint: None,
+                                            raw_int: None,
+                                        });
+                                        // Skip past the jump and continue outer loop.
+                                        i = j + 1;
+                                        continue 'outer;
+                                    }
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        result.push(ops[i].clone());
+        i += 1;
+    }
+
+    result
+}
+
 fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
     let mut result = Vec::with_capacity(ops.len());
     let mut depth: i32 = 0;
