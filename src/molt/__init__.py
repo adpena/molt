@@ -33,11 +33,11 @@ __all__ = sorted(_CONCURRENCY_EXPORTS | _NET_EXPORTS)
 
 def _load_runtime_symbol(name: str) -> Any:
     if name in _CONCURRENCY_EXPORTS:
-        from molt import concurrency as _concurrency
+        from moltlib import concurrency as _concurrency
 
         return getattr(_concurrency, name)
     if name in _NET_EXPORTS:
-        from molt import net as _net
+        from moltlib import net as _net
 
         return getattr(_net, name)
     raise AttributeError(name)

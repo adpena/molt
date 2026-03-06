@@ -57,8 +57,16 @@ performance-first C-extension compatibility without embedding CPython.
 - `molt_object_getattr`, `molt_object_setattr`, `molt_object_hasattr`
 - `molt_object_getattr_bytes`, `molt_object_setattr_bytes`
 - `molt_object_call`
+- `molt_object_get_iter`, `molt_iterator_next`
 - `molt_object_repr`, `molt_object_str`, `molt_object_truthy`
 - `molt_object_equal`, `molt_object_not_equal`, `molt_object_contains`
+
+### 4.4a Capsules
+- `molt_capsule_new`
+- `molt_capsule_get_name_ptr`, `molt_capsule_get_pointer`
+- `molt_capsule_is_valid`
+- `molt_capsule_get_context`, `molt_capsule_set_context`
+- `molt_capsule_import`
 
 ### 4.5 Numerics
 - `molt_number_add`, `molt_number_sub`, `molt_number_mul`
@@ -67,6 +75,7 @@ performance-first C-extension compatibility without embedding CPython.
 
 ### 4.6 Sequences + Mappings
 - `molt_sequence_length`, `molt_sequence_getitem`, `molt_sequence_setitem`
+- `molt_sequence_to_list`, `molt_sequence_to_tuple`
 - `molt_mapping_getitem`, `molt_mapping_setitem`, `molt_mapping_length`, `molt_mapping_keys`
 - `molt_tuple_from_array`, `molt_list_from_array`, `molt_dict_from_pairs`
 
@@ -100,14 +109,22 @@ performance-first C-extension compatibility without embedding CPython.
   `PyModule_FromDefAndSpec(2)`, `PyModule_ExecDef`, `PyState_*`
 - `PyErr_*` core helpers (`Occurred`, `SetString`, `SetObject`, `Clear`,
   `Fetch`, `Restore`, `Matches`, `Format`, `NoMemory`, warning stubs)
-- `PySequence_*` / `PyMapping_*` wrappers on top of `libmolt`
+- `PyCapsule_New`, `PyCapsule_GetName`, `PyCapsule_GetPointer`,
+  `PyCapsule_IsValid`, `PyCapsule_GetContext`, `PyCapsule_SetContext`,
+  `PyCapsule_Import`
+- `PyObject_GetIter`, `PyIter_Next`, `PySequence_*`, list-materializing
+  `PyMapping_Keys`/`PyMapping_Values`/`PyMapping_Items`,
+  always-succeeds `PyMapping_HasKey*`, and high-use `PyDict_*`
+  collection/delete wrappers on top of `libmolt`
 - reference/type/memory helper macros and shims used by extension sources
   (`Py_TYPE`, `Py_SETREF`, `Py_CLEAR`, `PyTuple_GET_*`, `PyList_GET_*`,
   `PyMem_*`, `PyObject_GetBuffer`/`PyBuffer_Release`)
 - convenience call/build helpers (`PyObject_CallFunctionObjArgs`,
   `PyObject_CallFunction`, `PyObject_CallMethod`, `Py_BuildValue`)
 - module/threading shims (`PyThreadState_Get`, `PyGILState_Ensure`,
-  `PyGILState_Release`, `PyImport_ImportModule`, `PyCapsule_Import`)
+  `PyGILState_Release`, `PyImport_ImportModule`, `PySys_GetObject`,
+  `PyCapsule_Import`)
+- selected Unicode helpers (`PyUnicode_InternFromString`)
 - `PyArg_ParseTuple` / `PyArg_ParseTupleAndKeywords` format coverage for
   `O,O!,b,B,h,H,i,I,l,k,L,K,n,c,d,f,p,s,s#,z,z#,y#` with `|` optional + `$`
   keyword-only markers and kwlist-driven keyword lookup in the keywords path
@@ -116,15 +133,27 @@ performance-first C-extension compatibility without embedding CPython.
   `va_list` parity is implemented)
 - `PyType_Spec` slot lowering includes selected call/numeric/sequence/getset
   lanes and type-method flag handling for `METH_CLASS` + `METH_STATIC`
-- NumPy source-compat include lane (`#include <numpy/arrayobject.h>`) with
-  type/shape/flag macros, typenum predicates, dtype/type-object exports,
-  `PyDataType_*` and `PyDataMem_*` helpers, `import_array*` capsule wiring,
+- NumPy source-compat include lane (`#include <numpy/arrayobject.h>` /
+  `#include <numpy/ndarrayobject.h>`) with type/shape/flag macros, typenum
+  predicates, dtype/type-object exports, `PyDataType_*` and `PyDataMem_*`
+  helpers, `import_array*` capsule wiring, `arrayscalars.h`,
+  `numpyconfig.h`, `utils.h`, generated-config bridge headers
+  (`_numpyconfig.h`, `config.h`, `npy_cpu_dispatch_config.h`,
+  `numpy/npy_cpu.h`), top-level `arrayobject.h`, `pymem.h`, `frameobject.h`,
   upstream-shaped internal include wrappers (`npy_common.h`, `dtype_api.h`,
   `__multiarray_api.h`, `__ufunc_api.h`, `npy_2_compat.h`, `npy_math.h`),
-  and fail-fast stubs for unsupported heavy ndarray/ufunc APIs
+  utility/visibility helpers (`NPY_UNUSED`, `NPY_VISIBILITY_HIDDEN`,
+  `NPY_NO_EXPORT`, `NPY_TLS`), `NpyAuxData` lifecycle macros, legacy
+  `PyUFunc_Loop1d` / `PyUFuncObject` source shapes, and fail-fast stubs for
+  unsupported heavy ndarray/ufunc APIs. Private/generated NumPy build
+  artifacts such as `arraytypes.h` and dispatch-generated internal headers are
+  outside the public `libmolt` compatibility contract.
 - Datetime source-compat include lane (`#include <datetime.h>`) with
   `PyDateTimeAPI`, `PyDateTime_IMPORT`, and basic date/datetime/timedelta
   checker shims
+- Legacy CPython member-definition include lane (`#include <structmember.h>`)
+  with `Py_T_*` / `Py_READONLY` constants, deprecated alias macros, and
+  fail-fast `PyMember_GetOne` / `PyMember_SetOne` shims
 
 ---
 
@@ -143,7 +172,8 @@ performance-first C-extension compatibility without embedding CPython.
 - CPython-compat include path is also available via `#include <Python.h>`,
   implemented by `include/Python.h` forwarding to `include/molt/Python.h`.
 - Initial NumPy compatibility headers ship under `include/numpy/` and are
-  intentionally partial while we close remaining NumPy C-API gaps.
+  intentionally partial while we close remaining NumPy C-API gaps; libmolt
+  does not ship NumPy's private/generated build graph.
 - Initial datetime compatibility header ships as `include/datetime.h` with a
   partial `PyDateTime` C-API bootstrap.
 

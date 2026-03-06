@@ -1,9 +1,8 @@
-"""Compatibility shim for Molt concurrency helpers.
-
-Canonical location is `moltlib.concurrency`.
-"""
+"""Molt-native concurrency helpers outside the CPython stdlib namespace."""
 
 from __future__ import annotations
+
+from typing import Any
 
 from molt import intrinsics as _intrinsics
 
@@ -20,7 +19,7 @@ __all__ = [
 _RUNTIME_EXPORTS = set(__all__) | {"_call_intrinsic"}
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     if name not in _RUNTIME_EXPORTS:
         raise AttributeError(name)
     if not _intrinsics.runtime_active():

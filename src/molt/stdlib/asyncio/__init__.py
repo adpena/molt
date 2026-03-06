@@ -38,6 +38,7 @@ import enum as _enum
 
 from _intrinsics import require_intrinsic as _intrinsic_require
 
+_mod_dict = getattr(_sys.modules.get(__name__), "__dict__", None) or globals()
 
 _VERSION_INFO = getattr(_sys, "version_info", (3, 12, 0, "final", 0))
 _IS_WINDOWS = _os.name == "nt"
@@ -6226,7 +6227,7 @@ def __getattr__(name: str) -> Any:
         mod = _make_queues_module()
     else:
         raise AttributeError(f"module 'asyncio' has no attribute '{name}'")
-    globals()[name] = mod
+    _mod_dict[name] = mod
     return mod
 
 
@@ -6888,8 +6889,8 @@ if _EXPOSE_GRAPH:
     )
 
 if not _EXPOSE_EVENT_LOOP:
-    if "EventLoop" in globals():
-        del globals()["EventLoop"]
+    if "EventLoop" in _mod_dict:
+        del _mod_dict["EventLoop"]
 
 if not _EXPOSE_GRAPH:
     for _name in (
@@ -6901,8 +6902,8 @@ if not _EXPOSE_GRAPH:
         "future_add_to_awaited_by",
         "future_discard_from_awaited_by",
     ):
-        if _name in globals():
-            del globals()[_name]
+        if _name in _mod_dict:
+            del _mod_dict[_name]
 
 _builtin_targets = [
     _get_running_loop,

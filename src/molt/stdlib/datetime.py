@@ -478,7 +478,7 @@ class time:
         microsecond = _as_int(microsecond)
         fold = _as_int(fold)
         _validate_time(hour, minute, second, microsecond, fold)
-        if tzinfo is not None and not isinstance(tzinfo, globals()["tzinfo"]):
+        if tzinfo is not None and not isinstance(tzinfo, tzinfo):
             raise TypeError("tzinfo argument must be None or of a tzinfo subclass")
         self.hour = hour
         self.minute = minute
@@ -589,7 +589,7 @@ class datetime:
         fold = _as_int(fold)
         _validate_date(year, month, day)
         _validate_time(hour, minute, second, microsecond, fold)
-        if tzinfo is not None and not isinstance(tzinfo, globals()["tzinfo"]):
+        if tzinfo is not None and not isinstance(tzinfo, tzinfo):
             raise TypeError("tzinfo argument must be None or of a tzinfo subclass")
         self.year = year
         self.month = month
@@ -713,7 +713,7 @@ class datetime:
     def astimezone(self, tz: tzinfo | None = None) -> datetime:
         if tz is None:
             tz = timezone.utc
-        if not isinstance(tz, globals()["tzinfo"]):
+        if not isinstance(tz, tzinfo):
             raise TypeError("tz argument must be an instance of tzinfo")
         if self.tzinfo is None:
             return datetime(

@@ -37,6 +37,7 @@ typedef NPY_CASTING (PyArrayMethod_ResolveDescriptorsWithScalar)(
     npy_intp *view_offset
 );
 
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
 typedef int (PyArrayMethod_GetMaskedStridedLoop)(
     PyArrayMethod_Context *context,
     int aligned,
@@ -46,6 +47,7 @@ typedef int (PyArrayMethod_GetMaskedStridedLoop)(
     NpyAuxData **out_auxdata,
     NPY_ARRAYMETHOD_FLAGS *flags
 );
+#endif
 
 typedef int (PyArrayMethod_GetLoop)(
     PyArrayMethod_Context *context,
@@ -105,6 +107,33 @@ typedef int (PyArrayMethod_PromoterFunction)(
     PyArray_DTypeMeta *const signature[],
     PyArray_DTypeMeta *new_op_dtypes[]
 );
+
+typedef PyArray_Descr *(PyArrayDTypeMeta_DiscoverDescrFromPyobject)(
+    PyArray_DTypeMeta *cls,
+    PyObject *obj
+);
+
+typedef int (PyArrayDTypeMeta_IsKnownScalarType)(
+    PyArray_DTypeMeta *cls,
+    PyTypeObject *obj
+);
+
+typedef PyArray_Descr *(PyArrayDTypeMeta_DefaultDescriptor)(PyArray_DTypeMeta *cls);
+typedef PyArray_DTypeMeta *(PyArrayDTypeMeta_CommonDType)(
+    PyArray_DTypeMeta *dtype1,
+    PyArray_DTypeMeta *dtype2
+);
+typedef PyArray_Descr *(PyArrayDTypeMeta_CommonInstance)(
+    PyArray_Descr *dtype1,
+    PyArray_Descr *dtype2
+);
+typedef PyArray_Descr *(PyArrayDTypeMeta_EnsureCanonical)(PyArray_Descr *dtype);
+typedef PyArray_Descr *(PyArrayDTypeMeta_FinalizeDescriptor)(PyArray_Descr *dtype);
+typedef int (PyArrayDTypeMeta_GetConstant)(PyArray_Descr *descr, int id, void *data);
+typedef int (PyArrayDTypeMeta_SetItem)(PyArray_Descr *descr, PyObject *obj, char *data);
+typedef PyObject *(PyArrayDTypeMeta_GetItem)(PyArray_Descr *descr, char *data);
+
+#define NPY_DTYPE(descr) ((PyArray_DTypeMeta *)Py_TYPE(descr))
 
 typedef int (PyArrayMethod_GetReductionInitial)(
     PyArrayMethod_Context *context,

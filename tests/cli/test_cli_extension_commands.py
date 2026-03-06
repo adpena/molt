@@ -145,6 +145,51 @@ def _write_extension_scan_directory_project(project_root: Path) -> None:
     )
 
 
+def _write_extension_scan_mapping_project(project_root: Path) -> None:
+    src_dir = project_root / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "mappingext.c").write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "int mappingext_probe(void) {",
+                "    (void)PyMapping_Check;",
+                "    (void)PyMapping_Keys;",
+                "    (void)PyMapping_Values;",
+                "    (void)PyMapping_Items;",
+                "    (void)PyMapping_HasKey;",
+                "    (void)PyMapping_HasKeyString;",
+                "    (void)PyDict_DelItem;",
+                "    (void)PyDict_DelItemString;",
+                "    (void)PyDict_Keys;",
+                "    (void)PyDict_Values;",
+                "    (void)PyDict_Items;",
+                "    (void)PyByteArray_Size;",
+                "    return 0;",
+                "}",
+                "",
+            ]
+        )
+        + "\n"
+    )
+    (project_root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "scan-mapping-ext"',
+                'version = "0.1.0"',
+                "",
+                "[tool.molt.extension]",
+                'module = "mappingext"',
+                'sources = ["src/mappingext.c"]',
+                'capabilities = ["fs.read"]',
+                'molt_c_api_version = "1"',
+                "",
+            ]
+        )
+    )
+
+
 def _write_extension_numpy_project(project_root: Path) -> None:
     src_dir = project_root / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
@@ -416,6 +461,37 @@ def test_extension_scan_reports_missing_symbols_without_gate(
     assert "PyLong_FromLong" in data["supported_symbols"]
 
 
+def test_extension_scan_reports_mapping_dict_symbols_supported(
+    tmp_path: Path, capsys
+) -> None:
+    project_root = tmp_path / "scanproj_mapping"
+    project_root.mkdir()
+    _write_extension_scan_mapping_project(project_root)
+
+    rc = cli.extension_scan(
+        project=str(project_root),
+        fail_on_missing=True,
+        json_output=True,
+        verbose=False,
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    data = payload["data"]
+    assert data["missing_symbols"] == []
+    assert "PyMapping_Check" in data["supported_symbols"]
+    assert "PyMapping_Keys" in data["supported_symbols"]
+    assert "PyMapping_Values" in data["supported_symbols"]
+    assert "PyMapping_Items" in data["supported_symbols"]
+    assert "PyMapping_HasKey" in data["supported_symbols"]
+    assert "PyMapping_HasKeyString" in data["supported_symbols"]
+    assert "PyDict_DelItem" in data["supported_symbols"]
+    assert "PyDict_DelItemString" in data["supported_symbols"]
+    assert "PyDict_Keys" in data["supported_symbols"]
+    assert "PyDict_Values" in data["supported_symbols"]
+    assert "PyDict_Items" in data["supported_symbols"]
+    assert "PyByteArray_Size" in data["supported_symbols"]
+
+
 def test_extension_scan_fail_on_missing_returns_error(tmp_path: Path, capsys) -> None:
     project_root = tmp_path / "scanproj"
     project_root.mkdir()
@@ -584,6 +660,94 @@ def test_extension_scan_ignores_locally_defined_py_symbols(
     local_defs = data["locally_defined_by_file"][str(source_path)]
     assert "PyLocalMacro" in local_defs
     assert "PyLocalHelper" in local_defs
+
+
+def test_extension_scan_ignores_project_shared_py_symbols(
+    tmp_path: Path, capsys
+) -> None:
+    project_root = tmp_path / "scanproj_shared_defs"
+    src_dir = project_root / "src"
+    src_dir.mkdir(parents=True)
+    header_path = src_dir / "pandasish.h"
+    alpha_path = src_dir / "alpha.c"
+    beta_path = src_dir / "beta.c"
+    header_path.write_text(
+        "\n".join(
+            [
+                "#ifndef PANDASISH_H",
+                "#define PANDASISH_H",
+                "#define PyDateTimeToIso(value) (value)",
+                "typedef struct {",
+                "    void *PyTypeToUTF8;",
+                "} PyObjectEncoder;",
+                "#endif",
+                "",
+            ]
+        )
+    )
+    alpha_path.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                '#include "pandasish.h"',
+                "int demo(void) {",
+                "    (void)PyInit_demo;",
+                "    (void)PyDateTimeToIso;",
+                "    (void)PyObject_CallFinalizerFromDealloc;",
+                "    return 0;",
+                "}",
+                "",
+            ]
+        )
+    )
+    beta_path.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "PyMODINIT_FUNC PyInit_demo(void) {",
+                "    Py_RETURN_NONE;",
+                "}",
+                "",
+            ]
+        )
+    )
+    (project_root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "scan-shared-defs"',
+                'version = "0.1.0"',
+                "",
+                "[tool.molt.extension]",
+                'module = "demoext"',
+                'sources = ["src"]',
+                'capabilities = ["fs.read"]',
+                'molt_c_api_version = "1"',
+                "",
+            ]
+        )
+    )
+
+    rc = cli.extension_scan(
+        project=str(project_root),
+        fail_on_missing=True,
+        json_output=True,
+        verbose=False,
+    )
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    data = payload["data"]
+    assert data["missing_symbols"] == ["PyObject_CallFinalizerFromDealloc"]
+    assert "PyInit_demo" not in data["missing_symbols"]
+    assert "PyDateTimeToIso" not in data["missing_symbols"]
+    assert "PyObjectEncoder" not in data["missing_symbols"]
+    assert "PyTypeToUTF8" not in data["missing_symbols"]
+    header_defs = data["locally_defined_by_file"][str(header_path)]
+    assert "PyDateTimeToIso" in header_defs
+    assert "PyObjectEncoder" in header_defs
+    assert "PyTypeToUTF8" in header_defs
+    beta_defs = data["locally_defined_by_file"][str(beta_path)]
+    assert "PyInit_demo" in beta_defs
 
 
 def test_extension_scan_numpy_surface_symbols_supported(tmp_path: Path, capsys) -> None:
@@ -1785,6 +1949,739 @@ def test_numpy_header_arrayobject_batch_smoke(tmp_path: Path) -> None:
                 "    Py_XDECREF(shape);",
                 "    Py_XDECREF(capsule);",
                 "    return 0;",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_numpy_limited_api_import_umath_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for NumPy limited API smoke test")
+    source = tmp_path / "numpy_limited_api_import_umath_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <numpy/arrayobject.h>",
+                "#include <numpy/arrayscalars.h>",
+                "#include <numpy/ufuncobject.h>",
+                "",
+                "static int visit_slot(PyObject *obj, void *arg) {",
+                "    (void)obj;",
+                "    (void)arg;",
+                "    return 0;",
+                "}",
+                "",
+                "static int traverse_slot(PyObject *obj, visitproc visit, void *arg) {",
+                "    return visit(obj, arg);",
+                "}",
+                "",
+                "static PyModuleDef moduledef = {",
+                "    .m_base = PyModuleDef_HEAD_INIT,",
+                '    .m_name = "limited_api_smoke",',
+                "};",
+                "",
+                "PyMODINIT_FUNC PyInit_limited_api_smoke(void) {",
+                "    import_array();",
+                "    import_umath();",
+                "    return PyModule_Create(&moduledef);",
+                "}",
+                "",
+                "int main(void) {",
+                "    npy_datetime dt = 0;",
+                "    npy_timedelta td = 0;",
+                "    npy_datetimestruct dts = {0};",
+                "    PyBoolScalarObject bool_scalar = {0};",
+                "    assert(dt == 0);",
+                "    assert(td == 0);",
+                "    (void)dts;",
+                "    (void)bool_scalar;",
+                "    (void)NPY_DATETIME_FMT;",
+                "    return traverse_slot(Py_None, visit_slot, NULL);",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_numpy_ndarrayobject_import_array_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for NumPy ndarrayobject smoke test")
+    source = tmp_path / "numpy_ndarrayobject_import_array_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <numpy/ndarrayobject.h>",
+                "",
+                "static PyModuleDef moduledef = {",
+                "    .m_base = PyModuleDef_HEAD_INIT,",
+                '    .m_name = "ndarrayobject_smoke",',
+                "};",
+                "",
+                "PyMODINIT_FUNC PyInit_ndarrayobject_smoke(void) {",
+                "    import_array();",
+                "    return PyModule_Create(&moduledef);",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_numpy_pandas_scalar_surface_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for NumPy scalar surface smoke test")
+    source = tmp_path / "numpy_pandas_scalar_surface_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <numpy/arrayobject.h>",
+                "#include <numpy/arrayscalars.h>",
+                "#include <numpy/ndarraytypes.h>",
+                "#include <numpy/npy_math.h>",
+                "",
+                "int main(void) {",
+                "    npy_int64 nat = NPY_MIN_INT64;",
+                "    npy_float64 seconds = 0.0;",
+                "    npy_intp dims[NPY_MAXDIMS] = {0};",
+                "    int datetime_scalar = PyArray_IsScalar(Py_None, Datetime);",
+                "    int integer_scalar = PyArray_IsScalar(Py_None, Integer);",
+                "    int bool_scalar = PyArray_IsScalar(Py_None, Bool);",
+                "    int float_scalar = PyArray_IsScalar(Py_None, Float);",
+                "    int double_scalar = PyArray_IsScalar(Py_None, Double);",
+                "    int nonfinite = npy_isnan(seconds) || npy_isinf(seconds);",
+                "    PyArray_Descr *descr = PyArray_DescrFromType(NPY_INT64);",
+                "    (void)nat;",
+                "    (void)dims;",
+                "    (void)descr;",
+                "    return datetime_scalar + integer_scalar + bool_scalar + float_scalar + double_scalar + nonfinite;",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_mapping_dict_collection_surface_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for mapping/dict surface smoke test")
+    source = tmp_path / "mapping_dict_collection_surface_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "",
+                "int main(void) {",
+                "    PyObject *dict = PyDict_New();",
+                "    PyObject *keys = PyMapping_Keys(dict);",
+                "    PyObject *values = PyMapping_Values(dict);",
+                "    PyObject *items = PyMapping_Items(dict);",
+                '    int has_missing = PyMapping_HasKeyString(dict, "missing");',
+                "    int has_none = PyMapping_HasKey(dict, Py_None);",
+                "    int del_none = PyDict_DelItem(dict, Py_None);",
+                '    int del_missing = PyDict_DelItemString(dict, "missing");',
+                "    PyObject *dict_keys = PyDict_Keys(dict);",
+                "    PyObject *dict_values = PyDict_Values(dict);",
+                "    PyObject *dict_items = PyDict_Items(dict);",
+                '    PyObject *bytearray = PyByteArray_FromStringAndSize("abc", 3);',
+                "    Py_ssize_t bytearray_size = PyByteArray_Size(bytearray);",
+                "    char *bytearray_ptr = PyByteArray_AsString(bytearray);",
+                "    (void)keys;",
+                "    (void)values;",
+                "    (void)items;",
+                "    (void)dict_keys;",
+                "    (void)dict_values;",
+                "    (void)dict_items;",
+                "    (void)bytearray_ptr;",
+                "    return has_missing + has_none + del_none + del_missing + (int)bytearray_size;",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_structmember_header_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for structmember.h smoke test")
+    source = tmp_path / "structmember_h_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <structmember.h>",
+                "",
+                "typedef struct {",
+                "    PyObject *ob_base;",
+                "    int value;",
+                "} MemberSmokeObject;",
+                "",
+                "static PyMemberDef member_table[] = {",
+                '    {"value", Py_T_INT, offsetof(MemberSmokeObject, value), Py_READONLY, "value"},',
+                "    {NULL, 0, 0, 0, NULL},",
+                "};",
+                "",
+                "int main(void) {",
+                "    (void)member_table;",
+                "    (void)T_INT;",
+                "    (void)READONLY;",
+                "    (void)PY_AUDIT_READ;",
+                "    return 0;",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_numpy_internal_header_surface_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for NumPy internal-header smoke test")
+    source = tmp_path / "numpy_internal_header_surface_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <numpy/ndarraytypes.h>",
+                "#include <numpy/npy_common.h>",
+                "#include <numpy/utils.h>",
+                "",
+                "NPY_VISIBILITY_HIDDEN int hidden_counter = 0;",
+                "NPY_NO_EXPORT PyObject *demo_intern(PyObject *NPY_UNUSED(mod), PyObject *NPY_UNUSED(arg)) {",
+                '    return PyUnicode_InternFromString("axis1");',
+                "}",
+                "static NPY_TLS int tls_slot = 0;",
+                "",
+                "int main(void) {",
+                '    PyObject *name = PyUnicode_InternFromString("axis1");',
+                '    PyObject *flags = PySys_GetObject("flags");',
+                "    hidden_counter += name != NULL;",
+                "    hidden_counter += flags != NULL;",
+                "    tls_slot += hidden_counter;",
+                "    return tls_slot == 0;",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_python_mapping_and_bytearray_surface_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for Python.h mapping/bytearray smoke test")
+    source = tmp_path / "python_mapping_and_bytearray_surface_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "",
+                "int main(void) {",
+                "    PyObject *dict = PyDict_New();",
+                '    PyObject *payload = PyByteArray_FromStringAndSize("abc", 3);',
+                "    PyObject *keys;",
+                "    PyObject *values;",
+                "    PyObject *items;",
+                "    char *raw;",
+                "    Py_ssize_t size;",
+                "    int is_mapping;",
+                "    if (dict == NULL || payload == NULL) {",
+                "        return 1;",
+                "    }",
+                '    if (PyDict_SetItemString(dict, "payload", payload) < 0) {',
+                "        Py_DECREF(payload);",
+                "        Py_DECREF(dict);",
+                "        return 1;",
+                "    }",
+                "    keys = PyMapping_Keys(dict);",
+                "    values = PyMapping_Values(dict);",
+                "    items = PyMapping_Items(dict);",
+                "    raw = PyByteArray_AsString(payload);",
+                "    size = PyByteArray_Size(payload);",
+                "    is_mapping = PyMapping_Check(dict);",
+                "    (void)PyByteArray_Check(payload);",
+                "    (void)PyByteArray_AS_STRING(payload);",
+                "    (void)PyByteArray_GET_SIZE(payload);",
+                "    (void)PyDict_Keys(dict);",
+                "    (void)PyDict_Values(dict);",
+                "    (void)PyDict_Items(dict);",
+                "    (void)PySequence_DelItem(values, 0);",
+                "    Py_XDECREF(keys);",
+                "    Py_XDECREF(values);",
+                "    Py_XDECREF(items);",
+                "    Py_DECREF(payload);",
+                "    Py_DECREF(dict);",
+                "    return raw == NULL || size < 0 || !is_mapping;",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_numpy_auxiliary_header_surface_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for NumPy auxiliary header smoke test")
+    source = tmp_path / "numpy_auxiliary_header_surface_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <pymem.h>",
+                "#include <arrayobject.h>",
+                "#include <numpy/numpyconfig.h>",
+                "#include <numpy/npy_common.h>",
+                "",
+                "static NPY_NO_EXPORT void *alloc_like(npy_uintp size, PyObject *handler) {",
+                "    return PyDataMem_UserNEW(size, handler);",
+                "}",
+                "",
+                "int main(void) {",
+                "    PyArrayObject *arr = NULL;",
+                "    npy_cdouble z = {0.0, 0.0};",
+                "    void *buf = PyMem_MALLOC(16);",
+                "    (void)arr;",
+                "    (void)z;",
+                "    (void)alloc_like;",
+                "    (void)NPY_INTP_FMT;",
+                "    (void)Py_USING_UNICODE;",
+                "    PyMem_FREE(buf);",
+                "    return 0;",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_numpy_generated_header_surface_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for NumPy generated header smoke test")
+    source = tmp_path / "numpy_generated_header_surface_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <_numpyconfig.h>",
+                "#include <npy_cpu_dispatch_config.h>",
+                "#include <numpy/npy_cpu.h>",
+                "",
+                "int main(void) {",
+                "    const char *dispatch_info[] = NPY_CPU_DISPATCH_INFO();",
+                "    (void)dispatch_info;",
+                "    (void)NPY_WITH_CPU_BASELINE_N;",
+                "    (void)NPY_WITH_CPU_DISPATCH_N;",
+                "    return (int)(NPY_SIZEOF_OFF_T + NPY_SIZEOF_PY_INTPTR_T + NPY_NO_SMP);",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_frameobject_header_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for frameobject header smoke test")
+    source = tmp_path / "frameobject_header_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <frameobject.h>",
+                "#include <stdio.h>",
+                "",
+                "int main(void) {",
+                "    PyFrameObject frame = {0};",
+                "    PyThreadState *tstate = PyThreadState_Get();",
+                "    PyCodeObject *code = PyFrame_GetCode(&frame);",
+                "    PyFrameObject *back = PyFrame_GetBack(&frame);",
+                "    PyObject *locals = PyFrame_GetLocals(&frame);",
+                "    PyObject *globals = PyFrame_GetGlobals(&frame);",
+                "    PyObject *builtins = PyFrame_GetBuiltins(&frame);",
+                "    PyInterpreterState *interp = PyThreadState_GetInterpreter(tstate);",
+                "    PyFrameObject *current = PyThreadState_GetFrame(tstate);",
+                '    PyObject *module = PyImport_AddModule("sys");',
+                '    const char *fmt = "%" PRId64 " / %" PRIu64;',
+                "    PyFrame_FastToLocals(&frame);",
+                "    (void)code;",
+                "    (void)back;",
+                "    (void)locals;",
+                "    (void)globals;",
+                "    (void)builtins;",
+                "    (void)interp;",
+                "    (void)current;",
+                "    (void)module;",
+                "    (void)fmt;",
+                "    (void)PyExc_NameError;",
+                "    return PyFrame_FastToLocalsWithError(&frame);",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_python_header_inttypes_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for Python.h inttypes smoke test")
+    source = tmp_path / "python_header_inttypes_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "",
+                "int main(void) {",
+                '    const char *fmt = "%" PRId64 " / %" PRIu64;',
+                "    (void)fmt;",
+                "    return 0;",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_numpy_internal_pythoncapi_skip_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for NumPy internal pythoncapi skip smoke test")
+    source = tmp_path / "numpy_internal_pythoncapi_skip_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#define _MULTIARRAYMODULE",
+                "#include <Python.h>",
+                "",
+                "int main(void) {",
+                "#ifndef PYTHONCAPI_COMPAT",
+                '#error "PYTHONCAPI_COMPAT should be pre-defined for NumPy core builds"',
+                "#endif",
+                "    return 0;",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_pythoncapi_helper_surface_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for pythoncapi helper surface smoke test")
+    source = tmp_path / "pythoncapi_helper_surface_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "",
+                "int main(void) {",
+                '    PyObject *name = PyUnicode_FromString("value");',
+                "    PyObject *attr = NULL;",
+                "    PyObject *weak_obj = PyWeakref_GetObject(NULL);",
+                "    PyObject **dict_ptr = _PyObject_GetDictPtr(Py_None);",
+                "    PyThreadState *tstate = _PyThreadState_UncheckedGet();",
+                "    int present = _PyObject_LookupAttr(Py_None, name, &attr);",
+                "    int is_ascii = PyUnicode_IS_ASCII(name);",
+                "    void *unicode_data = PyUnicode_DATA(name);",
+                "    int int_value = _PyLong_AsInt(PyLong_FromLong(7));",
+                "    int is_weak = PyWeakref_Check(Py_None);",
+                "    int finalizing = _Py_IsFinalizing();",
+                "    (void)weak_obj;",
+                "    (void)dict_ptr;",
+                "    (void)tstate;",
+                "    (void)present;",
+                "    (void)is_ascii;",
+                "    (void)unicode_data;",
+                "    (void)int_value;",
+                "    (void)is_weak;",
+                "    (void)finalizing;",
+                "    Py_XDECREF(attr);",
+                "    Py_DECREF(name);",
+                "    return 0;",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = subprocess.run(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_numpy_ufunc_auxdata_surface_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for NumPy ufunc auxdata smoke test")
+    source = tmp_path / "numpy_ufunc_auxdata_surface_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <numpy/ufuncobject.h>",
+                "",
+                "static void aux_free(NpyAuxData *aux) {",
+                "    (void)aux;",
+                "}",
+                "",
+                "static NpyAuxData *aux_clone(NpyAuxData *aux) {",
+                "    return aux;",
+                "}",
+                "",
+                "int main(void) {",
+                "    NpyAuxData aux = {",
+                "        .free = aux_free,",
+                "        .clone = aux_clone,",
+                "    };",
+                "    PyUFuncObject ufunc = {0};",
+                "    PyUFunc_Loop1d loop = {0};",
+                "    NpyAuxData *cloned = NPY_AUXDATA_CLONE(&aux);",
+                "    NPY_AUXDATA_FREE(&aux);",
+                "    (void)cloned;",
+                "    (void)loop.func;",
+                "    (void)loop.arg_types;",
+                "    (void)ufunc.name;",
+                "    (void)ufunc.userloops;",
+                "    (void)ufunc.types;",
+                "    (void)ufunc.ntypes;",
+                "    (void)ufunc.functions;",
+                "    (void)ufunc.data;",
+                "    return PyUFunc_None + PyUFunc_ReorderableNone + PyUFunc_IdentityValue;",
                 "}",
                 "",
             ]
