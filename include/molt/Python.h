@@ -1,6 +1,8 @@
 #ifndef MOLT_C_API_PYTHON_H
 #define MOLT_C_API_PYTHON_H
 
+/* Source-compat facade only; stable ABI lives in include/molt/molt.h. */
+
 #include <stdarg.h>
 #include <assert.h>
 #include <errno.h>
