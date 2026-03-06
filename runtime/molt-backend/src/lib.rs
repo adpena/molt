@@ -479,7 +479,97 @@ impl SimpleIR {
             }
         }
 
-        // Phase 3: Run standard tree_shake to remove now-unreachable functions.
+        // Phase 3: Strip exception-handling boilerplate from all functions.
+        // Pattern: exception_last → const_none → is → not → if → [body] → end_if
+        // In Luau there are no exceptions, so this entire chain is dead code.
+        // We use a sequential scan to recognize and nop the complete pattern.
+        let dead_kinds: HashSet<&str> = [
+            "check_exception",
+            "exception_stack_depth",
+            "exception_stack_set_depth",
+            "exception_stack_exit",
+            "exception_new",
+            "raise",
+            "exception_reraise",
+        ]
+        .iter()
+        .copied()
+        .collect();
+
+        for func in &mut self.functions {
+            let mut stripped = 0;
+            let len = func.ops.len();
+            let mut i = 0;
+            while i < len {
+                let kind = func.ops[i].kind.as_str();
+
+                // Simple dead ops — nop individually.
+                if dead_kinds.contains(kind) {
+                    func.ops[i].kind = "nop".to_string();
+                    func.ops[i].s_value = None;
+                    func.ops[i].args = None;
+                    func.ops[i].out = None;
+                    stripped += 1;
+                    i += 1;
+                    continue;
+                }
+
+                // Recognize the full exception-check pattern:
+                //   exception_last → const_none → is → not → if → ... → end_if
+                if kind == "exception_last" && i + 4 < len {
+                    let k1 = func.ops[i + 1].kind.as_str();
+                    let k2 = func.ops[i + 2].kind.as_str();
+                    let k3 = func.ops[i + 3].kind.as_str();
+                    let k4 = func.ops[i + 4].kind.as_str();
+                    if k1 == "const_none" && k2 == "is" && k3 == "not" && k4 == "if" {
+                        // Nop: exception_last, const_none, is, not, if
+                        for j in i..=i + 4 {
+                            func.ops[j].kind = "nop".to_string();
+                            func.ops[j].s_value = None;
+                            func.ops[j].args = None;
+                            func.ops[j].out = None;
+                            stripped += 1;
+                        }
+                        // Nop everything until matching end_if.
+                        let mut depth: i32 = 1;
+                        let mut j = i + 5;
+                        while j < len && depth > 0 {
+                            if func.ops[j].kind == "if" {
+                                depth += 1;
+                            } else if func.ops[j].kind == "end_if" {
+                                depth -= 1;
+                            }
+                            func.ops[j].kind = "nop".to_string();
+                            func.ops[j].s_value = None;
+                            func.ops[j].args = None;
+                            func.ops[j].out = None;
+                            stripped += 1;
+                            j += 1;
+                        }
+                        i = j;
+                        continue;
+                    }
+                    // Fallback: just nop the exception_last.
+                    func.ops[i].kind = "nop".to_string();
+                    func.ops[i].s_value = None;
+                    func.ops[i].args = None;
+                    func.ops[i].out = None;
+                    stripped += 1;
+                    i += 1;
+                    continue;
+                }
+
+                i += 1;
+            }
+            if stripped > 0 {
+                eprintln!(
+                    "[molt-dce] Stripped {stripped} exception-handling ops from {}",
+                    func.name
+                );
+            }
+        }
+
+        // Phase 4: Run standard tree_shake to remove now-unreachable functions.
         self.tree_shake();
     }
 }
