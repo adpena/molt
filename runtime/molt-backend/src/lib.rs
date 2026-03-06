@@ -11,6 +11,7 @@ use std::fmt::Write as _;
 use std::sync::OnceLock;
 
 mod ir_schema;
+pub mod luau;
 pub mod wasm;
 
 const QNAN: u64 = 0x7ff8_0000_0000_0000;
@@ -320,6 +321,60 @@ fn should_validate_operand(kind: &str, arg_index: usize) -> bool {
     true
 }
 
+fn supports_fast_int(kind: &str) -> bool {
+    matches!(
+        kind,
+        "add"
+            | "inplace_add"
+            | "sub"
+            | "inplace_sub"
+            | "mul"
+            | "inplace_mul"
+            | "bit_or"
+            | "inplace_bit_or"
+            | "bit_and"
+            | "inplace_bit_and"
+            | "bit_xor"
+            | "inplace_bit_xor"
+            | "lshift"
+            | "rshift"
+            | "div"
+            | "floordiv"
+            | "mod"
+            | "lt"
+            | "le"
+            | "gt"
+            | "ge"
+            | "eq"
+            | "ne"
+            | "abs"
+            | "invert"
+    )
+}
+
+fn supports_raw_int(kind: &str) -> bool {
+    matches!(
+        kind,
+        "const"
+            | "add"
+            | "inplace_add"
+            | "mul"
+            | "mod"
+            | "lt"
+            | "loop_break_if_true"
+            | "loop_break_if_false"
+    )
+}
+
+fn specialized_int_expected_arity(kind: &str) -> Option<usize> {
+    match kind {
+        "abs" | "invert" | "loop_break_if_true" | "loop_break_if_false" => Some(1),
+        "const" => Some(0),
+        _ if supports_fast_int(kind) || supports_raw_int(kind) => Some(2),
+        _ => None,
+    }
+}
+
 pub fn validate_simple_ir(ir: &SimpleIR) -> Result<(), String> {
     let mut errors: Vec<String> = Vec::new();
     for func in &ir.functions {
@@ -364,6 +419,37 @@ pub fn validate_simple_ir(ir: &SimpleIR) -> Result<(), String> {
             break;
         }
         for (op_idx, op) in func.ops.iter().enumerate() {
+            let fast_int = op.fast_int.unwrap_or(false);
+            let raw_int = op.raw_int.unwrap_or(false);
+            if fast_int && raw_int {
+                errors.push(format!(
+                    "function `{}` op#{op_idx} `{}` cannot set both `fast_int` and `raw_int`",
+                    func.name, op.kind
+                ));
+            }
+            if fast_int && !supports_fast_int(&op.kind) {
+                errors.push(format!(
+                    "function `{}` op#{op_idx} `{}` does not support `fast_int`",
+                    func.name, op.kind
+                ));
+            }
+            if raw_int && !supports_raw_int(&op.kind) {
+                errors.push(format!(
+                    "function `{}` op#{op_idx} `{}` does not support `raw_int`",
+                    func.name, op.kind
+                ));
+            }
+            if fast_int || raw_int {
+                if let Some(expected_arity) = specialized_int_expected_arity(&op.kind) {
+                    let actual_arity = op.args.as_ref().map_or(0, Vec::len);
+                    if actual_arity != expected_arity {
+                        errors.push(format!(
+                            "function `{}` op#{op_idx} `{}` specialized-int path requires `args` length {}",
+                            func.name, op.kind, expected_arity
+                        ));
+                    }
+                }
+            }
             if let Some(args) = &op.args {
                 for (arg_index, arg) in args.iter().enumerate() {
                     if !should_validate_operand(&op.kind, arg_index) {
@@ -379,6 +465,77 @@ pub fn validate_simple_ir(ir: &SimpleIR) -> Result<(), String> {
                             func.name, op.kind, arg
                         ));
                     }
+                }
+            }
+            if errors.len() >= 32 {
+                break;
+            }
+        }
+        let mut raw_defined: HashSet<String> = HashSet::new();
+        for (op_idx, op) in func.ops.iter().enumerate() {
+            let raw_int = op.raw_int.unwrap_or(false);
+            if raw_int {
+                match op.kind.as_str() {
+                    "add" | "inplace_add" | "mul" | "mod" | "lt" => {
+                        if let Some(args) = &op.args {
+                            for arg in args {
+                                if !raw_defined.contains(arg) {
+                                    errors.push(format!(
+                                        "function `{}` op#{op_idx} `{}` consumes non-raw value `{}` in `raw_int` mode",
+                                        func.name, op.kind, arg
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    "loop_break_if_true" | "loop_break_if_false" => {
+                        if let Some(arg) = op.args.as_ref().and_then(|args| args.first()) {
+                            if !raw_defined.contains(arg) {
+                                errors.push(format!(
+                                    "function `{}` op#{op_idx} `{}` consumes non-raw loop condition `{}`",
+                                    func.name, op.kind, arg
+                                ));
+                            }
+                        }
+                    }
+                    "const" => {
+                        if op.value.is_none() {
+                            errors.push(format!(
+                                "function `{}` op#{op_idx} `const` requires `value` when `raw_int` is set",
+                                func.name
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(out) = &op.out
+                && out != "none"
+            {
+                let carrier_input_is_raw = match op.kind.as_str() {
+                    "loop_index_start" | "loop_index_next" | "loop_carry_init" => op
+                        .args
+                        .as_ref()
+                        .and_then(|args| args.first())
+                        .is_some_and(|arg| raw_defined.contains(arg)),
+                    "loop_carry_update" => op
+                        .args
+                        .as_ref()
+                        .and_then(|args| args.last())
+                        .is_some_and(|arg| raw_defined.contains(arg)),
+                    _ => false,
+                };
+                let produces_raw = op.kind == "unbox_to_raw_int"
+                    || carrier_input_is_raw
+                    || (raw_int
+                        && !matches!(
+                            op.kind.as_str(),
+                            "loop_break_if_true" | "loop_break_if_false"
+                        ));
+                if produces_raw {
+                    raw_defined.insert(out.clone());
+                } else {
+                    raw_defined.remove(out);
                 }
             }
             if errors.len() >= 32 {
@@ -1341,6 +1498,11 @@ impl SimpleBackend {
             elide_dead_struct_allocs(func_ir);
         }
         inline_functions(&mut ir);
+        if cfg!(debug_assertions) {
+            if let Err(err) = validate_simple_ir(&ir) {
+                panic!("SimpleBackend::compile received invalid simple IR: {err}");
+            }
+        }
         // Conditional trace elimination: skip emitting trace_enter/trace_exit calls
         // when tracing is disabled. Each guarded call site emits 2 trace function calls
         // (enter + exit); eliminating them saves ~10ns per call in release builds.
