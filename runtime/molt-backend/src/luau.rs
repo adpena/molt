@@ -34,18 +34,16 @@ impl LuauBackend {
 
     /// Compile the given IR to a Luau source string.
     pub fn compile(&mut self, ir: &SimpleIR) -> String {
-        self.emit_prelude();
-
-        // Forward-declare all functions so call order doesn't matter.
-        // In Luau, `local function f()` is not hoisted, so callees
-        // must be defined before callers.  Forward declarations solve
-        // this: `local f; ... f = function(...) ... end`.
-        // Filter out dead annotation functions and unused runtime helpers.
+        // Phase 1: Emit all function bodies to a temporary buffer so we can
+        // scan which runtime helpers are actually referenced.
         let emit_funcs: Vec<&FunctionIR> = ir
             .functions
             .iter()
             .filter(|f| !f.name.contains("__annotate__"))
             .collect();
+
+        let mut func_output = String::with_capacity(8192);
+        std::mem::swap(&mut self.output, &mut func_output);
 
         if emit_funcs.len() > 1 {
             self.uses_forward_decls = true;
@@ -61,13 +59,23 @@ impl LuauBackend {
             self.emit_function_body(func);
             self.output.push('\n');
         }
-        // Entry point: call molt_main if it exists.
+
         self.emit_line("-- Entry point");
         self.emit_line("if molt_main then");
         self.push_indent();
         self.emit_line("molt_main()");
         self.pop_indent();
         self.emit_line("end");
+
+        let func_body = std::mem::take(&mut self.output);
+        self.output = func_output;
+
+        // Phase 2: Emit prelude with only the helpers that are actually used.
+        self.emit_prelude_conditional(&func_body);
+
+        // Phase 3: Combine prelude + function bodies.
+        self.output.push_str(&func_body);
+
         inline_single_use_constants(&mut self.output);
         std::mem::take(&mut self.output)
     }
@@ -81,298 +89,103 @@ impl LuauBackend {
         Ok(source)
     }
 
-    fn emit_prelude(&mut self) {
-        let prelude = r#"--!strict
--- Molt -> Luau transpiled output
--- Runtime helpers
+    fn emit_prelude_conditional(&mut self, func_body: &str) {
+        // Always-emitted header.
+        self.output.push_str("--!strict\n-- Molt -> Luau transpiled output\n-- Runtime helpers\n\n");
+        self.output.push_str("local molt_func_attrs: {[any]: {[string]: any}} = {}\n");
+        self.output.push_str("local molt_module_cache: {[string]: any} = {\n\tmath = nil,\n\tjson = nil,\n}\n\n");
 
--- Side-table for function attributes (e.g. __defaults__, __kwdefaults__).
--- Luau functions are primitives and don't support attribute setting.
-local molt_func_attrs: {[any]: {[string]: any}} = {}
+        // Helper to check if a name is used in the function body.
+        let used = |name: &str| func_body.contains(name);
 
--- Module registry: maps Python module names to Luau bridge tables.
-local molt_module_cache: {[string]: any} = {
-	math = nil,  -- filled after molt_math is defined
-	json = nil,  -- filled after json is defined
-}
+        // Conditional runtime helpers — only emit if referenced.
+        // Each helper is a (name, source) pair.
+        let helpers: &[(&str, &str)] = &[
+            ("molt_range", "local function molt_range(start: number, stop: number, step: number?): {number}\n\tlocal result = {}\n\tlocal s = step or 1\n\tlocal i = start\n\twhile (s > 0 and i < stop) or (s < 0 and i > stop) do\n\t\ttable.insert(result, i)\n\t\ti = i + s\n\tend\n\treturn result\nend\n"),
+            ("molt_len", "local function molt_len(obj: any): number\n\tif type(obj) == \"string\" then return #obj end\n\tif type(obj) == \"table\" then return #obj end\n\treturn 0\nend\n"),
+            ("molt_int", "local function molt_int(x: any): number\n\treturn math.floor(tonumber(x) or 0)\nend\n"),
+            ("molt_float", "local function molt_float(x: any): number\n\treturn tonumber(x) or 0.0\nend\n"),
+            ("molt_str", "local function molt_str(x: any): string\n\treturn tostring(x)\nend\n"),
+            ("molt_bool", "local function molt_bool(x: any): boolean\n\tif x == nil or x == false or x == 0 or x == \"\" then return false end\n\tif type(x) == \"table\" and next(x) == nil then return false end\n\treturn true\nend\n"),
+            ("molt_repr", "local function molt_repr(x: any): string\n\tif type(x) == \"string\" then return '\"' .. x .. '\"' end\n\treturn tostring(x)\nend\n"),
+            ("molt_floor_div", "local function molt_floor_div(a: number, b: number): number\n\treturn math.floor(a / b)\nend\n"),
+            ("molt_pow", "local function molt_pow(a: number, b: number): number\n\treturn a ^ b\nend\n"),
+            ("molt_mod", "local function molt_mod(a: number, b: number): number\n\treturn a - math.floor(a / b) * b\nend\n"),
+            ("molt_enumerate", "local function molt_enumerate(t: {any}, start: number?): {{any}}\n\tlocal result = {}\n\tlocal s = start or 0\n\tfor i, v in ipairs(t) do\n\t\ttable.insert(result, {s + i - 1, v})\n\tend\n\treturn result\nend\n"),
+            ("molt_zip", "local function molt_zip(a: {any}, b: {any}): {{any}}\n\tlocal result = {}\n\tlocal n = math.min(#a, #b)\n\tfor i = 1, n do\n\t\ttable.insert(result, {a[i], b[i]})\n\tend\n\treturn result\nend\n"),
+            ("molt_sorted", "local function molt_sorted(t: {any}): {any}\n\tlocal copy = table.clone(t)\n\ttable.sort(copy)\n\treturn copy\nend\n"),
+            ("molt_reversed", "local function molt_reversed(t: {any}): {any}\n\tlocal result = {}\n\tfor i = #t, 1, -1 do\n\t\ttable.insert(result, t[i])\n\tend\n\treturn result\nend\n"),
+            ("molt_sum", "local function molt_sum(t: {number}, start: number?): number\n\tlocal s = start or 0\n\tfor _, v in ipairs(t) do s = s + v end\n\treturn s\nend\n"),
+            ("molt_any", "local function molt_any(t: {any}): boolean\n\tfor _, v in ipairs(t) do\n\t\tif v then return true end\n\tend\n\treturn false\nend\n"),
+            ("molt_all", "local function molt_all(t: {any}): boolean\n\tfor _, v in ipairs(t) do\n\t\tif not v then return false end\n\tend\n\treturn true\nend\n"),
+            ("molt_map", "local function molt_map(func: (any) -> any, t: {any}): {any}\n\tlocal result = {}\n\tfor _, v in ipairs(t) do\n\t\ttable.insert(result, func(v))\n\tend\n\treturn result\nend\n"),
+            ("molt_filter", "local function molt_filter(func: ((any) -> boolean)?, t: {any}): {any}\n\tlocal result = {}\n\tfor _, v in ipairs(t) do\n\t\tif func then\n\t\t\tif func(v) then table.insert(result, v) end\n\t\telseif v then\n\t\t\ttable.insert(result, v)\n\t\tend\n\tend\n\treturn result\nend\n"),
+            ("molt_dict_keys", "local function molt_dict_keys(d: {[any]: any}): {any}\n\tlocal result = {}\n\tfor k in pairs(d) do table.insert(result, k) end\n\treturn result\nend\n"),
+            ("molt_dict_values", "local function molt_dict_values(d: {[any]: any}): {any}\n\tlocal result = {}\n\tfor _, v in pairs(d) do table.insert(result, v) end\n\treturn result\nend\n"),
+            ("molt_dict_items", "local function molt_dict_items(d: {[any]: any}): {{any}}\n\tlocal result = {}\n\tfor k, v in pairs(d) do table.insert(result, {k, v}) end\n\treturn result\nend\n"),
+        ];
 
-local function molt_range(start: number, stop: number, step: number?): {number}
-	local result = {}
-	local s = step or 1
-	local i = start
-	while (s > 0 and i < stop) or (s < 0 and i > stop) do
-		table.insert(result, i)
-		i = i + s
-	end
-	return result
-end
+        for (name, source) in helpers {
+            if used(name) {
+                self.output.push_str(source);
+                self.output.push('\n');
+            }
+        }
 
-local function molt_len(obj: any): number
-	if type(obj) == "string" then return #obj end
-	if type(obj) == "table" then return #obj end
-	return 0
-end
+        // Infrastructure used by JSON serializer and math/bitwise ops.
+        // math_floor is needed by the JSON prelude (serialize checks integer-ness).
+        let needs_json = used("molt_json_dumps") || used("\"json\"");
+        if used("math_floor") || needs_json {
+            self.output.push_str("local math_floor = math.floor\n");
+        }
+        if used("bit32") || used("bit.") {
+            self.output.push_str("local bit = bit32 or bit\n");
+        }
+        self.output.push('\n');
 
-local function molt_int(x: any): number
-	return math.floor(tonumber(x) or 0)
-end
+        // Math module bridge — emit if any function references math module.
+        // Detection: molt_math (static path) or module_cache["math"] (dynamic path)
+        // or .floor/.sqrt/.ceil etc. via module attribute access.
+        if used("molt_math") || used("\"math\"") {
+            self.output.push_str(concat!(
+                "local molt_math = {\n",
+                "\tfloor = math.floor,\n\tceil = math.ceil,\n\tsqrt = math.sqrt,\n",
+                "\tabs = math.abs,\n\tsin = math.sin,\n\tcos = math.cos,\n",
+                "\ttan = math.tan,\n\tasin = math.asin,\n\tacos = math.acos,\n",
+                "\tatan = math.atan,\n\tatan2 = math.atan2,\n\texp = math.exp,\n",
+                "\tlog = math.log,\n\tlog10 = math.log,\n\tpi = math.pi,\n",
+                "\te = 2.718281828459045,\n\tinf = math.huge,\n\tnan = 0/0,\n",
+                "}\n\n",
+            ));
+            self.output.push_str("molt_module_cache[\"math\"] = molt_math\n\n");
+        }
 
-local function molt_float(x: any): number
-	return tonumber(x) or 0.0
-end
+        // JSON serializer — emit if any function references json module.
+        if used("molt_json_dumps") || used("\"json\"") {
+            self.output.push_str(include_str!("luau_json_prelude.luau"));
+            self.output.push('\n');
+            self.output.push_str("molt_module_cache[\"json\"] = json\n\n");
+        }
 
-local function molt_str(x: any): string
-	return tostring(x)
-end
+        // String method helpers.
+        if used("molt_string") {
+            self.output.push_str(concat!(
+                "local molt_string = {\n",
+                "\tformat = string.format,\n",
+                "\tjoin = function(sep: string, t: {string}): string\n\t\treturn table.concat(t, sep)\n\tend,\n",
+                "\tsplit = function(s: string, sep: string?): {string}\n",
+                "\t\tlocal result = {}\n\t\tlocal pattern = sep and sep or \"%s+\"\n",
+                "\t\tif sep then\n\t\t\tlocal pos = 1\n\t\t\twhile pos <= #s do\n",
+                "\t\t\t\tlocal i, j = string.find(s, pattern, pos, true)\n",
+                "\t\t\t\tif i then\n\t\t\t\t\ttable.insert(result, string.sub(s, pos, i - 1))\n",
+                "\t\t\t\t\tpos = j + 1\n\t\t\t\telse\n",
+                "\t\t\t\t\ttable.insert(result, string.sub(s, pos))\n\t\t\t\t\tbreak\n",
+                "\t\t\t\tend\n\t\t\tend\n\t\telse\n",
+                "\t\t\tfor w in string.gmatch(s, \"%S+\") do\n\t\t\t\ttable.insert(result, w)\n",
+                "\t\t\tend\n\t\tend\n\t\treturn result\n\tend,\n}\n\n",
+            ));
+        }
 
-local function molt_bool(x: any): boolean
-	if x == nil or x == false or x == 0 or x == "" then return false end
-	if type(x) == "table" and next(x) == nil then return false end
-	return true
-end
-
-local function molt_repr(x: any): string
-	if type(x) == "string" then return '"' .. x .. '"' end
-	return tostring(x)
-end
-
-local function molt_floor_div(a: number, b: number): number
-	return math.floor(a / b)
-end
-
-local function molt_pow(a: number, b: number): number
-	return a ^ b
-end
-
-local function molt_mod(a: number, b: number): number
-	return a - math.floor(a / b) * b
-end
-
-local math_floor = math.floor
-local bit = bit32 or bit
-
--- Python enumerate(iterable) -> {{index, value}, ...}
-local function molt_enumerate(t: {any}, start: number?): {{any}}
-	local result = {}
-	local s = start or 0
-	for i, v in ipairs(t) do
-		table.insert(result, {s + i - 1, v})
-	end
-	return result
-end
-
--- Python zip(a, b) -> {{a[i], b[i]}, ...}
-local function molt_zip(a: {any}, b: {any}): {{any}}
-	local result = {}
-	local n = math.min(#a, #b)
-	for i = 1, n do
-		table.insert(result, {a[i], b[i]})
-	end
-	return result
-end
-
--- Python sorted(iterable)
-local function molt_sorted(t: {any}): {any}
-	local copy = table.clone(t)
-	table.sort(copy)
-	return copy
-end
-
--- Python reversed(iterable)
-local function molt_reversed(t: {any}): {any}
-	local result = {}
-	for i = #t, 1, -1 do
-		table.insert(result, t[i])
-	end
-	return result
-end
-
--- Python sum(iterable, start=0)
-local function molt_sum(t: {number}, start: number?): number
-	local s = start or 0
-	for _, v in ipairs(t) do s = s + v end
-	return s
-end
-
--- Python any(iterable)
-local function molt_any(t: {any}): boolean
-	for _, v in ipairs(t) do
-		if v then return true end
-	end
-	return false
-end
-
--- Python all(iterable)
-local function molt_all(t: {any}): boolean
-	for _, v in ipairs(t) do
-		if not v then return false end
-	end
-	return true
-end
-
--- Python map(func, iterable)
-local function molt_map(func: (any) -> any, t: {any}): {any}
-	local result = {}
-	for _, v in ipairs(t) do
-		table.insert(result, func(v))
-	end
-	return result
-end
-
--- Python filter(func, iterable)
-local function molt_filter(func: ((any) -> boolean)?, t: {any}): {any}
-	local result = {}
-	for _, v in ipairs(t) do
-		if func then
-			if func(v) then table.insert(result, v) end
-		elseif v then
-			table.insert(result, v)
-		end
-	end
-	return result
-end
-
--- Python dict.keys() / dict.values() / dict.items()
-local function molt_dict_keys(d: {[any]: any}): {any}
-	local result = {}
-	for k in pairs(d) do table.insert(result, k) end
-	return result
-end
-
-local function molt_dict_values(d: {[any]: any}): {any}
-	local result = {}
-	for _, v in pairs(d) do table.insert(result, v) end
-	return result
-end
-
-local function molt_dict_items(d: {[any]: any}): {{any}}
-	local result = {}
-	for k, v in pairs(d) do table.insert(result, {k, v}) end
-	return result
-end
-
--- math module bridge
-local molt_math = {
-	floor = math.floor,
-	ceil = math.ceil,
-	sqrt = math.sqrt,
-	abs = math.abs,
-	sin = math.sin,
-	cos = math.cos,
-	tan = math.tan,
-	asin = math.asin,
-	acos = math.acos,
-	atan = math.atan,
-	atan2 = math.atan2,
-	exp = math.exp,
-	log = math.log,
-	log10 = math.log,
-	pi = math.pi,
-	e = 2.718281828459045,
-	inf = math.huge,
-	nan = 0/0,
-}
-
--- Minimal JSON serializer for Luau (Python json.dumps equivalent)
-local molt_json_dumps
-do
-	local function serialize(val: any, depth: number): string
-		if depth > 50 then return '"[max depth]"' end
-		local t = type(val)
-		if t == "nil" then
-			return "null"
-		elseif t == "boolean" then
-			return val and "true" or "false"
-		elseif t == "number" then
-			if val ~= val then return "null" end
-			if val == math.huge then return "1e308" end
-			if val == -math.huge then return "-1e308" end
-			if val == math_floor(val) and math.abs(val) < 1e15 then
-				return string.format("%d", val)
-			end
-			return tostring(val)
-		elseif t == "string" then
-			local escaped = val:gsub('[\\"]', function(c) return "\\" .. c end)
-			escaped = escaped:gsub("\n", "\\n"):gsub("\r", "\\r"):gsub("\t", "\\t")
-			return '"' .. escaped .. '"'
-		elseif t == "table" then
-			-- Detect array vs object: array if sequential integer keys from 1
-			local is_array = true
-			local n = #val
-			if n == 0 then
-				-- Check if it has any keys at all
-				if next(val) ~= nil then is_array = false end
-			else
-				for k in pairs(val) do
-					if type(k) ~= "number" or k < 1 or k > n or k ~= math_floor(k) then
-						is_array = false
-						break
-					end
-				end
-			end
-			local parts = {}
-			if is_array then
-				for i = 1, n do
-					table.insert(parts, serialize(val[i], depth + 1))
-				end
-				return "[" .. table.concat(parts, ", ") .. "]"
-			else
-				for k, v in pairs(val) do
-					local ks = type(k) == "string" and k or tostring(k)
-					local escaped = ks:gsub('[\\"]', function(c) return "\\" .. c end)
-					table.insert(parts, '"' .. escaped .. '": ' .. serialize(v, depth + 1))
-				end
-				return "{" .. table.concat(parts, ", ") .. "}"
-			end
-		end
-		return '"' .. tostring(val) .. '"'
-	end
-	molt_json_dumps = function(val: any): string
-		return serialize(val, 0)
-	end
-end
-
--- json module bridge
-local json = {
-	dumps = molt_json_dumps,
-}
-
--- String method helpers (for call_method on strings)
-local molt_string = {
-	format = string.format,
-	join = function(sep: string, t: {string}): string
-		return table.concat(t, sep)
-	end,
-	split = function(s: string, sep: string?): {string}
-		local result = {}
-		local pattern = sep and sep or "%s+"
-		if sep then
-			local pos = 1
-			while pos <= #s do
-				local i, j = string.find(s, pattern, pos, true)
-				if i then
-					table.insert(result, string.sub(s, pos, i - 1))
-					pos = j + 1
-				else
-					table.insert(result, string.sub(s, pos))
-					break
-				end
-			end
-		else
-			for w in string.gmatch(s, "%S+") do
-				table.insert(result, w)
-			end
-		end
-		return result
-	end,
-}
-
--- Populate module cache now that bridge tables are defined.
-molt_module_cache["math"] = molt_math
-molt_module_cache["json"] = json
-
-"#;
-        self.output.push_str(prelude);
     }
 
     fn emit_function_body(&mut self, func: &FunctionIR) {
