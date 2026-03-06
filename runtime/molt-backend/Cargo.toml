@@ -17,3 +17,4 @@ serde_path_to_error = "0.1"
 molt-obj-model = { path = "../molt-obj-model" }
 wasm-encoder = "0.245.1"
 wasmparser = "0.245.1"
+relooper = "0.1.0"
