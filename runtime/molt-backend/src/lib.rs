@@ -328,9 +328,9 @@ impl SimpleIR {
         let mut live: HashSet<usize> = HashSet::new();
         let mut worklist: Vec<usize> = Vec::new();
 
-        // Seed with molt_main and any __main__ functions (user's module).
+        // Seed with molt_main and the module initializer.
         for (i, f) in self.functions.iter().enumerate() {
-            if f.name == "molt_main" || f.name.contains("__main__") {
+            if f.name == "molt_main" || f.name == "molt_init___main__" {
                 if live.insert(i) {
                     worklist.push(i);
                 }
@@ -442,28 +442,27 @@ impl SimpleIR {
             }
         }
 
-        // Phase 2.5: Strip the module-init boilerplate at the top of
-        // molt_init___main__.  The boilerplate sets up __file__, __package__,
-        // importlib.machinery, __spec__, etc. — all Python module machinery
-        // that is meaningless in Luau.  We find the first user-code op
-        // (func_new for a user-defined function) and nop everything before it,
-        // except for module_new/module_cache_set which create the module dict.
+        // Phase 2.5: Strip module-init boilerplate from molt_init___main__.
+        // The boilerplate before the first func_new sets up __file__,
+        // __package__, importlib, __spec__ — all Python runtime metadata
+        // meaningless in Luau.  Also strip func_attr_set patterns (setting
+        // __defaults__, __kwdefaults__, __doc__, __code__) and module_set_attr
+        // which writes metadata to the module dict.
         if let Some(init_main) = self
             .functions
             .iter_mut()
             .find(|f| f.name == "molt_init___main__")
         {
-            // Find the first func_new that defines a user function.
+            // Part A: Strip everything before the first func_new.
             let first_user_op = init_main
                 .ops
                 .iter()
-                .position(|op| op.kind == "func_new");
+                .position(|op| matches!(op.kind.as_str(), "func_new" | "make_function"));
+            let mut stripped = 0;
             if let Some(cutoff) = first_user_op {
-                let mut stripped = 0;
                 for op in &mut init_main.ops[..cutoff] {
                     let kind = op.kind.as_str();
-                    // Keep the module dict creation ops.
-                    if matches!(kind, "const_str" | "module_new" | "module_cache_set" | "nop") {
+                    if matches!(kind, "const_str" | "const_string" | "module_new" | "module_cache_set" | "nop") {
                         continue;
                     }
                     op.kind = "nop".to_string();
@@ -471,11 +470,30 @@ impl SimpleIR {
                     op.args = None;
                     stripped += 1;
                 }
-                if stripped > 0 {
-                    eprintln!(
-                        "[molt-dce] Stripped {stripped} module-init boilerplate ops before user code"
-                    );
+            }
+
+            // Part B: Strip function attribute setup patterns.
+            // These are ops that set __defaults__, __kwdefaults__, etc.
+            // Pattern: the ops reference func_attr, __defaults__, __kwdefaults__
+            // Also strip module_set_attr (writes to module dict).
+            let metadata_kinds: HashSet<&str> = [
+                "func_attr_set", "module_set_attr", "module_del_global",
+            ].iter().copied().collect();
+            for op in init_main.ops.iter_mut() {
+                if metadata_kinds.contains(op.kind.as_str()) {
+                    op.kind = "nop".to_string();
+                    op.out = None;
+                    op.s_value = None;
+                    op.args = None;
+                    op.var = None;
+                    stripped += 1;
                 }
+            }
+
+            if stripped > 0 {
+                eprintln!(
+                    "[molt-dce] Stripped {stripped} module-init boilerplate ops in molt_init___main__"
+                );
             }
         }
 
@@ -650,7 +668,146 @@ impl SimpleIR {
             }
         }
 
-        // Phase 4: Run standard tree_shake to remove now-unreachable functions.
+        // Phase 4.5: Dead variable elimination.
+        // Remove ops whose `out` variable is never consumed by any other op
+        // and whose kind is side-effect-free (constants, pure math, table literals).
+        let side_effect_free: HashSet<&str> = [
+            "const", "const_int", "const_float", "const_string", "const_bytes",
+            "const_none", "const_bool", "const_true", "const_false",
+            "const_ellipsis", "const_complex",
+            "load_local", "load_global", "load_fast",
+            "build_list", "list_new", "build_tuple", "tuple_new",
+            "build_dict", "dict_new", "build_set", "set_new",
+            "build_string", "format_string",
+            "binary_add", "binary_sub", "binary_mul", "binary_div",
+            "binary_floor_div", "binary_mod", "binary_pow",
+            "binary_and", "binary_or", "binary_xor",
+            "binary_lshift", "binary_rshift",
+            "unary_neg", "unary_pos", "unary_not", "unary_invert",
+            "compare", "is", "is_not", "in", "not_in", "not",
+            "add", "sub", "mul", "div", "floor_div", "mod", "pow",
+            "lshift", "rshift", "bit_and", "bit_or", "bit_xor",
+            "get_item", "index", "subscript", "get_attr",
+            "missing", "nop",
+            "module_get_attr", "module_get_global", "module_get_name",
+            "callargs_new",
+            "func_new", "make_function",
+        ].iter().copied().collect();
+
+        for func in &mut self.functions {
+            let mut total_eliminated = 0;
+            loop {
+                // Collect all variable *uses* (reads) across the function.
+                let mut used_vars: HashSet<String> = HashSet::new();
+                // Params are always "used" (entry points).
+                for p in &func.params {
+                    used_vars.insert(p.clone());
+                }
+                for op in func.ops.iter() {
+                    if let Some(ref args) = op.args {
+                        for a in args {
+                            used_vars.insert(a.clone());
+                        }
+                    }
+                    if let Some(ref v) = op.var {
+                        used_vars.insert(v.clone());
+                    }
+                }
+
+                let mut eliminated = 0;
+                for op in &mut func.ops {
+                    if let Some(ref out_var) = op.out {
+                        if !used_vars.contains(out_var)
+                            && side_effect_free.contains(op.kind.as_str())
+                        {
+                            op.kind = "nop".to_string();
+                            op.out = None;
+                            op.args = None;
+                            op.var = None;
+                            op.s_value = None;
+                            eliminated += 1;
+                        }
+                    }
+                }
+                total_eliminated += eliminated;
+                if eliminated == 0 {
+                    break;
+                }
+            }
+            if total_eliminated > 0 {
+                eprintln!(
+                    "[molt-dce] Eliminated {total_eliminated} dead variables in {}",
+                    func.name
+                );
+            }
+        }
+
+        // Phase 4.6: Strip __annotate__ machinery.
+        // Python 3.12+ emits __annotate__ callbacks for type annotations.
+        // These are pure metadata, never needed at runtime in Luau.
+        // Nop func_new ops that create __annotate__ functions, and any ops
+        // that only exist to wire them into module dicts.
+        if let Some(init_main) = self
+            .functions
+            .iter_mut()
+            .find(|f| f.name == "molt_init___main__")
+        {
+            let mut annotate_vars: HashSet<String> = HashSet::new();
+            // Find func_new ops that create __annotate__ functions.
+            for op in init_main.ops.iter_mut() {
+                if matches!(op.kind.as_str(), "func_new" | "make_function") {
+                    if let Some(ref s) = op.s_value {
+                        if s.contains("__annotate__") {
+                            if let Some(ref out) = op.out {
+                                annotate_vars.insert(out.clone());
+                            }
+                            op.kind = "nop".to_string();
+                            op.out = None;
+                            op.args = None;
+                            op.s_value = None;
+                        }
+                    }
+                }
+            }
+            if !annotate_vars.is_empty() {
+                // Nop any op that references an annotate var in args or var.
+                let mut stripped = 0;
+                for op in init_main.ops.iter_mut() {
+                    if op.kind == "nop" {
+                        continue;
+                    }
+                    let refs_annotate = op
+                        .args
+                        .as_deref()
+                        .unwrap_or(&[])
+                        .iter()
+                        .any(|a| annotate_vars.contains(a))
+                        || op
+                            .var
+                            .as_deref()
+                            .map_or(false, |v| annotate_vars.contains(v));
+                    if refs_annotate {
+                        // Also collect the output var so downstream uses are eliminated.
+                        if let Some(ref out) = op.out {
+                            annotate_vars.insert(out.clone());
+                        }
+                        op.kind = "nop".to_string();
+                        op.out = None;
+                        op.args = None;
+                        op.var = None;
+                        op.s_value = None;
+                        stripped += 1;
+                    }
+                }
+                eprintln!(
+                    "[molt-dce] Stripped {} __annotate__ ops ({} vars)",
+                    stripped,
+                    annotate_vars.len()
+                );
+            }
+        }
+
+        // Phase 5: Run standard tree_shake to remove now-unreachable functions.
         self.tree_shake();
     }
 }
