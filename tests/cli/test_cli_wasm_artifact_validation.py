@@ -26,6 +26,112 @@ def test_wasm_runtime_recovery_target_root_suffix(tmp_path: Path) -> None:
     )
 
 
+def test_is_wasm_unsafe_volume_detects_non_native_filesystems(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "artifact-root"
+    path.mkdir()
+
+    def fake_run(
+        cmd: list[str], *, capture_output: bool, text: bool, timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        del capture_output, text, timeout
+        if cmd[0] == "df":
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                f"Filesystem 512-blocks Used Available Capacity Mounted on\n/dev/disk9s1 1 1 1 1% {path}\n",
+                "",
+            )
+        assert cmd[0] == "mount"
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            "/dev/disk9s1 on /Volumes/APDataStore (exfat, local, nodev, nosuid)\n",
+            "",
+        )
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run, raising=True)
+
+    assert cli._is_wasm_unsafe_volume(path) is True
+
+
+def test_ensure_runtime_wasm_redirects_unsafe_target_root_to_local(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
+    primary_target = tmp_path / "target-unsafe"
+    local_target = tmp_path / "target-local"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(primary_target))
+    monkeypatch.setattr(
+        cli, "_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint_path",
+        lambda *args, **kwargs: tmp_path / "fingerprint.json",
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+    )
+    monkeypatch.setattr(
+        cli,
+        "_build_lock",
+        lambda *args, **kwargs: contextlib.nullcontext(),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_is_wasm_unsafe_volume",
+        lambda path: Path(path) == primary_target,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli, "_wasm_local_target_root", lambda target_root: local_target, raising=True
+    )
+
+    seen_target_root_override: Path | None = None
+
+    def fake_run_runtime_wasm_cargo_build(
+        *,
+        cmd: list[str],
+        root: Path,
+        env: dict[str, str],
+        cargo_timeout: float | None,
+        profile_dir: str,
+        target_root_override: Path | None,
+        json_output: bool,
+    ) -> tuple[subprocess.CompletedProcess[str], Path]:
+        del root, env, cargo_timeout, json_output
+        nonlocal seen_target_root_override
+        seen_target_root_override = target_root_override
+        src = local_target / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(b"\x00asm\x01\x00\x00\x00ok")
+        return subprocess.CompletedProcess(cmd, 0), src
+
+    monkeypatch.setattr(
+        cli,
+        "_run_runtime_wasm_cargo_build",
+        fake_run_runtime_wasm_cargo_build,
+        raising=True,
+    )
+
+    assert cli._ensure_runtime_wasm(
+        runtime_wasm,
+        reloc=False,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=5.0,
+        project_root=project_root,
+    )
+    assert seen_target_root_override == local_target
+    assert cli._is_valid_wasm_binary(runtime_wasm)
+
+
 def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -52,6 +158,7 @@ def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
     )
+    monkeypatch.setattr(cli, "_is_wasm_unsafe_volume", lambda path: False, raising=True)
 
     seen_target_roots: list[Path] = []
 
@@ -119,6 +226,7 @@ def test_ensure_runtime_wasm_uses_valid_deps_artifact_before_recovery(
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
     )
+    monkeypatch.setattr(cli, "_is_wasm_unsafe_volume", lambda path: False, raising=True)
 
     seen_target_roots: list[Path] = []
 
@@ -184,6 +292,7 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
     )
+    monkeypatch.setattr(cli, "_is_wasm_unsafe_volume", lambda path: False, raising=True)
 
     seen_profiles: list[str] = []
     seen_targets: list[Path] = []
