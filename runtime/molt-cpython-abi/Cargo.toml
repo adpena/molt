@@ -1,0 +1,32 @@
+[package]
+name = "molt-lang-cpython-abi"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "CPython binary ABI compatibility shim for Molt — enables dlopen-loading real CPython C extensions"
+
+[lib]
+name = "molt_cpython_abi"
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+# Enable SIMD-accelerated type-tag batch checking (x86_64 SSE4.1 / ARM NEON)
+simd = []
+# Enable dlopen-based loading of pre-built CPython .so extensions
+extension-loader = ["dep:libloading"]
+
+[dependencies]
+molt-lang-obj-model = { path = "../molt-obj-model" }
+# molt-lang-runtime is NOT listed here to avoid circular dependency.
+# Runtime integration (type IDs, heap object allocation) is injected via
+# the AbiRuntimeHooks trait at load time.
+libc                = "0.2"
+once_cell           = "1.21"
+parking_lot         = "0.12"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libloading = { version = "0.9", optional = true }
+
+[build-dependencies]
+cc = "1"
