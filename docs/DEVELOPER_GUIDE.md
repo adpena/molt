@@ -165,6 +165,82 @@ We recommend reading them in this order:
 - **`tests/`**: Test suites (differential testing vs CPython).
 - **`docs/`**: Project documentation and specifications (`spec/`).
 
+## Luau Backend (Roblox Target)
+
+Molt can transpile Python to **Luau** for execution in Roblox Studio or standalone
+via [Lune](https://lune-org.github.io/docs). Build with `--target luau`:
+
+```bash
+molt build my_script.py --target luau --output my_script.luau
+lune run my_script.luau   # Local testing via Lune 0.10.4+
+```
+
+### Architecture
+
+- **Source**: `runtime/molt-backend/src/luau.rs` (~4600 lines)
+- **Tests**: `tests/luau/test_molt_luau_correctness.py` (59 differential tests)
+- **Benchmark tool**: `tools/benchmark_luau_vs_cpython.py`
+- **IR input**: Same `SimpleIR` (JSON) used by native/WASM backends
+
+The Luau backend is a source-to-source transpiler: it reads `SimpleIR` and emits
+Luau source text. It does **not** go through Cranelift.
+
+### Optimization Pipeline (10 passes, ordered)
+
+Text-level passes run on the emitted Luau source before the prelude is prepended:
+
+1. **`inline_single_use_constants`** — Replace `local vN = <literal>` with inline literal at use site
+2. **`eliminate_nil_missing_wrappers`** — Flatten `{nil}` frame-slot wrappers to plain locals
+3. **`strip_unbound_local_checks`** — Remove dead `UnboundLocalError` guard blocks
+4. **`strip_dead_locals_dict_stores`** — Remove write-only `__dict__` tables (module introspection)
+5. **`strip_undefined_rhs_assignments`** — Eliminate dead closure-restore ops (`vN = vM` where vM undefined)
+6. **`strip_trailing_continue`** — Remove no-op `continue` before `end`
+7. **`simplify_comparison_break`** — Fuse `local vN = a < b; if not vN then break end` → `if a >= b then break end`
+8. **`optimize_luau_perf`** — Multi-pass optimizer:
+   - Inline `molt_pow` → `^`, `molt_floor_div` → `math_floor(/)`, `molt_mod` → `%`
+   - Track numeric variables through assignments (local + bare)
+   - Eliminate string-or-add type guards when operands are provably numeric
+   - Simplify index type guards (`if type(vN) == "number" then vN+1 else vN` → `vN+1`)
+   - Strength-reduce `x^2` → `x*x`
+   - Annotate user functions with `@native` for Luau VM JIT
+
+IR-level passes run in `lib.rs` (`tree_shake_luau`):
+- Exception op stripping, stdlib stubs, genexpr inlining, frame-slot flattening, dead var elimination
+
+### IR Type Hints
+
+The `OpIR` struct carries `type_hint`, `fast_int`, `fast_float`, and `raw_int` fields.
+The Luau backend checks these at codegen time:
+
+- **`add`/`inplace_add`**: When `fast_int`/`fast_float`/`type_hint="int"`, emits plain `+` instead of string-or-add guard
+- **`get_item`/`set_item`**: When key is `fast_int`, emits `container[key + 1]` instead of runtime type-guard
+
+The frontend currently doesn't propagate `fast_int` into loop-body arithmetic, so
+the text-level numeric tracking pass handles most optimizations for now.
+
+### Correctness Testing
+
+59 differential tests compare `molt build --target luau | lune run` output against
+CPython `python3 -c`. Coverage includes:
+
+- Range/loops (8), indexing (4), dict (2), math (7), print formatting (8)
+- Algorithms (5: fib, factorial, sum_of_squares, collatz, gcd)
+- Assignment (3), list ops (4), control flow (4), boolean logic (3)
+- **Nested indexing** (4: matrix multiply, nested sum, list-of-lists, accumulate)
+- **Function returns** (3: computed list, nested result, accumulator)
+- **Performance** (4: fib70, sum100k, nested100×100, listbuild10k)
+
+Run: `uv run pytest tests/luau/ -x -v`
+
+### Key Safety Rules
+
+- **No variable-copy inlining**: `local vN = vM` copies cannot be inlined because
+  `vM` may be reassigned between declaration and use (closure save/restore patterns).
+- **For-loop vars in defined_vars**: The dead-RHS pass must collect for-loop
+  iteration variables to avoid stripping live assignments.
+- **Guarded-store detection**: `type(vN)` in `if type(vN) == "table" then vN["key"] = val end`
+  must not mark the dict as live.
+
 ## When Adding New Functionality
 Use this checklist to ensure you touch the right layers and docs.
 
