@@ -8375,6 +8375,14 @@ def build(
                     out_dir=out_dir_path,
                     project_root=project_root,
                 )
+    elif is_rust:
+        output_rust = _resolve_output_path(
+            output,
+            output_root / "output.rs",
+            out_dir=out_dir_path,
+            project_root=project_root,
+        )
+        output_artifact = output_rust
     else:
         output_obj = artifacts_root / "output.o"
         if emit_mode == "obj":
@@ -10081,6 +10089,8 @@ def build(
                     if is_luau
                     else "output.wasm"
                     if is_wasm
+                    else "output.rs"
+                    if is_rust
                     else "output.o"
                 )
                 backend_compiled = False
@@ -10097,6 +10107,7 @@ def build(
                         backend_output=backend_output,
                         is_wasm=is_wasm,
                         is_luau=is_luau,
+                        is_rust=is_rust,
                         target_triple=target_triple,
                         cache_key=cache_key,
                         function_cache_key=function_cache_key,
@@ -10150,6 +10161,7 @@ def build(
                                 backend_output=backend_output,
                                 is_wasm=is_wasm,
                                 is_luau=is_luau,
+                                is_rust=is_rust,
                                 target_triple=target_triple,
                                 cache_key=cache_key,
                                 function_cache_key=function_cache_key,
@@ -10477,6 +10489,27 @@ def build(
             diagnostics_path=diagnostics_path,
             json_output=json_output,
         )
+        return 0
+
+    if is_rust:
+        # Rust target: backend emitted .rs source; nothing left to do.
+        if json_output:
+            cache_info = _attach_daemon_cache_info({"enabled": cache, "hit": cache_hit})
+            if cache_key:
+                cache_info["key"] = cache_key
+            if cache_hit_tier:
+                cache_info["hit_tier"] = cache_hit_tier
+            data = {
+                "target": target,
+                "entry": str(source_path),
+                "output": str(output_artifact),
+                "cache": cache_info,
+                "emit": emit_mode,
+            }
+            payload = _build_json_payload("build", "ok", data=data, warnings=warnings)
+            _emit_json(payload, json_output)
+        else:
+            print(f"Successfully built {output_artifact}")
         return 0
 
     # 3. Linking: output.o + main.c -> binary
