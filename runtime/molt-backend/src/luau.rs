@@ -2480,8 +2480,8 @@ pub fn review_luau_perf(source: &str) -> Vec<(usize, &'static str, String)> {
             issues.push((ln, "table-insert", "table.insert() — use result[n] = x for speed".into()));
         }
 
-        // Missing @native on function definitions.
-        if (trimmed.starts_with("local function ") || trimmed.contains(" = function("))
+        // Missing @native on `local function` definitions (only syntax that supports @native).
+        if trimmed.starts_with("local function ")
             && !trimmed.starts_with("--")
         {
             // Check if previous line has @native.
@@ -3037,8 +3037,13 @@ fn optimize_luau_perf(source: &mut String) {
         let trimmed = line.trim();
         let mut optimized = line.to_string();
 
+        // Skip function definition lines — the inlining passes below must not
+        // rewrite `local function molt_xyz(...)` declarations.
+        let is_func_def = trimmed.starts_with("local function molt_");
+
         // Pass 1: Inline molt_pow(a, b) → a ^ b
-        while let Some(start) = optimized.find("molt_pow(") {
+        while !is_func_def {
+            let Some(start) = optimized.find("molt_pow(") else { break };
             if let Some(close) = find_matching_paren(&optimized, start + 8) {
                 let inner = &optimized[start + 9..close];
                 if let Some(comma) = inner.find(", ") {
@@ -3059,7 +3064,8 @@ fn optimize_luau_perf(source: &mut String) {
         }
 
         // Pass 2: Inline molt_floor_div(a, b) → math_floor(a / b)
-        while let Some(start) = optimized.find("molt_floor_div(") {
+        while !is_func_def {
+            let Some(start) = optimized.find("molt_floor_div(") else { break };
             if let Some(close) = find_matching_paren(&optimized, start + 14) {
                 let inner = &optimized[start + 15..close];
                 if let Some(comma) = inner.find(", ") {
@@ -3082,7 +3088,8 @@ fn optimize_luau_perf(source: &mut String) {
         // Pass 3: Inline molt_mod(a, b) → a % b
         // Python's floor-mod matches Luau's % for positive divisors, which covers
         // the vast majority of real-world uses (array indexing, hash functions, etc.).
-        while let Some(start) = optimized.find("molt_mod(") {
+        while !is_func_def {
+            let Some(start) = optimized.find("molt_mod(") else { break };
             if let Some(close) = find_matching_paren(&optimized, start + 8) {
                 let inner = &optimized[start + 9..close];
                 if let Some(comma) = inner.find(", ") {
@@ -3212,16 +3219,8 @@ fn optimize_luau_perf(source: &mut String) {
             result.push_str(&format!("{indent}@native\n"));
             perf_count += 1;
         }
-        // Also annotate forward-declared function assignments: `molt_name = function(`
-        if !trimmed.starts_with("local ")
-            && !trimmed.starts_with("--")
-            && trimmed.starts_with("molt_")
-            && trimmed.contains(" = function(")
-        {
-            let indent = &line[..line.len() - trimmed.len()];
-            result.push_str(&format!("{indent}@native\n"));
-            perf_count += 1;
-        }
+        // Note: `@native` only works with `local function` declarations in Luau.
+        // Forward-declared assignments like `molt_name = function(` cannot use @native.
 
         result.push_str(&optimized);
         result.push('\n');
