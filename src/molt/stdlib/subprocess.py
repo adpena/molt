@@ -953,5 +953,8 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Namespace cleanup — remove names that are not part of CPython's subprocess API.
 # ---------------------------------------------------------------------------
+import sys as _sub_cleanup_sys
+_sub_cleanup_dict = getattr(_sub_cleanup_sys.modules.get(__name__), "__dict__", None) or globals()
 for _name in ("Any",):
-    globals().pop(_name, None)
+    _sub_cleanup_dict.pop(_name, None)
+del _sub_cleanup_sys, _sub_cleanup_dict

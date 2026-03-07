@@ -389,7 +389,9 @@ if _default_selector_cls is SelectSelector:
         "DevpollSelector",
         "PollSelector",
     ):
-        _selector_candidate = globals().get(_selector_name)
+        import sys as _sel_sys
+        _sel_mod_dict = getattr(_sel_sys.modules.get(__name__), "__dict__", None) or globals()
+        _selector_candidate = _sel_mod_dict.get(_selector_name)
         if _selector_candidate is not None:
             _default_selector_cls = _selector_candidate
             break

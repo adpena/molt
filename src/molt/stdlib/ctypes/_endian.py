@@ -109,7 +109,9 @@ for _name in (
     "c_wchar_p",
     "py_object",
 ):
-    globals()[_name] = _make_simple(_name)
+    import sys as _endian_sys
+    _endian_mod_dict = getattr(_endian_sys.modules.get(__name__), "__dict__", None) or globals()
+    _endian_mod_dict[_name] = _make_simple(_name)
 
 c_voidp = c_void_p
 
