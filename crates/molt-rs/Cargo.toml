@@ -1,0 +1,15 @@
+[package]
+name = "molt-rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["Molt Contributors"]
+description = "Runtime types and helpers for Molt-generated Rust code"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/adpena/molt"
+keywords = ["molt", "python", "compiler", "runtime", "ffi"]
+categories = ["compilers", "development-tools"]
+readme = "README.md"
+
+[dependencies]
+
+[dev-dependencies]
