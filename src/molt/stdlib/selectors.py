@@ -371,13 +371,16 @@ if _backend_available(_SELECT_KIND_KQUEUE):
 
 _default_kind = int(_MOLT_SELECT_DEFAULT_SELECTOR_KIND())
 
-if _default_kind == _SELECT_KIND_KQUEUE and "KqueueSelector" in globals():
+import sys as _sel_default_sys
+_sel_default_mod_dict = _sel_default_sys.modules[__name__].__dict__
+
+if _default_kind == _SELECT_KIND_KQUEUE and "KqueueSelector" in _sel_default_mod_dict:
     _default_selector_cls = KqueueSelector
-elif _default_kind == _SELECT_KIND_EPOLL and "EpollSelector" in globals():
+elif _default_kind == _SELECT_KIND_EPOLL and "EpollSelector" in _sel_default_mod_dict:
     _default_selector_cls = EpollSelector
-elif _default_kind == _SELECT_KIND_DEVPOLL and "DevpollSelector" in globals():
+elif _default_kind == _SELECT_KIND_DEVPOLL and "DevpollSelector" in _sel_default_mod_dict:
     _default_selector_cls = DevpollSelector
-elif _default_kind == _SELECT_KIND_POLL and "PollSelector" in globals():
+elif _default_kind == _SELECT_KIND_POLL and "PollSelector" in _sel_default_mod_dict:
     _default_selector_cls = PollSelector
 else:
     _default_selector_cls = SelectSelector
