@@ -16,9 +16,18 @@ typedef enum {
         NPY_METH_REQUIRES_PYAPI | NPY_METH_NO_FLOATINGPOINT_ERRORS),
 } NPY_ARRAYMETHOD_FLAGS;
 
+#define NPY_DT_ABSTRACT (1 << 1)
+#define NPY_DT_PARAMETRIC (1 << 2)
+#define NPY_DT_NUMERIC (1 << 3)
+
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(PyArrayMethod_COMBINED_FLAGS)
 #define PyArrayMethod_COMBINED_FLAGS(lhs, rhs) \
     ((NPY_ARRAYMETHOD_FLAGS)((lhs) | (rhs)))
+#endif
+
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(PyArrayMethod_MINIMAL_FLAGS)
 #define PyArrayMethod_MINIMAL_FLAGS 0
+#endif
 
 typedef NPY_CASTING (PyArrayMethod_ResolveDescriptors)(
     PyArrayMethodObject *method,

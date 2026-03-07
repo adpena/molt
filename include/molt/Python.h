@@ -43,29 +43,68 @@ typedef struct _molt_pyinterpreterstate PyInterpreterState;
 struct PyNumberMethods;
 struct PyMappingMethods;
 struct PySequenceMethods;
+struct PyAsyncMethods;
 struct PyBufferProcs;
 typedef struct _molt_pyobject {
     Py_ssize_t ob_refcnt;
     struct _molt_pyobject *ob_type;
     const char *tp_name;
-    struct _molt_pyobject *tp_base;
-    struct _molt_pyobject *tp_dict;
-    struct _molt_pyobject *tp_mro;
-    unsigned long tp_flags;
     Py_ssize_t tp_basicsize;
     Py_ssize_t tp_itemsize;
+    void (*tp_dealloc)(struct _molt_pyobject *);
+    Py_ssize_t tp_vectorcall_offset;
+    struct _molt_pyobject *(*tp_getattr)(struct _molt_pyobject *, char *);
+    int (*tp_setattr)(struct _molt_pyobject *, char *, struct _molt_pyobject *);
+    struct PyAsyncMethods *tp_as_async;
+    struct _molt_pyobject *(*tp_repr)(struct _molt_pyobject *);
     struct PyNumberMethods *tp_as_number;
     struct PySequenceMethods *tp_as_sequence;
     struct PyMappingMethods *tp_as_mapping;
-    struct PyBufferProcs *tp_as_buffer;
-    struct _molt_pyobject *(*tp_alloc)(struct _molt_pyobject *, Py_ssize_t);
-    void (*tp_free)(void *);
-    struct _molt_pyobject *(*tp_new)(
+    Py_hash_t (*tp_hash)(struct _molt_pyobject *);
+    struct _molt_pyobject *(*tp_call)(
         struct _molt_pyobject *, struct _molt_pyobject *, struct _molt_pyobject *);
-    struct _molt_pyobject *(*tp_repr)(struct _molt_pyobject *);
     struct _molt_pyobject *(*tp_str)(struct _molt_pyobject *);
+    struct _molt_pyobject *(*tp_getattro)(
+        struct _molt_pyobject *, struct _molt_pyobject *);
+    int (*tp_setattro)(
+        struct _molt_pyobject *, struct _molt_pyobject *, struct _molt_pyobject *);
+    struct PyBufferProcs *tp_as_buffer;
+    unsigned long tp_flags;
+    const char *tp_doc;
+    int (*tp_traverse)(
+        struct _molt_pyobject *, int (*)(struct _molt_pyobject *, void *), void *);
+    int (*tp_clear)(struct _molt_pyobject *);
+    struct _molt_pyobject *(*tp_richcompare)(
+        struct _molt_pyobject *, struct _molt_pyobject *, int);
+    Py_ssize_t tp_weaklistoffset;
     struct _molt_pyobject *(*tp_iter)(struct _molt_pyobject *);
     struct _molt_pyobject *(*tp_iternext)(struct _molt_pyobject *);
+    struct PyMethodDef *tp_methods;
+    struct PyMemberDef *tp_members;
+    struct PyGetSetDef *tp_getset;
+    struct _molt_pyobject *tp_base;
+    struct _molt_pyobject *tp_dict;
+    struct _molt_pyobject *(*tp_descr_get)(
+        struct _molt_pyobject *, struct _molt_pyobject *, struct _molt_pyobject *);
+    int (*tp_descr_set)(
+        struct _molt_pyobject *, struct _molt_pyobject *, struct _molt_pyobject *);
+    Py_ssize_t tp_dictoffset;
+    int (*tp_init)(
+        struct _molt_pyobject *, struct _molt_pyobject *, struct _molt_pyobject *);
+    struct _molt_pyobject *(*tp_alloc)(struct _molt_pyobject *, Py_ssize_t);
+    struct _molt_pyobject *(*tp_new)(
+        struct _molt_pyobject *, struct _molt_pyobject *, struct _molt_pyobject *);
+    void (*tp_free)(void *);
+    int (*tp_is_gc)(struct _molt_pyobject *);
+    struct _molt_pyobject *tp_bases;
+    struct _molt_pyobject *tp_mro;
+    struct _molt_pyobject *tp_cache;
+    void *tp_subclasses;
+    struct _molt_pyobject *tp_weaklist;
+    void (*tp_del)(struct _molt_pyobject *);
+    unsigned int tp_version_tag;
+    void (*tp_finalize)(struct _molt_pyobject *);
+    vectorcallfunc tp_vectorcall;
 } PyObject;
 typedef PyObject PyTypeObject;
 typedef PyObject PyCodeObject;
@@ -102,9 +141,28 @@ typedef int (*traverseproc)(PyObject *, visitproc, void *);
 typedef PyObject *(*unaryfunc)(PyObject *);
 typedef PyObject *(*binaryfunc)(PyObject *, PyObject *);
 typedef PyObject *(*ternaryfunc)(PyObject *, PyObject *, PyObject *);
+typedef PyObject *(*ssizeargfunc)(PyObject *, Py_ssize_t);
+typedef PyObject *(*ssizessizeargfunc)(PyObject *, Py_ssize_t, Py_ssize_t);
+typedef int (*ssizeobjargproc)(PyObject *, Py_ssize_t, PyObject *);
+typedef int (*ssizessizeobjargproc)(PyObject *, Py_ssize_t, Py_ssize_t, PyObject *);
 typedef int (*objobjargproc)(PyObject *, PyObject *, PyObject *);
 typedef int (*objobjproc)(PyObject *, PyObject *);
 typedef int (*inquiry)(PyObject *);
+typedef void (*freefunc)(void *);
+typedef void (*destructor)(PyObject *);
+typedef PyObject *(*getattrfunc)(PyObject *, char *);
+typedef PyObject *(*getattrofunc)(PyObject *, PyObject *);
+typedef int (*setattrfunc)(PyObject *, char *, PyObject *);
+typedef int (*setattrofunc)(PyObject *, PyObject *, PyObject *);
+typedef PyObject *(*reprfunc)(PyObject *);
+typedef Py_hash_t (*hashfunc)(PyObject *);
+typedef PyObject *(*richcmpfunc)(PyObject *, PyObject *, int);
+typedef PyObject *(*getiterfunc)(PyObject *);
+typedef PyObject *(*iternextfunc)(PyObject *);
+typedef PyObject *(*descrgetfunc)(PyObject *, PyObject *, PyObject *);
+typedef int (*descrsetfunc)(PyObject *, PyObject *, PyObject *);
+typedef int (*initproc)(PyObject *, PyObject *, PyObject *);
+typedef PyObject *(*newfunc)(PyTypeObject *, PyObject *, PyObject *);
 
 typedef void *PyThread_type_lock;
 typedef long long PY_TIMEOUT_T;
@@ -167,15 +225,22 @@ typedef struct PyMappingMethods {
 typedef struct PySequenceMethods {
     lenfunc sq_length;
     binaryfunc sq_concat;
-    binaryfunc sq_repeat;
-    PyObject *(*sq_item)(PyObject *, Py_ssize_t);
+    ssizeargfunc sq_repeat;
+    ssizeargfunc sq_item;
     void *was_sq_slice;
-    int (*sq_ass_item)(PyObject *, Py_ssize_t, PyObject *);
+    ssizeobjargproc sq_ass_item;
     void *was_sq_ass_slice;
     objobjproc sq_contains;
     binaryfunc sq_inplace_concat;
-    binaryfunc sq_inplace_repeat;
+    ssizeargfunc sq_inplace_repeat;
 } PySequenceMethods;
+
+typedef struct PyAsyncMethods {
+    unaryfunc am_await;
+    unaryfunc am_aiter;
+    unaryfunc am_anext;
+    binaryfunc am_send;
+} PyAsyncMethods;
 
 typedef struct PyBufferProcs {
     int (*bf_getbuffer)(PyObject *, Py_buffer *, int);
@@ -277,8 +342,7 @@ typedef struct {
 } PyFloatObject;
 
 typedef struct {
-    PyObject *ob_base;
-    PyTypeObject *ht_type;
+    PyTypeObject ht_type;
 } PyHeapTypeObject;
 
 typedef struct {
@@ -370,6 +434,9 @@ static inline PyThreadState *PyThreadState_Get(void);
 static inline PyInterpreterState *PyThreadState_GetInterpreter(PyThreadState *tstate);
 static inline PyFrameObject *PyThreadState_GetFrame(PyThreadState *tstate);
 static inline PyInterpreterState *PyInterpreterState_Get(void);
+static inline int PyTuple_Check(PyObject *obj);
+static inline Py_ssize_t PyTuple_Size(PyObject *tuple);
+static inline PyObject *PyTuple_GetItem(PyObject *tuple, Py_ssize_t index);
 static inline PyObject *PyTuple_New(Py_ssize_t size);
 static inline int PyTuple_SetItem(PyObject *tuple, Py_ssize_t index, PyObject *value);
 static inline PyGILState_STATE PyGILState_Ensure(void);
@@ -495,8 +562,8 @@ static inline void *_molt_pyunicode_data(PyObject *unicode);
 #define PyMODINIT_FUNC PyObject *
 #endif
 
-#define PyObject_HEAD_INIT(type) { 0 }
-#define PyVarObject_HEAD_INIT(type, size) { 0 }
+#define PyObject_HEAD_INIT(type) 0, (PyObject *)(type),
+#define PyVarObject_HEAD_INIT(type, size) PyObject_HEAD_INIT(type)
 #define PyObject_HEAD PyObject ob_base;
 #define PyObject_VAR_HEAD PyObject ob_base;
 #define Py_SIZE(ob) (((PyVarObject *)(ob))->ob_size)
@@ -707,6 +774,14 @@ static inline PyObject *_molt_pyexc_future_warning(void) {
     return _molt_pyobject_from_handle(cached);
 }
 
+static inline PyObject *_molt_pyexc_unicode_decode_error(void) {
+    static MoltHandle cached = 0;
+    if (cached == 0) {
+        cached = _molt_exception_class_from_name("UnicodeDecodeError");
+    }
+    return _molt_pyobject_from_handle(cached);
+}
+
 #define PyExc_TypeError _molt_pyexc_type_error()
 #define PyExc_ValueError _molt_pyexc_value_error()
 #define PyExc_RuntimeError _molt_pyexc_runtime_error()
@@ -724,6 +799,7 @@ static inline PyObject *_molt_pyexc_future_warning(void) {
 #define PyExc_UserWarning _molt_pyexc_user_warning()
 #define PyExc_DeprecationWarning _molt_pyexc_deprecation_warning()
 #define PyExc_FutureWarning _molt_pyexc_future_warning()
+#define PyExc_UnicodeDecodeError _molt_pyexc_unicode_decode_error()
 #define PyExc_OSError _molt_pyexc_os_error()
 #define PyExc_IOError PyExc_OSError
 #define PyExc_StopIteration _molt_pyexc_stop_iteration()
@@ -1027,6 +1103,7 @@ static inline void _molt_py_set_type(PyObject *obj, PyTypeObject *type_obj) {
 }
 
 #define Py_TYPE(ob) _molt_py_typeof((PyObject *)(ob))
+#define Py_IS_TYPE(ob, type) (Py_TYPE(ob) == (type))
 #define Py_SET_TYPE(ob, type_obj) _molt_py_set_type((PyObject *)(ob), (PyTypeObject *)(type_obj))
 #define Py_REFCNT(ob) ((Py_ssize_t)1)
 #define Py_SET_REFCNT(ob, refcnt) ((void)(ob), (void)(refcnt))
@@ -1474,6 +1551,11 @@ static inline PyObject *PyObject_CallObject(PyObject *callable, PyObject *args) 
         molt_handle_decref(args_bits);
     }
     return _molt_pyobject_from_result(out);
+}
+
+static inline PyObject *PyObject_CallOneArg(PyObject *callable, PyObject *arg) {
+    PyObject *const args[] = {arg};
+    return PyObject_Vectorcall(callable, args, 1, NULL);
 }
 
 static inline int PyWeakref_Check(PyObject *obj) {
@@ -3264,6 +3346,91 @@ static inline PyObject *PyDict_GetItemWithError(PyObject *dict, PyObject *key) {
     return PyDict_GetItem(dict, key);
 }
 
+static inline int PyDict_Merge(PyObject *mp, PyObject *other, int override) {
+    PyObject *items;
+    Py_ssize_t item_count;
+    Py_ssize_t i;
+    if (mp == NULL || other == NULL) {
+        PyErr_SetString(PyExc_TypeError, "dict and other must not be NULL");
+        return -1;
+    }
+    items = PyMapping_Items(other);
+    if (items == NULL) {
+        return -1;
+    }
+    item_count = PySequence_Size(items);
+    if (item_count < 0) {
+        Py_DECREF(items);
+        return -1;
+    }
+    for (i = 0; i < item_count; i++) {
+        PyObject *item = PySequence_GetItem(items, i);
+        PyObject *key;
+        PyObject *value;
+        int should_write;
+        if (item == NULL) {
+            Py_DECREF(items);
+            return -1;
+        }
+        if (PySequence_Size(item) < 2) {
+            Py_DECREF(item);
+            Py_DECREF(items);
+            PyErr_SetString(PyExc_ValueError, "mapping items must contain key/value pairs");
+            return -1;
+        }
+        key = PySequence_GetItem(item, 0);
+        value = PySequence_GetItem(item, 1);
+        Py_DECREF(item);
+        if (key == NULL || value == NULL) {
+            Py_XDECREF(key);
+            Py_XDECREF(value);
+            Py_DECREF(items);
+            return -1;
+        }
+        should_write = override || !PyMapping_HasKey(mp, key);
+        if (should_write && PyDict_SetItem(mp, key, value) < 0) {
+            Py_DECREF(key);
+            Py_DECREF(value);
+            Py_DECREF(items);
+            return -1;
+        }
+        Py_DECREF(key);
+        Py_DECREF(value);
+    }
+    Py_DECREF(items);
+    return 0;
+}
+
+static inline PyObject *PyDict_Copy(PyObject *mp) {
+    if (mp == NULL) {
+        PyErr_SetString(PyExc_TypeError, "dict must not be NULL");
+        return NULL;
+    }
+    return PyObject_CallMethod(mp, "copy", NULL);
+}
+
+static inline PyObject *PyDictProxy_New(PyObject *mapping) {
+    PyObject *types_module;
+    PyObject *mappingproxy_type;
+    PyObject *proxy;
+    if (mapping == NULL) {
+        PyErr_SetString(PyExc_TypeError, "mapping must not be NULL");
+        return NULL;
+    }
+    types_module = PyImport_ImportModule("types");
+    if (types_module == NULL) {
+        return NULL;
+    }
+    mappingproxy_type = PyObject_GetAttrString(types_module, "MappingProxyType");
+    Py_DECREF(types_module);
+    if (mappingproxy_type == NULL) {
+        return NULL;
+    }
+    proxy = PyObject_CallOneArg(mappingproxy_type, mapping);
+    Py_DECREF(mappingproxy_type);
+    return proxy;
+}
+
 static inline int PyDict_GetItemStringRef(PyObject *dict, const char *key, PyObject **result) {
     PyObject *item = PyMapping_GetItemString(dict, key);
     if (result != NULL) {
@@ -3540,6 +3707,14 @@ static inline PyObject *PyBytes_FromStringAndSize(const char *value, Py_ssize_t 
     }
     return _molt_pyobject_from_result(
         molt_bytes_from((const uint8_t *)value, size < 0 ? 0u : (uint64_t)size));
+}
+
+static inline PyObject *PyBytes_FromString(const char *value) {
+    if (value == NULL) {
+        PyErr_SetString(PyExc_TypeError, "bytes value must not be NULL");
+        return NULL;
+    }
+    return PyBytes_FromStringAndSize(value, (Py_ssize_t)strlen(value));
 }
 
 static inline int PyBytes_AsStringAndSize(PyObject *value, char **buf, Py_ssize_t *len_out) {
@@ -3869,6 +4044,62 @@ static inline int PyTuple_SetItem(PyObject *tuple, Py_ssize_t index, PyObject *v
     return rc;
 }
 
+static inline PyObject *PyTuple_GetSlice(PyObject *tuple, Py_ssize_t low, Py_ssize_t high) {
+    Py_ssize_t tuple_size;
+    Py_ssize_t slice_size;
+    Py_ssize_t i;
+    PyObject *slice;
+    if (tuple == NULL) {
+        PyErr_SetString(PyExc_TypeError, "tuple must not be NULL");
+        return NULL;
+    }
+    if (!PyTuple_Check(tuple)) {
+        PyErr_SetString(PyExc_TypeError, "expected tuple");
+        return NULL;
+    }
+    tuple_size = PyTuple_Size(tuple);
+    if (tuple_size < 0) {
+        return NULL;
+    }
+    if (low < 0) {
+        low += tuple_size;
+    }
+    if (high < 0) {
+        high += tuple_size;
+    }
+    if (low < 0) {
+        low = 0;
+    }
+    if (low > tuple_size) {
+        low = tuple_size;
+    }
+    if (high < low) {
+        high = low;
+    }
+    if (high > tuple_size) {
+        high = tuple_size;
+    }
+    slice_size = high - low;
+    slice = PyTuple_New(slice_size);
+    if (slice == NULL) {
+        return NULL;
+    }
+    for (i = 0; i < slice_size; i++) {
+        PyObject *item = PyTuple_GetItem(tuple, low + i);
+        if (item == NULL) {
+            Py_DECREF(slice);
+            return NULL;
+        }
+        Py_INCREF(item);
+        if (PyTuple_SetItem(slice, i, item) < 0) {
+            Py_DECREF(item);
+            Py_DECREF(slice);
+            return NULL;
+        }
+    }
+    return slice;
+}
+
 static inline PyObject *PyTuple_Pack(Py_ssize_t n, ...) {
     va_list ap;
     MoltHandle *items;
@@ -4163,17 +4394,47 @@ static inline PyTypeObject *_molt_builtin_type_object_borrowed(const char *name)
     return (PyTypeObject *)_molt_pyobject_from_handle(bits);
 }
 
+static inline PyTypeObject *_molt_mappingproxy_type_object_borrowed(void) {
+    static MoltHandle cached = 0;
+    static PyTypeObject unavailable = {0};
+    if (cached == 0) {
+        PyObject *types_module = PyImport_ImportModule("types");
+        PyObject *mappingproxy_type;
+        if (types_module == NULL) {
+            PyErr_Clear();
+            return &unavailable;
+        }
+        mappingproxy_type = PyObject_GetAttrString(types_module, "MappingProxyType");
+        Py_DECREF(types_module);
+        if (mappingproxy_type == NULL) {
+            PyErr_Clear();
+            return &unavailable;
+        }
+        cached = _molt_py_handle(mappingproxy_type);
+        Py_DECREF(mappingproxy_type);
+    }
+    return (PyTypeObject *)_molt_pyobject_from_handle(cached);
+}
+
 #define PyLong_Type (*_molt_builtin_type_object_borrowed("int"))
 #define PyFloat_Type (*_molt_builtin_type_object_borrowed("float"))
 #define PyBool_Type (*_molt_builtin_type_object_borrowed("bool"))
 #define PyBytes_Type (*_molt_builtin_type_object_borrowed("bytes"))
 #define PyByteArray_Type (*_molt_builtin_type_object_borrowed("bytearray"))
+#define PyDict_Type (*_molt_builtin_type_object_borrowed("dict"))
+#define PyList_Type (*_molt_builtin_type_object_borrowed("list"))
 #define PyUnicode_Type (*_molt_builtin_type_object_borrowed("str"))
 #define PyComplex_Type (*_molt_builtin_type_object_borrowed("complex"))
 #define PyTuple_Type (*_molt_builtin_type_object_borrowed("tuple"))
 #define PyType_Type (*_molt_builtin_type_object_borrowed("type"))
+#define PyBaseObject_Type (*_molt_builtin_type_object_borrowed("object"))
+#define PyMemoryView_Type (*_molt_builtin_type_object_borrowed("memoryview"))
+#define PyDictProxy_Type (*_molt_mappingproxy_type_object_borrowed())
 #define PySet_Type (*_molt_builtin_type_object_borrowed("set"))
 #define PyFrozenSet_Type (*_molt_builtin_type_object_borrowed("frozenset"))
+#define PyList_CheckExact(op) Py_IS_TYPE((op), &PyList_Type)
+#define PyDictProxy_Check(op) Py_IS_TYPE((op), &PyDictProxy_Type)
+#define PyMemoryView_Check(op) Py_IS_TYPE((op), &PyMemoryView_Type)
 #define PyUnicode_GET_LENGTH(op) PyUnicode_GetLength((PyObject *)(op))
 #define PyUnicode_IS_ASCII(op) _molt_pyunicode_is_ascii((PyObject *)(op))
 #define PyUnicode_DATA(op) _molt_pyunicode_data((PyObject *)(op))
@@ -4444,6 +4705,28 @@ static inline int PyObject_IsInstance(PyObject *obj, PyObject *cls) {
         return -1;
     }
     return _molt_pyarg_object_matches_type(_molt_py_handle(obj), _molt_py_handle(cls));
+}
+
+static inline int PyNumber_Check(PyObject *obj) {
+    if (obj == NULL) {
+        return 0;
+    }
+    if (PyBool_Check(obj) || PyLong_Check(obj) || PyFloat_Check(obj) || PyComplex_Check(obj)) {
+        return 1;
+    }
+    if (PyObject_HasAttrString(obj, "__index__") > 0) {
+        return 1;
+    }
+    PyErr_Clear();
+    if (PyObject_HasAttrString(obj, "__int__") > 0) {
+        return 1;
+    }
+    PyErr_Clear();
+    if (PyObject_HasAttrString(obj, "__float__") > 0) {
+        return 1;
+    }
+    PyErr_Clear();
+    return 0;
 }
 
 static inline PyObject *PySequence_Fast(PyObject *obj, const char *msg) {
@@ -5054,6 +5337,28 @@ static inline PyObject *PyObject_CallMethod(
     return out;
 }
 
+static inline PyObject *Py_GenericAlias(PyObject *origin, PyObject *args) {
+    PyObject *types_module;
+    PyObject *generic_alias_type;
+    PyObject *alias;
+    if (origin == NULL || args == NULL) {
+        PyErr_SetString(PyExc_TypeError, "origin and args must not be NULL");
+        return NULL;
+    }
+    types_module = PyImport_ImportModule("types");
+    if (types_module == NULL) {
+        return NULL;
+    }
+    generic_alias_type = PyObject_GetAttrString(types_module, "GenericAlias");
+    Py_DECREF(types_module);
+    if (generic_alias_type == NULL) {
+        return NULL;
+    }
+    alias = PyObject_CallFunctionObjArgs(generic_alias_type, origin, args, NULL);
+    Py_DECREF(generic_alias_type);
+    return alias;
+}
+
 static inline PyObject *PyEval_GetBuiltins(void) {
     PyObject *module = PyImport_ImportModule("builtins");
     PyObject *dict;
@@ -5091,6 +5396,16 @@ static inline PyObject *PyImport_AddModule(const char *name) {
 static inline int _Py_IsFinalizing(void) {
     return 0;
 }
+
+static inline int Py_EnterRecursiveCall(const char *where) {
+    (void)where;
+    PyErr_SetString(
+        PyExc_RuntimeError,
+        "Py_EnterRecursiveCall is not yet implemented in Molt's C-API layer");
+    return -1;
+}
+
+static inline void Py_LeaveRecursiveCall(void) {}
 
 static inline PyThreadState *_PyThreadState_UncheckedGet(void) {
     return PyThreadState_Get();

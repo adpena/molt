@@ -155,22 +155,38 @@ impl LuauBackend {
             ("molt_dict_keys", "local function molt_dict_keys(d: {[any]: any}): {any}\n\tlocal result = {}\n\tlocal n = 0\n\tfor k in pairs(d) do n += 1; result[n] = k end\n\treturn result\nend\n"),
             ("molt_dict_values", "local function molt_dict_values(d: {[any]: any}): {any}\n\tlocal result = {}\n\tlocal n = 0\n\tfor _, v in pairs(d) do n += 1; result[n] = v end\n\treturn result\nend\n"),
             ("molt_dict_items", "local function molt_dict_items(d: {[any]: any}): {{any}}\n\tlocal result = {}\n\tlocal n = 0\n\tfor k, v in pairs(d) do n += 1; result[n] = {k, v} end\n\treturn result\nend\n"),
+            ("molt_print", "local function molt_print(...)\n\tlocal n = select(\"#\", ...)\n\tif n == 0 then print(); return end\n\tif n == 1 then print(molt_str((...))) return end\n\tlocal parts = table.create(n)\n\tfor i = 1, n do\n\t\tparts[i] = molt_str((select(i, ...)))\n\tend\n\tprint(table.concat(parts, \" \"))\nend\n"),
         ];
 
         // Dependency: molt_str ↔ molt_repr are mutually recursive for table
-        // serialization. If either is used, emit both.
-        let needs_str = used_call("molt_str");
+        // serialization. molt_print depends on molt_str. If any is used, emit all linked.
+        // Luau `local function` is NOT hoisted, so we need a forward declaration for
+        // molt_repr before molt_str (which calls molt_repr in its body).
+        let needs_print = used_call("molt_print");
+        let needs_str = used_call("molt_str") || needs_print;
         let needs_repr = used_call("molt_repr");
+        let needs_str_group = needs_str || needs_repr;
+        if needs_str_group {
+            self.output.push_str("local molt_repr\n");
+        }
         for (name, source) in helpers {
             let emit = if *name == "molt_str" {
-                needs_str || needs_repr
+                needs_str_group
             } else if *name == "molt_repr" {
-                needs_repr || needs_str
+                needs_str_group
+            } else if *name == "molt_print" {
+                needs_print
             } else {
                 used_call(name)
             };
             if emit {
-                self.output.push_str(source);
+                // molt_repr uses assignment form since it was forward-declared.
+                if *name == "molt_repr" && needs_str_group {
+                    let assigned = source.replace("local function molt_repr(", "molt_repr = function(");
+                    self.output.push_str(&assigned);
+                } else {
+                    self.output.push_str(source);
+                }
                 self.output.push('\n');
             }
         }
@@ -1027,7 +1043,7 @@ impl LuauBackend {
                         "all" | "molt_all" => format!("molt_all({call_args})"),
                         "map" | "molt_map" => format!("molt_map({call_args})"),
                         "filter" | "molt_filter" => format!("molt_filter({call_args})"),
-                        "print" => format!("print({call_args})"),
+                        "print" => format!("molt_print({call_args})"),
                         _ => format!("{func_name}({call_args})"),
                     };
                     self.emit_line(&format!("local {out} = {mapped}"));
@@ -1738,10 +1754,10 @@ impl LuauBackend {
                     .map(|a| sanitize_ident(a))
                     .collect::<Vec<_>>()
                     .join(", ");
-                self.emit_line(&format!("print({call_args})"));
+                self.emit_line(&format!("molt_print({call_args})"));
             }
             "print_newline" => {
-                self.emit_line("print()");
+                self.emit_line("molt_print()");
             }
 
             // ================================================================
@@ -3724,6 +3740,9 @@ fn optimize_luau_perf(source: &mut String) {
             && !trimmed.starts_with("local function molt_dict_")
             && !trimmed.starts_with("local function molt_json_")
             && !trimmed.starts_with("local function molt_string")
+            && !trimmed.starts_with("local function molt_print")
+            && !trimmed.starts_with("local function molt_pow")
+            && !trimmed.starts_with("local function molt_floor_div")
         {
             let indent = &line[..line.len() - trimmed.len()];
             result.push_str(&format!("{indent}@native\n"));
