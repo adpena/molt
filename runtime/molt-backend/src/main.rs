@@ -875,7 +875,38 @@ fn main() -> io::Result<()> {
     let mut file = File::create(output_file)?;
 
     if is_luau {
+        // Dump IR before tree shaking if MOLT_DUMP_IR is set
+        if let Ok(filter) = std::env::var("MOLT_DUMP_IR") {
+            for func in &ir.functions {
+                if filter == "1" || filter == "all" || func.name.contains(&filter) {
+                    eprintln!("=== IR [pre-shake] {} ({} ops) ===", func.name, func.ops.len());
+                    for (i, op) in func.ops.iter().enumerate() {
+                        eprintln!("  [{i:4}] kind={:<24} out={:<12} s_value={:<30} args={:?}",
+                            op.kind,
+                            op.out.as_deref().unwrap_or("-"),
+                            op.s_value.as_deref().unwrap_or("-"),
+                            op.args.as_ref().map(|a| a.join(", ")).unwrap_or_default());
+                    }
+                }
+            }
+        }
         ir.tree_shake_luau();
+        // Dump IR after tree shaking if MOLT_DUMP_IR is set
+        if let Ok(filter) = std::env::var("MOLT_DUMP_IR") {
+            for func in &ir.functions {
+                if filter == "1" || filter == "all" || func.name.contains(&filter) {
+                    eprintln!("=== IR [post-shake] {} ({} ops) ===", func.name, func.ops.len());
+                    for (i, op) in func.ops.iter().enumerate() {
+                        if op.kind == "nop" { continue; }
+                        eprintln!("  [{i:4}] kind={:<24} out={:<12} s_value={:<30} args={:?}",
+                            op.kind,
+                            op.out.as_deref().unwrap_or("-"),
+                            op.s_value.as_deref().unwrap_or("-"),
+                            op.args.as_ref().map(|a| a.join(", ")).unwrap_or_default());
+                    }
+                }
+            }
+        }
         let mut backend = LuauBackend::new();
         let luau_source = match backend.compile_checked(&ir) {
             Ok(source) => source,

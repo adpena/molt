@@ -121,7 +121,8 @@ static inline npy_intp _molt_pyarray_size(const PyArrayObject *array_obj) {
 #define PyArray_ISFARRAY(arr) PyArray_CHKFLAGS((arr), NPY_ARRAY_FARRAY)
 #define PyArray_ISFARRAY_RO(arr) PyArray_CHKFLAGS((arr), NPY_ARRAY_FARRAY_RO)
 #define PyArray_HANDLER(arr) ((PyObject *)((PyArrayObject_fields *)(arr))->mem_handler)
-#define PyArray_ISNBO(byteorder) ((byteorder) == '=' || (byteorder) == '|')
+#define PyArray_ISNBO(byteorder) ((byteorder) != NPY_OPPBYTE)
+#define PyArray_IsNativeByteOrder PyArray_ISNBO
 #define PyArray_ISNOTSWAPPED(arr) PyArray_ISNBO(PyArray_DESCR(arr)->byteorder)
 #define PyArray_ISBYTESWAPPED(arr) (!PyArray_ISNOTSWAPPED(arr))
 #define PyArray_ISDATETIME(arr) PyTypeNum_ISDATETIME(PyArray_TYPE(arr))
@@ -188,8 +189,37 @@ static inline npy_intp _molt_pyarray_size(const PyArrayObject *array_obj) {
 #define PyArray_Item_XDECREF(obj, ...) Py_XDECREF((PyObject *)(obj))
 
 #define PyArray_IsScalar(obj, cls) PyObject_TypeCheck((obj), &Py##cls##ArrType_Type)
+#define PyArray_IsPythonNumber(obj) \
+    (PyFloat_Check(obj) || PyComplex_Check(obj) || PyLong_Check(obj) || PyBool_Check(obj))
+#define PyArray_IsIntegerScalar(obj) \
+    (PyLong_Check(obj) || PyArray_IsScalar((obj), Integer))
+#define PyArray_IsPythonScalar(obj) \
+    (PyArray_IsPythonNumber(obj) || PyBytes_Check(obj) || PyUnicode_Check(obj))
+#define PyArray_IsAnyScalar(obj) \
+    (PyArray_IsScalar((obj), Generic) || PyArray_IsPythonScalar(obj))
 #define PyArray_CheckScalar(obj) (PyArray_IsScalar((obj), Generic) || PyArray_IsZeroDim((obj)))
 #define PyArray_CheckAnyScalar(obj) (PyArray_CheckScalar((obj)) || PyBool_Check(obj) || PyLong_Check(obj) || PyFloat_Check(obj) || PyComplex_Check(obj) || PyBytes_Check(obj) || PyUnicode_Check(obj))
+#define DEPRECATE(msg) PyErr_WarnEx(PyExc_DeprecationWarning, (msg), 1)
+#define DEPRECATE_FUTUREWARNING(msg) PyErr_WarnEx(PyExc_FutureWarning, (msg), 1)
+
+static inline int NPY_TITLE_KEY_check(PyObject *key, PyObject *value) {
+    PyObject *title;
+    if (PyTuple_Size(value) != 3) {
+        return 0;
+    }
+    title = PyTuple_GetItem(value, 2);
+    if (key == title) {
+        return 1;
+    }
+#ifdef PYPY_VERSION
+    if (PyUnicode_Check(title) && PyUnicode_Check(key)) {
+        return PyUnicode_Compare(title, key) == 0 ? 1 : 0;
+    }
+#endif
+    return 0;
+}
+
+#define NPY_TITLE_KEY(key, value) (NPY_TITLE_KEY_check((key), (value)))
 
 #if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
 static inline int PyArray_CheckAnyScalarExact(PyObject *obj) {
@@ -218,10 +248,17 @@ static inline PyArray_Descr *PyArray_DescrFromType(int typenum) {
     return descr;
 }
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT PyArray_Descr *PyArray_DescrNewFromType(int typenum);
+#else
 static inline PyArray_Descr *PyArray_DescrNewFromType(int typenum) {
     return PyArray_DescrFromType(typenum);
 }
+#endif
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT PyArray_Descr *PyArray_DescrNew(PyArray_Descr *descr);
+#else
 static inline PyArray_Descr *PyArray_DescrNew(PyArray_Descr *descr) {
     PyArray_Descr *copy;
     if (descr == NULL) {
@@ -234,6 +271,7 @@ static inline PyArray_Descr *PyArray_DescrNew(PyArray_Descr *descr) {
     *copy = *descr;
     return copy;
 }
+#endif
 
 #if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
 NPY_NO_EXPORT PyArray_Descr *PyArray_DescrFromScalar(PyObject *obj);
@@ -310,6 +348,9 @@ static inline PyArray_DTypeMeta *_molt_numpy_dtype_from_typenum(int typenum) {
 }
 #endif
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT int PyArray_BoolConverter(PyObject *obj, npy_bool *out);
+#else
 static inline int PyArray_BoolConverter(PyObject *obj, npy_bool *out) {
     int truthy = PyObject_IsTrue(obj);
     if (truthy < 0) {
@@ -320,6 +361,7 @@ static inline int PyArray_BoolConverter(PyObject *obj, npy_bool *out) {
     }
     return 1;
 }
+#endif
 
 #if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
 static inline PyArray_DTypeMeta *PyArray_DTypeFromTypeNum(int typenum) {
@@ -392,6 +434,12 @@ static inline int PyArray_Converter(PyObject *object, PyObject **address) {
     return *address != NULL ? NPY_SUCCEED : NPY_FAIL;
 }
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT int PyArray_CorrelatemodeConverter(
+    PyObject *object,
+    NPY_CORRELATEMODE *val
+);
+#else
 static inline int PyArray_CorrelatemodeConverter(
     PyObject *object,
     NPY_CORRELATEMODE *val
@@ -435,6 +483,7 @@ static inline int PyArray_CorrelatemodeConverter(
     }
     return NPY_SUCCEED;
 }
+#endif
 
 static inline int PyArray_OrderConverter(PyObject *obj, NPY_ORDER *order_out) {
     const char *text;
@@ -482,6 +531,9 @@ static inline int PyArray_OrderConverter(PyObject *obj, NPY_ORDER *order_out) {
     }
 }
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT int PyArray_SortkindConverter(PyObject *obj, NPY_SORTKIND *sortkind_out);
+#else
 static inline int PyArray_SortkindConverter(PyObject *obj, NPY_SORTKIND *sortkind_out) {
     if (sortkind_out == NULL) {
         PyErr_SetString(PyExc_TypeError, "sortkind output pointer must not be NULL");
@@ -498,6 +550,7 @@ static inline int PyArray_SortkindConverter(PyObject *obj, NPY_SORTKIND *sortkin
     PyErr_SetString(PyExc_TypeError, "sortkind must be an integer or None");
     return 0;
 }
+#endif
 
 #if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
 static inline int PyArray_SearchsideConverter(
@@ -538,6 +591,9 @@ static inline int PyArray_ClipmodeConverter(PyObject *obj, NPY_CLIPMODE *clipmod
     return 0;
 }
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT int PyArray_ByteorderConverter(PyObject *obj, char *byteorder_out);
+#else
 static inline int PyArray_ByteorderConverter(PyObject *obj, char *byteorder_out) {
     const char *text;
     if (byteorder_out == NULL) {
@@ -564,6 +620,7 @@ static inline int PyArray_ByteorderConverter(PyObject *obj, char *byteorder_out)
     *byteorder_out = text[0];
     return 1;
 }
+#endif
 
 static inline int PyArray_CastingConverter(PyObject *obj, NPY_CASTING *casting_out) {
     const char *text;
@@ -622,11 +679,15 @@ static inline int PyArray_CastScalarToCtype(
 }
 #endif
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT int PyArray_BufferConverter(PyObject *obj, PyArray_Chunk *buf);
+#else
 static inline int PyArray_BufferConverter(PyObject *obj, PyArray_Chunk *buf) {
     (void)obj;
     (void)buf;
     return _molt_numpy_unavailable_i32("PyArray_BufferConverter");
 }
+#endif
 
 static inline int PyArray_CompareLists(
     const npy_intp *lhs,
@@ -664,6 +725,9 @@ static inline int PyArray_EquivTypes(PyArray_Descr *lhs, PyArray_Descr *rhs) {
     return lhs->type_num == rhs->type_num;
 }
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT int PyArray_IntpConverter(PyObject *obj, PyArray_Dims *dims_out);
+#else
 static inline int PyArray_IntpConverter(PyObject *obj, PyArray_Dims *dims_out) {
     (void)obj;
     if (dims_out != NULL) {
@@ -672,7 +736,11 @@ static inline int PyArray_IntpConverter(PyObject *obj, PyArray_Dims *dims_out) {
     }
     return _molt_numpy_unavailable_i32("PyArray_IntpConverter");
 }
+#endif
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT int PyArray_OptionalIntpConverter(PyObject *obj, PyArray_Dims *dims_out);
+#else
 static inline int PyArray_OptionalIntpConverter(PyObject *obj, PyArray_Dims *dims_out) {
     if (dims_out != NULL) {
         dims_out->ptr = NULL;
@@ -683,7 +751,11 @@ static inline int PyArray_OptionalIntpConverter(PyObject *obj, PyArray_Dims *dim
     }
     return PyArray_IntpConverter(obj, dims_out);
 }
+#endif
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT int PyArray_IntpFromPyIntConverter(PyObject *obj, npy_intp *value_out);
+#else
 static inline int PyArray_IntpFromPyIntConverter(PyObject *obj, npy_intp *value_out) {
     if (value_out == NULL) {
         PyErr_SetString(PyExc_TypeError, "integer output pointer must not be NULL");
@@ -692,7 +764,11 @@ static inline int PyArray_IntpFromPyIntConverter(PyObject *obj, npy_intp *value_
     *value_out = (npy_intp)PyLong_AsLongLong(obj);
     return PyErr_Occurred() == NULL;
 }
+#endif
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT int PyArray_IntpFromSequence(PyObject *obj, npy_intp *values, int max_values);
+#else
 static inline int PyArray_IntpFromSequence(PyObject *obj, npy_intp *values, int max_values) {
     int count;
     int i;
@@ -725,6 +801,7 @@ static inline int PyArray_IntpFromSequence(PyObject *obj, npy_intp *values, int 
     }
     return count;
 }
+#endif
 
 static inline PyArrayObject *PyArray_NewCopy(PyArrayObject *array_obj, int order) {
     (void)order;
@@ -744,13 +821,21 @@ static inline npy_intp _molt_PyArray_Size(PyObject *obj) {
 
 #define PyArray_Size(obj) _molt_PyArray_Size((PyObject *)(obj))
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT npy_intp PyArray_PyIntAsIntp(PyObject *obj);
+#else
 static inline npy_intp PyArray_PyIntAsIntp(PyObject *obj) {
     return (npy_intp)PyLong_AsLongLong(obj);
 }
+#endif
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT int PyArray_PyIntAsInt(PyObject *obj);
+#else
 static inline int PyArray_PyIntAsInt(PyObject *obj) {
     return (int)PyLong_AsLongLong(obj);
 }
+#endif
 
 static inline PyObject *PyArray_PythonPyIntFromInt(int value) {
     return PyLong_FromLong((long)value);
@@ -1110,6 +1195,14 @@ static inline npy_bool PyArray_CanCastTypeTo(
     return 0;
 }
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT npy_bool PyArray_CanCastTo(PyArray_Descr *from_descr, PyArray_Descr *to_descr);
+#else
+static inline npy_bool PyArray_CanCastTo(PyArray_Descr *from_descr, PyArray_Descr *to_descr) {
+    return PyArray_CanCastTypeTo(from_descr, to_descr, NPY_SAFE_CASTING);
+}
+#endif
+
 static inline npy_bool PyArray_CanCastArrayTo(
     PyArrayObject *array_obj,
     PyArray_Descr *to_descr,
@@ -1121,6 +1214,9 @@ static inline npy_bool PyArray_CanCastArrayTo(
     return PyArray_CanCastTypeTo(PyArray_DESCR(array_obj), to_descr, casting);
 }
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT int PyArray_DescrConverter(PyObject *obj, PyArray_Descr **out);
+#else
 static inline int PyArray_DescrConverter(PyObject *obj, PyArray_Descr **out) {
     if (out == NULL) {
         PyErr_SetString(PyExc_TypeError, "descriptor output pointer must not be NULL");
@@ -1134,10 +1230,15 @@ static inline int PyArray_DescrConverter(PyObject *obj, PyArray_Descr **out) {
     *out = PyArray_DescrFromScalar(obj);
     return *out != NULL;
 }
+#endif
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT int PyArray_DescrConverter2(PyObject *obj, PyArray_Descr **out);
+#else
 static inline int PyArray_DescrConverter2(PyObject *obj, PyArray_Descr **out) {
     return PyArray_DescrConverter(obj, out);
 }
+#endif
 
 #if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
 static inline int PyArray_DTypeOrDescrConverterRequired(
@@ -1198,6 +1299,13 @@ static inline PyArray_DTypeMeta *_molt_numpy_dtypemeta_from_object(
 }
 #endif
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT PyArray_Descr *PyArray_DTypeFromObjectStringDiscovery(
+    PyObject *obj,
+    PyArray_Descr *last_dtype,
+    int string_type
+);
+#else
 static inline PyArray_Descr *PyArray_DTypeFromObjectStringDiscovery(
     PyObject *obj,
     PyArray_Descr *last_dtype,
@@ -1209,7 +1317,14 @@ static inline PyArray_Descr *PyArray_DTypeFromObjectStringDiscovery(
     }
     return PyArray_DescrFromScalar(obj);
 }
+#endif
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT PyArray_Descr *PyArray_DescrNewByteorder(
+    PyArray_Descr *descr,
+    char neworder
+);
+#else
 static inline PyArray_Descr *PyArray_DescrNewByteorder(
     PyArray_Descr *descr,
     char neworder
@@ -1226,6 +1341,7 @@ static inline PyArray_Descr *PyArray_DescrNewByteorder(
     copy->byteorder = neworder;
     return copy;
 }
+#endif
 
 static inline PyArray_Descr *PyArray_PromoteTypes(
     PyArray_Descr *left,
@@ -1347,6 +1463,13 @@ static inline void PyArray_DiscardWritebackIfCopy(PyArrayObject *array_obj) {
     }
 }
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT int PyArray_Pack(
+    PyArray_Descr *descr,
+    void *item,
+    PyObject *value
+);
+#else
 static inline int PyArray_Pack(
     PyArray_Descr *descr,
     void *item,
@@ -1357,6 +1480,7 @@ static inline int PyArray_Pack(
     (void)value;
     return _molt_numpy_unavailable_i32("PyArray_Pack");
 }
+#endif
 
 #if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
 static inline PyObject *PyArray_GETITEM(PyArrayObject *array_obj, const char *item_ptr) {
@@ -1410,6 +1534,13 @@ static inline npy_intp PyArray_SafeCast(
     return PyArray_CanCastTypeTo(from_descr, to_descr, minimum_safety) ? 1 : 0;
 }
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT PyArray_Descr *PyArray_AdaptDescriptorToArray(
+    PyArrayObject *array_obj,
+    PyArray_DTypeMeta *dtype,
+    PyArray_Descr *descr
+);
+#else
 static inline PyArray_Descr *PyArray_AdaptDescriptorToArray(
     PyArrayObject *array_obj,
     PyArray_DTypeMeta *dtype,
@@ -1424,6 +1555,7 @@ static inline PyArray_Descr *PyArray_AdaptDescriptorToArray(
     }
     return PyArray_DescrFromType(NPY_OBJECT);
 }
+#endif
 
 #if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
 static inline int _molt_numpy_extract_dtypemeta_and_descriptor(
@@ -1745,6 +1877,13 @@ static inline int PyArray_ClearArray(PyArrayObject *arr) {
     return _molt_numpy_unavailable_i32("PyArray_ClearArray");
 }
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+NPY_NO_EXPORT int PyArray_ConvertMultiAxis(
+    PyObject *axis_in,
+    int ndim,
+    npy_bool *out_axis_flags
+);
+#else
 static inline int PyArray_ConvertMultiAxis(
     PyObject *axis_in,
     int ndim,
@@ -1755,6 +1894,7 @@ static inline int PyArray_ConvertMultiAxis(
     (void)out_axis_flags;
     return _molt_numpy_unavailable_i32("PyArray_ConvertMultiAxis");
 }
+#endif
 
 static inline int PyArray_AssignZero(
     PyArrayObject *dst,

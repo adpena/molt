@@ -18,6 +18,7 @@ Canonical status lives in [docs/spec/STATUS.md](docs/spec/STATUS.md) (README and
 - Spec index (full spec map): [docs/spec/README.md](docs/spec/README.md)
 - Differential suite organization + run ledger: [tests/differential/INDEX.md](tests/differential/INDEX.md)
 - Examples guide: [examples/README.md](examples/README.md)
+- Browser WASM demo guide: [examples/README.md#browser-wasm-demo](examples/README.md#browser-wasm-demo)
 - Demo guide: [demo/README.md](demo/README.md)
 - Symphony orchestration guide: [docs/SYMPHONY.md](docs/SYMPHONY.md)
 - Symphony canonical alignment: [docs/SYMPHONY_CANONICAL_ALIGNMENT.md](docs/SYMPHONY_CANONICAL_ALIGNMENT.md)
@@ -369,6 +370,7 @@ See `docs/spec/areas/` for detailed architectural decisions.
 - WASM build (require linked): `uv run --python 3.12 python3 -m molt.cli build --target wasm --require-linked examples/hello.py` (linked output is primary; unlinked artifact removed).
 - Luau build (preview): `uv run --python 3.12 python3 -m molt.cli build --target luau examples/hello.py` (emits `output.luau`; this is a bounded preview backend that fails fast if lowered output still contains unsupported comment/stub markers).
 - WASM run (Node/WASI): `node run_wasm.js /path/to/output.wasm` (requires linked output; build with `--linked` or `--require-linked`).
+- WASM run (browser host): build `examples/hello.py` with `--target wasm --linked`, serve `wasm/` over HTTP, and open `wasm/browser_host.html` (the host prefers `output_linked.wasm` and falls back to `output.wasm` + `molt_runtime.wasm` when needed).
 - WASM bench: `uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json` (requires `wasm-ld` + `wasm-tools`; linked output is required by default), then compare against the native CPython baselines in `bench/results/bench.json`.
 
 ## Performance & Comparisons
