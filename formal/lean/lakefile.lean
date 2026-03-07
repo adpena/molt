@@ -24,4 +24,5 @@ lean_lib MoltTIR where
              `MoltTIR.Passes.LICM, `MoltTIR.Passes.LICMCorrect,
              `MoltTIR.Passes.Pipeline,
              `MoltTIR.Runtime.NanBox, `MoltTIR.Runtime.Refcount, `MoltTIR.Runtime.WasmNative,
+             `MoltTIR.Backend.LuauSyntax, `MoltTIR.Backend.LuauEmit, `MoltTIR.Backend.LuauCorrect,
              `MoltTIR.Tests.Smoke]
