@@ -5159,6 +5159,23 @@ def _resolve_wasm_cargo_profile(cargo_profile: str) -> str:
     return cargo_profile
 
 
+def _resolve_luau_cargo_profile(cargo_profile: str) -> str:
+    """Map cargo profile for Luau transpilation targets.
+
+    Luau output is source code, not machine code, so the backend binary's
+    optimization level has negligible impact on output quality.  Uses
+    ``release-fast`` (no LTO, 128 codegen-units) instead of ``release``
+    for ~10x faster backend compilation.  Override with
+    ``MOLT_LUAU_CARGO_PROFILE``.
+    """
+    override = os.environ.get("MOLT_LUAU_CARGO_PROFILE", "").strip()
+    if override:
+        return override
+    if cargo_profile == "release":
+        return "release-fast"
+    return cargo_profile
+
+
 def _native_arch_perf_requested() -> bool:
     profile = os.environ.get("MOLT_PERF_PROFILE", "").strip().lower()
     if profile in {"native-arch", "native_arch", "native"}:
@@ -5846,7 +5863,7 @@ def _ensure_backend_binary(
             "cargo",
             "build",
             "--package",
-            "molt-backend",
+            "molt-lang-backend",
             "--profile",
             cargo_profile,
         ]
@@ -8267,6 +8284,8 @@ def build(
     namespace_module_names = set(namespace_modules)
     is_wasm = target == "wasm"
     is_luau = target == "luau"
+    if is_luau:
+        backend_cargo_profile = _resolve_luau_cargo_profile(backend_cargo_profile)
     if trusted and is_wasm:
         return _fail(
             "Trusted mode is not supported for wasm targets",
