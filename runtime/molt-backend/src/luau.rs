@@ -67,18 +67,23 @@ impl LuauBackend {
         self.pop_indent();
         self.emit_line("end");
 
-        let func_body = std::mem::take(&mut self.output);
+        let mut func_body = std::mem::take(&mut self.output);
         self.output = func_output;
 
-        // Phase 2: Emit prelude with only the helpers that are actually used.
+        // Phase 2: Run text-level optimizations on the function body BEFORE
+        // scanning for prelude helpers — inlining passes may eliminate helper
+        // calls (e.g. molt_pow → ^, molt_mod → %), leaving dead definitions
+        // if we scan before optimization.
+        inline_single_use_constants(&mut func_body);
+        eliminate_nil_missing_wrappers(&mut func_body);
+        optimize_luau_perf(&mut func_body);
+
+        // Phase 3: Emit prelude with only the helpers that survive optimization.
         self.emit_prelude_conditional(&func_body);
 
-        // Phase 3: Combine prelude + function bodies.
+        // Phase 4: Combine prelude + optimized function bodies.
         self.output.push_str(&func_body);
 
-        inline_single_use_constants(&mut self.output);
-        eliminate_nil_missing_wrappers(&mut self.output);
-        optimize_luau_perf(&mut self.output);
         std::mem::take(&mut self.output)
     }
 
@@ -116,18 +121,25 @@ impl LuauBackend {
         self.output.push_str("local molt_module_cache: {[string]: any} = {\n\tmath = nil,\n\tjson = nil,\n}\n\n");
 
         // Helper to check if a name is used in the function body.
+        // We search for "name(" to match call sites, avoiding false positives
+        // like "molt_mod" matching inside "molt_module_cache".
+        let used_call = |name: &str| {
+            let pattern = format!("{name}(");
+            func_body.contains(&pattern)
+        };
+        // For non-function names (modules, variables), use plain contains.
         let used = |name: &str| func_body.contains(name);
 
-        // Conditional runtime helpers — only emit if referenced.
+        // Conditional runtime helpers — only emit if referenced by call.
         // Each helper is a (name, source) pair.
         let helpers: &[(&str, &str)] = &[
             ("molt_range", "@native\nlocal function molt_range(start: number, stop: number, step: number?): {number}\n\tlocal result = {}\n\tlocal s = step or 1\n\tlocal n = 0\n\tlocal i = start\n\twhile (s > 0 and i < stop) or (s < 0 and i > stop) do\n\t\tn += 1\n\t\tresult[n] = i\n\t\ti += s\n\tend\n\treturn result\nend\n"),
             ("molt_len", "local function molt_len(obj: any): number\n\tif type(obj) == \"string\" then return #obj end\n\tif type(obj) == \"table\" then return #obj end\n\treturn 0\nend\n"),
             ("molt_int", "local function molt_int(x: any): number\n\treturn math.floor(tonumber(x) or 0)\nend\n"),
             ("molt_float", "local function molt_float(x: any): number\n\treturn tonumber(x) or 0.0\nend\n"),
-            ("molt_str", "local function molt_str(x: any): string\n\treturn tostring(x)\nend\n"),
+            ("molt_str", "local function molt_str(x: any): string\n\tif type(x) == \"table\" then\n\t\tlocal n = #x\n\t\tif n > 0 or next(x) == nil then\n\t\t\tlocal parts = table.create(n)\n\t\t\tfor i = 1, n do parts[i] = molt_str(x[i]) end\n\t\t\treturn \"[\" .. table.concat(parts, \", \") .. \"]\"\n\t\telse\n\t\t\tlocal parts = {}\n\t\t\tlocal m = 0\n\t\t\tfor k, v in pairs(x) do m += 1; parts[m] = molt_repr(k) .. \": \" .. molt_str(v) end\n\t\t\treturn \"{\" .. table.concat(parts, \", \") .. \"}\"\n\t\tend\n\tend\n\tif type(x) == \"boolean\" then return x and \"True\" or \"False\" end\n\tif x == nil then return \"None\" end\n\treturn tostring(x)\nend\n"),
             ("molt_bool", "local function molt_bool(x: any): boolean\n\tif x == nil or x == false or x == 0 or x == \"\" then return false end\n\tif type(x) == \"table\" and next(x) == nil then return false end\n\treturn true\nend\n"),
-            ("molt_repr", "local function molt_repr(x: any): string\n\tif type(x) == \"string\" then return '\"' .. x .. '\"' end\n\treturn tostring(x)\nend\n"),
+            ("molt_repr", "local function molt_repr(x: any): string\n\tif type(x) == \"string\" then return \"'\" .. x .. \"'\" end\n\tif type(x) == \"table\" then return molt_str(x) end\n\tif type(x) == \"boolean\" then return x and \"True\" or \"False\" end\n\tif x == nil then return \"None\" end\n\treturn tostring(x)\nend\n"),
             ("molt_floor_div", "local function molt_floor_div(a: number, b: number): number\n\treturn math.floor(a / b)\nend\n"),
             ("molt_pow", "local function molt_pow(a: number, b: number): number\n\treturn a ^ b\nend\n"),
             ("molt_mod", "local function molt_mod(a: number, b: number): number\n\treturn a - math.floor(a / b) * b\nend\n"),
@@ -145,8 +157,19 @@ impl LuauBackend {
             ("molt_dict_items", "local function molt_dict_items(d: {[any]: any}): {{any}}\n\tlocal result = {}\n\tlocal n = 0\n\tfor k, v in pairs(d) do n += 1; result[n] = {k, v} end\n\treturn result\nend\n"),
         ];
 
+        // Dependency: molt_str ↔ molt_repr are mutually recursive for table
+        // serialization. If either is used, emit both.
+        let needs_str = used_call("molt_str");
+        let needs_repr = used_call("molt_repr");
         for (name, source) in helpers {
-            if used(name) {
+            let emit = if *name == "molt_str" {
+                needs_str || needs_repr
+            } else if *name == "molt_repr" {
+                needs_repr || needs_str
+            } else {
+                used_call(name)
+            };
+            if emit {
                 self.output.push_str(source);
                 self.output.push('\n');
             }
@@ -212,6 +235,7 @@ impl LuauBackend {
         // Pre-process: lower early returns (store+jump→ret) then strip dead code.
         let ops = lower_early_returns(&func.ops);
         let ops = strip_dead_after_return(&ops);
+        let ops = lower_iter_to_for(&ops);
 
         let params = func
             .params
@@ -1790,9 +1814,23 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = {module}"));
                 }
             }
-            "module_set_attr" | "module_del_global" => {
-                // Module dict mutations are no-ops in Luau — the __main__
-                // module dict isn't used at runtime.
+            "module_set_attr" => {
+                // Store user-visible variables into the module cache so they can
+                // be accessed by name later (e.g., `nums = [1,2,3]`).
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 3 {
+                    let module = sanitize_ident(&args[0]);
+                    let attr_name = sanitize_ident(&args[1]);
+                    let value = sanitize_ident(&args[2]);
+                    // Only emit for non-dunder attributes (user variables).
+                    // Dunder metadata writes are unnecessary in Luau.
+                    self.emit_line(&format!(
+                        "if type({module}) == \"table\" then {module}[{attr_name}] = {value} end"
+                    ));
+                }
+            }
+            "module_del_global" => {
+                // Module dict deletion is a no-op in Luau.
             }
 
             // ================================================================
@@ -2008,7 +2046,41 @@ impl LuauBackend {
                 || kind.starts_with("vec_max_") =>
             {
                 let out = self.out_var(op);
-                self.emit_line(&format!("local {out} = 0 -- [vectorized: {}]", op.kind));
+                let args = op.args.as_deref().unwrap_or(&[]);
+                // Vectorized reduction: args[0] = iterable.
+                // Emit as a Luau loop that computes the reduction, returning
+                // a tuple-like table {result, false} on success.
+                // The subsequent get_item(out, 0) and get_item(out, 1) unpack it.
+                if let Some(iterable) = args.first() {
+                    let iterable = sanitize_ident(iterable);
+                    let (init, body_op) = if kind.starts_with("vec_sum_") {
+                        ("0", "acc = acc + v")
+                    } else if kind.starts_with("vec_prod_") {
+                        ("1", "acc = acc * v")
+                    } else if kind.starts_with("vec_min_") {
+                        ("math.huge", "if v < acc then acc = v end")
+                    } else {
+                        ("-math.huge", "if v > acc then acc = v end")
+                    };
+                    self.emit_line(&format!("local {out}; do -- [vectorized: {kind}]"));
+                    self.push_indent();
+                    self.emit_line(&format!("if type({iterable}) == \"table\" and #({iterable}) > 0 then"));
+                    self.push_indent();
+                    self.emit_line(&format!("local acc = {init}"));
+                    self.emit_line(&format!("for _, v in ipairs({iterable}) do {body_op} end"));
+                    self.emit_line(&format!("{out} = {{acc, false}}"));
+                    self.pop_indent();
+                    self.emit_line("else");
+                    self.push_indent();
+                    self.emit_line(&format!("{out} = {{nil, true}}"));
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.pop_indent();
+                    self.emit_line("end");
+                } else {
+                    // No iterable arg — emit nil tuple (will fall through to loop).
+                    self.emit_line(&format!("local {out} = {{nil, true}} -- [vectorized: {kind}]"));
+                }
             }
 
             // ================================================================
@@ -2180,18 +2252,25 @@ impl LuauBackend {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(iterable) = args.first() {
-                    // In Luau, iterating a table is done via ipairs/pairs.
-                    // Store the iterable itself as the "iterator".
-                    self.emit_line(&format!("local {out} = {}", sanitize_ident(iterable)));
+                    let it = sanitize_ident(iterable);
+                    // Create a stateful iterator closure over the table.
+                    // Each call returns {value, nil} or {nil, true} when exhausted.
+                    self.emit_line(&format!(
+                        "local {out}; do local _t = {it}; local _i = 0; \
+                         {out} = function() _i = _i + 1; \
+                         if _i <= #_t then return {{_t[_i], nil}} \
+                         else return {{nil, true}} end; end; end"
+                    ));
                 }
             }
             "iter_next" => {
-                // iter_next is handled by for loops in structured IR; stub for unstructured.
+                // Call the stateful iterator closure created by the `iter` op.
+                // Returns {value, nil} or {nil, true} when exhausted.
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(iter_var) = args.first() {
                     let iter_var = sanitize_ident(iter_var);
-                    self.emit_line(&format!("local {out} = next({iter_var})"));
+                    self.emit_line(&format!("local {out} = {iter_var}()"));
                 }
             }
 
@@ -2556,6 +2635,248 @@ fn sanitize_label(label: &str) -> String {
 /// Transformed to:
 ///   ret_direct(value)      — a synthetic op that emits `return value`
 ///   jump (kept for dead-code elimination to mark rest as unreachable)
+/// Rewrite `iter` + `while true` + `iter_next` + `get_item` patterns into
+/// `for_iter` + `end_for`, producing idiomatic `for _, v in ipairs(t) do`.
+///
+/// The Python frontend emits iteration as:
+///   iter(iterable) → loop_start → iter_next → get_item(result,1) [exhausted?]
+///   → if → break → end_if → get_item(result,0) [value] → body → loop_end
+///
+/// We detect this pattern and collapse it to for_iter/end_for.
+fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
+    if ops.is_empty() {
+        return ops.to_vec();
+    }
+
+    let mut result: Vec<OpIR> = Vec::with_capacity(ops.len());
+    let mut i = 0;
+
+    while i < ops.len() {
+        // Look for: iter(iterable) at position i
+        if ops[i].kind == "iter" {
+            let iter_op = &ops[i];
+            let iter_out = iter_op.out.as_deref().unwrap_or("");
+            let iterable = iter_op
+                .args
+                .as_deref()
+                .and_then(|a| a.first())
+                .cloned()
+                .unwrap_or_default();
+
+            // Scan forward for the matching loop pattern.
+            // We need: ... → loop_start → ... → iter_next(iter_out) → get_item → if → break
+            // The pattern can have nil-checks and TypeError guards between iter and loop_start.
+            let mut found_pattern = false;
+            let mut loop_start_idx = None;
+            let mut iter_next_idx = None;
+            let mut iter_next_out = String::new();
+            let mut value_var = String::new();
+            let mut loop_end_idx = None;
+            let mut skip_until = i + 1; // ops to skip (boilerplate)
+
+            // Find loop_start — skip exception boilerplate (check_exception, raise,
+            // exception_last, const_none, is, not, if, end_if, etc.).
+            // The frontend emits ~30 boilerplate ops between iter and loop_start.
+            for j in (i + 1)..ops.len().min(i + 50) {
+                if ops[j].kind == "loop_start" {
+                    loop_start_idx = Some(j);
+                    break;
+                }
+            }
+
+            if let Some(ls_idx) = loop_start_idx {
+                // Find iter_next — skip check_exception boilerplate after loop_start.
+                for j in (ls_idx + 1)..ops.len().min(ls_idx + 15) {
+                    if ops[j].kind == "iter_next" {
+                        let args = ops[j].args.as_deref().unwrap_or(&[]);
+                        if let Some(arg) = args.first() {
+                            // The iter_next should reference the iter output or the
+                            // iterable variable directly.
+                            if arg == iter_out || arg == &iterable {
+                                iter_next_idx = Some(j);
+                                iter_next_out = ops[j].out.as_deref().unwrap_or("").to_string();
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(in_idx) = iter_next_idx {
+                // Find the value extraction from iter_next result.
+                // Pattern:
+                //   iter_next → index(result, 1) [exhausted] → loop_break_if_true
+                //   → index(result, 0) [value] → body
+                // The VALUE is the index op that comes AFTER the break check,
+                // not the first one (which is the exhausted flag).
+                let mut found_break = false;
+                for j in (in_idx + 1)..ops.len().min(in_idx + 30) {
+                    if matches!(ops[j].kind.as_str(), "loop_break_if_true" | "loop_break_if_false") {
+                        found_break = true;
+                        continue;
+                    }
+                    if found_break
+                        && matches!(ops[j].kind.as_str(), "get_item" | "subscript" | "index")
+                    {
+                        let args = ops[j].args.as_deref().unwrap_or(&[]);
+                        if args.len() >= 2 && args[0] == iter_next_out {
+                            value_var = ops[j].out.as_deref().unwrap_or("").to_string();
+                            break;
+                        }
+                    }
+                    // Also handle the older if/break/end_if pattern.
+                    if !found_break && ops[j].kind == "break" {
+                        found_break = true;
+                    }
+                }
+
+                // Find the matching loop_end by counting nesting.
+                if let Some(ls_idx) = loop_start_idx {
+                    let mut depth = 1i32;
+                    for j in (ls_idx + 1)..ops.len() {
+                        match ops[j].kind.as_str() {
+                            "loop_start" => depth += 1,
+                            "loop_end" => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    loop_end_idx = Some(j);
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                if !value_var.is_empty() && loop_end_idx.is_some() {
+                    found_pattern = true;
+                }
+            }
+
+            if found_pattern {
+                let ls_idx = loop_start_idx.unwrap();
+                let in_idx = iter_next_idx.unwrap();
+                let le_idx = loop_end_idx.unwrap();
+
+                // Emit for_iter op.
+                result.push(OpIR {
+                    kind: "for_iter".to_string(),
+                    out: Some(value_var.clone()),
+                    args: Some(vec![iterable.clone()]),
+                    ..OpIR::default()
+                });
+
+                // Find where the loop body starts: after the break-on-exhausted
+                // pattern (iter_next → get_item → if → break → end_if → get_item).
+                // We need to skip the boilerplate and emit only the body.
+                // The body starts after the last get_item that unpacks iter_next_out
+                // (which assigns the loop variable into a slot).
+                let mut body_start = in_idx + 1;
+
+                // Scan past the unpack + break pattern to find body start.
+                // Look for the pattern: get_item, const, get_item, if, break, end_if,
+                // then optional store into a slot variable.
+                let mut break_end = in_idx + 1;
+                let mut depth = 0i32;
+                let mut seen_break_check = false;
+                for j in (in_idx + 1)..le_idx {
+                    match ops[j].kind.as_str() {
+                        "if" => depth += 1,
+                        "end_if" => {
+                            depth -= 1;
+                            if depth < 0 {
+                                break_end = j + 1;
+                                depth = 0;
+                            }
+                        }
+                        _ => {}
+                    }
+                    // Check if this op still references the iter_next output (part of unpack)
+                    let refs_iter = ops[j].args.as_deref().map_or(false, |args| {
+                        args.iter().any(|a| a == &iter_next_out)
+                    });
+                    if refs_iter || matches!(ops[j].kind.as_str(),
+                        "const_int" | "const" | "break" | "check_exception"
+                        | "exception_last" | "const_none" | "is" | "not"
+                        | "loop_break_if_true" | "loop_break_if_false")
+                    {
+                        body_start = j + 1;
+                    }
+                    // Track when we've passed the break check.
+                    if matches!(ops[j].kind.as_str(),
+                        "loop_break_if_true" | "loop_break_if_false" | "break")
+                    {
+                        seen_break_check = true;
+                    }
+                    // Stop scanning after end_if at depth 0.
+                    if ops[j].kind == "end_if" && depth <= 0 && j > in_idx + 2 {
+                        body_start = j + 1;
+                        break;
+                    }
+                    // After the break check, once we find the value extraction
+                    // (an index op referencing iter_next_out), we're done.
+                    if seen_break_check && refs_iter
+                        && matches!(ops[j].kind.as_str(), "get_item" | "subscript" | "index")
+                    {
+                        body_start = j + 1;
+                        break;
+                    }
+                }
+                body_start = body_start.max(break_end);
+
+                // Now find the actual value extraction: look for set_item or store
+                // ops that write the unpacked value into a usable slot.
+                // These appear right after the break check.
+                for j in body_start..le_idx.min(body_start + 8) {
+                    let refs_value = ops[j].args.as_deref().map_or(false, |args| {
+                        args.iter().any(|a| a == &value_var)
+                    });
+                    if refs_value && matches!(ops[j].kind.as_str(), "set_item" | "store_local") {
+                        // This stores the loop variable into a slot — part of boilerplate.
+                        body_start = j + 1;
+                    } else if !refs_value && ops[j].kind == "const_int" {
+                        // Index constant for the set_item — skip.
+                        body_start = j + 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                // Skip any ops between iter and loop body that are boilerplate
+                // (nil checks, TypeError, etc.) — they're between i and ls_idx.
+                // We already emitted for_iter, so skip from i to body_start.
+
+                // Emit the body ops (from body_start to loop_end, exclusive).
+                for j in body_start..le_idx {
+                    // Skip `continue` at the end of the loop body — it's implicit in for loops.
+                    if j == le_idx - 1 && ops[j].kind == "continue" {
+                        continue;
+                    }
+                    result.push(ops[j].clone());
+                }
+
+                // Emit end_for.
+                result.push(OpIR {
+                    kind: "end_for".to_string(),
+                    ..OpIR::default()
+                });
+
+                // Skip past the entire original pattern.
+                i = le_idx + 1;
+
+                // Also skip any ops between the original iter and loop_start
+                // that were nil-check boilerplate (they're now unnecessary).
+                continue;
+            }
+        }
+
+        result.push(ops[i].clone());
+        i += 1;
+    }
+
+    result
+}
+
 fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
     if ops.is_empty() {
         return ops.to_vec();
