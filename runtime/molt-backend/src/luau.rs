@@ -79,9 +79,15 @@ impl LuauBackend {
         strip_unbound_local_checks(&mut func_body);
         strip_dead_locals_dict_stores(&mut func_body);
         strip_undefined_rhs_assignments(&mut func_body);
+        propagate_single_use_copies(&mut func_body);
         strip_trailing_continue(&mut func_body);
         simplify_comparison_break(&mut func_body);
         optimize_luau_perf(&mut func_body);
+        // Second copy-prop pass: optimize_luau_perf reduces type-guard
+        // expressions (4 uses → 2 uses), unlocking more copy propagation.
+        propagate_single_use_copies(&mut func_body);
+        sink_single_use_locals(&mut func_body);
+        simplify_return_chain(&mut func_body);
 
         // Phase 3: Emit prelude with only the helpers that survive optimization.
         self.emit_prelude_conditional(&func_body);
@@ -4015,6 +4021,424 @@ fn strip_undefined_rhs_assignments(source: &mut String) {
     eprintln!("[molt-luau] Stripped {} dead undefined-RHS assignments", remove.len());
 }
 
+/// Propagate single-use variable copies: `local vN = vM` where vN is used
+/// exactly once → replace vN with vM at the use site and remove the declaration.
+/// Only applies when vM is not reassigned between declaration and use.
+///
+/// Runs up to 3 iterations to collapse chains (vA → vB → vC).
+fn propagate_single_use_copies(source: &mut String) {
+    let mut total = 0;
+    for _ in 0..3 {
+        let count = propagate_single_use_copies_once(source);
+        if count == 0 {
+            break;
+        }
+        total += count;
+    }
+    if total > 0 {
+        eprintln!("[molt-luau] Propagated {} single-use copies", total);
+    }
+}
+
+fn propagate_single_use_copies_once(source: &mut String) -> usize {
+    let lines: Vec<&str> = source.lines().collect();
+
+    // Phase 1: Find `local vN = vM` copy declarations and count all var uses.
+    let mut copy_decls: HashMap<String, (usize, String)> = HashMap::new();
+    let mut var_use_count: HashMap<String, usize> = HashMap::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+
+        if let Some(rest) = trimmed.strip_prefix("local v") {
+            if let Some(eq_pos) = rest.find(" = ") {
+                let var_suffix = &rest[..eq_pos];
+                if var_suffix.chars().all(|c| c.is_ascii_digit()) {
+                    let var_name = format!("v{var_suffix}");
+                    let rhs = rest[eq_pos + 3..].trim();
+                    if is_simple_var_ref(rhs) {
+                        copy_decls.insert(var_name, (i, rhs.to_string()));
+                    }
+                }
+            }
+        }
+
+        // Count all vNNN references in this line.
+        let bytes = line.as_bytes();
+        let mut pos = 0;
+        while pos < bytes.len() {
+            if bytes[pos] == b'v' && (pos == 0 || !is_ident_char(bytes[pos - 1])) {
+                let start = pos;
+                pos += 1;
+                while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+                    pos += 1;
+                }
+                if pos > start + 1 && (pos >= bytes.len() || !is_ident_char(bytes[pos])) {
+                    let var = std::str::from_utf8(&bytes[start..pos]).unwrap_or("");
+                    *var_use_count.entry(var.to_string()).or_insert(0) += 1;
+                }
+            } else {
+                pos += 1;
+            }
+        }
+    }
+
+    // Phase 2: For single-use copies, verify source is not reassigned between
+    // declaration and use.
+    let mut inline_map: HashMap<String, String> = HashMap::new();
+    let mut remove_lines: HashSet<usize> = HashSet::new();
+
+    for (var, (decl_line, source_var)) in &copy_decls {
+        let count = var_use_count.get(var).copied().unwrap_or(0);
+        if count != 2 {
+            continue; // 1 decl + 1 use = 2
+        }
+
+        // Find the use line.
+        let mut use_idx = None;
+        for (i, line) in lines.iter().enumerate() {
+            if i == *decl_line {
+                continue;
+            }
+            if contains_whole_word_var(line, var) {
+                use_idx = Some(i);
+                break;
+            }
+        }
+
+        let Some(use_line) = use_idx else { continue };
+        if use_line <= *decl_line {
+            continue; // Use before decl — skip.
+        }
+
+        // Verify source_var is not reassigned between decl and use.
+        let mut reassigned = false;
+        for i in (*decl_line + 1)..use_line {
+            let t = lines[i].trim();
+            if t.starts_with("--") {
+                continue;
+            }
+            // Bare assignment: `source_var = ...`
+            let assign_pat = format!("{source_var} = ");
+            if t.starts_with(&assign_pat) {
+                reassigned = true;
+                break;
+            }
+        }
+
+        if !reassigned {
+            inline_map.insert(var.clone(), source_var.clone());
+            remove_lines.insert(*decl_line);
+        }
+    }
+
+    if inline_map.is_empty() {
+        return 0;
+    }
+
+    let count = inline_map.len();
+    let mut result = String::with_capacity(source.len());
+    for (i, line) in lines.iter().enumerate() {
+        if remove_lines.contains(&i) {
+            continue;
+        }
+        let mut new_line = (*line).to_string();
+        for (var, replacement) in &inline_map {
+            if new_line.contains(var.as_str()) {
+                new_line = replace_whole_word(&new_line, var, replacement);
+            }
+        }
+        result.push_str(&new_line);
+        result.push('\n');
+    }
+
+    *source = result;
+    count
+}
+
+/// Check if a string is a simple variable reference (v\d+ or parameter name).
+fn is_simple_var_ref(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    // v\d+ pattern
+    if s.starts_with('v') && s.len() > 1 && s[1..].chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    // Simple parameter names (alphabetic + underscore, no dots/brackets/parens)
+    if s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        // Exclude Luau keywords
+        !matches!(
+            s,
+            "and" | "break" | "do" | "else" | "elseif" | "end" | "false" | "for"
+                | "function" | "if" | "in" | "local" | "nil" | "not" | "or"
+                | "repeat" | "return" | "then" | "true" | "until" | "while"
+        )
+    } else {
+        false
+    }
+}
+
+/// Check if `line` contains a whole-word occurrence of `var`.
+fn contains_whole_word_var(line: &str, var: &str) -> bool {
+    let bytes = line.as_bytes();
+    let var_bytes = var.as_bytes();
+    let mut pos = 0;
+    while pos + var_bytes.len() <= bytes.len() {
+        if &bytes[pos..pos + var_bytes.len()] == var_bytes {
+            let before_ok = pos == 0 || !is_ident_char(bytes[pos - 1]);
+            let after_ok = pos + var_bytes.len() >= bytes.len()
+                || !is_ident_char(bytes[pos + var_bytes.len()]);
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+        pos += 1;
+    }
+    false
+}
+
+/// Simplify return chains where a hoisted variable is assigned just before return.
+/// Pattern: `vN = expr; [comment lines]; return vN` → `return expr`
+/// Only applies when vN is used exactly 3 times total (decl + assign + return).
+fn simplify_return_chain(source: &mut String) {
+    let lines: Vec<&str> = source.lines().collect();
+
+    // Count all variable uses.
+    let mut var_use_count: HashMap<String, usize> = HashMap::new();
+    for line in &lines {
+        let bytes = line.as_bytes();
+        let mut pos = 0;
+        while pos < bytes.len() {
+            if bytes[pos] == b'v' && (pos == 0 || !is_ident_char(bytes[pos - 1])) {
+                let start = pos;
+                pos += 1;
+                while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+                    pos += 1;
+                }
+                if pos > start + 1 && (pos >= bytes.len() || !is_ident_char(bytes[pos])) {
+                    let var = std::str::from_utf8(&bytes[start..pos]).unwrap_or("");
+                    *var_use_count.entry(var.to_string()).or_insert(0) += 1;
+                }
+            } else {
+                pos += 1;
+            }
+        }
+    }
+
+    let mut remove_lines: HashSet<usize> = HashSet::new();
+    let mut replacements: HashMap<usize, String> = HashMap::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+
+        // Match `return vN`
+        if let Some(ret_var) = trimmed.strip_prefix("return ") {
+            let ret_var = ret_var.trim();
+            if !ret_var.starts_with('v') || ret_var.len() < 2
+                || !ret_var[1..].chars().all(|c| c.is_ascii_digit())
+            {
+                continue;
+            }
+
+            // Scan backwards for `vN = expr`, skipping comments and blank lines.
+            let mut assign_line = None;
+            let mut assign_rhs = None;
+            let mut j = i.wrapping_sub(1);
+            while j < lines.len() {
+                let prev = lines[j].trim();
+                if prev.is_empty() || prev.starts_with("--") {
+                    if j == 0 { break; }
+                    j -= 1;
+                    continue;
+                }
+                // Match `vN = expr` (bare assignment, not local)
+                let assign_pat = format!("{ret_var} = ");
+                if let Some(rhs) = prev.strip_prefix(&assign_pat) {
+                    // Verify this is a bare assignment, not inside an if/etc.
+                    assign_line = Some(j);
+                    assign_rhs = Some(rhs.to_string());
+                }
+                break;
+            }
+
+            if let (Some(a_line), Some(rhs)) = (assign_line, assign_rhs) {
+                // Check that ret_var has exactly 3 uses (decl + assign + return).
+                let count = var_use_count.get(ret_var).copied().unwrap_or(0);
+                if count == 3 {
+                    let indent = &line[..line.len() - trimmed.len()];
+                    replacements.insert(i, format!("{indent}return {rhs}"));
+                    remove_lines.insert(a_line);
+                }
+            }
+        }
+    }
+
+    if remove_lines.is_empty() && replacements.is_empty() {
+        return;
+    }
+
+    let count = replacements.len();
+    let mut result = String::with_capacity(source.len());
+    for (i, line) in lines.iter().enumerate() {
+        if remove_lines.contains(&i) {
+            continue;
+        }
+        if let Some(replacement) = replacements.get(&i) {
+            result.push_str(replacement);
+        } else {
+            result.push_str(line);
+        }
+        result.push('\n');
+    }
+    *source = result;
+    eprintln!("[molt-luau] Simplified {} return chains", count);
+}
+
+/// Sink single-use locals into their sole consumer when the consumer is on
+/// the immediately following (non-blank, non-comment) line.
+///
+/// `local vN = <expr>` followed by a line that uses vN exactly once →
+/// remove the local declaration, replace vN with `<expr>` inline.
+/// Only applies when the expression is ≤120 chars (avoids line bloat).
+///
+/// Runs iteratively to handle chains (vA → vB → vC) without introducing
+/// dangling references.
+fn sink_single_use_locals(source: &mut String) {
+    let mut total = 0;
+    for _ in 0..5 {
+        let count = sink_single_use_locals_once(source);
+        if count == 0 {
+            break;
+        }
+        total += count;
+    }
+    if total > 0 {
+        eprintln!("[molt-luau] Sunk {} single-use locals into next line", total);
+    }
+}
+
+fn sink_single_use_locals_once(source: &mut String) -> usize {
+    let lines: Vec<&str> = source.lines().collect();
+
+    // Phase 1: Find all `local vN = <expr>` and count uses.
+    let mut local_decls: HashMap<String, (usize, String)> = HashMap::new();
+    let mut var_use_count: HashMap<String, usize> = HashMap::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+
+        if let Some(rest) = trimmed.strip_prefix("local v") {
+            if let Some(eq_pos) = rest.find(" = ") {
+                let var_suffix = &rest[..eq_pos];
+                if var_suffix.chars().all(|c| c.is_ascii_digit()) {
+                    let var_name = format!("v{var_suffix}");
+                    let rhs = rest[eq_pos + 3..].trim().to_string();
+                    if rhs.len() <= 120
+                        && !rhs.contains('\n')
+                        && !is_simple_literal(&rhs)
+                        && !is_simple_var_ref(&rhs)
+                    {
+                        local_decls.insert(var_name, (i, rhs));
+                    }
+                }
+            }
+        }
+
+        let bytes = line.as_bytes();
+        let mut pos = 0;
+        while pos < bytes.len() {
+            if bytes[pos] == b'v' && (pos == 0 || !is_ident_char(bytes[pos - 1])) {
+                let start = pos;
+                pos += 1;
+                while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+                    pos += 1;
+                }
+                if pos > start + 1 && (pos >= bytes.len() || !is_ident_char(bytes[pos])) {
+                    let var = std::str::from_utf8(&bytes[start..pos]).unwrap_or("");
+                    *var_use_count.entry(var.to_string()).or_insert(0) += 1;
+                }
+            } else {
+                pos += 1;
+            }
+        }
+    }
+
+    // Phase 2: Collect candidates. Skip if the RHS references another variable
+    // that is ALSO a candidate (chain hazard — handle in the next iteration).
+    let mut candidates: HashMap<String, (usize, String)> = HashMap::new();
+    for (var, (decl_line, expr)) in &local_decls {
+        let count = var_use_count.get(var).copied().unwrap_or(0);
+        if count != 2 {
+            continue;
+        }
+
+        // Find the next non-blank, non-comment line.
+        let mut next_line = *decl_line + 1;
+        while next_line < lines.len() {
+            let t = lines[next_line].trim();
+            if !t.is_empty() && !t.starts_with("--") {
+                break;
+            }
+            next_line += 1;
+        }
+        if next_line >= lines.len() {
+            continue;
+        }
+
+        if contains_whole_word_var(lines[next_line], var) {
+            candidates.insert(var.clone(), (*decl_line, expr.clone()));
+        }
+    }
+
+    // Filter out candidates whose RHS references another candidate variable.
+    let candidate_vars: HashSet<String> = candidates.keys().cloned().collect();
+    let mut inline_map: HashMap<String, String> = HashMap::new();
+    let mut remove_lines: HashSet<usize> = HashSet::new();
+
+    for (var, (decl_line, expr)) in &candidates {
+        let rhs_references_candidate = candidate_vars.iter().any(|other| {
+            other != var && contains_whole_word_var(expr, other)
+        });
+        if !rhs_references_candidate {
+            // Wrap in parentheses when needed for correctness:
+            // - Table constructors: `{...}[n]` is a Luau syntax error
+            // - Top-level binary operators: inlining `a + b` into `expr * 2`
+            //   would change precedence without parens
+            let safe_expr = if expr.starts_with('{') || has_top_level_binary_op(expr) {
+                format!("({expr})")
+            } else {
+                expr.clone()
+            };
+            inline_map.insert(var.clone(), safe_expr);
+            remove_lines.insert(*decl_line);
+        }
+    }
+
+    if inline_map.is_empty() {
+        return 0;
+    }
+
+    let count = inline_map.len();
+    let mut result = String::with_capacity(source.len());
+    for (i, line) in lines.iter().enumerate() {
+        if remove_lines.contains(&i) {
+            continue;
+        }
+        let mut new_line = (*line).to_string();
+        for (var, replacement) in &inline_map {
+            if new_line.contains(var.as_str()) {
+                new_line = replace_whole_word(&new_line, var, replacement);
+            }
+        }
+        result.push_str(&new_line);
+        result.push('\n');
+    }
+
+    *source = result;
+    count
+}
+
 /// Performance optimization pass over emitted Luau source.
 ///
 /// Applied after constant inlining and nil-wrapper elimination. Performs:
@@ -4376,6 +4800,38 @@ fn optimize_luau_perf(source: &mut String) {
         *source = result;
         eprintln!("[molt-luau] Applied {} perf optimizations", perf_count);
     }
+}
+
+/// Find the matching closing parenthesis for an opening paren at `open_pos`.
+/// Check if an expression contains binary operators at the top level
+/// (not inside `[]`, `()`, or `{}`). Used by the sink pass to decide
+/// whether inlined expressions need parenthesization.
+fn has_top_level_binary_op(expr: &str) -> bool {
+    let bytes = expr.as_bytes();
+    let mut depth: i32 = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'+' | b'-' | b'*' | b'/' | b'%' | b'^' if depth == 0 => {
+                // Must be a binary op: preceded and followed by space
+                if i > 0
+                    && i + 1 < bytes.len()
+                    && bytes[i - 1] == b' '
+                    && bytes[i + 1] == b' '
+                {
+                    return true;
+                }
+            }
+            b'.' if depth == 0 && i + 1 < bytes.len() && bytes[i + 1] == b'.' => {
+                return true; // string concatenation `..`
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Find the matching closing parenthesis for an opening paren at `open_pos`.

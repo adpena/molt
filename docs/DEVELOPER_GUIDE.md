@@ -177,7 +177,7 @@ lune run my_script.luau   # Local testing via Lune 0.10.4+
 
 ### Architecture
 
-- **Source**: `runtime/molt-backend/src/luau.rs` (~4600 lines)
+- **Source**: `runtime/molt-backend/src/luau.rs` (~5000 lines)
 - **Tests**: `tests/luau/test_molt_luau_correctness.py` (59 differential tests)
 - **Benchmark tool**: `tools/benchmark_luau_vs_cpython.py`
 - **IR input**: Same `SimpleIR` (JSON) used by native/WASM backends
@@ -185,24 +185,33 @@ lune run my_script.luau   # Local testing via Lune 0.10.4+
 The Luau backend is a source-to-source transpiler: it reads `SimpleIR` and emits
 Luau source text. It does **not** go through Cranelift.
 
-### Optimization Pipeline (10 passes, ordered)
+### Optimization Pipeline (13 passes, two-phase)
 
 Text-level passes run on the emitted Luau source before the prelude is prepended:
 
+**Phase A (before perf optimizer):**
 1. **`inline_single_use_constants`** — Replace `local vN = <literal>` with inline literal at use site
 2. **`eliminate_nil_missing_wrappers`** — Flatten `{nil}` frame-slot wrappers to plain locals
 3. **`strip_unbound_local_checks`** — Remove dead `UnboundLocalError` guard blocks
 4. **`strip_dead_locals_dict_stores`** — Remove write-only `__dict__` tables (module introspection)
 5. **`strip_undefined_rhs_assignments`** — Eliminate dead closure-restore ops (`vN = vM` where vM undefined)
-6. **`strip_trailing_continue`** — Remove no-op `continue` before `end`
-7. **`simplify_comparison_break`** — Fuse `local vN = a < b; if not vN then break end` → `if a >= b then break end`
-8. **`optimize_luau_perf`** — Multi-pass optimizer:
+6. **`propagate_single_use_copies`** (1st pass) — `local vN = vM` where vN is single-use → replace with vM
+7. **`strip_trailing_continue`** — Remove no-op `continue` before `end`
+8. **`simplify_comparison_break`** — Fuse `local vN = a < b; if not vN then break end` → `if a >= b then break end`
+9. **`optimize_luau_perf`** — Multi-pass optimizer:
    - Inline `molt_pow` → `^`, `molt_floor_div` → `math_floor(/)`, `molt_mod` → `%`
    - Track numeric variables through assignments (local + bare)
    - Eliminate string-or-add type guards when operands are provably numeric
    - Simplify index type guards (`if type(vN) == "number" then vN+1 else vN` → `vN+1`)
    - Strength-reduce `x^2` → `x*x`
    - Annotate user functions with `@native` for Luau VM JIT
+
+**Phase B (after perf optimizer unlocks more opportunities):**
+10. **`propagate_single_use_copies`** (2nd pass) — Catches copies unblocked by type-guard simplification
+11. **`sink_single_use_locals`** — `local vN = <expr>; <next line uses vN once>` → inline expr (iterative, chain-safe)
+12. **`simplify_return_chain`** — `vN = expr; [comments]; return vN` → `return expr`
+
+The two-phase copy propagation is a **pass ordering solution**: `optimize_luau_perf` reduces type-guard expressions from 4 variable uses to 2, which unlocks copy propagation that wasn't possible in phase A.
 
 IR-level passes run in `lib.rs` (`tree_shake_luau`):
 - Exception op stripping, stdlib stubs, genexpr inlining, frame-slot flattening, dead var elimination
@@ -234,8 +243,13 @@ Run: `uv run pytest tests/luau/ -x -v`
 
 ### Key Safety Rules
 
-- **No variable-copy inlining**: `local vN = vM` copies cannot be inlined because
-  `vM` may be reassigned between declaration and use (closure save/restore patterns).
+- **Copy propagation requires reassignment check**: `local vN = vM` copies are safe to
+  inline only if `vM` is not reassigned between declaration and use. The pass scans
+  intervening lines for `vM = ...` patterns. Runs iteratively (up to 3 passes) to
+  collapse chains.
+- **Sink pass is chain-safe**: When sinking `local vN = <expr>`, skip candidates
+  whose RHS references another variable also being sunk in the same iteration.
+  Run iteratively (up to 5 passes) to handle multi-level chains correctly.
 - **For-loop vars in defined_vars**: The dead-RHS pass must collect for-loop
   iteration variables to avoid stripping live assignments.
 - **Guarded-store detection**: `type(vN)` in `if type(vN) == "table" then vN["key"] = val end`
