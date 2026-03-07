@@ -164,9 +164,11 @@ for _name, _fn in _CALLABLES.items():
     _mod_dict[_name] = _as_builtin_function(_name, _fn)
 
 
+import sys as _all_sys
+_all_mod_dict = _all_sys.modules[__name__].__dict__
 __all__ = sorted(
     name
-    for name in globals()
+    for name in _all_mod_dict
     if not name.startswith("_")
     and name
     not in {
