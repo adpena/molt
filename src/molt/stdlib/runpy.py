@@ -43,7 +43,9 @@ def _fspath(path_name: Any) -> Any:
 
 
 def _runpy_module_file() -> str | None:
-    module_file = globals().get("__file__")
+    import sys as _rp_sys
+    _rp_dict = getattr(_rp_sys.modules.get(__name__), "__dict__", None) or globals()
+    module_file = _rp_dict.get("__file__")
     if isinstance(module_file, str):
         return module_file
     return None

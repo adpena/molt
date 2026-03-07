@@ -33,7 +33,9 @@ def _search_paths() -> tuple[str, ...]:
 
 
 def _resources_module_file() -> str | None:
-    module_file = globals().get("__file__")
+    import sys as _ilrf_sys
+    _ilrf_dict = getattr(_ilrf_sys.modules.get(__name__), "__dict__", None) or globals()
+    module_file = _ilrf_dict.get("__file__")
     if isinstance(module_file, str) and module_file:
         return module_file
     return None

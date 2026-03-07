@@ -68,7 +68,9 @@ def _install_external_support(module: ModuleType, support_init: Path) -> None:
     _EXTERNAL_SUPPORT_PATH = str(support_init)
     external_dir = str(support_init.parent)
     local_dir = str(_THIS_DIR)
-    globals()["__path__"] = [external_dir, local_dir]
+    import sys as _ts_sys
+    _ts_mod_dict = getattr(_ts_sys.modules.get(__name__), "__dict__", None) or globals()
+    _ts_mod_dict["__path__"] = [external_dir, local_dir]
 
     for name, value in module.__dict__.items():
         if name in {
@@ -81,13 +83,13 @@ def _install_external_support(module: ModuleType, support_init: Path) -> None:
             "__builtins__",
         }:
             continue
-        globals()[name] = value
+        _ts_mod_dict[name] = value
 
     all_names = module.__dict__.get("__all__")
     if isinstance(all_names, list):
-        globals()["__all__"] = list(all_names)
+        _ts_mod_dict["__all__"] = list(all_names)
     elif isinstance(all_names, tuple):
-        globals()["__all__"] = list(all_names)
+        _ts_mod_dict["__all__"] = list(all_names)
 
 
 for _candidate in _candidate_cpython_support_paths():
@@ -104,20 +106,24 @@ for _candidate in _candidate_cpython_support_paths():
 if not _LOADED_EXTERNAL:
     from . import _fallback_support as _fallback
 
-    globals()["__path__"] = [str(_THIS_DIR)]
+    import sys as _tsf_sys
+    _tsf_mod_dict = getattr(_tsf_sys.modules.get(__name__), "__dict__", None) or globals()
+    _tsf_mod_dict["__path__"] = [str(_THIS_DIR)]
     _fallback_all = getattr(_fallback, "__all__", [])
     for _name in _fallback_all:
-        globals()[_name] = getattr(_fallback, _name)
-    globals()["__all__"] = list(_fallback_all)
+        _tsf_mod_dict[_name] = getattr(_fallback, _name)
+    _tsf_mod_dict["__all__"] = list(_fallback_all)
 
 
 def __dir__() -> list[str]:
-    all_names = globals().get("__all__")
+    import sys as _tsd_sys
+    _tsd_dict = getattr(_tsd_sys.modules.get(__name__), "__dict__", None) or globals()
+    all_names = _tsd_dict.get("__all__")
     if isinstance(all_names, list):
         return sorted(set(all_names))
     if isinstance(all_names, tuple):
         return sorted(set(all_names))
-    return sorted(name for name in globals() if not name.startswith("_"))
+    return sorted(name for name in _tsd_dict if not name.startswith("_"))
 
 
 def __getattr__(name: str) -> Any:
