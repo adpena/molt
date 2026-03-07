@@ -7,6 +7,7 @@ members = [
     "runtime/molt-python",
     "runtime/molt-worker",
     "runtime/molt-wasm-host",
+    "runtime/molt-cpython-abi",
 ]
 resolver = "2"
 
