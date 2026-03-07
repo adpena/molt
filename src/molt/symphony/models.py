@@ -84,6 +84,7 @@ class AgentConfig:
     max_concurrent_agents: int
     max_turns: int
     max_retry_backoff_ms: int
+    max_retry_attempts: int
     max_concurrent_agents_by_state: dict[str, int]
     role_pools: dict[str, int]
     default_role: str
