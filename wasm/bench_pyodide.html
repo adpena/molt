@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Molt vs Pyodide — WASM Python Speed Comparison</title>
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.27.0/full/pyodide.js"></script>
+    <style>
+      :root {
+        font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+        background: #0d1117;
+        color: #e6edf3;
+        color-scheme: dark;
+      }
+      body { margin: 0; padding: 24px; }
+      h1 { font-size: 20px; margin: 0 0 4px; color: #58a6ff; }
+      .subtitle { color: #8b949e; font-size: 12px; margin: 0 0 24px; }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+      .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+      .card h2 { margin: 0 0 8px; font-size: 15px; }
+      .molt-card h2 { color: #f78166; }
+      .pyodide-card h2 { color: #7ee787; }
+      label { font-size: 11px; color: #8b949e; display: block; margin: 8px 0 3px; }
+      input[type=text], input[type=number] {
+        width: 100%; background: #0d1117; border: 1px solid #30363d;
+        border-radius: 4px; color: #e6edf3; padding: 5px 8px;
+        font-family: inherit; font-size: 12px; box-sizing: border-box;
+      }
+      .status { font-size: 11px; margin-top: 8px; min-height: 16px; color: #8b949e; }
+      .status.ok { color: #7ee787; }
+      .status.err { color: #f78166; }
+      .status.loading { color: #d29922; }
+      button {
+        padding: 8px 16px; border-radius: 6px; border: none; background: #238636;
+        color: #fff; font-family: inherit; font-size: 13px; cursor: pointer; margin-right: 8px;
+      }
+      button:disabled { background: #21262d; color: #484f58; cursor: default; }
+      button.secondary { background: #21262d; color: #e6edf3; border: 1px solid #30363d; }
+      .controls { display: flex; align-items: center; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+      .controls label { margin: 0; }
+      .results-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+      .results-table th {
+        background: #21262d; padding: 6px 10px; text-align: left;
+        font-weight: 600; border-bottom: 1px solid #30363d;
+      }
+      .results-table td { padding: 5px 10px; border-bottom: 1px solid #1c2128; }
+      .results-table tr:hover td { background: #1c2128; }
+      .winner { color: #7ee787; font-weight: 700; }
+      .speedup-col { color: #58a6ff; }
+      .bar { height: 10px; border-radius: 3px; margin: 2px 0; }
+      .bar-molt { background: #f78166; }
+      .bar-pyodide { background: #7ee787; }
+      pre#log {
+        background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+        padding: 12px; font-size: 11px; max-height: 240px; overflow-y: auto; margin: 0; color: #8b949e;
+      }
+      .section-title {
+        font-size: 12px; font-weight: 600; color: #8b949e; margin: 20px 0 8px;
+        text-transform: uppercase; letter-spacing: .06em;
+      }
+      .badge { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 10px; vertical-align: middle; }
+      .badge-ok { background: #1f6feb; color: #fff; }
+      .badge-pending { background: #6e7681; color: #fff; }
+    </style>
+  </head>
+  <body>
+    <h1>Molt vs Pyodide — WASM Python Speed</h1>
+    <p class="subtitle">
+      Molt = AOT-compiled Python&nbsp;&rarr;&nbsp;native WASM bytecode &nbsp;|&nbsp;
+      Pyodide = CPython interpreter compiled to WASM
+    </p>
+
+    <div class="grid">
+      <div class="card molt-card">
+        <h2>Molt WASM <span class="badge badge-pending" id="molt-badge">not loaded</span></h2>
+        <label for="molt-url">Pre-compiled benchmark .wasm URL</label>
+        <input id="molt-url" type="text" value="./output_linked.wasm" />
+        <label for="runtime-url">Runtime .wasm URL</label>
+        <input id="runtime-url" type="text" value="./molt_runtime.wasm" />
+        <div class="status" id="molt-status">Load a pre-compiled benchmark WASM to compare</div>
+        <button id="load-molt" class="secondary" style="margin-top:10px">Load Molt WASM</button>
+      </div>
+
+      <div class="card pyodide-card">
+        <h2>Pyodide <span class="badge badge-pending" id="pyodide-badge">not loaded</span></h2>
+        <div class="status loading" id="pyodide-status">Loading Pyodide from CDN&hellip;</div>
+        <p style="font-size:11px;color:#8b949e;margin:12px 0 0">
+          Pyodide v0.27.0 loads automatically from CDN. No setup required.
+        </p>
+      </div>
+    </div>
+
+    <div class="controls">
+      <label for="iter-count">Iterations:</label>
+      <input id="iter-count" type="number" value="10" min="1" max="100" style="width:60px" />
+      <button id="run-btn" disabled>Run Benchmarks</button>
+      <button id="clear-btn" class="secondary">Clear</button>
+    </div>
+
+    <div class="section-title">Results</div>
+    <table class="results-table" id="results-table">
+      <thead>
+        <tr>
+          <th>Benchmark</th>
+          <th>Molt min (ms)</th>
+          <th>Molt avg (ms)</th>
+          <th>Pyodide min (ms)</th>
+          <th>Pyodide avg (ms)</th>
+          <th>Speedup</th>
+          <th style="width:100px">Bar (avg)</th>
+        </tr>
+      </thead>
+      <tbody id="results-body"></tbody>
+    </table>
+
+    <div class="section-title" style="margin-top:24px">Log</div>
+    <pre id="log"></pre>
+
+    <script type="module">
+      import { loadMoltWasm } from './browser_host.js';
+
+      // ─── Benchmark definitions ───────────────────────────────────────────
+      // Pure Python, no imports — runnable verbatim in Pyodide.
+      // For Molt: pre-compile each with: molt compile bench_fib.py --target wasm32-wasip1
+      const BENCHMARKS = [
+        {
+          id: 'fib',
+          label: 'fib(30) recursive',
+          code: [
+            'def fib(n):',
+            '    if n < 2: return n',
+            '    return fib(n-1) + fib(n-2)',
+            'result = fib(30)',
+          ].join('\n'),
+        },
+        {
+          id: 'sum_range',
+          label: 'sum range(1_000_000)',
+          code: [
+            'total = 0',
+            'for i in range(1_000_000):',
+            '    total += i',
+          ].join('\n'),
+        },
+        {
+          id: 'list_ops',
+          label: 'list comprehension 10k',
+          code: [
+            'lst = [i * 17 % 997 for i in range(10_000)]',
+            'lst.sort()',
+            'result = lst[-1]',
+          ].join('\n'),
+        },
+        {
+          id: 'dict_ops',
+          label: 'dict build + lookup 50k',
+          code: [
+            'd = {}',
+            'for i in range(50_000):',
+            '    d[i] = i * i',
+            'total = 0',
+            'for i in range(50_000):',
+            '    total += d[i]',
+          ].join('\n'),
+        },
+        {
+          id: 'str_join',
+          label: 'str join 10k items',
+          code: [
+            'parts = [str(i) for i in range(10_000)]',
+            'result = ",".join(parts)',
+          ].join('\n'),
+        },
+        {
+          id: 'matrix_mul',
+          label: 'matrix mul 32x32',
+          code: [
+            'n = 32',
+            'A = [[float(i*n+j) for j in range(n)] for i in range(n)]',
+            'B = [[float((i+j) % n) for j in range(n)] for i in range(n)]',
+            'C = [[sum(A[i][k]*B[k][j] for k in range(n)) for j in range(n)] for i in range(n)]',
+            'result = C[0][0]',
+          ].join('\n'),
+        },
+      ];
+
+      // ─── Logging ─────────────────────────────────────────────────────────
+      const logEl = document.getElementById('log');
+      function log(msg) {
+        logEl.textContent += msg + '\n';
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      function setStatus(id, text, cls) {
+        const el = document.getElementById(id);
+        el.textContent = text;
+        el.className = 'status ' + (cls || '');
+      }
+
+      // ─── State ───────────────────────────────────────────────────────────
+      let pyodide = null;
+      let moltHost = null;
+
+      // ─── Pyodide init ────────────────────────────────────────────────────
+      (async () => {
+        try {
+          log('Loading Pyodide from CDN...');
+          pyodide = await loadPyodide();
+          document.getElementById('pyodide-badge').textContent = 'ready';
+          document.getElementById('pyodide-badge').className = 'badge badge-ok';
+          setStatus('pyodide-status', 'Pyodide ' + pyodide.version + ' ready', 'ok');
+          log('Pyodide ' + pyodide.version + ' loaded.');
+          updateRunBtn();
+        } catch (err) {
+          setStatus('pyodide-status', 'Failed: ' + err.message, 'err');
+          log('Pyodide load error: ' + err.message);
+        }
+      })();
+
+      // ─── Molt WASM init ──────────────────────────────────────────────────
+      document.getElementById('load-molt').addEventListener('click', async () => {
+        const wasmUrl = document.getElementById('molt-url').value.trim();
+        const runtimeUrl = document.getElementById('runtime-url').value.trim();
+        setStatus('molt-status', 'Loading...', 'loading');
+        document.getElementById('load-molt').disabled = true;
+        try {
+          moltHost = await loadMoltWasm({
+            wasmUrl,
+            linkedUrl: wasmUrl,
+            runtimeUrl,
+            log: (level, msg) => log('[molt:' + level + '] ' + msg),
+          });
+          document.getElementById('molt-badge').textContent = 'ready';
+          document.getElementById('molt-badge').className = 'badge badge-ok';
+          setStatus('molt-status', 'Molt WASM loaded', 'ok');
+          log('Molt WASM loaded from ' + wasmUrl);
+          updateRunBtn();
+        } catch (err) {
+          setStatus('molt-status', 'Error: ' + err.message, 'err');
+          document.getElementById('load-molt').disabled = false;
+          log('Molt load error: ' + err.message);
+        }
+      });
+
+      function updateRunBtn() {
+        const btn = document.getElementById('run-btn');
+        btn.disabled = !pyodide; // Pyodide required; Molt optional for Pyodide-only run
+      }
+
+      // ─── Timing helpers ──────────────────────────────────────────────────
+      function statsOf(times) {
+        const min = Math.min(...times);
+        const max = Math.max(...times);
+        const avg = times.reduce((a, b) => a + b, 0) / times.length;
+        return { min, max, avg };
+      }
+
+      async function timePyodide(code, iters) {
+        pyodide.runPython(code); // warm-up
+        const times = [];
+        for (let i = 0; i < iters; i++) {
+          const t0 = performance.now();
+          pyodide.runPython(code);
+          times.push(performance.now() - t0);
+          // yield to event loop between runs
+          await new Promise(r => setTimeout(r, 0));
+        }
+        return statsOf(times);
+      }
+
+      async function timeMolt(iters) {
+        moltHost.run(); // warm-up
+        const times = [];
+        for (let i = 0; i < iters; i++) {
+          const t0 = performance.now();
+          moltHost.run();
+          times.push(performance.now() - t0);
+          await new Promise(r => setTimeout(r, 0));
+        }
+        return statsOf(times);
+      }
+
+      // ─── Results rendering (safe DOM, no innerHTML) ───────────────────────
+      function renderResultRow(bench, moldSt, pySt) {
+        const tr = document.createElement('tr');
+
+        const addCell = (text, winner) => {
+          const td = document.createElement('td');
+          td.textContent = text;
+          if (winner) td.className = 'winner';
+          tr.appendChild(td);
+        };
+
+        addCell(bench.label);
+
+        if (moldSt) {
+          const moltWins = moldSt.min < pySt.min;
+          addCell(moldSt.min.toFixed(2), moltWins);
+          addCell(moldSt.avg.toFixed(2), moldSt.avg < pySt.avg);
+        } else {
+          addCell('—'); addCell('—');
+        }
+
+        addCell(pySt.min.toFixed(2), moldSt ? pySt.min < moldSt.min : true);
+        addCell(pySt.avg.toFixed(2), moldSt ? pySt.avg < moldSt.avg : true);
+
+        const speedTd = document.createElement('td');
+        speedTd.className = 'speedup-col';
+        if (moldSt) {
+          const ratio = pySt.avg / moldSt.avg;
+          speedTd.textContent = ratio >= 1
+            ? ratio.toFixed(1) + '\u00d7 faster (Molt)'
+            : (1 / ratio).toFixed(1) + '\u00d7 faster (Pyodide)';
+        } else {
+          speedTd.textContent = 'load Molt WASM';
+        }
+        tr.appendChild(speedTd);
+
+        // Bar chart cell
+        const barTd = document.createElement('td');
+        const maxAvg = moldSt ? Math.max(moldSt.avg, pySt.avg) : pySt.avg;
+        if (moldSt) {
+          const moltBar = document.createElement('div');
+          moltBar.className = 'bar bar-molt';
+          moltBar.style.width = ((moldSt.avg / maxAvg) * 96).toFixed(0) + 'px';
+          moltBar.title = 'Molt ' + moldSt.avg.toFixed(1) + 'ms';
+          barTd.appendChild(moltBar);
+        }
+        const pyBar = document.createElement('div');
+        pyBar.className = 'bar bar-pyodide';
+        pyBar.style.width = ((pySt.avg / maxAvg) * 96).toFixed(0) + 'px';
+        pyBar.title = 'Pyodide ' + pySt.avg.toFixed(1) + 'ms';
+        barTd.appendChild(pyBar);
+        tr.appendChild(barTd);
+
+        return tr;
+      }
+
+      // ─── Run ──────────────────────────────────────────────────────────────
+      document.getElementById('run-btn').addEventListener('click', async () => {
+        const iters = Math.max(1, parseInt(document.getElementById('iter-count').value, 10) || 10);
+        document.getElementById('run-btn').disabled = true;
+
+        const tbody = document.getElementById('results-body');
+        while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+
+        log('\n=== Benchmark run (' + iters + ' iterations) ===');
+
+        // Molt timing — one run covers the single compiled benchmark
+        let moltSt = null;
+        if (moltHost) {
+          try {
+            log('Timing Molt WASM...');
+            moltSt = await timeMolt(iters);
+            log('  min=' + moltSt.min.toFixed(2) + 'ms avg=' + moltSt.avg.toFixed(2) + 'ms');
+          } catch (err) {
+            log('Molt run error: ' + err.message);
+          }
+        }
+
+        for (const bench of BENCHMARKS) {
+          log('Pyodide: ' + bench.label + '...');
+          try {
+            const pySt = await timePyodide(bench.code, iters);
+            log('  min=' + pySt.min.toFixed(2) + 'ms avg=' + pySt.avg.toFixed(2) + 'ms');
+            tbody.appendChild(renderResultRow(bench, moltSt, pySt));
+          } catch (err) {
+            log('  error: ' + err.message);
+          }
+        }
+
+        log('=== Done ===');
+        document.getElementById('run-btn').disabled = false;
+      });
+
+      document.getElementById('clear-btn').addEventListener('click', () => {
+        logEl.textContent = '';
+        const tbody = document.getElementById('results-body');
+        while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+        const placeholder = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 7;
+        td.textContent = 'Run benchmarks to see results';
+        td.style.cssText = 'color:#484f58;padding:16px 10px';
+        placeholder.appendChild(td);
+        tbody.appendChild(placeholder);
+      });
+    </script>
+  </body>
+</html>
