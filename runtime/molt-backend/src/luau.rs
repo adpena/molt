@@ -2798,6 +2798,9 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                     if refs_iter || matches!(ops[j].kind.as_str(),
                         "const_int" | "const" | "break" | "check_exception"
                         | "exception_last" | "const_none" | "is" | "not"
+                        | "if" | "end_if" | "raise" | "jump" | "nop" | "line"
+                        | "exception_new" | "exception_stack_set_depth"
+                        | "exception_stack_exit" | "tuple_new" | "const_str"
                         | "loop_break_if_true" | "loop_break_if_false")
                     {
                         body_start = j + 1;
@@ -2808,8 +2811,10 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                     {
                         seen_break_check = true;
                     }
-                    // Stop scanning after end_if at depth 0.
-                    if ops[j].kind == "end_if" && depth <= 0 && j > in_idx + 2 {
+                    // Stop scanning after end_if at depth 0, but ONLY after we've
+                    // already passed the break check. Exception-handling end_if ops
+                    // appear BEFORE the break check and we must not stop there.
+                    if seen_break_check && ops[j].kind == "end_if" && depth <= 0 && j > in_idx + 2 {
                         body_start = j + 1;
                         break;
                     }
