@@ -88,6 +88,24 @@ impl LuauBackend {
     pub fn compile_checked(&mut self, ir: &SimpleIR) -> Result<String, String> {
         let source = self.compile(ir);
         validate_luau_source(&source)?;
+
+        // Performance review — report remaining opportunities to stderr.
+        let perf_issues = review_luau_perf(&source);
+        if !perf_issues.is_empty() {
+            eprintln!("[molt-luau] Performance review ({} issue{}):",
+                perf_issues.len(),
+                if perf_issues.len() == 1 { "" } else { "s" }
+            );
+            for (ln, cat, msg) in perf_issues.iter().take(20) {
+                eprintln!("  L{ln} [{cat}] {msg}");
+            }
+            if perf_issues.len() > 20 {
+                eprintln!("  ... {} more", perf_issues.len() - 20);
+            }
+        } else {
+            eprintln!("[molt-luau] Performance review: clean — no issues found");
+        }
+
         Ok(source)
     }
 
@@ -2428,6 +2446,65 @@ pub fn validate_luau_source(source: &str) -> Result<(), String> {
         let _ = write!(message, "\n- ... {} more", blockers.len() - 8);
     }
     Err(message)
+}
+
+/// Performance review of emitted Luau source.
+///
+/// Returns a report of remaining perf opportunities that an agent or human
+/// reviewer can act on before the next pipeline phase (deploy, Studio MCP, etc.).
+/// Each entry is a (line_number, category, message) triple.
+pub fn review_luau_perf(source: &str) -> Vec<(usize, &'static str, String)> {
+    let mut issues = Vec::new();
+    for (i, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        let ln = i + 1;
+
+        // Remaining helper calls that should have been inlined.
+        if trimmed.contains("molt_pow(") {
+            issues.push((ln, "helper-call", "molt_pow() not inlined — use a ^ b".into()));
+        }
+        if trimmed.contains("molt_floor_div(") {
+            issues.push((ln, "helper-call", "molt_floor_div() not inlined — use math_floor(a / b)".into()));
+        }
+        if trimmed.contains("molt_mod(") {
+            issues.push((ln, "helper-call", "molt_mod() not inlined — use a % b".into()));
+        }
+
+        // Type-checked add that could be numeric.
+        if trimmed.contains("if type(") && trimmed.contains("then tostring(") {
+            issues.push((ln, "type-check", "type-checked add — verify if operands are numeric".into()));
+        }
+
+        // table.insert in user code (not in helper definitions).
+        if trimmed.contains("table.insert(") && !trimmed.starts_with("--") {
+            issues.push((ln, "table-insert", "table.insert() — use result[n] = x for speed".into()));
+        }
+
+        // Missing @native on function definitions.
+        if (trimmed.starts_with("local function ") || trimmed.contains(" = function("))
+            && !trimmed.starts_with("--")
+        {
+            // Check if previous line has @native.
+            if i == 0 || !source.lines().nth(i - 1).map_or(false, |prev| prev.trim() == "@native") {
+                // Don't flag runtime helper definitions.
+                if !trimmed.contains("molt_range")
+                    && !trimmed.contains("molt_len")
+                    && !trimmed.contains("molt_int")
+                    && !trimmed.contains("molt_float")
+                    && !trimmed.contains("molt_str")
+                    && !trimmed.contains("molt_bool")
+                {
+                    issues.push((ln, "native", "function missing @native annotation".into()));
+                }
+            }
+        }
+
+        // Unsupported ops that are still present.
+        if trimmed.contains("-- [unsupported op:") {
+            issues.push((ln, "unsupported", trimmed.to_string()));
+        }
+    }
+    issues
 }
 
 /// Sanitize a Molt IR identifier for Luau.
