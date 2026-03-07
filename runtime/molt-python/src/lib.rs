@@ -2,13 +2,13 @@
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "backend")]
-pub use molt_backend as backend;
+pub use molt_lang_backend as backend;
 #[cfg(feature = "db")]
-pub use molt_db as db;
+pub use molt_lang_db as db;
 #[cfg(feature = "obj-model")]
-pub use molt_obj_model as obj_model;
+pub use molt_lang_obj_model as obj_model;
 #[cfg(feature = "runtime")]
-pub use molt_runtime as runtime;
+pub use molt_lang_runtime as runtime;
 
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -22,7 +22,7 @@ pub const REPOSITORY: &str = match option_env!("CARGO_PKG_REPOSITORY") {
 };
 pub const DOCUMENTATION: &str = match option_env!("CARGO_PKG_DOCUMENTATION") {
     Some(value) => value,
-    None => "https://docs.rs/molt-python",
+    None => "https://docs.rs/molt-lang-python",
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,7 +168,7 @@ mod tests {
         assert_eq!(metadata.version, VERSION);
         assert_eq!(metadata.homepage, "https://github.com/adpena/molt");
         assert_eq!(metadata.repository, "https://github.com/adpena/molt");
-        assert_eq!(metadata.documentation, "https://docs.rs/molt-python");
+        assert_eq!(metadata.documentation, "https://docs.rs/molt-lang-python");
     }
 
     #[test]
