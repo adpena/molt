@@ -1,4 +1,4 @@
-use molt_backend::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
+use molt_lang_backend::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
 
 fn op(kind: &str) -> OpIR {
     OpIR {

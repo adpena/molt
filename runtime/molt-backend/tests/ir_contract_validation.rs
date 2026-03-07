@@ -1,4 +1,4 @@
-use molt_backend::{FunctionIR, OpIR, SimpleIR, validate_simple_ir};
+use molt_lang_backend::{FunctionIR, OpIR, SimpleIR, validate_simple_ir};
 
 fn op(kind: &str) -> OpIR {
     OpIR {

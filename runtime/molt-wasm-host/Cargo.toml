@@ -1,8 +1,12 @@
 [package]
-name = "molt-wasm-host"
+name = "molt-lang-wasm-host"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
+
+[[bin]]
+name = "molt-wasm-host"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
