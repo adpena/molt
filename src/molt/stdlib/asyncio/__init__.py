@@ -5011,12 +5011,16 @@ class Runner:
             result = loop.run_until_complete(task)
         except BaseException:
             _cancel_all_tasks(loop)
-            shutdown = globals().get("molt_asyncgen_shutdown")
+            import sys as _aio_sys
+            _aio_mod_dict = getattr(_aio_sys.modules.get(__name__), "__dict__", None) or globals()
+            shutdown = _aio_mod_dict.get("molt_asyncgen_shutdown")
             if shutdown is not None:
                 shutdown()
             raise
         _cancel_all_tasks(loop)
-        shutdown = globals().get("molt_asyncgen_shutdown")
+        import sys as _aio_sys
+        _aio_mod_dict = getattr(_aio_sys.modules.get(__name__), "__dict__", None) or globals()
+        shutdown = _aio_mod_dict.get("molt_asyncgen_shutdown")
         if shutdown is not None:
             shutdown()
         return result
@@ -5026,7 +5030,9 @@ class Runner:
             return
         if not self._loop.is_closed():
             _cancel_all_tasks(self._loop)
-            shutdown = globals().get("molt_asyncgen_shutdown")
+            import sys as _aio_sys
+            _aio_mod_dict = getattr(_aio_sys.modules.get(__name__), "__dict__", None) or globals()
+            shutdown = _aio_mod_dict.get("molt_asyncgen_shutdown")
             if shutdown is not None:
                 shutdown()
             self._loop.close()
@@ -6934,4 +6940,6 @@ for _name in (
     "dataclass",
     "typing",
 ):
-    globals().pop(_name, None)
+    import sys as _aio_cleanup_sys
+    _aio_cleanup_dict = getattr(_aio_cleanup_sys.modules.get(__name__), "__dict__", None) or globals()
+    _aio_cleanup_dict.pop(_name, None)

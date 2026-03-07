@@ -260,5 +260,8 @@ def interrupt_main(signum: int = 2) -> None:
 # ---------------------------------------------------------------------------
 # Namespace cleanup — remove names that are not part of CPython's _thread API.
 # ---------------------------------------------------------------------------
+import sys as _thr_cleanup_sys
+_thr_cleanup_dict = getattr(_thr_cleanup_sys.modules.get(__name__), "__dict__", None) or globals()
 for _name in ("Any",):
-    globals().pop(_name, None)
+    _thr_cleanup_dict.pop(_name, None)
+del _thr_cleanup_sys, _thr_cleanup_dict

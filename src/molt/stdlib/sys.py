@@ -675,7 +675,9 @@ builtin_module_names = _MOLT_SYS_BUILTIN_MODULE_NAMES()
 
 
 def _bootstrap_module_file() -> str | None:
-    value = globals().get("__file__")
+    import sys as _bmf_sys
+    _bmf_dict = getattr(_bmf_sys.modules.get(__name__), "__dict__", None) or globals()
+    value = _bmf_dict.get("__file__")
     if isinstance(value, str):
         return value
     return None
@@ -1125,4 +1127,6 @@ for _name in (
     "abiflags_obj",
     "asyncgen_hooks",
 ):
-    globals().pop(_name, None)
+    import sys as _sys_cleanup
+    _sys_mod_dict = getattr(_sys_cleanup.modules.get(__name__), "__dict__", None) or globals()
+    _sys_mod_dict.pop(_name, None)
