@@ -1896,6 +1896,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 result_safe = isinstance(arg, MoltValue) and arg.name in inline_safe
             elif op.kind == "PHI":
                 result_safe = op.result.type_hint == "int" and args_are_inline_safe()
+            elif op.kind == "LEN":
+                # len() always returns a non-negative int that fits inline
+                # representation (bounded by collection size).
+                result_safe = op.result.type_hint == "int"
+            elif op.kind in {"LOOP_INDEX_START", "LOOP_INDEX_NEXT"} and op.args:
+                # Loop counters are inherently small integers (range iteration).
+                src = op.args[0]
+                result_safe = (
+                    op.result.type_hint == "int"
+                    and isinstance(src, MoltValue)
+                    and src.name in inline_safe
+                )
             elif op.kind in {"LOOP_CARRY_INIT", "LOOP_CARRY_UPDATE"} and op.args:
                 src = op.args[-1]
                 result_safe = (
@@ -27417,6 +27429,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     add_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     add_entry["fast_float"] = True
+                elif op.result.type_hint in ("int", "float"):
+                    add_entry["type_hint"] = op.result.type_hint
                 json_ops.append(add_entry)
             elif op.kind == "INPLACE_ADD":
                 add_entry = {
@@ -27430,6 +27444,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     add_entry["fast_int"] = True
                 elif self._should_fast_float(op):
                     add_entry["fast_float"] = True
+                elif op.result.type_hint in ("int", "float"):
+                    add_entry["type_hint"] = op.result.type_hint
                 json_ops.append(add_entry)
             elif op.kind == "SUB":
                 sub_entry: dict[str, Any] = {
@@ -28985,16 +29001,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                 )
             elif op.kind == "LEN":
-                json_ops.append(
-                    {
-                        "kind": "len",
-                        "args": [
-                            arg.name if hasattr(arg, "name") else str(arg)
-                            for arg in op.args
-                        ],
-                        "out": op.result.name,
-                    }
-                )
+                len_entry: dict[str, Any] = {
+                    "kind": "len",
+                    "args": [
+                        arg.name if hasattr(arg, "name") else str(arg)
+                        for arg in op.args
+                    ],
+                    "out": op.result.name,
+                }
+                if op.result.type_hint:
+                    len_entry["type_hint"] = op.result.type_hint
+                json_ops.append(len_entry)
             elif op.kind == "ID":
                 json_ops.append(
                     {
@@ -29630,21 +29647,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             elif op.kind == "LOOP_START":
                 json_ops.append({"kind": "loop_start"})
             elif op.kind == "LOOP_INDEX_START":
-                json_ops.append(
-                    {
-                        "kind": "loop_index_start",
-                        "args": [op.args[0].name],
-                        "out": op.result.name,
-                    }
-                )
+                lis_entry: dict[str, Any] = {
+                    "kind": "loop_index_start",
+                    "args": [op.args[0].name],
+                    "out": op.result.name,
+                }
+                if op.result.type_hint:
+                    lis_entry["type_hint"] = op.result.type_hint
+                json_ops.append(lis_entry)
             elif op.kind == "LOOP_INDEX_NEXT":
-                json_ops.append(
-                    {
-                        "kind": "loop_index_next",
-                        "args": [op.args[0].name],
-                        "out": op.result.name,
-                    }
-                )
+                lin_entry: dict[str, Any] = {
+                    "kind": "loop_index_next",
+                    "args": [op.args[0].name],
+                    "out": op.result.name,
+                }
+                if op.result.type_hint:
+                    lin_entry["type_hint"] = op.result.type_hint
+                json_ops.append(lin_entry)
             elif op.kind == "LOOP_CARRY_INIT":
                 json_ops.append(
                     {
