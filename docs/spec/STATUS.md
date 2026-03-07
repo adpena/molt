@@ -988,6 +988,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   overrides; advanced schema coverage (binary/float/large ints/tags) is still expanding.
   (TODO(tests, owner:runtime, milestone:SL1, priority:P1, status:partial): expand codec parity coverage for
   binary/floats/large ints/tagged values/deeper container shapes.)
+- WASM/browser demo: `wasm/browser_host.html` + `wasm/browser_host.js` are restored as a real manual browser-host lane again, so linked/direct wasm artifacts can be loaded over HTTP without Node-specific host glue.
 - WASM parity: wasmtime host wires sockets + io_poller readiness with capability checks; Node/WASI host bindings (sockets + readiness, detach, sockopts) live in `run_wasm.js`; browser harness under `wasm/browser_host.html` supports WebSocket-backed stream sockets + io_poller readiness plus the DB host adapter (fetch/JS adapter + cancellation polling). WASM websocket host intrinsics (`molt_ws_*_host`) are available in Node, browser, and wasmtime hosts. WASM process host is wired for Node/wasmtime (spawn + stdin/out/err pipes + cancellation hooks); browser process host remains unavailable. UDP/listen/server sockets remain unsupported in the browser host.
   (TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P0, status:partial): expand browser socket coverage (UDP/listen/server sockets) + add more parity tests.)
 - Structured codecs: MsgPack is the production default while JSON remains for compatibility/debug.

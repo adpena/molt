@@ -6,6 +6,7 @@
 
 #include <Python.h>
 #include <numpy/numpyconfig.h>
+#include <numpy/npy_endian.h>
 #include <numpy/utils.h>
 
 #ifdef __cplusplus
@@ -141,6 +142,36 @@ typedef enum NPY_TYPES {
     NPY_USERDEF = 256
 } NPY_TYPES;
 
+enum NPY_TYPECHAR {
+    NPY_BOOLLTR = '?',
+    NPY_BYTELTR = 'b',
+    NPY_UBYTELTR = 'B',
+    NPY_SHORTLTR = 'h',
+    NPY_USHORTLTR = 'H',
+    NPY_INTLTR = 'i',
+    NPY_UINTLTR = 'I',
+    NPY_LONGLTR = 'l',
+    NPY_ULONGLTR = 'L',
+    NPY_LONGLONGLTR = 'q',
+    NPY_ULONGLONGLTR = 'Q',
+    NPY_HALFLTR = 'e',
+    NPY_FLOATLTR = 'f',
+    NPY_DOUBLELTR = 'd',
+    NPY_LONGDOUBLELTR = 'g',
+    NPY_CFLOATLTR = 'F',
+    NPY_CDOUBLELTR = 'D',
+    NPY_CLONGDOUBLELTR = 'G',
+    NPY_OBJECTLTR = 'O',
+    NPY_STRINGLTR = 'S',
+    NPY_DEPRECATED_STRINGLTR2 = 'a',
+    NPY_UNICODELTR = 'U',
+    NPY_VOIDLTR = 'V',
+    NPY_DATETIMELTR = 'M',
+    NPY_TIMEDELTALTR = 'm',
+    NPY_CHARLTR = 'c',
+    NPY_VSTRINGLTR = 'T',
+};
+
 #if NPY_SIZEOF_LONG == 8
 #define NPY_INT64 NPY_LONG
 #define NPY_UINT64 NPY_ULONG
@@ -169,6 +200,20 @@ typedef enum {
     NPY_SAME = 1,
     NPY_FULL = 2
 } NPY_CORRELATEMODE;
+
+#define NPY_LITTLE '<'
+#define NPY_BIG '>'
+#define NPY_NATIVE '='
+#define NPY_SWAP 's'
+#define NPY_IGNORE '|'
+
+#if NPY_BYTE_ORDER == NPY_BIG_ENDIAN
+#define NPY_NATBYTE NPY_BIG
+#define NPY_OPPBYTE NPY_LITTLE
+#else
+#define NPY_NATBYTE NPY_LITTLE
+#define NPY_OPPBYTE NPY_BIG
+#endif
 
 typedef enum {
     NPY_QUICKSORT = 0,
@@ -237,6 +282,7 @@ typedef struct PyArray_Descr {
     char kind;
     char type;
     char byteorder;
+    char _former_flags;
     npy_uint64 flags;
     int type_num;
     int elsize;
@@ -245,6 +291,7 @@ typedef struct PyArray_Descr {
     PyObject *names;
     PyObject *fields;
     PyObject *metadata;
+    npy_hash_t hash;
     NpyAuxData *c_metadata;
 } PyArray_Descr;
 
@@ -463,6 +510,17 @@ typedef struct PyArrayMapIterObject {
     int _molt_reserved;
 } PyArrayMapIterObject;
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+typedef struct PyArray_DTypeMeta {
+    PyHeapTypeObject super;
+    PyArray_Descr *singleton;
+    int type_num;
+    PyTypeObject *scalar_type;
+    npy_uint64 flags;
+    void *dt_slots;
+    void *reserved[3];
+} PyArray_DTypeMeta;
+#else
 typedef struct PyArray_DTypeMeta {
     _MOLT_NUMPY_OBJECT_HEAD;
     PyArray_Descr *singleton;
@@ -472,6 +530,7 @@ typedef struct PyArray_DTypeMeta {
     void *dt_slots;
     void *reserved[3];
 } PyArray_DTypeMeta;
+#endif
 
 typedef PyArray_DTypeMeta PyArray_DTypeMeta_tag;
 
@@ -738,6 +797,8 @@ typedef struct npy_unpacked_static_string {
     const char *buf;
 } npy_static_string;
 
+typedef struct npy_packed_static_string npy_packed_static_string;
+
 typedef struct npy_string_allocator npy_string_allocator;
 
 typedef struct {
@@ -775,9 +836,12 @@ typedef enum {
 
 #define NPY_FAIL 0
 #define NPY_SUCCEED 1
+#define NPY_FALSE 0
+#define NPY_TRUE 1
 #define NPY_NTYPES_LEGACY 24
 #define NPY_UINT8 NPY_UBYTE
 #define NPY_DEFAULT_INT NPY_INTP
+#define NPY_DEFAULT_TYPE NPY_DOUBLE
 
 #ifndef NPY_INTP
 #if defined(_WIN64)
@@ -856,7 +920,8 @@ static inline int PyDataType_ALIGNMENT(const PyArray_Descr *descr) {
 #define PyDataType_SET_ELSIZE(descr, value) ((descr) != NULL ? ((descr)->elsize = (int)(value)) : 0)
 #define PyDataType_NAMES(descr) ((descr) != NULL ? (descr)->names : NULL)
 #define PyDataType_FIELDS(descr) ((descr) != NULL ? (descr)->fields : NULL)
-#define PyDataType_SUBARRAY(descr) ((descr) != NULL ? (descr)->subarray : NULL)
+#define PyDataType_SUBARRAY(descr) \
+    ((descr) != NULL ? (PyArray_ArrayDescr *)(descr)->subarray : NULL)
 #define PyDataType_SHAPE(descr) \
     ((PyDataType_SUBARRAY(descr) != NULL) ? ((PyArray_ArrayDescr *)PyDataType_SUBARRAY(descr))->shape : NULL)
 #define PyDataType_METADATA(descr) ((descr) != NULL ? (descr)->metadata : NULL)
@@ -873,13 +938,19 @@ static inline int PyDataType_ALIGNMENT(const PyArray_Descr *descr) {
 #define PyDataType_ISUSERDEF(descr) PyTypeNum_ISUSERDEF((descr) != NULL ? (descr)->type_num : NPY_NOTYPE)
 #define PyDataType_ISEXTENDED(descr) PyTypeNum_ISEXTENDED((descr) != NULL ? (descr)->type_num : NPY_NOTYPE)
 #define PyDataType_ISFLEXIBLE(descr) PyTypeNum_ISFLEXIBLE((descr) != NULL ? (descr)->type_num : NPY_NOTYPE)
+#define PyDataType_ISDATETIME(descr) PyTypeNum_ISDATETIME((descr) != NULL ? (descr)->type_num : NPY_NOTYPE)
 #define PyDataType_ISBYTESWAPPED(descr) ((descr) != NULL && (descr)->byteorder != '=' && (descr)->byteorder != '|')
 #define PyDataType_ISNOTSWAPPED(descr) (!PyDataType_ISBYTESWAPPED(descr))
 #define PyDataType_ISLEGACY(descr) ((descr) != NULL && (descr)->type_num >= 0)
 
 #define PyArray_Type (*_molt_numpy_builtin_type_borrowed("object"))
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+extern PyArray_DTypeMeta PyArrayDescr_TypeFull;
+#define PyArrayDescr_Type (*(PyTypeObject *)&PyArrayDescr_TypeFull)
+#else
 #define PyArrayDescr_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #define PyArrayDescr_TypeFull PyArrayDescr_Type
+#endif
 #define PyArrayDTypeMeta_Type (*_molt_numpy_builtin_type_borrowed("type"))
 #if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
 #define PyArrayMethod_Type (*_molt_numpy_builtin_type_borrowed("object"))

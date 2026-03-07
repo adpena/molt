@@ -460,9 +460,21 @@ impl SimpleIR {
                 .position(|op| matches!(op.kind.as_str(), "func_new" | "make_function"));
             let mut stripped = 0;
             if let Some(cutoff) = first_user_op {
+                // Only strip known module-init boilerplate ops.
+                // Preserve everything else (data construction, assignments, etc.)
+                // to avoid breaking list literals and dict construction.
+                let boilerplate_kinds: HashSet<&str> = [
+                    "module_get_attr", "module_del_global",
+                    "import_name", "import_from",
+                    "call_guarded", "call",
+                    "check_exception", "exception_last",
+                    "is", "not", "if", "else", "end_if",
+                    "func_attr_set",
+                ].iter().copied().collect();
                 for op in &mut init_main.ops[..cutoff] {
                     let kind = op.kind.as_str();
-                    if matches!(kind, "const_str" | "const_string" | "module_new" | "module_cache_set" | "nop") {
+                    // Only strip ops that are definitely module metadata boilerplate.
+                    if !boilerplate_kinds.contains(kind) {
                         continue;
                     }
                     op.kind = "nop".to_string();
@@ -473,14 +485,22 @@ impl SimpleIR {
             }
 
             // Part B: Strip function attribute setup patterns.
-            // These are ops that set __defaults__, __kwdefaults__, etc.
-            // Pattern: the ops reference func_attr, __defaults__, __kwdefaults__
-            // Also strip module_set_attr (writes to module dict).
-            let metadata_kinds: HashSet<&str> = [
-                "func_attr_set", "module_set_attr", "module_del_global",
-            ].iter().copied().collect();
+            // Strip function attribute setup and module metadata writes.
+            // Preserve module_set_attr for user-visible variables (non-dunder names).
             for op in init_main.ops.iter_mut() {
-                if metadata_kinds.contains(op.kind.as_str()) {
+                let should_strip = match op.kind.as_str() {
+                    "func_attr_set" | "module_del_global" => true,
+                    "module_set_attr" => {
+                        // Only strip if the attribute name is a dunder (__xxx__).
+                        // User variable assignments like `nums = [1,2,3]` must be kept.
+                        let attr_name = op.s_value.as_deref()
+                            .or_else(|| op.args.as_deref().and_then(|a| a.get(1).map(|s| s.as_str())))
+                            .unwrap_or("");
+                        attr_name.starts_with("__") && attr_name.ends_with("__")
+                    }
+                    _ => false,
+                };
+                if should_strip {
                     op.kind = "nop".to_string();
                     op.out = None;
                     op.s_value = None;
@@ -804,6 +824,340 @@ impl SimpleIR {
                     stripped,
                     annotate_vars.len()
                 );
+            }
+        }
+
+        // Phase 4.5: Inline list comprehension generators.
+        // Python list comprehensions compile as generator expressions (genexpr_N_poll)
+        // that use state_yield to produce values. The consumer uses alloc_task + iter
+        // + iter_next to collect them. This pattern is:
+        //
+        //   alloc_task vTASK = genexpr_N_poll
+        //   list_new   vRESULT = []
+        //   iter       vITER = vTASK
+        //   loop_start
+        //     iter_next  vNEXT = vITER
+        //     index      vFLAG = vNEXT[1]
+        //     loop_break_if_true vFLAG
+        //     index      vVAL = vNEXT[0]
+        //     list_append vRESULT, vVAL
+        //     loop_continue
+        //   loop_end
+        //
+        // We inline this by extracting the genexpr's source iterable and body
+        // expression, then replacing the consumer with a direct for_iter loop.
+        {
+            // Collect genexpr functions: name → (source_list_ops, body_ops, iter_var, body_result_var)
+            struct GenExprInfo {
+                /// Ops that build the source iterable (e.g., list_new with constants)
+                source_ops: Vec<OpIR>,
+                /// The output var of the source iterable
+                source_var: String,
+                /// The variable holding the current loop item (stored via closure_store after index extraction)
+                item_var: String,
+                /// Ops for the body expression (between item extraction and state_yield)
+                body_ops: Vec<OpIR>,
+                /// The yielded result variable (first element of the state_yield tuple)
+                result_var: String,
+            }
+
+            let mut genexpr_map: HashMap<String, GenExprInfo> = HashMap::new();
+
+            for func in &self.functions {
+                if !(func.name.contains("genexpr") && func.name.contains("_poll")) {
+                    continue;
+                }
+
+                // Find the source iterable: look for list_new followed by iter
+                let mut source_var = String::new();
+                let mut source_ops: Vec<OpIR> = Vec::new();
+                let mut iter_target = String::new();
+
+                // Collect const ops and the list_new that uses them
+                let mut const_ops: Vec<OpIR> = Vec::new();
+                for op in &func.ops {
+                    match op.kind.as_str() {
+                        "const" | "const_int" | "const_float" | "const_str" | "const_bool" => {
+                            const_ops.push(op.clone());
+                        }
+                        "list_new" | "build_list" => {
+                            if let Some(ref out) = op.out {
+                                // Check if the next op is 'iter' on this list
+                                source_var = out.clone();
+                                source_ops = const_ops.clone();
+                                source_ops.push(op.clone());
+                            }
+                        }
+                        "iter" => {
+                            if let Some(ref args) = op.args {
+                                if let Some(src) = args.first() {
+                                    if src == &source_var {
+                                        iter_target = op.out.clone().unwrap_or_default();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                if source_var.is_empty() || iter_target.is_empty() {
+                    continue;
+                }
+
+                // Find the body: between closure_store(self, item) and state_yield
+                // Pattern: closure_store self, vITEM → [body ops] → state_yield [vTUPLE]
+                // where vTUPLE is built from the body result
+                let mut item_var = String::new();
+                let mut body_ops: Vec<OpIR> = Vec::new();
+                let mut result_var = String::new();
+                let mut in_body = false;
+                let mut first_closure_store_after_index = false;
+
+                for (idx, op) in func.ops.iter().enumerate() {
+                    // Find the pattern: index(vNEXT, 0) → closure_store(self, value)
+                    // This is where the loop item is extracted and stored.
+                    // We need to find the SECOND index (first is exhausted flag check,
+                    // second is value extraction), followed by closure_store.
+                    // Skip check_exception/nop between them.
+                    if op.kind == "index" && !first_closure_store_after_index {
+                        // Look ahead for closure_store, skipping check_exception/nop
+                        let mut look = idx + 1;
+                        while look < func.ops.len() {
+                            let k = func.ops[look].kind.as_str();
+                            if k == "check_exception" || k == "nop" {
+                                look += 1;
+                                continue;
+                            }
+                            break;
+                        }
+                        if look < func.ops.len() && func.ops[look].kind == "closure_store" {
+                            if let Some(ref args) = func.ops[look].args {
+                                if args.len() >= 2 && args[0] == "self" {
+                                    item_var = args[1].clone();
+                                    first_closure_store_after_index = true;
+                                    in_body = true;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
+                    if in_body {
+                        match op.kind.as_str() {
+                            "closure_store" if op.args.as_ref().map_or(false, |a| a.len() >= 2 && a[0] == "self") => {
+                                // Skip — this is storing the item var
+                                if op.args.as_ref().map(|a| &a[1]) == Some(&item_var) {
+                                    continue;
+                                }
+                            }
+                            "state_yield" => {
+                                // The yield argument is a tuple {result, false}
+                                // We need to find what was yielded: look at the tuple
+                                // construction just before this
+                                if let Some(ref args) = op.args {
+                                    if let Some(tuple_var) = args.first() {
+                                        // Find the tuple construction: build_tuple or list_new
+                                        // that created this tuple
+                                        for prev_op in func.ops[..idx].iter().rev() {
+                                            if prev_op.out.as_deref() == Some(tuple_var.as_str()) {
+                                                // The first arg of the tuple is the result
+                                                if let Some(ref pargs) = prev_op.args {
+                                                    if let Some(res) = pargs.first() {
+                                                        result_var = res.clone();
+                                                    }
+                                                }
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                in_body = false;
+                                break;
+                            }
+                            "dict_set" | "frame_locals_set" | "check_exception" => {
+                                // Skip metadata ops
+                                continue;
+                            }
+                            "closure_load" => {
+                                // Rewrite closure_load(self) → load the item variable
+                                let mut rewritten = op.clone();
+                                rewritten.kind = "load_local".to_string();
+                                rewritten.args = None;
+                                rewritten.var = Some(item_var.clone());
+                                body_ops.push(rewritten);
+                                continue;
+                            }
+                            _ => {
+                                body_ops.push(op.clone());
+                            }
+                        }
+                    }
+                }
+
+                if !result_var.is_empty() {
+                    eprintln!(
+                        "[molt-dce] Found inlinable genexpr: {} (source={}, item={}, result={}, {} body ops)",
+                        func.name, source_var, item_var, result_var, body_ops.len()
+                    );
+                    genexpr_map.insert(func.name.clone(), GenExprInfo {
+                        source_ops,
+                        source_var,
+                        item_var,
+                        body_ops,
+                        result_var,
+                    });
+                }
+            }
+
+            // Now rewrite consumer functions that use alloc_task for these genexprs
+            if !genexpr_map.is_empty() {
+                for func in &mut self.functions {
+                    let mut replacements: Vec<(usize, usize, Vec<OpIR>)> = Vec::new();
+
+                    for (i, op) in func.ops.iter().enumerate() {
+                        if op.kind != "alloc_task" {
+                            continue;
+                        }
+                        let task_func = op.s_value.as_deref().unwrap_or("");
+                        let info = match genexpr_map.get(task_func) {
+                            Some(info) => info,
+                            None => continue,
+                        };
+                        let task_var = op.out.as_deref().unwrap_or("").to_string();
+
+                        // Find the consumer pattern: alloc_task → list_new → iter → loop
+                        // Skip check_exception/nop ops between them.
+                        let skip_kinds = |k: &str| k == "check_exception" || k == "nop" || k == "line";
+                        let mut next_idx = i + 1;
+                        while next_idx < func.ops.len() && skip_kinds(func.ops[next_idx].kind.as_str()) {
+                            next_idx += 1;
+                        }
+                        if next_idx >= func.ops.len() { continue; }
+
+                        let result_list_var = match func.ops[next_idx].kind.as_str() {
+                            "list_new" | "build_list" => {
+                                func.ops[next_idx].out.clone().unwrap_or_default()
+                            }
+                            _ => continue,
+                        };
+
+                        let mut iter_idx = next_idx + 1;
+                        while iter_idx < func.ops.len() && skip_kinds(func.ops[iter_idx].kind.as_str()) {
+                            iter_idx += 1;
+                        }
+                        if iter_idx >= func.ops.len() { continue; }
+
+                        let iter_var = match func.ops[iter_idx].kind.as_str() {
+                            "iter" => {
+                                func.ops[iter_idx].out.clone().unwrap_or_default()
+                            }
+                            _ => continue,
+                        };
+
+                        // Find loop_start and loop_end
+                        let mut loop_start = 0;
+                        let mut loop_end = 0;
+                        for j in (iter_idx + 1)..func.ops.len() {
+                            if func.ops[j].kind == "loop_start" && loop_start == 0 {
+                                loop_start = j;
+                            }
+                            if func.ops[j].kind == "loop_end" && loop_start > 0 {
+                                loop_end = j;
+                                break;
+                            }
+                        }
+                        if loop_start == 0 || loop_end == 0 {
+                            continue;
+                        }
+
+                        // Build replacement ops:
+                        // 1. Source iterable construction (const ops + list_new)
+                        // 2. Result list construction
+                        // 3. for_iter loop with body expression + list_append
+                        let mut new_ops: Vec<OpIR> = Vec::new();
+
+                        // Emit source iterable construction
+                        for src_op in &info.source_ops {
+                            new_ops.push(src_op.clone());
+                        }
+
+                        // Emit result list
+                        new_ops.push(OpIR {
+                            kind: "list_new".to_string(),
+                            out: Some(result_list_var.clone()),
+                            ..OpIR::default()
+                        });
+
+                        // Emit for_iter: for item in source
+                        let iter_item_var = format!("__comp_item_{}", i);
+                        new_ops.push(OpIR {
+                            kind: "for_iter".to_string(),
+                            out: Some(iter_item_var.clone()),
+                            args: Some(vec![info.source_var.clone()]),
+                            ..OpIR::default()
+                        });
+
+                        // Emit body ops, replacing references to the original item_var
+                        for body_op in &info.body_ops {
+                            let mut new_op = body_op.clone();
+                            // Replace var references to item_var with iter_item_var
+                            if new_op.var.as_deref() == Some(&info.item_var) {
+                                new_op.var = Some(iter_item_var.clone());
+                            }
+                            if let Some(ref mut args) = new_op.args {
+                                for arg in args.iter_mut() {
+                                    if arg == &info.item_var {
+                                        *arg = iter_item_var.clone();
+                                    }
+                                }
+                            }
+                            // Replace load_local that loads item_var
+                            if new_op.kind == "load_local" && new_op.var.as_deref() == Some(&iter_item_var) {
+                                new_op.var = Some(iter_item_var.clone());
+                            }
+                            new_ops.push(new_op);
+                        }
+
+                        // Emit list_append with the result
+                        new_ops.push(OpIR {
+                            kind: "list_append".to_string(),
+                            out: Some("none".to_string()),
+                            args: Some(vec![result_list_var.clone(), info.result_var.clone()]),
+                            ..OpIR::default()
+                        });
+
+                        // Emit end_for
+                        new_ops.push(OpIR {
+                            kind: "end_for".to_string(),
+                            ..OpIR::default()
+                        });
+
+                        replacements.push((i, loop_end, new_ops));
+                    }
+
+                    // Apply replacements in reverse order
+                    for (start, end, new_ops) in replacements.into_iter().rev() {
+                        // Nop everything from start to end (inclusive)
+                        for j in start..=end {
+                            func.ops[j].kind = "nop".to_string();
+                            func.ops[j].out = None;
+                            func.ops[j].s_value = None;
+                            func.ops[j].args = None;
+                            func.ops[j].var = None;
+                        }
+                        // Insert new ops after start
+                        let insert_pos = start;
+                        for (offset, op) in new_ops.into_iter().enumerate() {
+                            func.ops.insert(insert_pos + offset, op);
+                        }
+                        eprintln!(
+                            "[molt-dce] Inlined genexpr in {} (replaced ops {}-{})",
+                            func.name, start, end
+                        );
+                    }
+                }
             }
         }
 
