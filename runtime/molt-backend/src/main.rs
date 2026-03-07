@@ -1,6 +1,6 @@
-use molt_backend::luau::LuauBackend;
-use molt_backend::wasm::WasmBackend;
-use molt_backend::{
+use molt_lang_backend::luau::LuauBackend;
+use molt_lang_backend::wasm::WasmBackend;
+use molt_lang_backend::{
     SIMPLE_IR_CONTRACT_NAME, SIMPLE_IR_CONTRACT_VERSION, SimpleBackend, SimpleIR,
     validate_simple_ir,
 };

@@ -24,13 +24,13 @@ pub(crate) static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(test)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_isolate_bootstrap() -> u64 {
-    molt_obj_model::MoltObject::none().bits()
+    molt_lang_obj_model::MoltObject::none().bits()
 }
 
 #[cfg(test)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
-    molt_obj_model::MoltObject::none().bits()
+    molt_lang_obj_model::MoltObject::none().bits()
 }
 
 #[cfg(feature = "molt_hosted_extension")]
@@ -98,7 +98,7 @@ pub(crate) use crate::concurrency::{
 #[allow(unused_imports)]
 pub(crate) use crate::state::RuntimeState;
 #[allow(unused_imports)]
-pub(crate) use molt_obj_model::MoltObject;
+pub(crate) use molt_lang_obj_model::MoltObject;
 
 pub use crate::async_rt::cancellation::*;
 pub(crate) use crate::async_rt::channels::has_capability;

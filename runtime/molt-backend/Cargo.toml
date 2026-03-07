@@ -1,8 +1,12 @@
 [package]
-name = "molt-backend"
+name = "molt-lang-backend"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
+
+[[bin]]
+name = "molt-backend"
+path = "src/main.rs"
 
 [dependencies]
 cranelift = "0.129"
@@ -14,7 +18,7 @@ target-lexicon = "0.13"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_path_to_error = "0.1"
-molt-obj-model = { path = "../molt-obj-model" }
+molt-lang-obj-model = { path = "../molt-obj-model" }
 wasm-encoder = "0.245.1"
 wasmparser = "0.245.1"
 relooper = "0.1.0"

@@ -1,5 +1,5 @@
 [package]
-name = "molt-db"
+name = "molt-lang-db"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
