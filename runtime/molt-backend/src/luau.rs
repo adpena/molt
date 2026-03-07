@@ -76,6 +76,8 @@ impl LuauBackend {
         // if we scan before optimization.
         inline_single_use_constants(&mut func_body);
         eliminate_nil_missing_wrappers(&mut func_body);
+        strip_unbound_local_checks(&mut func_body);
+        strip_dead_locals_dict_stores(&mut func_body);
         optimize_luau_perf(&mut func_body);
 
         // Phase 3: Emit prelude with only the helpers that survive optimization.
@@ -2771,7 +2773,7 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
             let mut iter_next_out = String::new();
             let mut value_var = String::new();
             let mut loop_end_idx = None;
-            let mut skip_until = i + 1; // ops to skip (boilerplate)
+            let _skip_until = i + 1; // ops to skip (boilerplate)
 
             // Find loop_start — skip exception boilerplate (check_exception, raise,
             // exception_last, const_none, is, not, if, end_if, etc.).
@@ -2853,7 +2855,7 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
             }
 
             if found_pattern {
-                let ls_idx = loop_start_idx.unwrap();
+                let _ls_idx = loop_start_idx.unwrap();
                 let in_idx = iter_next_idx.unwrap();
                 let le_idx = loop_end_idx.unwrap();
 
@@ -3442,6 +3444,192 @@ fn eliminate_nil_missing_wrappers(source: &mut String) {
         "[molt-luau] Eliminated {} nil-missing wrappers",
         removed
     );
+}
+
+/// Strip dead UnboundLocalError checks.
+///
+/// Pattern (3-5 lines):
+///   local vN = vM == vP       (comparison — vP is often undefined)
+///   if vN then
+///       local vQ = "cannot access local variable ..."
+///       local vR = "UnboundLocalError"
+///   end
+///
+/// These are Python unbound-variable guards that can never trigger in
+/// transpiled Luau (all variables are initialized). Remove the entire block.
+fn strip_unbound_local_checks(source: &mut String) {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut remove: HashSet<usize> = HashSet::new();
+    let len = lines.len();
+
+    let mut i = 0;
+    while i < len {
+        let trimmed = lines[i].trim();
+        // Match: `if vN then`
+        if trimmed.starts_with("if v") && trimmed.ends_with(" then") {
+            // Look ahead: next line should be a string containing "cannot access local variable"
+            if i + 1 < len && lines[i + 1].contains("cannot access local variable") {
+                // Find the closing `end`
+                let mut j = i + 2;
+                while j < len {
+                    if lines[j].trim() == "end" {
+                        break;
+                    }
+                    j += 1;
+                }
+                if j < len && lines[j].trim() == "end" {
+                    // Also remove the comparison line before the `if`
+                    // Pattern: `local vN = vM == vP`
+                    if i > 0 {
+                        let prev = lines[i - 1].trim();
+                        if prev.starts_with("local v") && prev.contains(" == ") {
+                            remove.insert(i - 1);
+                        }
+                    }
+                    for k in i..=j {
+                        remove.insert(k);
+                    }
+                    i = j + 1;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    if remove.is_empty() {
+        return;
+    }
+
+    let mut result = String::with_capacity(source.len());
+    for (i, line) in lines.iter().enumerate() {
+        if !remove.contains(&i) {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+    *source = result;
+    eprintln!("[molt-luau] Stripped {} UnboundLocalError check lines", remove.len());
+}
+
+/// Strip dead locals-dict stores.
+///
+/// Pattern: `vN["name"] = expr` where vN is a locals dict (created as `{}`
+/// and only used for store/module metadata). These are Python frame
+/// introspection writes — the dict is never read in transpiled Luau.
+///
+/// We detect the locals dict by looking for the pattern:
+///   `local vN = {}` (empty table) followed only by bracket-store writes.
+fn strip_dead_locals_dict_stores(source: &mut String) {
+    let lines: Vec<&str> = source.lines().collect();
+
+    // Phase 1: Find candidates — `local vN = {}`
+    let mut candidates: HashMap<String, usize> = HashMap::new();
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("local v") {
+            if rest.ends_with(" = {}") {
+                if let Some(eq_pos) = rest.find(" = {}") {
+                    let suffix = &rest[..eq_pos];
+                    if suffix.chars().all(|c| c.is_ascii_digit()) {
+                        let var = format!("v{suffix}");
+                        candidates.insert(var, i);
+                    }
+                }
+            }
+        }
+    }
+
+    if candidates.is_empty() {
+        return;
+    }
+
+    // Phase 2: For each candidate, check if it's ONLY used as:
+    //   vN["name"] = expr  (store)
+    //   if type(vN) == "table" then vN["name"] = expr end  (guarded store)
+    // If it's read in any other context, it's live — skip.
+    let mut dead_dicts: HashSet<String> = HashSet::new();
+
+    for (var, _decl_line) in &candidates {
+        let var_bytes = var.as_bytes();
+        let mut is_dead = true;
+
+        for line in &lines {
+            let trimmed = line.trim();
+            let bytes = trimmed.as_bytes();
+            // Find all occurrences of var in this line
+            let mut pos = 0;
+            while pos + var_bytes.len() <= bytes.len() {
+                if &bytes[pos..pos + var_bytes.len()] == var_bytes {
+                    let before_ok = pos == 0 || !is_ident_char(bytes[pos - 1]);
+                    let after_ok = pos + var_bytes.len() >= bytes.len()
+                        || !is_ident_char(bytes[pos + var_bytes.len()]);
+                    if before_ok && after_ok {
+                        // Check context: is this a declaration, store, or guarded store?
+                        let is_decl = trimmed.starts_with(&format!("local {var} = {{}}"));
+                        let is_store = {
+                            let after = &trimmed[pos + var_bytes.len()..];
+                            after.starts_with("[\"")
+                        };
+                        let is_guarded = trimmed.starts_with("if type(") && is_store;
+                        if !is_decl && !is_store && !is_guarded {
+                            is_dead = false;
+                            break;
+                        }
+                    }
+                }
+                pos += 1;
+            }
+            if !is_dead { break; }
+        }
+
+        if is_dead {
+            dead_dicts.insert(var.clone());
+        }
+    }
+
+    if dead_dicts.is_empty() {
+        return;
+    }
+
+    // Phase 3: Remove declaration lines and all store lines referencing dead dicts.
+    let mut remove: HashSet<usize> = HashSet::new();
+    for var in &dead_dicts {
+        if let Some(&decl_line) = candidates.get(var) {
+            remove.insert(decl_line);
+        }
+    }
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        for var in &dead_dicts {
+            // Direct store: `vN["name"] = expr`
+            if trimmed.starts_with(&format!("{var}[\"")) {
+                remove.insert(i);
+                break;
+            }
+            // Guarded store: `if type(vN) == "table" then vN["name"] = expr end`
+            if trimmed.starts_with(&format!("if type({var})")) && trimmed.contains(&format!("{var}[\"")) {
+                remove.insert(i);
+                break;
+            }
+        }
+    }
+
+    if remove.is_empty() {
+        return;
+    }
+
+    let mut result = String::with_capacity(source.len());
+    for (i, line) in lines.iter().enumerate() {
+        if !remove.contains(&i) {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+    let total = remove.len();
+    *source = result;
+    eprintln!("[molt-luau] Stripped {} dead locals-dict lines ({} dicts)", total, dead_dicts.len());
 }
 
 /// Performance optimization pass over emitted Luau source.

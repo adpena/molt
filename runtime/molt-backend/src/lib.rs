@@ -1041,6 +1041,24 @@ impl SimpleIR {
                                         }
                                     }
                                 }
+
+                                // Count unclosed if/end_if in body_ops to close them
+                                let mut open_ifs = 0i32;
+                                for bop in &body_ops {
+                                    match bop.kind.as_str() {
+                                        "if" => open_ifs += 1,
+                                        "end_if" => open_ifs -= 1,
+                                        _ => {}
+                                    }
+                                }
+                                // Append end_if ops for any unclosed if blocks
+                                for _ in 0..open_ifs {
+                                    body_ops.push(OpIR {
+                                        kind: "end_if".to_string(),
+                                        ..OpIR::default()
+                                    });
+                                }
+
                                 in_body = false;
                                 break;
                             }
@@ -1162,32 +1180,40 @@ impl SimpleIR {
                                 .filter_map(|op| op.args.as_ref().and_then(|a| a.get(1)).cloned())
                                 .next();
 
-                            eprintln!("[molt-dce] genexpr source has module_get, global_name={:?}", global_name);
+                            // Extract the global name: resolve the variable reference in
+                            // module_get_global's second arg to a const_str value.
+                            let global_name: Option<String> = info.source_ops.iter()
+                                .filter(|op| op.kind == "module_get_global")
+                                .filter_map(|op| {
+                                    let name_var = op.args.as_ref()?.get(1)?;
+                                    // Find the const_str that defined this variable
+                                    info.source_ops.iter()
+                                        .find(|o| o.kind == "const_str" && o.out.as_deref() == Some(name_var.as_str()))
+                                        .and_then(|o| o.s_value.clone())
+                                })
+                                .next();
+
                             if let Some(ref name) = global_name {
-                                // Search backwards in consumer for dict_set/set_attr that stores this name
+                                // Search backwards in consumer for module_set_attr/dict_set
+                                // that stores this global name.
+                                // Pattern: const_str(key="name") then module_set_attr(dict, key, value)
                                 for j in (0..i).rev() {
                                     let jk = func.ops[j].kind.as_str();
-                                    if jk == "dict_set" || jk == "set_attr" || jk == "store_subscr" {
-                                        eprintln!("[molt-dce]   checking op {} kind={} args={:?} s_value={:?}", j, jk, func.ops[j].args, func.ops[j].s_value);
+                                    if jk == "module_set_attr" || jk == "dict_set" || jk == "set_attr" || jk == "store_subscr" {
                                         if let Some(ref args) = func.ops[j].args {
-                                            // dict_set args: [dict_var, key_var, value_var]
-                                            // Or could be s_value for the key
                                             if args.len() >= 3 {
-                                                // Check if the key matches our global name
-                                                // The key could be a const_str var — look it up
                                                 let key_var = &args[1];
-                                                // Check if key_var was set to our global name
+                                                // Resolve key_var to its const_str value
                                                 for k in (0..j).rev() {
                                                     if func.ops[k].out.as_deref() == Some(key_var.as_str()) {
-                                                        if func.ops[k].kind == "const_str" || func.ops[k].kind == "const" {
-                                                            if func.ops[k].s_value.as_deref() == Some(name.as_str()) {
-                                                                effective_source_var = args[2].clone();
-                                                                eprintln!(
-                                                                    "[molt-dce] Resolved module global '{}' to consumer var '{}'",
-                                                                    name, effective_source_var
-                                                                );
-                                                                break;
-                                                            }
+                                                        if (func.ops[k].kind == "const_str" || func.ops[k].kind == "const")
+                                                            && func.ops[k].s_value.as_deref() == Some(name.as_str())
+                                                        {
+                                                            effective_source_var = args[2].clone();
+                                                            eprintln!(
+                                                                "[molt-dce] Resolved module global '{}' to consumer var '{}'",
+                                                                name, effective_source_var
+                                                            );
                                                         }
                                                         break;
                                                     }
@@ -1195,7 +1221,7 @@ impl SimpleIR {
                                             }
                                         }
                                     }
-                                    if !effective_source_var.is_empty() && effective_source_var != info.source_var {
+                                    if effective_source_var != info.source_var {
                                         break;
                                     }
                                 }
@@ -1230,10 +1256,21 @@ impl SimpleIR {
                             ..OpIR::default()
                         });
 
-                        // Emit body ops, replacing references to the original item_var
-                        for body_op in &info.body_ops {
+                        // Split body_ops into core ops and trailing end_if closers.
+                        // For filter comprehensions, list_append goes inside the if block.
+                        let mut trailing_end_ifs = 0;
+                        for bop in info.body_ops.iter().rev() {
+                            if bop.kind == "end_if" {
+                                trailing_end_ifs += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        let core_end = info.body_ops.len() - trailing_end_ifs;
+
+                        // Emit core body ops (before trailing end_ifs)
+                        for body_op in &info.body_ops[..core_end] {
                             let mut new_op = body_op.clone();
-                            // Replace var references to item_var with iter_item_var
                             if new_op.var.as_deref() == Some(&info.item_var) {
                                 new_op.var = Some(iter_item_var.clone());
                             }
@@ -1244,20 +1281,27 @@ impl SimpleIR {
                                     }
                                 }
                             }
-                            // Replace load_local that loads item_var
                             if new_op.kind == "load_local" && new_op.var.as_deref() == Some(&iter_item_var) {
                                 new_op.var = Some(iter_item_var.clone());
                             }
                             new_ops.push(new_op);
                         }
 
-                        // Emit list_append with the result
+                        // Emit list_append (inside any filter if-block)
                         new_ops.push(OpIR {
                             kind: "list_append".to_string(),
                             out: Some("none".to_string()),
                             args: Some(vec![result_list_var.clone(), info.result_var.clone()]),
                             ..OpIR::default()
                         });
+
+                        // Emit trailing end_if closers
+                        for _ in 0..trailing_end_ifs {
+                            new_ops.push(OpIR {
+                                kind: "end_if".to_string(),
+                                ..OpIR::default()
+                            });
+                        }
 
                         // Emit end_for
                         new_ops.push(OpIR {
