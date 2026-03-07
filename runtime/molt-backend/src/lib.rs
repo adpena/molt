@@ -13,6 +13,7 @@ use std::sync::OnceLock;
 mod ir_schema;
 pub mod luau;
 pub mod wasm;
+pub mod rust;
 
 const QNAN: u64 = 0x7ff8_0000_0000_0000;
 const TAG_INT: u64 = 0x0001_0000_0000_0000;

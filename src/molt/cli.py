@@ -5689,6 +5689,7 @@ def _compile_with_backend_daemon(
     backend_output: Path,
     is_wasm: bool,
     is_luau: bool = False,
+    is_rust: bool = False,
     target_triple: str | None,
     cache_key: str | None,
     function_cache_key: str | None,
@@ -5700,6 +5701,7 @@ def _compile_with_backend_daemon(
         "id": "job0",
         "is_wasm": is_wasm,
         "is_luau": is_luau,
+        "is_rust": is_rust,
         "target_triple": target_triple,
         "output": str(backend_output),
         "cache_key": cache_key or "",
@@ -8284,6 +8286,7 @@ def build(
     namespace_module_names = set(namespace_modules)
     is_wasm = target == "wasm"
     is_luau = target == "luau"
+    is_rust = target == "rust"
     if is_luau:
         backend_cargo_profile = _resolve_luau_cargo_profile(backend_cargo_profile)
     if trusted and is_wasm:
@@ -8320,9 +8323,9 @@ def build(
             linked = True
     if linked is None:
         linked = False
-    target_triple = None if target in {"native", "wasm", "luau"} else target
-    emit_mode = emit or ("luau" if is_luau else "wasm" if is_wasm else "bin")
-    if emit_mode not in {"bin", "obj", "wasm", "luau"}:
+    target_triple = None if target in {"native", "wasm", "luau", "rust"} else target
+    emit_mode = emit or ("luau" if is_luau else "rust" if is_rust else "wasm" if is_wasm else "bin")
+    if emit_mode not in {"bin", "obj", "wasm", "luau", "rust"}:
         return _fail(
             f"Invalid emit mode: {emit_mode}",
             json_output,
@@ -9847,7 +9850,7 @@ def build(
             warnings.append(f"Cache disabled: {exc}")
             cache = False
         else:
-            ext = "luau" if is_luau else "wasm" if is_wasm else "o"
+            ext = "luau" if is_luau else "rs" if is_rust else "wasm" if is_wasm else "o"
             cache_path = cache_root / f"{cache_key}.{ext}"
 
             if function_cache_key and function_cache_key != cache_key:
@@ -10183,6 +10186,8 @@ def build(
                     cmd = [str(backend_bin)]
                     if is_luau:
                         cmd.extend(["--target", "luau"])
+                    elif is_rust:
+                        cmd.extend(["--target", "rust"])
                     elif is_wasm:
                         cmd.extend(["--target", "wasm"])
                     elif target_triple:
