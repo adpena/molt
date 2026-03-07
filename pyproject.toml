@@ -1,10 +1,19 @@
 [project]
-name = "molt"
-version = "0.0.001"
-description = "Molt: A verified subset Python to native/WASM compiler."
+name = "molt-lang"
+version = "0.1.0"
+description = "Molt: AOT Python compiler targeting native binaries, WASM, and Luau."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12, <3.15"
+keywords = ["compiler", "python", "wasm", "luau", "aot", "native"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Compilers",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+]
 dependencies = [
     "click>=8.3.1",
     "packaging>=26.0",
@@ -12,6 +21,11 @@ dependencies = [
     "rich>=14.3.3",
     "ty>=0.0.20",
 ]
+
+[project.urls]
+Homepage = "https://github.com/adpena/molt"
+Repository = "https://github.com/adpena/molt"
+Issues = "https://github.com/adpena/molt/issues"
 
 [project.scripts]
 molt = "molt.cli:main"
