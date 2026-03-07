@@ -526,9 +526,11 @@ impl SimpleIR {
             "exception_stack_depth",
             "exception_stack_set_depth",
             "exception_stack_exit",
+            "exception_stack_enter",
             "exception_new",
             "raise",
             "exception_reraise",
+            "frame_locals_set",
         ]
         .iter()
         .copied()
@@ -652,30 +654,38 @@ impl SimpleIR {
         }
 
         // Phase 3.5: Flatten frame-slot wrappers.
-        // Pattern: `missing:vM → list_new:vW(vM)` creates a single-element
-        // table used as a mutable cell.  All accesses use constant index 0.
-        // Replace with a plain local variable: vW becomes the value directly.
+        // Pattern A: `missing:vM → list_new:vW(vM)` — default arg sentinel cells.
+        // Pattern B: `const_none:vM → list_new:vW(vM)` — closure/frame slot cells.
+        // Both create single-element tables used as mutable cells. All accesses
+        // use constant index 0. Replace with plain local variables.
         for func in &mut self.functions {
-            // Step 1: Identify wrapper tables (missing → list_new pairs).
+            // Step 1: Identify wrapper tables (missing/const_none → list_new pairs).
             let mut wrapper_vars: HashSet<String> = HashSet::new();
             let mut i = 0;
             while i < func.ops.len() {
-                if func.ops[i].kind == "missing" {
-                    // Skip check_exception ops to find the list_new.
-                    let missing_out = func.ops[i].out.clone().unwrap_or_default();
+                let is_wrapper_source = matches!(
+                    func.ops[i].kind.as_str(),
+                    "missing" | "const_none"
+                );
+                if is_wrapper_source {
+                    let source_out = func.ops[i].out.clone().unwrap_or_default();
+                    // Skip check_exception and nop ops to find the list_new.
+                    // (Phase 3 may have already converted check_exception to nop.)
                     let mut j = i + 1;
-                    while j < func.ops.len() && func.ops[j].kind == "check_exception" {
+                    while j < func.ops.len()
+                        && matches!(func.ops[j].kind.as_str(), "check_exception" | "nop")
+                    {
                         j += 1;
                     }
                     if j < func.ops.len()
                         && matches!(func.ops[j].kind.as_str(), "list_new" | "build_list")
                     {
                         let args = func.ops[j].args.as_deref().unwrap_or(&[]);
-                        if args.len() == 1 && args[0] == missing_out {
+                        if args.len() == 1 && args[0] == source_out {
                             if let Some(ref wrapper_name) = func.ops[j].out {
                                 wrapper_vars.insert(wrapper_name.clone());
                             }
-                            // Nop the missing op.
+                            // Nop the source op.
                             func.ops[i].kind = "nop".to_string();
                             func.ops[i].out = None;
                             func.ops[i].args = None;
