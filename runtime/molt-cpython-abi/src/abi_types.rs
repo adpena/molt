@@ -258,3 +258,35 @@ pub unsafe fn init_static_types() {
         Py_False.ob_type = &raw mut PyBool_Type;
     }
 }
+
+// ─── Exception singletons ──────────────────────────────────────────────────
+//
+// Extensions receive these as opaque `*mut PyObject` passed to PyErr_SetString.
+// The exact type/content doesn't matter — they're identity-compared by the bridge.
+// We create one sentinel PyObject per exception class.
+
+macro_rules! exc_singleton {
+    ($name:ident) => {
+        #[unsafe(no_mangle)]
+        pub static mut $name: PyObject = PyObject {
+            ob_refcnt: 1,
+            ob_type:   std::ptr::null_mut(),
+        };
+    };
+}
+
+exc_singleton!(PyExc_BaseException);
+exc_singleton!(PyExc_Exception);
+exc_singleton!(PyExc_ValueError);
+exc_singleton!(PyExc_TypeError);
+exc_singleton!(PyExc_RuntimeError);
+exc_singleton!(PyExc_MemoryError);
+exc_singleton!(PyExc_IndexError);
+exc_singleton!(PyExc_KeyError);
+exc_singleton!(PyExc_AttributeError);
+exc_singleton!(PyExc_OverflowError);
+exc_singleton!(PyExc_ZeroDivisionError);
+exc_singleton!(PyExc_ImportError);
+exc_singleton!(PyExc_StopIteration);
+exc_singleton!(PyExc_NotImplementedError);
+exc_singleton!(PyExc_OSError);
