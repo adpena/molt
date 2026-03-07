@@ -40,19 +40,20 @@ hooks:
     git status --short
   timeout_ms: 120000
 agent:
-  max_concurrent_agents: 2
+  max_concurrent_agents: 1
   max_turns: 20
   max_retry_backoff_ms: 300000
+  max_retry_attempts: 10
   default_role: executor
   role_pools:
-    executor: 2
+    executor: 1
     triage: 1
     formalizer: 1
     reviewer: 1
   max_concurrent_agents_by_state:
-    in progress: 2
-    todo: 2
-    rework: 2
+    in progress: 1
+    todo: 1
+    rework: 1
 codex:
   command: ${CODEX_BIN:-codex} app-server
   approval_policy:

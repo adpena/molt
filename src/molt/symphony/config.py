@@ -88,6 +88,9 @@ def build_runtime_config(workflow: WorkflowDefinition) -> RuntimeConfig:
         max_retry_backoff_ms=_coerce_int(
             agent_raw.get("max_retry_backoff_ms"), 300000, 1000
         ),
+        max_retry_attempts=_coerce_int(
+            agent_raw.get("max_retry_attempts"), 10, 1
+        ),
         max_concurrent_agents_by_state=per_state,
         role_pools=role_pools,
         default_role=default_role,

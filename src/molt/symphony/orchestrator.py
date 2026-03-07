@@ -1397,6 +1397,9 @@ class SymphonyOrchestrator:
                     "max_retry_backoff_ms": int(
                         getattr(self._config.agent, "max_retry_backoff_ms", 300000)
                     ),
+                    "max_retry_attempts": int(
+                        getattr(self._config.agent, "max_retry_attempts", 10)
+                    ),
                 },
                 "dashboard_profile": _dashboard_profile_for_suspension(suspension_kind),
                 "event_queue": {
@@ -2874,6 +2877,19 @@ class SymphonyOrchestrator:
         continuation: bool,
         delay_override_ms: int | None = None,
     ) -> None:
+        max_attempts = self._config.agent.max_retry_attempts
+        if attempt > max_attempts:
+            log(
+                "WARNING",
+                "max_retry_attempts_exceeded",
+                issue_id=issue_id,
+                issue_identifier=identifier,
+                attempt=attempt,
+                max_attempts=max_attempts,
+            )
+            self._release_claim(issue_id)
+            return
+
         if delay_override_ms is not None:
             delay_ms = max(int(delay_override_ms), 1000)
         elif continuation:
