@@ -1,4 +1,5 @@
 use molt_lang_backend::luau::LuauBackend;
+use molt_lang_backend::rust::RustBackend;
 use molt_lang_backend::wasm::WasmBackend;
 use molt_lang_backend::{
     SIMPLE_IR_CONTRACT_NAME, SIMPLE_IR_CONTRACT_VERSION, SimpleBackend, SimpleIR,
@@ -25,6 +26,8 @@ struct DaemonJobRequest {
     is_wasm: bool,
     #[serde(default)]
     is_luau: bool,
+    #[serde(default)]
+    is_rust: bool,
     target_triple: Option<String>,
     output: String,
     cache_key: String,
@@ -378,6 +381,30 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
             }
         };
         if let Err(err) = write_output(&output_path, luau_source.as_bytes()) {
+            return DaemonJobResponse {
+                id: job_id,
+                ok: false,
+                cached: false,
+                cache_tier: None,
+                message: Some(format!("failed to write output: {err}")),
+            };
+        }
+        return DaemonJobResponse {
+            id: job_id,
+            ok: true,
+            cached: false,
+            cache_tier: None,
+            message: None,
+        };
+    }
+
+    if job.is_rust {
+        let job_id = job.id.clone();
+        let output_path = job.output.clone();
+        let ir = job.ir;
+        let mut backend = RustBackend::new();
+        let rust_source = backend.compile(&ir);
+        if let Err(err) = write_output(&output_path, rust_source.as_bytes()) {
             return DaemonJobResponse {
                 id: job_id,
                 ok: false,
@@ -825,6 +852,7 @@ fn main() -> io::Result<()> {
     }
     let is_wasm = args.contains(&"--target".to_string()) && args.contains(&"wasm".to_string());
     let is_luau = args.contains(&"--target".to_string()) && args.contains(&"luau".to_string());
+    let is_rust = args.contains(&"--target".to_string()) && args.contains(&"rust".to_string());
     let target_triple = args
         .iter()
         .position(|arg| arg == "--target-triple")
@@ -867,6 +895,8 @@ fn main() -> io::Result<()> {
 
     let output_file = output_path.unwrap_or(if is_luau {
         "output.luau"
+    } else if is_rust {
+        "output.rs"
     } else if is_wasm {
         "output.wasm"
     } else {
@@ -874,7 +904,12 @@ fn main() -> io::Result<()> {
     });
     let mut file = File::create(output_file)?;
 
-    if is_luau {
+    if is_rust {
+        let mut backend = RustBackend::new();
+        let rust_source = backend.compile(&ir);
+        file.write_all(rust_source.as_bytes())?;
+        println!("Successfully compiled to {output_file}");
+    } else if is_luau {
         // Dump IR before tree shaking if MOLT_DUMP_IR is set
         if let Ok(filter) = std::env::var("MOLT_DUMP_IR") {
             for func in &ir.functions {
