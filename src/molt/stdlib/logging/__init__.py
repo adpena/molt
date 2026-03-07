@@ -951,7 +951,10 @@ class Logger(Filterer):
         f = getattr(_sys, "_getframe", None)
         if f is None:
             return ("", 0, None)
-        frame = f(2)
+        try:
+            frame = f(2)
+        except (AttributeError, ValueError):
+            return ("", 0, None)
         for _ in range(stacklevel - 1):
             if frame is None:
                 break
