@@ -28,6 +28,8 @@ struct DaemonJobRequest {
     is_luau: bool,
     #[serde(default)]
     is_rust: bool,
+    #[serde(default)]
+    use_crate: bool,
     target_triple: Option<String>,
     output: String,
     cache_key: String,
@@ -402,7 +404,7 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
         let job_id = job.id.clone();
         let output_path = job.output.clone();
         let ir = job.ir;
-        let mut backend = RustBackend::new();
+        let mut backend = if job.use_crate { RustBackend::new_with_crate() } else { RustBackend::new() };
         let rust_source = backend.compile(&ir);
         if let Err(err) = write_output(&output_path, rust_source.as_bytes()) {
             return DaemonJobResponse {
@@ -853,6 +855,7 @@ fn main() -> io::Result<()> {
     let is_wasm = args.contains(&"--target".to_string()) && args.contains(&"wasm".to_string());
     let is_luau = args.contains(&"--target".to_string()) && args.contains(&"luau".to_string());
     let is_rust = args.contains(&"--target".to_string()) && args.contains(&"rust".to_string());
+    let use_crate = args.contains(&"--use-crate".to_string());
     let target_triple = args
         .iter()
         .position(|arg| arg == "--target-triple")
@@ -905,7 +908,7 @@ fn main() -> io::Result<()> {
     let mut file = File::create(output_file)?;
 
     if is_rust {
-        let mut backend = RustBackend::new();
+        let mut backend = if use_crate { RustBackend::new_with_crate() } else { RustBackend::new() };
         let rust_source = backend.compile(&ir);
         file.write_all(rust_source.as_bytes())?;
         println!("Successfully compiled to {output_file}");
