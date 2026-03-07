@@ -23,6 +23,9 @@ pub struct RustBackend {
     output: String,
     indent: usize,
     hoisted_vars: HashSet<String>,
+    /// When true, emit `use molt_rs::*;` instead of the inline MoltValue prelude.
+    /// The caller is responsible for adding `molt-rs` to `Cargo.toml`.
+    use_crate: bool,
 }
 
 impl RustBackend {
@@ -31,6 +34,15 @@ impl RustBackend {
             output: String::with_capacity(8192),
             indent: 0,
             hoisted_vars: HashSet::new(),
+            use_crate: false,
+        }
+    }
+
+    /// Build a backend that emits `use molt_rs::*;` instead of the inline prelude.
+    pub fn new_with_crate() -> Self {
+        Self {
+            use_crate: true,
+            ..Self::new()
         }
     }
 
@@ -62,9 +74,13 @@ impl RustBackend {
         let bodies = std::mem::take(&mut self.output);
         self.output = func_body;
 
-        // Phase 2: emit file header + conditional prelude.
+        // Phase 2: emit file header + conditional prelude (or crate import).
         self.emit_header();
-        self.emit_prelude_conditional(&bodies);
+        if self.use_crate {
+            self.output.push_str("use molt_rs::*;\n\n");
+        } else {
+            self.emit_prelude_conditional(&bodies);
+        }
 
         // Phase 3: combine prelude + function bodies.
         self.output.push_str(&bodies);
@@ -93,8 +109,10 @@ impl RustBackend {
             "    clippy::needless_pass_by_value, clippy::clone_on_copy,\n",
             "    clippy::useless_vec,\n",
             ")]\n\n",
-            "use std::sync::Arc;\n\n",
         ));
+        if !self.use_crate {
+            self.output.push_str("use std::sync::Arc;\n\n");
+        }
     }
 
     // ── Prelude ───────────────────────────────────────────────────────────────
