@@ -4,19 +4,23 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'runtime/molt-backend/src/**'
-      - 'src/molt/frontend/**'
-      - 'src/molt/cli.py'
-      - 'src/molt/stdlib/**'
-      - 'tests/**'
+      - 'runtime/**'
+      - 'src/**'
+      - 'tests/test_wasm_*.py'
+      - 'tests/wasm_harness.py'
+      - 'tests/wasm_linked_runner.py'
+      - 'examples/*.py'
+      - '.github/workflows/molt-wasm-ci.yml'
   pull_request:
     branches: [ main ]
     paths:
-      - 'runtime/molt-backend/src/**'
-      - 'src/molt/frontend/**'
-      - 'src/molt/cli.py'
-      - 'src/molt/stdlib/**'
-      - 'tests/**'
+      - 'runtime/**'
+      - 'src/**'
+      - 'tests/test_wasm_*.py'
+      - 'tests/wasm_harness.py'
+      - 'tests/wasm_linked_runner.py'
+      - 'examples/*.py'
+      - '.github/workflows/molt-wasm-ci.yml'
 
 permissions:
   contents: read
@@ -25,6 +29,8 @@ jobs:
   wasm-build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      PYTHONPATH: ${{ github.workspace }}/src
     steps:
       - uses: actions/checkout@v4
 
@@ -53,22 +59,97 @@ jobs:
           curl https://wasmtime.dev/install.sh -sSf | bash
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
 
-      - name: Compile test script to WASM
+      # ── WASM target: hello.py (class + arithmetic) ──
+      - name: Compile hello.py to WASM
         run: |
-          PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build \
+          uv run --python 3.12 python3 -m molt.cli build \
             examples/hello.py --target wasm --output /tmp/test_hello.wasm
         env:
           MOLT_EXT_ROOT: /tmp/molt-ext
           RUSTC_WRAPPER: ""
 
-      - name: Validate WASM output is non-zero
+      - name: Validate hello.wasm is non-zero
         run: |
           WASM_SIZE=$(stat --format=%s /tmp/test_hello.wasm)
           echo "WASM size: ${WASM_SIZE} bytes"
           if [ "$WASM_SIZE" -lt 100 ]; then
-            echo "ERROR: WASM output is suspiciously small (${WASM_SIZE} bytes) — possible ExFAT zeroing regression"
+            echo "ERROR: WASM output is suspiciously small (${WASM_SIZE} bytes)"
             exit 1
           fi
 
-      - name: Run WASM with wasmtime
+      - name: Run hello.wasm with wasmtime
         run: wasmtime run /tmp/test_hello.wasm
+
+      # ── WASM target: comprehension_fail.py (list comprehension regression gate) ──
+      - name: Compile comprehension_fail.py to WASM
+        run: |
+          uv run --python 3.12 python3 -m molt.cli build \
+            examples/comprehension_fail.py --target wasm --output /tmp/test_comprehension.wasm
+        env:
+          MOLT_EXT_ROOT: /tmp/molt-ext
+          RUSTC_WRAPPER: ""
+
+      - name: Validate comprehension.wasm is non-zero
+        run: |
+          WASM_SIZE=$(stat --format=%s /tmp/test_comprehension.wasm)
+          echo "WASM size: ${WASM_SIZE} bytes"
+          if [ "$WASM_SIZE" -lt 100 ]; then
+            echo "ERROR: WASM output is suspiciously small (${WASM_SIZE} bytes)"
+            exit 1
+          fi
+
+      - name: Run comprehension.wasm with wasmtime
+        run: wasmtime run /tmp/test_comprehension.wasm
+
+      # ── Luau target: hello.py ──
+      - name: Compile hello.py to Luau
+        run: |
+          uv run --python 3.12 python3 -m molt.cli build \
+            examples/hello.py --target luau --output /tmp/test_hello.luau
+        env:
+          MOLT_EXT_ROOT: /tmp/molt-ext
+          RUSTC_WRAPPER: ""
+
+      - name: Validate hello.luau is non-zero
+        run: |
+          LUAU_SIZE=$(stat --format=%s /tmp/test_hello.luau)
+          echo "Luau size: ${LUAU_SIZE} bytes"
+          if [ "$LUAU_SIZE" -lt 10 ]; then
+            echo "ERROR: Luau output is suspiciously small (${LUAU_SIZE} bytes)"
+            exit 1
+          fi
+
+      # ── Luau target: comprehension_fail.py (comprehension regression gate) ──
+      - name: Compile comprehension_fail.py to Luau
+        run: |
+          uv run --python 3.12 python3 -m molt.cli build \
+            examples/comprehension_fail.py --target luau --output /tmp/test_comprehension.luau
+        env:
+          MOLT_EXT_ROOT: /tmp/molt-ext
+          RUSTC_WRAPPER: ""
+
+      - name: Validate comprehension.luau is non-zero
+        run: |
+          LUAU_SIZE=$(stat --format=%s /tmp/test_comprehension.luau)
+          echo "Luau size: ${LUAU_SIZE} bytes"
+          if [ "$LUAU_SIZE" -lt 10 ]; then
+            echo "ERROR: Luau output is suspiciously small (${LUAU_SIZE} bytes)"
+            exit 1
+          fi
+
+      # ── WASM parity tests (pytest) ──
+      - name: Run WASM control flow parity tests
+        run: uv run pytest tests/test_wasm_control_flow.py -q
+
+      # ── Summary ──
+      - name: Build summary
+        if: always()
+        run: |
+          echo "=== WASM Build Summary ==="
+          for f in /tmp/test_hello.wasm /tmp/test_comprehension.wasm /tmp/test_hello.luau /tmp/test_comprehension.luau; do
+            if [ -f "$f" ]; then
+              echo "  $(basename "$f"): $(stat --format=%s "$f") bytes"
+            else
+              echo "  $(basename "$f"): MISSING"
+            fi
+          done

@@ -1171,8 +1171,8 @@ wheels = [
 ]
 
 [[package]]
-name = "molt"
-version = "0.0.1"
+name = "molt-lang"
+version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "click" },
