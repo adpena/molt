@@ -1,5 +1,14 @@
 # Repository Guidelines
 
+## Fleet MCP Server (Infrastructure Access)
+
+If you have access to the fleet MCP server (configured via `.mcp.json` or environment):
+- **First actions**: `fleet_onboard()`, then `agent_register(agent_id='molt-agent', agent_type='...', capabilities=[...])`
+- **Knowledge**: `knowledge_search`, `knowledge_store`, `knowledge_semantic_search`
+- **Linear**: `linear_issues(team='STR')` or `linear_search(query='molt')` for project tracking
+- **Symphony**: `symphony_status(project='molt')`, `symphony_dashboard(project='molt')`
+- The fleet MCP server URL is configured via `FLEET_MCP_URL` env var (default: see fleet repo `.mcp.json`)
+
 ## Top Priority: Chris Lattner Compiler Engineering Standards (Feb 18, 2026) (Non-Negotiable, Turn Blocker)
 - This section is a top-of-file hard gate and applies to every compiler/runtime/tooling turn; violations block merge and must be fixed before completion.
 - AI acceleration is expected, but ownership cannot be delegated: humans and agents remain fully accountable for architecture quality, correctness, maintainability, and long-term evolution.
