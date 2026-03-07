@@ -1,5 +1,5 @@
-use molt_backend::wasm::WasmBackend;
-use molt_backend::{FunctionIR, OpIR, SimpleIR};
+use molt_lang_backend::wasm::WasmBackend;
+use molt_lang_backend::{FunctionIR, OpIR, SimpleIR};
 
 fn op(kind: &str) -> OpIR {
     OpIR {
