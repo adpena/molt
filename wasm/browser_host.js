@@ -374,6 +374,7 @@ const TAG_BOOL = 0x0002000000000000n;
 const TAG_MASK = 0x0007000000000000n;
 const INT_MASK = (1n << 47n) - 1n;
 const CANCEL_POLL_MS = 10;
+const I64_MIN = -(1n << 63n);
 
 const boxInt = (value) => {
   let v = BigInt(value);
@@ -593,12 +594,113 @@ const encodeMsgpack = (value) => {
   return out;
 };
 
+const tzNameForDate = (date) => {
+  try {
+    const parts = new Intl.DateTimeFormat(undefined, {
+      timeZoneName: 'short',
+    }).formatToParts(date);
+    const part = parts.find((entry) => entry.type === 'timeZoneName');
+    if (part && part.value) {
+      return part.value;
+    }
+  } catch (err) {
+    // Fall through to the default below.
+  }
+  return 'UTC';
+};
+
+const tzProfileForYear = (year) => {
+  const jan = new Date(year, 0, 1, 12, 0, 0);
+  const jul = new Date(year, 6, 1, 12, 0, 0);
+  const janOffset = jan.getTimezoneOffset();
+  const julOffset = jul.getTimezoneOffset();
+  const stdDate = janOffset >= julOffset ? jan : jul;
+  const dstDate = janOffset >= julOffset ? jul : jan;
+  const stdName = tzNameForDate(stdDate);
+  const dstName = janOffset === julOffset ? stdName : tzNameForDate(dstDate);
+  return {
+    stdOffsetSeconds: Math.trunc(Math.max(janOffset, julOffset) * 60),
+    stdName,
+    dstName,
+  };
+};
+
+const defaultLogSink = (level, message) => {
+  if (typeof console === 'undefined') return;
+  const text = typeof message === 'string' ? message : String(message);
+  const trimmed = text.endsWith('\n') ? text.slice(0, -1) : text;
+  if (typeof level === 'string' && (level === 'stderr' || level === 'error')) {
+    console.error(trimmed);
+    return;
+  }
+  console.log(trimmed);
+};
+
+const createStdIoEmitter = (logFn) => {
+  const buffers = new Map();
+  const emitLine = (fd, line) => {
+    const sinkLevel = fd === 2 ? 'stderr' : 'stdout';
+    if (typeof logFn === 'function') {
+      logFn(sinkLevel, line);
+      return;
+    }
+    defaultLogSink(sinkLevel, line);
+  };
+  return {
+    write(fd, text) {
+      const prior = buffers.get(fd) || '';
+      const merged = `${prior}${text}`.replace(/\r\n/g, '\n');
+      const parts = merged.split('\n');
+      const tail = parts.pop() || '';
+      for (const line of parts) {
+        emitLine(fd, line);
+      }
+      buffers.set(fd, tail);
+    },
+    flush(fd) {
+      const tail = buffers.get(fd);
+      if (!tail) return;
+      emitLine(fd, tail);
+      buffers.delete(fd);
+    },
+    flushAll() {
+      for (const fd of Array.from(buffers.keys())) {
+        this.flush(fd);
+      }
+    },
+  };
+};
+
 const buildEnv = (memory, table, callIndirect, logFn, overrides) => {
+  const stdio = createStdIoEmitter(logFn);
   const env = {
     molt_db_query_host: stubI32,
     molt_db_exec_host: stubI32,
     molt_db_host_poll: stubZero,
     molt_getpid_host: stubZeroI64,
+    molt_time_timezone_host: () => BigInt(tzProfileForYear(new Date().getFullYear()).stdOffsetSeconds),
+    molt_time_local_offset_host: (secsRaw) => {
+      const secs = typeof secsRaw === 'bigint' ? Number(secsRaw) : Number(secsRaw);
+      if (!Number.isFinite(secs)) return I64_MIN;
+      const date = new Date(secs * 1000);
+      if (!Number.isFinite(date.getTime())) return I64_MIN;
+      return BigInt(Math.trunc(date.getTimezoneOffset() * 60));
+    },
+    molt_time_tzname_host: (whichRaw, bufPtr, bufCap, outLenPtr) => {
+      if (!memory || !outLenPtr) return -ENOSYS;
+      const which = typeof whichRaw === 'bigint' ? Number(whichRaw) : Number(whichRaw);
+      if (!Number.isFinite(which) || (which !== 0 && which !== 1)) return -EINVAL;
+      const profile = tzProfileForYear(new Date().getFullYear());
+      const label = which === 0 ? profile.stdName : profile.dstName;
+      const data = UTF8_ENCODER.encode(label);
+      writeU32ToMemory(memory, outLenPtr, data.length);
+      const cap = typeof bufCap === 'bigint' ? Number(bufCap) : Number(bufCap);
+      if (!Number.isFinite(cap) || cap < 0) return -EINVAL;
+      if (data.length > cap) return -ENOMEM;
+      if (data.length > 0 && !writeBytesToMemory(memory, bufPtr, data)) return -EINVAL;
+      return 0;
+    },
+    molt_os_close_host: stubI32,
     molt_socket_new_host: stubI64,
     molt_socket_close_host: stubI32,
     molt_socket_clone_host: stubI64,
@@ -610,7 +712,9 @@ const buildEnv = (memory, table, callIndirect, logFn, overrides) => {
     molt_socket_recv_host: stubI32,
     molt_socket_send_host: stubI32,
     molt_socket_sendto_host: stubI32,
+    molt_socket_sendmsg_host: stubI32,
     molt_socket_recvfrom_host: stubI32,
+    molt_socket_recvmsg_host: stubI32,
     molt_socket_shutdown_host: stubI32,
     molt_socket_getsockname_host: stubI32,
     molt_socket_getpeername_host: stubI32,
@@ -626,6 +730,7 @@ const buildEnv = (memory, table, callIndirect, logFn, overrides) => {
     molt_socket_wait_host: () => -ENOSYS,
     molt_socket_has_ipv6_host: stubZero,
     molt_ws_connect_host: stubI32,
+    molt_ws_poll_host: stubI32,
     molt_ws_send_host: stubI32,
     molt_ws_recv_host: stubI32,
     molt_ws_close_host: stubI32,
@@ -638,10 +743,14 @@ const buildEnv = (memory, table, callIndirect, logFn, overrides) => {
     molt_process_stdio_host: stubI32,
     molt_process_host_poll: stubZero,
     molt_log_host: (level, ptr, len) => {
-      if (!memory || !logFn) return;
+      if (!memory) return;
       const view = new Uint8Array(memory.buffer, ptr >>> 0, len >>> 0);
       const msg = new TextDecoder('utf-8').decode(view);
-      logFn(level, msg);
+      if (typeof logFn === 'function') {
+        logFn(level, msg.endsWith('\n') ? msg.slice(0, -1) : msg);
+        return;
+      }
+      defaultLogSink(level, msg);
     },
   };
   if (overrides && typeof overrides === 'object') {
@@ -1354,9 +1463,32 @@ export const createBrowserSocketHost = (state, options) => {
 
   const socketHostSendTo = () => -EOPNOTSUPP;
 
+  const socketHostSendMsg = (handle, bufPtr, bufLen, flags) =>
+    socketHostSend(handle, bufPtr, bufLen, flags);
+
   const socketHostRecvFrom = (_handle, _bufPtr, _bufLen, _flags, _addrPtr, _addrCap, outLenPtr) => {
     const memory = state.memory;
     if (memory && outLenPtr) writeU32ToMemory(memory, outLenPtr, 0);
+    return -EOPNOTSUPP;
+  };
+
+  const socketHostRecvMsg = (
+    _handle,
+    _bufPtr,
+    _bufLen,
+    _flags,
+    _addrPtr,
+    _addrCap,
+    outAddrLenPtr,
+    _ancPtr,
+    _ancCap,
+    outAncLenPtr,
+    outMsgFlagsPtr,
+  ) => {
+    const memory = state.memory;
+    if (memory && outAddrLenPtr) writeU32ToMemory(memory, outAddrLenPtr, 0);
+    if (memory && outAncLenPtr) writeU32ToMemory(memory, outAncLenPtr, 0);
+    if (memory && outMsgFlagsPtr) writeU32ToMemory(memory, outMsgFlagsPtr, 0);
     return -EOPNOTSUPP;
   };
 
@@ -1632,7 +1764,9 @@ export const createBrowserSocketHost = (state, options) => {
     socketHostRecv,
     socketHostSend,
     socketHostSendTo,
+    socketHostSendMsg,
     socketHostRecvFrom,
+    socketHostRecvMsg,
     socketHostShutdown,
     socketHostGetsockname,
     socketHostGetpeername,
@@ -1791,6 +1925,28 @@ export const createBrowserWebSocketHost = (state, options) => {
     return -EWOULDBLOCK;
   };
 
+  const wsPollHost = (handle, events) => {
+    const entry = sockets.get(Number(handle));
+    if (!entry) return -EBADF;
+    let ready = 0;
+    if (events & IO_EVENT_READ) {
+      if (entry.queue.length > 0 || entry.state === 'closed' || entry.state === 'error') {
+        ready |= IO_EVENT_READ;
+      }
+    }
+    if (events & IO_EVENT_WRITE) {
+      if (entry.state === 'open' || entry.state === 'closed' || entry.state === 'error') {
+        ready |= IO_EVENT_WRITE;
+      }
+    }
+    if (events & IO_EVENT_ERROR) {
+      if (entry.state === 'error') {
+        ready |= IO_EVENT_ERROR;
+      }
+    }
+    return ready;
+  };
+
   const wsCloseHost = (handle) => {
     const entry = sockets.get(Number(handle));
     if (!entry) return -EBADF;
@@ -1806,24 +1962,117 @@ export const createBrowserWebSocketHost = (state, options) => {
     return 0;
   };
 
-  return { wsConnectHost, wsSendHost, wsRecvHost, wsCloseHost };
+  return { wsConnectHost, wsPollHost, wsSendHost, wsRecvHost, wsCloseHost };
 };
 
-const buildWasiStub = () => ({
-  proc_exit: (code) => {
-    throw new Error(`WASM proc_exit ${code}`);
-  },
-  fd_write: stubI32,
-  fd_read: stubI32,
-  fd_close: stubI32,
-  fd_seek: stubI32,
-  fd_fdstat_get: stubI32,
-  fd_fdstat_set_flags: stubI32,
-  path_open: stubI32,
-  path_filestat_get: stubI32,
-  random_get: stubI32,
-  clock_time_get: stubI32,
-});
+const buildWasiStub = (state, logFn) => {
+  const stdio = createStdIoEmitter(logFn);
+  const writeWasiU32 = (ptr, value) => {
+    const memory = state.memory;
+    if (!memory) return false;
+    new DataView(memory.buffer).setUint32(Number(ptr), Number(value) >>> 0, true);
+    return true;
+  };
+  const wasiUnsupported = () => ENOSYS;
+  return {
+    proc_exit: (code) => {
+      stdio.flushAll();
+      throw new Error(`WASM proc_exit ${code}`);
+    },
+    args_sizes_get: (argcPtr, argvBufSizePtr) => {
+      if (!writeWasiU32(argcPtr, 0)) return ENOSYS;
+      if (!writeWasiU32(argvBufSizePtr, 0)) return ENOSYS;
+      return 0;
+    },
+    args_get: () => 0,
+    environ_sizes_get: (countPtr, bufSizePtr) => {
+      if (!writeWasiU32(countPtr, 0)) return ENOSYS;
+      if (!writeWasiU32(bufSizePtr, 0)) return ENOSYS;
+      return 0;
+    },
+    environ_get: () => 0,
+    fd_write: (fd, iovsPtr, iovsLen, outWrittenPtr) => {
+      const memory = state.memory;
+      if (!memory) return ENOSYS;
+      const view = new DataView(memory.buffer);
+      const basePtr = typeof iovsPtr === 'bigint' ? Number(iovsPtr) : Number(iovsPtr >>> 0);
+      const count = typeof iovsLen === 'bigint' ? Number(iovsLen) : Number(iovsLen >>> 0);
+      let text = '';
+      let written = 0;
+      for (let index = 0; index < count; index += 1) {
+        const ptr = view.getUint32(basePtr + index * 8, true);
+        const len = view.getUint32(basePtr + index * 8 + 4, true);
+        if (len > 0) {
+          text += UTF8_DECODER.decode(new Uint8Array(memory.buffer, ptr, len));
+          written += len;
+        }
+      }
+      if (outWrittenPtr) {
+        view.setUint32(Number(outWrittenPtr), written >>> 0, true);
+      }
+      stdio.write(Number(fd), text);
+      return 0;
+    },
+    fd_read: wasiUnsupported,
+    fd_close: () => 0,
+    fd_seek: wasiUnsupported,
+    fd_tell: wasiUnsupported,
+    fd_fdstat_get: wasiUnsupported,
+    fd_fdstat_set_flags: wasiUnsupported,
+    fd_filestat_get: wasiUnsupported,
+    fd_filestat_set_size: wasiUnsupported,
+    fd_readdir: wasiUnsupported,
+    fd_prestat_get: wasiUnsupported,
+    fd_prestat_dir_name: wasiUnsupported,
+    path_open: wasiUnsupported,
+    path_filestat_get: wasiUnsupported,
+    path_create_directory: wasiUnsupported,
+    path_remove_directory: wasiUnsupported,
+    path_unlink_file: wasiUnsupported,
+    path_rename: wasiUnsupported,
+    path_readlink: wasiUnsupported,
+    random_get: (bufPtr, bufLen) => {
+      const memory = state.memory;
+      if (!memory) return ENOSYS;
+      const ptr = typeof bufPtr === 'bigint' ? Number(bufPtr) : Number(bufPtr >>> 0);
+      const len = typeof bufLen === 'bigint' ? Number(bufLen) : Number(bufLen >>> 0);
+      const bytes = new Uint8Array(memory.buffer, ptr, len);
+      if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+        crypto.getRandomValues(bytes);
+        return 0;
+      }
+      for (let index = 0; index < bytes.length; index += 1) {
+        bytes[index] = Math.floor(Math.random() * 256);
+      }
+      return 0;
+    },
+    poll_oneoff: (_inPtr, _outPtr, _nsubscriptions, outEventsPtr) => {
+      if (outEventsPtr && !writeWasiU32(outEventsPtr, 0)) return ENOSYS;
+      return 0;
+    },
+    sched_yield: () => 0,
+    clock_time_get: (clockIdRaw, _precisionRaw, outPtr) => {
+      const memory = state.memory;
+      if (!memory) return ENOSYS;
+      const clockId =
+        typeof clockIdRaw === 'bigint' ? Number(clockIdRaw) : Number(clockIdRaw >>> 0);
+      let nanos;
+      if (clockId === 0) {
+        nanos = BigInt(Date.now()) * 1000000n;
+      } else if (clockId === 1) {
+        const now =
+          typeof performance !== 'undefined' && typeof performance.now === 'function'
+            ? performance.now()
+            : Date.now();
+        nanos = BigInt(Math.trunc(now * 1000000));
+      } else {
+        return ENOSYS;
+      }
+      new DataView(memory.buffer).setBigUint64(Number(outPtr), nanos, true);
+      return 0;
+    },
+  };
+};
 
 const tryFetch = async (url) => {
   try {
@@ -1871,7 +2120,9 @@ export const loadMoltWasm = async (options = {}) => {
     molt_socket_recv_host: socketHost.socketHostRecv,
     molt_socket_send_host: socketHost.socketHostSend,
     molt_socket_sendto_host: socketHost.socketHostSendTo,
+    molt_socket_sendmsg_host: socketHost.socketHostSendMsg,
     molt_socket_recvfrom_host: socketHost.socketHostRecvFrom,
+    molt_socket_recvmsg_host: socketHost.socketHostRecvMsg,
     molt_socket_shutdown_host: socketHost.socketHostShutdown,
     molt_socket_getsockname_host: socketHost.socketHostGetsockname,
     molt_socket_getpeername_host: socketHost.socketHostGetpeername,
@@ -1887,6 +2138,7 @@ export const loadMoltWasm = async (options = {}) => {
     molt_socket_wait_host: socketHost.socketHostWait,
     molt_socket_has_ipv6_host: socketHost.socketHasIpv6Host,
     molt_ws_connect_host: wsHost.wsConnectHost,
+    molt_ws_poll_host: wsHost.wsPollHost,
     molt_ws_send_host: wsHost.wsSendHost,
     molt_ws_recv_host: wsHost.wsRecvHost,
     molt_ws_close_host: wsHost.wsCloseHost,
@@ -1898,10 +2150,7 @@ export const loadMoltWasm = async (options = {}) => {
     if (linkedBytes) {
       const imports = parseWasmImports(linkedBytes);
       const hasRuntime = imports.funcImports.some((imp) => imp.module === 'molt_runtime');
-      const hasCallIndirect = imports.funcImports.some(
-        (imp) => imp.module === 'env' && imp.name.startsWith('molt_call_indirect'),
-      );
-      if (hasRuntime || hasCallIndirect) {
+      if (hasRuntime) {
         linkedBytes = null;
       }
     }
@@ -1909,13 +2158,46 @@ export const loadMoltWasm = async (options = {}) => {
 
   if (linkedBytes) {
     const linkedImports = parseWasmImports(linkedBytes);
+    const linkedCallIndirectNames = linkedImports.funcImports
+      .filter((imp) => imp.module === 'env' && imp.name.startsWith('molt_call_indirect'))
+      .map((imp) => imp.name);
+    const linkedCallIndirectFns = {};
     const memory = makeMemory(linkedImports.memory);
     const table = makeTable(linkedImports.table);
     state.memory = memory;
-    const env = buildEnv(memory, table, null, logFn, overrides);
-    const importObject = { env, wasi_snapshot_preview1: buildWasiStub() };
+    const linkedCallIndirect = {};
+    for (const name of linkedCallIndirectNames) {
+      linkedCallIndirect[name] = (...args) => {
+        const fn = linkedCallIndirectFns[name];
+        if (!fn) {
+          throw new Error(`${name} called before linked export wiring`);
+        }
+        return fn(...args);
+      };
+    }
+    const env = buildEnv(memory, table, linkedCallIndirect, logFn, overrides);
+    const importObject = { env, wasi_snapshot_preview1: buildWasiStub(state, logFn) };
     const result = await WebAssembly.instantiate(linkedBytes, importObject);
     const instance = result.instance;
+    for (const name of linkedCallIndirectNames) {
+      let fn = instance.exports[name];
+      if (typeof fn !== 'function') {
+        const mangledMatch = name.match(/^molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA-F]+E$)/);
+        const plainMatch = name.match(/^molt_call_indirect(\d+)$/);
+        const arityRaw = (mangledMatch && mangledMatch[1]) || (plainMatch && plainMatch[1]);
+        if (arityRaw) {
+          const arity = Number.parseInt(arityRaw, 10);
+          fn = instance.exports[`molt_call_indirect${arity}`];
+        }
+      }
+      if (typeof fn !== 'function') {
+        throw new Error(`linked wasm missing ${name} export`);
+      }
+      linkedCallIndirectFns[name] = fn;
+    }
+    if (typeof instance.exports.molt_table_init === 'function') {
+      instance.exports.molt_table_init();
+    }
     const memoryExport =
       instance.exports.molt_memory || instance.exports.memory || env.memory || null;
     state.runtimeInstance = instance;
@@ -1967,7 +2249,7 @@ export const loadMoltWasm = async (options = {}) => {
   const env = buildEnv(memory, table, callIndirect, logFn, overrides);
   const runtimeModule = await WebAssembly.instantiate(runtimeBytes, {
     env,
-    wasi_snapshot_preview1: buildWasiStub(),
+    wasi_snapshot_preview1: buildWasiStub(state, logFn),
   });
   const runtimeInstance = runtimeModule.instance;
   state.runtimeInstance = runtimeInstance;
