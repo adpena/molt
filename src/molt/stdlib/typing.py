@@ -501,7 +501,8 @@ def _require_importlib_util_module() -> object:
 
 
 def _load_collections_abc() -> ModuleType:
-    cached = globals().get("_ABC_CACHE")
+    import sys as _typing_abc_sys
+    cached = _typing_abc_sys.modules[__name__].__dict__.get("_ABC_CACHE")
     if isinstance(cached, ModuleType):
         return cached
     import _collections_abc as abc_mod_raw

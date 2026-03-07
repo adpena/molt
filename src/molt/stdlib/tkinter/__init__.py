@@ -3787,7 +3787,8 @@ __all__ = [
     "wantobjects",
 ]
 
-for _name in tuple(globals()):
+import sys as _tk_all_sys
+for _name in tuple(_tk_all_sys.modules[__name__].__dict__):
     if _name.isupper() and not _name.startswith("_") and _name not in __all__:
         __all__.append(_name)
 
