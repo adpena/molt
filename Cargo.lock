@@ -2087,6 +2087,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "molt-lang-cpython-abi"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "libc",
+ "libloading 0.9.0",
+ "molt-lang-obj-model",
+ "once_cell",
+ "parking_lot",
+]
+
+[[package]]
 name = "molt-lang-db"
 version = "0.1.0"
 dependencies = [
