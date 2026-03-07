@@ -273,6 +273,28 @@ impl LuauBackend {
             }
         }
 
+        // Pre-declare closure slot variables used by closure_store/closure_load.
+        // These are generator/coroutine state variables that must persist across
+        // loop iterations and function calls.
+        {
+            let mut closure_slots: Vec<String> = Vec::new();
+            for op in &ops {
+                if op.kind == "closure_store" || op.kind == "closure_load" {
+                    if let Some(ref args) = op.args {
+                        if let Some(slot) = args.first() {
+                            let var_name = format!("__closure_{}", sanitize_ident(slot));
+                            if !closure_slots.contains(&var_name) {
+                                closure_slots.push(var_name);
+                            }
+                        }
+                    }
+                }
+            }
+            for var in &closure_slots {
+                self.emit_line(&format!("local {var}"));
+            }
+        }
+
         // Phi hoisting: find `end_if` followed by `phi` ops and collect
         // the phi output variables.  Also find variables first declared
         // inside if/else blocks but referenced outside (scope escape).
@@ -578,17 +600,40 @@ impl LuauBackend {
             // ================================================================
             // Variable load/store (both pedagogical and real IR forms)
             // ================================================================
-            "load_local" | "load" | "closure_load" | "guarded_load" => {
+            "load_local" | "load" | "guarded_load" => {
                 let out = self.out_var(op);
                 let var = self.var_ref(op);
                 self.emit_line(&format!("local {out} = {var}"));
             }
-            "store_local" | "store" | "store_init" | "closure_store" => {
+            "closure_load" => {
+                // closure_load: args[0] = slot name, out = destination var
+                // Reads from closure slot (stored via closure_store).
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(slot) = args.first() {
+                    let slot = sanitize_ident(slot);
+                    self.emit_line(&format!("local {out} = __closure_{slot}"));
+                } else {
+                    let var = self.var_ref(op);
+                    self.emit_line(&format!("local {out} = {var}"));
+                }
+            }
+            "store_local" | "store" | "store_init" => {
                 let var = self.var_ref(op);
                 if let Some(ref args) = op.args {
                     if let Some(src) = args.first() {
                         self.emit_line(&format!("{var} = {}", sanitize_ident(src)));
                     }
+                }
+            }
+            "closure_store" => {
+                // closure_store: args[0] = slot name, args[1] = value
+                // Stores value into a closure slot variable.
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let slot = sanitize_ident(&args[0]);
+                    let value = sanitize_ident(&args[1]);
+                    self.emit_line(&format!("__closure_{slot} = {value}"));
                 }
             }
             "identity_alias" => {
@@ -1842,7 +1887,34 @@ impl LuauBackend {
             | "alloc_class_static"
             | "alloc_task" => {
                 let out = self.out_var(op);
-                self.emit_line(&format!("local {out} = {{}}"));
+                // If this is a genexpr/listcomp task, create a coroutine-based
+                // iterator that eagerly collects all yielded values into a list.
+                let task_func = op.s_value.as_deref().unwrap_or("");
+                if task_func.contains("genexpr") || task_func.contains("listcomp") {
+                    // Create a list by running the generator to completion.
+                    // The genexpr function uses state_yield to produce values
+                    // as {value, false} tuples and returns {nil, true} when done.
+                    let func_name = sanitize_ident(task_func);
+                    self.emit_line(&format!(
+                        "local {out} = (function()\n\
+                         \t\tlocal __result = {{}}\n\
+                         \t\tlocal __co = coroutine.wrap({func_name})\n\
+                         \t\twhile true do\n\
+                         \t\t\tlocal __item = __co()\n\
+                         \t\t\tif __item == nil then break end\n\
+                         \t\t\tif type(__item) == \"table\" then\n\
+                         \t\t\t\tif __item[2] == true then break end\n\
+                         \t\t\t\ttable.insert(__result, __item[1])\n\
+                         \t\t\telse\n\
+                         \t\t\t\ttable.insert(__result, __item)\n\
+                         \t\t\tend\n\
+                         \t\tend\n\
+                         \t\treturn __result\n\
+                         \tend)()"
+                    ));
+                } else {
+                    self.emit_line(&format!("local {out} = {{}}"));
+                }
             }
 
             // ================================================================
@@ -1941,9 +2013,20 @@ impl LuauBackend {
             // ================================================================
             // Async/generator stubs
             // ================================================================
+            "state_yield" => {
+                // Generator yield: yield the value to the coroutine consumer.
+                // args[0] is the value (typically a {result, false} tuple).
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(val) = args.first() {
+                    self.emit_line(&format!("coroutine.yield({})", sanitize_ident(val)));
+                }
+                if let Some(ref out_name) = op.out {
+                    let out = sanitize_ident(out_name);
+                    self.emit_line(&format!("local {out} = nil -- [async: state_yield]"));
+                }
+            }
             "state_switch"
             | "state_transition"
-            | "state_yield"
             | "chan_new"
             | "chan_drop"
             | "chan_send_yield"
@@ -3352,7 +3435,108 @@ fn eliminate_nil_missing_wrappers(source: &mut String) {
 /// 2. `@native` annotation on transpiled functions for Luau VM JIT
 /// 3. Eliminate redundant type-checked add when operands are provably numeric
 /// 4. Inline remaining `molt_pow`/`molt_floor_div` helper calls (from binop path)
+/// Simplify `local vN = <int>` + `if type(vN) == "number" then vN + 1 else vN`
+/// into a direct integer index. Eliminates the runtime type check when the
+/// index is a known integer literal.
+fn simplify_numeric_type_guards(source: &mut String) {
+    use std::collections::HashMap;
+
+    let lines: Vec<&str> = source.lines().collect();
+    let mut result = String::with_capacity(source.len());
+
+    // Phase 1: Find `local vN = <integer_literal>` declarations and check
+    // if vN is ONLY used in type-guard patterns on the NEXT line.
+    let mut int_consts: HashMap<String, (usize, i64)> = HashMap::new(); // var -> (line, value)
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("local v") {
+            if let Some(eq_pos) = rest.find(" = ") {
+                let suffix = &rest[..eq_pos];
+                if suffix.chars().all(|c| c.is_ascii_digit()) {
+                    let rhs = rest[eq_pos + 3..].trim();
+                    // Check if RHS is a simple integer (possibly negative).
+                    if let Ok(val) = rhs.parse::<i64>() {
+                        let var_name = format!("v{suffix}");
+                        int_consts.insert(var_name, (i, val));
+                    }
+                }
+            }
+        }
+    }
+
+    // Phase 2: For each int const, check if the next line contains the
+    // type-guard pattern and the const is only used there.
+    let mut remove_lines: HashSet<usize> = HashSet::new();
+    let mut line_replacements: HashMap<usize, String> = HashMap::new();
+
+    for (var, (decl_line, val)) in &int_consts {
+        let next_line = decl_line + 1;
+        if next_line >= lines.len() { continue; }
+
+        let pattern = format!(
+            "if type({var}) == \"number\" then {var} + 1 else {var}",
+        );
+        if lines[next_line].contains(&pattern) {
+            // Check the var isn't used elsewhere (only on these 2 lines).
+            let mut total_uses = 0;
+            for line in &lines {
+                let bytes = line.as_bytes();
+                let var_bytes = var.as_bytes();
+                let mut pos = 0;
+                while pos + var_bytes.len() <= bytes.len() {
+                    if &bytes[pos..pos + var_bytes.len()] == var_bytes {
+                        let before_ok = pos == 0 || !is_ident_char(bytes[pos - 1]);
+                        let after_ok = pos + var_bytes.len() >= bytes.len()
+                            || !is_ident_char(bytes[pos + var_bytes.len()]);
+                        if before_ok && after_ok {
+                            total_uses += 1;
+                        }
+                    }
+                    pos += 1;
+                }
+            }
+            // decl (1) + 3 uses in type guard = 4 total
+            if total_uses == 4 {
+                // Replace the type-guard with the computed index.
+                let replacement = format!("{}", val + 1);
+                let old_pattern = format!(
+                    "[if type({var}) == \"number\" then {var} + 1 else {var}]",
+                );
+                let new_pattern = format!("[{replacement}]");
+                let new_line = lines[next_line].replace(&old_pattern, &new_pattern);
+                line_replacements.insert(next_line, new_line);
+                remove_lines.insert(*decl_line);
+            }
+        }
+    }
+
+    if remove_lines.is_empty() {
+        return; // Nothing to simplify.
+    }
+
+    for (i, line) in lines.iter().enumerate() {
+        if remove_lines.contains(&i) {
+            continue;
+        }
+        if let Some(replacement) = line_replacements.get(&i) {
+            result.push_str(replacement);
+        } else {
+            result.push_str(line);
+        }
+        result.push('\n');
+    }
+
+    *source = result;
+}
+
 fn optimize_luau_perf(source: &mut String) {
+    // Pre-pass: Simplify type-guard index patterns.
+    // Pattern: `local vN = <int_literal>` followed by a line containing
+    //   `if type(vN) == "number" then vN + 1 else vN`
+    // This checks at runtime whether a known-integer index needs +1 adjustment.
+    // Since we KNOW vN is numeric, simplify to just `vN + 1` (= literal + 1).
+    simplify_numeric_type_guards(source);
+
     let mut result = String::with_capacity(source.len());
     let mut perf_count: usize = 0;
 
