@@ -2152,6 +2152,7 @@ dependencies = [
  "md4",
  "memchr",
  "mio",
+ "molt-lang-cpython-abi",
  "molt-lang-obj-model",
  "num-bigint",
  "num-integer",

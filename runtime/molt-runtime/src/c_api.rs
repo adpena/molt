@@ -795,7 +795,11 @@ pub extern "C" fn molt_c_api_version() -> u32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_init() -> i32 {
-    if molt_runtime_init() == 0 { -1 } else { 0 }
+    let rc = if molt_runtime_init() == 0 { -1 } else { 0 };
+    if rc == 0 {
+        crate::cpython_abi_hooks::register_cpython_hooks();
+    }
+    rc
 }
 
 #[unsafe(no_mangle)]

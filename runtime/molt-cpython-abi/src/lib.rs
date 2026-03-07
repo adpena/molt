@@ -58,9 +58,11 @@
 pub mod abi_types;
 pub mod api;
 pub mod bridge;
+pub mod hooks;
 
 #[cfg(all(feature = "extension-loader", not(target_arch = "wasm32")))]
 pub mod loader;
 
 pub use abi_types::{PyObject, PyTypeObject, Py_ssize_t};
 pub use bridge::{AbiHandle, ObjectBridge};
+pub use hooks::{RuntimeHooks, set_runtime_hooks, hooks, hooks_or_stubs};
