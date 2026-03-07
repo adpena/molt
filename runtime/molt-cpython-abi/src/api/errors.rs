@@ -221,24 +221,33 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
 
 // ─── Helpers — read Molt object internals ────────────────────────────────
 
-/// Get items of a Molt tuple as a Vec<u64>.
+/// Get items of a Molt tuple (or list) as a Vec<u64> of handle bits.
 fn molt_tuple_items(bits: u64) -> Vec<u64> {
-    // Molt tuples store their items contiguously after the object header.
-    // Use the public runtime API via c_api exports.
-    // For now: if the handle is a list or tuple, try to read items.
-    // Full implementation requires access to molt-runtime internals — link via c_api.
-    use molt_lang_obj_model::MoltObject;
-    let _ = bits; // suppress unused warning until runtime hook wired
-    Vec::new() // TODO: wire to molt runtime tuple accessor
+    let h = crate::hooks::hooks_or_stubs();
+    let len = unsafe { (h.tuple_len)(bits) };
+    if len == 0 {
+        // Args may arrive as a list in some Molt call paths.
+        let llen = unsafe { (h.list_len)(bits) };
+        return (0..llen)
+            .map(|i| unsafe { (h.list_item)(bits, i) })
+            .collect();
+    }
+    (0..len)
+        .map(|i| unsafe { (h.tuple_item)(bits, i) })
+        .collect()
 }
 
 /// Get a null-terminated UTF-8 pointer into a Molt str object's storage.
 fn molt_str_ptr(bits: u64) -> *const c_char {
-    let _ = bits;
-    b"\0".as_ptr().cast() // TODO: wire to molt runtime string storage
+    let h = crate::hooks::hooks_or_stubs();
+    let mut len: usize = 0;
+    let ptr = unsafe { (h.str_data)(bits, std::ptr::addr_of_mut!(len)) };
+    if ptr.is_null() { b"\0".as_ptr().cast() } else { ptr.cast() }
 }
 
 fn molt_str_len(bits: u64) -> usize {
-    let _ = bits;
-    0
+    let h = crate::hooks::hooks_or_stubs();
+    let mut len: usize = 0;
+    unsafe { (h.str_data)(bits, std::ptr::addr_of_mut!(len)) };
+    len
 }

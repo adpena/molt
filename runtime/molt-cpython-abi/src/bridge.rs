@@ -285,17 +285,35 @@ impl ObjectBridge {
         if obj.is_int()   { return MoltTypeTag::Int;  }
         if obj.is_float() { return MoltTypeTag::Float; }
 
-        // Heap types: classification requires access to the runtime's type-ID
-        // table, which lives in molt-lang-runtime. To avoid a circular dependency,
-        // we defer to a pluggable hook. If no hook is registered, heap objects
-        // are treated as Str (safest fallback for most extension code paths).
-        //
-        // TODO: register a hook from molt-lang-runtime during runtime init:
-        //   crate::bridge::set_classify_hook(|bits| { ... });
         if obj.is_ptr() {
-            MoltTypeTag::Str // conservative fallback — wire runtime hook to improve
+            // Heap type: ask the runtime via the registered classify hook.
+            let h = crate::hooks::hooks_or_stubs();
+            let tag_u8 = unsafe { (h.classify_heap)(bits) };
+            match tag_u8 {
+                t if t == MoltTypeTag::Str    as u8 => MoltTypeTag::Str,
+                t if t == MoltTypeTag::Bytes  as u8 => MoltTypeTag::Bytes,
+                t if t == MoltTypeTag::List   as u8 => MoltTypeTag::List,
+                t if t == MoltTypeTag::Tuple  as u8 => MoltTypeTag::Tuple,
+                t if t == MoltTypeTag::Dict   as u8 => MoltTypeTag::Dict,
+                t if t == MoltTypeTag::Set    as u8 => MoltTypeTag::Set,
+                t if t == MoltTypeTag::Module as u8 => MoltTypeTag::Module,
+                _                                   => MoltTypeTag::Other,
+            }
         } else {
             MoltTypeTag::Other
         }
     }
+}
+
+// ─── Exported ABI initialiser ─────────────────────────────────────────────
+
+/// Initialize the Molt CPython ABI bridge (type-tag table + static type objects).
+///
+/// Exposed as a `#[no_mangle]` C symbol so callers can `dlopen`
+/// `libmolt_cpython_abi.dylib`, resolve this symbol, and call it before
+/// loading any C extensions.  Idempotent — safe to call multiple times.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_cpython_abi_init() {
+    unsafe { crate::abi_types::init_static_types() };
+    init_tag_table();
 }
