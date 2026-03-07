@@ -3566,14 +3566,18 @@ fn strip_dead_locals_dict_stores(source: &mut String) {
                     let after_ok = pos + var_bytes.len() >= bytes.len()
                         || !is_ident_char(bytes[pos + var_bytes.len()]);
                     if before_ok && after_ok {
-                        // Check context: is this a declaration, store, or guarded store?
+                        // Check context: is this a declaration, store, guarded store,
+                        // or type-check guard part of a guarded store line?
                         let is_decl = trimmed.starts_with(&format!("local {var} = {{}}"));
                         let is_store = {
                             let after = &trimmed[pos + var_bytes.len()..];
                             after.starts_with("[\"")
                         };
-                        let is_guarded = trimmed.starts_with("if type(") && is_store;
-                        if !is_decl && !is_store && !is_guarded {
+                        // Accept type(vN) on a guarded-store line
+                        let is_type_check = pos >= 5 && &trimmed[pos - 5..pos] == "type(";
+                        let on_guarded_line = trimmed.starts_with("if type(")
+                            && trimmed.contains(&format!("{var}[\""));
+                        if !is_decl && !is_store && !(is_type_check && on_guarded_line) {
                             is_dead = false;
                             break;
                         }
