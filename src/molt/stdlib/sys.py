@@ -11,6 +11,10 @@ def cast(_tp, value):  # type: ignore[override]
 
 
 # Ensure sys.modules exists early to avoid circular import failures.
+# NOTE: sys is special — during early bootstrap, sys.modules may not yet exist,
+# so we cannot use sys.modules[__name__].__dict__ here. The module-level globals()
+# is acceptable for this bootstrap-only path because sys is injected directly by
+# the runtime before any compiled-module scoping applies.
 _existing_modules = globals().get("modules")
 if _existing_modules is None:
     modules: dict[str, object] = {}
@@ -830,7 +834,10 @@ def exc_info() -> tuple[object, object, object]:
 
 
 def _getframe(depth: int = 0) -> object | None:
-    return _MOLT_GETFRAME(depth + 2)
+    try:
+        return _MOLT_GETFRAME(depth + 2)
+    except (AttributeError, ValueError):
+        return None
 
 
 def getdefaultencoding() -> str:

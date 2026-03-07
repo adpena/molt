@@ -174,7 +174,7 @@ if isinstance(_module_dict, dict):
     _module_dict.update(_CONSTANTS)
 else:
     # Fallback for early bootstrap/import edge paths.
-    globals().update(_CONSTANTS)
+    sys.modules[__name__].__dict__.update(_CONSTANTS)
 _EAI_CODES = {val for key, val in _CONSTANTS.items() if key.startswith("EAI_")}
 
 # --- IntEnum / IntFlag wrappers for CPython >= 3.12 parity ---
