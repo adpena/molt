@@ -607,6 +607,50 @@ impl SimpleIR {
             }
         }
 
+        // Phase 3.1: In genexpr/poll functions, strip the send()/throw() check
+        // after state_yield. The pattern:
+        //   state_yield → closure_load → [exception check] → closure_store(self, nil)
+        //   → closure_load → closure_store(self, nil) → loop_continue
+        // The code between state_yield and loop_continue is generator protocol
+        // handling that is meaningless in Luau. Nop everything between them
+        // (exclusive) EXCEPT the loop_continue itself.
+        for func in &mut self.functions {
+            if !(func.name.contains("genexpr") || func.name.contains("listcomp")) {
+                continue;
+            }
+            let len = func.ops.len();
+            let mut i = 0;
+            let mut stripped = 0;
+            while i < len {
+                if func.ops[i].kind == "state_yield" {
+                    // Nop everything from i+1 until loop_continue or loop_end
+                    let mut j = i + 1;
+                    while j < len {
+                        let k = func.ops[j].kind.as_str();
+                        if k == "loop_continue" || k == "loop_end" {
+                            break;
+                        }
+                        func.ops[j].kind = "nop".to_string();
+                        func.ops[j].out = None;
+                        func.ops[j].s_value = None;
+                        func.ops[j].args = None;
+                        func.ops[j].var = None;
+                        stripped += 1;
+                        j += 1;
+                    }
+                    i = j;
+                    continue;
+                }
+                i += 1;
+            }
+            if stripped > 0 {
+                eprintln!(
+                    "[molt-dce] Stripped {stripped} post-yield ops from genexpr {}",
+                    func.name
+                );
+            }
+        }
+
         // Phase 3.5: Flatten frame-slot wrappers.
         // Pattern: `missing:vM → list_new:vW(vM)` creates a single-element
         // table used as a mutable cell.  All accesses use constant index 0.
@@ -873,37 +917,61 @@ impl SimpleIR {
                 let mut source_ops: Vec<OpIR> = Vec::new();
                 let mut iter_target = String::new();
 
-                // Collect const ops and the list_new that uses them
-                let mut const_ops: Vec<OpIR> = Vec::new();
+                // Collect all ops that contribute to the source iterable.
+                // Two patterns:
+                // A) Literal list: const ops → list_new → iter
+                // B) Variable ref: const_str → module_cache_get → module_get_global → iter
+                let mut preceding_ops: Vec<OpIR> = Vec::new();
+                let mut last_out_var = String::new();
                 for op in &func.ops {
-                    match op.kind.as_str() {
-                        "const" | "const_int" | "const_float" | "const_str" | "const_bool" => {
-                            const_ops.push(op.clone());
-                        }
-                        "list_new" | "build_list" => {
-                            if let Some(ref out) = op.out {
-                                // Check if the next op is 'iter' on this list
-                                source_var = out.clone();
-                                source_ops = const_ops.clone();
-                                source_ops.push(op.clone());
-                            }
-                        }
+                    let k = op.kind.as_str();
+                    match k {
+                        "check_exception" | "nop" | "exception_stack_enter"
+                        | "exception_stack_depth" | "dict_new" | "frame_locals_set"
+                        | "state_switch" => {}
                         "iter" => {
                             if let Some(ref args) = op.args {
                                 if let Some(src) = args.first() {
-                                    if src == &source_var {
-                                        iter_target = op.out.clone().unwrap_or_default();
-                                        break;
-                                    }
+                                    // The iter target should be the last variable we tracked
+                                    source_var = src.clone();
+                                    iter_target = op.out.clone().unwrap_or_default();
+                                    break;
                                 }
                             }
                         }
-                        _ => {}
+                        _ => {
+                            if let Some(ref out) = op.out {
+                                last_out_var = out.clone();
+                            }
+                            preceding_ops.push(op.clone());
+                        }
                     }
                 }
 
                 if source_var.is_empty() || iter_target.is_empty() {
                     continue;
+                }
+
+                // Filter source_ops to only include ops needed to produce source_var.
+                // Walk backwards from source_var to find its dependency chain.
+                {
+                    let mut needed: HashSet<String> = HashSet::new();
+                    needed.insert(source_var.clone());
+                    let mut filtered = Vec::new();
+                    for op in preceding_ops.iter().rev() {
+                        let out = op.out.as_deref().unwrap_or("");
+                        if needed.contains(out) {
+                            // This op produces a needed value; add its args as needed too
+                            if let Some(ref args) = op.args {
+                                for arg in args {
+                                    needed.insert(arg.clone());
+                                }
+                            }
+                            filtered.push(op.clone());
+                        }
+                    }
+                    filtered.reverse();
+                    source_ops = filtered;
                 }
 
                 // Find the body: between closure_store(self, item) and state_yield
@@ -1078,9 +1146,72 @@ impl SimpleIR {
                         // 3. for_iter loop with body expression + list_append
                         let mut new_ops: Vec<OpIR> = Vec::new();
 
-                        // Emit source iterable construction
-                        for src_op in &info.source_ops {
-                            new_ops.push(src_op.clone());
+                        // Determine the actual source variable for iteration.
+                        // If the genexpr's source_ops reference a module global (module_get_global),
+                        // resolve it in the consumer's scope by finding the dict_set that stored
+                        // that global name. This avoids emitting module_cache lookups that return nil.
+                        let mut effective_source_var = info.source_var.clone();
+                        let has_module_get = info.source_ops.iter().any(|op| {
+                            op.kind == "module_get_global" || op.kind == "module_cache_get"
+                        });
+
+                        if has_module_get {
+                            // Extract the global name from the module_get_global op
+                            let global_name = info.source_ops.iter()
+                                .filter(|op| op.kind == "module_get_global")
+                                .filter_map(|op| op.args.as_ref().and_then(|a| a.get(1)).cloned())
+                                .next();
+
+                            eprintln!("[molt-dce] genexpr source has module_get, global_name={:?}", global_name);
+                            if let Some(ref name) = global_name {
+                                // Search backwards in consumer for dict_set/set_attr that stores this name
+                                for j in (0..i).rev() {
+                                    let jk = func.ops[j].kind.as_str();
+                                    if jk == "dict_set" || jk == "set_attr" || jk == "store_subscr" {
+                                        eprintln!("[molt-dce]   checking op {} kind={} args={:?} s_value={:?}", j, jk, func.ops[j].args, func.ops[j].s_value);
+                                        if let Some(ref args) = func.ops[j].args {
+                                            // dict_set args: [dict_var, key_var, value_var]
+                                            // Or could be s_value for the key
+                                            if args.len() >= 3 {
+                                                // Check if the key matches our global name
+                                                // The key could be a const_str var — look it up
+                                                let key_var = &args[1];
+                                                // Check if key_var was set to our global name
+                                                for k in (0..j).rev() {
+                                                    if func.ops[k].out.as_deref() == Some(key_var.as_str()) {
+                                                        if func.ops[k].kind == "const_str" || func.ops[k].kind == "const" {
+                                                            if func.ops[k].s_value.as_deref() == Some(name.as_str()) {
+                                                                effective_source_var = args[2].clone();
+                                                                eprintln!(
+                                                                    "[molt-dce] Resolved module global '{}' to consumer var '{}'",
+                                                                    name, effective_source_var
+                                                                );
+                                                                break;
+                                                            }
+                                                        }
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if !effective_source_var.is_empty() && effective_source_var != info.source_var {
+                                        break;
+                                    }
+                                }
+                            }
+
+                            // Only emit source_ops if we couldn't resolve in consumer scope
+                            if effective_source_var == info.source_var {
+                                for src_op in &info.source_ops {
+                                    new_ops.push(src_op.clone());
+                                }
+                            }
+                        } else {
+                            // Literal source — emit source construction ops directly
+                            for src_op in &info.source_ops {
+                                new_ops.push(src_op.clone());
+                            }
                         }
 
                         // Emit result list
@@ -1095,7 +1226,7 @@ impl SimpleIR {
                         new_ops.push(OpIR {
                             kind: "for_iter".to_string(),
                             out: Some(iter_item_var.clone()),
-                            args: Some(vec![info.source_var.clone()]),
+                            args: Some(vec![effective_source_var.clone()]),
                             ..OpIR::default()
                         });
 
