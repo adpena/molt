@@ -32,6 +32,7 @@ _mod = _sys.modules.get(__name__)
 if _mod is not None:
     _mod.__dict__.update(constants)
 else:
-    globals().update(constants)
+    import sys as _sys2
+    _sys2.modules[__name__].__dict__.update(constants)
 del _sys, _mod
 __all__ = sorted(constants.keys()) + ["errorcode"]

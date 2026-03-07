@@ -100,7 +100,7 @@ def _bootstrap() -> None:
     if mod is not None:
         mod.__dict__.update(data)
     else:
-        globals().update(data)
+        sys.modules[__name__].__dict__.update(data)
 
 
 _bootstrap()
