@@ -3243,9 +3243,10 @@ fn inline_single_use_constants(source: &mut String) {
                 if var_suffix.chars().all(|c| c.is_ascii_digit()) {
                     let var_name = format!("v{var_suffix}");
                     let rhs = rest[eq_pos + 3..].to_string();
-                    // Check if RHS is a simple literal.
-                    let is_literal = is_simple_literal(&rhs);
-                    if is_literal {
+                    // Only inline simple literals — variable copies are unsafe
+                    // because the source variable may be reassigned between
+                    // declaration and use (closure save/restore patterns).
+                    if is_simple_literal(&rhs) {
                         const_decls.insert(var_name, (i, rhs));
                     }
                 }
