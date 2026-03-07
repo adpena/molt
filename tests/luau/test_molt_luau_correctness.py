@@ -449,6 +449,118 @@ print(x != 4)
 """)
 
 
+# ─── Nested Index & Type Guard ───────────────────────────────────────────────
+
+
+class TestNestedIndexing:
+    """Tests that exercise index type-guard elimination and nested list access."""
+
+    def test_matrix_multiply(self):
+        _assert_match("""
+def matrix_multiply(a, b):
+    rows_a = len(a)
+    cols_b = len(b[0])
+    cols_a = len(b)
+    result = []
+    for i in range(rows_a):
+        row = []
+        for j in range(cols_b):
+            total = 0
+            for k in range(cols_a):
+                total = total + a[i][k] * b[k][j]
+            row.append(total)
+        result.append(row)
+    return result
+
+a = [[1, 2, 3], [4, 5, 6]]
+b = [[7, 8], [9, 10], [11, 12]]
+c = matrix_multiply(a, b)
+for row in c:
+    print(row)
+""")
+
+    def test_nested_list_sum(self):
+        _assert_match("""
+grid = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+total = 0
+for i in range(len(grid)):
+    for j in range(len(grid[i])):
+        total = total + grid[i][j]
+print(total)
+""")
+
+    def test_list_of_lists_build(self):
+        _assert_match("""
+result = []
+for i in range(4):
+    row = []
+    for j in range(3):
+        row.append(i * 3 + j)
+    result.append(row)
+for row in result:
+    print(row)
+""")
+
+    def test_accumulate_with_index(self):
+        _assert_match("""
+data = [10, 20, 30, 40, 50]
+running = []
+total = 0
+for i in range(len(data)):
+    total = total + data[i]
+    running.append(total)
+print(running)
+""")
+
+
+# ─── Function Return Values ─────────────────────────────────────────────────
+
+
+class TestFunctionReturn:
+    """Tests that verify function return values survive epilogue cleanup."""
+
+    def test_return_computed_list(self):
+        _assert_match("""
+def make_list(n):
+    result = []
+    for i in range(n):
+        result.append(i * i)
+    return result
+
+print(make_list(5))
+""")
+
+    def test_return_nested_result(self):
+        _assert_match("""
+def transpose(matrix):
+    rows = len(matrix)
+    cols = len(matrix[0])
+    result = []
+    for j in range(cols):
+        row = []
+        for i in range(rows):
+            row.append(matrix[i][j])
+        result.append(row)
+    return result
+
+m = [[1, 2, 3], [4, 5, 6]]
+t = transpose(m)
+for row in t:
+    print(row)
+""")
+
+    def test_return_accumulator(self):
+        _assert_match("""
+def dot_product(a, b):
+    total = 0
+    for i in range(len(a)):
+        total = total + a[i] * b[i]
+    return total
+
+print(dot_product([1, 2, 3], [4, 5, 6]))
+""")
+
+
 # ─── Performance Benchmark ───────────────────────────────────────────────────
 
 
