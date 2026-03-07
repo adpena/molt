@@ -26,5 +26,8 @@ __all__ = [
     "TimeoutError",
 ]
 
+import sys as _aex_cleanup_sys
+_aex_cleanup_dict = getattr(_aex_cleanup_sys.modules.get(__name__), "__dict__", None) or globals()
 for _name in ("QueueEmpty", "QueueFull", "QueueShutDown"):
-    globals().pop(_name, None)
+    _aex_cleanup_dict.pop(_name, None)
+del _aex_cleanup_sys, _aex_cleanup_dict
