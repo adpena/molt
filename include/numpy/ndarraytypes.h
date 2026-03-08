@@ -300,6 +300,10 @@ typedef enum {
     NPY_SAME_VALUE_CASTING = NPY_UNSAFE_CASTING | NPY_SAME_VALUE_CASTING_FLAG
 } NPY_CASTING;
 
+#if MOLT_NUMPY_INTERNAL_BUILD
+extern NPY_NO_EXPORT NPY_CASTING NPY_DEFAULT_ASSIGN_CASTING;
+#endif
+
 typedef enum {
     NPY_ANYORDER = -1,
     NPY_CORDER = 0,
@@ -512,6 +516,36 @@ typedef struct {
     npy_int32 as;
 } npy_timedeltastruct;
 
+NPY_NO_EXPORT int NpyDatetime_ConvertDatetimeStructToDatetime64(
+    PyArray_DatetimeMetaData *meta,
+    const npy_datetimestruct *dts,
+    npy_datetime *out
+);
+NPY_NO_EXPORT int NpyDatetime_ConvertDatetime64ToDatetimeStruct(
+    PyArray_DatetimeMetaData *meta,
+    npy_datetime dt,
+    npy_datetimestruct *out
+);
+NPY_NO_EXPORT int NpyDatetime_ParseISO8601Datetime(
+    char const *str,
+    Py_ssize_t len,
+    NPY_DATETIMEUNIT unit,
+    NPY_CASTING casting,
+    npy_datetimestruct *out,
+    NPY_DATETIMEUNIT *out_bestunit,
+    npy_bool *out_special
+);
+NPY_NO_EXPORT int NpyDatetime_MakeISO8601Datetime(
+    npy_datetimestruct *dts,
+    char *outstr,
+    npy_intp outlen,
+    int local,
+    int utc,
+    NPY_DATETIMEUNIT base,
+    int tzoffset,
+    NPY_CASTING casting
+);
+
 #if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 typedef enum {
     NPY_DEVICE_CPU = 0,
@@ -651,13 +685,17 @@ typedef struct NpyIter_InternalOnly NpyIter;
 typedef int (NpyIter_IterNextFunc)(NpyIter *iter);
 typedef void (NpyIter_GetMultiIndexFunc)(NpyIter *iter, npy_intp *outcoords);
 NPY_NO_EXPORT NpyIter *NpyIter_New(PyObject *op, ...);
-NPY_NO_EXPORT NpyIter *NpyIter_MultiNew(int nop, PyObject **op, ...);
+NPY_NO_EXPORT NpyIter *NpyIter_MultiNew(int nop, PyArrayObject **op, ...);
 NPY_NO_EXPORT int NpyIter_Deallocate(NpyIter *iter);
 NPY_NO_EXPORT int NpyIter_Reset(NpyIter *iter, char **errmsg);
 NPY_NO_EXPORT PyArrayObject **NpyIter_GetOperandArray(NpyIter *iter);
 NPY_NO_EXPORT npy_intp NpyIter_GetIterSize(NpyIter *iter);
 NPY_NO_EXPORT NpyIter_IterNextFunc *NpyIter_GetIterNext(NpyIter *iter, char **errmsg);
 NPY_NO_EXPORT char **NpyIter_GetDataPtrArray(NpyIter *iter);
+NPY_NO_EXPORT int NpyIter_GetTransferFlags(NpyIter *iter);
+NPY_NO_EXPORT int NpyIter_IterationNeedsAPI(NpyIter *iter);
+NPY_NO_EXPORT npy_intp *NpyIter_GetInnerStrideArray(NpyIter *iter);
+NPY_NO_EXPORT npy_intp *NpyIter_GetInnerLoopSizePtr(NpyIter *iter);
 
 #ifndef NPY_ITER_C_INDEX
 #define NPY_ITER_C_INDEX 0x00000001
@@ -1471,8 +1509,8 @@ extern PyArray_DTypeMeta PyArray_FloatAbstractDType;
         }                                                                         \
     } while (0)
 #define NPY_ALLOW_C_API_DEF PyGILState_STATE __save__;
-#define NPY_ALLOW_C_API do { __save__ = PyGILState_Ensure(); } while (0)
-#define NPY_DISABLE_C_API do { PyGILState_Release(__save__); } while (0)
+#define NPY_ALLOW_C_API do { __save__ = PyGILState_Ensure(); } while (0);
+#define NPY_DISABLE_C_API do { PyGILState_Release(__save__); } while (0);
 #else
 #define NPY_BEGIN_ALLOW_THREADS
 #define NPY_END_ALLOW_THREADS
@@ -1493,10 +1531,12 @@ static PyDataMem_Handler PyDataMem_DefaultHandler = {
     {NULL, NULL, NULL, NULL, NULL},
 };
 
+#if !MOLT_NUMPY_INTERNAL_BUILD
 #define PyDataMem_NEW(size) PyMem_Malloc((size_t)(size))
 #define PyDataMem_NEW_ZEROED(nelem, elsize) PyMem_Calloc((size_t)(nelem), (size_t)(elsize))
 #define PyDataMem_RENEW(ptr, size) PyMem_Realloc((ptr), (size_t)(size))
 #define PyDataMem_FREE(ptr) PyMem_Free((ptr))
+#endif
 
 static inline PyObject *PyDataMem_GetHandler(void) {
     Py_RETURN_NONE;

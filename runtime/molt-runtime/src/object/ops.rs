@@ -35962,8 +35962,8 @@ unsafe fn find_ascii_split_whitespace_neon(bytes: &[u8], start: usize) -> usize 
                 // Found whitespace in this chunk — scan for exact position
                 let mut buf = [0u8; 16];
                 vst1q_u8(buf.as_mut_ptr(), is_ws);
-                for j in 0..16 {
-                    if buf[j] != 0 {
+                for (j, &slot) in buf.iter().enumerate() {
+                    if slot != 0 {
                         return i + j;
                     }
                 }

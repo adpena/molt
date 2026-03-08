@@ -414,8 +414,7 @@ pub extern "C" fn molt_string_formatter_parse(format_string_bits: u64) -> u64 {
                 }
 
                 // Format spec.
-                let format_spec_bits;
-                if text[idx] == b':' {
+                let format_spec_bits = if text[idx] == b':' {
                     idx += 1;
                     let spec_start = idx;
                     let mut nested = 0i32;
@@ -453,11 +452,11 @@ pub extern "C" fn molt_string_formatter_parse(format_string_bits: u64) -> u64 {
                     }
                     let spec = &text[spec_start..idx];
                     let spec_ptr = alloc_string(_py, spec);
-                    format_spec_bits = MoltObject::from_ptr(spec_ptr).bits();
+                    MoltObject::from_ptr(spec_ptr).bits()
                 } else {
                     let empty_ptr = alloc_string(_py, b"");
-                    format_spec_bits = MoltObject::from_ptr(empty_ptr).bits();
-                }
+                    MoltObject::from_ptr(empty_ptr).bits()
+                };
 
                 if idx >= length || text[idx] != b'}' {
                     return raise_exception::<_>(
