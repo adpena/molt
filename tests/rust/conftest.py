@@ -6,6 +6,7 @@ timeout when the daemon binary needs to cold-start.
 
 import os
 import subprocess
+import sys
 import tempfile
 
 MOLT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,7 +26,9 @@ def pytest_configure(config):
         "MOLT_USE_SCCACHE": "0",
         "RUSTC_WRAPPER": "",
         "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
-        "MOLT_DEV_CARGO_PROFILE": "release-fast",
+        "MOLT_DEV_CARGO_PROFILE": os.environ.get("MOLT_DEV_CARGO_PROFILE", "release-fast"),
+        "UV_LINK_MODE": os.environ.get("UV_LINK_MODE", "copy"),
+        "UV_NO_SYNC": os.environ.get("UV_NO_SYNC", "1"),
     }
     try:
         with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
@@ -37,13 +40,13 @@ def pytest_configure(config):
         # Generous timeout covers daemon cold-start + optional cargo rebuild.
         subprocess.run(
             [
-                "uv", "run", "python", "-m", "molt.cli", "build",
+                (sys.executable or "python3"), "-m", "molt.cli", "build",
                 warmup_path, "--target", "rust", "--profile", "dev",
                 "--output", warmup_out,
             ],
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=900,
             env=env,
             cwd=MOLT_DIR,
         )
