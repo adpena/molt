@@ -164,7 +164,8 @@ impl RustBackend {
         if self.current_is_main || self.current_params.is_empty() {
             return;
         }
-        for (i, param) in self.current_params.iter().enumerate() {
+        let params = self.current_params.clone();
+        for (i, param) in params.iter().enumerate() {
             self.emit_line(&format!(
                 "if args___.len() <= {i} {{ args___.resize({len}, MoltValue::None); }}",
                 len = i + 1
@@ -208,7 +209,7 @@ impl RustBackend {
             "    Str(String),\n",
             "    List(Vec<MoltValue>),\n",
             "    Dict(Vec<(MoltValue, MoltValue)>),\n",
-            "    Func(Arc<dyn Fn(Vec<MoltValue>) -> MoltValue + Send + Sync>),\n",
+            "    Func(Arc<dyn Fn(&mut Vec<MoltValue>) -> MoltValue + Send + Sync>),\n",
             "}\n",
             "impl std::fmt::Debug for MoltValue {\n",
             "    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {\n",
@@ -805,7 +806,7 @@ impl RustBackend {
         // Dynamic call dispatch
         if used("molt_call(") {
             self.output.push_str(concat!(
-                "fn molt_call(f: &MoltValue, args: Vec<MoltValue>) -> MoltValue {\n",
+                "fn molt_call(f: &MoltValue, args: &mut Vec<MoltValue>) -> MoltValue {\n",
                 "    if let MoltValue::Func(func) = f { func(args) } else { MoltValue::None }\n",
                 "}\n\n",
             ));
@@ -837,27 +838,27 @@ impl RustBackend {
                 "        other => other,\n",
                 "    };\n",
                 "    match canonical {\n",
-                "        \"molt_function_set_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
-                "            molt_builtin_positional(&args).into_iter().next().unwrap_or(MoltValue::None)\n",
+                "        \"molt_function_set_builtin\" => MoltValue::Func(Arc::new(|args: &mut Vec<MoltValue>| {\n",
+                "            molt_builtin_positional(args).into_iter().next().unwrap_or(MoltValue::None)\n",
                 "        })),\n",
-                "        \"molt_int_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
-                "            let pos = molt_builtin_positional(&args);\n",
+                "        \"molt_int_builtin\" => MoltValue::Func(Arc::new(|args: &mut Vec<MoltValue>| {\n",
+                "            let pos = molt_builtin_positional(args);\n",
                 "            MoltValue::Int(pos.first().map_or(0, molt_int))\n",
                 "        })),\n",
-                "        \"molt_float_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
-                "            let pos = molt_builtin_positional(&args);\n",
+                "        \"molt_float_builtin\" => MoltValue::Func(Arc::new(|args: &mut Vec<MoltValue>| {\n",
+                "            let pos = molt_builtin_positional(args);\n",
                 "            MoltValue::Float(pos.first().map_or(0.0, molt_float))\n",
                 "        })),\n",
-                "        \"molt_bool_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
-                "            let pos = molt_builtin_positional(&args);\n",
+                "        \"molt_bool_builtin\" => MoltValue::Func(Arc::new(|args: &mut Vec<MoltValue>| {\n",
+                "            let pos = molt_builtin_positional(args);\n",
                 "            MoltValue::Bool(pos.first().is_some_and(molt_bool))\n",
                 "        })),\n",
-                "        \"molt_str_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
-                "            let pos = molt_builtin_positional(&args);\n",
+                "        \"molt_str_builtin\" => MoltValue::Func(Arc::new(|args: &mut Vec<MoltValue>| {\n",
+                "            let pos = molt_builtin_positional(args);\n",
                 "            MoltValue::Str(pos.first().map_or_else(String::new, molt_str))\n",
                 "        })),\n",
-                "        \"molt_len_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
-                "            let pos = molt_builtin_positional(&args);\n",
+                "        \"molt_len_builtin\" => MoltValue::Func(Arc::new(|args: &mut Vec<MoltValue>| {\n",
+                "            let pos = molt_builtin_positional(args);\n",
                 "            if let Some(v) = pos.first() {\n",
                 "                match v {\n",
                 "                    MoltValue::Str(s) => MoltValue::Int(s.chars().count() as i64),\n",
@@ -869,8 +870,8 @@ impl RustBackend {
                 "                MoltValue::Int(0)\n",
                 "            }\n",
                 "        })),\n",
-                "        \"molt_min_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
-                "            let mut pos = molt_builtin_positional(&args);\n",
+                "        \"molt_min_builtin\" => MoltValue::Func(Arc::new(|args: &mut Vec<MoltValue>| {\n",
+                "            let mut pos = molt_builtin_positional(args);\n",
                 "            if pos.len() == 1 { if let MoltValue::List(items) = &pos[0] { pos = items.clone(); } }\n",
                 "            if pos.is_empty() {\n",
                 "                return MoltValue::None;\n",
@@ -883,8 +884,8 @@ impl RustBackend {
                 "            }\n",
                 "            best\n",
                 "        })),\n",
-                "        \"molt_max_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
-                "            let mut pos = molt_builtin_positional(&args);\n",
+                "        \"molt_max_builtin\" => MoltValue::Func(Arc::new(|args: &mut Vec<MoltValue>| {\n",
+                "            let mut pos = molt_builtin_positional(args);\n",
                 "            if pos.len() == 1 { if let MoltValue::List(items) = &pos[0] { pos = items.clone(); } }\n",
                 "            if pos.is_empty() {\n",
                 "                return MoltValue::None;\n",
@@ -897,8 +898,8 @@ impl RustBackend {
                 "            }\n",
                 "            best\n",
                 "        })),\n",
-                "        \"molt_sum_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
-                "            let pos = molt_builtin_positional(&args);\n",
+                "        \"molt_sum_builtin\" => MoltValue::Func(Arc::new(|args: &mut Vec<MoltValue>| {\n",
+                "            let pos = molt_builtin_positional(args);\n",
                 "            let mut acc = if pos.len() > 1 { pos[1].clone() } else { MoltValue::Int(0) };\n",
                 "            if let Some(MoltValue::List(items)) = pos.first() {\n",
                 "                for value in items {\n",
@@ -908,8 +909,8 @@ impl RustBackend {
                 "            }\n",
                 "            acc\n",
                 "        })),\n",
-                "        \"molt_enumerate_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
-                "            let pos = molt_builtin_positional(&args);\n",
+                "        \"molt_enumerate_builtin\" => MoltValue::Func(Arc::new(|args: &mut Vec<MoltValue>| {\n",
+                "            let pos = molt_builtin_positional(args);\n",
                 "            if let Some(iterable) = pos.first() {\n",
                 "                let start = pos.get(1).map_or(0, molt_int);\n",
                 "                molt_enumerate(iterable, start)\n",
@@ -917,16 +918,16 @@ impl RustBackend {
                 "                MoltValue::List(vec![])\n",
                 "            }\n",
                 "        })),\n",
-                "        \"molt_zip_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
-                "            let pos = molt_builtin_positional(&args);\n",
+                "        \"molt_zip_builtin\" => MoltValue::Func(Arc::new(|args: &mut Vec<MoltValue>| {\n",
+                "            let pos = molt_builtin_positional(args);\n",
                 "            if pos.len() >= 2 {\n",
                 "                molt_zip(&pos[0], &pos[1])\n",
                 "            } else {\n",
                 "                MoltValue::List(vec![])\n",
                 "            }\n",
                 "        })),\n",
-                "        \"molt_range_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
-                "            let pos = molt_builtin_positional(&args);\n",
+                "        \"molt_range_builtin\" => MoltValue::Func(Arc::new(|args: &mut Vec<MoltValue>| {\n",
+                "            let pos = molt_builtin_positional(args);\n",
                 "            let (start, stop, step) = match pos.len() {\n",
                 "                0 => (0, 0, 1),\n",
                 "                1 => (0, molt_int(&pos[0]), 1),\n",
@@ -971,6 +972,13 @@ impl RustBackend {
             || func.name == "__main__"
             || func.name == "molt___main__"
             || (func.params.is_empty() && func.name.starts_with("molt_main"));
+        self.current_is_main = is_main;
+        self.current_params = if is_main {
+            Vec::new()
+        } else {
+            func.params.iter().map(|p| rust_ident(p)).collect()
+        };
+        self.aliases.clear();
 
         let name = rust_ident(&func.name);
 
@@ -1018,7 +1026,7 @@ impl RustBackend {
         } else {
             let _ = writeln!(
                 self.output,
-                "fn {name}(args___: Vec<MoltValue>) -> MoltValue {{"
+                "fn {name}(args___: &mut Vec<MoltValue>) -> MoltValue {{"
             );
             self.indent += 1;
             // Destructure params from args
@@ -1096,8 +1104,10 @@ impl RustBackend {
             // This covers: store → jump → (skipped code) → label → load → ret
             if ops[i].kind == "jump" {
                 if let Some(ref expr) = last_jump_return.clone() {
+                    self.emit_param_writeback();
                     self.emit_line(&format!("return {expr};"));
                 } else {
+                    self.emit_param_writeback();
                     self.emit_line("return MoltValue::None; /* jump: no prior store */");
                 }
                 i += 1;
@@ -1136,6 +1146,7 @@ impl RustBackend {
         if is_main {
             // main doesn't have an explicit return
         } else {
+            self.emit_param_writeback();
             self.emit_line("MoltValue::None");
         }
         self.emit_line("}");
@@ -1183,6 +1194,9 @@ impl RustBackend {
 
         self.hoisted_vars.clear();
         self.phi_to_frame.clear();
+        self.aliases.clear();
+        self.current_params.clear();
+        self.current_is_main = false;
     }
 
     // ── Op emission ───────────────────────────────────────────────────────────
@@ -1190,6 +1204,10 @@ impl RustBackend {
     fn emit_op(&mut self, op: &OpIR) {
         let out = || out_var(op);
         let _is_hoisted = |name: &str| self.hoisted_vars.contains(name);
+        if let Some(name) = op.out.as_deref() {
+            let out_name = rust_ident(name);
+            self.clear_alias(&out_name);
+        }
 
         let declare = |out_name: &str, rhs: &str, hoisted: &HashSet<String>| -> String {
             if hoisted.contains(out_name) {
@@ -1263,6 +1281,7 @@ impl RustBackend {
                     &format!("{v}.clone()"),
                     &self.hoisted_vars.clone(),
                 ));
+                self.note_alias(o, v);
             }
             "closure_load" => {
                 let o = out();
@@ -1277,12 +1296,16 @@ impl RustBackend {
                     &format!("{slot}.clone()"),
                     &self.hoisted_vars.clone(),
                 ));
+                self.note_alias(o, slot);
             }
             "store_local" | "store" | "store_init" => {
                 let v = var_ref(op);
                 if let Some(src) = op.args.as_ref().and_then(|a| a.first()) {
                     let s = rust_ident(src);
                     self.emit_line(&format!("{v} = {s}.clone();"));
+                    self.note_alias(v, s);
+                } else {
+                    self.clear_alias(&v);
                 }
             }
             "closure_store" => {
@@ -1713,15 +1736,19 @@ impl RustBackend {
             "return" | "ret" => {
                 if let Some(val) = op.args.as_ref().and_then(|a| a.first()) {
                     let v = rust_ident(val);
+                    self.emit_param_writeback();
                     self.emit_line(&format!("return {v}.clone();"));
                 } else if let Some(ref v) = op.var {
                     let v = rust_ident(v);
+                    self.emit_param_writeback();
                     self.emit_line(&format!("return {v}.clone();"));
                 } else {
+                    self.emit_param_writeback();
                     self.emit_line("return MoltValue::None;");
                 }
             }
             "return_none" | "ret_none" => {
+                self.emit_param_writeback();
                 self.emit_line("return MoltValue::None;");
             }
 
@@ -1729,16 +1756,40 @@ impl RustBackend {
             "call" | "call_func" | "call_internal" => {
                 let o = out();
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let rhs = if let Some(ref fn_name) = op.s_value {
-                    // Direct static call: s_value is the Rust function name.
+                if let Some(ref fn_name) = op.s_value {
+                    // Direct static call with mutable arg-vector writeback.
                     let fn_ident = rust_ident(fn_name);
                     let call_args: Vec<String> = args
                         .iter()
                         .map(|a| format!("{}.clone()", rust_ident(a)))
                         .collect();
-                    format!("{fn_ident}(vec![{args}])", args = call_args.join(", "))
+                    self.emit_line(&format!(
+                        "let mut __call_args: Vec<MoltValue> = vec![{}];",
+                        call_args.join(", ")
+                    ));
+                    self.emit_line(&format!(
+                        "let mut __call_ret: MoltValue = {fn_ident}(&mut __call_args);"
+                    ));
+                    for (idx, arg) in args.iter().enumerate() {
+                        let var = rust_ident(arg);
+                        if is_assignable_var(&var) {
+                            self.emit_line(&format!(
+                                "{var} = __call_args.get({idx}).cloned().unwrap_or({var}.clone());"
+                            ));
+                            self.emit_alias_writeback(&var);
+                        }
+                    }
+                    if o == "_" || o == "none" {
+                        self.emit_line("__call_ret;");
+                    } else {
+                        self.emit_line(&declare(&o, "__call_ret.clone()", &self.hoisted_vars.clone()));
+                    }
                 } else if args.is_empty() {
-                    "MoltValue::None".to_string()
+                    if o == "_" || o == "none" {
+                        self.emit_line("MoltValue::None;");
+                    } else {
+                        self.emit_line(&declare(&o, "MoltValue::None", &self.hoisted_vars.clone()));
+                    }
                 } else {
                     // Dynamic call: args[0] is the MoltValue::Func to invoke.
                     let func_var = rust_ident(&args[0]);
@@ -1746,15 +1797,27 @@ impl RustBackend {
                         .iter()
                         .map(|a| format!("{}.clone()", rust_ident(a)))
                         .collect();
-                    format!(
-                        "molt_call(&{func_var}, vec![{args}])",
-                        args = call_args.join(", ")
-                    )
-                };
-                if o == "_" || o == "none" {
-                    self.emit_line(&format!("{rhs};"));
-                } else {
-                    self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
+                    self.emit_line(&format!(
+                        "let mut __call_args: Vec<MoltValue> = vec![{}];",
+                        call_args.join(", ")
+                    ));
+                    self.emit_line(&format!(
+                        "let mut __call_ret: MoltValue = molt_call(&{func_var}, &mut __call_args);"
+                    ));
+                    for (idx, arg) in args[1..].iter().enumerate() {
+                        let var = rust_ident(arg);
+                        if is_assignable_var(&var) {
+                            self.emit_line(&format!(
+                                "{var} = __call_args.get({idx}).cloned().unwrap_or({var}.clone());"
+                            ));
+                            self.emit_alias_writeback(&var);
+                        }
+                    }
+                    if o == "_" || o == "none" {
+                        self.emit_line("__call_ret;");
+                    } else {
+                        self.emit_line(&declare(&o, "__call_ret.clone()", &self.hoisted_vars.clone()));
+                    }
                 }
             }
             "call_method" => {
@@ -1770,14 +1833,18 @@ impl RustBackend {
                     .iter()
                     .map(|a| format!("{}.clone()", rust_ident(a)))
                     .collect();
-                let rhs = match method {
-                    "append" => format!(
-                        "{{ molt_list_append(&mut {obj}, {}); MoltValue::None }}",
-                        call_args
-                            .first()
-                            .cloned()
-                            .unwrap_or_else(|| "MoltValue::None".to_string())
-                    ),
+                if method == "append" {
+                    let arg = call_args
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "MoltValue::None".to_string());
+                    self.emit_line(&format!("molt_list_append(&mut {obj}, {arg});"));
+                    self.emit_alias_writeback(&obj);
+                    if o != "_" && o != "none" {
+                        self.emit_line(&declare(&o, "MoltValue::None", &self.hoisted_vars.clone()));
+                    }
+                } else {
+                    let rhs = match method {
                     "keys" => format!("molt_dict_keys(&{obj})"),
                     "values" => format!("molt_dict_values(&{obj})"),
                     "items" => format!("molt_dict_items(&{obj})"),
@@ -1798,11 +1865,12 @@ impl RustBackend {
                         "/* MOLT_STUB: method {obj}.{method}({}) */ MoltValue::None",
                         call_args.join(", ")
                     ),
-                };
-                if o == "_" || o == "none" {
-                    self.emit_line(&format!("{rhs};"));
-                } else {
-                    self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
+                    };
+                    if o == "_" || o == "none" {
+                        self.emit_line(&format!("{rhs};"));
+                    } else {
+                        self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
+                    }
                 }
             }
             "call_bind" | "call_indirect" => {
@@ -1829,10 +1897,11 @@ impl RustBackend {
                                __call_args.push({builder}.clone()); \
                            }} \
                            {extra_stmt} \
-                           molt_call(&{func}, __call_args) }}"
+                           let __ret = molt_call(&{func}, &mut __call_args); \
+                           __ret }}"
                     )
                 } else if let Some(func) = args.first() {
-                    format!("molt_call(&{}, vec![])", rust_ident(func))
+                    format!("{{ let mut __call_args = Vec::new(); molt_call(&{}, &mut __call_args) }}", rust_ident(func))
                 } else {
                     "MoltValue::None".to_string()
                 };
@@ -1862,6 +1931,7 @@ impl RustBackend {
                     let list = rust_ident(&args[0]);
                     let val = rust_ident(&args[1]);
                     self.emit_line(&format!("molt_list_append(&mut {list}, {val}.clone());"));
+                    self.emit_alias_writeback(&list);
                 }
             }
             "callargs_expand_star" => {
@@ -1872,6 +1942,7 @@ impl RustBackend {
                     self.emit_line(&format!(
                         "for __item in molt_iter_list(&{other}) {{ molt_list_append(&mut {list}, __item); }}"
                     ));
+                    self.emit_alias_writeback(&list);
                 }
             }
             "callargs_push_kw" | "callargs_expand_kwstar" => {
@@ -1882,7 +1953,7 @@ impl RustBackend {
                 let rhs = if let Some(ref fn_name) = op.s_value {
                     let fn_ident = rust_ident(fn_name);
                     format!(
-                        "MoltValue::Func(Arc::new(move |args: Vec<MoltValue>| {fn_ident}(args)))"
+                        "MoltValue::Func(Arc::new(move |args: &mut Vec<MoltValue>| {fn_ident}(args)))"
                     )
                 } else {
                     "MoltValue::None".to_string()
@@ -2036,6 +2107,7 @@ impl RustBackend {
                     let list = rust_ident(&args[0]);
                     let val = rust_ident(&args[1]);
                     self.emit_line(&format!("molt_list_append(&mut {list}, {val}.clone());"));
+                    self.emit_alias_writeback(&list);
                 }
             }
             "get_item" | "subscript" | "index" => {
@@ -2087,6 +2159,7 @@ impl RustBackend {
                     self.emit_line(&format!(
                         "molt_set_item(&mut {obj}, {key}.clone(), {val}.clone());"
                     ));
+                    self.emit_alias_writeback(&obj);
                 }
             }
             "dict_set" => {
@@ -2098,6 +2171,7 @@ impl RustBackend {
                     self.emit_line(&format!(
                         "molt_set_item(&mut {obj}, {key}.clone(), {val}.clone());"
                     ));
+                    self.emit_alias_writeback(&obj);
                 }
             }
             "get_attr" | "load_attr" => {
@@ -2126,6 +2200,7 @@ impl RustBackend {
                     let val = rust_ident(&args[2]);
                     self.emit_line(&format!("molt_set_item(&mut {obj}, MoltValue::Str({attr_lit}.to_string()), {val}.clone());",
                         attr_lit = rust_string_literal(attr)));
+                    self.emit_alias_writeback(&obj);
                 }
             }
 
@@ -2652,6 +2727,10 @@ pub(crate) fn rust_ident(name: &str) -> String {
         }
         _ => s,
     }
+}
+
+fn is_assignable_var(name: &str) -> bool {
+    !(name.is_empty() || name == "_" || name == "none")
 }
 
 fn out_var(op: &OpIR) -> String {
