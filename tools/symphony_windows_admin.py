@@ -512,6 +512,7 @@ def _build_env_values(
     ext_root: Path,
     symphony_parent: Path,
     project_key: str,
+    source_repo_url: str | None,
     linear_project_slug: str | None,
     linear_api_key: str | None,
 ) -> dict[str, str]:
@@ -521,7 +522,19 @@ def _build_env_values(
     store = _to_posix(symphony_parent / project_key)
     state = f"{store}/state"
     logs = f"{store}/logs"
-    env.setdefault("MOLT_SOURCE_REPO_URL", "https://github.com/adpena/molt.git")
+    default_repo_url = "https://github.com/adpena/molt.git"
+    source_url = (
+        str(source_repo_url).strip()
+        if source_repo_url is not None
+        else str(env.get("MOLT_SOURCE_REPO_URL") or "").strip()
+    )
+    if not source_url:
+        source_url = default_repo_url
+    # On Windows workers, SSH git remotes commonly fail in non-interactive hooks.
+    # Prefer HTTPS so workspace bootstrap stays deterministic.
+    if sys.platform.startswith("win") and source_url.startswith("git@"):
+        source_url = default_repo_url
+    env["MOLT_SOURCE_REPO_URL"] = source_url
     env.setdefault("MOLT_SYMPHONY_SYNC_REMOTE", "origin")
     env.setdefault("MOLT_SYMPHONY_SYNC_BRANCH", "main")
     env.setdefault("MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS", "adpena,symphony")
@@ -805,6 +818,7 @@ def cmd_repair(args: argparse.Namespace) -> int:
         ext_root=ext_root,
         symphony_parent=symphony_parent,
         project_key=project_key,
+        source_repo_url=args.source_repo_url,
         linear_project_slug=args.project_slug,
         linear_api_key=args.linear_api_key,
     )
@@ -1229,6 +1243,7 @@ def build_parser() -> argparse.ArgumentParser:
     repair.add_argument("--ext-root", default=str(DEFAULT_EXT_ROOT))
     repair.add_argument("--symphony-parent-root", default=str(DEFAULT_SYMPHONY_PARENT))
     repair.add_argument("--project-key", default="molt")
+    repair.add_argument("--source-repo-url", default=None)
     repair.add_argument("--project-slug", default=None)
     repair.add_argument("--linear-api-key", default=None)
     repair.add_argument("--fleet-mcp-url", default=DEFAULT_FLEET_MCP_URL)
