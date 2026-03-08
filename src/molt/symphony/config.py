@@ -95,7 +95,7 @@ def build_runtime_config(workflow: WorkflowDefinition) -> RuntimeConfig:
     )
 
     codex = CodexConfig(
-        command=str(codex_raw.get("command", "codex app-server")).strip(),
+        command=str(codex_raw.get("command", "codex --yolo app-server")).strip(),
         approval_policy=codex_raw.get(
             "approval_policy",
             {

@@ -36,8 +36,11 @@ Local implementation must remain semantically aligned with those documents. This
   - [`src/molt/symphony/config.py`](src/molt/symphony/config.py)
 - Coding-agent app-server subprocess client with JSON line protocol: `PASS`
   - [`src/molt/symphony/app_server.py`](src/molt/symphony/app_server.py)
-- Codex launch command config (`codex.command`, default `codex app-server`): `PASS`
+- Codex launch command config (`codex.command`, default `codex --yolo app-server`): `PASS`
   - [`src/molt/symphony/config.py`](src/molt/symphony/config.py)
+- OpenAI app-server v2 `item/tool/requestUserInput` response shape (`result.answers` map): `PASS`
+  - [`src/molt/symphony/app_server.py`](src/molt/symphony/app_server.py)
+  - [`tests/test_symphony_app_server_usage.py`](tests/test_symphony_app_server_usage.py)
 - Strict prompt rendering with `issue` and `attempt` variables: `PASS`
   - [`src/molt/symphony/template.py`](src/molt/symphony/template.py)
   - [`tests/test_symphony_template.py`](tests/test_symphony_template.py)

@@ -1684,18 +1684,25 @@ impl RustBackend {
                 ));
             }
             "for_iter" => {
-                // for_iter: args = [iter_var, iterable]
-                let args = op.args.as_deref().unwrap_or(&[]);
-                let iter_var = args
-                    .first()
-                    .map(|s| rust_ident(s))
-                    .unwrap_or_else(|| "_".to_string());
-                let iterable = args
-                    .get(1)
-                    .map(|s| rust_ident(s))
-                    .unwrap_or_else(|| "MoltValue::None".to_string());
+                // for_iter (comprehension-inlined): out = loop_var, args[0] = iterable.
+                // The comprehension inliner in lib.rs always emits this convention.
+                let iter_var = out();
+                let iterable = arg0(op);
                 self.emit_line(&format!("for {iter_var} in molt_iter_list(&{iterable}) {{"));
                 self.indent += 1;
+            }
+            "range_new" => {
+                // range_new(start, stop, step) — used by comprehension-inlined source_ops.
+                let o = out();
+                let args = op.args.as_deref().unwrap_or(&[]);
+                let start = args.first().map(|s| rust_ident(s)).unwrap_or_else(|| "MoltValue::Int(0)".to_string());
+                let stop = args.get(1).map(|s| rust_ident(s)).unwrap_or_else(|| "MoltValue::Int(0)".to_string());
+                let step = args.get(2).map(|s| rust_ident(s)).unwrap_or_else(|| "MoltValue::Int(1)".to_string());
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_range(molt_int(&{start}), molt_int(&{stop}), molt_int(&{step}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "end_for" => {
                 // Range loops open an extra block + while; make sure the index

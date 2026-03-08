@@ -407,6 +407,21 @@ class CodexAppServerClient:
         request_id = message.get("id")
         method = str(message.get("method") or "")
 
+        if _is_request_user_input(method):
+            result = _build_request_user_input_result(message)
+            self._send_json(
+                {
+                    "id": request_id,
+                    "result": result,
+                }
+            )
+            self._emit(
+                "request_user_input_required",
+                message=method,
+                details={"question_ids": sorted(result["answers"])},
+            )
+            raise TurnInputRequiredError("turn_input_required")
+
         if _is_input_required(method, message):
             self._send_json(
                 {
@@ -864,16 +879,36 @@ def _is_turn_cancelled(method: str) -> bool:
     return lowered.endswith("turn/cancelled") or "turn/cancelled" in lowered
 
 
-def _is_input_required(method: str, payload: dict[str, Any]) -> bool:
+def _is_request_user_input(method: str) -> bool:
     lowered = method.lower()
-    if "requestuserinput" in lowered:
+    return "requestuserinput" in lowered or "request_user_input" in lowered
+
+
+def _is_input_required(method: str, payload: dict[str, Any]) -> bool:
+    if _is_request_user_input(method):
         return True
+    lowered = method.lower()
     if "input_required" in lowered:
         return True
     params = payload.get("params")
     if isinstance(params, dict) and params.get("inputRequired") is True:
         return True
     return False
+
+
+def _build_request_user_input_result(payload: dict[str, Any]) -> dict[str, Any]:
+    answers: dict[str, dict[str, list[str]]] = {}
+    params = payload.get("params")
+    if isinstance(params, dict):
+        questions = params.get("questions")
+        if isinstance(questions, list):
+            for question in questions:
+                if not isinstance(question, dict):
+                    continue
+                question_id = question.get("id")
+                if isinstance(question_id, str) and question_id:
+                    answers[question_id] = {"answers": []}
+    return {"answers": answers}
 
 
 def _extract_tool_name(params: dict[str, Any]) -> str | None:
