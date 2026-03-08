@@ -315,10 +315,25 @@ def _check_mcp_status() -> list[CheckResult]:
                 fix="verify codex-cli installation and auth",
             )
         ]
-    text = (list_proc.stdout or "").lower()
-    has_linear = "linear" in text
-    has_fleet = "vertigo-fleet" in text or "fleet" in text
-    linear_logged_in = "linear" in text and "not logged in" not in text
+    text = list_proc.stdout or ""
+    lower_lines = [line.strip().lower() for line in text.splitlines() if line.strip()]
+
+    def _row_for(name: str) -> str | None:
+        prefix = f"{name.lower()} "
+        for line in lower_lines:
+            if line.startswith(prefix):
+                return line
+        return None
+
+    linear_row = _row_for("linear")
+    fleet_row = _row_for("vertigo-fleet")
+    has_linear = linear_row is not None
+    has_fleet = fleet_row is not None
+    linear_logged_in = bool(
+        linear_row
+        and "not logged in" not in linear_row
+        and ("bearer token" in linear_row or "logged in" in linear_row)
+    )
     results = [
         CheckResult(
             name="codex_mcp_linear_present",
