@@ -112,18 +112,6 @@ impl RustBackend {
         }
     }
 
-    fn alias_root(&self, name: &str) -> String {
-        let mut cur = name.to_string();
-        let mut seen = HashSet::new();
-        while let Some(next) = self.aliases.get(&cur) {
-            if !seen.insert(cur.clone()) {
-                break;
-            }
-            cur = next.clone();
-        }
-        cur
-    }
-
     fn clear_alias(&mut self, var: &str) {
         let mut stack = vec![var.to_string()];
         while let Some(target) = stack.pop() {

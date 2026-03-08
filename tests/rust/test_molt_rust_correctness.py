@@ -52,11 +52,13 @@ def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> s
             "MOLT_EXT_ROOT": ext_root,
             "CARGO_TARGET_DIR": cargo_target,
             "MOLT_USE_SCCACHE": "0",
+            "MOLT_BACKEND_DAEMON": "0",
+            "MOLT_BUILD_STATE_DIR": os.environ.get(
+                "MOLT_BUILD_STATE_DIR",
+                os.path.join(ext_root, f"rust-tests-build-state-{os.getpid()}"),
+            ),
             "RUSTC_WRAPPER": "",
             "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
-            # Map dev profile → release-fast so we reuse the already-built binary
-            # (default dev→dev-fast would trigger a fresh ~4 min cargo build each run)
-            "MOLT_DEV_CARGO_PROFILE": "release-fast",
         }
 
         # Step 1: molt build --target rust
@@ -65,7 +67,7 @@ def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> s
                 "uv", "run", "python", "-m", "molt.cli", "build",
                 py_path, "--target", "rust", "--profile", "dev", "--output", rs_path,
             ],
-            capture_output=True, text=True, timeout=240, env=env, cwd=MOLT_DIR,
+            capture_output=True, text=True, timeout=600, env=env, cwd=MOLT_DIR,
         )
         if result.returncode != 0:
             if expect_fail:
