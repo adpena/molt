@@ -3,4 +3,12 @@
 
 #include <numpy/arrayobject.h>
 
+#ifndef NPY_RAVEL_AXIS
+#define NPY_RAVEL_AXIS NPY_MIN_INT
+#endif
+
+#ifndef NPY_DEFAULT_ASSIGN_CASTING
+#define NPY_DEFAULT_ASSIGN_CASTING NPY_SAME_KIND_CASTING
+#endif
+
 #endif
