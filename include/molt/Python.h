@@ -464,7 +464,7 @@ static inline PyObject *PyUnicode_AsEncodedString(
 static inline int PyUnicode_Check(PyObject *obj);
 static inline int PyContextVar_Get(PyObject *var, PyObject *default_value, PyObject **value);
 static inline PyObject *PyContextVar_New(const char *name, PyObject *default_value);
-static inline int PyContextVar_Set(PyObject *var, PyObject *value);
+static inline PyObject *PyContextVar_Set(PyObject *var, PyObject *value);
 static inline PyObject *PyUnicode_FromString(const char *value);
 static inline PyObject *PyUnicode_InternFromString(const char *value);
 static inline PyObject *PyUnicode_FromKindAndData(
@@ -6991,18 +6991,17 @@ static inline int PyContextVar_Get(PyObject *var, PyObject *default_value, PyObj
     return 0;
 }
 
-static inline int PyContextVar_Set(PyObject *var, PyObject *value) {
+static inline PyObject *PyContextVar_Set(PyObject *var, PyObject *value) {
     PyObject *token;
     if (var == NULL) {
         PyErr_SetString(PyExc_TypeError, "context variable must not be NULL");
-        return -1;
+        return NULL;
     }
     token = PyObject_CallMethod(var, "set", "O", value != NULL ? value : Py_None);
     if (token == NULL) {
-        return -1;
+        return NULL;
     }
-    Py_DECREF(token);
-    return 0;
+    return token;
 }
 
 static inline PyObject *PyContextVar_New(const char *name, PyObject *default_value) {
