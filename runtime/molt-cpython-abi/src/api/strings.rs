@@ -52,14 +52,14 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8(op: *mut PyObject) -> *const c_char {
     let bridge = GLOBAL_BRIDGE.lock();
     let bits = match bridge.pyobj_to_handle(op) {
         Some(b) => b,
-        None => return b"\0".as_ptr().cast(),
+        None => return c"".as_ptr(),
     };
     drop(bridge);
     let h = hooks_or_stubs();
     let mut len: usize = 0;
     let ptr = unsafe { (h.str_data)(bits, &raw mut len) };
     if ptr.is_null() {
-        b"\0".as_ptr().cast()
+        c"".as_ptr()
     } else {
         ptr.cast()
     }
@@ -103,9 +103,7 @@ pub unsafe extern "C" fn PyUnicode_Check(op: *mut PyObject) -> c_int {
         return 0;
     }
     let ob_type = unsafe { (*op).ob_type };
-    (std::ptr::eq(ob_type, unsafe {
-        &raw const crate::abi_types::PyUnicode_Type
-    })) as c_int
+    (std::ptr::eq(ob_type, &raw const crate::abi_types::PyUnicode_Type)) as c_int
 }
 
 #[unsafe(no_mangle)]
@@ -213,9 +211,7 @@ pub unsafe extern "C" fn PyBytes_Check(op: *mut PyObject) -> c_int {
         return 0;
     }
     let ob_type = unsafe { (*op).ob_type };
-    (std::ptr::eq(ob_type, unsafe {
-        &raw const crate::abi_types::PyBytes_Type
-    })) as c_int
+    (std::ptr::eq(ob_type, &raw const crate::abi_types::PyBytes_Type)) as c_int
 }
 
 #[unsafe(no_mangle)]
