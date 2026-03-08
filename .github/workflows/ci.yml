@@ -247,6 +247,7 @@ jobs:
         shell: bash
     env:
       PYTHONPATH: ${{ github.workspace }}/src
+      PYTHONHASHSEED: "0"
       MOLT_EXT_ROOT: ${{ github.workspace }}/.ci-ext-${{ matrix.lane.name }}
       CARGO_TARGET_DIR: ${{ github.workspace }}/.ci-ext-${{ matrix.lane.name }}/cargo-target
       MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/.ci-ext-${{ matrix.lane.name }}/cargo-target
@@ -355,7 +356,29 @@ jobs:
             if command -v zig >/dev/null 2>&1; then
               printf '%s\n' \
                 '#!/usr/bin/env bash' \
-                'exec zig c++ -target x86_64-linux-musl "$@"' \
+                'set -euo pipefail' \
+                'args=()' \
+                'while [ "$#" -gt 0 ]; do' \
+                '  case "$1" in' \
+                '    --target=x86_64-unknown-linux-musl)' \
+                '      args+=(--target=x86_64-linux-musl)' \
+                '      shift' \
+                '      ;;' \
+                '    --target)' \
+                '      if [ "${2:-}" = "x86_64-unknown-linux-musl" ]; then' \
+                '        args+=(--target x86_64-linux-musl)' \
+                '      else' \
+                '        args+=(--target "${2:-}")' \
+                '      fi' \
+                '      shift 2' \
+                '      ;;' \
+                '    *)' \
+                '      args+=("$1")' \
+                '      shift' \
+                '      ;;' \
+                '  esac' \
+                'done' \
+                'exec zig c++ -target x86_64-linux-musl "${args[@]}"' \
                 | sudo tee /usr/local/bin/x86_64-linux-musl-g++ >/dev/null
               sudo chmod +x /usr/local/bin/x86_64-linux-musl-g++
             else
