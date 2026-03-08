@@ -13,6 +13,7 @@ and asserts identical stdout to CPython. This catches:
 
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import pytest
@@ -30,17 +31,26 @@ def _compile_and_run(python_source: str, *, expect_fail: bool = False) -> str:
     try:
         env = {
             **os.environ,
-            "MOLT_EXT_ROOT": "/Volumes/APDataStore/Molt",
-            "CARGO_TARGET_DIR": "/Volumes/APDataStore/Molt/cargo-target",
+            "MOLT_EXT_ROOT": os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt"),
+            "CARGO_TARGET_DIR": os.environ.get(
+                "CARGO_TARGET_DIR",
+                os.path.join(
+                    os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt"),
+                    "cargo-target",
+                ),
+            ),
             "MOLT_USE_SCCACHE": "0",
             "RUSTC_WRAPPER": "",
             "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
+            "MOLT_DEV_CARGO_PROFILE": os.environ.get("MOLT_DEV_CARGO_PROFILE", "release-fast"),
+            "UV_LINK_MODE": os.environ.get("UV_LINK_MODE", "copy"),
+            "UV_NO_SYNC": os.environ.get("UV_NO_SYNC", "1"),
         }
+        build_timeout = int(os.environ.get("MOLT_LUAU_BUILD_TIMEOUT", "900"))
+        py_exec = sys.executable or "python3"
         result = subprocess.run(
             [
-                "uv",
-                "run",
-                "python",
+                py_exec,
                 "-m",
                 "molt.cli",
                 "build",
@@ -54,7 +64,7 @@ def _compile_and_run(python_source: str, *, expect_fail: bool = False) -> str:
             ],
             capture_output=True,
             text=True,
-            timeout=240,
+            timeout=build_timeout,
             env=env,
             cwd=MOLT_DIR,
         )
