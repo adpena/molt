@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from .errors import HookError, WorkspaceError
@@ -104,9 +105,10 @@ class WorkspaceManager:
         self._ensure_inside_root(cwd)
         timeout_sec = max(self._hooks.timeout_ms, 1) / 1000.0
         log("INFO", "workspace_hook_start", hook=name, cwd=cwd)
+        hook_cmd = _hook_command(script)
         try:
             result = subprocess.run(
-                ["bash", "-lc", script],
+                hook_cmd,
                 cwd=cwd,
                 check=False,
                 capture_output=True,
@@ -170,3 +172,29 @@ def _is_git_sync_conflict(message: str) -> bool:
     if not normalized:
         return False
     return any(pattern in normalized for pattern in _GIT_SYNC_CONFLICT_PATTERNS)
+
+
+def _hook_command(script: str) -> list[str]:
+    # On Windows, avoid WSL launcher bash.exe (System32) for non-interactive
+    # workspace hooks; prefer Git-for-Windows POSIX shells.
+    if not sys.platform.startswith("win"):
+        return ["bash", "-lc", script]
+    candidates = []
+    for name in ("sh", "bash"):
+        resolved = shutil.which(name)
+        if resolved:
+            candidates.append(resolved)
+    candidates.extend(
+        [
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\sh.exe",
+        ]
+    )
+    for shell in candidates:
+        normalized = shell.replace("/", "\\").lower()
+        if normalized.endswith(r"\windows\system32\bash.exe"):
+            continue
+        if Path(shell).exists():
+            return [shell, "-lc", script]
+    return ["cmd", "/d", "/s", "/c", script]
