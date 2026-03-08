@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 from types import ModuleType
 
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = REPO_ROOT / "tools" / "check_luau_static.py"
@@ -21,6 +22,24 @@ def _load_module() -> ModuleType:
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture(autouse=True)
+def _external_volume_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ext_root = tmp_path / "ext"
+    (ext_root / "cargo-target").mkdir(parents=True, exist_ok=True)
+    (ext_root / "molt_cache").mkdir(parents=True, exist_ok=True)
+    (ext_root / "diff").mkdir(parents=True, exist_ok=True)
+    (ext_root / "tmp").mkdir(parents=True, exist_ok=True)
+    (ext_root / "uv-cache").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(ext_root / "cargo-target"))
+    monkeypatch.setenv("MOLT_DIFF_CARGO_TARGET_DIR", str(ext_root / "cargo-target"))
+    monkeypatch.setenv("MOLT_CACHE", str(ext_root / "molt_cache"))
+    monkeypatch.setenv("MOLT_DIFF_ROOT", str(ext_root / "diff"))
+    monkeypatch.setenv("MOLT_DIFF_TMPDIR", str(ext_root / "tmp"))
+    monkeypatch.setenv("UV_CACHE_DIR", str(ext_root / "uv-cache"))
+    monkeypatch.setenv("TMPDIR", str(ext_root / "tmp"))
 
 
 def test_parse_analyzer_warnings_best_effort() -> None:
