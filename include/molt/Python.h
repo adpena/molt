@@ -5754,12 +5754,12 @@ static inline PyObject *PyMethod_New(PyObject *func, PyObject *self, PyObject *c
     return out;
 }
 
-static inline int PyObject_TypeCheck(PyObject *ob, PyTypeObject *type) {
+static inline int PyObject_TypeCheck(const void *ob, PyTypeObject *type) {
     if (ob == NULL || type == NULL) {
         return 0;
     }
     return _molt_pyarg_object_matches_type(
-        _molt_py_handle(ob), _molt_py_handle((PyObject *)type));
+        _molt_py_handle((PyObject *)ob), _molt_py_handle((PyObject *)type));
 }
 
 #define PyType_Check(op) PyObject_TypeCheck((PyObject *)(op), &PyType_Type)
