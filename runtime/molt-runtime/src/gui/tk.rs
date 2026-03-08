@@ -6771,8 +6771,6 @@ fn handle_winfo_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u
                 } else {
                     widget_option_i64_default(&widget.options, "-height", 160)
                 }
-            } else if subcommand.ends_with("width") {
-                0
             } else {
                 0
             };

@@ -2606,7 +2606,7 @@ pub extern "C" fn PyIter_Check(obj: u64) -> i32 {
 // ---------------------------------------------------------------------------
 
 /// `PyList_Check(obj)` — return 1 if obj is a list, 0 otherwise.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyList_Check(obj: u64) -> i32 {
     if let Some(ptr) = obj_from_bits(obj).as_ptr()
         && unsafe { object_type_id(ptr) } == TYPE_ID_LIST
@@ -2618,7 +2618,7 @@ pub extern "C" fn PyList_Check(obj: u64) -> i32 {
 }
 
 /// `PyDict_Check(obj)` — return 1 if obj is a dict, 0 otherwise.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyDict_Check(obj: u64) -> i32 {
     if let Some(ptr) = obj_from_bits(obj).as_ptr()
         && unsafe { object_type_id(ptr) } == TYPE_ID_DICT
@@ -2630,7 +2630,7 @@ pub extern "C" fn PyDict_Check(obj: u64) -> i32 {
 }
 
 /// `PyTuple_Check(obj)` — return 1 if obj is a tuple, 0 otherwise.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyTuple_Check(obj: u64) -> i32 {
     if let Some(ptr) = obj_from_bits(obj).as_ptr()
         && unsafe { object_type_id(ptr) } == TYPE_ID_TUPLE
@@ -2664,7 +2664,7 @@ pub extern "C" fn PyLong_Check(obj: u64) -> i32 {
 }
 
 /// `PyUnicode_Check(obj)` — return 1 if obj is a str, 0 otherwise.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyUnicode_Check(obj: u64) -> i32 {
     if let Some(ptr) = obj_from_bits(obj).as_ptr()
         && unsafe { object_type_id(ptr) } == TYPE_ID_STRING
@@ -2693,7 +2693,7 @@ pub extern "C" fn PyNone_Check(obj: u64) -> i32 {
 
 /// `PyList_New(size)` — create a new list of length `size` filled with None values.
 /// Returns the new list handle (caller owns the reference) or 0 on error.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyList_New(size: isize) -> u64 {
     crate::with_gil_entry!(_py, {
         if size < 0 {
@@ -2713,7 +2713,7 @@ pub extern "C" fn PyList_New(size: isize) -> u64 {
 }
 
 /// `PyList_Size(list)` — return the length of the list, or -1 on error.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyList_Size(list: u64) -> isize {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(list).as_ptr() else {
@@ -2732,7 +2732,7 @@ pub extern "C" fn PyList_Size(list: u64) -> isize {
 
 /// `PyList_GetItem(list, index)` — return a **borrowed** reference to list[index].
 /// Returns 0 on error. The caller must NOT decref the returned handle.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyList_GetItem(list: u64, index: isize) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(list).as_ptr() else {
@@ -2768,7 +2768,7 @@ pub extern "C" fn PyList_GetItem(list: u64, index: isize) -> u64 {
 
 /// `PyList_SetItem(list, index, item)` — set list[index] to `item`.
 /// **Steals** a reference to `item`. Returns 0 on success, -1 on error.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyList_SetItem(list: u64, index: isize, item: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(list).as_ptr() else {
@@ -2817,7 +2817,7 @@ pub extern "C" fn PyList_SetItem(list: u64, index: isize, item: u64) -> i32 {
 
 /// `PyList_Append(list, item)` — append `item` to `list`.
 /// Returns 0 on success, -1 on error.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyList_Append(list: u64, item: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(list).as_ptr() else {
@@ -2843,7 +2843,7 @@ pub extern "C" fn PyList_Append(list: u64, item: u64) -> i32 {
 
 /// `PyDict_New()` — create a new empty dict.
 /// Returns the new dict handle (caller owns the reference) or 0 on error.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyDict_New() -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = alloc_dict_with_pairs(_py, &[]);
@@ -2856,7 +2856,7 @@ pub extern "C" fn PyDict_New() -> u64 {
 
 /// `PyDict_SetItem(dict, key, val)` — insert key/value pair into dict.
 /// Returns 0 on success, -1 on error.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyDict_SetItem(dict: u64, key: u64, val: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(dict).as_ptr() else {
@@ -2876,7 +2876,7 @@ pub extern "C" fn PyDict_SetItem(dict: u64, key: u64, val: u64) -> i32 {
 
 /// `PyDict_GetItem(dict, key)` — return a **borrowed** reference to dict[key],
 /// or 0 (NULL) if the key is not present (no exception set for missing key).
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyDict_GetItem(dict: u64, key: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(dict).as_ptr() else {
@@ -2910,7 +2910,7 @@ pub extern "C" fn PyDict_GetItem(dict: u64, key: u64) -> u64 {
 
 /// `PyDict_SetItemString(dict, key, val)` — insert string key/value into dict.
 /// The key is a C string (null-terminated). Returns 0 on success, -1 on error.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub unsafe extern "C" fn PyDict_SetItemString(
     dict: u64,
     key: *const std::ffi::c_char,
@@ -2935,7 +2935,7 @@ pub unsafe extern "C" fn PyDict_SetItemString(
 }
 
 /// `PyDict_Size(dict)` — return the number of items in the dict, or -1 on error.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyDict_Size(dict: u64) -> isize {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(dict).as_ptr() else {
@@ -2991,7 +2991,7 @@ pub extern "C" fn PyDict_Contains(dict: u64, key: u64) -> i32 {
 
 /// `PyTuple_New(size)` — create a new tuple of length `size` filled with None values.
 /// Returns the new tuple handle (caller owns the reference) or 0 on error.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyTuple_New(size: isize) -> u64 {
     crate::with_gil_entry!(_py, {
         if size < 0 {
@@ -3011,7 +3011,7 @@ pub extern "C" fn PyTuple_New(size: isize) -> u64 {
 }
 
 /// `PyTuple_Size(tuple)` — return the length of the tuple, or -1 on error.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyTuple_Size(tuple: u64) -> isize {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(tuple).as_ptr() else {
@@ -3030,7 +3030,7 @@ pub extern "C" fn PyTuple_Size(tuple: u64) -> isize {
 
 /// `PyTuple_GetItem(tuple, index)` — return a **borrowed** reference to tuple[index].
 /// Returns 0 on error. The caller must NOT decref the returned handle.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyTuple_GetItem(tuple: u64, index: isize) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(tuple).as_ptr() else {
@@ -3057,7 +3057,7 @@ pub extern "C" fn PyTuple_GetItem(tuple: u64, index: isize) -> u64 {
 /// `PyTuple_SetItem(tuple, index, item)` — set tuple[index] to `item`.
 /// **Steals** a reference to `item`. Returns 0 on success, -1 on error.
 /// Intended for filling newly-created tuples before they are exposed to other code.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyTuple_SetItem(tuple: u64, index: isize, item: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(tuple).as_ptr() else {
@@ -3339,7 +3339,7 @@ pub extern "C" fn PyNumber_Xor(a: u64, b: u64) -> u64 {
 }
 
 /// `PyNumber_Check(o)` — return 1 if `o` is a numeric type (int, float, bool), 0 otherwise.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyNumber_Check(o: u64) -> i32 {
     let obj = obj_from_bits(o);
     if obj.is_int() || obj.is_float() || obj.is_bool() {
@@ -3623,7 +3623,7 @@ pub extern "C" fn PySequence_Contains(o: u64, value: u64) -> i32 {
 /// `PyBytes_FromStringAndSize(v, len)` — create a new bytes object from a buffer.
 /// If `v` is NULL and `len > 0`, returns 0 (error). If `len == 0`, returns an empty bytes.
 /// Returns the new bytes handle (caller owns the reference) or 0 on error.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub unsafe extern "C" fn PyBytes_FromStringAndSize(v: *const u8, len: isize) -> u64 {
     crate::with_gil_entry!(_py, {
         if len < 0 {
@@ -3675,7 +3675,7 @@ pub extern "C" fn PyBytes_AsString(o: u64) -> *const u8 {
 }
 
 /// `PyBytes_Size(o)` — return the length of a bytes object, or -1 on error.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyBytes_Size(o: u64) -> isize {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(o).as_ptr() else {
@@ -3694,7 +3694,7 @@ pub extern "C" fn PyBytes_Size(o: u64) -> isize {
 
 /// `PyUnicode_FromString(v)` — create a new str from a NUL-terminated UTF-8 C string.
 /// Returns the new string handle (caller owns the reference) or 0 on error.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub unsafe extern "C" fn PyUnicode_FromString(v: *const std::ffi::c_char) -> u64 {
     crate::with_gil_entry!(_py, {
         if v.is_null() {
@@ -3715,7 +3715,7 @@ pub unsafe extern "C" fn PyUnicode_FromString(v: *const std::ffi::c_char) -> u64
 /// `PyUnicode_AsUTF8(o)` — return a pointer to the UTF-8 representation of a string.
 /// Returns NULL on error. The pointer is borrowed and valid as long as the string object
 /// is alive.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyUnicode_AsUTF8(o: u64) -> *const std::ffi::c_char {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(o).as_ptr() else {
@@ -3735,7 +3735,7 @@ pub extern "C" fn PyUnicode_AsUTF8(o: u64) -> *const std::ffi::c_char {
 /// `PyUnicode_AsUTF8AndSize(o, size)` — return a pointer to the UTF-8 representation
 /// and write the length to `*size` (if `size` is not NULL).
 /// Returns NULL on error.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub unsafe extern "C" fn PyUnicode_AsUTF8AndSize(
     o: u64,
     size: *mut isize,
@@ -3817,7 +3817,7 @@ pub unsafe extern "C" fn PyObject_Free(ptr: *mut u8) {
 // ---------------------------------------------------------------------------
 
 /// `PyObject_Repr(obj)` — return repr(obj), or 0 on error. Caller owns the reference.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyObject_Repr(obj: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_repr_from_obj(obj);
@@ -3832,7 +3832,7 @@ pub extern "C" fn PyObject_Repr(obj: u64) -> u64 {
 }
 
 /// `PyObject_Str(obj)` — return str(obj), or 0 on error. Caller owns the reference.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyObject_Str(obj: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_str_from_obj(obj);
@@ -3847,7 +3847,7 @@ pub extern "C" fn PyObject_Str(obj: u64) -> u64 {
 }
 
 /// `PyObject_Hash(obj)` — return the hash of obj, or -1 on error.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyObject_Hash(obj: u64) -> i64 {
     crate::with_gil_entry!(_py, {
         let res = molt_hash_builtin(obj);
@@ -4055,7 +4055,7 @@ pub extern "C" fn PyObject_DelAttrString(obj: u64, name: *const std::ffi::c_char
 /// `PyObject_RichCompareBool(a, b, op)` — compare two objects.
 /// op: Py_LT=0, Py_LE=1, Py_EQ=2, Py_NE=3, Py_GT=4, Py_GE=5
 /// Returns 1 if true, 0 if false, -1 on error.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyObject_RichCompareBool(a: u64, b: u64, op: i32) -> i32 {
     crate::with_gil_entry!(_py, {
         let res = match op {
@@ -4091,7 +4091,7 @@ pub extern "C" fn PyObject_RichCompareBool(a: u64, b: u64, op: i32) -> i32 {
 }
 
 /// `PyObject_RichCompare(a, b, op)` — compare two objects, returning the result object.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyObject_RichCompare(a: u64, b: u64, op: i32) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = match op {
@@ -4121,7 +4121,7 @@ pub extern "C" fn PyObject_RichCompare(a: u64, b: u64, op: i32) -> u64 {
 }
 
 /// `PyCallable_Check(obj)` — return 1 if obj is callable, 0 otherwise.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyCallable_Check(obj: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let res = molt_callable_builtin(obj);
@@ -4138,7 +4138,7 @@ pub extern "C" fn PyCallable_Check(obj: u64) -> i32 {
 }
 
 /// `PyObject_IsInstance(obj, cls)` — return 1 if isinstance(obj, cls), 0 if not, -1 on error.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyObject_IsInstance(obj: u64, cls: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let res = molt_isinstance(obj, cls);
@@ -4362,7 +4362,7 @@ pub extern "C" fn PyFrozenSet_Check(obj: u64) -> i32 {
 // ---------------------------------------------------------------------------
 
 /// `PyUnicode_GetLength(obj)` — return the length of the Unicode string in code points.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyUnicode_GetLength(obj: u64) -> isize {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(obj).as_ptr() else {
@@ -4402,7 +4402,7 @@ pub extern "C" fn PyUnicode_Contains(container: u64, element: u64) -> i32 {
 
 /// `PyUnicode_CompareWithASCIIString(uni, string)` — compare with a C ASCII string.
 /// Returns -1, 0, or 1 for less, equal, greater.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyUnicode_CompareWithASCIIString(
     uni: u64,
     string: *const std::ffi::c_char,
@@ -4431,7 +4431,7 @@ pub extern "C" fn PyUnicode_CompareWithASCIIString(
 // ---------------------------------------------------------------------------
 
 /// `PyDict_GetItemString(dict, key)` — get item using C string key. Borrowed reference.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyDict_GetItemString(dict: u64, key: *const std::ffi::c_char) -> u64 {
     crate::with_gil_entry!(_py, {
         if key.is_null() {
@@ -4479,7 +4479,7 @@ pub extern "C" fn PyDict_DelItem(dict: u64, key: u64) -> i32 {
 }
 
 /// `PyDict_DelItemString(dict, key)` — delete dict[key] using C string.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyDict_DelItemString(dict: u64, key: *const std::ffi::c_char) -> i32 {
     crate::with_gil_entry!(_py, {
         if key.is_null() {
@@ -4500,13 +4500,13 @@ pub extern "C" fn PyDict_DelItemString(dict: u64, key: *const std::ffi::c_char) 
 }
 
 /// `PyDict_Keys(dict)` — return a list of all keys in the dict.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyDict_Keys(dict: u64) -> u64 {
     PyMapping_Keys(dict)
 }
 
 /// `PyDict_Values(dict)` — return a list of all values in the dict.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyDict_Values(dict: u64) -> u64 {
     PyMapping_Values(dict)
 }
@@ -4536,7 +4536,7 @@ pub extern "C" fn PyDict_Update(a: u64, b: u64) -> i32 {
 }
 
 /// `PyDict_Copy(dict)` — return a shallow copy of the dict.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyDict_Copy(dict: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_dict_copy(dict);
@@ -4638,7 +4638,7 @@ pub extern "C" fn PyList_AsTuple(list: u64) -> u64 {
 // ---------------------------------------------------------------------------
 
 /// `PyErr_SetString(type, message)` — set the current exception.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyErr_SetString(exc_type: u64, message: *const std::ffi::c_char) {
     crate::with_gil_entry!(_py, {
         if message.is_null() {
@@ -4651,7 +4651,7 @@ pub extern "C" fn PyErr_SetString(exc_type: u64, message: *const std::ffi::c_cha
 }
 
 /// `PyErr_SetNone(type)` — set the current exception with no message.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyErr_SetNone(exc_type: u64) {
     crate::with_gil_entry!(_py, {
         set_exception_from_message(_py, exc_type, b"");
@@ -4659,7 +4659,7 @@ pub extern "C" fn PyErr_SetNone(exc_type: u64) {
 }
 
 /// `PyErr_Occurred()` — return the current exception type bits if an exception is pending, or 0.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyErr_Occurred() -> u64 {
     crate::with_gil_entry!(_py, {
         if exception_pending(_py) {
@@ -4673,7 +4673,7 @@ pub extern "C" fn PyErr_Occurred() -> u64 {
 }
 
 /// `PyErr_Clear()` — clear the current exception.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyErr_Clear() {
     crate::with_gil_entry!(_py, {
         if exception_pending(_py) {
@@ -4722,13 +4722,13 @@ pub extern "C" fn Py_DecRef(obj: u64) {
 }
 
 /// `Py_XINCREF(obj)` — increment ref count if obj is non-NULL.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn Py_XINCREF(obj: u64) {
     Py_IncRef(obj)
 }
 
 /// `Py_XDECREF(obj)` — decrement ref count if obj is non-NULL.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn Py_XDECREF(obj: u64) {
     Py_DecRef(obj)
 }
@@ -4738,7 +4738,7 @@ pub extern "C" fn Py_XDECREF(obj: u64) {
 // ---------------------------------------------------------------------------
 
 /// `PyLong_AsLong(obj)` — return the integer value as a C long, or -1 on error.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyLong_AsLong(obj: u64) -> i64 {
     crate::with_gil_entry!(_py, {
         match to_i64(obj_from_bits(obj)) {
@@ -4752,13 +4752,13 @@ pub extern "C" fn PyLong_AsLong(obj: u64) -> i64 {
 }
 
 /// `PyLong_FromLong(v)` — create a new integer from a C long.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyLong_FromLong(v: i64) -> u64 {
     MoltObject::from_int(v).bits()
 }
 
 /// `PyFloat_AsDouble(obj)` — return the float value as a C double, or -1.0 on error.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyFloat_AsDouble(obj: u64) -> f64 {
     crate::with_gil_entry!(_py, {
         match to_f64(obj_from_bits(obj)) {
@@ -4772,13 +4772,13 @@ pub extern "C" fn PyFloat_AsDouble(obj: u64) -> f64 {
 }
 
 /// `PyFloat_FromDouble(v)` — create a new float from a C double.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyFloat_FromDouble(v: f64) -> u64 {
     MoltObject::from_float(v).bits()
 }
 
 /// `PyBool_FromLong(v)` — return Py_True if v is nonzero, Py_False otherwise.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
 pub extern "C" fn PyBool_FromLong(v: i64) -> u64 {
     MoltObject::from_bool(v != 0).bits()
 }
