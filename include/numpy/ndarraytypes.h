@@ -13,6 +13,12 @@
 extern "C" {
 #endif
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
+#define MOLT_NUMPY_INTERNAL_BUILD 1
+#else
+#define MOLT_NUMPY_INTERNAL_BUILD 0
+#endif
+
 typedef unsigned char npy_bool;
 typedef signed char npy_byte;
 typedef unsigned char npy_ubyte;
@@ -111,8 +117,10 @@ typedef _molt_npy_clongdouble_value npy_clongdouble;
 #define NPY_RAVEL_AXIS NPY_MIN_INT
 #endif
 
+#if !MOLT_NUMPY_INTERNAL_BUILD
 #ifndef NPY_DEFAULT_ASSIGN_CASTING
 #define NPY_DEFAULT_ASSIGN_CASTING NPY_SAME_KIND_CASTING
+#endif
 #endif
 
 #ifndef NPY_DATETIME_FMT
@@ -825,9 +833,11 @@ typedef struct PyArrayMethod_Spec {
 } PyArrayMethod_Spec;
 
 typedef struct PyArrayDTypeMeta_Spec {
-    const char *name;
+    PyTypeObject *typeobj;
     int flags;
-    void *slots;
+    PyArrayMethod_Spec **casts;
+    PyType_Slot *slots;
+    PyTypeObject *baseclass;
 } PyArrayDTypeMeta_Spec;
 
 typedef struct PyArray_Chunk {
@@ -849,6 +859,11 @@ typedef struct PyArrayInterface {
     void *data;
     PyObject *descr;
 } PyArrayInterface;
+
+typedef struct {
+    npy_intp perm;
+    npy_intp stride;
+} npy_stride_sort_item;
 
 #ifndef MOLT_NUMPY_UFUNC_CORE_TYPES
 #define MOLT_NUMPY_UFUNC_CORE_TYPES
@@ -1054,11 +1069,19 @@ typedef struct {
     npy_uint8 lane_data[64];
 } PySIMDVectorObject;
 
+#if MOLT_NUMPY_INTERNAL_BUILD
+extern void *PyArray_StringDType_DTypeSpec;
+extern void *PyArray_StringDType_Slots;
+extern void *PyArray_StringDType_casts;
+extern void *PyArray_StringDType_members;
+extern void *PyArray_StringDType_methods;
+#else
 static void *PyArray_StringDType_DTypeSpec = NULL;
 static void *PyArray_StringDType_Slots = NULL;
 static void *PyArray_StringDType_casts = NULL;
 static void *PyArray_StringDType_members = NULL;
 static void *PyArray_StringDType_methods = NULL;
+#endif
 typedef struct npy_unpacked_static_string {
     size_t size;
     const char *buf;
@@ -1212,7 +1235,11 @@ static inline int PyDataType_ALIGNMENT(const PyArray_Descr *descr) {
 #define PyDataType_ISLEGACY(descr) ((descr) != NULL && (descr)->type_num >= 0)
 #define PyDataType_ PyDataType_ELSIZE
 
+#if MOLT_NUMPY_INTERNAL_BUILD
+extern PyTypeObject PyArray_Type;
+#else
 #define PyArray_Type (*_molt_numpy_builtin_type_borrowed("object"))
+#endif
 #if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
 extern PyArray_DTypeMeta PyArrayDescr_TypeFull;
 #define PyArrayDescr_Type (*(PyTypeObject *)&PyArrayDescr_TypeFull)
@@ -1220,8 +1247,11 @@ extern PyArray_DTypeMeta PyArrayDescr_TypeFull;
 #define PyArrayDescr_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #define PyArrayDescr_TypeFull PyArrayDescr_Type
 #endif
+#if MOLT_NUMPY_INTERNAL_BUILD
+extern PyTypeObject PyArrayDTypeMeta_Type;
+extern PyTypeObject PyArrayMethod_Type;
+#else
 #define PyArrayDTypeMeta_Type (*_molt_numpy_builtin_type_borrowed("type"))
-#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 #define PyArrayMethod_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #endif
 #define PyGenericArrType_Type (*_molt_numpy_builtin_type_borrowed("object"))
@@ -1237,17 +1267,60 @@ extern PyTypeObject PyArrayFunctionDispatcher_Type;
 #else
 #define PyArrayFunctionDispatcher_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #endif
+#if MOLT_NUMPY_INTERNAL_BUILD
+extern PyTypeObject PyArrayIter_Type;
+extern PyTypeObject PyArrayMultiIter_Type;
+extern PyTypeObject PyArrayNeighborhoodIter_Type;
+extern PyTypeObject PyFortran_Type;
+#else
 #define PyArrayIter_Type (*_molt_numpy_builtin_type_borrowed("object"))
+#define PyArrayMultiIter_Type (*_molt_numpy_builtin_type_borrowed("object"))
+#define PyArrayNeighborhoodIter_Type (*_molt_numpy_builtin_type_borrowed("object"))
+#define PyFortran_Type (*_molt_numpy_builtin_type_borrowed("object"))
+#endif
 #if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
 extern PyTypeObject PyArrayMapIter_Type;
 #else
 #define PyArrayMapIter_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #endif
-#define PyArrayMultiIter_Type (*_molt_numpy_builtin_type_borrowed("object"))
-#define PyArrayNeighborhoodIter_Type (*_molt_numpy_builtin_type_borrowed("object"))
-#define PyFortran_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #define PyArray_ PyArray_Check
 
+#if MOLT_NUMPY_INTERNAL_BUILD
+extern PyTypeObject PyBoolArrType_Type;
+extern PyTypeObject PyByteArrType_Type;
+extern PyTypeObject PyUByteArrType_Type;
+extern PyTypeObject PyShortArrType_Type;
+extern PyTypeObject PyUShortArrType_Type;
+extern PyTypeObject PyIntArrType_Type;
+extern PyTypeObject PyUIntArrType_Type;
+extern PyTypeObject PyLongArrType_Type;
+extern PyTypeObject PyULongArrType_Type;
+extern PyTypeObject PyLongLongArrType_Type;
+extern PyTypeObject PyULongLongArrType_Type;
+extern PyTypeObject PyHalfArrType_Type;
+extern PyTypeObject PyFloatArrType_Type;
+extern PyTypeObject PyDoubleArrType_Type;
+extern PyTypeObject PyLongDoubleArrType_Type;
+extern PyTypeObject PyCFloatArrType_Type;
+extern PyTypeObject PyCDoubleArrType_Type;
+extern PyTypeObject PyCLongDoubleArrType_Type;
+extern PyTypeObject PyStringArrType_Type;
+extern PyTypeObject PyUnicodeArrType_Type;
+extern PyTypeObject PyVoidArrType_Type;
+extern PyTypeObject PyDatetimeArrType_Type;
+extern PyTypeObject PyTimedeltaArrType_Type;
+extern PyTypeObject PyNumberArrType_Type;
+extern PyTypeObject PyIntegerArrType_Type;
+extern PyTypeObject PySignedIntegerArrType_Type;
+extern PyTypeObject PyUnsignedIntegerArrType_Type;
+extern PyTypeObject PyInexactArrType_Type;
+extern PyTypeObject PyFloatingArrType_Type;
+extern PyTypeObject PyComplexFloatingArrType_Type;
+extern PyTypeObject PyFlexibleArrType_Type;
+extern PyTypeObject PyCharacterArrType_Type;
+extern PyTypeObject PyObjectArrType_Type;
+extern PyTypeObject PyTimeIntegerArrType_Type;
+#else
 #define PyBoolArrType_Type (*_molt_numpy_builtin_type_borrowed("bool"))
 #define PyByteArrType_Type (*_molt_numpy_builtin_type_borrowed("int"))
 #define PyUByteArrType_Type (*_molt_numpy_builtin_type_borrowed("int"))
@@ -1282,8 +1355,52 @@ extern PyTypeObject PyArrayMapIter_Type;
 #define PyCharacterArrType_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #define PyObjectArrType_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #define PyTimeIntegerArrType_Type (*_molt_numpy_builtin_type_borrowed("object"))
+#endif
 
-#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
+#if MOLT_NUMPY_INTERNAL_BUILD
+extern PyArray_DTypeMeta PyArray_BoolDType;
+extern PyArray_DTypeMeta PyArray_ByteDType;
+extern PyArray_DTypeMeta PyArray_UByteDType;
+extern PyArray_DTypeMeta PyArray_ShortDType;
+extern PyArray_DTypeMeta PyArray_UShortDType;
+extern PyArray_DTypeMeta PyArray_IntDType;
+extern PyArray_DTypeMeta PyArray_UIntDType;
+extern PyArray_DTypeMeta PyArray_LongDType;
+extern PyArray_DTypeMeta PyArray_ULongDType;
+extern PyArray_DTypeMeta PyArray_LongLongDType;
+extern PyArray_DTypeMeta PyArray_ULongLongDType;
+extern PyArray_DTypeMeta PyArray_Int8DType;
+extern PyArray_DTypeMeta PyArray_UInt8DType;
+extern PyArray_DTypeMeta PyArray_Int16DType;
+extern PyArray_DTypeMeta PyArray_UInt16DType;
+extern PyArray_DTypeMeta PyArray_Int32DType;
+extern PyArray_DTypeMeta PyArray_UInt32DType;
+extern PyArray_DTypeMeta PyArray_Int64DType;
+extern PyArray_DTypeMeta PyArray_UInt64DType;
+extern PyArray_DTypeMeta PyArray_PyLongDType;
+extern PyArray_DTypeMeta PyArray_PyFloatDType;
+extern PyArray_DTypeMeta PyArray_HalfDType;
+extern PyArray_DTypeMeta PyArray_FloatDType;
+extern PyArray_DTypeMeta PyArray_DoubleDType;
+extern PyArray_DTypeMeta PyArray_StringDType;
+extern PyArray_DTypeMeta PyArray_IntpDType;
+extern PyArray_DTypeMeta PyArray_UIntpDType;
+extern PyArray_DTypeMeta PyArray_BytesDType;
+extern PyArray_DTypeMeta PyArray_UnicodeDType;
+extern PyArray_DTypeMeta PyArray_ObjectDType;
+extern PyArray_DTypeMeta PyArray_VoidDType;
+extern PyArray_DTypeMeta PyArray_DatetimeDType;
+extern PyArray_DTypeMeta PyArray_PyComplexDType;
+extern PyArray_DTypeMeta PyArray_CFloatDType;
+extern PyArray_DTypeMeta PyArray_CDoubleDType;
+extern PyArray_DTypeMeta PyArray_CLongDoubleDType;
+extern PyArray_DTypeMeta PyArray_LongDoubleDType;
+extern PyArray_DTypeMeta PyArray_ComplexAbstractDType;
+extern PyArray_DTypeMeta PyArray_DefaultIntDType;
+extern PyArray_DTypeMeta PyArray_TimedeltaDType;
+extern PyArray_DTypeMeta PyArray_IntAbstractDType;
+extern PyArray_DTypeMeta PyArray_FloatAbstractDType;
+#elif !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 #define PyArray_BoolDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("bool"))
 #define PyArray_ByteDType PyArray_PyLongDType
 #define PyArray_UByteDType PyArray_PyLongDType
