@@ -53,6 +53,7 @@ Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
 - 0019 Bytecode Lowering Matrix: [docs/spec/areas/compiler/0019_BYTECODE_LOWERING_MATRIX.md](docs/spec/areas/compiler/0019_BYTECODE_LOWERING_MATRIX.md)
 - 0190 Lowering Rules: [docs/spec/areas/compiler/0190_LOWERING_RULES.md](docs/spec/areas/compiler/0190_LOWERING_RULES.md)
 - 0192 Idioms And Semantic Patterns: [docs/spec/areas/compiler/0192_IDIOMS_AND_SEMANTIC_PATTERNS.md](docs/spec/areas/compiler/0192_IDIOMS_AND_SEMANTIC_PATTERNS.md)
+- 0220 Transpiler Research Execution Plan: [docs/spec/areas/tooling/0220_TRANSPILER_RESEARCH_EXECUTION_PLAN.md](docs/spec/areas/tooling/0220_TRANSPILER_RESEARCH_EXECUTION_PLAN.md)
 
 ## Compatibility and Stdlib
 - Compatibility architecture index: [docs/spec/areas/compat/README.md](docs/spec/areas/compat/README.md)
