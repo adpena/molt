@@ -1673,7 +1673,6 @@ impl LuauBackend {
             "get_attr"
             | "get_attr_generic_obj"
             | "get_attr_generic_ptr"
-            | "get_attr_name"
             | "get_attr_special_obj" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
@@ -1694,34 +1693,72 @@ impl LuauBackend {
                     }
                 }
             }
+            "get_attr_name" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let obj = sanitize_ident(&args[0]);
+                    let attr_name = sanitize_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "local {out} = if type({obj}) == \"table\" then {obj}[{attr_name}] else nil"
+                    ));
+                } else {
+                    self.emit_line(&format!("local {out} = nil"));
+                }
+            }
             "get_attr_name_default" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let attr = op.s_value.as_deref().unwrap_or("unknown");
-                let attr = sanitize_ident(attr);
-                if let Some(obj) = args.first() {
-                    let obj = sanitize_ident(obj);
-                    let default = if args.len() >= 2 {
-                        sanitize_ident(&args[1])
+                if args.len() >= 2 {
+                    let obj = sanitize_ident(&args[0]);
+                    let attr_name = sanitize_ident(&args[1]);
+                    let default = if args.len() >= 3 {
+                        sanitize_ident(&args[2])
                     } else {
                         "nil".to_string()
                     };
                     self.emit_line(&format!(
-                        "local {out}; if {obj}.{attr} ~= nil then {out} = {obj}.{attr} else {out} = {default} end"
+                        "local {out}; if type({obj}) == \"table\" and {obj}[{attr_name}] ~= nil then {out} = {obj}[{attr_name}] else {out} = {default} end"
                     ));
+                } else if let Some(obj) = args.first() {
+                    let obj = sanitize_ident(obj);
+                    let attr = sanitize_ident(op.s_value.as_deref().unwrap_or("unknown"));
+                    self.emit_line(&format!(
+                        "local {out}; if {obj}.{attr} ~= nil then {out} = {obj}.{attr} else {out} = nil end"
+                    ));
+                } else {
+                    self.emit_line(&format!("local {out} = nil"));
                 }
             }
             "has_attr_name" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let attr = op.s_value.as_deref().unwrap_or("unknown");
-                let attr = sanitize_ident(attr);
-                if let Some(obj) = args.first() {
+                if args.len() >= 2 {
+                    let obj = sanitize_ident(&args[0]);
+                    let attr_name = sanitize_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "local {out} = (type({obj}) == \"table\" and {obj}[{attr_name}] ~= nil)"
+                    ));
+                } else if let Some(obj) = args.first() {
                     let obj = sanitize_ident(obj);
+                    let attr = sanitize_ident(op.s_value.as_deref().unwrap_or("unknown"));
                     self.emit_line(&format!("local {out} = ({obj}.{attr} ~= nil)"));
+                } else {
+                    self.emit_line(&format!("local {out} = false"));
                 }
             }
-            "set_attr" | "set_attr_generic_obj" | "set_attr_generic_ptr" | "set_attr_name" => {
+            "set_attr_name" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 3 {
+                    let obj = sanitize_ident(&args[0]);
+                    let attr_name = sanitize_ident(&args[1]);
+                    let value = sanitize_ident(&args[2]);
+                    self.emit_line(&format!(
+                        "if type({obj}) == \"table\" then {obj}[{attr_name}] = {value} end"
+                    ));
+                }
+            }
+            "set_attr" | "set_attr_generic_obj" | "set_attr_generic_ptr" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let attr = op.s_value.as_deref().unwrap_or("unknown");
                 if attr.starts_with("__") && attr.ends_with("__") {
@@ -1748,7 +1785,17 @@ impl LuauBackend {
                     }
                 }
             }
-            "del_attr_generic_obj" | "del_attr_generic_ptr" | "del_attr_name" => {
+            "del_attr_name" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let obj = sanitize_ident(&args[0]);
+                    let attr_name = sanitize_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "if type({obj}) == \"table\" then {obj}[{attr_name}] = nil end"
+                    ));
+                }
+            }
+            "del_attr_generic_obj" | "del_attr_generic_ptr" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let attr = op.s_value.as_deref().unwrap_or("unknown");
                 let attr = sanitize_ident(attr);
@@ -2016,8 +2063,9 @@ impl LuauBackend {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
-                    let obj = sanitize_ident(&args[0]);
-                    let method = sanitize_ident(&args[1]);
+                    // IR contract: args[0] = function, args[1] = self.
+                    let method = sanitize_ident(&args[0]);
+                    let obj = sanitize_ident(&args[1]);
                     self.emit_line(&format!(
                         "local {out} = function(...) return {method}({obj}, ...) end"
                     ));

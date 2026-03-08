@@ -9769,10 +9769,10 @@ def build(
         target_root = _cargo_target_root(molt_root)
         if target_triple:
             runtime_lib = (
-                target_root / target_triple / profile_dir / "libmolt_runtime.a"
+                target_root / target_triple / profile_dir / "libmolt_lang_runtime.a"
             )
         else:
-            runtime_lib = target_root / profile_dir / "libmolt_runtime.a"
+            runtime_lib = target_root / profile_dir / "libmolt_lang_runtime.a"
         if not _ensure_runtime_lib(
             runtime_lib,
             target_triple,
@@ -10650,10 +10650,10 @@ int main(int argc, char** argv) {
         target_root = _cargo_target_root(molt_root)
         if target_triple:
             runtime_lib = (
-                target_root / target_triple / profile_dir / "libmolt_runtime.a"
+                target_root / target_triple / profile_dir / "libmolt_lang_runtime.a"
             )
         else:
-            runtime_lib = target_root / profile_dir / "libmolt_runtime.a"
+            runtime_lib = target_root / profile_dir / "libmolt_lang_runtime.a"
 
     cc = os.environ.get("CC", "clang")
     link_cmd = shlex.split(cc)
@@ -12088,7 +12088,7 @@ def doctor(
                     advice=["Ensure uv.lock exists and is readable"],
                 )
 
-    runtime_lib = _cargo_target_root(root) / "release" / "libmolt_runtime.a"
+    runtime_lib = _cargo_target_root(root) / "release" / "libmolt_lang_runtime.a"
     record(
         "molt-runtime",
         runtime_lib.exists(),
@@ -12951,10 +12951,10 @@ def extension_build(
     if runtime_target_triple:
         _ensure_rustup_target(runtime_target_triple, warnings)
         runtime_lib = (
-            target_root / runtime_target_triple / profile_dir / "libmolt_runtime.a"
+            target_root / runtime_target_triple / profile_dir / "libmolt_lang_runtime.a"
         )
     else:
-        runtime_lib = target_root / profile_dir / "libmolt_runtime.a"
+        runtime_lib = target_root / profile_dir / "libmolt_lang_runtime.a"
     with _temporary_env_overrides({"MOLT_RUNTIME_HOSTED_EXTENSION": "1"}):
         if not _ensure_runtime_lib(
             runtime_lib,
