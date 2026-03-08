@@ -20,12 +20,12 @@ typedef enum {
 #define NPY_DT_PARAMETRIC (1 << 2)
 #define NPY_DT_NUMERIC (1 << 3)
 
-#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(PyArrayMethod_COMBINED_FLAGS)
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD) && !defined(PyArrayMethod_COMBINED_FLAGS)
 #define PyArrayMethod_COMBINED_FLAGS(lhs, rhs) \
     ((NPY_ARRAYMETHOD_FLAGS)((lhs) | (rhs)))
 #endif
 
-#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(PyArrayMethod_MINIMAL_FLAGS)
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD) && !defined(PyArrayMethod_MINIMAL_FLAGS)
 #define PyArrayMethod_MINIMAL_FLAGS 0
 #endif
 
@@ -46,7 +46,7 @@ typedef NPY_CASTING (PyArrayMethod_ResolveDescriptorsWithScalar)(
     npy_intp *view_offset
 );
 
-#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 typedef int (PyArrayMethod_GetMaskedStridedLoop)(
     PyArrayMethod_Context *context,
     int aligned,
@@ -170,6 +170,37 @@ typedef int (PyArrayMethod_TranslateLoopDescriptors)(
 typedef struct {
     int flags;
 } PyArrayMethod_SortParameters;
+
+#ifndef _NPY_METH_resolve_descriptors_with_scalars
+#define _NPY_METH_resolve_descriptors_with_scalars 1
+#endif
+#ifndef NPY_METH_resolve_descriptors
+#define NPY_METH_resolve_descriptors 2
+#endif
+#ifndef NPY_METH_get_loop
+#define NPY_METH_get_loop 3
+#endif
+#ifndef NPY_METH_get_reduction_initial
+#define NPY_METH_get_reduction_initial 4
+#endif
+#ifndef NPY_METH_strided_loop
+#define NPY_METH_strided_loop 5
+#endif
+#ifndef NPY_METH_contiguous_loop
+#define NPY_METH_contiguous_loop 6
+#endif
+#ifndef NPY_METH_unaligned_strided_loop
+#define NPY_METH_unaligned_strided_loop 7
+#endif
+#ifndef NPY_METH_unaligned_contiguous_loop
+#define NPY_METH_unaligned_contiguous_loop 8
+#endif
+#ifndef NPY_METH_contiguous_indexed_loop
+#define NPY_METH_contiguous_indexed_loop 9
+#endif
+#ifndef _NPY_METH_static_data
+#define _NPY_METH_static_data 10
+#endif
 
 static inline int _molt_numpy_dtype_unavailable_i32(const char *name) {
     PyErr_Format(

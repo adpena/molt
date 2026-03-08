@@ -180,12 +180,18 @@ enum NPY_TYPECHAR {
 #define NPY_UINT64 NPY_ULONGLONG
 #endif
 
+#ifndef NPY_SAME_VALUE_CASTING_FLAG
+#define NPY_SAME_VALUE_CASTING_FLAG 64
+#endif
+
 typedef enum {
+    _NPY_ERROR_OCCURRED_IN_CAST = -1,
     NPY_NO_CASTING = 0,
     NPY_EQUIV_CASTING = 1,
     NPY_SAFE_CASTING = 2,
     NPY_SAME_KIND_CASTING = 3,
-    NPY_UNSAFE_CASTING = 4
+    NPY_UNSAFE_CASTING = 4,
+    NPY_SAME_VALUE_CASTING = NPY_UNSAFE_CASTING | NPY_SAME_VALUE_CASTING_FLAG
 } NPY_CASTING;
 
 typedef enum {
@@ -386,13 +392,13 @@ typedef struct {
     npy_int32 as;
 } npy_timedeltastruct;
 
-#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 typedef enum {
     NPY_DEVICE_CPU = 0,
 } NPY_DEVICE;
 #endif
 
-#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 typedef struct {
     struct PyArray_DTypeMeta *dtype;
     PyArray_Descr *descr;
@@ -510,7 +516,7 @@ typedef struct PyArrayMapIterObject {
     int _molt_reserved;
 } PyArrayMapIterObject;
 
-#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
 typedef struct PyArray_DTypeMeta {
     PyHeapTypeObject super;
     PyArray_Descr *singleton;
@@ -534,7 +540,7 @@ typedef struct PyArray_DTypeMeta {
 
 typedef PyArray_DTypeMeta PyArray_DTypeMeta_tag;
 
-#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
 typedef struct PyArrayMethodObject_tag PyArrayMethodObject;
 #else
 typedef struct PyArrayMethodObject_tag {
@@ -567,7 +573,7 @@ typedef struct PyArrayMethod_Context_tag {
 
 typedef PyArrayMethod_Context PyArrayMethod_Context_tag;
 
-typedef int (*PyArrayMethod_StridedLoop)(
+typedef int (PyArrayMethod_StridedLoop)(
     PyArrayMethod_Context *context,
     char *const *data,
     const npy_intp *dimensions,
@@ -581,7 +587,8 @@ typedef struct PyArrayMethod_Spec {
     int nout;
     int casting;
     int flags;
-    void *slots;
+    PyArray_DTypeMeta **dtypes;
+    PyType_Slot *slots;
 } PyArrayMethod_Spec;
 
 typedef struct PyArrayDTypeMeta_Spec {
@@ -672,7 +679,7 @@ typedef struct _tagPyUFuncObject {
     PyObject *identity_value;
 } PyUFuncObject;
 
-#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 typedef enum {
     NPY_COPY_NEVER = 0,
     NPY_COPY_ALWAYS = 1,
@@ -852,7 +859,7 @@ typedef struct {
     npy_string_allocator *allocator;
 } PyArray_StringDTypeObject;
 
-#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 typedef enum {
     NPY_AS_TYPE_COPY_IF_NEEDED = 0,
     NPY_AS_TYPE_COPY_ALWAYS = 1,
@@ -970,7 +977,7 @@ static inline int PyDataType_ALIGNMENT(const PyArray_Descr *descr) {
 #define PyDataType_ PyDataType_ELSIZE
 
 #define PyArray_Type (*_molt_numpy_builtin_type_borrowed("object"))
-#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
 extern PyArray_DTypeMeta PyArrayDescr_TypeFull;
 #define PyArrayDescr_Type (*(PyTypeObject *)&PyArrayDescr_TypeFull)
 #else
@@ -978,7 +985,7 @@ extern PyArray_DTypeMeta PyArrayDescr_TypeFull;
 #define PyArrayDescr_TypeFull PyArrayDescr_Type
 #endif
 #define PyArrayDTypeMeta_Type (*_molt_numpy_builtin_type_borrowed("type"))
-#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 #define PyArrayMethod_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #endif
 #define PyGenericArrType_Type (*_molt_numpy_builtin_type_borrowed("object"))
@@ -1027,7 +1034,7 @@ extern PyArray_DTypeMeta PyArrayDescr_TypeFull;
 #define PyObjectArrType_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #define PyTimeIntegerArrType_Type (*_molt_numpy_builtin_type_borrowed("object"))
 
-#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 #define PyArray_BoolDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("bool"))
 #define PyArray_ByteDType PyArray_PyLongDType
 #define PyArray_UByteDType PyArray_PyLongDType
