@@ -199,11 +199,13 @@ NPY_NO_EXPORT int PyArray_CheckAnyScalarExact(PyObject *obj);
 
 #define PyArray_malloc PyMem_Malloc
 #define PyArray_free PyMem_Free
+#if !MOLT_NUMPY_INTERNAL_BUILD
 #ifndef PyDataMem_NEW
 #define PyDataMem_NEW(size) PyMem_Malloc((size))
 #endif
 #ifndef PyDataMem_FREE
 #define PyDataMem_FREE(ptr) PyMem_Free((ptr))
+#endif
 #endif
 #if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 #define PyDataMem_UserNEW(size, handler) ((void)(handler), PyMem_Malloc((size)))
@@ -265,11 +267,13 @@ NPY_NO_EXPORT int PyArray_CheckAnyScalarExact(PyObject *obj);
 #define PyArray_FILLWBYTE(obj, val) memset(PyArray_DATA(obj), (val), (size_t)PyArray_NBYTES(obj))
 #define PyArray_INCREF(obj) Py_INCREF((PyObject *)(obj))
 #define PyArray_XDECREF(obj) Py_XDECREF((PyObject *)(obj))
+#if !MOLT_NUMPY_INTERNAL_BUILD
 #ifndef PyArray_Item_INCREF
 #define PyArray_Item_INCREF(obj, ...) Py_INCREF((PyObject *)(obj))
 #endif
 #ifndef PyArray_Item_XDECREF
 #define PyArray_Item_XDECREF(obj, ...) Py_XDECREF((PyObject *)(obj))
+#endif
 #endif
 
 #define PyArray_IsScalar(obj, cls) PyObject_TypeCheck((obj), &Py##cls##ArrType_Type)
