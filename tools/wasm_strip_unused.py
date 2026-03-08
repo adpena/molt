@@ -454,12 +454,6 @@ def parse_imports(wasm_path: Path) -> list[ImportInfo]:
     data = wasm_path.read_bytes()
     sections = _parse_sections(data)
 
-    # Parse type section for signatures
-    types: dict[int, tuple[list, list]] = {}
-    if SECTION_TYPE in sections:
-        t_off, t_size = sections[SECTION_TYPE]
-        types = _parse_type_section(data, t_off, t_size)
-
     if SECTION_IMPORT not in sections:
         return []
 
@@ -479,8 +473,7 @@ def parse_imports(wasm_path: Path) -> list[ImportInfo]:
             type_index, offset = _read_leb128_u32(data, offset)
             kind = "func"
         elif kind_byte == 0x01:  # table
-            elem_type = data[offset]
-            offset += 1
+            offset += 1  # elem_type
             flags = data[offset]
             offset += 1
             _initial, offset = _read_leb128_u32(data, offset)
@@ -591,70 +584,7 @@ def strip_imports(wasm_path: Path, output_path: Path, result: AnalysisResult) ->
         shutil.copy2(wasm_path, output_path)
         return output_path
 
-    # Get WAT representation
-    print("Converting to WAT text form...")
-    wat_proc = subprocess.run(
-        [wasm_tools, "print", str(wasm_path)],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    if wat_proc.returncode != 0:
-        print(f"ERROR: wasm-tools print failed: {wat_proc.stderr}", file=sys.stderr)
-        sys.exit(1)
-
-    wat = wat_proc.stdout
-
-    # Parse the type section to get signatures of strippable imports
-    data = wasm_path.read_bytes()
-    sections = _parse_sections(data)
-    types: dict[int, tuple[list, list]] = {}
-    if SECTION_TYPE in sections:
-        t_off, t_size = sections[SECTION_TYPE]
-        types = _parse_type_section(data, t_off, t_size)
-
-    # Build no-op function bodies for each strippable import
-    # We need to know the return types to generate appropriate no-op bodies
-    noop_funcs = []
-    for imp in strippable:
-        sig = types.get(imp.type_index)
-        if sig is None:
-            continue
-        _params, results = sig
-        # Build a no-op body that returns zero for each result type
-        param_str = " ".join(f"(param {_valtype_name(p)})" for p in _params)
-        result_str = " ".join(f"(result {_valtype_name(r)})" for r in results)
-        body_parts = []
-        for r in results:
-            vt = _valtype_name(r)
-            if vt == "i32":
-                body_parts.append("i32.const 0")
-            elif vt == "i64":
-                body_parts.append("i64.const 0")
-            elif vt == "f32":
-                body_parts.append("f32.const 0")
-            elif vt == "f64":
-                body_parts.append("f64.const 0")
-            else:
-                body_parts.append("i32.const 0")  # fallback
-        body_str = " ".join(body_parts) if body_parts else ""
-        noop_funcs.append((imp, param_str, result_str, body_str))
-
-    # Replace import lines with internal function definitions
-    # This is done via text manipulation of the WAT
-    modified_wat = wat
-    for imp, param_str, result_str, body_str in noop_funcs:
-        # Find the import line and comment it out
-        # Pattern: (import "module" "name" (func (;N;) (type M)))
-        escaped_name = re.escape(imp.name)
-        pattern = rf'\(import "{re.escape(imp.module)}" "{escaped_name}" \(func \(;\d+;\) \(type \d+\)\)\)'
-        # We can't simply remove imports without renumbering everything.
-        # Instead, we leave the imports in place — the browser host stubs them anyway.
-        # What we CAN do is report the analysis and use wasm-tools strip to remove
-        # debug sections and unused code.
-
-    # A simpler and safer approach: use wasm-tools strip to remove debug/name sections
-    # and wasm-tools demangle, then report the size savings from section removal
+    # Use wasm-tools strip to remove debug/name sections and report size savings.
     print("Stripping debug and name sections...")
     strip_proc = subprocess.run(
         [wasm_tools, "strip", str(wasm_path), "-o", str(output_path)],

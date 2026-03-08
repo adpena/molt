@@ -14,7 +14,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import time
 
 import pytest
 
@@ -55,6 +54,9 @@ def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> s
             "MOLT_USE_SCCACHE": "0",
             "RUSTC_WRAPPER": "",
             "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
+            # Map dev profile → release-fast so we reuse the already-built binary
+            # (default dev→dev-fast would trigger a fresh ~4 min cargo build each run)
+            "MOLT_DEV_CARGO_PROFILE": "release-fast",
         }
 
         # Step 1: molt build --target rust

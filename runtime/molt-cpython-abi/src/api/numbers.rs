@@ -1,6 +1,6 @@
 //! Numeric type bridge — PyLong_*, PyFloat_*, PyBool_*.
 
-use crate::abi_types::{PyObject, Py_False, Py_None, Py_True};
+use crate::abi_types::{Py_False, Py_None, Py_True, PyObject};
 use crate::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
 use std::os::raw::{c_double, c_int, c_long, c_longlong, c_ulong, c_ulonglong};
@@ -36,7 +36,9 @@ pub unsafe extern "C" fn PyLong_FromUnsignedLongLong(v: c_ulonglong) -> *mut PyO
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsLong(op: *mut PyObject) -> c_long {
-    if op.is_null() { return -1; }
+    if op.is_null() {
+        return -1;
+    }
     let bridge = GLOBAL_BRIDGE.lock();
     match bridge.pyobj_to_handle(op) {
         Some(bits) => {
@@ -78,7 +80,9 @@ pub unsafe extern "C" fn PyFloat_FromDouble(v: c_double) -> *mut PyObject {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyFloat_AsDouble(op: *mut PyObject) -> c_double {
-    if op.is_null() { return -1.0; }
+    if op.is_null() {
+        return -1.0;
+    }
     let bridge = GLOBAL_BRIDGE.lock();
     match bridge.pyobj_to_handle(op) {
         Some(bits) => {
@@ -100,7 +104,11 @@ pub unsafe extern "C" fn PyFloat_AsDouble(op: *mut PyObject) -> c_double {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyBool_FromLong(v: c_long) -> *mut PyObject {
     unsafe {
-        if v != 0 { &raw mut Py_True } else { &raw mut Py_False }
+        if v != 0 {
+            &raw mut Py_True
+        } else {
+            &raw mut Py_False
+        }
     }
 }
 
@@ -110,7 +118,9 @@ macro_rules! type_check {
     ($name:ident, $pred:ident) => {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $name(op: *mut PyObject) -> c_int {
-            if op.is_null() { return 0; }
+            if op.is_null() {
+                return 0;
+            }
             match GLOBAL_BRIDGE.lock().pyobj_to_handle(op) {
                 Some(bits) => MoltObject::from_bits(bits).$pred() as c_int,
                 None => 0,
@@ -119,13 +129,15 @@ macro_rules! type_check {
     };
 }
 
-type_check!(PyLong_Check,  is_int);
+type_check!(PyLong_Check, is_int);
 type_check!(PyFloat_Check, is_float);
-type_check!(PyBool_Check,  is_bool);
+type_check!(PyBool_Check, is_bool);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_Check(op: *mut PyObject) -> c_int {
-    if op.is_null() { return 0; }
+    if op.is_null() {
+        return 0;
+    }
     match GLOBAL_BRIDGE.lock().pyobj_to_handle(op) {
         Some(bits) => {
             let obj = MoltObject::from_bits(bits);

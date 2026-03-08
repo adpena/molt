@@ -104,26 +104,56 @@ pub fn hooks() -> Option<&'static RuntimeHooks> {
 
 // ─── No-op stubs for pre-init or test use ────────────────────────────────────
 
-unsafe extern "C" fn stub_alloc_str(_data: *const u8, _len: usize) -> u64 { 0 }
-unsafe extern "C" fn stub_alloc_bytes(_data: *const u8, _len: usize) -> u64 { 0 }
-unsafe extern "C" fn stub_alloc_list() -> u64 { 0 }
+unsafe extern "C" fn stub_alloc_str(_data: *const u8, _len: usize) -> u64 {
+    0
+}
+unsafe extern "C" fn stub_alloc_bytes(_data: *const u8, _len: usize) -> u64 {
+    0
+}
+unsafe extern "C" fn stub_alloc_list() -> u64 {
+    0
+}
 unsafe extern "C" fn stub_list_append(_list_bits: u64, _item_bits: u64) {}
-unsafe extern "C" fn stub_list_len(_bits: u64) -> usize { 0 }
-unsafe extern "C" fn stub_list_item(_bits: u64, _i: usize) -> u64 { 0 }
-unsafe extern "C" fn stub_alloc_tuple(_n: usize) -> u64 { 0 }
+unsafe extern "C" fn stub_list_len(_bits: u64) -> usize {
+    0
+}
+unsafe extern "C" fn stub_list_item(_bits: u64, _i: usize) -> u64 {
+    0
+}
+unsafe extern "C" fn stub_alloc_tuple(_n: usize) -> u64 {
+    0
+}
 unsafe extern "C" fn stub_tuple_set(_bits: u64, _i: usize, _val: u64) {}
-unsafe extern "C" fn stub_tuple_len(_bits: u64) -> usize { 0 }
-unsafe extern "C" fn stub_tuple_item(_bits: u64, _i: usize) -> u64 { 0 }
-unsafe extern "C" fn stub_alloc_dict() -> u64 { 0 }
+unsafe extern "C" fn stub_tuple_len(_bits: u64) -> usize {
+    0
+}
+unsafe extern "C" fn stub_tuple_item(_bits: u64, _i: usize) -> u64 {
+    0
+}
+unsafe extern "C" fn stub_alloc_dict() -> u64 {
+    0
+}
 unsafe extern "C" fn stub_dict_set(_d: u64, _k: u64, _v: u64) {}
-unsafe extern "C" fn stub_dict_get(_d: u64, _k: u64) -> u64 { 0 }
-unsafe extern "C" fn stub_dict_len(_bits: u64) -> usize { 0 }
+unsafe extern "C" fn stub_dict_get(_d: u64, _k: u64) -> u64 {
+    0
+}
+unsafe extern "C" fn stub_dict_len(_bits: u64) -> usize {
+    0
+}
 unsafe extern "C" fn stub_str_data(_bits: u64, out_len: *mut usize) -> *const u8 {
-    if !out_len.is_null() { unsafe { *out_len = 0; } }
+    if !out_len.is_null() {
+        unsafe {
+            *out_len = 0;
+        }
+    }
     b"\0".as_ptr()
 }
 unsafe extern "C" fn stub_bytes_data(_bits: u64, out_len: *mut usize) -> *const u8 {
-    if !out_len.is_null() { unsafe { *out_len = 0; } }
+    if !out_len.is_null() {
+        unsafe {
+            *out_len = 0;
+        }
+    }
     std::ptr::null()
 }
 unsafe extern "C" fn stub_classify_heap(_bits: u64) -> u8 {
@@ -134,25 +164,25 @@ unsafe extern "C" fn stub_dec_ref(_bits: u64) {}
 
 /// A no-op hooks table used when the runtime hasn't registered yet.
 pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
-    alloc_str:      stub_alloc_str,
-    alloc_bytes:    stub_alloc_bytes,
-    alloc_list:     stub_alloc_list,
-    list_append:    stub_list_append,
-    list_len:       stub_list_len,
-    list_item:      stub_list_item,
-    alloc_tuple:    stub_alloc_tuple,
-    tuple_set:      stub_tuple_set,
-    tuple_len:      stub_tuple_len,
-    tuple_item:     stub_tuple_item,
-    alloc_dict:     stub_alloc_dict,
-    dict_set:       stub_dict_set,
-    dict_get:       stub_dict_get,
-    dict_len:       stub_dict_len,
-    str_data:       stub_str_data,
-    bytes_data:     stub_bytes_data,
-    classify_heap:  stub_classify_heap,
-    inc_ref:        stub_inc_ref,
-    dec_ref:        stub_dec_ref,
+    alloc_str: stub_alloc_str,
+    alloc_bytes: stub_alloc_bytes,
+    alloc_list: stub_alloc_list,
+    list_append: stub_list_append,
+    list_len: stub_list_len,
+    list_item: stub_list_item,
+    alloc_tuple: stub_alloc_tuple,
+    tuple_set: stub_tuple_set,
+    tuple_len: stub_tuple_len,
+    tuple_item: stub_tuple_item,
+    alloc_dict: stub_alloc_dict,
+    dict_set: stub_dict_set,
+    dict_get: stub_dict_get,
+    dict_len: stub_dict_len,
+    str_data: stub_str_data,
+    bytes_data: stub_bytes_data,
+    classify_heap: stub_classify_heap,
+    inc_ref: stub_inc_ref,
+    dec_ref: stub_dec_ref,
 };
 
 /// Return the registered hooks or fall back to the no-op stubs.
