@@ -71,6 +71,7 @@ def test_symphony_run_main_uses_env_file_and_launches(
     monkeypatch.setattr(symphony_run, "_default_java_home", lambda: str(java_home))
     monkeypatch.setattr(symphony_run.shutil, "which", lambda _: "/usr/bin/uv")
     monkeypatch.setattr(symphony_run.subprocess, "run", _fake_run)
+    monkeypatch.delenv("JAVA_HOME", raising=False)
 
     rc = symphony_run.main(
         [
@@ -105,9 +106,9 @@ def test_symphony_run_main_uses_env_file_and_launches(
     assert (
         env["MOLT_QUINT_NODE_FALLBACK"] == symphony_run._default_quint_node_fallback()
     )
-    assert env["MOLT_APALACHE_WORK_DIR"] == str(
+    assert Path(env["MOLT_APALACHE_WORK_DIR"]).resolve() == (
         Path(env["MOLT_EXT_ROOT"]) / "tmp" / "apalache"
-    )
+    ).resolve()
     assert env["JAVA_HOME"] == str(java_home)
     assert env["PATH"].split(os.pathsep)[0] == str(java_home / "bin")
     assert env["MOLT_SYMPHONY_ENFORCE_ORIGIN"] == "1"

@@ -32,6 +32,14 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install mold linker
+        run: |
+          if ! command -v mold >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y mold
+          fi
+          mold --version
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -94,6 +102,14 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install mold linker
+        run: |
+          if ! command -v mold >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y mold
+          fi
+          mold --version
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -200,6 +216,14 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install mold linker
+        run: |
+          if ! command -v mold >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y mold
+          fi
+          mold --version
 
       - name: Cache cargo
         uses: actions/cache@v4
