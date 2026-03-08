@@ -35,10 +35,18 @@ import argparse
 import difflib
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+
+TARGET_NATIVE = "native"
+TARGET_RUST = "rust"
+TARGET_LUAU = "luau"
+TARGET_ALL = "all"
+TARGET_CHOICES = (TARGET_NATIVE, TARGET_RUST, TARGET_LUAU, TARGET_ALL)
 
 
 def _repo_root() -> Path:
@@ -84,6 +92,61 @@ def _extract_binary(build_json: dict) -> str | None:
         for key in ("output", "artifact", "binary", "path"):
             if key in data["build"]:
                 return data["build"][key]
+    return None
+
+
+def _expand_targets(target: str) -> list[str]:
+    """Expand the CLI target selector into concrete execution lanes."""
+    if target == TARGET_ALL:
+        return [TARGET_NATIVE, TARGET_RUST, TARGET_LUAU]
+    return [target]
+
+
+def _find_rustc() -> str | None:
+    """Return a rustc executable path when available."""
+    for candidate in ("rustc", os.path.expanduser("~/.cargo/bin/rustc")):
+        resolved = shutil.which(candidate) if os.sep not in candidate else candidate
+        if not resolved:
+            continue
+        try:
+            probe = subprocess.run(
+                [resolved, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if probe.returncode == 0:
+            return resolved
+    return None
+
+
+def _find_lune() -> str | None:
+    """Return a Lune executable path when available."""
+    override = os.environ.get("MOLT_LUNE", "").strip()
+    candidates = [
+        override,
+        os.path.expanduser("~/.aftman/bin/lune"),
+        "lune",
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        resolved = shutil.which(candidate) if os.sep not in candidate else candidate
+        if not resolved or not Path(resolved).exists():
+            continue
+        try:
+            probe = subprocess.run(
+                [resolved, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if probe.returncode == 0:
+            return resolved
     return None
 
 
@@ -181,6 +244,97 @@ def build_molt(
     return binary, ""
 
 
+def build_molt_target(
+    source: str,
+    target: str,
+    profile: str,
+    output: str,
+    timeout: float,
+    env: dict[str, str],
+    verbose: bool = False,
+) -> tuple[bool, str]:
+    """Build a non-native target artifact and return (ok, error_message)."""
+    cmd = [
+        sys.executable,
+        "-m",
+        "molt.cli",
+        "build",
+        source,
+        "--target",
+        target,
+        "--profile",
+        profile,
+        "--capabilities",
+        "fs,env,time,random",
+        "--output",
+        output,
+    ]
+    if verbose:
+        print(f"  Build ({target}): {' '.join(cmd)}")
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            cwd=str(_repo_root()),
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"Molt build ({target}) timed out after {timeout}s"
+
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        return False, (
+            f"Molt build ({target}) failed (exit {result.returncode}): {detail[:500]}"
+        )
+
+    if not Path(output).exists():
+        return False, f"Build ({target}) produced no artifact: {output}"
+    return True, ""
+
+
+def compile_rust_artifact(
+    rust_source: str,
+    output_binary: str,
+    timeout: float,
+    verbose: bool = False,
+) -> tuple[bool, str]:
+    """Compile a generated Rust artifact with rustc."""
+    rustc = _find_rustc()
+    if rustc is None:
+        return False, "rustc not found (required for --target rust validation)"
+    cmd = [
+        rustc,
+        rust_source,
+        "-o",
+        output_binary,
+        "--edition=2021",
+        "-A",
+        "unused_mut,unused_variables,dead_code,non_snake_case",
+    ]
+    if verbose:
+        print(f"  rustc: {' '.join(cmd)}")
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(_repo_root()),
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"rustc compilation timed out after {timeout}s"
+
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        return False, f"rustc compilation failed (exit {result.returncode}): {detail[:500]}"
+
+    if not Path(output_binary).exists():
+        return False, f"rustc produced no binary: {output_binary}"
+    return True, ""
+
+
 def run_molt(
     binary: str,
     timeout: float,
@@ -205,6 +359,34 @@ def run_molt(
     return result.stdout, result.stderr, result.returncode
 
 
+def run_luau(
+    luau_source: str,
+    timeout: float,
+    env: dict[str, str],
+    verbose: bool = False,
+) -> tuple[str, str, int]:
+    """Run a Luau artifact via Lune and return (stdout, stderr, exit_code)."""
+    lune = _find_lune()
+    if lune is None:
+        return "", "lune not found (required for --target luau validation)", -2
+
+    cmd = [lune, "run", luau_source]
+    if verbose:
+        print(f"  Lune run: {' '.join(cmd)}")
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            cwd=str(_repo_root()),
+        )
+    except subprocess.TimeoutExpired:
+        return "", f"Luau artifact timed out after {timeout}s", -1
+    return result.stdout, result.stderr, result.returncode
+
+
 def _unified_diff(label_a: str, label_b: str, text_a: str, text_b: str) -> str:
     """Return a unified diff between two strings, or empty if identical."""
     lines_a = text_a.splitlines(keepends=True)
@@ -216,7 +398,7 @@ def _unified_diff(label_a: str, label_b: str, text_a: str, text_b: str) -> str:
 class ValidationResult:
     """Result of validating a single file."""
 
-    __slots__ = ("source", "status", "detail", "elapsed")
+    __slots__ = ("source", "target", "status", "detail", "elapsed", "mismatches", "timings")
 
     PASS = "pass"
     FAIL = "fail"
@@ -226,18 +408,36 @@ class ValidationResult:
     def __init__(
         self,
         source: str,
+        target: str,
         status: str,
         detail: str = "",
         elapsed: float = 0.0,
+        mismatches: list[str] | None = None,
+        timings: dict[str, float] | None = None,
     ):
         self.source = source
+        self.target = target
         self.status = status
         self.detail = detail
         self.elapsed = elapsed
+        self.mismatches = list(mismatches or [])
+        self.timings = dict(timings or {})
+
+    def to_json(self) -> dict[str, object]:
+        """Return a normalized JSON object for machine-readable reporting."""
+        return {
+            "source": self.source,
+            "target": self.target,
+            "status": self.status,
+            "mismatches": self.mismatches,
+            "timings": self.timings,
+            "detail": self.detail,
+        }
 
 
 def validate_file(
     source: str,
+    target: str,
     profile: str,
     timeout: float,
     verbose: bool = False,
@@ -249,63 +449,265 @@ def validate_file(
     t0 = time.monotonic()
     env = _make_env()
 
+    timings: dict[str, float] = {}
+
     # Step 1: Run under CPython
+    step_t0 = time.monotonic()
     cpython_stdout, cpython_stderr, cpython_rc = run_cpython(
         source, timeout, env, verbose
     )
+    timings["cpython_sec"] = time.monotonic() - step_t0
     if cpython_rc == -1:
+        elapsed = time.monotonic() - t0
+        timings["total_sec"] = elapsed
         return ValidationResult(
             source,
+            target,
             ValidationResult.ERROR,
             f"CPython timed out after {timeout}s",
-            time.monotonic() - t0,
+            elapsed,
+            timings=timings,
         )
 
     # Step 2: Build with Molt
-    binary, build_error = build_molt(source, profile, timeout, env, verbose)
-    if binary is None:
-        return ValidationResult(
-            source,
-            ValidationResult.ERROR,
-            f"Build error: {build_error}",
-            time.monotonic() - t0,
-        )
+    run_label = "molt"
+    run_path: str | None = None
+    if target == TARGET_NATIVE:
+        step_t0 = time.monotonic()
+        binary, build_error = build_molt(source, profile, timeout, env, verbose)
+        timings["build_sec"] = time.monotonic() - step_t0
+        if binary is None:
+            elapsed = time.monotonic() - t0
+            timings["total_sec"] = elapsed
+            return ValidationResult(
+                source,
+                target,
+                ValidationResult.ERROR,
+                f"Build error: {build_error}",
+                elapsed,
+                timings=timings,
+            )
+        run_path = binary
+    else:
+        suffix = ".rs" if target == TARGET_RUST else ".luau"
+        with tempfile.TemporaryDirectory(prefix=f"molt-translation-{target}-") as tmpdir:
+            artifact_path = str(Path(tmpdir) / f"{Path(source).stem}{suffix}")
 
-    # Step 3: Run Molt binary
-    molt_stdout, molt_stderr, molt_rc = run_molt(binary, timeout, env, verbose)
-    if molt_rc == -1 and "timed out" in molt_stderr:
+            step_t0 = time.monotonic()
+            ok, build_error = build_molt_target(
+                source,
+                target,
+                profile,
+                artifact_path,
+                timeout,
+                env,
+                verbose,
+            )
+            timings["build_sec"] = time.monotonic() - step_t0
+            if not ok:
+                elapsed = time.monotonic() - t0
+                timings["total_sec"] = elapsed
+                return ValidationResult(
+                    source,
+                    target,
+                    ValidationResult.ERROR,
+                    f"Build error: {build_error}",
+                    elapsed,
+                    timings=timings,
+                )
+
+            if target == TARGET_RUST:
+                binary_name = f"{Path(source).stem}_rust"
+                if os.name == "nt":
+                    binary_name += ".exe"
+                binary_path = str(Path(tmpdir) / binary_name)
+
+                step_t0 = time.monotonic()
+                ok, rustc_error = compile_rust_artifact(
+                    artifact_path,
+                    binary_path,
+                    timeout,
+                    verbose,
+                )
+                timings["rustc_sec"] = time.monotonic() - step_t0
+                if not ok:
+                    elapsed = time.monotonic() - t0
+                    timings["total_sec"] = elapsed
+                    return ValidationResult(
+                        source,
+                        target,
+                        ValidationResult.ERROR,
+                        f"rustc error: {rustc_error}",
+                        elapsed,
+                        timings=timings,
+                    )
+
+                run_label = "rust"
+                run_path = binary_path
+            else:
+                run_label = "luau"
+                run_path = artifact_path
+
+            # Step 3: Run translated artifact
+            step_t0 = time.monotonic()
+            if target == TARGET_LUAU:
+                molt_stdout, molt_stderr, molt_rc = run_luau(
+                    run_path,
+                    timeout,
+                    env,
+                    verbose,
+                )
+            else:
+                molt_stdout, molt_stderr, molt_rc = run_molt(
+                    run_path,
+                    timeout,
+                    env,
+                    verbose,
+                )
+            timings["run_sec"] = time.monotonic() - step_t0
+
+            if molt_rc == -1 and "timed out" in molt_stderr:
+                elapsed = time.monotonic() - t0
+                timings["total_sec"] = elapsed
+                return ValidationResult(
+                    source,
+                    target,
+                    ValidationResult.ERROR,
+                    f"{run_label} artifact timed out after {timeout}s",
+                    elapsed,
+                    timings=timings,
+                )
+            if molt_rc == -2:
+                elapsed = time.monotonic() - t0
+                timings["total_sec"] = elapsed
+                return ValidationResult(
+                    source,
+                    target,
+                    ValidationResult.ERROR,
+                    molt_stderr,
+                    elapsed,
+                    timings=timings,
+                )
+
+            # Step 4: Compare
+            step_t0 = time.monotonic()
+            mismatches: list[str] = []
+
+            if cpython_stdout != molt_stdout:
+                diff = _unified_diff(
+                    "cpython/stdout",
+                    f"{run_label}/stdout",
+                    cpython_stdout,
+                    molt_stdout,
+                )
+                mismatches.append(f"STDOUT MISMATCH:\n{diff}")
+
+            if cpython_stderr != molt_stderr:
+                diff = _unified_diff(
+                    "cpython/stderr",
+                    f"{run_label}/stderr",
+                    cpython_stderr,
+                    molt_stderr,
+                )
+                mismatches.append(f"STDERR MISMATCH:\n{diff}")
+
+            if cpython_rc != molt_rc:
+                mismatches.append(
+                    f"EXIT CODE MISMATCH: cpython={cpython_rc}, {run_label}={molt_rc}"
+                )
+
+            timings["compare_sec"] = time.monotonic() - step_t0
+            elapsed = time.monotonic() - t0
+            timings["total_sec"] = elapsed
+
+            if mismatches:
+                detail = "\n".join(mismatches)
+                return ValidationResult(
+                    source,
+                    target,
+                    ValidationResult.FAIL,
+                    detail,
+                    elapsed,
+                    mismatches=mismatches,
+                    timings=timings,
+                )
+
+            return ValidationResult(
+                source,
+                target,
+                ValidationResult.PASS,
+                "",
+                elapsed,
+                mismatches=[],
+                timings=timings,
+            )
+
+    # Native lane run/compare path
+    step_t0 = time.monotonic()
+    if run_path is None:
+        elapsed = time.monotonic() - t0
+        timings["total_sec"] = elapsed
         return ValidationResult(
             source,
+            target,
+            ValidationResult.ERROR,
+            "Internal error: missing native artifact path",
+            elapsed,
+            timings=timings,
+        )
+    molt_stdout, molt_stderr, molt_rc = run_molt(run_path, timeout, env, verbose)
+    timings["run_sec"] = time.monotonic() - step_t0
+    if molt_rc == -1 and "timed out" in molt_stderr:
+        elapsed = time.monotonic() - t0
+        timings["total_sec"] = elapsed
+        return ValidationResult(
+            source,
+            target,
             ValidationResult.ERROR,
             f"Molt binary timed out after {timeout}s",
-            time.monotonic() - t0,
+            elapsed,
+            timings=timings,
         )
 
-    # Step 4: Compare
+    step_t0 = time.monotonic()
     mismatches: list[str] = []
 
     if cpython_stdout != molt_stdout:
-        diff = _unified_diff(
-            "cpython/stdout", "molt/stdout", cpython_stdout, molt_stdout
-        )
+        diff = _unified_diff("cpython/stdout", "molt/stdout", cpython_stdout, molt_stdout)
         mismatches.append(f"STDOUT MISMATCH:\n{diff}")
 
     if cpython_stderr != molt_stderr:
-        diff = _unified_diff(
-            "cpython/stderr", "molt/stderr", cpython_stderr, molt_stderr
-        )
+        diff = _unified_diff("cpython/stderr", "molt/stderr", cpython_stderr, molt_stderr)
         mismatches.append(f"STDERR MISMATCH:\n{diff}")
 
     if cpython_rc != molt_rc:
         mismatches.append(f"EXIT CODE MISMATCH: cpython={cpython_rc}, molt={molt_rc}")
 
+    timings["compare_sec"] = time.monotonic() - step_t0
     elapsed = time.monotonic() - t0
+    timings["total_sec"] = elapsed
 
     if mismatches:
         detail = "\n".join(mismatches)
-        return ValidationResult(source, ValidationResult.FAIL, detail, elapsed)
+        return ValidationResult(
+            source,
+            target,
+            ValidationResult.FAIL,
+            detail,
+            elapsed,
+            mismatches=mismatches,
+            timings=timings,
+        )
 
-    return ValidationResult(source, ValidationResult.PASS, "", elapsed)
+    return ValidationResult(
+        source,
+        target,
+        ValidationResult.PASS,
+        "",
+        elapsed,
+        mismatches=[],
+        timings=timings,
+    )
 
 
 def collect_sources(batch_dir: str) -> list[str]:
@@ -342,6 +744,17 @@ def main() -> int:
         type=float,
         default=30.0,
         help="Timeout in seconds for each CPython/Molt run (default: 30)",
+    )
+    parser.add_argument(
+        "--target",
+        choices=TARGET_CHOICES,
+        default=TARGET_NATIVE,
+        help="Validation target lane: native|rust|luau|all (default: native)",
+    )
+    parser.add_argument(
+        "--json-out",
+        metavar="PATH",
+        help="Write normalized per-file/per-target results to PATH as JSON",
     )
     parser.add_argument(
         "--verbose",
@@ -389,45 +802,52 @@ def main() -> int:
         return 2
 
     # Run validation
+    targets = _expand_targets(args.target)
     results: list[ValidationResult] = []
-    total = len(sources)
+    total = len(sources) * len(targets)
 
     print(
-        f"Translation validation: {total} file(s), profile={args.build_profile}, timeout={args.timeout}s"
+        "Translation validation: "
+        f"{len(sources)} file(s), targets={','.join(targets)}, "
+        f"profile={args.build_profile}, timeout={args.timeout}s"
     )
     print()
 
-    for i, source in enumerate(sources, 1):
-        label = Path(source).name
-        if args.verbose:
-            print(f"[{i}/{total}] {source}")
-        else:
-            print(f"[{i}/{total}] {label} ... ", end="", flush=True)
-
-        result = validate_file(
-            source,
-            profile=args.build_profile,
-            timeout=args.timeout,
-            verbose=args.verbose,
-        )
-        results.append(result)
-
-        if not args.verbose:
-            if result.status == ValidationResult.PASS:
-                print(f"PASS ({result.elapsed:.1f}s)")
-            elif result.status == ValidationResult.FAIL:
-                print(f"FAIL ({result.elapsed:.1f}s)")
-            elif result.status == ValidationResult.ERROR:
-                print(f"ERROR ({result.elapsed:.1f}s)")
+    counter = 0
+    for source in sources:
+        for target in targets:
+            counter += 1
+            label = f"{Path(source).name} [{target}]"
+            if args.verbose:
+                print(f"[{counter}/{total}] {source} [{target}]")
             else:
-                print(f"SKIP ({result.elapsed:.1f}s)")
+                print(f"[{counter}/{total}] {label} ... ", end="", flush=True)
 
-        # Show detail for failures and errors in both modes
-        if result.status == ValidationResult.FAIL:
-            for line in result.detail.splitlines():
-                print(f"    {line}")
-        elif result.status == ValidationResult.ERROR and args.verbose:
-            print(f"    {result.detail[:300]}")
+            result = validate_file(
+                source,
+                target=target,
+                profile=args.build_profile,
+                timeout=args.timeout,
+                verbose=args.verbose,
+            )
+            results.append(result)
+
+            if not args.verbose:
+                if result.status == ValidationResult.PASS:
+                    print(f"PASS ({result.elapsed:.1f}s)")
+                elif result.status == ValidationResult.FAIL:
+                    print(f"FAIL ({result.elapsed:.1f}s)")
+                elif result.status == ValidationResult.ERROR:
+                    print(f"ERROR ({result.elapsed:.1f}s)")
+                else:
+                    print(f"SKIP ({result.elapsed:.1f}s)")
+
+            # Show detail for failures and errors in both modes
+            if result.status == ValidationResult.FAIL:
+                for line in result.detail.splitlines():
+                    print(f"    {line}")
+            elif result.status == ValidationResult.ERROR and args.verbose:
+                print(f"    {result.detail[:300]}")
 
     # Summary
     n_pass = sum(1 for r in results if r.status == ValidationResult.PASS)
@@ -441,12 +861,38 @@ def main() -> int:
         f"Results: {n_pass} pass, {n_fail} fail, {n_error} error, {n_skip} skip  ({total_time:.1f}s)"
     )
 
+    if args.json_out:
+        json_payload = {
+            "sources": sources,
+            "targets": targets,
+            "build_profile": args.build_profile,
+            "timeout_sec": args.timeout,
+            "summary": {
+                "pass": n_pass,
+                "fail": n_fail,
+                "error": n_error,
+                "skip": n_skip,
+                "total": len(results),
+                "total_time_sec": total_time,
+            },
+            "results": [r.to_json() for r in results],
+        }
+        try:
+            out_path = Path(args.json_out)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(json.dumps(json_payload, indent=2), encoding="utf-8")
+            if args.verbose:
+                print(f"Wrote JSON report: {out_path}")
+        except OSError as exc:
+            print(f"ERROR: Unable to write --json-out file: {exc}", file=sys.stderr)
+            return 2
+
     if n_fail > 0:
         print()
-        print("Failed files:")
+        print("Failed file/target pairs:")
         for r in results:
             if r.status == ValidationResult.FAIL:
-                print(f"  {r.source}")
+                print(f"  {r.source} [{r.target}]")
         return 1
 
     if n_error > 0 and n_pass == 0:
