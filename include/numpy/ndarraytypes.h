@@ -1536,19 +1536,25 @@ extern PyArray_DTypeMeta PyArray_FloatAbstractDType;
 #endif
 #endif
 
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT void *PyDataMem_NEW(size_t size);
+NPY_NO_EXPORT void *PyDataMem_NEW_ZEROED(size_t nelem, size_t elsize);
+NPY_NO_EXPORT void *PyDataMem_RENEW(void *ptr, size_t size);
+NPY_NO_EXPORT void PyDataMem_FREE(void *ptr);
+NPY_NO_EXPORT PyObject *PyDataMem_GetHandler(void);
+NPY_NO_EXPORT PyObject *PyDataMem_SetHandler(PyObject *handler);
+NPY_NO_EXPORT extern PyObject *PyDataMem_DefaultHandler;
+#else
 static PyDataMem_Handler PyDataMem_DefaultHandler = {
     "molt",
     1,
     {NULL, NULL, NULL, NULL, NULL},
 };
 
-#if !MOLT_NUMPY_INTERNAL_BUILD
 #define PyDataMem_NEW(size) PyMem_Malloc((size_t)(size))
 #define PyDataMem_NEW_ZEROED(nelem, elsize) PyMem_Calloc((size_t)(nelem), (size_t)(elsize))
 #define PyDataMem_RENEW(ptr, size) PyMem_Realloc((ptr), (size_t)(size))
 #define PyDataMem_FREE(ptr) PyMem_Free((ptr))
-#endif
-
 static inline PyObject *PyDataMem_GetHandler(void) {
     Py_RETURN_NONE;
 }
@@ -1560,6 +1566,7 @@ static inline PyObject *PyDataMem_SetHandler(PyObject *handler) {
     Py_INCREF(handler);
     return handler;
 }
+#endif
 
 static inline int PyArrayNeighborhoodIter_Next(PyArrayNeighborhoodIterObject *iter) {
     if (iter == NULL || iter->translate == NULL) {
