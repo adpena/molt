@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Benchmark backend incremental transpilation for rust/luau targets.
+
+Runs cold, warm, and edit builds per target/profile and writes JSON results
+with timings and executed commands.
+"""
+
 from __future__ import annotations
 
 import argparse
