@@ -123,6 +123,12 @@ NPY_NO_EXPORT PyObject *PyArray_SwapAxes(PyArrayObject *ap, int a1, int a2);
 NPY_NO_EXPORT PyObject *PyArray_ToList(PyArrayObject *self);
 NPY_NO_EXPORT int PyArray_ToFile(PyArrayObject *self, FILE *fp, char *sep, char *format);
 NPY_NO_EXPORT PyObject *PyArray_ToString(PyArrayObject *self, NPY_ORDER order);
+NPY_NO_EXPORT PyObject *PyArray_Compress(
+    PyArrayObject *self,
+    PyObject *condition,
+    int axis,
+    PyArrayObject *out
+);
 NPY_NO_EXPORT PyObject *PyArray_MultiIterNew(int n, ...);
 NPY_NO_EXPORT char *PyArray_Zero(PyArrayObject *arr);
 NPY_NO_EXPORT char *PyArray_One(PyArrayObject *arr);
@@ -131,6 +137,23 @@ NPY_NO_EXPORT PyObject *PyArray_MatrixProduct2(
     PyObject *op2,
     PyArrayObject *out
 );
+NPY_NO_EXPORT PyArrayObject *PyArray_EinsteinSum(
+    char *subscripts,
+    npy_intp nop,
+    PyArrayObject **op_in,
+    PyArray_Descr *dtype,
+    NPY_ORDER order,
+    NPY_CASTING casting,
+    PyArrayObject *out
+);
+NPY_NO_EXPORT PyObject *PyArray_ArangeObj(
+    PyObject *start,
+    PyObject *stop,
+    PyObject *step,
+    PyArray_Descr *dtype
+);
+NPY_NO_EXPORT PyObject *PyArray_LexSort(PyObject *sort_keys, int axis);
+NPY_NO_EXPORT PyArray_Descr *PyArray_MinScalarType(PyArrayObject *arr);
 #if MOLT_NUMPY_INTERNAL_BUILD
 NPY_NO_EXPORT PyObject *PyArray_IntTupleFromIntp(int length, const npy_intp *values);
 NPY_NO_EXPORT int PyArray_CheckAnyScalarExact(PyObject *obj);
@@ -818,7 +841,7 @@ NPY_NO_EXPORT int PyArray_CompareLists(
     int length
 );
 NPY_NO_EXPORT npy_intp PyArray_MultiplyList(const npy_intp *values, int length);
-NPY_NO_EXPORT int PyArray_EquivTypes(PyArray_Descr *lhs, PyArray_Descr *rhs);
+NPY_NO_EXPORT unsigned char PyArray_EquivTypes(PyArray_Descr *lhs, PyArray_Descr *rhs);
 #else
 static inline int PyArray_CompareLists(
     const npy_intp *lhs,
@@ -849,11 +872,11 @@ static inline npy_intp PyArray_MultiplyList(const npy_intp *values, int length) 
     return out;
 }
 
-static inline int PyArray_EquivTypes(PyArray_Descr *lhs, PyArray_Descr *rhs) {
+static inline unsigned char PyArray_EquivTypes(PyArray_Descr *lhs, PyArray_Descr *rhs) {
     if (lhs == NULL || rhs == NULL) {
         return 0;
     }
-    return lhs->type_num == rhs->type_num;
+    return (unsigned char)(lhs->type_num == rhs->type_num);
 }
 #endif
 
@@ -936,15 +959,15 @@ static inline int PyArray_IntpFromSequence(PyObject *obj, npy_intp *values, int 
 #endif
 
 #if MOLT_NUMPY_INTERNAL_BUILD
-NPY_NO_EXPORT PyArrayObject *PyArray_NewCopy(PyArrayObject *array_obj, int order);
+NPY_NO_EXPORT PyObject *PyArray_NewCopy(PyArrayObject *array_obj, int order);
 #else
-static inline PyArrayObject *PyArray_NewCopy(PyArrayObject *array_obj, int order) {
+static inline PyObject *PyArray_NewCopy(PyArrayObject *array_obj, int order) {
     (void)order;
     if (array_obj == NULL) {
         return NULL;
     }
     Py_INCREF((PyObject *)array_obj);
-    return array_obj;
+    return (PyObject *)array_obj;
 }
 #endif
 
@@ -1828,20 +1851,28 @@ static inline PyObject *PyArray_Newshape(
     return PyArray_FromArray(array_obj, NULL, 0);
 }
 
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT void PyArray_CreateSortedStridePerm(
+    int ndim,
+    npy_intp const *strides,
+    npy_stride_sort_item *out_strideperm
+);
+#else
 static inline void PyArray_CreateSortedStridePerm(
     int ndim,
-    const npy_intp *strides,
-    npy_intp *perm
+    npy_intp const *strides,
+    npy_stride_sort_item *out_strideperm
 ) {
     int i;
-    (void)strides;
-    if (perm == NULL) {
+    if (out_strideperm == NULL) {
         return;
     }
     for (i = 0; i < ndim; i++) {
-        perm[i] = i;
+        out_strideperm[i].perm = i;
+        out_strideperm[i].stride = strides[i];
     }
 }
+#endif
 
 #if MOLT_NUMPY_INTERNAL_BUILD
 NPY_NO_EXPORT int PyArray_AxisConverter(PyObject *obj, int *axis_out);

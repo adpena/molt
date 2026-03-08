@@ -55,6 +55,21 @@ def test_workspace_sanitize() -> None:
     assert sanitize_workspace_key("MT 123/abc") == "MT_123_abc"
 
 
+def test_codex_command_defaults_to_yolo_app_server(tmp_path: Path) -> None:
+    workflow = _workflow(
+        tmp_path,
+        {
+            "tracker": {
+                "kind": "linear",
+                "api_key": "token",
+                "project_slug": "proj",
+            },
+        },
+    )
+    config = build_runtime_config(workflow)
+    assert config.codex.command == "codex --yolo app-server"
+
+
 def test_workspace_root_preserves_bare_relative_value(tmp_path: Path) -> None:
     workflow = _workflow(
         tmp_path,

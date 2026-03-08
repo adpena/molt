@@ -38,6 +38,8 @@ Canonical storage layout:
 - Durable telemetry memory on external volume (`events.jsonl` + optional `events.duckdb` / `events.parquet`)
 - Per-issue workspace lifecycle with safety checks and workflow hooks
 - Codex app-server JSON-line client (`initialize`, `thread/start`, `turn/start`)
+  with OpenAI app-server v2 `item/tool/requestUserInput` response compatibility
+  (`result.answers` mapping question ids to `{answers: [...]}`)
 - Agent tool-call registry:
   - `linear_graphql`
   - `molt_code_search`
@@ -111,6 +113,9 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_run.py WORKFLOW.md --
 BAT00 host orchestration and machine-control tooling is maintained in the private
 `fleet` repository (not in public `molt`). Use Fleet MCP tools for remote
 operations.
+
+Default Codex command for Symphony is `codex --yolo app-server` (override with
+`codex.command` in `WORKFLOW.md` when needed).
 
 Public `molt` documents runtime behavior and local workflow contracts; host-level
 automation, credentials handling, and remote orchestration APIs remain fleet-owned.

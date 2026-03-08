@@ -31,6 +31,15 @@ extern "C" {
 #endif
 #endif
 
+#ifndef NPY_STEALS_REF_TO_ARG
+#ifdef WITH_CPYCHECKER_STEALS_REFERENCE_TO_ARG_ATTRIBUTE
+#define NPY_STEALS_REF_TO_ARG(n) \
+    __attribute__((cpychecker_steals_reference_to_arg(n)))
+#else
+#define NPY_STEALS_REF_TO_ARG(n)
+#endif
+#endif
+
 #define PyComplex64ArrType_Type PyCFloatArrType_Type
 #define PyComplex128ArrType_Type PyCDoubleArrType_Type
 #define PyComplex160ArrType_Type PyCLongDoubleArrType_Type
