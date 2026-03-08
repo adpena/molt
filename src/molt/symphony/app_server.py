@@ -125,6 +125,8 @@ class CodexAppServerClient:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
+                encoding="utf-8",
+                errors="replace",
             )
         except OSError as exc:
             message = f"launch_failed:{exc.__class__.__name__}:{exc}"

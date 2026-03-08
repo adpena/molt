@@ -40,6 +40,7 @@ Canonical storage layout:
 - Codex app-server JSON-line client (`initialize`, `thread/start`, `turn/start`)
   with OpenAI app-server v2 `item/tool/requestUserInput` response compatibility
   (`result.answers` mapping question ids to `{answers: [...]}`)
+- Windows-safe app-server stream decoding (`subprocess.Popen(..., encoding="utf-8", errors="replace")`)
 - Agent tool-call registry:
   - `linear_graphql`
   - `molt_code_search`

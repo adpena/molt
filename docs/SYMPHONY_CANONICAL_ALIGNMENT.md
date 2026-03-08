@@ -41,6 +41,9 @@ Local implementation must remain semantically aligned with those documents. This
 - OpenAI app-server v2 `item/tool/requestUserInput` response shape (`result.answers` map): `PASS`
   - [`src/molt/symphony/app_server.py`](src/molt/symphony/app_server.py)
   - [`tests/test_symphony_app_server_usage.py`](tests/test_symphony_app_server_usage.py)
+- Windows-safe app-server stdio decode (`encoding="utf-8"`, `errors="replace"`): `PASS`
+  - [`src/molt/symphony/app_server.py`](src/molt/symphony/app_server.py)
+  - [`tests/test_symphony_app_server_usage.py`](tests/test_symphony_app_server_usage.py)
 - Strict prompt rendering with `issue` and `attempt` variables: `PASS`
   - [`src/molt/symphony/template.py`](src/molt/symphony/template.py)
   - [`tests/test_symphony_template.py`](tests/test_symphony_template.py)
