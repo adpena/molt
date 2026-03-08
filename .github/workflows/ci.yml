@@ -72,6 +72,14 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y clang
           fi
+      - name: Install mold linker
+        if: matrix.python-version == '3.12'
+        run: |
+          if ! command -v mold >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y mold
+          fi
+          mold --version
       - name: Build runtime (release)
         if: matrix.python-version == '3.12'
         run: cargo build -p molt-lang-runtime --release
@@ -239,10 +247,10 @@ jobs:
         shell: bash
     env:
       PYTHONPATH: ${{ github.workspace }}/src
-      MOLT_EXT_ROOT: ${{ runner.temp }}/molt-ext-${{ matrix.lane.name }}
-      CARGO_TARGET_DIR: ${{ runner.temp }}/molt-ext-${{ matrix.lane.name }}/cargo-target
-      MOLT_DIFF_CARGO_TARGET_DIR: ${{ runner.temp }}/molt-ext-${{ matrix.lane.name }}/cargo-target
-      MOLT_BACKEND_DAEMON_SOCKET_DIR: ${{ runner.temp }}/molt_backend_sockets
+      MOLT_EXT_ROOT: ${{ github.workspace }}/.ci-ext-${{ matrix.lane.name }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.ci-ext-${{ matrix.lane.name }}/cargo-target
+      MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/.ci-ext-${{ matrix.lane.name }}/cargo-target
+      MOLT_BACKEND_DAEMON_SOCKET_DIR: /tmp/molt_backend_sockets
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -283,6 +291,14 @@ jobs:
             Add-Content -Path $env:GITHUB_PATH -Value $llvmBin
           }
           clang --version
+      - name: Install mold linker (linux lanes)
+        if: runner.os == 'Linux'
+        run: |
+          if ! command -v mold >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y mold
+          fi
+          mold --version
       - name: Install zig (cross lane)
         if: matrix.lane.install_zig && runner.os == 'Linux'
         run: |
@@ -710,6 +726,13 @@ jobs:
           components: clippy, rustfmt
       - name: Rust cache
         uses: swatinem/rust-cache@v2
+      - name: Install mold linker
+        run: |
+          if ! command -v mold >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y mold
+          fi
+          mold --version
       - name: Cache cargo registry and target
         uses: actions/cache@v4
         with:
@@ -781,6 +804,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Rust cache
         uses: swatinem/rust-cache@v2
+      - name: Install mold linker
+        run: |
+          if ! command -v mold >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y mold
+          fi
+          mold --version
       - name: Run wasm parity test
         run: uv run pytest tests/test_wasm_control_flow.py
 
@@ -869,6 +899,14 @@ jobs:
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
+      - name: Install mold linker (linux)
+        if: runner.os == 'Linux'
+        run: |
+          if ! command -v mold >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y mold
+          fi
+          mold --version
 
       - name: Install Linux Tk/Xvfb prerequisites
         if: runner.os == 'Linux'
