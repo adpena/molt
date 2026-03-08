@@ -27,7 +27,10 @@ __all__ = [
 ]
 
 import sys as _aex_cleanup_sys
-_aex_cleanup_dict = getattr(_aex_cleanup_sys.modules.get(__name__), "__dict__", None) or globals()
+
+_aex_cleanup_dict = (
+    getattr(_aex_cleanup_sys.modules.get(__name__), "__dict__", None) or globals()
+)
 for _name in ("QueueEmpty", "QueueFull", "QueueShutDown"):
     _aex_cleanup_dict.pop(_name, None)
 del _aex_cleanup_sys, _aex_cleanup_dict

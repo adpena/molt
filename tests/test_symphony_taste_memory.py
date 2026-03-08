@@ -22,7 +22,9 @@ def test_taste_memory_distills_recent_patterns(tmp_path: Path) -> None:
         {
             "cycle_status": "pass",
             "failure_codes": [],
-            "successful_actions": ["PYTHONPATH=src uv run --python 3.12 python3 tools/check_formal_methods.py --json-only"],
+            "successful_actions": [
+                "PYTHONPATH=src uv run --python 3.12 python3 tools/check_formal_methods.py --json-only"
+            ],
             "tools_used": ["readiness_audit", "linear_hygiene"],
         }
     )

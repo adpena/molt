@@ -451,7 +451,13 @@ def test_on_worker_exit_turn_input_required_sets_auth_pause() -> None:
         orchestrator._state.claimed.add(issue.id)
     scheduled: list[tuple[str, str, int, str | None, bool, int | None]] = []
     orchestrator._schedule_retry = (  # type: ignore[assignment]
-        lambda issue_id, identifier, attempt, *, error, continuation, delay_override_ms=None: (
+        lambda issue_id,
+        identifier,
+        attempt,
+        *,
+        error,
+        continuation,
+        delay_override_ms=None: (
             scheduled.append(
                 (
                     issue_id,
@@ -537,7 +543,13 @@ def test_worker_exit_rate_limited_sets_suspension_and_retry_delay() -> None:
         }
     scheduled: list[tuple[str, str, int, str | None, bool, int | None]] = []
     orchestrator._schedule_retry = (  # type: ignore[assignment]
-        lambda issue_id, identifier, attempt, *, error, continuation, delay_override_ms=None: (
+        lambda issue_id,
+        identifier,
+        attempt,
+        *,
+        error,
+        continuation,
+        delay_override_ms=None: (
             scheduled.append(
                 (
                     issue_id,

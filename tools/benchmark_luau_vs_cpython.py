@@ -23,7 +23,7 @@ import sys
 import tempfile
 import time
 
-GENERATOR_SOURCE = '''\
+GENERATOR_SOURCE = """\
 def hash_float(x, y, z, seed):
     h = seed + x * 374761 + y * 668265 + z * 224682
     h = (h * 3266489) % 2147483647
@@ -60,7 +60,7 @@ result = generate_platforms(1337, -120, 64, 8)
 print(len(result[0]))
 print(len(result[1]))
 print(len(result[2]))
-'''
+"""
 
 ITERATIONS = 10
 
@@ -73,7 +73,9 @@ def run_cpython_bench(source_path: str, iterations: int) -> dict:
         t0 = time.perf_counter()
         proc = subprocess.run(
             [sys.executable, source_path],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         elapsed = time.perf_counter() - t0
         if proc.returncode != 0:
@@ -99,14 +101,30 @@ def compile_to_luau(source_path: str, output_path: str) -> bool:
     env = {
         **os.environ,
         "MOLT_EXT_ROOT": os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt"),
-        "CARGO_TARGET_DIR": os.environ.get("CARGO_TARGET_DIR", "/Volumes/APDataStore/Molt/cargo-target"),
+        "CARGO_TARGET_DIR": os.environ.get(
+            "CARGO_TARGET_DIR", "/Volumes/APDataStore/Molt/cargo-target"
+        ),
         "RUSTC_WRAPPER": "",
         "PYTHONPATH": "src",
     }
     proc = subprocess.run(
-        ["uv", "run", "python", "-m", "molt.cli", "build",
-         source_path, "--target", "luau", "--output", output_path],
-        capture_output=True, text=True, timeout=120, env=env,
+        [
+            "uv",
+            "run",
+            "python",
+            "-m",
+            "molt.cli",
+            "build",
+            source_path,
+            "--target",
+            "luau",
+            "--output",
+            output_path,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
         cwd=os.path.expanduser("~/PycharmProjects/molt"),
     )
     if proc.returncode != 0:
@@ -127,7 +145,9 @@ def run_lune_bench(luau_path: str, iterations: int) -> dict:
         t0 = time.perf_counter()
         proc = subprocess.run(
             [lune, "run", luau_path],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         elapsed = time.perf_counter() - t0
         if proc.returncode != 0:
@@ -158,7 +178,7 @@ def main():
         py_path = f.name
 
     try:
-        print(f"=== Molt Benchmark: Procedural Zone Generator ===")
+        print("=== Molt Benchmark: Procedural Zone Generator ===")
         print(f"Iterations: {args.iterations}")
         print()
 
@@ -207,8 +227,12 @@ def main():
             print("=== Results ===")
             print(f"  CPython mean:  {cpython_result['mean_ms']:.2f} ms")
             print(f"  Luau VM mean:  {lune_result['mean_ms']:.2f} ms")
-            print(f"  Ratio:         {ratio:.2f}x {'(Luau faster)' if ratio > 1 else '(CPython faster)'}")
-            print(f"  Output match:  {'YES' if match else 'NO (integer overflow divergence expected)'}")
+            print(
+                f"  Ratio:         {ratio:.2f}x {'(Luau faster)' if ratio > 1 else '(CPython faster)'}"
+            )
+            print(
+                f"  Output match:  {'YES' if match else 'NO (integer overflow divergence expected)'}"
+            )
 
         report = {
             "cpython": cpython_result,

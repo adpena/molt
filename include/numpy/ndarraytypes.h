@@ -792,6 +792,31 @@ typedef int (PyArray_ArgPartitionFunc)(
     npy_intp,
     void *
 );
+typedef int (PyArray_FinalizeFunc)();
+typedef int (PyArray_GetDTypeCopySwapFn)();
+typedef int (PyArray_GetStridedCopySwapFn)();
+typedef int (PyArray_GetStridedCopySwapPairFn)();
+typedef int (PyArray_GetStridedNumericCastFn)();
+typedef int (PyArray_MaskedStridedUnaryOp)();
+typedef int (PyArray_PartitionFunc)();
+typedef int (PyArray_ReduceLoopFunc)();
+typedef int (PyArray_TransferMaskedStridedToNDim)();
+typedef int (PyArray_TransferNDimToStrided)();
+typedef int (PyArray_TransferStridedToNDim)();
+typedef int (PyArray_AssignReduceIdentityFunc)();
+typedef int (PyArray_ArgSortImpl)();
+typedef int (PyArray_SortImpl)();
+
+typedef struct {
+    _MOLT_NUMPY_OBJECT_HEAD;
+    npy_uint8 lane_data[64];
+} PySIMDVectorObject;
+
+static void *PyArray_StringDType_DTypeSpec = NULL;
+static void *PyArray_StringDType_Slots = NULL;
+static void *PyArray_StringDType_casts = NULL;
+static void *PyArray_StringDType_members = NULL;
+static void *PyArray_StringDType_methods = NULL;
 typedef struct npy_unpacked_static_string {
     size_t size;
     const char *buf;
@@ -942,6 +967,7 @@ static inline int PyDataType_ALIGNMENT(const PyArray_Descr *descr) {
 #define PyDataType_ISBYTESWAPPED(descr) ((descr) != NULL && (descr)->byteorder != '=' && (descr)->byteorder != '|')
 #define PyDataType_ISNOTSWAPPED(descr) (!PyDataType_ISBYTESWAPPED(descr))
 #define PyDataType_ISLEGACY(descr) ((descr) != NULL && (descr)->type_num >= 0)
+#define PyDataType_ PyDataType_ELSIZE
 
 #define PyArray_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE)
@@ -963,6 +989,8 @@ extern PyArray_DTypeMeta PyArrayDescr_TypeFull;
 #define PyArrayMapIter_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #define PyArrayMultiIter_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #define PyArrayNeighborhoodIter_Type (*_molt_numpy_builtin_type_borrowed("object"))
+#define PyFortran_Type (*_molt_numpy_builtin_type_borrowed("object"))
+#define PyArray_ PyArray_Check
 
 #define PyBoolArrType_Type (*_molt_numpy_builtin_type_borrowed("bool"))
 #define PyByteArrType_Type (*_molt_numpy_builtin_type_borrowed("int"))
@@ -1023,6 +1051,7 @@ extern PyArray_DTypeMeta PyArrayDescr_TypeFull;
 #define PyArray_PyFloatDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("float"))
 #define PyArray_HalfDType PyArray_PyFloatDType
 #define PyArray_FloatDType PyArray_PyFloatDType
+#define PyArray_DoubleDType PyArray_PyFloatDType
 #define PyArray_StringDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("str"))
 #define PyArray_IntpDType PyArray_PyLongDType
 #define PyArray_UIntpDType PyArray_PyLongDType
@@ -1030,7 +1059,11 @@ extern PyArray_DTypeMeta PyArrayDescr_TypeFull;
 #define PyArray_UnicodeDType PyArray_StringDType
 #define PyArray_ObjectDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("object"))
 #define PyArray_VoidDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("object"))
+#define PyArray_DatetimeDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("object"))
 #define PyArray_PyComplexDType ((PyArray_DTypeMeta *)_molt_numpy_builtin_type_borrowed("complex"))
+#define PyArray_CFloatDType PyArray_PyComplexDType
+#define PyArray_CDoubleDType PyArray_PyComplexDType
+#define PyArray_CLongDoubleDType PyArray_PyComplexDType
 #define PyArray_LongDoubleDType PyArray_PyFloatDType
 #define PyArray_ComplexAbstractDType PyArray_PyComplexDType
 #define PyArray_DefaultIntDType PyArray_PyLongDType
@@ -1081,6 +1114,20 @@ static inline int PyArrayNeighborhoodIter_Next(PyArrayNeighborhoodIterObject *it
     iter->index += 1;
     iter->dataptr = iter->translate((PyArrayIterObject *)iter, iter->coordinates);
     return 0;
+}
+
+static inline int PyArrayNeighborhoodIter_Next2D(
+    PyArrayNeighborhoodIterObject *iter,
+    npy_intp *x,
+    npy_intp *y
+) {
+    if (x != NULL) {
+        *x = iter != NULL ? iter->coordinates[0] : 0;
+    }
+    if (y != NULL) {
+        *y = iter != NULL ? iter->coordinates[1] : 0;
+    }
+    return PyArrayNeighborhoodIter_Next(iter);
 }
 
 static inline int PyArrayNeighborhoodIter_Reset(PyArrayNeighborhoodIterObject *iter) {

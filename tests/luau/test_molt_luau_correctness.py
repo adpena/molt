@@ -10,6 +10,7 @@ and asserts identical stdout to CPython. This catches:
 - Control flow (if/else, while, break/continue)
 - Function semantics (recursion, closures, default args)
 """
+
 import os
 import subprocess
 import tempfile
@@ -31,13 +32,31 @@ def _compile_and_run(python_source: str, *, expect_fail: bool = False) -> str:
             **os.environ,
             "MOLT_EXT_ROOT": "/Volumes/APDataStore/Molt",
             "CARGO_TARGET_DIR": "/Volumes/APDataStore/Molt/cargo-target",
+            "MOLT_USE_SCCACHE": "0",
             "RUSTC_WRAPPER": "",
             "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
         }
         result = subprocess.run(
-            ["uv", "run", "python", "-m", "molt.cli", "build",
-             py_path, "--target", "luau", "--output", luau_path],
-            capture_output=True, text=True, timeout=240, env=env, cwd=MOLT_DIR,
+            [
+                "uv",
+                "run",
+                "python",
+                "-m",
+                "molt.cli",
+                "build",
+                py_path,
+                "--target",
+                "luau",
+                "--profile",
+                "dev",
+                "--output",
+                luau_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=240,
+            env=env,
+            cwd=MOLT_DIR,
         )
         if result.returncode != 0:
             if expect_fail:
@@ -46,7 +65,9 @@ def _compile_and_run(python_source: str, *, expect_fail: bool = False) -> str:
 
         result = subprocess.run(
             ["lune", "run", luau_path],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if result.returncode != 0 and not expect_fail:
             pytest.fail(f"Lune runtime error: {result.stderr[:300]}")
@@ -61,7 +82,9 @@ def _python_output(source: str) -> str:
     """Get CPython reference output."""
     result = subprocess.run(
         ["python3", "-c", source],
-        capture_output=True, text=True, timeout=10,
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
     return result.stdout.strip()
 
@@ -198,25 +221,25 @@ print(d["x"])
 
 class TestMath:
     def test_floor_div(self):
-        _assert_match('print(7 // 2, -7 // 2)')
+        _assert_match("print(7 // 2, -7 // 2)")
 
     def test_modulo(self):
-        _assert_match('print(7 % 3)')
+        _assert_match("print(7 % 3)")
 
     def test_power(self):
-        _assert_match('print(2 ** 10)')
+        _assert_match("print(2 ** 10)")
 
     def test_power_small(self):
-        _assert_match('print(3 ** 4)')
+        _assert_match("print(3 ** 4)")
 
     def test_arithmetic_chain(self):
-        _assert_match('print(2 + 3 * 4 - 1)')
+        _assert_match("print(2 + 3 * 4 - 1)")
 
     def test_integer_division(self):
-        _assert_match('print(10 // 3, 11 // 4, 100 // 7)')
+        _assert_match("print(10 // 3, 11 // 4, 100 // 7)")
 
     def test_large_multiply(self):
-        _assert_match('print(12345 * 6789)')
+        _assert_match("print(12345 * 6789)")
 
 
 # ─── Print Formatting ────────────────────────────────────────────────────────
@@ -242,7 +265,7 @@ print(empty)
 """)
 
     def test_print_booleans(self):
-        _assert_match('print(True, False)')
+        _assert_match("print(True, False)")
 
     def test_print_mixed_types(self):
         _assert_match('print(1, "hello", [3, 4], True)')
@@ -251,7 +274,7 @@ print(empty)
         _assert_match('print("a", "b", "c", 1, 2, 3)')
 
     def test_print_single_int(self):
-        _assert_match('print(42)')
+        _assert_match("print(42)")
 
     def test_print_single_string(self):
         _assert_match('print("hello world")')
@@ -589,9 +612,24 @@ class TestPerformance:
             }
             t0 = time.perf_counter()
             result = subprocess.run(
-                ["uv", "run", "python", "-m", "molt.cli", "build",
-                 py_path, "--target", "luau", "--output", luau_path],
-                capture_output=True, text=True, timeout=240, env=env, cwd=MOLT_DIR,
+                [
+                    "uv",
+                    "run",
+                    "python",
+                    "-m",
+                    "molt.cli",
+                    "build",
+                    py_path,
+                    "--target",
+                    "luau",
+                    "--output",
+                    luau_path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=240,
+                env=env,
+                cwd=MOLT_DIR,
             )
             compile_time = time.perf_counter() - t0
             if result.returncode != 0:
@@ -600,7 +638,9 @@ class TestPerformance:
             t0 = time.perf_counter()
             result = subprocess.run(
                 ["lune", "run", luau_path],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             run_time = time.perf_counter() - t0
             return result.stdout.strip(), compile_time, run_time
@@ -613,7 +653,10 @@ class TestPerformance:
     def _timed_python(src: str) -> tuple[str, float]:
         t0 = time.perf_counter()
         result = subprocess.run(
-            ["python3", "-c", src], capture_output=True, text=True, timeout=10,
+            ["python3", "-c", src],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         return result.stdout.strip(), time.perf_counter() - t0
 
@@ -629,7 +672,9 @@ print(a)
         luau_out, c_time, r_time = self._timed_compile_and_run(src)
         py_out, py_time = self._timed_python(src)
         assert luau_out == py_out, f"Output mismatch: {luau_out!r} vs {py_out!r}"
-        print(f"\n  fib70: Luau={r_time:.3f}s CPython={py_time:.3f}s compile={c_time:.3f}s")
+        print(
+            f"\n  fib70: Luau={r_time:.3f}s CPython={py_time:.3f}s compile={c_time:.3f}s"
+        )
 
     def test_perf_sum_range(self):
         src = """
@@ -641,7 +686,9 @@ print(total)
         luau_out, c_time, r_time = self._timed_compile_and_run(src)
         py_out, py_time = self._timed_python(src)
         assert luau_out == py_out, f"Output mismatch: {luau_out!r} vs {py_out!r}"
-        print(f"\n  sum100k: Luau={r_time:.3f}s CPython={py_time:.3f}s compile={c_time:.3f}s")
+        print(
+            f"\n  sum100k: Luau={r_time:.3f}s CPython={py_time:.3f}s compile={c_time:.3f}s"
+        )
 
     def test_perf_nested_loop(self):
         src = """
@@ -654,7 +701,9 @@ print(total)
         luau_out, c_time, r_time = self._timed_compile_and_run(src)
         py_out, py_time = self._timed_python(src)
         assert luau_out == py_out, f"Output mismatch: {luau_out!r} vs {py_out!r}"
-        print(f"\n  nested100x100: Luau={r_time:.3f}s CPython={py_time:.3f}s compile={c_time:.3f}s")
+        print(
+            f"\n  nested100x100: Luau={r_time:.3f}s CPython={py_time:.3f}s compile={c_time:.3f}s"
+        )
 
     def test_perf_list_build(self):
         src = """
@@ -666,4 +715,6 @@ print(len(result))
         luau_out, c_time, r_time = self._timed_compile_and_run(src)
         py_out, py_time = self._timed_python(src)
         assert luau_out == py_out, f"Output mismatch: {luau_out!r} vs {py_out!r}"
-        print(f"\n  listbuild10k: Luau={r_time:.3f}s CPython={py_time:.3f}s compile={c_time:.3f}s")
+        print(
+            f"\n  listbuild10k: Luau={r_time:.3f}s CPython={py_time:.3f}s compile={c_time:.3f}s"
+        )

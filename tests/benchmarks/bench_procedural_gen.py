@@ -11,7 +11,7 @@ import math
 def hash_coord(x: int, y: int, z: int, seed: int) -> float:
     h = seed ^ x * 374761393 ^ y * 668265263 ^ z * 2246822519
     h = (h ^ (h >> 13)) * 3266489917
-    h = (h ^ (h >> 16))
+    h = h ^ (h >> 16)
     return (h & 0xFFFFFFFF) / 4294967295.0
 
 

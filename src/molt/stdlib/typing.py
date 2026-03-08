@@ -502,6 +502,7 @@ def _require_importlib_util_module() -> object:
 
 def _load_collections_abc() -> ModuleType:
     import sys as _typing_abc_sys
+
     cached = _typing_abc_sys.modules[__name__].__dict__.get("_ABC_CACHE")
     if isinstance(cached, ModuleType):
         return cached
@@ -522,7 +523,10 @@ def _load_collections_abc() -> ModuleType:
     if missing:
         raise RuntimeError(f"typing missing _collections_abc.{missing[0]}")
     import sys as _typing_sys
-    _typing_mod_dict = getattr(_typing_sys.modules.get(__name__), "__dict__", None) or globals()
+
+    _typing_mod_dict = (
+        getattr(_typing_sys.modules.get(__name__), "__dict__", None) or globals()
+    )
     _typing_mod_dict["_ABC_CACHE"] = abc_mod
     return abc_mod
 

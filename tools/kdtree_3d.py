@@ -1,7 +1,9 @@
-# kdtree_3d.py -- 3D KD-tree for 3D points (Molt --target luau compatible)
-# NO imports, NO classes, NO comprehensions, NO lambda, NO module-level mutation.
-# NO continue statements (molts Luau backend emits empty block for continue).
-# Uses if/else to handle -1 sentinel instead of continue.
+# kdtree_3d.py -- 3D KD-tree for Molt --target luau
+# KEY CONSTRAINT: NO `and` in while conditions.
+# Molt's Luau backend stores compound AND results at list index 0,
+# but Luau tables are 1-indexed so index 0 is always nil => infinite loop.
+# Use single-condition whiles with explicit if/break for compound exit.
+# NO imports, NO classes, NO comprehensions, NO continue.
 
 def _sq_dist(a, b):
     dx = a[0] - b[0]
@@ -10,52 +12,82 @@ def _sq_dist(a, b):
     return dx * dx + dy * dy + dz * dz
 
 def _isort(indices, pts, axis, lo, hi):
+    """Insertion sort indices[lo..hi] by pts[idx][axis].
+    Inner while uses single condition + explicit break (no `and` in while cond)."""
     i = lo + 1
     while i <= hi:
         key_idx = indices[i]
         key_val = pts[key_idx][axis]
         j = i - 1
-        while j >= lo and pts[indices[j]][axis] > key_val:
-            indices[j + 1] = indices[j]
-            j = j - 1
+        while j >= lo:
+            if pts[indices[j]][axis] > key_val:
+                indices[j + 1] = indices[j]
+                j = j - 1
+            else:
+                break
         indices[j + 1] = key_idx
         i = i + 1
 
-def _alloc(pool, pt, axis):
-    idx = len(pool[0])
-    pool[0].append(pt)
-    pool[1].append(-1)
-    pool[2].append(-1)
-    pool[3].append(axis)
-    return idx
-
-def _build(pool, pts, indices, lo, hi, depth):
-    if lo > hi:
-        return -1
-    axis = depth % 3
-    _isort(indices, pts, axis, lo, hi)
-    mid = (lo + hi) // 2
-    nid = _alloc(pool, pts[indices[mid]], axis)
-    pool[1][nid] = _build(pool, pts, indices, lo, mid - 1, depth + 1)
-    pool[2][nid] = _build(pool, pts, indices, mid + 1, hi, depth + 1)
-    return nid
-
 def build(points):
-    """Return pool = [node_pt, node_left, node_right, node_axis, root]."""
-    pool = [[], [], [], [], -1]
+    """Build KD-tree. Returns [npt, nleft, nright, naxis, root_idx]."""
+    npt = []
+    nleft = []
+    nright = []
+    naxis = []
     n = len(points)
     if n == 0:
-        return pool
+        return [npt, nleft, nright, naxis, -1]
     indices = []
     i = 0
     while i < n:
         indices.append(i)
         i = i + 1
-    pool[4] = _build(pool, points, indices, 0, n - 1, 0)
-    return pool
+    root_idx = -1
+    work = [[0, n - 1, 0, -1, -1]]
+    wsz = 1
+    while wsz > 0:
+        wsz = wsz - 1
+        task = work[wsz]
+        lo = task[0]
+        hi = task[1]
+        depth = task[2]
+        parent_nid = task[3]
+        side = task[4]
+        if lo > hi:
+            if parent_nid != -1:
+                if side == 0:
+                    nleft[parent_nid] = -1
+                else:
+                    nright[parent_nid] = -1
+        else:
+            axis = depth % 3
+            _isort(indices, points, axis, lo, hi)
+            mid = (lo + hi) // 2
+            nid = len(npt)
+            npt.append(points[indices[mid]])
+            nleft.append(-1)
+            nright.append(-1)
+            naxis.append(axis)
+            if parent_nid == -1:
+                root_idx = nid
+            elif side == 0:
+                nleft[parent_nid] = nid
+            else:
+                nright[parent_nid] = nid
+            if wsz < len(work):
+                work[wsz] = [mid + 1, hi, depth + 1, nid, 1]
+            else:
+                work.append([mid + 1, hi, depth + 1, nid, 1])
+            wsz = wsz + 1
+            if wsz < len(work):
+                work[wsz] = [lo, mid - 1, depth + 1, nid, 0]
+            else:
+                work.append([lo, mid - 1, depth + 1, nid, 0])
+            wsz = wsz + 1
+    return [npt, nleft, nright, naxis, root_idx]
 
 def nearest(pool, query):
-    """Return nearest [x, y, z] to query."""
+    """Return nearest [x, y, z] to query. Returns [] if empty."""
     root = pool[4]
     if root == -1:
         return []
@@ -63,28 +95,22 @@ def nearest(pool, query):
     nleft = pool[1]
     nright = pool[2]
     naxis = pool[3]
-
     best_d2 = _sq_dist(query, npt[root]) + 1.0
     best_pt = npt[root]
-
     stk = [root]
     sz = 1
-
     while sz > 0:
         sz = sz - 1
         nid = stk[sz]
-
         if nid != -1:
             pt = npt[nid]
             d2 = _sq_dist(query, pt)
             if d2 < best_d2:
                 best_d2 = d2
                 best_pt = pt
-
             ax = naxis[nid]
             diff = query[ax] - pt[ax]
             diff2 = diff * diff
-
             if diff <= 0:
                 if diff2 < best_d2:
                     right = nright[nid]
@@ -117,7 +143,6 @@ def nearest(pool, query):
                     else:
                         stk.append(right)
                     sz = sz + 1
-
     return best_pt
 
 def range_query(pool, query, radius):
@@ -130,25 +155,20 @@ def range_query(pool, query, radius):
     nright = pool[2]
     naxis = pool[3]
     r2 = radius * radius
-
     results = []
     stk = [root]
     sz = 1
-
     while sz > 0:
         sz = sz - 1
         nid = stk[sz]
-
         if nid != -1:
             pt = npt[nid]
             d2 = _sq_dist(query, pt)
             if d2 <= r2:
                 results.append(pt)
-
             ax = naxis[nid]
             diff = query[ax] - pt[ax]
             diff2 = diff * diff
-
             if diff <= 0:
                 left = nleft[nid]
                 if left != -1:
@@ -181,7 +201,6 @@ def range_query(pool, query, radius):
                         else:
                             stk.append(left)
                         sz = sz + 1
-
     return results
 
 # ─── Demo ─────────────────────────────────────────────────────────────────────

@@ -40,4 +40,3 @@ If HES drops below target:
 1. Repair missing artifacts.
 2. Repair missing principle coverage.
 3. Re-run readiness until score is back to `>= 90`.
-

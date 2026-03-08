@@ -16,7 +16,6 @@ from datetime import UTC, datetime
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from threading import BoundedSemaphore, Lock, Thread
 from typing import Any, Callable, Protocol
 from urllib.parse import parse_qs, unquote, urlparse, urlsplit

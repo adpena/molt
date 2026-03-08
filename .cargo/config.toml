@@ -2,6 +2,11 @@
 # Portable baseline: no target-cpu=native by default.
 # For host-tuned builds, use .cargo/config-native.toml or set MOLT_NATIVE_CPU=1.
 
+[build]
+# Keep all build artifacts on the external volume to preserve local SSD space.
+# Override per-invocation with CARGO_TARGET_DIR if needed.
+target-dir = "/Volumes/APDataStore/Molt/cargo-target"
+
 [target.'cfg(not(target_arch = "wasm32"))']
 rustflags = []
 

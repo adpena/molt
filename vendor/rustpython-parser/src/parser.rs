@@ -247,7 +247,7 @@ impl Parse for ast::Constant {
 }
 
 /// Parse a full Python program usually consisting of multiple lines.
-///  
+///
 /// This is a convenience function that can be used to parse a full Python program without having to
 /// specify the [`Mode`] or the location. It is probably what you want to use most of the time.
 ///
@@ -909,7 +909,7 @@ type X[T: int, *Ts, **P] = (T, Ts, P)
 type X[T: (int, str), *Ts, **P] = (T, Ts, P)
 
 # soft keyword as alias name
-type type = int  
+type type = int
 type match = int
 type case = int
 
