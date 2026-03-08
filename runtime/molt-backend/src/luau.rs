@@ -108,7 +108,8 @@ impl LuauBackend {
         // Performance review — report remaining opportunities to stderr.
         let perf_issues = review_luau_perf(&source);
         if !perf_issues.is_empty() {
-            eprintln!("[molt-luau] Performance review ({} issue{}):",
+            eprintln!(
+                "[molt-luau] Performance review ({} issue{}):",
                 perf_issues.len(),
                 if perf_issues.len() == 1 { "" } else { "s" }
             );
@@ -127,8 +128,10 @@ impl LuauBackend {
 
     fn emit_prelude_conditional(&mut self, func_body: &str) {
         // Always-emitted header.
-        self.output.push_str("--!strict\n-- Molt -> Luau transpiled output\n-- Runtime helpers\n\n");
-        self.output.push_str("local molt_func_attrs: {[any]: {[string]: any}} = {}\n");
+        self.output
+            .push_str("--!strict\n-- Molt -> Luau transpiled output\n-- Runtime helpers\n\n");
+        self.output
+            .push_str("local molt_func_attrs: {[any]: {[string]: any}} = {}\n");
         self.output.push_str("local molt_module_cache: {[string]: any} = {\n\tmath = nil,\n\tjson = nil,\n\ttime = nil,\n\tos = nil,\n}\n\n");
 
         // Helper to check if a name is used in the function body.
@@ -144,29 +147,98 @@ impl LuauBackend {
         // Conditional runtime helpers — only emit if referenced by call.
         // Each helper is a (name, source) pair.
         let helpers: &[(&str, &str)] = &[
-            ("molt_range", "@native\nlocal function molt_range(start: number, stop: number, step: number?): {number}\n\tlocal result = {}\n\tlocal s = step or 1\n\tlocal n = 0\n\tlocal i = start\n\twhile (s > 0 and i < stop) or (s < 0 and i > stop) do\n\t\tn += 1\n\t\tresult[n] = i\n\t\ti += s\n\tend\n\treturn result\nend\n"),
-            ("molt_len", "local function molt_len(obj: any): number\n\tif type(obj) == \"string\" then return #obj end\n\tif type(obj) == \"table\" then return #obj end\n\treturn 0\nend\n"),
-            ("molt_int", "local function molt_int(x: any): number\n\treturn math.floor(tonumber(x) or 0)\nend\n"),
-            ("molt_float", "local function molt_float(x: any): number\n\treturn tonumber(x) or 0.0\nend\n"),
-            ("molt_str", "local function molt_str(x: any): string\n\tif type(x) == \"table\" then\n\t\tlocal n = #x\n\t\tif n > 0 or next(x) == nil then\n\t\t\tlocal parts = table.create(n)\n\t\t\tfor i = 1, n do parts[i] = molt_str(x[i]) end\n\t\t\treturn \"[\" .. table.concat(parts, \", \") .. \"]\"\n\t\telse\n\t\t\tlocal parts = {}\n\t\t\tlocal m = 0\n\t\t\tfor k, v in pairs(x) do m += 1; parts[m] = molt_repr(k) .. \": \" .. molt_str(v) end\n\t\t\treturn \"{\" .. table.concat(parts, \", \") .. \"}\"\n\t\tend\n\tend\n\tif type(x) == \"boolean\" then return x and \"True\" or \"False\" end\n\tif x == nil then return \"None\" end\n\treturn tostring(x)\nend\n"),
-            ("molt_bool", "local function molt_bool(x: any): boolean\n\tif x == nil or x == false or x == 0 or x == \"\" then return false end\n\tif type(x) == \"table\" and next(x) == nil then return false end\n\treturn true\nend\n"),
-            ("molt_repr", "local function molt_repr(x: any): string\n\tif type(x) == \"string\" then return \"'\" .. x .. \"'\" end\n\tif type(x) == \"table\" then return molt_str(x) end\n\tif type(x) == \"boolean\" then return x and \"True\" or \"False\" end\n\tif x == nil then return \"None\" end\n\treturn tostring(x)\nend\n"),
-            ("molt_floor_div", "local function molt_floor_div(a: number, b: number): number\n\treturn math.floor(a / b)\nend\n"),
-            ("molt_pow", "local function molt_pow(a: number, b: number): number\n\treturn a ^ b\nend\n"),
-            ("molt_mod", "local function molt_mod(a: number, b: number): number\n\treturn a - math.floor(a / b) * b\nend\n"),
-            ("molt_enumerate", "local function molt_enumerate(t: {any}, start: number?): {{any}}\n\tlocal result = {}\n\tlocal s = start or 0\n\tlocal n = 0\n\tfor i, v in ipairs(t) do\n\t\tn += 1\n\t\tresult[n] = {s + i - 1, v}\n\tend\n\treturn result\nend\n"),
-            ("molt_zip", "local function molt_zip(a: {any}, b: {any}): {{any}}\n\tlocal result = {}\n\tlocal len = math.min(#a, #b)\n\tfor i = 1, len do\n\t\tresult[i] = {a[i], b[i]}\n\tend\n\treturn result\nend\n"),
-            ("molt_sorted", "local function molt_sorted(t: {any}): {any}\n\tlocal copy = table.clone(t)\n\ttable.sort(copy)\n\treturn copy\nend\n"),
-            ("molt_reversed", "@native\nlocal function molt_reversed(t: {any}): {any}\n\tlocal len = #t\n\tlocal result = table.create(len)\n\tfor i = 1, len do\n\t\tresult[i] = t[len - i + 1]\n\tend\n\treturn result\nend\n"),
-            ("molt_sum", "@native\nlocal function molt_sum(t: {number}, start: number?): number\n\tlocal s = start or 0\n\tfor _, v in ipairs(t) do s += v end\n\treturn s\nend\n"),
-            ("molt_any", "local function molt_any(t: {any}): boolean\n\tfor _, v in ipairs(t) do\n\t\tif v then return true end\n\tend\n\treturn false\nend\n"),
-            ("molt_all", "local function molt_all(t: {any}): boolean\n\tfor _, v in ipairs(t) do\n\t\tif not v then return false end\n\tend\n\treturn true\nend\n"),
-            ("molt_map", "@native\nlocal function molt_map(func: (any) -> any, t: {any}): {any}\n\tlocal len = #t\n\tlocal result = table.create(len)\n\tfor i = 1, len do\n\t\tresult[i] = func(t[i])\n\tend\n\treturn result\nend\n"),
-            ("molt_filter", "local function molt_filter(func: ((any) -> boolean)?, t: {any}): {any}\n\tlocal result = {}\n\tlocal n = 0\n\tfor _, v in ipairs(t) do\n\t\tif func then\n\t\t\tif func(v) then n += 1; result[n] = v end\n\t\telseif v then\n\t\t\tn += 1; result[n] = v\n\t\tend\n\tend\n\treturn result\nend\n"),
-            ("molt_dict_keys", "local function molt_dict_keys(d: {[any]: any}): {any}\n\tlocal result = {}\n\tlocal n = 0\n\tfor k in pairs(d) do n += 1; result[n] = k end\n\treturn result\nend\n"),
-            ("molt_dict_values", "local function molt_dict_values(d: {[any]: any}): {any}\n\tlocal result = {}\n\tlocal n = 0\n\tfor _, v in pairs(d) do n += 1; result[n] = v end\n\treturn result\nend\n"),
-            ("molt_dict_items", "local function molt_dict_items(d: {[any]: any}): {{any}}\n\tlocal result = {}\n\tlocal n = 0\n\tfor k, v in pairs(d) do n += 1; result[n] = {k, v} end\n\treturn result\nend\n"),
-            ("molt_print", "local function molt_print(...)\n\tlocal n = select(\"#\", ...)\n\tif n == 0 then print(); return end\n\tif n == 1 then print(molt_str((...))) return end\n\tlocal parts = table.create(n)\n\tfor i = 1, n do\n\t\tparts[i] = molt_str((select(i, ...)))\n\tend\n\tprint(table.concat(parts, \" \"))\nend\n"),
+            (
+                "molt_range",
+                "@native\nlocal function molt_range(start: number, stop: number, step: number?): {number}\n\tlocal result = {}\n\tlocal s = step or 1\n\tlocal n = 0\n\tlocal i = start\n\twhile (s > 0 and i < stop) or (s < 0 and i > stop) do\n\t\tn += 1\n\t\tresult[n] = i\n\t\ti += s\n\tend\n\treturn result\nend\n",
+            ),
+            (
+                "molt_len",
+                "local function molt_len(obj: any): number\n\tif type(obj) == \"string\" then return #obj end\n\tif type(obj) == \"table\" then return #obj end\n\treturn 0\nend\n",
+            ),
+            (
+                "molt_int",
+                "local function molt_int(x: any): number\n\treturn math.floor(tonumber(x) or 0)\nend\n",
+            ),
+            (
+                "molt_float",
+                "local function molt_float(x: any): number\n\treturn tonumber(x) or 0.0\nend\n",
+            ),
+            (
+                "molt_str",
+                "local function molt_str(x: any): string\n\tif type(x) == \"table\" then\n\t\tlocal n = #x\n\t\tif n > 0 or next(x) == nil then\n\t\t\tlocal parts = table.create(n)\n\t\t\tfor i = 1, n do parts[i] = molt_str(x[i]) end\n\t\t\treturn \"[\" .. table.concat(parts, \", \") .. \"]\"\n\t\telse\n\t\t\tlocal parts = {}\n\t\t\tlocal m = 0\n\t\t\tfor k, v in pairs(x) do m += 1; parts[m] = molt_repr(k) .. \": \" .. molt_str(v) end\n\t\t\treturn \"{\" .. table.concat(parts, \", \") .. \"}\"\n\t\tend\n\tend\n\tif type(x) == \"boolean\" then return x and \"True\" or \"False\" end\n\tif x == nil then return \"None\" end\n\treturn tostring(x)\nend\n",
+            ),
+            (
+                "molt_bool",
+                "local function molt_bool(x: any): boolean\n\tif x == nil or x == false or x == 0 or x == \"\" then return false end\n\tif type(x) == \"table\" and next(x) == nil then return false end\n\treturn true\nend\n",
+            ),
+            (
+                "molt_repr",
+                "local function molt_repr(x: any): string\n\tif type(x) == \"string\" then return \"'\" .. x .. \"'\" end\n\tif type(x) == \"table\" then return molt_str(x) end\n\tif type(x) == \"boolean\" then return x and \"True\" or \"False\" end\n\tif x == nil then return \"None\" end\n\treturn tostring(x)\nend\n",
+            ),
+            (
+                "molt_floor_div",
+                "local function molt_floor_div(a: number, b: number): number\n\treturn math.floor(a / b)\nend\n",
+            ),
+            (
+                "molt_pow",
+                "local function molt_pow(a: number, b: number): number\n\treturn a ^ b\nend\n",
+            ),
+            (
+                "molt_mod",
+                "local function molt_mod(a: number, b: number): number\n\treturn a - math.floor(a / b) * b\nend\n",
+            ),
+            (
+                "molt_enumerate",
+                "local function molt_enumerate(t: {any}, start: number?): {{any}}\n\tlocal result = {}\n\tlocal s = start or 0\n\tlocal n = 0\n\tfor i, v in ipairs(t) do\n\t\tn += 1\n\t\tresult[n] = {s + i - 1, v}\n\tend\n\treturn result\nend\n",
+            ),
+            (
+                "molt_zip",
+                "local function molt_zip(a: {any}, b: {any}): {{any}}\n\tlocal result = {}\n\tlocal len = math.min(#a, #b)\n\tfor i = 1, len do\n\t\tresult[i] = {a[i], b[i]}\n\tend\n\treturn result\nend\n",
+            ),
+            (
+                "molt_sorted",
+                "local function molt_sorted(t: {any}): {any}\n\tlocal copy = table.clone(t)\n\ttable.sort(copy)\n\treturn copy\nend\n",
+            ),
+            (
+                "molt_reversed",
+                "@native\nlocal function molt_reversed(t: {any}): {any}\n\tlocal len = #t\n\tlocal result = table.create(len)\n\tfor i = 1, len do\n\t\tresult[i] = t[len - i + 1]\n\tend\n\treturn result\nend\n",
+            ),
+            (
+                "molt_sum",
+                "@native\nlocal function molt_sum(t: {number}, start: number?): number\n\tlocal s = start or 0\n\tfor _, v in ipairs(t) do s += v end\n\treturn s\nend\n",
+            ),
+            (
+                "molt_any",
+                "local function molt_any(t: {any}): boolean\n\tfor _, v in ipairs(t) do\n\t\tif v then return true end\n\tend\n\treturn false\nend\n",
+            ),
+            (
+                "molt_all",
+                "local function molt_all(t: {any}): boolean\n\tfor _, v in ipairs(t) do\n\t\tif not v then return false end\n\tend\n\treturn true\nend\n",
+            ),
+            (
+                "molt_map",
+                "@native\nlocal function molt_map(func: (any) -> any, t: {any}): {any}\n\tlocal len = #t\n\tlocal result = table.create(len)\n\tfor i = 1, len do\n\t\tresult[i] = func(t[i])\n\tend\n\treturn result\nend\n",
+            ),
+            (
+                "molt_filter",
+                "local function molt_filter(func: ((any) -> boolean)?, t: {any}): {any}\n\tlocal result = {}\n\tlocal n = 0\n\tfor _, v in ipairs(t) do\n\t\tif func then\n\t\t\tif func(v) then n += 1; result[n] = v end\n\t\telseif v then\n\t\t\tn += 1; result[n] = v\n\t\tend\n\tend\n\treturn result\nend\n",
+            ),
+            (
+                "molt_dict_keys",
+                "local function molt_dict_keys(d: {[any]: any}): {any}\n\tlocal result = {}\n\tlocal n = 0\n\tfor k in pairs(d) do n += 1; result[n] = k end\n\treturn result\nend\n",
+            ),
+            (
+                "molt_dict_values",
+                "local function molt_dict_values(d: {[any]: any}): {any}\n\tlocal result = {}\n\tlocal n = 0\n\tfor _, v in pairs(d) do n += 1; result[n] = v end\n\treturn result\nend\n",
+            ),
+            (
+                "molt_dict_items",
+                "local function molt_dict_items(d: {[any]: any}): {{any}}\n\tlocal result = {}\n\tlocal n = 0\n\tfor k, v in pairs(d) do n += 1; result[n] = {k, v} end\n\treturn result\nend\n",
+            ),
+            (
+                "molt_print",
+                "local function molt_print(...)\n\tlocal n = select(\"#\", ...)\n\tif n == 0 then print(); return end\n\tif n == 1 then print(molt_str((...))) return end\n\tlocal parts = table.create(n)\n\tfor i = 1, n do\n\t\tparts[i] = molt_str((select(i, ...)))\n\tend\n\tprint(table.concat(parts, \" \"))\nend\n",
+            ),
         ];
 
         // Dependency: molt_str ↔ molt_repr are mutually recursive for table
@@ -193,7 +265,8 @@ impl LuauBackend {
             if emit {
                 // molt_repr uses assignment form since it was forward-declared.
                 if *name == "molt_repr" && needs_str_group {
-                    let assigned = source.replace("local function molt_repr(", "molt_repr = function(");
+                    let assigned =
+                        source.replace("local function molt_repr(", "molt_repr = function(");
                     self.output.push_str(&assigned);
                 } else {
                     self.output.push_str(source);
@@ -227,14 +300,16 @@ impl LuauBackend {
                 "\te = 2.718281828459045,\n\tinf = math.huge,\n\tnan = 0/0,\n",
                 "}\n\n",
             ));
-            self.output.push_str("molt_module_cache[\"math\"] = molt_math\n\n");
+            self.output
+                .push_str("molt_module_cache[\"math\"] = molt_math\n\n");
         }
 
         // JSON serializer — emit if any function references json module.
         if used("molt_json_dumps") || used("\"json\"") {
             self.output.push_str(include_str!("luau_json_prelude.luau"));
             self.output.push('\n');
-            self.output.push_str("molt_module_cache[\"json\"] = json\n\n");
+            self.output
+                .push_str("molt_module_cache[\"json\"] = json\n\n");
         }
 
         // Time module bridge — emit if any function references time module.
@@ -245,7 +320,8 @@ impl LuauBackend {
                 "\tmonotonic = os.clock,\n\tsleep = function(s: number) task.wait(s) end,\n",
                 "}\n\n",
             ));
-            self.output.push_str("molt_module_cache[\"time\"] = molt_time\n\n");
+            self.output
+                .push_str("molt_module_cache[\"time\"] = molt_time\n\n");
         }
 
         // OS module bridge — emit if any function references os module.
@@ -258,7 +334,8 @@ impl LuauBackend {
                 "\t\texists = function() return false end, sep = \"/\" },\n",
                 "}\n\n",
             ));
-            self.output.push_str("molt_module_cache[\"os\"] = molt_os\n\n");
+            self.output
+                .push_str("molt_module_cache[\"os\"] = molt_os\n\n");
         }
 
         // String method helpers.
@@ -279,7 +356,6 @@ impl LuauBackend {
                 "\t\t\tend\n\t\tend\n\t\treturn result\n\tend,\n}\n\n",
             ));
         }
-
     }
 
     fn emit_function_body(&mut self, func: &FunctionIR) {
@@ -386,11 +462,8 @@ impl LuauBackend {
             // sites.
             let mut depth: i32 = 0;
             let mut decl_depth: HashMap<String, i32> = HashMap::new();
-            let param_set: HashSet<String> = func
-                .params
-                .iter()
-                .map(|p| sanitize_ident(p))
-                .collect();
+            let param_set: HashSet<String> =
+                func.params.iter().map(|p| sanitize_ident(p)).collect();
 
             for op in &ops {
                 match op.kind.as_str() {
@@ -471,20 +544,29 @@ impl LuauBackend {
                                 for (phi_var, args) in phis {
                                     if let Some(else_i) = else_idx {
                                         // True branch value: inject before else.
-                                        let true_val = args.first().cloned().unwrap_or_else(|| "nil".to_string());
+                                        let true_val = args
+                                            .first()
+                                            .cloned()
+                                            .unwrap_or_else(|| "nil".to_string());
                                         phi_inject_before_else
                                             .entry(else_i)
                                             .or_default()
                                             .push((phi_var.clone(), true_val));
                                         // False branch value: inject before end_if.
-                                        let false_val = args.get(1).cloned().unwrap_or_else(|| "nil".to_string());
+                                        let false_val = args
+                                            .get(1)
+                                            .cloned()
+                                            .unwrap_or_else(|| "nil".to_string());
                                         phi_inject_before_end_if
                                             .entry(idx)
                                             .or_default()
                                             .push((phi_var.clone(), false_val));
                                     } else {
                                         // No else branch — only true path sets value.
-                                        let true_val = args.first().cloned().unwrap_or_else(|| "nil".to_string());
+                                        let true_val = args
+                                            .first()
+                                            .cloned()
+                                            .unwrap_or_else(|| "nil".to_string());
                                         phi_inject_before_end_if
                                             .entry(idx)
                                             .or_default()
@@ -515,7 +597,10 @@ impl LuauBackend {
                 }
             }
 
-            if ops[i].kind == "loop_start" && i + 1 < ops.len() && ops[i + 1].kind == "loop_index_start" {
+            if ops[i].kind == "loop_start"
+                && i + 1 < ops.len()
+                && ops[i + 1].kind == "loop_index_start"
+            {
                 let idx_op = &ops[i + 1];
                 if let Some(ref out_name) = idx_op.out {
                     let out = sanitize_ident(out_name);
@@ -762,9 +847,7 @@ impl LuauBackend {
                     let base = sanitize_ident(&args[0]);
                     let exp = sanitize_ident(&args[1]);
                     let modulus = sanitize_ident(&args[2]);
-                    self.emit_line(&format!(
-                        "local {out} = ({base} ^ {exp}) % {modulus}"
-                    ));
+                    self.emit_line(&format!("local {out} = ({base} ^ {exp}) % {modulus}"));
                 }
             }
             "matmul" => {
@@ -815,7 +898,10 @@ impl LuauBackend {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
-                    self.emit_line(&format!("local {out} = bit32.bnot({})", sanitize_ident(val)));
+                    self.emit_line(&format!(
+                        "local {out} = bit32.bnot({})",
+                        sanitize_ident(val)
+                    ));
                 }
             }
             "abs" => {
@@ -1143,9 +1229,7 @@ impl LuauBackend {
                             "local {out} = if {func_ref} then {func_ref}({call_args}) else nil"
                         ));
                     } else {
-                        self.emit_line(&format!(
-                            "if {func_ref} then {func_ref}({call_args}) end"
-                        ));
+                        self.emit_line(&format!("if {func_ref} then {func_ref}({call_args}) end"));
                     }
                 }
             }
@@ -1548,9 +1632,7 @@ impl LuauBackend {
                         || op.raw_int == Some(true)
                         || matches!(op.type_hint.as_deref(), Some("int"));
                     if key_is_int {
-                        self.emit_line(&format!(
-                            "local {out} = {container}[{key} + 1]"
-                        ));
+                        self.emit_line(&format!("local {out} = {container}[{key} + 1]"));
                     } else {
                         self.emit_line(&format!(
                             "local {out} = {container}[if type({key}) == \"number\" then {key} + 1 else {key}]"
@@ -1568,9 +1650,7 @@ impl LuauBackend {
                         || op.raw_int == Some(true)
                         || matches!(op.type_hint.as_deref(), Some("int"));
                     if key_is_int {
-                        self.emit_line(&format!(
-                            "{container}[{key} + 1] = {value}"
-                        ));
+                        self.emit_line(&format!("{container}[{key} + 1] = {value}"));
                     } else {
                         self.emit_line(&format!(
                             "{container}[if type({key}) == \"number\" then {key} + 1 else {key}] = {value}"
@@ -1603,10 +1683,8 @@ impl LuauBackend {
                     let obj = sanitize_ident(obj);
                     // For dunder attrs that might be on functions (stored
                     // in the side-table), look there first.
-                    let use_side_table = matches!(
-                        raw_attr,
-                        "__defaults__" | "__kwdefaults__" | "__closure__"
-                    );
+                    let use_side_table =
+                        matches!(raw_attr, "__defaults__" | "__kwdefaults__" | "__closure__");
                     if use_side_table {
                         self.emit_line(&format!(
                             "local {out} = if molt_func_attrs[{obj}] then molt_func_attrs[{obj}].{attr} else nil"
@@ -1845,82 +1923,86 @@ impl LuauBackend {
                     // so we wrap Luau functions in a closure that unpacks the
                     // positional args tuple for the correct calling convention.
                     let mapped = match s_val {
-                        "molt_max_builtin" =>
-                            "function(a, ...) return math.max(table.unpack(a)) end",
-                        "molt_min_builtin" =>
-                            "function(a, ...) return math.min(table.unpack(a)) end",
-                        "molt_abs_builtin" =>
-                            "function(a, ...) return math.abs(a[1]) end",
-                        "molt_round_builtin" =>
-                            "function(a, ...) return math.round(a[1]) end",
-                        "molt_print_builtin" =>
-                            "function(a, ...) return molt_print(table.unpack(a)) end",
-                        "molt_len" =>
-                            "function(a, ...) return molt_len(a[1]) end",
-                        "molt_int_builtin" | "molt_int" =>
-                            "function(a, ...) return molt_int(a[1]) end",
-                        "molt_float_builtin" | "molt_float" =>
-                            "function(a, ...) return molt_float(a[1]) end",
-                        "molt_str_builtin" | "molt_str" =>
-                            "function(a, ...) return molt_str(a[1]) end",
-                        "molt_bool_builtin" | "molt_bool" =>
-                            "function(a, ...) return molt_bool(a[1]) end",
-                        "molt_sum_builtin" =>
-                            "function(a, ...) return molt_sum(a[1]) end",
-                        "molt_any_builtin" =>
-                            "function(a, ...) return molt_any(a[1]) end",
-                        "molt_all_builtin" =>
-                            "function(a, ...) return molt_all(a[1]) end",
-                        "molt_sorted_builtin" =>
-                            "function(a, ...) return molt_sorted(table.unpack(a)) end",
-                        "molt_reversed_builtin" =>
-                            "function(a, ...) return molt_reversed(a[1]) end",
-                        "molt_enumerate_builtin" =>
-                            "function(a, ...) return molt_enumerate(table.unpack(a)) end",
-                        "molt_zip_builtin" =>
-                            "function(a, ...) return molt_zip(table.unpack(a)) end",
-                        "molt_isinstance" =>
-                            "function(a, ...) return molt_isinstance(a[1], a[2]) end",
-                        "molt_issubclass" =>
-                            "function(a, ...) return molt_issubclass(a[1], a[2]) end",
-                        "molt_hash_builtin" =>
-                            "function(a, ...) return molt_hash(a[1]) end",
-                        "molt_ord" =>
-                            "function(a, ...) return string.byte(a[1]) end",
-                        "molt_chr" =>
-                            "function(a, ...) return string.char(a[1]) end",
-                        "molt_repr_builtin" =>
-                            "function(a, ...) return molt_repr(a[1]) end",
-                        "molt_id" =>
-                            "function(a, ...) return molt_id(a[1]) end",
-                        "molt_callable_builtin" =>
-                            "function(a, ...) return molt_callable(a[1]) end",
-                        "molt_iter_checked" =>
-                            "function(a, ...) return molt_iter(a[1]) end",
-                        "molt_next_builtin" =>
-                            "function(a, ...) return molt_next(table.unpack(a)) end",
-                        "molt_getattr_builtin" =>
-                            "function(a, ...) return molt_getattr(table.unpack(a)) end",
-                        "molt_divmod_builtin" =>
-                            "function(a, ...) return molt_divmod(a[1], a[2]) end",
-                        "molt_hex_builtin" =>
-                            "function(a, ...) return molt_hex(a[1]) end",
-                        "molt_oct_builtin" =>
-                            "function(a, ...) return molt_oct(a[1]) end",
-                        "molt_bin_builtin" =>
-                            "function(a, ...) return molt_bin(a[1]) end",
-                        "molt_ascii_from_obj" =>
-                            "function(a, ...) return molt_ascii(a[1]) end",
-                        "molt_format_builtin" =>
-                            "function(a, ...) return molt_format(table.unpack(a)) end",
-                        "molt_dir_builtin" =>
-                            "function(a, ...) return molt_dir(a[1]) end",
-                        "molt_vars_builtin" =>
-                            "function(a, ...) return molt_vars(a[1]) end",
+                        "molt_max_builtin" => {
+                            "function(a, ...) return math.max(table.unpack(a)) end"
+                        }
+                        "molt_min_builtin" => {
+                            "function(a, ...) return math.min(table.unpack(a)) end"
+                        }
+                        "molt_abs_builtin" => "function(a, ...) return math.abs(a[1]) end",
+                        "molt_round_builtin" => "function(a, ...) return math.round(a[1]) end",
+                        "molt_print_builtin" => {
+                            "function(a, ...) return molt_print(table.unpack(a)) end"
+                        }
+                        "molt_len" => "function(a, ...) return molt_len(a[1]) end",
+                        "molt_int_builtin" | "molt_int" => {
+                            "function(a, ...) return molt_int(a[1]) end"
+                        }
+                        "molt_float_builtin" | "molt_float" => {
+                            "function(a, ...) return molt_float(a[1]) end"
+                        }
+                        "molt_str_builtin" | "molt_str" => {
+                            "function(a, ...) return molt_str(a[1]) end"
+                        }
+                        "molt_bool_builtin" | "molt_bool" => {
+                            "function(a, ...) return molt_bool(a[1]) end"
+                        }
+                        "molt_sum_builtin" => "function(a, ...) return molt_sum(a[1]) end",
+                        "molt_any_builtin" => "function(a, ...) return molt_any(a[1]) end",
+                        "molt_all_builtin" => "function(a, ...) return molt_all(a[1]) end",
+                        "molt_sorted_builtin" => {
+                            "function(a, ...) return molt_sorted(table.unpack(a)) end"
+                        }
+                        "molt_reversed_builtin" => {
+                            "function(a, ...) return molt_reversed(a[1]) end"
+                        }
+                        "molt_enumerate_builtin" => {
+                            "function(a, ...) return molt_enumerate(table.unpack(a)) end"
+                        }
+                        "molt_zip_builtin" => {
+                            "function(a, ...) return molt_zip(table.unpack(a)) end"
+                        }
+                        "molt_isinstance" => {
+                            "function(a, ...) return molt_isinstance(a[1], a[2]) end"
+                        }
+                        "molt_issubclass" => {
+                            "function(a, ...) return molt_issubclass(a[1], a[2]) end"
+                        }
+                        "molt_hash_builtin" => "function(a, ...) return molt_hash(a[1]) end",
+                        "molt_ord" => "function(a, ...) return string.byte(a[1]) end",
+                        "molt_chr" => "function(a, ...) return string.char(a[1]) end",
+                        "molt_repr_builtin" => "function(a, ...) return molt_repr(a[1]) end",
+                        "molt_id" => "function(a, ...) return molt_id(a[1]) end",
+                        "molt_callable_builtin" => {
+                            "function(a, ...) return molt_callable(a[1]) end"
+                        }
+                        "molt_iter_checked" => "function(a, ...) return molt_iter(a[1]) end",
+                        "molt_next_builtin" => {
+                            "function(a, ...) return molt_next(table.unpack(a)) end"
+                        }
+                        "molt_getattr_builtin" => {
+                            "function(a, ...) return molt_getattr(table.unpack(a)) end"
+                        }
+                        "molt_divmod_builtin" => {
+                            "function(a, ...) return molt_divmod(a[1], a[2]) end"
+                        }
+                        "molt_hex_builtin" => "function(a, ...) return molt_hex(a[1]) end",
+                        "molt_oct_builtin" => "function(a, ...) return molt_oct(a[1]) end",
+                        "molt_bin_builtin" => "function(a, ...) return molt_bin(a[1]) end",
+                        "molt_ascii_from_obj" => "function(a, ...) return molt_ascii(a[1]) end",
+                        "molt_format_builtin" => {
+                            "function(a, ...) return molt_format(table.unpack(a)) end"
+                        }
+                        "molt_dir_builtin" => "function(a, ...) return molt_dir(a[1]) end",
+                        "molt_vars_builtin" => "function(a, ...) return molt_vars(a[1]) end",
                         // Runtime intrinsics that have no Luau equivalent.
-                        "molt_function_set_builtin" | "molt_open_builtin"
-                        | "molt_set_attr_name" | "molt_del_attr_name"
-                        | "molt_has_attr_name" | "molt_aiter" | "molt_anext_builtin" => "nil",
+                        "molt_function_set_builtin"
+                        | "molt_open_builtin"
+                        | "molt_set_attr_name"
+                        | "molt_del_attr_name"
+                        | "molt_has_attr_name"
+                        | "molt_aiter"
+                        | "molt_anext_builtin" => "nil",
                         _ => "nil",
                     };
                     self.emit_line(&format!("local {out} = {mapped}"));
@@ -1956,10 +2038,7 @@ impl LuauBackend {
                     let out = sanitize_ident(out_name);
                     // Try to statically map known module names.
                     let args = op.args.as_deref().unwrap_or(&[]);
-                    let module_name = op
-                        .s_value
-                        .as_deref()
-                        .unwrap_or("");
+                    let module_name = op.s_value.as_deref().unwrap_or("");
                     let mapped = match module_name {
                         "math" => "molt_math",
                         "json" => "json",
@@ -2268,7 +2347,6 @@ impl LuauBackend {
                 // Skip line markers in production output — they add
                 // ~3% to file size with no runtime benefit.
                 // Uncomment for debugging: self.emit_line(&format!("-- line {val}"));
-
             }
 
             // ================================================================
@@ -2309,7 +2387,9 @@ impl LuauBackend {
                     };
                     self.emit_line(&format!("local {out}; do -- [vectorized: {kind}]"));
                     self.push_indent();
-                    self.emit_line(&format!("if type({iterable}) == \"table\" and #({iterable}) > 0 then"));
+                    self.emit_line(&format!(
+                        "if type({iterable}) == \"table\" and #({iterable}) > 0 then"
+                    ));
                     self.push_indent();
                     self.emit_line(&format!("local acc = {init}"));
                     self.emit_line(&format!("for _, v in ipairs({iterable}) do {body_op} end"));
@@ -2324,7 +2404,9 @@ impl LuauBackend {
                     self.emit_line("end");
                 } else {
                     // No iterable arg — emit nil tuple (will fall through to loop).
-                    self.emit_line(&format!("local {out} = {{nil, true}} -- [vectorized: {kind}]"));
+                    self.emit_line(&format!(
+                        "local {out} = {{nil, true}} -- [vectorized: {kind}]"
+                    ));
                 }
             }
 
@@ -2785,31 +2867,54 @@ pub fn review_luau_perf(source: &str) -> Vec<(usize, &'static str, String)> {
 
         // Remaining helper calls that should have been inlined.
         if trimmed.contains("molt_pow(") {
-            issues.push((ln, "helper-call", "molt_pow() not inlined — use a ^ b".into()));
+            issues.push((
+                ln,
+                "helper-call",
+                "molt_pow() not inlined — use a ^ b".into(),
+            ));
         }
         if trimmed.contains("molt_floor_div(") {
-            issues.push((ln, "helper-call", "molt_floor_div() not inlined — use math_floor(a / b)".into()));
+            issues.push((
+                ln,
+                "helper-call",
+                "molt_floor_div() not inlined — use math_floor(a / b)".into(),
+            ));
         }
         if trimmed.contains("molt_mod(") {
-            issues.push((ln, "helper-call", "molt_mod() not inlined — use a % b".into()));
+            issues.push((
+                ln,
+                "helper-call",
+                "molt_mod() not inlined — use a % b".into(),
+            ));
         }
 
         // Type-checked add that could be numeric.
         if trimmed.contains("if type(") && trimmed.contains("then tostring(") {
-            issues.push((ln, "type-check", "type-checked add — verify if operands are numeric".into()));
+            issues.push((
+                ln,
+                "type-check",
+                "type-checked add — verify if operands are numeric".into(),
+            ));
         }
 
         // table.insert in user code (not in helper definitions).
         if trimmed.contains("table.insert(") && !trimmed.starts_with("--") {
-            issues.push((ln, "table-insert", "table.insert() — use result[n] = x for speed".into()));
+            issues.push((
+                ln,
+                "table-insert",
+                "table.insert() — use result[n] = x for speed".into(),
+            ));
         }
 
         // Missing @native on `local function` definitions (only syntax that supports @native).
-        if trimmed.starts_with("local function ")
-            && !trimmed.starts_with("--")
-        {
+        if trimmed.starts_with("local function ") && !trimmed.starts_with("--") {
             // Check if previous line has @native.
-            if i == 0 || !source.lines().nth(i - 1).map_or(false, |prev| prev.trim() == "@native") {
+            if i == 0
+                || !source
+                    .lines()
+                    .nth(i - 1)
+                    .map_or(false, |prev| prev.trim() == "@native")
+            {
                 // Don't flag runtime helper definitions.
                 if !trimmed.contains("molt_range")
                     && !trimmed.contains("molt_len")
@@ -2973,7 +3078,10 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                         }
                         continue;
                     }
-                    if matches!(ops[j].kind.as_str(), "loop_break_if_true" | "loop_break_if_false") {
+                    if matches!(
+                        ops[j].kind.as_str(),
+                        "loop_break_if_true" | "loop_break_if_false"
+                    ) {
                         if let Some(arg) = ops[j].args.as_deref().and_then(|a| a.first()) {
                             break_cond_var = Some(arg.clone());
                         }
@@ -3055,23 +3163,43 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                         _ => {}
                     }
                     // Check if this op still references the iter_next output (part of unpack)
-                    let refs_iter = ops[j].args.as_deref().map_or(false, |args| {
-                        args.iter().any(|a| a == &iter_next_out)
-                    });
-                    if refs_iter || matches!(ops[j].kind.as_str(),
-                        "const_int" | "const" | "break" | "check_exception"
-                        | "exception_last" | "const_none" | "is" | "not"
-                        | "if" | "end_if" | "raise" | "jump" | "nop" | "line"
-                        | "exception_new" | "exception_stack_set_depth"
-                        | "exception_stack_exit" | "tuple_new" | "const_str"
-                        | "loop_break_if_true" | "loop_break_if_false")
+                    let refs_iter = ops[j]
+                        .args
+                        .as_deref()
+                        .map_or(false, |args| args.iter().any(|a| a == &iter_next_out));
+                    if refs_iter
+                        || matches!(
+                            ops[j].kind.as_str(),
+                            "const_int"
+                                | "const"
+                                | "break"
+                                | "check_exception"
+                                | "exception_last"
+                                | "const_none"
+                                | "is"
+                                | "not"
+                                | "if"
+                                | "end_if"
+                                | "raise"
+                                | "jump"
+                                | "nop"
+                                | "line"
+                                | "exception_new"
+                                | "exception_stack_set_depth"
+                                | "exception_stack_exit"
+                                | "tuple_new"
+                                | "const_str"
+                                | "loop_break_if_true"
+                                | "loop_break_if_false"
+                        )
                     {
                         body_start = j + 1;
                     }
                     // Track when we've passed the break check.
-                    if matches!(ops[j].kind.as_str(),
-                        "loop_break_if_true" | "loop_break_if_false" | "break")
-                    {
+                    if matches!(
+                        ops[j].kind.as_str(),
+                        "loop_break_if_true" | "loop_break_if_false" | "break"
+                    ) {
                         seen_break_check = true;
                     }
                     // Stop scanning after end_if at depth 0, but ONLY after we've
@@ -3083,7 +3211,8 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                     }
                     // After the break check, once we find the value extraction
                     // (an index op referencing iter_next_out), we're done.
-                    if seen_break_check && refs_iter
+                    if seen_break_check
+                        && refs_iter
                         && matches!(ops[j].kind.as_str(), "get_item" | "subscript" | "index")
                     {
                         body_start = j + 1;
@@ -3096,9 +3225,10 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                 // ops that write the unpacked value into a usable slot.
                 // These appear right after the break check.
                 for j in body_start..le_idx.min(body_start + 8) {
-                    let refs_value = ops[j].args.as_deref().map_or(false, |args| {
-                        args.iter().any(|a| a == &value_var)
-                    });
+                    let refs_value = ops[j]
+                        .args
+                        .as_deref()
+                        .map_or(false, |args| args.iter().any(|a| a == &value_var));
                     if refs_value && matches!(ops[j].kind.as_str(), "set_item" | "store_local") {
                         // This stores the loop variable into a slot — part of boilerplate.
                         body_start = j + 1;
@@ -3163,9 +3293,18 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                 let mut j = i + 1;
                 while j < ops.len() {
                     let k = ops[j].kind.as_str();
-                    if matches!(k, "exception_stack_set_depth" | "exception_stack_exit"
-                              | "check_exception" | "exception_last" | "const_none"
-                              | "is" | "not" | "nop" | "line") {
+                    if matches!(
+                        k,
+                        "exception_stack_set_depth"
+                            | "exception_stack_exit"
+                            | "check_exception"
+                            | "exception_last"
+                            | "const_none"
+                            | "is"
+                            | "not"
+                            | "nop"
+                            | "line"
+                    ) {
                         j += 1;
                         continue;
                     }
@@ -3177,15 +3316,24 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                                 let mut m = j + 1;
                                 while m < ops.len() {
                                     let mk = ops[m].kind.as_str();
-                                    if matches!(mk, "check_exception" | "exception_stack_set_depth"
-                                              | "exception_stack_exit" | "nop" | "line") {
+                                    if matches!(
+                                        mk,
+                                        "check_exception"
+                                            | "exception_stack_set_depth"
+                                            | "exception_stack_exit"
+                                            | "nop"
+                                            | "line"
+                                    ) {
                                         m += 1;
                                         continue;
                                     }
                                     if mk == "ret" {
                                         if let Some(ref ret_var) = ops[m].var {
                                             if ret_var == out {
-                                                return_labels.insert(label_id, (slot.clone(), args[1].clone()));
+                                                return_labels.insert(
+                                                    label_id,
+                                                    (slot.clone(), args[1].clone()),
+                                                );
                                             }
                                         }
                                     }
@@ -3220,15 +3368,28 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                     let mut j = i + 1;
                     while j < ops.len() {
                         let k = ops[j].kind.as_str();
-                        if matches!(k, "check_exception" | "exception_stack_set_depth"
-                                  | "exception_stack_exit" | "exception_last" | "const_none"
-                                  | "is" | "not" | "if" | "raise" | "end_if" | "nop" | "line") {
+                        if matches!(
+                            k,
+                            "check_exception"
+                                | "exception_stack_set_depth"
+                                | "exception_stack_exit"
+                                | "exception_last"
+                                | "const_none"
+                                | "is"
+                                | "not"
+                                | "if"
+                                | "raise"
+                                | "end_if"
+                                | "nop"
+                                | "line"
+                        ) {
                             j += 1;
                             continue;
                         }
                         if k == "jump" {
                             if let Some(target_label) = ops[j].value {
-                                if let Some((ret_slot, ret_idx)) = return_labels.get(&target_label) {
+                                if let Some((ret_slot, ret_idx)) = return_labels.get(&target_label)
+                                {
                                     if slot == ret_slot && idx == ret_idx {
                                         // Match! Replace store_index + jump with ret.
                                         result.push(OpIR {
@@ -3276,10 +3437,7 @@ fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
         let kind = op.kind.as_str();
 
         // Track structured nesting.
-        let is_open = matches!(
-            kind,
-            "if" | "loop_start" | "for_range" | "for_iter"
-        );
+        let is_open = matches!(kind, "if" | "loop_start" | "for_range" | "for_iter");
         let is_mid = matches!(kind, "else");
         let is_close = matches!(kind, "end_if" | "loop_end" | "end_for");
 
@@ -3487,7 +3645,9 @@ fn is_simple_literal(s: &str) -> bool {
     if !bytes.is_empty() {
         let start = if bytes[0] == b'-' { 1 } else { 0 };
         if start < bytes.len() && bytes[start].is_ascii_digit() {
-            return bytes[start..].iter().all(|&b| b.is_ascii_digit() || b == b'.');
+            return bytes[start..]
+                .iter()
+                .all(|&b| b.is_ascii_digit() || b == b'.');
         }
     }
     // String: starts and ends with "
@@ -3512,8 +3672,7 @@ fn replace_whole_word(haystack: &str, needle: &str, replacement: &str) -> String
         if pos + needle_bytes.len() <= bytes.len()
             && &bytes[pos..pos + needle_bytes.len()] == needle_bytes
         {
-            let before_ok =
-                pos == 0 || !is_ident_char(bytes[pos - 1]);
+            let before_ok = pos == 0 || !is_ident_char(bytes[pos - 1]);
             let after_ok = pos + needle_bytes.len() >= bytes.len()
                 || !is_ident_char(bytes[pos + needle_bytes.len()]);
             if before_ok && after_ok {
@@ -3603,10 +3762,7 @@ fn eliminate_nil_missing_wrappers(source: &mut String) {
 
     let removed = remove_lines.len();
     *source = result;
-    eprintln!(
-        "[molt-luau] Eliminated {} nil-missing wrappers",
-        removed
-    );
+    eprintln!("[molt-luau] Eliminated {} nil-missing wrappers", removed);
 }
 
 /// Strip dead UnboundLocalError checks.
@@ -3672,7 +3828,10 @@ fn strip_unbound_local_checks(source: &mut String) {
         }
     }
     *source = result;
-    eprintln!("[molt-luau] Stripped {} UnboundLocalError check lines", remove.len());
+    eprintln!(
+        "[molt-luau] Stripped {} UnboundLocalError check lines",
+        remove.len()
+    );
 }
 
 /// Strip dead locals-dict stores.
@@ -3747,7 +3906,9 @@ fn strip_dead_locals_dict_stores(source: &mut String) {
                 }
                 pos += 1;
             }
-            if !is_dead { break; }
+            if !is_dead {
+                break;
+            }
         }
 
         if is_dead {
@@ -3776,7 +3937,9 @@ fn strip_dead_locals_dict_stores(source: &mut String) {
                 break;
             }
             // Guarded store: `if type(vN) == "table" then vN["name"] = expr end`
-            if trimmed.starts_with(&format!("if type({var})")) && trimmed.contains(&format!("{var}[\"")) {
+            if trimmed.starts_with(&format!("if type({var})"))
+                && trimmed.contains(&format!("{var}[\""))
+            {
                 remove.insert(i);
                 break;
             }
@@ -3796,7 +3959,11 @@ fn strip_dead_locals_dict_stores(source: &mut String) {
     }
     let total = remove.len();
     *source = result;
-    eprintln!("[molt-luau] Stripped {} dead locals-dict lines ({} dicts)", total, dead_dicts.len());
+    eprintln!(
+        "[molt-luau] Stripped {} dead locals-dict lines ({} dicts)",
+        total,
+        dead_dicts.len()
+    );
 }
 
 /// Remove trailing `continue` statements from loop bodies.
@@ -3832,13 +3999,16 @@ fn strip_trailing_continue(source: &mut String) {
         }
     }
     *source = result;
-    eprintln!("[molt-luau] Stripped {} trailing continue statements", remove.len());
+    eprintln!(
+        "[molt-luau] Stripped {} trailing continue statements",
+        remove.len()
+    );
 }
 
 /// Simplify comparison-break patterns in while-true loops.
 /// `local vN = vA < vB; if not vN then break end` → `if vA >= vB then break end`
 fn simplify_comparison_break(source: &mut String) {
-    use std::collections::{HashSet, HashMap};
+    use std::collections::{HashMap, HashSet};
     let lines: Vec<&str> = source.lines().collect();
     let mut remove: HashSet<usize> = HashSet::new();
     let mut replacements: HashMap<usize, String> = HashMap::new();
@@ -3928,7 +4098,10 @@ fn simplify_comparison_break(source: &mut String) {
     }
     let count = remove.len() + replacements.len();
     *source = result;
-    eprintln!("[molt-luau] Simplified {} comparison-break patterns", count / 2);
+    eprintln!(
+        "[molt-luau] Simplified {} comparison-break patterns",
+        count / 2
+    );
 }
 
 /// Eliminate assignments where the RHS variable is never declared or assigned
@@ -3947,7 +4120,8 @@ fn strip_undefined_rhs_assignments(source: &mut String) {
         let trimmed = line.trim();
         // `local vN` or `local vN = ...`
         if let Some(rest) = trimmed.strip_prefix("local ") {
-            let var_end = rest.find(|c: char| !c.is_alphanumeric() && c != '_')
+            let var_end = rest
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
                 .unwrap_or(rest.len());
             let var = &rest[..var_end];
             if !var.is_empty() {
@@ -3958,9 +4132,7 @@ fn strip_undefined_rhs_assignments(source: &mut String) {
         if trimmed.starts_with('v') {
             if let Some(eq_pos) = trimmed.find(" = ") {
                 let lhs = &trimmed[..eq_pos];
-                if lhs.starts_with('v')
-                    && lhs[1..].chars().all(|c| c.is_ascii_digit())
-                {
+                if lhs.starts_with('v') && lhs[1..].chars().all(|c| c.is_ascii_digit()) {
                     defined_vars.insert(lhs.to_string());
                 }
             }
@@ -3969,7 +4141,9 @@ fn strip_undefined_rhs_assignments(source: &mut String) {
     // Function parameters are also defined.
     for line in &lines {
         let trimmed = line.trim();
-        if trimmed.ends_with(')') && (trimmed.contains("= function(") || trimmed.contains("function ")) {
+        if trimmed.ends_with(')')
+            && (trimmed.contains("= function(") || trimmed.contains("function "))
+        {
             if let Some(paren_start) = trimmed.rfind('(') {
                 let params = &trimmed[paren_start + 1..trimmed.len() - 1];
                 for param in params.split(", ") {
@@ -4005,9 +4179,7 @@ fn strip_undefined_rhs_assignments(source: &mut String) {
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         // Match: `vN = vM` (bare assignment, not `local`)
-        if !trimmed.starts_with("local ")
-            && trimmed.starts_with('v')
-        {
+        if !trimmed.starts_with("local ") && trimmed.starts_with('v') {
             if let Some(eq_pos) = trimmed.find(" = ") {
                 let lhs = &trimmed[..eq_pos];
                 let rhs = trimmed[eq_pos + 3..].trim();
@@ -4036,7 +4208,10 @@ fn strip_undefined_rhs_assignments(source: &mut String) {
         }
     }
     *source = result;
-    eprintln!("[molt-luau] Stripped {} dead undefined-RHS assignments", remove.len());
+    eprintln!(
+        "[molt-luau] Stripped {} dead undefined-RHS assignments",
+        remove.len()
+    );
 }
 
 /// Propagate single-use variable copies: `local vN = vM` where vN is used
@@ -4188,9 +4363,27 @@ fn is_simple_var_ref(s: &str) -> bool {
         // Exclude Luau keywords
         !matches!(
             s,
-            "and" | "break" | "do" | "else" | "elseif" | "end" | "false" | "for"
-                | "function" | "if" | "in" | "local" | "nil" | "not" | "or"
-                | "repeat" | "return" | "then" | "true" | "until" | "while"
+            "and"
+                | "break"
+                | "do"
+                | "else"
+                | "elseif"
+                | "end"
+                | "false"
+                | "for"
+                | "function"
+                | "if"
+                | "in"
+                | "local"
+                | "nil"
+                | "not"
+                | "or"
+                | "repeat"
+                | "return"
+                | "then"
+                | "true"
+                | "until"
+                | "while"
         )
     } else {
         false
@@ -4253,7 +4446,8 @@ fn simplify_return_chain(source: &mut String) {
         // Match `return vN`
         if let Some(ret_var) = trimmed.strip_prefix("return ") {
             let ret_var = ret_var.trim();
-            if !ret_var.starts_with('v') || ret_var.len() < 2
+            if !ret_var.starts_with('v')
+                || ret_var.len() < 2
                 || !ret_var[1..].chars().all(|c| c.is_ascii_digit())
             {
                 continue;
@@ -4266,7 +4460,9 @@ fn simplify_return_chain(source: &mut String) {
             while j < lines.len() {
                 let prev = lines[j].trim();
                 if prev.is_empty() || prev.starts_with("--") {
-                    if j == 0 { break; }
+                    if j == 0 {
+                        break;
+                    }
                     j -= 1;
                     continue;
                 }
@@ -4332,7 +4528,10 @@ fn sink_single_use_locals(source: &mut String) {
         total += count;
     }
     if total > 0 {
-        eprintln!("[molt-luau] Sunk {} single-use locals into next line", total);
+        eprintln!(
+            "[molt-luau] Sunk {} single-use locals into next line",
+            total
+        );
     }
 }
 
@@ -4415,9 +4614,9 @@ fn sink_single_use_locals_once(source: &mut String) -> usize {
     let mut remove_lines: HashSet<usize> = HashSet::new();
 
     for (var, (decl_line, expr)) in &candidates {
-        let rhs_references_candidate = candidate_vars.iter().any(|other| {
-            other != var && contains_whole_word_var(expr, other)
-        });
+        let rhs_references_candidate = candidate_vars
+            .iter()
+            .any(|other| other != var && contains_whole_word_var(expr, other));
         if !rhs_references_candidate {
             // Wrap in parentheses when needed for correctness:
             // - Table constructors: `{...}[n]` is a Luau syntax error
@@ -4500,11 +4699,11 @@ fn simplify_numeric_type_guards(source: &mut String) {
 
     for (var, (decl_line, val)) in &int_consts {
         let next_line = decl_line + 1;
-        if next_line >= lines.len() { continue; }
+        if next_line >= lines.len() {
+            continue;
+        }
 
-        let pattern = format!(
-            "if type({var}) == \"number\" then {var} + 1 else {var}",
-        );
+        let pattern = format!("if type({var}) == \"number\" then {var} + 1 else {var}",);
         if lines[next_line].contains(&pattern) {
             // Check the var isn't used elsewhere (only on these 2 lines).
             let mut total_uses = 0;
@@ -4528,9 +4727,8 @@ fn simplify_numeric_type_guards(source: &mut String) {
             if total_uses == 4 {
                 // Replace the type-guard with the computed index.
                 let replacement = format!("{}", val + 1);
-                let old_pattern = format!(
-                    "[if type({var}) == \"number\" then {var} + 1 else {var}]",
-                );
+                let old_pattern =
+                    format!("[if type({var}) == \"number\" then {var} + 1 else {var}]",);
                 let new_pattern = format!("[{replacement}]");
                 let new_line = lines[next_line].replace(&old_pattern, &new_pattern);
                 line_replacements.insert(next_line, new_line);
@@ -4582,7 +4780,9 @@ fn optimize_luau_perf(source: &mut String) {
 
         // Pass 1: Inline molt_pow(a, b) → a ^ b
         while !is_func_def {
-            let Some(start) = optimized.find("molt_pow(") else { break };
+            let Some(start) = optimized.find("molt_pow(") else {
+                break;
+            };
             if let Some(close) = find_matching_paren(&optimized, start + 8) {
                 let inner = &optimized[start + 9..close];
                 if let Some(comma) = inner.find(", ") {
@@ -4604,7 +4804,9 @@ fn optimize_luau_perf(source: &mut String) {
 
         // Pass 2: Inline molt_floor_div(a, b) → math_floor(a / b)
         while !is_func_def {
-            let Some(start) = optimized.find("molt_floor_div(") else { break };
+            let Some(start) = optimized.find("molt_floor_div(") else {
+                break;
+            };
             if let Some(close) = find_matching_paren(&optimized, start + 14) {
                 let inner = &optimized[start + 15..close];
                 if let Some(comma) = inner.find(", ") {
@@ -4628,7 +4830,9 @@ fn optimize_luau_perf(source: &mut String) {
         // Python's floor-mod matches Luau's % for positive divisors, which covers
         // the vast majority of real-world uses (array indexing, hash functions, etc.).
         while !is_func_def {
-            let Some(start) = optimized.find("molt_mod(") else { break };
+            let Some(start) = optimized.find("molt_mod(") else {
+                break;
+            };
             if let Some(close) = find_matching_paren(&optimized, start + 8) {
                 let inner = &optimized[start + 9..close];
                 if let Some(comma) = inner.find(", ") {
@@ -4652,18 +4856,31 @@ fn optimize_luau_perf(source: &mut String) {
         // Handles both `local vN = expr` and bare `vN = expr` assignments.
         // When both operands of a type-checked add are known-numeric, simplify.
         {
-            let (is_local, var_name_opt, rhs_opt) = if let Some(rest) = trimmed.strip_prefix("local ") {
-                if let Some(eq_pos) = rest.find(" = ") {
-                    (true, Some(rest[..eq_pos].to_string()), Some(&rest[eq_pos + 3..]))
-                } else { (true, None, None) }
-            } else if trimmed.starts_with('v') {
-                if let Some(eq_pos) = trimmed.find(" = ") {
-                    let lhs = &trimmed[..eq_pos];
-                    if lhs.starts_with('v') && lhs[1..].chars().all(|c| c.is_ascii_digit()) {
-                        (false, Some(lhs.to_string()), Some(&trimmed[eq_pos + 3..]))
-                    } else { (false, None, None) }
-                } else { (false, None, None) }
-            } else { (false, None, None) };
+            let (is_local, var_name_opt, rhs_opt) =
+                if let Some(rest) = trimmed.strip_prefix("local ") {
+                    if let Some(eq_pos) = rest.find(" = ") {
+                        (
+                            true,
+                            Some(rest[..eq_pos].to_string()),
+                            Some(&rest[eq_pos + 3..]),
+                        )
+                    } else {
+                        (true, None, None)
+                    }
+                } else if trimmed.starts_with('v') {
+                    if let Some(eq_pos) = trimmed.find(" = ") {
+                        let lhs = &trimmed[..eq_pos];
+                        if lhs.starts_with('v') && lhs[1..].chars().all(|c| c.is_ascii_digit()) {
+                            (false, Some(lhs.to_string()), Some(&trimmed[eq_pos + 3..]))
+                        } else {
+                            (false, None, None)
+                        }
+                    } else {
+                        (false, None, None)
+                    }
+                } else {
+                    (false, None, None)
+                };
 
             if let (Some(var_name), Some(rhs)) = (var_name_opt, rhs_opt) {
                 // Detect numeric assignment patterns.
@@ -4689,7 +4906,10 @@ fn optimize_luau_perf(source: &mut String) {
                 }
 
                 // Check for type-checked add that can be simplified.
-                if rhs.starts_with("if type(") && rhs.contains("then tostring(") && rhs.contains("else ") {
+                if rhs.starts_with("if type(")
+                    && rhs.contains("then tostring(")
+                    && rhs.contains("else ")
+                {
                     if let Some(else_pos) = rhs.rfind("else ") {
                         let numeric_expr = &rhs[else_pos + 5..];
                         if let Some(plus) = numeric_expr.find(" + ") {
@@ -4698,7 +4918,8 @@ fn optimize_luau_perf(source: &mut String) {
                             if numeric_vars.contains(lhs_var) && numeric_vars.contains(rhs_var) {
                                 let indent = &line[..line.len() - trimmed.len()];
                                 if is_local {
-                                    optimized = format!("{indent}local {var_name} = {numeric_expr}");
+                                    optimized =
+                                        format!("{indent}local {var_name} = {numeric_expr}");
                                 } else {
                                     optimized = format!("{indent}{var_name} = {numeric_expr}");
                                 }
@@ -4715,22 +4936,26 @@ fn optimize_luau_perf(source: &mut String) {
         // Pattern: `[if type(vN) == "number" then vN + 1 else vN]` → `[vN + 1]`
         while optimized.contains("if type(") && optimized.contains("+ 1 else") {
             let search = "if type(";
-            let Some(start) = optimized.find(search) else { break };
+            let Some(start) = optimized.find(search) else {
+                break;
+            };
             // Check bracket context: must be inside `[...]`
             let bracket_start = if start > 0 && optimized.as_bytes()[start - 1] == b'[' {
                 start - 1
-            } else { break };
+            } else {
+                break;
+            };
             // Extract var name from `if type(vN) ==`
             let after_type = &optimized[start + search.len()..];
-            let Some(close_paren) = after_type.find(')') else { break };
+            let Some(close_paren) = after_type.find(')') else {
+                break;
+            };
             let var = &after_type[..close_paren];
             if !var.starts_with('v') || !var[1..].chars().all(|c| c.is_ascii_digit()) {
                 break;
             }
             // Verify full pattern
-            let full_pattern = format!(
-                "[if type({var}) == \"number\" then {var} + 1 else {var}]"
-            );
+            let full_pattern = format!("[if type({var}) == \"number\" then {var} + 1 else {var}]");
             if !optimized[bracket_start..].starts_with(&full_pattern) {
                 break;
             }
@@ -4834,11 +5059,7 @@ fn has_top_level_binary_op(expr: &str) -> bool {
             b')' | b']' | b'}' => depth -= 1,
             b'+' | b'-' | b'*' | b'/' | b'%' | b'^' if depth == 0 => {
                 // Must be a binary op: preceded and followed by space
-                if i > 0
-                    && i + 1 < bytes.len()
-                    && bytes[i - 1] == b' '
-                    && bytes[i + 1] == b' '
-                {
+                if i > 0 && i + 1 < bytes.len() && bytes[i - 1] == b' ' && bytes[i + 1] == b' ' {
                     return true;
                 }
             }
@@ -5223,8 +5444,7 @@ mod tests {
     #[test]
     fn test_validate_luau_source_accepts_stub_comments() {
         // Stub comments like [async: spawn] are harmless nil assignments.
-        let source =
-            "--!strict\nfunction molt_main()\n\tlocal v0 = nil -- [async: spawn]\nend\n";
+        let source = "--!strict\nfunction molt_main()\n\tlocal v0 = nil -- [async: spawn]\nend\n";
         assert!(validate_luau_source(source).is_ok());
     }
 

@@ -28,8 +28,8 @@
 
 #![cfg(all(feature = "extension-loader", not(target_arch = "wasm32")))]
 
-use crate::bridge::GLOBAL_BRIDGE;
 use crate::abi_types::PyObject;
+use crate::bridge::GLOBAL_BRIDGE;
 use libloading::{Library, Symbol};
 use std::ffi::{CString, OsStr};
 use std::path::Path;
@@ -48,11 +48,13 @@ pub enum LoadError {
 impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::DlopenFailed(e)          => write!(f, "dlopen failed: {e}"),
-            Self::InitSymbolMissing { lib_path, symbol } =>
-                write!(f, "{symbol} not found in {lib_path}"),
-            Self::InitReturnedNull { name } =>
-                write!(f, "PyInit_{name}() returned NULL (module init error)"),
+            Self::DlopenFailed(e) => write!(f, "dlopen failed: {e}"),
+            Self::InitSymbolMissing { lib_path, symbol } => {
+                write!(f, "{symbol} not found in {lib_path}")
+            }
+            Self::InitReturnedNull { name } => {
+                write!(f, "PyInit_{name}() returned NULL (module init error)")
+            }
         }
     }
 }
@@ -64,17 +66,13 @@ impl std::fmt::Display for LoadError {
 /// - The extension must not make assumptions about CPython's memory layout
 ///   beyond what our ABI shim provides.
 /// - Must be called after `init_static_types()` and `init_tag_table()`.
-pub unsafe fn load_cpython_extension(
-    path: &Path,
-    name: &str,
-) -> Result<u64, LoadError> {
+pub unsafe fn load_cpython_extension(path: &Path, name: &str) -> Result<u64, LoadError> {
     // Ensure ABI is initialized.
     unsafe { crate::abi_types::init_static_types() };
     crate::bridge::init_tag_table();
 
     // dlopen the .so
-    let lib = unsafe { Library::new(path) }
-        .map_err(LoadError::DlopenFailed)?;
+    let lib = unsafe { Library::new(path) }.map_err(LoadError::DlopenFailed)?;
 
     // Locate PyInit_<name> entry point.
     let symbol_name = format!("PyInit_{name}");
@@ -82,7 +80,7 @@ pub unsafe fn load_cpython_extension(
         lib.get(symbol_name.as_bytes())
             .map_err(|_| LoadError::InitSymbolMissing {
                 lib_path: path.display().to_string(),
-                symbol:   symbol_name.clone(),
+                symbol: symbol_name.clone(),
             })?
     };
 
@@ -90,13 +88,16 @@ pub unsafe fn load_cpython_extension(
     // which calls back into our PyModule_Create2, PyType_Ready, etc.
     let module_ptr = unsafe { init_fn() };
     if module_ptr.is_null() {
-        return Err(LoadError::InitReturnedNull { name: name.to_owned() });
+        return Err(LoadError::InitReturnedNull {
+            name: name.to_owned(),
+        });
     }
 
     // Convert the returned *mut PyObject to a Molt handle.
     let molt_bits = {
         let bridge = GLOBAL_BRIDGE.lock();
-        bridge.pyobj_to_handle(module_ptr)
+        bridge
+            .pyobj_to_handle(module_ptr)
             .unwrap_or_else(|| molt_lang_obj_model::MoltObject::none().bits())
     };
 
@@ -137,7 +138,10 @@ fn extension_candidate_paths(name: &str) -> Vec<std::path::PathBuf> {
 
     // Probe python3 for site-packages.
     if let Ok(output) = std::process::Command::new("python3")
-        .args(["-c", "import site; print('\\n'.join(site.getsitepackages()))"])
+        .args([
+            "-c",
+            "import site; print('\\n'.join(site.getsitepackages()))",
+        ])
         .output()
     {
         if output.status.success() {

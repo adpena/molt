@@ -1,6 +1,6 @@
 //! Type object API — PyType_Ready, PyType_GenericAlloc, Py_TYPE checks.
 
-use crate::abi_types::{PyObject, PyTypeObject, Py_ssize_t, Py_TPFLAGS_READY};
+use crate::abi_types::{Py_TPFLAGS_READY, Py_ssize_t, PyObject, PyTypeObject};
 use std::os::raw::c_int;
 use std::ptr;
 
@@ -9,7 +9,9 @@ use std::ptr;
 /// need basic tp_base resolution.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
-    if tp.is_null() { return -1; }
+    if tp.is_null() {
+        return -1;
+    }
     unsafe {
         // Set tp_base to object if not set.
         if (*tp).tp_base.is_null() {
@@ -26,7 +28,9 @@ pub unsafe extern "C" fn PyType_GenericAlloc(
     tp: *mut PyTypeObject,
     _nitems: Py_ssize_t,
 ) -> *mut PyObject {
-    if tp.is_null() { return ptr::null_mut(); }
+    if tp.is_null() {
+        return ptr::null_mut();
+    }
     // Allocate basic size + nitems * itemsize.
     // For now, allocate a minimal PyObject header.
     let layout = std::alloc::Layout::from_size_align(
@@ -35,7 +39,9 @@ pub unsafe extern "C" fn PyType_GenericAlloc(
     )
     .expect("layout");
     let raw = unsafe { std::alloc::alloc_zeroed(layout) };
-    if raw.is_null() { return ptr::null_mut(); }
+    if raw.is_null() {
+        return ptr::null_mut();
+    }
     let obj = raw as *mut PyObject;
     unsafe {
         (*obj).ob_refcnt = 1;
@@ -57,25 +63,23 @@ pub unsafe extern "C" fn PyType_GenericNew(
 #[unsafe(no_mangle)]
 #[inline]
 pub unsafe extern "C" fn _Py_TYPE(op: *mut PyObject) -> *mut PyTypeObject {
-    if op.is_null() { return ptr::null_mut(); }
+    if op.is_null() {
+        return ptr::null_mut();
+    }
     unsafe { (*op).ob_type }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyObject_TypeCheck(
-    op: *mut PyObject,
-    tp: *mut PyTypeObject,
-) -> c_int {
-    if op.is_null() || tp.is_null() { return 0; }
+pub unsafe extern "C" fn PyObject_TypeCheck(op: *mut PyObject, tp: *mut PyTypeObject) -> c_int {
+    if op.is_null() || tp.is_null() {
+        return 0;
+    }
     let actual = unsafe { (*op).ob_type };
     std::ptr::eq(actual, tp) as c_int
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyObject_IsInstance(
-    inst: *mut PyObject,
-    cls: *mut PyObject,
-) -> c_int {
+pub unsafe extern "C" fn PyObject_IsInstance(inst: *mut PyObject, cls: *mut PyObject) -> c_int {
     let _ = (inst, cls);
     0 // conservative: unknown instance
 }
@@ -93,10 +97,10 @@ pub unsafe extern "C" fn PyObject_Hash(op: *mut PyObject) -> isize {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Repr(op: *mut PyObject) -> *mut PyObject {
-    if op.is_null() { return ptr::null_mut(); }
-    unsafe {
-        crate::api::strings::PyUnicode_FromString(b"<molt object>\0".as_ptr().cast())
+    if op.is_null() {
+        return ptr::null_mut();
     }
+    unsafe { crate::api::strings::PyUnicode_FromString(b"<molt object>\0".as_ptr().cast()) }
 }
 
 #[unsafe(no_mangle)]

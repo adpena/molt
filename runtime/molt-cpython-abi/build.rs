@@ -43,10 +43,7 @@ fn main() {
         }
         "linux" => {
             println!("cargo:rustc-cdylib-link-arg=-Wl,--whole-archive");
-            println!(
-                "cargo:rustc-cdylib-link-arg={}",
-                lib_path.display()
-            );
+            println!("cargo:rustc-cdylib-link-arg={}", lib_path.display());
             println!("cargo:rustc-cdylib-link-arg=-Wl,--no-whole-archive");
         }
         _ => {}

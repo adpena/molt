@@ -22,7 +22,9 @@ pub unsafe extern "C" fn PyModule_New(name: *const c_char) -> *mut PyObject {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyModule_GetDict(module: *mut PyObject) -> *mut PyObject {
-    if module.is_null() { return ptr::null_mut(); }
+    if module.is_null() {
+        return ptr::null_mut();
+    }
     // Return module's __dict__. For bridge modules, create a wrapper dict.
     module // placeholder — real impl returns the module's attribute dict
 }
