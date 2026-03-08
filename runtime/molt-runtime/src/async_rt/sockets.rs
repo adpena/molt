@@ -779,10 +779,7 @@ fn encode_sendmsg_ancillary_buffer(items: &[AncillaryItem]) -> Result<Vec<u8>, S
     let mut control = vec![0u8; total];
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
     msg.msg_control = control.as_mut_ptr() as *mut c_void;
-    msg.msg_controllen = control
-        .len()
-        .try_into()
-        .map_err(|_| "ancillary payload too large".to_string())?;
+    msg.msg_controllen = control.len();
     let mut cmsg = unsafe { libc::CMSG_FIRSTHDR(&msg as *const _) };
     for (level, kind, data) in items {
         if cmsg.is_null() {
@@ -4048,22 +4045,14 @@ pub unsafe extern "C" fn molt_socket_sendmsg(
                             msg.msg_iovlen = 0;
                         } else {
                             msg.msg_iov = iovecs.as_mut_ptr();
-                            msg.msg_iovlen = iovecs.len().try_into().map_err(|_| {
-                                std::io::Error::new(ErrorKind::InvalidInput, "too many iovecs")
-                            })?;
+                            msg.msg_iovlen = iovecs.len();
                         }
                         if ancillary_control.is_empty() {
                             msg.msg_control = std::ptr::null_mut();
                             msg.msg_controllen = 0;
                         } else {
                             msg.msg_control = ancillary_control.as_mut_ptr() as *mut c_void;
-                            msg.msg_controllen =
-                                ancillary_control.len().try_into().map_err(|_| {
-                                    std::io::Error::new(
-                                        ErrorKind::InvalidInput,
-                                        "ancillary too large",
-                                    )
-                                })?;
+                            msg.msg_controllen = ancillary_control.len();
                         }
                         let ret = libc::sendmsg(libc_socket(fd), &msg as *const _, flags);
                         if ret >= 0 {
@@ -4227,9 +4216,7 @@ pub unsafe extern "C" fn molt_socket_recvmsg(
                         msg.msg_controllen = 0;
                     } else {
                         msg.msg_control = control.as_mut_ptr() as *mut c_void;
-                        msg.msg_controllen = control.len().try_into().map_err(|_| {
-                            std::io::Error::new(ErrorKind::InvalidInput, "ancillary too large")
-                        })?;
+                        msg.msg_controllen = control.len();
                     }
                     let ret = unsafe { libc::recvmsg(libc_socket(fd), &mut msg as *mut _, flags) };
                     if ret >= 0 {
@@ -4408,9 +4395,7 @@ pub unsafe extern "C" fn molt_socket_recvmsg_into(
                         msg.msg_controllen = 0;
                     } else {
                         msg.msg_control = control.as_mut_ptr() as *mut c_void;
-                        msg.msg_controllen = control.len().try_into().map_err(|_| {
-                            std::io::Error::new(ErrorKind::InvalidInput, "ancillary too large")
-                        })?;
+                        msg.msg_controllen = control.len();
                     }
                     let ret = unsafe { libc::recvmsg(libc_socket(fd), &mut msg as *mut _, flags) };
                     if ret >= 0 {
@@ -9340,24 +9325,24 @@ pub unsafe extern "C" fn molt_socket_sendmsg_afalg(
             }
 
             // ALG_SET_IV (optional)
-            if let Some(ref iv) = iv_data {
-                if !cmsg.is_null() {
-                    (*cmsg).cmsg_level = SOL_ALG;
-                    (*cmsg).cmsg_type = ALG_SET_IV;
-                    (*cmsg).cmsg_len = libc::CMSG_LEN(iv.len() as u32) as _;
-                    std::ptr::copy_nonoverlapping(iv.as_ptr(), libc::CMSG_DATA(cmsg), iv.len());
-                    cmsg = libc::CMSG_NXTHDR(&msghdr, cmsg);
-                }
+            if let Some(ref iv) = iv_data
+                && !cmsg.is_null()
+            {
+                (*cmsg).cmsg_level = SOL_ALG;
+                (*cmsg).cmsg_type = ALG_SET_IV;
+                (*cmsg).cmsg_len = libc::CMSG_LEN(iv.len() as u32) as _;
+                std::ptr::copy_nonoverlapping(iv.as_ptr(), libc::CMSG_DATA(cmsg), iv.len());
+                cmsg = libc::CMSG_NXTHDR(&msghdr, cmsg);
             }
 
             // ALG_SET_AEAD_ASSOCLEN (optional)
-            if let Some(ref assoc) = assoclen_bytes {
-                if !cmsg.is_null() {
-                    (*cmsg).cmsg_level = SOL_ALG;
-                    (*cmsg).cmsg_type = ALG_SET_AEAD_ASSOCLEN;
-                    (*cmsg).cmsg_len = libc::CMSG_LEN(4) as _;
-                    std::ptr::copy_nonoverlapping(assoc.as_ptr(), libc::CMSG_DATA(cmsg), 4);
-                }
+            if let Some(ref assoc) = assoclen_bytes
+                && !cmsg.is_null()
+            {
+                (*cmsg).cmsg_level = SOL_ALG;
+                (*cmsg).cmsg_type = ALG_SET_AEAD_ASSOCLEN;
+                (*cmsg).cmsg_len = libc::CMSG_LEN(4) as _;
+                std::ptr::copy_nonoverlapping(assoc.as_ptr(), libc::CMSG_DATA(cmsg), 4);
             }
         }
 

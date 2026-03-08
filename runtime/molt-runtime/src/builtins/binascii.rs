@@ -497,7 +497,6 @@ fn simd_hex_decode(input: &[u8]) -> Option<Vec<u8>> {
                 if _mm_movemask_epi8(any_bad) != 0 {
                     return None;
                 }
-                let result = _mm_or_si128(_mm_slli_epi16(hi_vals, 4), lo_vals);
                 // Mask off the high bits that leaked from slli_epi16
                 let nibble_mask = _mm_set1_epi8(0x0F);
                 let hi_shifted =
@@ -847,8 +846,6 @@ fn qp_encode(input: &[u8]) -> Vec<u8> {
         if input.len() >= 16 && std::arch::is_x86_feature_detected!("sse2") {
             unsafe {
                 use std::arch::x86_64::*;
-                let space = _mm_set1_epi8(b' ' as i8);
-                let tilde = _mm_set1_epi8(b'~' as i8);
                 let eq_char = _mm_set1_epi8(b'=' as i8);
                 let nl = _mm_set1_epi8(b'\n' as i8);
                 let cr = _mm_set1_epi8(b'\r' as i8);

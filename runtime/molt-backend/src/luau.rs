@@ -736,10 +736,22 @@ impl LuauBackend {
             // ================================================================
             // Variable load/store (both pedagogical and real IR forms)
             // ================================================================
-            "load_local" | "load" | "guarded_load" => {
+            "load_local" => {
                 let out = self.out_var(op);
                 let var = self.var_ref(op);
                 self.emit_line(&format!("local {out} = {var}"));
+            }
+            "load" | "guarded_load" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(obj) = args.first() {
+                    // Field offsets are byte offsets in 8-byte MoltValue slots.
+                    let slot = (op.value.unwrap_or(0) / 8) + 1;
+                    let obj = sanitize_ident(obj);
+                    self.emit_line(&format!("local {out} = {obj}[{slot}]"));
+                } else {
+                    self.emit_line(&format!("local {out} = nil"));
+                }
             }
             "closure_load" => {
                 // closure_load: args[0] = slot name, out = destination var
@@ -754,12 +766,22 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = {var}"));
                 }
             }
-            "store_local" | "store" | "store_init" => {
+            "store_local" => {
                 let var = self.var_ref(op);
                 if let Some(ref args) = op.args {
                     if let Some(src) = args.first() {
                         self.emit_line(&format!("{var} = {}", sanitize_ident(src)));
                     }
+                }
+            }
+            "store" | "store_init" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    // Field offsets are byte offsets in 8-byte MoltValue slots.
+                    let slot = (op.value.unwrap_or(0) / 8) + 1;
+                    let obj = sanitize_ident(&args[0]);
+                    let value = sanitize_ident(&args[1]);
+                    self.emit_line(&format!("{obj}[{slot}] = {value}"));
                 }
             }
             "closure_store" => {
