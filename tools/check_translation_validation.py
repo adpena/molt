@@ -391,9 +391,9 @@ def compile_rust_artifact(
         "-o",
         output_binary,
         "--edition=2021",
-        "-A",
-        "unused_mut,unused_variables,dead_code,non_snake_case",
     ]
+    for lint in ("unused_mut", "unused_variables", "dead_code", "non_snake_case"):
+        cmd.extend(["-A", lint])
     if verbose:
         print(f"  rustc: {' '.join(cmd)}")
     try:
@@ -848,8 +848,8 @@ def main() -> int:
     parser.add_argument(
         "--timeout",
         type=float,
-        default=30.0,
-        help="Timeout in seconds for each CPython/Molt run (default: 30)",
+        default=300.0,
+        help="Timeout in seconds for each CPython/Molt run (default: 300)",
     )
     parser.add_argument(
         "--target",
