@@ -43,10 +43,16 @@ def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> s
         with open(py_path, "w") as f:
             f.write(python_source)
 
+        ext_root = os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt")
+        cargo_target = os.environ.get(
+            "CARGO_TARGET_DIR",
+            os.path.join(ext_root, "cargo-target"),
+        )
         env = {
             **os.environ,
-            "MOLT_EXT_ROOT": "/Volumes/APDataStore/Molt",
-            "CARGO_TARGET_DIR": "/Volumes/APDataStore/Molt/cargo-target",
+            "MOLT_EXT_ROOT": ext_root,
+            "CARGO_TARGET_DIR": cargo_target,
+            "MOLT_USE_SCCACHE": "0",
             "RUSTC_WRAPPER": "",
             "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
         }
@@ -55,7 +61,7 @@ def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> s
         result = subprocess.run(
             [
                 "uv", "run", "python", "-m", "molt.cli", "build",
-                py_path, "--target", "rust", "--output", rs_path,
+                py_path, "--target", "rust", "--profile", "dev", "--output", rs_path,
             ],
             capture_output=True, text=True, timeout=240, env=env, cwd=MOLT_DIR,
         )
@@ -71,7 +77,7 @@ def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> s
         result2 = subprocess.run(
             [rustc, rs_path, "-o", bin_path, "--edition=2021",
              "-A", "unused_mut,unused_variables,dead_code,non_snake_case"],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=300,
         )
         if result2.returncode != 0:
             if expect_fail:

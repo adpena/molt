@@ -372,13 +372,16 @@ if _backend_available(_SELECT_KIND_KQUEUE):
 _default_kind = int(_MOLT_SELECT_DEFAULT_SELECTOR_KIND())
 
 import sys as _sel_default_sys
+
 _sel_default_mod_dict = _sel_default_sys.modules[__name__].__dict__
 
 if _default_kind == _SELECT_KIND_KQUEUE and "KqueueSelector" in _sel_default_mod_dict:
     _default_selector_cls = KqueueSelector
 elif _default_kind == _SELECT_KIND_EPOLL and "EpollSelector" in _sel_default_mod_dict:
     _default_selector_cls = EpollSelector
-elif _default_kind == _SELECT_KIND_DEVPOLL and "DevpollSelector" in _sel_default_mod_dict:
+elif (
+    _default_kind == _SELECT_KIND_DEVPOLL and "DevpollSelector" in _sel_default_mod_dict
+):
     _default_selector_cls = DevpollSelector
 elif _default_kind == _SELECT_KIND_POLL and "PollSelector" in _sel_default_mod_dict:
     _default_selector_cls = PollSelector
@@ -393,7 +396,10 @@ if _default_selector_cls is SelectSelector:
         "PollSelector",
     ):
         import sys as _sel_sys
-        _sel_mod_dict = getattr(_sel_sys.modules.get(__name__), "__dict__", None) or globals()
+
+        _sel_mod_dict = (
+            getattr(_sel_sys.modules.get(__name__), "__dict__", None) or globals()
+        )
         _selector_candidate = _sel_mod_dict.get(_selector_name)
         if _selector_candidate is not None:
             _default_selector_cls = _selector_candidate

@@ -269,9 +269,7 @@ def f(n: int) -> int:
     )
     ops = list(fn["ops"])
     outer_loop_start = next(
-        idx
-        for idx, op in enumerate(ops)
-        if op["kind"] == "loop_start"
+        idx for idx, op in enumerate(ops) if op["kind"] == "loop_start"
     )
     outer_loop_break = next(
         idx

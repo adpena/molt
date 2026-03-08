@@ -3,6 +3,7 @@
 Differential testing: compile with Molt, run natively, compare to CPython output.
 Tests cover version-specific semantics introduced in CPython 3.14.
 """
+
 import os
 import subprocess
 import sys
@@ -30,10 +31,20 @@ def _compile_and_run(python_source: str) -> str:
         }
 
         build = subprocess.run(
-            [sys.executable, "-m", "molt.cli", "build",
-             str(src_path), "--out-dir", str(tmp)],
-            capture_output=True, text=True, timeout=240,
-            env=env, cwd=str(MOLT_DIR),
+            [
+                sys.executable,
+                "-m",
+                "molt.cli",
+                "build",
+                str(src_path),
+                "--out-dir",
+                str(tmp),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=240,
+            env=env,
+            cwd=str(MOLT_DIR),
         )
         if build.returncode != 0:
             pytest.skip(f"Compilation failed: {build.stderr[:300]}")
@@ -43,7 +54,9 @@ def _compile_and_run(python_source: str) -> str:
 
         run = subprocess.run(
             [str(binary_path)],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if run.returncode != 0:
             pytest.fail(f"Runtime error: {run.stderr[:300]}")
@@ -54,7 +67,9 @@ def _python_output(source: str) -> str:
     """Get CPython reference output."""
     result = subprocess.run(
         [sys.executable, "-c", source],
-        capture_output=True, text=True, timeout=10,
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
     if result.returncode != 0:
         pytest.skip(f"CPython itself failed: {result.stderr[:200]}")
@@ -148,7 +163,9 @@ print(len(template.interpolations))
 class TestPEP758ExceptSyntax:
     """PEP 758 allows `except ValueError, TypeError:` without parentheses."""
 
-    @pytest.mark.skip(reason="PEP 758 unparenthesized except not yet implemented in Molt")
+    @pytest.mark.skip(
+        reason="PEP 758 unparenthesized except not yet implemented in Molt"
+    )
     def test_except_multiple_no_parens(self):
         _assert_match("""\
 def try_convert(val):
@@ -161,7 +178,9 @@ print(try_convert("42"))
 print(try_convert("abc"))
 """)
 
-    @pytest.mark.skip(reason="PEP 758 unparenthesized except not yet implemented in Molt")
+    @pytest.mark.skip(
+        reason="PEP 758 unparenthesized except not yet implemented in Molt"
+    )
     def test_except_three_types_no_parens(self):
         _assert_match("""\
 def safe_div(a, b):

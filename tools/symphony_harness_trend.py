@@ -170,9 +170,7 @@ def main(argv: list[str] | None = None) -> int:
     csv_path = (
         Path(str(args.csv)).expanduser().resolve()
         if args.csv
-        else (
-            symphony_metrics_dir() / "harness_timeseries.csv"
-        )
+        else (symphony_metrics_dir() / "harness_timeseries.csv")
     )
     if not csv_path.exists():
         raise RuntimeError(f"missing harness timeseries: {csv_path}")

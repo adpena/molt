@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from molt import capabilities
 
 if TYPE_CHECKING:
-    from moltlib.net import Request, Response, Stream
+    from moltlib.net import Request, Stream
 
 Scope = dict[str, Any]
 Receive = Callable[[], Awaitable[dict[str, Any]]]
