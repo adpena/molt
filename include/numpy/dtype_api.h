@@ -16,6 +16,10 @@ typedef enum {
         NPY_METH_REQUIRES_PYAPI | NPY_METH_NO_FLOATINGPOINT_ERRORS),
 } NPY_ARRAYMETHOD_FLAGS;
 
+typedef enum {
+    NPY_SAME_VALUE_CONTEXT_FLAG = 1,
+} NPY_ARRAYMETHOD_CONTEXT_FLAGS;
+
 #define NPY_DT_ABSTRACT (1 << 1)
 #define NPY_DT_PARAMETRIC (1 << 2)
 #define NPY_DT_NUMERIC (1 << 3)
@@ -147,6 +151,11 @@ typedef int (PyArrayDTypeMeta_SetItem)(PyArray_Descr *descr, PyObject *obj, char
 typedef PyObject *(PyArrayDTypeMeta_GetItem)(PyArray_Descr *descr, char *data);
 
 #define NPY_DTYPE(descr) ((PyArray_DTypeMeta *)Py_TYPE(descr))
+
+static inline PyArray_DTypeMeta *NPY_DT_NewRef(PyArray_DTypeMeta *o) {
+    Py_INCREF((PyObject *)o);
+    return o;
+}
 
 typedef int (PyArrayMethod_GetReductionInitial)(
     PyArrayMethod_Context *context,
