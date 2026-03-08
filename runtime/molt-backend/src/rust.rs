@@ -30,6 +30,12 @@ pub struct RustBackend {
     /// Used to emit a writeback when loop_index_next updates the phi var,
     /// so the locals frame stays coherent after the loop exits.
     phi_to_frame: HashMap<String, (String, String)>,
+    /// Best-effort alias graph from temporary clones to their source variable.
+    /// Used to propagate side-effecting mutations on cloned temps back to roots.
+    aliases: HashMap<String, String>,
+    /// Current function params (as Rust identifiers) for call-by-object writeback.
+    current_params: Vec<String>,
+    current_is_main: bool,
 }
 
 impl RustBackend {
@@ -40,6 +46,9 @@ impl RustBackend {
             hoisted_vars: HashSet::new(),
             use_crate: false,
             phi_to_frame: HashMap::new(),
+            aliases: HashMap::new(),
+            current_params: Vec::new(),
+            current_is_main: false,
         }
     }
 
@@ -100,6 +109,67 @@ impl RustBackend {
             Err("output contains unimplemented op stubs — use --target luau or native".to_string())
         } else {
             Ok(source)
+        }
+    }
+
+    fn alias_root(&self, name: &str) -> String {
+        let mut cur = name.to_string();
+        let mut seen = HashSet::new();
+        while let Some(next) = self.aliases.get(&cur) {
+            if !seen.insert(cur.clone()) {
+                break;
+            }
+            cur = next.clone();
+        }
+        cur
+    }
+
+    fn clear_alias(&mut self, var: &str) {
+        let mut stack = vec![var.to_string()];
+        while let Some(target) = stack.pop() {
+            self.aliases.remove(&target);
+            let children: Vec<String> = self
+                .aliases
+                .iter()
+                .filter_map(|(k, v)| if v == &target { Some(k.clone()) } else { None })
+                .collect();
+            for child in children {
+                self.aliases.remove(&child);
+                stack.push(child);
+            }
+        }
+    }
+
+    fn note_alias(&mut self, dst: String, src: String) {
+        self.clear_alias(&dst);
+        let root = self.alias_root(&src);
+        if dst != root {
+            self.aliases.insert(dst, root);
+        }
+    }
+
+    fn emit_alias_writeback(&mut self, var: &str) {
+        let mut cur = var.to_string();
+        let mut seen = HashSet::new();
+        while let Some(parent) = self.aliases.get(&cur).cloned() {
+            if !seen.insert(parent.clone()) {
+                break;
+            }
+            self.emit_line(&format!("{parent} = {cur}.clone();"));
+            cur = parent;
+        }
+    }
+
+    fn emit_param_writeback(&mut self) {
+        if self.current_is_main || self.current_params.is_empty() {
+            return;
+        }
+        for (i, param) in self.current_params.iter().enumerate() {
+            self.emit_line(&format!(
+                "if args___.len() <= {i} {{ args___.resize({len}, MoltValue::None); }}",
+                len = i + 1
+            ));
+            self.emit_line(&format!("args___[{i}] = {param}.clone();"));
         }
     }
 
@@ -897,7 +967,8 @@ impl RustBackend {
     // ── Function emission ─────────────────────────────────────────────────────
 
     fn emit_function(&mut self, func: &FunctionIR) {
-        let is_main = func.name == "molt_main" || func.name == "__main__"
+        let is_main = func.name == "molt_main"
+            || func.name == "__main__"
             || func.name == "molt___main__"
             || (func.params.is_empty() && func.name.starts_with("molt_main"));
 
@@ -909,7 +980,8 @@ impl RustBackend {
         let ops = lower_iter_to_for(&ops);
 
         // Collect loop index vars (need pre-declaration so they persist across iterations)
-        let loop_idx_vars: Vec<String> = ops.iter()
+        let loop_idx_vars: Vec<String> = ops
+            .iter()
             .filter(|op| op.kind == "loop_index_start")
             .filter_map(|op| op.out.as_deref())
             .map(|s| rust_ident(s))
@@ -944,7 +1016,10 @@ impl RustBackend {
         if is_main {
             self.emit_line("fn molt_main() {");
         } else {
-            let _ = writeln!(self.output, "fn {name}(args___: Vec<MoltValue>) -> MoltValue {{");
+            let _ = writeln!(
+                self.output,
+                "fn {name}(args___: Vec<MoltValue>) -> MoltValue {{"
+            );
             self.indent += 1;
             // Destructure params from args
             for (i, p) in func.params.iter().enumerate() {
@@ -1043,7 +1118,10 @@ impl RustBackend {
                 if let Some(ref out_name) = idx_op.out {
                     let out = rust_ident(out_name);
                     let args = idx_op.args.as_deref().unwrap_or(&[]);
-                    let start = args.first().map(|s| rust_ident(s)).unwrap_or_else(|| "MoltValue::Int(0)".to_string());
+                    let start = args
+                        .first()
+                        .map(|s| rust_ident(s))
+                        .unwrap_or_else(|| "MoltValue::Int(0)".to_string());
                     self.emit_line(&format!("{out} = {start}.clone();"));
                 }
                 self.emit_op(&ops[i]);
@@ -1180,14 +1258,25 @@ impl RustBackend {
             "load_local" | "load" | "guarded_load" => {
                 let o = out();
                 let v = var_ref(op);
-                self.emit_line(&declare(&o, &format!("{v}.clone()"), &self.hoisted_vars.clone()));
+                self.emit_line(&declare(
+                    &o,
+                    &format!("{v}.clone()"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "closure_load" => {
                 let o = out();
-                let slot = op.args.as_ref().and_then(|a| a.first())
+                let slot = op
+                    .args
+                    .as_ref()
+                    .and_then(|a| a.first())
                     .map(|s| format!("__closure_{}", rust_ident(s)))
                     .unwrap_or_else(|| var_ref(op));
-                self.emit_line(&declare(&o, &format!("{slot}.clone()"), &self.hoisted_vars.clone()));
+                self.emit_line(&declare(
+                    &o,
+                    &format!("{slot}.clone()"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "store_local" | "store" | "store_init" => {
                 let v = var_ref(op);
@@ -1215,135 +1304,252 @@ impl RustBackend {
                 let (a, b) = args2(op);
                 // Fast int path
                 if op.fast_int == Some(true) {
-                    self.emit_line(&declare(&o,
+                    self.emit_line(&declare(
+                        &o,
                         &format!("MoltValue::Int(molt_int(&{a}).wrapping_add(molt_int(&{b})))"),
-                        &self.hoisted_vars.clone()));
+                        &self.hoisted_vars.clone(),
+                    ));
                 } else {
-                    self.emit_line(&declare(&o,
+                    self.emit_line(&declare(
+                        &o,
                         &format!("molt_add({a}.clone(), {b}.clone())"),
-                        &self.hoisted_vars.clone()));
+                        &self.hoisted_vars.clone(),
+                    ));
                 }
             }
             "sub" | "inplace_sub" | "binop_sub" => {
-                let o = out(); let (a, b) = args2(op);
+                let o = out();
+                let (a, b) = args2(op);
                 if op.fast_int == Some(true) {
-                    self.emit_line(&declare(&o,
+                    self.emit_line(&declare(
+                        &o,
                         &format!("MoltValue::Int(molt_int(&{a}).wrapping_sub(molt_int(&{b})))"),
-                        &self.hoisted_vars.clone()));
+                        &self.hoisted_vars.clone(),
+                    ));
                 } else {
-                    self.emit_line(&declare(&o, &format!("molt_sub({a}.clone(), {b}.clone())"), &self.hoisted_vars.clone()));
+                    self.emit_line(&declare(
+                        &o,
+                        &format!("molt_sub({a}.clone(), {b}.clone())"),
+                        &self.hoisted_vars.clone(),
+                    ));
                 }
             }
             "mul" | "inplace_mul" | "binop_mul" => {
-                let o = out(); let (a, b) = args2(op);
+                let o = out();
+                let (a, b) = args2(op);
                 if op.fast_int == Some(true) {
-                    self.emit_line(&declare(&o,
+                    self.emit_line(&declare(
+                        &o,
                         &format!("MoltValue::Int(molt_int(&{a}).wrapping_mul(molt_int(&{b})))"),
-                        &self.hoisted_vars.clone()));
+                        &self.hoisted_vars.clone(),
+                    ));
                 } else {
-                    self.emit_line(&declare(&o, &format!("molt_mul({a}.clone(), {b}.clone())"), &self.hoisted_vars.clone()));
+                    self.emit_line(&declare(
+                        &o,
+                        &format!("molt_mul({a}.clone(), {b}.clone())"),
+                        &self.hoisted_vars.clone(),
+                    ));
                 }
             }
             "div" | "true_div" => {
-                let o = out(); let (a, b) = args2(op);
-                self.emit_line(&declare(&o, &format!("molt_div({a}.clone(), {b}.clone())"), &self.hoisted_vars.clone()));
+                let o = out();
+                let (a, b) = args2(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_div({a}.clone(), {b}.clone())"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "floor_div" | "floordiv" | "binop_floor_div" => {
-                let o = out(); let (a, b) = args2(op);
-                self.emit_line(&declare(&o, &format!("molt_floor_div({a}.clone(), {b}.clone())"), &self.hoisted_vars.clone()));
+                let o = out();
+                let (a, b) = args2(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_floor_div({a}.clone(), {b}.clone())"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "mod" | "modulo" | "binop_mod" => {
-                let o = out(); let (a, b) = args2(op);
-                self.emit_line(&declare(&o, &format!("molt_mod({a}.clone(), {b}.clone())"), &self.hoisted_vars.clone()));
+                let o = out();
+                let (a, b) = args2(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_mod({a}.clone(), {b}.clone())"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "pow" | "binop_pow" => {
-                let o = out(); let (a, b) = args2(op);
-                self.emit_line(&declare(&o, &format!("molt_pow({a}.clone(), {b}.clone())"), &self.hoisted_vars.clone()));
+                let o = out();
+                let (a, b) = args2(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_pow({a}.clone(), {b}.clone())"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "neg" | "unary_neg" => {
                 let o = out();
                 let a = arg0(op);
-                self.emit_line(&declare(&o, &format!("molt_neg({a}.clone())"), &self.hoisted_vars.clone()));
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_neg({a}.clone())"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "unary_not" | "not" => {
                 let o = out();
                 let a = arg0(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Bool(!molt_bool(&{a}))"), &self.hoisted_vars.clone()));
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Bool(!molt_bool(&{a}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
 
             // Bitwise
             "band" | "bit_and" => {
-                let o = out(); let (a, b) = args2(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Int(molt_int(&{a}) & molt_int(&{b}))"), &self.hoisted_vars.clone()));
+                let o = out();
+                let (a, b) = args2(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Int(molt_int(&{a}) & molt_int(&{b}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "bor" | "bit_or" => {
-                let o = out(); let (a, b) = args2(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Int(molt_int(&{a}) | molt_int(&{b}))"), &self.hoisted_vars.clone()));
+                let o = out();
+                let (a, b) = args2(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Int(molt_int(&{a}) | molt_int(&{b}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "bxor" | "bit_xor" => {
-                let o = out(); let (a, b) = args2(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Int(molt_int(&{a}) ^ molt_int(&{b}))"), &self.hoisted_vars.clone()));
+                let o = out();
+                let (a, b) = args2(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Int(molt_int(&{a}) ^ molt_int(&{b}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "lshift" => {
-                let o = out(); let (a, b) = args2(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Int(molt_int(&{a}) << (molt_int(&{b}) as u32))"), &self.hoisted_vars.clone()));
+                let o = out();
+                let (a, b) = args2(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Int(molt_int(&{a}) << (molt_int(&{b}) as u32))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "rshift" => {
-                let o = out(); let (a, b) = args2(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Int(molt_int(&{a}) >> (molt_int(&{b}) as u32))"), &self.hoisted_vars.clone()));
+                let o = out();
+                let (a, b) = args2(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Int(molt_int(&{a}) >> (molt_int(&{b}) as u32))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
 
             // ── Comparisons ────────────────────────────────────────────────────
             "eq" | "cmp_eq" => {
-                let o = out(); let (a, b) = args2(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Bool(molt_eq(&{a}, &{b}))"), &self.hoisted_vars.clone()));
+                let o = out();
+                let (a, b) = args2(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Bool(molt_eq(&{a}, &{b}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "ne" | "cmp_ne" => {
-                let o = out(); let (a, b) = args2(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Bool(!molt_eq(&{a}, &{b}))"), &self.hoisted_vars.clone()));
+                let o = out();
+                let (a, b) = args2(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Bool(!molt_eq(&{a}, &{b}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "lt" | "cmp_lt" => {
-                let o = out(); let (a, b) = args2(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Bool(molt_lt(&{a}, &{b}))"), &self.hoisted_vars.clone()));
+                let o = out();
+                let (a, b) = args2(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Bool(molt_lt(&{a}, &{b}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "le" | "cmp_le" => {
-                let o = out(); let (a, b) = args2(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Bool(molt_le(&{a}, &{b}))"), &self.hoisted_vars.clone()));
+                let o = out();
+                let (a, b) = args2(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Bool(molt_le(&{a}, &{b}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "gt" | "cmp_gt" => {
-                let o = out(); let (a, b) = args2(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Bool(molt_gt(&{a}, &{b}))"), &self.hoisted_vars.clone()));
+                let o = out();
+                let (a, b) = args2(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Bool(molt_gt(&{a}, &{b}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "ge" | "cmp_ge" => {
-                let o = out(); let (a, b) = args2(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Bool(molt_ge(&{a}, &{b}))"), &self.hoisted_vars.clone()));
+                let o = out();
+                let (a, b) = args2(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Bool(molt_ge(&{a}, &{b}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "is" | "is_not" => {
                 // Python `is` — identity check (use == for value equality in Rust)
-                let o = out(); let (a, b) = args2(op);
+                let o = out();
+                let (a, b) = args2(op);
                 let negate = op.kind == "is_not";
                 let cmp = if negate { "!" } else { "" };
-                self.emit_line(&declare(&o, &format!("MoltValue::Bool({cmp}molt_eq(&{a}, &{b}))"), &self.hoisted_vars.clone()));
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Bool({cmp}molt_eq(&{a}, &{b}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "in" | "not_in" => {
-                let o = out(); let (a, b) = args2(op);
+                let o = out();
+                let (a, b) = args2(op);
                 let negate = op.kind == "not_in";
                 let prefix = if negate { "!" } else { "" };
-                self.emit_line(&declare(&o, &format!("MoltValue::Bool({prefix}molt_in(&{a}, &{b}))"), &self.hoisted_vars.clone()));
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Bool({prefix}molt_in(&{a}, &{b}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
 
             // ── Boolean logic ──────────────────────────────────────────────────
             "and" | "_m_and" => {
-                let o = out(); let (a, b) = args2(op);
-                self.emit_line(&declare(&o,
+                let o = out();
+                let (a, b) = args2(op);
+                self.emit_line(&declare(
+                    &o,
                     &format!("(if !molt_bool(&{a}) {{ {a}.clone() }} else {{ {b}.clone() }})"),
-                    &self.hoisted_vars.clone()));
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "or" => {
-                let o = out(); let (a, b) = args2(op);
-                self.emit_line(&declare(&o,
+                let o = out();
+                let (a, b) = args2(op);
+                self.emit_line(&declare(
+                    &o,
                     &format!("(if molt_bool(&{a}) {{ {a}.clone() }} else {{ {b}.clone() }})"),
-                    &self.hoisted_vars.clone()));
+                    &self.hoisted_vars.clone(),
+                ));
             }
 
             // ── Control flow ───────────────────────────────────────────────────
@@ -1409,7 +1615,9 @@ impl RustBackend {
                         // Write the updated phi value back to the locals frame so
                         // post-loop `index` ops read the final (not stale) value.
                         if let Some((frame, slot)) = self.phi_to_frame.get(&o).cloned() {
-                            self.emit_line(&format!("molt_set_item(&mut {frame}, {slot}.clone(), {o}.clone());"));
+                            self.emit_line(&format!(
+                                "molt_set_item(&mut {frame}, {slot}.clone(), {o}.clone());"
+                            ));
                         }
                     }
                 }
@@ -1420,31 +1628,59 @@ impl RustBackend {
             "iter" => {
                 let o = out();
                 let src = arg0(op);
-                self.emit_line(&declare(&o, &format!("molt_iter(&{src})"), &self.hoisted_vars.clone()));
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_iter(&{src})"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "iter_next" => {
                 let o = out();
                 let iter_var = arg0(op);
-                self.emit_line(&declare(&o, &format!("molt_iter_next(&mut {iter_var})"), &self.hoisted_vars.clone()));
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_iter_next(&mut {iter_var})"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "for_range" => {
                 // for_range: args = [out_var, start, stop, step]
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let iter_var = args.first().map(|s| rust_ident(s)).unwrap_or_else(|| "_".to_string());
-                let start = args.get(1).map(|s| rust_ident(s)).unwrap_or_else(|| "MoltValue::Int(0)".to_string());
-                let stop = args.get(2).map(|s| rust_ident(s)).unwrap_or_else(|| "MoltValue::Int(0)".to_string());
-                let step = args.get(3).map(|s| rust_ident(s)).unwrap_or_else(|| "MoltValue::Int(1)".to_string());
+                let iter_var = args
+                    .first()
+                    .map(|s| rust_ident(s))
+                    .unwrap_or_else(|| "_".to_string());
+                let start = args
+                    .get(1)
+                    .map(|s| rust_ident(s))
+                    .unwrap_or_else(|| "MoltValue::Int(0)".to_string());
+                let stop = args
+                    .get(2)
+                    .map(|s| rust_ident(s))
+                    .unwrap_or_else(|| "MoltValue::Int(0)".to_string());
+                let step = args
+                    .get(3)
+                    .map(|s| rust_ident(s))
+                    .unwrap_or_else(|| "MoltValue::Int(1)".to_string());
                 // Emit as a while loop to keep MoltValue
                 self.emit_line(&format!("{{ let mut __range_i = molt_int(&{start}); let __range_stop = molt_int(&{stop}); let __range_step = molt_int(&{step});"));
                 self.emit_line(&format!("while (__range_step > 0 && __range_i < __range_stop) || (__range_step < 0 && __range_i > __range_stop) {{"));
                 self.indent += 1;
-                self.emit_line(&format!("let mut {iter_var}: MoltValue = MoltValue::Int(__range_i);"));
+                self.emit_line(&format!(
+                    "let mut {iter_var}: MoltValue = MoltValue::Int(__range_i);"
+                ));
             }
             "for_iter" => {
                 // for_iter: args = [iter_var, iterable]
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let iter_var = args.first().map(|s| rust_ident(s)).unwrap_or_else(|| "_".to_string());
-                let iterable = args.get(1).map(|s| rust_ident(s)).unwrap_or_else(|| "MoltValue::None".to_string());
+                let iter_var = args
+                    .first()
+                    .map(|s| rust_ident(s))
+                    .unwrap_or_else(|| "_".to_string());
+                let iterable = args
+                    .get(1)
+                    .map(|s| rust_ident(s))
+                    .unwrap_or_else(|| "MoltValue::None".to_string());
                 self.emit_line(&format!("for {iter_var} in molt_iter_list(&{iterable}) {{"));
                 self.indent += 1;
             }
@@ -1455,15 +1691,23 @@ impl RustBackend {
                 if closes_range {
                     self.emit_line("__range_i += __range_step;");
                 }
-                if self.indent > 0 { self.indent -= 1; }
+                if self.indent > 0 {
+                    self.indent -= 1;
+                }
                 self.emit_line("}");
                 if closes_range {
-                    if self.indent > 0 { self.indent -= 1; }
+                    if self.indent > 0 {
+                        self.indent -= 1;
+                    }
                     self.emit_line("}");
                 }
             }
-            "break" => { self.emit_line("break;"); }
-            "continue" => { self.emit_line("continue;"); }
+            "break" => {
+                self.emit_line("break;");
+            }
+            "continue" => {
+                self.emit_line("continue;");
+            }
 
             // ── Return ─────────────────────────────────────────────────────────
             "return" | "ret" => {
@@ -1488,7 +1732,8 @@ impl RustBackend {
                 let rhs = if let Some(ref fn_name) = op.s_value {
                     // Direct static call: s_value is the Rust function name.
                     let fn_ident = rust_ident(fn_name);
-                    let call_args: Vec<String> = args.iter()
+                    let call_args: Vec<String> = args
+                        .iter()
                         .map(|a| format!("{}.clone()", rust_ident(a)))
                         .collect();
                     format!("{fn_ident}(vec![{args}])", args = call_args.join(", "))
@@ -1497,10 +1742,14 @@ impl RustBackend {
                 } else {
                     // Dynamic call: args[0] is the MoltValue::Func to invoke.
                     let func_var = rust_ident(&args[0]);
-                    let call_args: Vec<String> = args[1..].iter()
+                    let call_args: Vec<String> = args[1..]
+                        .iter()
                         .map(|a| format!("{}.clone()", rust_ident(a)))
                         .collect();
-                    format!("molt_call(&{func_var}, vec![{args}])", args = call_args.join(", "))
+                    format!(
+                        "molt_call(&{func_var}, vec![{args}])",
+                        args = call_args.join(", ")
+                    )
                 };
                 if o == "_" || o == "none" {
                     self.emit_line(&format!("{rhs};"));
@@ -1512,20 +1761,43 @@ impl RustBackend {
                 let o = out();
                 let args = op.args.as_deref().unwrap_or(&[]);
                 // args: [obj, method_name, arg0, arg1, ...]
-                let obj = args.first().map(|s| rust_ident(s)).unwrap_or_else(|| "_".to_string());
+                let obj = args
+                    .first()
+                    .map(|s| rust_ident(s))
+                    .unwrap_or_else(|| "_".to_string());
                 let method = args.get(1).map(|s| s.as_str()).unwrap_or("");
-                let call_args: Vec<String> = args[2..].iter().map(|a| format!("{}.clone()", rust_ident(a))).collect();
+                let call_args: Vec<String> = args[2..]
+                    .iter()
+                    .map(|a| format!("{}.clone()", rust_ident(a)))
+                    .collect();
                 let rhs = match method {
-                    "append" => format!("{{ molt_list_append(&mut {obj}, {}); MoltValue::None }}", call_args.first().cloned().unwrap_or_else(|| "MoltValue::None".to_string())),
+                    "append" => format!(
+                        "{{ molt_list_append(&mut {obj}, {}); MoltValue::None }}",
+                        call_args
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| "MoltValue::None".to_string())
+                    ),
                     "keys" => format!("molt_dict_keys(&{obj})"),
                     "values" => format!("molt_dict_values(&{obj})"),
                     "items" => format!("molt_dict_items(&{obj})"),
                     "get" => {
-                        let key = call_args.first().cloned().unwrap_or_else(|| "MoltValue::None".to_string());
-                        let default = call_args.get(1).cloned().unwrap_or_else(|| "MoltValue::None".to_string());
-                        format!("{{ let __k = {key}; if let Some((_, v)) = if let MoltValue::Dict(d) = &{obj} {{ d.iter().find(|(k,_)| molt_eq(k, &__k)) }} else {{ None }} {{ v.clone() }} else {{ {default} }} }}")
+                        let key = call_args
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| "MoltValue::None".to_string());
+                        let default = call_args
+                            .get(1)
+                            .cloned()
+                            .unwrap_or_else(|| "MoltValue::None".to_string());
+                        format!(
+                            "{{ let __k = {key}; if let Some((_, v)) = if let MoltValue::Dict(d) = &{obj} {{ d.iter().find(|(k,_)| molt_eq(k, &__k)) }} else {{ None }} {{ v.clone() }} else {{ {default} }} }}"
+                        )
                     }
-                    _ => format!("/* MOLT_STUB: method {obj}.{method}({}) */ MoltValue::None", call_args.join(", ")),
+                    _ => format!(
+                        "/* MOLT_STUB: method {obj}.{method}({}) */ MoltValue::None",
+                        call_args.join(", ")
+                    ),
                 };
                 if o == "_" || o == "none" {
                     self.emit_line(&format!("{rhs};"));
@@ -1609,7 +1881,9 @@ impl RustBackend {
                 let o = out();
                 let rhs = if let Some(ref fn_name) = op.s_value {
                     let fn_ident = rust_ident(fn_name);
-                    format!("MoltValue::Func(Arc::new(move |args: Vec<MoltValue>| {fn_ident}(args)))")
+                    format!(
+                        "MoltValue::Func(Arc::new(move |args: Vec<MoltValue>| {fn_ident}(args)))"
+                    )
                 } else {
                     "MoltValue::None".to_string()
                 };
@@ -1628,57 +1902,118 @@ impl RustBackend {
             // ── Builtins ───────────────────────────────────────────────────────
             "print" | "builtin_print" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let arg_list = args.iter().map(|a| format!("{}.clone()", rust_ident(a))).collect::<Vec<_>>().join(", ");
+                let arg_list = args
+                    .iter()
+                    .map(|a| format!("{}.clone()", rust_ident(a)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 self.emit_line(&format!("molt_print(&[{arg_list}]);"));
             }
             "len" | "builtin_len" => {
                 let o = out();
                 let a = arg0(op);
-                self.emit_line(&declare(&o, &format!("molt_len(&{a})"), &self.hoisted_vars.clone()));
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_len(&{a})"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "int" | "cast_int" | "builtin_int" => {
-                let o = out(); let a = arg0(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Int(molt_int(&{a}))"), &self.hoisted_vars.clone()));
+                let o = out();
+                let a = arg0(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Int(molt_int(&{a}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "int_from_obj" => {
-                let o = out(); let a = arg0(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Int(molt_int(&{a}))"), &self.hoisted_vars.clone()));
+                let o = out();
+                let a = arg0(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Int(molt_int(&{a}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "float" | "cast_float" | "builtin_float" => {
-                let o = out(); let a = arg0(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Float(molt_float(&{a}))"), &self.hoisted_vars.clone()));
+                let o = out();
+                let a = arg0(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Float(molt_float(&{a}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "float_from_obj" => {
-                let o = out(); let a = arg0(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Float(molt_float(&{a}))"), &self.hoisted_vars.clone()));
+                let o = out();
+                let a = arg0(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Float(molt_float(&{a}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "str" | "cast_str" | "builtin_str" => {
-                let o = out(); let a = arg0(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Str(molt_str(&{a}))"), &self.hoisted_vars.clone()));
+                let o = out();
+                let a = arg0(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Str(molt_str(&{a}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "bool" | "cast_bool" | "builtin_bool" => {
-                let o = out(); let a = arg0(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Bool(molt_bool(&{a}))"), &self.hoisted_vars.clone()));
+                let o = out();
+                let a = arg0(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Bool(molt_bool(&{a}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "chr" => {
-                let o = out(); let a = arg0(op);
-                self.emit_line(&declare(&o, &format!("molt_chr(&{a})"), &self.hoisted_vars.clone()));
+                let o = out();
+                let a = arg0(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_chr(&{a})"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "ord" => {
-                let o = out(); let a = arg0(op);
-                self.emit_line(&declare(&o, &format!("molt_ord(&{a})"), &self.hoisted_vars.clone()));
+                let o = out();
+                let a = arg0(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_ord(&{a})"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "abs" | "builtin_abs" => {
-                let o = out(); let a = arg0(op);
-                self.emit_line(&declare(&o, &format!("molt_abs({a}.clone())"), &self.hoisted_vars.clone()));
+                let o = out();
+                let a = arg0(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_abs({a}.clone())"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
 
             // ── Collections ────────────────────────────────────────────────────
             "build_list" | "alloc" => {
                 let o = out();
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let items = args.iter().map(|a| format!("{}.clone()", rust_ident(a))).collect::<Vec<_>>().join(", ");
-                self.emit_line(&declare(&o, &format!("MoltValue::List(vec![{items}])"), &self.hoisted_vars.clone()));
+                let items = args
+                    .iter()
+                    .map(|a| format!("{}.clone()", rust_ident(a)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::List(vec![{items}])"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "build_dict" | "dict_new" => {
                 let o = out();
@@ -1704,14 +2039,25 @@ impl RustBackend {
                 }
             }
             "get_item" | "subscript" | "index" => {
-                let o = out(); let (obj, key) = args2(op);
-                self.emit_line(&declare(&o, &format!("molt_get_item(&{obj}, &{key})"), &self.hoisted_vars.clone()));
+                let o = out();
+                let (obj, key) = args2(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_get_item(&{obj}, &{key})"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "dict_get" => {
                 let o = out();
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let obj = args.first().map(|s| rust_ident(s)).unwrap_or_else(|| "MoltValue::None".to_string());
-                let key = args.get(1).map(|s| rust_ident(s)).unwrap_or_else(|| "MoltValue::None".to_string());
+                let obj = args
+                    .first()
+                    .map(|s| rust_ident(s))
+                    .unwrap_or_else(|| "MoltValue::None".to_string());
+                let key = args
+                    .get(1)
+                    .map(|s| rust_ident(s))
+                    .unwrap_or_else(|| "MoltValue::None".to_string());
                 if let Some(default) = args.get(2) {
                     let default = rust_ident(default);
                     self.emit_line(&declare(
@@ -1722,7 +2068,11 @@ impl RustBackend {
                         &self.hoisted_vars.clone(),
                     ));
                 } else {
-                    self.emit_line(&declare(&o, &format!("molt_get_item(&{obj}, &{key})"), &self.hoisted_vars.clone()));
+                    self.emit_line(&declare(
+                        &o,
+                        &format!("molt_get_item(&{obj}, &{key})"),
+                        &self.hoisted_vars.clone(),
+                    ));
                 }
             }
             "set_item" | "store_subscript" | "store_index" => {
@@ -1732,8 +2082,11 @@ impl RustBackend {
                     let key = rust_ident(&args[1]);
                     let val = rust_ident(&args[2]);
                     // Record phi→frame mapping so loop_index_next can write back.
-                    self.phi_to_frame.insert(val.clone(), (obj.clone(), key.clone()));
-                    self.emit_line(&format!("molt_set_item(&mut {obj}, {key}.clone(), {val}.clone());"));
+                    self.phi_to_frame
+                        .insert(val.clone(), (obj.clone(), key.clone()));
+                    self.emit_line(&format!(
+                        "molt_set_item(&mut {obj}, {key}.clone(), {val}.clone());"
+                    ));
                 }
             }
             "dict_set" => {
@@ -1742,16 +2095,27 @@ impl RustBackend {
                     let obj = rust_ident(&args[0]);
                     let key = rust_ident(&args[1]);
                     let val = rust_ident(&args[2]);
-                    self.emit_line(&format!("molt_set_item(&mut {obj}, {key}.clone(), {val}.clone());"));
+                    self.emit_line(&format!(
+                        "molt_set_item(&mut {obj}, {key}.clone(), {val}.clone());"
+                    ));
                 }
             }
             "get_attr" | "load_attr" => {
                 let o = out();
                 let obj = arg0(op);
-                let attr = op.s_value.as_deref()
+                let attr = op
+                    .s_value
+                    .as_deref()
                     .or_else(|| op.args.as_ref().and_then(|a| a.get(1)).map(|s| s.as_str()))
                     .unwrap_or("__unknown__");
-                self.emit_line(&declare(&o, &format!("molt_get_attr(&{obj}, {attr_lit})", attr_lit = rust_string_literal(attr)), &self.hoisted_vars.clone()));
+                self.emit_line(&declare(
+                    &o,
+                    &format!(
+                        "molt_get_attr(&{obj}, {attr_lit})",
+                        attr_lit = rust_string_literal(attr)
+                    ),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "set_attr" | "store_attr" => {
                 // stub — attribute assignment on dict
@@ -1767,35 +2131,73 @@ impl RustBackend {
 
             // ── Enumerate / zip / sorted / reversed ────────────────────────────
             "enumerate" => {
-                let o = out(); let a = arg0(op);
-                let start = op.args.as_ref().and_then(|a| a.get(1))
+                let o = out();
+                let a = arg0(op);
+                let start = op
+                    .args
+                    .as_ref()
+                    .and_then(|a| a.get(1))
                     .map(|s| rust_ident(s))
                     .unwrap_or_else(|| "MoltValue::Int(0)".to_string());
-                self.emit_line(&declare(&o, &format!("molt_enumerate(&{a}, molt_int(&{start}))"), &self.hoisted_vars.clone()));
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_enumerate(&{a}, molt_int(&{start}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "zip" => {
-                let o = out(); let (a, b) = args2(op);
-                self.emit_line(&declare(&o, &format!("molt_zip(&{a}, &{b})"), &self.hoisted_vars.clone()));
+                let o = out();
+                let (a, b) = args2(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_zip(&{a}, &{b})"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "sorted" | "builtin_sorted" => {
-                let o = out(); let a = arg0(op);
-                self.emit_line(&declare(&o, &format!("molt_sorted(&{a})"), &self.hoisted_vars.clone()));
+                let o = out();
+                let a = arg0(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_sorted(&{a})"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "reversed" | "builtin_reversed" => {
-                let o = out(); let a = arg0(op);
-                self.emit_line(&declare(&o, &format!("molt_reversed(&{a})"), &self.hoisted_vars.clone()));
+                let o = out();
+                let a = arg0(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_reversed(&{a})"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "sum" | "builtin_sum" => {
-                let o = out(); let a = arg0(op);
-                self.emit_line(&declare(&o, &format!("molt_sum(&{a})"), &self.hoisted_vars.clone()));
+                let o = out();
+                let a = arg0(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_sum(&{a})"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "any" | "builtin_any" => {
-                let o = out(); let a = arg0(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Bool(molt_any(&{a}))"), &self.hoisted_vars.clone()));
+                let o = out();
+                let a = arg0(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Bool(molt_any(&{a}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "all" | "builtin_all" => {
-                let o = out(); let a = arg0(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Bool(molt_all(&{a}))"), &self.hoisted_vars.clone()));
+                let o = out();
+                let a = arg0(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Bool(molt_all(&{a}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
 
             // ── Range ──────────────────────────────────────────────────────────
@@ -1803,30 +2205,66 @@ impl RustBackend {
                 let o = out();
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let (start, stop, step) = match args.len() {
-                    1 => ("MoltValue::Int(0)".to_string(), rust_ident(&args[0]), "MoltValue::Int(1)".to_string()),
-                    2 => (rust_ident(&args[0]), rust_ident(&args[1]), "MoltValue::Int(1)".to_string()),
-                    _ => (rust_ident(&args[0]), rust_ident(&args[1]), rust_ident(&args[2])),
+                    1 => (
+                        "MoltValue::Int(0)".to_string(),
+                        rust_ident(&args[0]),
+                        "MoltValue::Int(1)".to_string(),
+                    ),
+                    2 => (
+                        rust_ident(&args[0]),
+                        rust_ident(&args[1]),
+                        "MoltValue::Int(1)".to_string(),
+                    ),
+                    _ => (
+                        rust_ident(&args[0]),
+                        rust_ident(&args[1]),
+                        rust_ident(&args[2]),
+                    ),
                 };
-                self.emit_line(&declare(&o,
-                    &format!("molt_range(molt_int(&{start}), molt_int(&{stop}), molt_int(&{step}))"),
-                    &self.hoisted_vars.clone()));
+                self.emit_line(&declare(
+                    &o,
+                    &format!(
+                        "molt_range(molt_int(&{start}), molt_int(&{stop}), molt_int(&{step}))"
+                    ),
+                    &self.hoisted_vars.clone(),
+                ));
             }
 
             // ── No-ops / markers ───────────────────────────────────────────────
-            "nop" | "comment" | "debug_label" | "line" | "type_assert"
-            | "br_if" | "branch" | "alloc_task" | "block_on"
-            | "asyncgen_locals_register" | "cancel_current"
-            | "cancel_token_cancel" | "cancel_token_clone"
-            | "cancel_token_drop" | "cancel_token_get_current"
-            | "cancel_token_is_cancelled" | "cancel_token_new"
-            | "cancel_token_set_current" | "cancelled"
-            | "check_exception" | "alloc_class_static"
-            | "alloc_class_trusted" | "alloc_class"
-            | "class_apply_set_name" | "class_layout_version"
-            | "class_new" | "class_set_base" | "class_set_layout_version"
-            | "class_layout_field_count" | "class_layout_slot_count"
-            | "bound_method_new" | "builtin_type"
-            | "box_from_raw_int" | "ascii_from_obj"
+            "nop"
+            | "comment"
+            | "debug_label"
+            | "line"
+            | "type_assert"
+            | "br_if"
+            | "branch"
+            | "alloc_task"
+            | "block_on"
+            | "asyncgen_locals_register"
+            | "cancel_current"
+            | "cancel_token_cancel"
+            | "cancel_token_clone"
+            | "cancel_token_drop"
+            | "cancel_token_get_current"
+            | "cancel_token_is_cancelled"
+            | "cancel_token_new"
+            | "cancel_token_set_current"
+            | "cancelled"
+            | "check_exception"
+            | "alloc_class_static"
+            | "alloc_class_trusted"
+            | "alloc_class"
+            | "class_apply_set_name"
+            | "class_layout_version"
+            | "class_new"
+            | "class_set_base"
+            | "class_set_layout_version"
+            | "class_layout_field_count"
+            | "class_layout_slot_count"
+            | "bound_method_new"
+            | "builtin_type"
+            | "box_from_raw_int"
+            | "ascii_from_obj"
             | "bridge_unavailable" => {
                 // Stub: these ops may produce an output variable in the IR.
                 // Declare it so downstream phi references compile.
@@ -1840,11 +2278,15 @@ impl RustBackend {
             }
 
             // ── Class / instance stubs ─────────────────────────────────────────
-            "alloc_instance" | "init_instance" | "instance_set_field"
-            | "instance_get_field" | "instance_has_field" => {
+            "alloc_instance" | "init_instance" | "instance_set_field" | "instance_get_field"
+            | "instance_has_field" => {
                 let o = out();
                 if o != "_" && o != "none" {
-                    self.emit_line(&declare(&o, "MoltValue::Dict(vec![])", &self.hoisted_vars.clone()));
+                    self.emit_line(&declare(
+                        &o,
+                        "MoltValue::Dict(vec![])",
+                        &self.hoisted_vars.clone(),
+                    ));
                 }
             }
 
@@ -1856,8 +2298,8 @@ impl RustBackend {
                 // User code will still work correctly for the tested subset.
                 self.emit_line("return MoltValue::None;");
             }
-            "try_start" | "try_end" | "except_start" | "except_end"
-            | "finally_start" | "finally_end" => {
+            "try_start" | "try_end" | "except_start" | "except_end" | "finally_start"
+            | "finally_end" => {
                 // No Rust equivalent in v1 — exceptions become panics.
             }
 
@@ -1866,7 +2308,11 @@ impl RustBackend {
                 let o = out();
                 // Simple f-string: just convert all args to string and concat
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let parts = args.iter().map(|a| format!("molt_str(&{})", rust_ident(a))).collect::<Vec<_>>().join(" + &");
+                let parts = args
+                    .iter()
+                    .map(|a| format!("molt_str(&{})", rust_ident(a)))
+                    .collect::<Vec<_>>()
+                    .join(" + &");
                 let rhs = if parts.is_empty() {
                     "MoltValue::Str(String::new())".to_string()
                 } else {
@@ -1879,28 +2325,50 @@ impl RustBackend {
             "str_from_obj" => {
                 let o = out();
                 let a = arg0(op);
-                self.emit_line(&declare(&o, &format!("MoltValue::Str(molt_str(&{a}))"), &self.hoisted_vars.clone()));
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::Str(molt_str(&{a}))"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "repr_from_obj" => {
                 // molt_repr already returns MoltValue
                 let o = out();
                 let a = arg0(op);
-                self.emit_line(&declare(&o, &format!("molt_repr(&{a})"), &self.hoisted_vars.clone()));
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_repr(&{a})"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
 
             // ── Sequence / tuple ops ──────────────────────────────────────────
             "tuple_new" | "list_new" => {
                 let o = out();
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let items = args.iter().map(|a| format!("{}.clone()", rust_ident(a))).collect::<Vec<_>>().join(", ");
-                self.emit_line(&declare(&o, &format!("MoltValue::List(vec![{items}])"), &self.hoisted_vars.clone()));
+                let items = args
+                    .iter()
+                    .map(|a| format!("{}.clone()", rust_ident(a)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::List(vec![{items}])"),
+                    &self.hoisted_vars.clone(),
+                ));
             }
             "string_join" => {
                 // string_join(sep, iterable) → sep.join(str(x) for x in iterable)
                 let o = out();
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let sep = args.first().map(|s| rust_ident(s)).unwrap_or_else(|| "MoltValue::Str(\"\".to_string())".to_string());
-                let seq = args.get(1).map(|s| rust_ident(s)).unwrap_or_else(|| "_seq".to_string());
+                let sep = args
+                    .first()
+                    .map(|s| rust_ident(s))
+                    .unwrap_or_else(|| "MoltValue::Str(\"\".to_string())".to_string());
+                let seq = args
+                    .get(1)
+                    .map(|s| rust_ident(s))
+                    .unwrap_or_else(|| "_seq".to_string());
                 let rhs = format!(
                     "{{ let __sep = molt_str(&{sep}); if let MoltValue::List(ref __items) = {seq} {{ MoltValue::Str(__items.iter().map(|x| molt_str(x)).collect::<Vec<_>>().join(&__sep)) }} else {{ MoltValue::Str(molt_str(&{seq})) }} }}"
                 );
@@ -1913,7 +2381,11 @@ impl RustBackend {
             "module_cache_get" | "module_load_cached" => {
                 let o = out();
                 if o != "_" && o != "none" && !o.is_empty() {
-                    self.emit_line(&declare(&o, "MoltValue::Bool(true)", &self.hoisted_vars.clone()));
+                    self.emit_line(&declare(
+                        &o,
+                        "MoltValue::Bool(true)",
+                        &self.hoisted_vars.clone(),
+                    ));
                 }
             }
 
@@ -1922,7 +2394,9 @@ impl RustBackend {
                 let o = out();
                 let kind = other;
                 if o != "_" && o != "none" && !o.is_empty() {
-                    self.emit_line(&format!("let mut {o}: MoltValue = /* MOLT_STUB: {kind} */ MoltValue::None;"));
+                    self.emit_line(&format!(
+                        "let mut {o}: MoltValue = /* MOLT_STUB: {kind} */ MoltValue::None;"
+                    ));
                 } else {
                     self.emit_line(&format!("/* MOLT_STUB: {kind} */"));
                 }
@@ -1940,8 +2414,14 @@ impl RustBackend {
         self.output.push('\n');
     }
 
-    fn push_indent(&mut self) { self.indent += 1; }
-    fn pop_indent(&mut self) { if self.indent > 0 { self.indent -= 1; } }
+    fn push_indent(&mut self) {
+        self.indent += 1;
+    }
+    fn pop_indent(&mut self) {
+        if self.indent > 0 {
+            self.indent -= 1;
+        }
+    }
 }
 
 // ── IR lowering passes (shared logic, simpler than Luau variants) ─────────────
@@ -2041,7 +2521,10 @@ fn collect_phi_assignments(
 fn build_phi_injection_maps(
     ops: &[OpIR],
     phi_assignments: &HashMap<usize, Vec<(String, Vec<String>)>>,
-) -> (HashMap<usize, Vec<(String, String)>>, HashMap<usize, Vec<(String, String)>>) {
+) -> (
+    HashMap<usize, Vec<(String, String)>>,
+    HashMap<usize, Vec<(String, String)>>,
+) {
     let mut before_else: HashMap<usize, Vec<(String, String)>> = HashMap::new();
     let mut before_end_if: HashMap<usize, Vec<(String, String)>> = HashMap::new();
     let mut if_stack: Vec<(usize, Option<usize>)> = Vec::new();
@@ -2058,13 +2541,31 @@ fn build_phi_injection_maps(
                     if let Some(phis) = phi_assignments.get(&idx) {
                         for (phi_var, args) in phis {
                             if let Some(else_i) = else_idx {
-                                let true_val = args.first().cloned().unwrap_or_else(|| "MoltValue::None".to_string());
-                                before_else.entry(else_i).or_default().push((phi_var.clone(), true_val));
-                                let false_val = args.get(1).cloned().unwrap_or_else(|| "MoltValue::None".to_string());
-                                before_end_if.entry(idx).or_default().push((phi_var.clone(), false_val));
+                                let true_val = args
+                                    .first()
+                                    .cloned()
+                                    .unwrap_or_else(|| "MoltValue::None".to_string());
+                                before_else
+                                    .entry(else_i)
+                                    .or_default()
+                                    .push((phi_var.clone(), true_val));
+                                let false_val = args
+                                    .get(1)
+                                    .cloned()
+                                    .unwrap_or_else(|| "MoltValue::None".to_string());
+                                before_end_if
+                                    .entry(idx)
+                                    .or_default()
+                                    .push((phi_var.clone(), false_val));
                             } else {
-                                let true_val = args.first().cloned().unwrap_or_else(|| "MoltValue::None".to_string());
-                                before_end_if.entry(idx).or_default().push((phi_var.clone(), true_val));
+                                let true_val = args
+                                    .first()
+                                    .cloned()
+                                    .unwrap_or_else(|| "MoltValue::None".to_string());
+                                before_end_if
+                                    .entry(idx)
+                                    .or_default()
+                                    .push((phi_var.clone(), true_val));
                             }
                         }
                     }
@@ -2076,11 +2577,7 @@ fn build_phi_injection_maps(
     (before_else, before_end_if)
 }
 
-fn collect_scope_escapes(
-    ops: &[OpIR],
-    func: &FunctionIR,
-    hoisted_vars: &mut HashSet<String>,
-) {
+fn collect_scope_escapes(ops: &[OpIR], func: &FunctionIR, hoisted_vars: &mut HashSet<String>) {
     let mut depth: i32 = 0;
     let mut decl_depth: HashMap<String, i32> = HashMap::new();
     let param_set: HashSet<String> = func.params.iter().map(|p| rust_ident(p)).collect();
@@ -2097,14 +2594,20 @@ fn collect_scope_escapes(
                 decl_depth.entry(var).or_insert(depth);
             }
         }
-        let mut refs: Vec<String> = op.args.as_deref().unwrap_or(&[]).iter()
+        let mut refs: Vec<String> = op
+            .args
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
             .map(|s| rust_ident(s))
             .collect();
         if let Some(v) = op.var.as_deref() {
             refs.push(rust_ident(v));
         }
         for r in refs {
-            if param_set.contains(&r) { continue; }
+            if param_set.contains(&r) {
+                continue;
+            }
             if let Some(&dd) = decl_depth.get(&r) {
                 if dd > depth {
                     hoisted_vars.insert(r);
@@ -2122,9 +2625,16 @@ pub(crate) fn rust_ident(name: &str) -> String {
         return "_".to_string();
     }
     // Replace characters that are valid in Python but not Rust
-    let s: String = name.chars().map(|c| {
-        if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }
-    }).collect();
+    let s: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
     // Ensure it doesn't start with a digit
     let s = if s.starts_with(|c: char| c.is_ascii_digit()) {
         format!("v_{s}")
@@ -2133,11 +2643,11 @@ pub(crate) fn rust_ident(name: &str) -> String {
     };
     // Avoid Rust keywords
     match s.as_str() {
-        "type" | "match" | "move" | "ref" | "use" | "mod" | "pub" | "fn"
-        | "let" | "mut" | "impl" | "trait" | "struct" | "enum" | "where"
-        | "super" | "self" | "crate" | "extern" | "as" | "in" | "for"
-        | "loop" | "while" | "if" | "else" | "return" | "break" | "continue"
-        | "box" | "unsafe" | "static" | "const" | "dyn" | "async" | "await" => {
+        "type" | "match" | "move" | "ref" | "use" | "mod" | "pub" | "fn" | "let" | "mut"
+        | "impl" | "trait" | "struct" | "enum" | "where" | "super" | "self" | "crate"
+        | "extern" | "as" | "in" | "for" | "loop" | "while" | "if" | "else" | "return"
+        | "break" | "continue" | "box" | "unsafe" | "static" | "const" | "dyn" | "async"
+        | "await" => {
             format!("{s}_")
         }
         _ => s,
@@ -2153,7 +2663,8 @@ fn var_ref(op: &OpIR) -> String {
 }
 
 fn arg0(op: &OpIR) -> String {
-    op.args.as_deref()
+    op.args
+        .as_deref()
         .and_then(|a| a.first())
         .map(|s| rust_ident(s))
         .unwrap_or_else(|| "MoltValue::None".to_string())
@@ -2161,8 +2672,14 @@ fn arg0(op: &OpIR) -> String {
 
 fn args2(op: &OpIR) -> (String, String) {
     let args = op.args.as_deref().unwrap_or(&[]);
-    let a = args.first().map(|s| rust_ident(s)).unwrap_or_else(|| "MoltValue::None".to_string());
-    let b = args.get(1).map(|s| rust_ident(s)).unwrap_or_else(|| "MoltValue::None".to_string());
+    let a = args
+        .first()
+        .map(|s| rust_ident(s))
+        .unwrap_or_else(|| "MoltValue::None".to_string());
+    let b = args
+        .get(1)
+        .map(|s| rust_ident(s))
+        .unwrap_or_else(|| "MoltValue::None".to_string());
     (a, b)
 }
 

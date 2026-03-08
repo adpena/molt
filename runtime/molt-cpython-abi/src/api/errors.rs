@@ -5,7 +5,7 @@
 //! most common format codes: `i`, `l`, `d`, `f`, `s`, `z`, `s#`, `O`, `p`,
 //! `n`, `L`, `K`, `b`, `B`, `H`, `I`, `k`, `y`, `y#`, `C`.
 
-use crate::abi_types::{PyObject, Py_ssize_t};
+use crate::abi_types::{Py_ssize_t, PyObject};
 use crate::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
 use std::ffi::{CStr, c_void};
@@ -28,9 +28,7 @@ pub unsafe extern "C" fn PyErr_SetString(exc_type: *mut PyObject, message: *cons
     let type_bits = if exc_type.is_null() {
         0u64
     } else {
-        GLOBAL_BRIDGE.lock()
-            .pyobj_to_handle(exc_type)
-            .unwrap_or(0)
+        GLOBAL_BRIDGE.lock().pyobj_to_handle(exc_type).unwrap_or(0)
     };
     CURRENT_EXC.with(|c| *c.borrow_mut() = Some((type_bits, msg)));
 }
@@ -122,7 +120,9 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
     outs: *mut *mut c_void,
     n_outs: c_int,
 ) -> c_int {
-    if format.is_null() { return 1; }
+    if format.is_null() {
+        return 1;
+    }
     let fmt = unsafe { CStr::from_ptr(format).to_bytes() };
 
     let bridge = GLOBAL_BRIDGE.lock();
@@ -145,7 +145,10 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
         let ch = fmt[i] as char;
         i += 1;
         match ch {
-            '|' => { optional = true; continue; }
+            '|' => {
+                optional = true;
+                continue;
+            }
             ':' | ';' => break,
             '(' | ')' => continue,
             _ => {}
@@ -154,37 +157,45 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
         let item_bits = items.get(arg_idx).copied();
         arg_idx += 1;
 
-        if item_bits.is_none() && !optional { return 0; }
-        if item_bits.is_none() { continue; }
+        if item_bits.is_none() && !optional {
+            return 0;
+        }
+        if item_bits.is_none() {
+            continue;
+        }
         let bits = item_bits.unwrap();
         let obj = MoltObject::from_bits(bits);
 
         macro_rules! write_out {
             ($ty:ty, $val:expr) => {{
                 if out_idx < outs_slice.len() && !outs_slice[out_idx].is_null() {
-                    unsafe { *(outs_slice[out_idx] as *mut $ty) = $val; }
+                    unsafe {
+                        *(outs_slice[out_idx] as *mut $ty) = $val;
+                    }
                 }
                 out_idx += 1;
             }};
         }
 
         match ch {
-            'i' | 'H' | 'b' | 'B' | 'I' =>
-                write_out!(c_int, obj.as_int().unwrap_or(0) as c_int),
-            'l' | 'k' =>
-                write_out!(c_long, obj.as_int().unwrap_or(0) as c_long),
-            'L' =>
-                write_out!(i64, obj.as_int().unwrap_or(0)),
-            'K' =>
-                write_out!(u64, obj.as_int().unwrap_or(0) as u64),
+            'i' | 'H' | 'b' | 'B' | 'I' => write_out!(c_int, obj.as_int().unwrap_or(0) as c_int),
+            'l' | 'k' => write_out!(c_long, obj.as_int().unwrap_or(0) as c_long),
+            'L' => write_out!(i64, obj.as_int().unwrap_or(0)),
+            'K' => write_out!(u64, obj.as_int().unwrap_or(0) as u64),
             'd' => {
-                let v = if obj.is_float() { obj.as_float().unwrap_or(0.0) }
-                        else { obj.as_int().map(|x| x as f64).unwrap_or(0.0) };
+                let v = if obj.is_float() {
+                    obj.as_float().unwrap_or(0.0)
+                } else {
+                    obj.as_int().map(|x| x as f64).unwrap_or(0.0)
+                };
                 write_out!(f64, v);
             }
             'f' => {
-                let v = if obj.is_float() { obj.as_float().unwrap_or(0.0) as f32 }
-                        else { obj.as_int().map(|x| x as f32).unwrap_or(0.0) };
+                let v = if obj.is_float() {
+                    obj.as_float().unwrap_or(0.0) as f32
+                } else {
+                    obj.as_int().map(|x| x as f32).unwrap_or(0.0)
+                };
                 write_out!(f32, v);
             }
             's' | 'z' | 'y' => {
@@ -204,13 +215,16 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                 write_out!(*mut PyObject, py_ptr);
             }
             'p' => {
-                let truthy = if obj.is_bool() { obj.as_bool().unwrap_or(false) }
-                             else if obj.is_int() { obj.as_int().unwrap_or(0) != 0 }
-                             else { !obj.is_none() };
+                let truthy = if obj.is_bool() {
+                    obj.as_bool().unwrap_or(false)
+                } else if obj.is_int() {
+                    obj.as_int().unwrap_or(0) != 0
+                } else {
+                    !obj.is_none()
+                };
                 write_out!(c_int, truthy as c_int);
             }
-            'n' =>
-                write_out!(Py_ssize_t, obj.as_int().unwrap_or(0) as Py_ssize_t),
+            'n' => write_out!(Py_ssize_t, obj.as_int().unwrap_or(0) as Py_ssize_t),
             _ => {} // unknown — skip output slot
         }
     }
@@ -242,7 +256,11 @@ fn molt_str_ptr(bits: u64) -> *const c_char {
     let h = crate::hooks::hooks_or_stubs();
     let mut len: usize = 0;
     let ptr = unsafe { (h.str_data)(bits, std::ptr::addr_of_mut!(len)) };
-    if ptr.is_null() { b"\0".as_ptr().cast() } else { ptr.cast() }
+    if ptr.is_null() {
+        b"\0".as_ptr().cast()
+    } else {
+        ptr.cast()
+    }
 }
 
 fn molt_str_len(bits: u64) -> usize {

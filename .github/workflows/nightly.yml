@@ -14,6 +14,11 @@ jobs:
     name: CPython Regrtest (G5)
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      MOLT_EXT_ROOT: /tmp/molt-ext
+      CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target
+      MOLT_DIFF_CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target
+      MOLT_BACKEND_DAEMON_SOCKET_DIR: /tmp/molt_backend_sockets
 
     steps:
       - uses: actions/checkout@v4
@@ -50,7 +55,7 @@ jobs:
         run: uv sync --python 3.12
 
       - name: Build Molt runtime
-        run: cargo build -p molt-runtime --release
+        run: cargo build -p molt-lang-runtime --release
 
       - name: Run CPython regrtest (G5)
         run: |
@@ -72,6 +77,11 @@ jobs:
     name: Determinism Full Sweep
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      MOLT_EXT_ROOT: /tmp/molt-ext
+      CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target
+      MOLT_DIFF_CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target
+      MOLT_BACKEND_DAEMON_SOCKET_DIR: /tmp/molt_backend_sockets
 
     steps:
       - uses: actions/checkout@v4
@@ -100,7 +110,7 @@ jobs:
         run: uv sync --python 3.12
 
       - name: Build Molt runtime
-        run: cargo build -p molt-runtime --release
+        run: cargo build -p molt-lang-runtime --release
 
       - name: Reproducible build sweep
         run: |

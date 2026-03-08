@@ -12,8 +12,8 @@ use std::sync::OnceLock;
 
 mod ir_schema;
 pub mod luau;
-pub mod wasm;
 pub mod rust;
+pub mod wasm;
 
 const QNAN: u64 = 0x7ff8_0000_0000_0000;
 const TAG_INT: u64 = 0x0001_0000_0000_0000;
@@ -465,13 +465,24 @@ impl SimpleIR {
                 // Preserve everything else (data construction, assignments, etc.)
                 // to avoid breaking list literals and dict construction.
                 let boilerplate_kinds: HashSet<&str> = [
-                    "module_get_attr", "module_del_global",
-                    "import_name", "import_from",
-                    "call_guarded", "call",
-                    "check_exception", "exception_last",
-                    "is", "not", "if", "else", "end_if",
+                    "module_get_attr",
+                    "module_del_global",
+                    "import_name",
+                    "import_from",
+                    "call_guarded",
+                    "call",
+                    "check_exception",
+                    "exception_last",
+                    "is",
+                    "not",
+                    "if",
+                    "else",
+                    "end_if",
                     "func_attr_set",
-                ].iter().copied().collect();
+                ]
+                .iter()
+                .copied()
+                .collect();
                 for op in &mut init_main.ops[..cutoff] {
                     let kind = op.kind.as_str();
                     // Only strip ops that are definitely module metadata boilerplate.
@@ -494,8 +505,14 @@ impl SimpleIR {
                     "module_set_attr" => {
                         // Only strip if the attribute name is a dunder (__xxx__).
                         // User variable assignments like `nums = [1,2,3]` must be kept.
-                        let attr_name = op.s_value.as_deref()
-                            .or_else(|| op.args.as_deref().and_then(|a| a.get(1).map(|s| s.as_str())))
+                        let attr_name = op
+                            .s_value
+                            .as_deref()
+                            .or_else(|| {
+                                op.args
+                                    .as_deref()
+                                    .and_then(|a| a.get(1).map(|s| s.as_str()))
+                            })
                             .unwrap_or("");
                         attr_name.starts_with("__") && attr_name.ends_with("__")
                     }
@@ -664,10 +681,8 @@ impl SimpleIR {
             let mut wrapper_vars: HashSet<String> = HashSet::new();
             let mut i = 0;
             while i < func.ops.len() {
-                let is_wrapper_source = matches!(
-                    func.ops[i].kind.as_str(),
-                    "missing" | "const_none"
-                );
+                let is_wrapper_source =
+                    matches!(func.ops[i].kind.as_str(), "missing" | "const_none");
                 if is_wrapper_source {
                     let source_out = func.ops[i].out.clone().unwrap_or_default();
                     // Skip check_exception and nop ops to find the list_new.
@@ -747,27 +762,80 @@ impl SimpleIR {
         // Remove ops whose `out` variable is never consumed by any other op
         // and whose kind is side-effect-free (constants, pure math, table literals).
         let side_effect_free: HashSet<&str> = [
-            "const", "const_int", "const_float", "const_string", "const_bytes",
-            "const_none", "const_bool", "const_true", "const_false",
-            "const_ellipsis", "const_complex",
-            "load_local", "load_global", "load_fast",
-            "build_list", "list_new", "build_tuple", "tuple_new",
-            "build_dict", "dict_new", "build_set", "set_new",
-            "build_string", "format_string",
-            "binary_add", "binary_sub", "binary_mul", "binary_div",
-            "binary_floor_div", "binary_mod", "binary_pow",
-            "binary_and", "binary_or", "binary_xor",
-            "binary_lshift", "binary_rshift",
-            "unary_neg", "unary_pos", "unary_not", "unary_invert",
-            "compare", "is", "is_not", "in", "not_in", "not",
-            "add", "sub", "mul", "div", "floor_div", "mod", "pow",
-            "lshift", "rshift", "bit_and", "bit_or", "bit_xor",
-            "get_item", "index", "subscript", "get_attr",
-            "missing", "nop",
-            "module_get_attr", "module_get_global", "module_get_name",
+            "const",
+            "const_int",
+            "const_float",
+            "const_string",
+            "const_bytes",
+            "const_none",
+            "const_bool",
+            "const_true",
+            "const_false",
+            "const_ellipsis",
+            "const_complex",
+            "load_local",
+            "load_global",
+            "load_fast",
+            "build_list",
+            "list_new",
+            "build_tuple",
+            "tuple_new",
+            "build_dict",
+            "dict_new",
+            "build_set",
+            "set_new",
+            "build_string",
+            "format_string",
+            "binary_add",
+            "binary_sub",
+            "binary_mul",
+            "binary_div",
+            "binary_floor_div",
+            "binary_mod",
+            "binary_pow",
+            "binary_and",
+            "binary_or",
+            "binary_xor",
+            "binary_lshift",
+            "binary_rshift",
+            "unary_neg",
+            "unary_pos",
+            "unary_not",
+            "unary_invert",
+            "compare",
+            "is",
+            "is_not",
+            "in",
+            "not_in",
+            "not",
+            "add",
+            "sub",
+            "mul",
+            "div",
+            "floor_div",
+            "mod",
+            "pow",
+            "lshift",
+            "rshift",
+            "bit_and",
+            "bit_or",
+            "bit_xor",
+            "get_item",
+            "index",
+            "subscript",
+            "get_attr",
+            "missing",
+            "nop",
+            "module_get_attr",
+            "module_get_global",
+            "module_get_name",
             "callargs_new",
-            "func_new", "make_function",
-        ].iter().copied().collect();
+            "func_new",
+            "make_function",
+        ]
+        .iter()
+        .copied()
+        .collect();
 
         for func in &mut self.functions {
             let mut total_eliminated = 0;
@@ -937,8 +1005,12 @@ impl SimpleIR {
                 for op in &func.ops {
                     let k = op.kind.as_str();
                     match k {
-                        "check_exception" | "nop" | "exception_stack_enter"
-                        | "exception_stack_depth" | "dict_new" | "frame_locals_set"
+                        "check_exception"
+                        | "nop"
+                        | "exception_stack_enter"
+                        | "exception_stack_depth"
+                        | "dict_new"
+                        | "frame_locals_set"
                         | "state_switch" => {}
                         "iter" => {
                             if let Some(ref args) = op.args {
@@ -1025,7 +1097,12 @@ impl SimpleIR {
 
                     if in_body {
                         match op.kind.as_str() {
-                            "closure_store" if op.args.as_ref().map_or(false, |a| a.len() >= 2 && a[0] == "self") => {
+                            "closure_store"
+                                if op
+                                    .args
+                                    .as_ref()
+                                    .map_or(false, |a| a.len() >= 2 && a[0] == "self") =>
+                            {
                                 // Skip — this is storing the item var
                                 if op.args.as_ref().map(|a| &a[1]) == Some(&item_var) {
                                     continue;
@@ -1096,15 +1173,22 @@ impl SimpleIR {
                 if !result_var.is_empty() {
                     eprintln!(
                         "[molt-dce] Found inlinable genexpr: {} (source={}, item={}, result={}, {} body ops)",
-                        func.name, source_var, item_var, result_var, body_ops.len()
-                    );
-                    genexpr_map.insert(func.name.clone(), GenExprInfo {
-                        source_ops,
+                        func.name,
                         source_var,
                         item_var,
-                        body_ops,
                         result_var,
-                    });
+                        body_ops.len()
+                    );
+                    genexpr_map.insert(
+                        func.name.clone(),
+                        GenExprInfo {
+                            source_ops,
+                            source_var,
+                            item_var,
+                            body_ops,
+                            result_var,
+                        },
+                    );
                 }
             }
 
@@ -1126,12 +1210,17 @@ impl SimpleIR {
 
                         // Find the consumer pattern: alloc_task → list_new → iter → loop
                         // Skip check_exception/nop ops between them.
-                        let skip_kinds = |k: &str| k == "check_exception" || k == "nop" || k == "line";
+                        let skip_kinds =
+                            |k: &str| k == "check_exception" || k == "nop" || k == "line";
                         let mut next_idx = i + 1;
-                        while next_idx < func.ops.len() && skip_kinds(func.ops[next_idx].kind.as_str()) {
+                        while next_idx < func.ops.len()
+                            && skip_kinds(func.ops[next_idx].kind.as_str())
+                        {
                             next_idx += 1;
                         }
-                        if next_idx >= func.ops.len() { continue; }
+                        if next_idx >= func.ops.len() {
+                            continue;
+                        }
 
                         let result_list_var = match func.ops[next_idx].kind.as_str() {
                             "list_new" | "build_list" => {
@@ -1141,15 +1230,17 @@ impl SimpleIR {
                         };
 
                         let mut iter_idx = next_idx + 1;
-                        while iter_idx < func.ops.len() && skip_kinds(func.ops[iter_idx].kind.as_str()) {
+                        while iter_idx < func.ops.len()
+                            && skip_kinds(func.ops[iter_idx].kind.as_str())
+                        {
                             iter_idx += 1;
                         }
-                        if iter_idx >= func.ops.len() { continue; }
+                        if iter_idx >= func.ops.len() {
+                            continue;
+                        }
 
                         let iter_var = match func.ops[iter_idx].kind.as_str() {
-                            "iter" => {
-                                func.ops[iter_idx].out.clone().unwrap_or_default()
-                            }
+                            "iter" => func.ops[iter_idx].out.clone().unwrap_or_default(),
                             _ => continue,
                         };
 
@@ -1186,20 +1277,28 @@ impl SimpleIR {
 
                         if has_module_get {
                             // Extract the global name from the module_get_global op
-                            let global_name = info.source_ops.iter()
+                            let global_name = info
+                                .source_ops
+                                .iter()
                                 .filter(|op| op.kind == "module_get_global")
                                 .filter_map(|op| op.args.as_ref().and_then(|a| a.get(1)).cloned())
                                 .next();
 
                             // Extract the global name: resolve the variable reference in
                             // module_get_global's second arg to a const_str value.
-                            let global_name: Option<String> = info.source_ops.iter()
+                            let global_name: Option<String> = info
+                                .source_ops
+                                .iter()
                                 .filter(|op| op.kind == "module_get_global")
                                 .filter_map(|op| {
                                     let name_var = op.args.as_ref()?.get(1)?;
                                     // Find the const_str that defined this variable
-                                    info.source_ops.iter()
-                                        .find(|o| o.kind == "const_str" && o.out.as_deref() == Some(name_var.as_str()))
+                                    info.source_ops
+                                        .iter()
+                                        .find(|o| {
+                                            o.kind == "const_str"
+                                                && o.out.as_deref() == Some(name_var.as_str())
+                                        })
                                         .and_then(|o| o.s_value.clone())
                                 })
                                 .next();
@@ -1210,15 +1309,23 @@ impl SimpleIR {
                                 // Pattern: const_str(key="name") then module_set_attr(dict, key, value)
                                 for j in (0..i).rev() {
                                     let jk = func.ops[j].kind.as_str();
-                                    if jk == "module_set_attr" || jk == "dict_set" || jk == "set_attr" || jk == "store_subscr" {
+                                    if jk == "module_set_attr"
+                                        || jk == "dict_set"
+                                        || jk == "set_attr"
+                                        || jk == "store_subscr"
+                                    {
                                         if let Some(ref args) = func.ops[j].args {
                                             if args.len() >= 3 {
                                                 let key_var = &args[1];
                                                 // Resolve key_var to its const_str value
                                                 for k in (0..j).rev() {
-                                                    if func.ops[k].out.as_deref() == Some(key_var.as_str()) {
-                                                        if (func.ops[k].kind == "const_str" || func.ops[k].kind == "const")
-                                                            && func.ops[k].s_value.as_deref() == Some(name.as_str())
+                                                    if func.ops[k].out.as_deref()
+                                                        == Some(key_var.as_str())
+                                                    {
+                                                        if (func.ops[k].kind == "const_str"
+                                                            || func.ops[k].kind == "const")
+                                                            && func.ops[k].s_value.as_deref()
+                                                                == Some(name.as_str())
                                                         {
                                                             effective_source_var = args[2].clone();
                                                             eprintln!(
@@ -1292,7 +1399,9 @@ impl SimpleIR {
                                     }
                                 }
                             }
-                            if new_op.kind == "load_local" && new_op.var.as_deref() == Some(&iter_item_var) {
+                            if new_op.kind == "load_local"
+                                && new_op.var.as_deref() == Some(&iter_item_var)
+                            {
                                 new_op.var = Some(iter_item_var.clone());
                             }
                             new_ops.push(new_op);
