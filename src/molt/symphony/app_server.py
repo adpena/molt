@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import re
 import select
+import shlex
 import subprocess
 import sys
 import threading
@@ -28,6 +30,7 @@ EventCallback = Callable[[dict[str, Any]], None]
 ToolHandler = Callable[[str, dict[str, Any] | str | None], dict[str, Any]]
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_CODEX_BIN_DEFAULT_RE = re.compile(r"\$\{CODEX_BIN:-([^}]+)\}")
 _USAGE_KEYS = (
     "input_tokens",
     "inputtokens",
@@ -105,8 +108,9 @@ class CodexAppServerClient:
     def start(self) -> None:
         if self._proc is not None:
             return
+        launch_cmd = _resolve_launch_command(self._config.command)
         self._proc = subprocess.Popen(
-            ["bash", "-lc", self._config.command],
+            launch_cmd,
             cwd=self._workspace_path,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -724,6 +728,22 @@ def _extract_notification_details(message: dict[str, Any]) -> dict[str, Any] | N
         details["tool_name"] = tool_name
 
     return details or None
+
+
+def _resolve_launch_command(command: str) -> list[str]:
+    command_text = str(command or "").strip()
+    if not command_text:
+        command_text = "codex --yolo app-server"
+    if not sys.platform.startswith("win"):
+        return ["bash", "-lc", command_text]
+
+    def _replace_default(match: re.Match[str]) -> str:
+        default_value = match.group(1).strip() or "codex"
+        return os.environ.get("CODEX_BIN", default_value)
+
+    expanded = _CODEX_BIN_DEFAULT_RE.sub(_replace_default, command_text)
+    parts = shlex.split(expanded, posix=False)
+    return parts or ["codex", "--yolo", "app-server"]
 
 
 def _extract_text_preview(value: Any, depth: int = 0) -> str | None:

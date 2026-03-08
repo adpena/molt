@@ -257,6 +257,38 @@ jobs:
         uses: astral-sh/setup-uv@v3
         with:
           version: "latest"
+      - name: Normalize uv command for bash (windows)
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          echo "PATH=$PATH"
+          if command -v uv >/dev/null 2>&1; then
+            echo "uv already available at: $(command -v uv)"
+            uv --version
+            exit 0
+          fi
+          if ! command -v uv.exe >/dev/null 2>&1; then
+            echo "::error::Neither 'uv' nor 'uv.exe' is visible in bash PATH after setup-uv."
+            echo "::notice::bash PATH=$PATH"
+            exit 127
+          fi
+          uv_exe="$(command -v uv.exe)"
+          shim_dir="$RUNNER_TEMP/uv-bash-shim"
+          mkdir -p "$shim_dir"
+          printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$uv_exe" >"$shim_dir/uv"
+          chmod +x "$shim_dir/uv"
+          echo "$shim_dir" >> "$GITHUB_PATH"
+          echo "Created uv shim at $shim_dir/uv -> $uv_exe"
+          "$shim_dir/uv" --version
+      - name: Toolchain preflight (extension lanes)
+        run: |
+          set -euo pipefail
+          echo "runner.os=${{ runner.os }}"
+          echo "SHELL=${SHELL:-unknown}"
+          echo "PATH=$PATH"
+          echo "uv path: $(command -v uv)"
+          uv --version
+          command -v python || true
       - name: Set up Python 3.12
         run: uv python install 3.12
       - name: Install dependencies

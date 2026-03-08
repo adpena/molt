@@ -55,7 +55,7 @@ agent:
     todo: 1
     rework: 1
 codex:
-  command: ${CODEX_BIN:-codex} app-server
+  command: ${CODEX_BIN:-codex} --yolo app-server
   approval_policy:
     reject:
       sandbox_approval: true
