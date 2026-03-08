@@ -31,6 +31,58 @@ typedef enum {
 #define _NPY_DT_ARRFUNCS_OFFSET (1 << 11)
 #endif
 
+#ifndef NPY_CONSTANT_PYSCALAR
+#define NPY_CONSTANT_PYSCALAR 0
+#endif
+#ifndef NPY_CONSTANT_ZERO
+#define NPY_CONSTANT_ZERO 1
+#endif
+#ifndef NPY_CONSTANT_ONE
+#define NPY_CONSTANT_ONE 2
+#endif
+#ifndef NPY_CONSTANT_MINUS_ONE
+#define NPY_CONSTANT_MINUS_ONE 3
+#endif
+#ifndef NPY_CONSTANT_maximum_finite
+#define NPY_CONSTANT_maximum_finite 4
+#endif
+#ifndef NPY_CONSTANT_minimum_finite
+#define NPY_CONSTANT_minimum_finite 5
+#endif
+#ifndef NPY_CONSTANT_INFINITY
+#define NPY_CONSTANT_INFINITY 6
+#endif
+#ifndef NPY_CONSTANT_NAN
+#define NPY_CONSTANT_NAN 7
+#endif
+#ifndef NPY_CONSTANT_NAT
+#define NPY_CONSTANT_NAT 8
+#endif
+#ifndef NPY_CONSTANT_finfo_radix
+#define NPY_CONSTANT_finfo_radix 9
+#endif
+#ifndef NPY_CONSTANT_finfo_eps
+#define NPY_CONSTANT_finfo_eps 10
+#endif
+#ifndef NPY_CONSTANT_finfo_smallest_normal
+#define NPY_CONSTANT_finfo_smallest_normal 11
+#endif
+#ifndef NPY_CONSTANT_finfo_smallest_subnormal
+#define NPY_CONSTANT_finfo_smallest_subnormal 12
+#endif
+#ifndef NPY_CONSTANT_finfo_nmant
+#define NPY_CONSTANT_finfo_nmant ((1 << 16) + 0)
+#endif
+#ifndef NPY_CONSTANT_finfo_min_exp
+#define NPY_CONSTANT_finfo_min_exp ((1 << 16) + 1)
+#endif
+#ifndef NPY_CONSTANT_finfo_max_exp
+#define NPY_CONSTANT_finfo_max_exp ((1 << 16) + 2)
+#endif
+#ifndef NPY_CONSTANT_finfo_decimal_digits
+#define NPY_CONSTANT_finfo_decimal_digits ((1 << 16) + 3)
+#endif
+
 #if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD) && !defined(PyArrayMethod_COMBINED_FLAGS)
 #define PyArrayMethod_COMBINED_FLAGS(lhs, rhs) \
     ((NPY_ARRAYMETHOD_FLAGS)((lhs) | (rhs)))
