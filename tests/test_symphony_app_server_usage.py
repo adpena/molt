@@ -1,12 +1,32 @@
 from __future__ import annotations
 
+from pathlib import Path
+from threading import Event
 import sys
 
+import pytest
+
 from molt.symphony.app_server import (
+    CodexAppServerClient,
+    _build_request_user_input_result,
     _extract_notification_details,
     _extract_usage,
     _resolve_launch_command,
 )
+from molt.symphony.errors import TurnInputRequiredError
+from molt.symphony.models import CodexConfig
+
+
+def _codex_config() -> CodexConfig:
+    return CodexConfig(
+        command="codex --yolo app-server",
+        approval_policy={"reject": {}},
+        thread_sandbox="workspace-write",
+        turn_sandbox_policy={"type": "workspaceWrite"},
+        turn_timeout_ms=1000,
+        read_timeout_ms=100,
+        stall_timeout_ms=100,
+    )
 
 
 def test_extract_usage_from_explicit_payload() -> None:
@@ -178,3 +198,60 @@ def test_resolve_launch_command_windows_expands_codex_bin_env(monkeypatch) -> No
     )
     command = _resolve_launch_command("${CODEX_BIN:-codex} --yolo app-server")
     assert command == [r"D:\Tools\codex.cmd", "--yolo", "app-server"]
+
+
+def test_build_request_user_input_result_includes_question_ids() -> None:
+    payload = {
+        "method": "item/tool/requestUserInput",
+        "params": {
+            "questions": [
+                {"id": "confirm_path", "question": "Proceed?"},
+                {"id": "branch_choice", "question": "Which branch?"},
+            ]
+        },
+    }
+    assert _build_request_user_input_result(payload) == {
+        "answers": {
+            "confirm_path": {"answers": []},
+            "branch_choice": {"answers": []},
+        }
+    }
+
+
+def test_handle_server_request_request_user_input_uses_answers_schema() -> None:
+    sent: list[dict[str, object]] = []
+    events: list[dict[str, object]] = []
+    client = CodexAppServerClient(
+        codex_config=_codex_config(),
+        workspace_path=Path("."),
+        stop_event=Event(),
+        event_callback=events.append,
+    )
+    client._send_json = sent.append  # type: ignore[method-assign]
+
+    message = {
+        "id": 42,
+        "method": "item/tool/requestUserInput",
+        "params": {
+            "threadId": "thr_123",
+            "turnId": "turn_456",
+            "itemId": "call1",
+            "questions": [{"id": "confirm_path", "question": "Proceed?"}],
+        },
+    }
+
+    with pytest.raises(TurnInputRequiredError):
+        client._handle_server_request(message)
+
+    assert sent == [
+        {
+            "id": 42,
+            "result": {
+                "answers": {
+                    "confirm_path": {"answers": []},
+                }
+            },
+        }
+    ]
+    assert events
+    assert events[-1]["event"] == "request_user_input_required"
