@@ -454,7 +454,8 @@ static inline int PyArg_VaParseTupleAndKeywords(
     va_list vargs);
 static inline void *PyMem_Malloc(size_t size);
 static inline void PyMem_Free(void *ptr);
-static inline PyObject *Py_NewRef(PyObject *obj);
+static inline PyObject *_molt_Py_NewRef(PyObject *obj);
+static inline PyObject *_molt_Py_XNewRef(PyObject *obj);
 static inline PyObject *PyObject_Str(PyObject *obj);
 static inline const char *PyUnicode_AsUTF8(PyObject *value);
 static inline PyObject *PyUnicode_AsEncodedString(
@@ -753,7 +754,8 @@ static inline void *_molt_pyunicode_data(PyObject *unicode);
 #define Py_END_CRITICAL_SECTION2(...) do { } while (0)
 #endif
 
-#if !defined(Py_LIMITED_API) && !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
+#if !defined(Py_LIMITED_API) && !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && \
+    !defined(NPY_INTERNAL_BUILD)
 #define Py_LIMITED_API 0x030C0000
 #endif
 
@@ -1494,15 +1496,22 @@ static inline void _molt_py_set_type(PyObject *obj, PyTypeObject *type_obj) {
         return Py_NotImplemented;                                                  \
     } while (0)
 
-static inline PyObject *Py_NewRef(PyObject *obj) {
+static inline PyObject *_molt_Py_NewRef(PyObject *obj) {
     Py_INCREF(obj);
     return obj;
 }
 
-static inline PyObject *Py_XNewRef(PyObject *obj) {
+static inline PyObject *_molt_Py_XNewRef(PyObject *obj) {
     Py_XINCREF(obj);
     return obj;
 }
+
+#ifndef Py_NewRef
+#define Py_NewRef(obj) _molt_Py_NewRef((PyObject *)(obj))
+#endif
+#ifndef Py_XNewRef
+#define Py_XNewRef(obj) _molt_Py_XNewRef((PyObject *)(obj))
+#endif
 
 static inline PyObject *PyObject_Init(PyObject *obj, PyTypeObject *typeobj) {
     if (obj == NULL || typeobj == NULL) {

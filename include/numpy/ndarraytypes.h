@@ -63,6 +63,32 @@ typedef npy_int64 npy_timedelta;
 NPY_NO_EXPORT int npy_clear_floatstatus_barrier(char *param);
 NPY_NO_EXPORT int npy_get_floatstatus_barrier(char *param);
 
+#ifndef NPY_BITSOF_FLOAT
+#define NPY_BITSOF_FLOAT (NPY_SIZEOF_FLOAT * CHAR_BIT)
+#endif
+#ifndef NPY_BITSOF_DOUBLE
+#define NPY_BITSOF_DOUBLE (NPY_SIZEOF_DOUBLE * CHAR_BIT)
+#endif
+#ifndef NPY_BITSOF_LONGDOUBLE
+#define NPY_BITSOF_LONGDOUBLE (NPY_SIZEOF_LONGDOUBLE * CHAR_BIT)
+#endif
+
+#if !defined(HAVE_LDOUBLE_IEEE_QUAD_BE) && !defined(HAVE_LDOUBLE_IEEE_QUAD_LE) && \
+    !defined(HAVE_LDOUBLE_IEEE_DOUBLE_LE) && !defined(HAVE_LDOUBLE_IEEE_DOUBLE_BE) && \
+    !defined(HAVE_LDOUBLE_INTEL_EXTENDED_12_BYTES_LE) && \
+    !defined(HAVE_LDOUBLE_INTEL_EXTENDED_16_BYTES_LE) && \
+    !defined(HAVE_LDOUBLE_MOTOROLA_EXTENDED_12_BYTES_BE) && \
+    !defined(HAVE_LDOUBLE_IBM_DOUBLE_DOUBLE_LE) && \
+    !defined(HAVE_LDOUBLE_IBM_DOUBLE_DOUBLE_BE)
+#if NPY_SIZEOF_LONGDOUBLE == NPY_SIZEOF_DOUBLE
+#if NPY_BYTE_ORDER == NPY_LITTLE_ENDIAN
+#define HAVE_LDOUBLE_IEEE_DOUBLE_LE 1
+#else
+#define HAVE_LDOUBLE_IEEE_DOUBLE_BE 1
+#endif
+#endif
+#endif
+
 #if !defined(__STDC_NO_COMPLEX__)
 typedef float _Complex _molt_npy_cfloat_value;
 typedef double _Complex _molt_npy_cdouble_value;
@@ -161,6 +187,15 @@ typedef _molt_npy_clongdouble_value npy_clongdouble;
 #define NPY_GCC_NONNULL(...) __attribute__((nonnull(__VA_ARGS__)))
 #else
 #define NPY_GCC_NONNULL(...)
+#endif
+#endif
+
+#ifndef NPY_STEALS_REF_TO_ARG
+#ifdef WITH_CPYCHECKER_STEALS_REFERENCE_TO_ARG_ATTRIBUTE
+#define NPY_STEALS_REF_TO_ARG(n) \
+    __attribute__((cpychecker_steals_reference_to_arg(n)))
+#else
+#define NPY_STEALS_REF_TO_ARG(n)
 #endif
 #endif
 
@@ -783,6 +818,9 @@ NPY_NO_EXPORT npy_intp *NpyIter_GetInnerLoopSizePtr(NpyIter *iter);
 #endif
 #ifndef PyArray_ITER_DATA
 #define PyArray_ITER_DATA(it) ((void *)(_PyAIT(it)->dataptr))
+#endif
+#ifndef PyArray_ITER_NOTDONE
+#define PyArray_ITER_NOTDONE(it) (_PyAIT(it)->index < _PyAIT(it)->size)
 #endif
 
 #ifndef _PyMIT

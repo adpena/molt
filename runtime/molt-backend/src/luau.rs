@@ -2067,7 +2067,7 @@ impl LuauBackend {
                     let method = sanitize_ident(&args[0]);
                     let obj = sanitize_ident(&args[1]);
                     self.emit_line(&format!(
-                        "local {out} = function(...) return {method}({obj}, ...) end"
+                        "local {out} = function(...) local __m = {method}; if __m then return __m({obj}, ...) end; return nil end"
                     ));
                 } else {
                     self.emit_line(&format!("local {out} = nil -- bound_method missing args"));
