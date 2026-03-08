@@ -8,6 +8,7 @@
 //!   critical sections small and avoid taking them while holding the GIL for long paths.
 //! - Avoid blocking host I/O while holding the GIL; release or schedule work instead.
 #![cfg_attr(target_arch = "wasm32", allow(unused))]
+#![allow(unsafe_op_in_unsafe_fn)]
 
 macro_rules! fn_addr {
     ($func:path) => {

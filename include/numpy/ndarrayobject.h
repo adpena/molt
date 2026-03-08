@@ -287,6 +287,8 @@ NPY_NO_EXPORT int PyArray_XDECREF(PyArrayObject *mp);
     PyArray_EquivTypes(PyArray_DESCR((a1)), PyArray_DESCR((a2)))
 #define PyArray_Copy(obj) PyArray_NewCopy((PyArrayObject *)(obj), NPY_CORDER)
 #define PyArray_Zeros(...) _molt_numpy_unavailable_obj("PyArray_Zeros")
+#define PyArray_ZEROS(m, dims, type_num, is_f_order) \
+    PyArray_Zeros((m), (dims), PyArray_DescrFromType((type_num)), (is_f_order))
 #if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 #ifndef PyArray_MultiIter_DATA
 #define PyArray_MultiIter_DATA(iter, i) ((void)(iter), (void)(i), (char *)NULL)
@@ -961,13 +963,13 @@ static inline int PyArray_IntpFromSequence(PyObject *obj, npy_intp *values, int 
 #if MOLT_NUMPY_INTERNAL_BUILD
 NPY_NO_EXPORT PyObject *PyArray_NewCopy(PyArrayObject *array_obj, int order);
 #else
-static inline PyObject *PyArray_NewCopy(PyArrayObject *array_obj, int order) {
+static inline PyArrayObject *PyArray_NewCopy(PyArrayObject *array_obj, int order) {
     (void)order;
     if (array_obj == NULL) {
         return NULL;
     }
     Py_INCREF((PyObject *)array_obj);
-    return (PyObject *)array_obj;
+    return array_obj;
 }
 #endif
 

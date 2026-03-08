@@ -2536,7 +2536,7 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                     }
                     if !ancillary.is_empty() {
                         msg.msg_control = ancillary.as_mut_ptr() as *mut libc::c_void;
-                        msg.msg_controllen = ancillary.len() as libc::socklen_t;
+                        msg.msg_controllen = ancillary.len() as _;
                     }
                     unsafe { libc::sendmsg(fd, &msg as *const libc::msghdr, flags) }
                 }
@@ -2670,7 +2670,7 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                     msg.msg_iovlen = 1;
                     if !ancillary.is_empty() {
                         msg.msg_control = ancillary.as_mut_ptr() as *mut libc::c_void;
-                        msg.msg_controllen = ancillary.len() as libc::socklen_t;
+                        msg.msg_controllen = ancillary.len() as _;
                     }
                     let rc = unsafe { libc::recvmsg(fd, &mut msg as *mut libc::msghdr, flags) };
                     name_len = msg.msg_namelen;
@@ -2683,8 +2683,12 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                         );
                     }
                     if out_anc_len_ptr != 0 {
-                        let _ =
-                            write_u32(&mut caller, &memory, out_anc_len_ptr, msg.msg_controllen);
+                        let _ = write_u32(
+                            &mut caller,
+                            &memory,
+                            out_anc_len_ptr,
+                            msg.msg_controllen as u32,
+                        );
                     }
                     rc
                 }

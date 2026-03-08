@@ -2363,31 +2363,27 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
             #[cfg(target_arch = "x86_64")]
             {
                 if n >= 4 && std::arch::is_x86_feature_detected!("avx2") {
-                    unsafe {
-                        use std::arch::x86_64::*;
-                        let mut vec_sum = _mm256_setzero_pd();
-                        while i + 4 <= n {
-                            let v = _mm256_loadu_pd(vals.as_ptr().add(i));
-                            vec_sum = _mm256_add_pd(vec_sum, _mm256_mul_pd(v, v));
-                            i += 4;
-                        }
-                        let mut lanes = [0.0f64; 4];
-                        _mm256_storeu_pd(lanes.as_mut_ptr(), vec_sum);
-                        sum_sq = lanes[0] + lanes[1] + lanes[2] + lanes[3];
+                    use std::arch::x86_64::*;
+                    let mut vec_sum = _mm256_setzero_pd();
+                    while i + 4 <= n {
+                        let v = _mm256_loadu_pd(vals.as_ptr().add(i));
+                        vec_sum = _mm256_add_pd(vec_sum, _mm256_mul_pd(v, v));
+                        i += 4;
                     }
+                    let mut lanes = [0.0f64; 4];
+                    _mm256_storeu_pd(lanes.as_mut_ptr(), vec_sum);
+                    sum_sq = lanes[0] + lanes[1] + lanes[2] + lanes[3];
                 } else if n >= 2 && std::arch::is_x86_feature_detected!("sse2") {
-                    unsafe {
-                        use std::arch::x86_64::*;
-                        let mut vec_sum = _mm_setzero_pd();
-                        while i + 2 <= n {
-                            let v = _mm_loadu_pd(vals.as_ptr().add(i));
-                            vec_sum = _mm_add_pd(vec_sum, _mm_mul_pd(v, v));
-                            i += 2;
-                        }
-                        let mut lanes = [0.0f64; 2];
-                        _mm_storeu_pd(lanes.as_mut_ptr(), vec_sum);
-                        sum_sq = lanes[0] + lanes[1];
+                    use std::arch::x86_64::*;
+                    let mut vec_sum = _mm_setzero_pd();
+                    while i + 2 <= n {
+                        let v = _mm_loadu_pd(vals.as_ptr().add(i));
+                        vec_sum = _mm_add_pd(vec_sum, _mm_mul_pd(v, v));
+                        i += 2;
                     }
+                    let mut lanes = [0.0f64; 2];
+                    _mm_storeu_pd(lanes.as_mut_ptr(), vec_sum);
+                    sum_sq = lanes[0] + lanes[1];
                 }
             }
             #[cfg(target_arch = "wasm32")]

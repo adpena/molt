@@ -5,4 +5,6 @@
 #include <numpy/arrayscalars.h>
 #include <numpy/npy_math.h>
 
+NPY_NO_EXPORT int set_typeinfo(PyObject *dict);
+
 #endif
