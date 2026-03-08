@@ -67,14 +67,81 @@ of nested lists. This avoids the subscript-of-list pattern entirely.
 
 ---
 
+---
+
+## Bug 3: `math.floor` (and other stdlib attribute accesses) not resolved
+
+**Location:** `molt-backend/src/luau.rs` — module attribute resolution for `math`
+
+**Symptom:** `math.floor(x)` inside a function emits a `MODULE_GET_ATTR` call
+through the module cache mechanism rather than mapping directly to Luau's
+built-in `math.floor`. The generated code calls into the molt runtime module
+system and may return nil or error if the `math` module binding isn't present
+in the Luau environment.
+
+**Fix:** Add a direct-call mapping for `math.*` functions to their Luau
+equivalents (`math.floor`, `math.sin`, `math.cos`, etc.) in the Luau backend's
+stdlib direct-call table, bypassing the module cache path.
+
+**Workaround:** Assign `math.floor` to a local at module top: `_floor = math.floor`
+then call `_floor(x)`. This goes through the simpler `LOAD_GLOBAL` → `CALL`
+path which resolves correctly.
+
+---
+
+## Bug 4: `if/elif/else` chains with nil-reset pattern — goto emitted as comment
+
+**Location:** `molt-backend/src/luau.rs` — control flow emission for if/elif/else
+
+**Symptom:** When molt emits `if/elif/else` chains that need a goto-based
+fallthrough (to implement Python's fall-through semantics for elif branches
+that set variables), it emits the goto as a Luau comment `-- goto label`
+rather than a real control flow construct. This causes variables that should
+be set in later `elif` branches to retain their initial nil values, producing
+silent logic errors rather than compile errors.
+
+**Example:** A 6-way if/elif/else that assigns `i1`, `j1`, `k1`, `i2`, `j2`, `k2`
+based on coordinate ordering (the simplex skew-tetrahedron selection in 3D
+gradient noise) should set all 6 variables in every branch. If the goto
+comment bug fires, only the first matching branch's assignments are visible.
+
+**Fix:** Implement proper Luau `do/break` blocks or label/goto pairs for
+elif chains instead of emitting goto as a comment.
+
+**Workaround:** Rewrite elif chains as nested `if/else` blocks — each branch
+independently assigns all variables, even if some assignments repeat. This
+avoids any goto need.
+
+---
+
+## Bug 5: Tuple returns produce nil in callers
+
+**Location:** `molt-backend/src/luau.rs` — multiple return value handling
+
+**Symptom:** Python functions returning tuples (e.g., `return x, y, z`) emit
+correct Luau multi-return syntax, but callers that destructure the result
+(`a, b, c = f()`) sometimes receive nil if the function went through the
+module cache path or if the return passes through an intermediate variable.
+
+**Workaround:** Return a single table `{x, y, z}` and index it at the call
+site, or use flat parallel output arrays passed by reference.
+
+---
+
 ## Impact
 
-Both bugs prevent list-heavy algorithms (KD-tree, A*, spatial hash) from
-compiling correctly via `--target luau`. Pure scalar arithmetic (Catmull-Rom,
-spring/verlet) compiles cleanly.
+Bugs 1–5 prevent list-heavy or control-flow-rich algorithms (KD-tree, A*,
+spatial hash, simplex noise) from compiling correctly via `--target luau`.
+Pure scalar arithmetic with simple if/else (Catmull-Rom, spring/verlet)
+compiles cleanly — the Catmull-Rom spline (82 lines) compiled to 540 lines
+of valid Luau with zero errors.
 
 **Affected targets:** `--target luau` only. Native and WASM targets are unaffected
 since they use Rust's type system rather than runtime type hints.
+
+**Confirmed working pattern:** flat parallel float arrays, no `global` list
+access, no nested lists, no module attributes (use local aliases), simple
+if/else (not elif chains), no tuple returns.
 
 ---
 
