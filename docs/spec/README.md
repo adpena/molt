@@ -73,6 +73,7 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0014 Determinism And Security Enforcement Checklist: [docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md](docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md)
 - 0200 Profile Artifact: [docs/spec/areas/tooling/0200_PROFILE_ARTIFACT.md](docs/spec/areas/tooling/0200_PROFILE_ARTIFACT.md)
 - 0215 Molt Extension Build Pipeline (runtime metadata enforcement + native/cross-host CI matrix + verify/wasm policy checks): [docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md](docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md)
+- 0220 Transpiler Research Execution Plan: [docs/spec/areas/tooling/0220_TRANSPILER_RESEARCH_EXECUTION_PLAN.md](docs/spec/areas/tooling/0220_TRANSPILER_RESEARCH_EXECUTION_PLAN.md)
 - 0602 When To Write Extensions Or Binaries: [docs/spec/areas/tooling/0602_WHEN_TO_WRITE_EXTENSIONS_OR_BINARIES.md](docs/spec/areas/tooling/0602_WHEN_TO_WRITE_EXTENSIONS_OR_BINARIES.md)
 
 ## Testing
