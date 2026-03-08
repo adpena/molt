@@ -110,15 +110,10 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_run.py WORKFLOW.md --
 
 BAT00 host orchestration and machine-control tooling is maintained in the private
 `fleet` repository (not in public `molt`). Use Fleet MCP tools for remote
-operations:
+operations.
 
-- `molt_symphony_bat00_doctor`
-- `molt_symphony_bat00_repair`
-- `molt_symphony_bat00_start`
-- `molt_symphony_bat00_stop`
-- `molt_symphony_bat00_status`
-- `molt_symphony_bat00_telemetry`
-- `molt_symphony_bat00_set_concurrency`
+Public `molt` documents runtime behavior and local workflow contracts; host-level
+automation, credentials handling, and remote orchestration APIs remain fleet-owned.
 
 Bootstrap output now includes `formal_toolchain` with direct/fallback probes for
 Node + Quint + Lake so you can confirm formal tooling health before long runs.
