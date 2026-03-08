@@ -125,9 +125,7 @@ def _external_roots_available(
 
 def _load_api_token(env_values: dict[str, str]) -> str | None:
     for key in ("MOLT_SYMPHONY_API_TOKEN", "MOLT_SYMPHONY_DASHBOARD_TOKEN"):
-        candidate_token = str(
-            env_values.get(key) or os.environ.get(key) or ""
-        ).strip()
+        candidate_token = str(env_values.get(key) or os.environ.get(key) or "").strip()
         if candidate_token:
             return candidate_token
     token_file_raw = str(

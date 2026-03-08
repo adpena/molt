@@ -46,7 +46,9 @@ class TasteMemoryStore:
 
     def distill_recent(self, *, limit: int = 200) -> dict[str, Any]:
         rows = self.load(limit=limit)
-        status_counts = Counter(str(row.get("cycle_status") or "unknown") for row in rows)
+        status_counts = Counter(
+            str(row.get("cycle_status") or "unknown") for row in rows
+        )
         failing_codes = Counter()
         successful_actions = Counter()
         preferred_tools = Counter()
@@ -68,6 +70,8 @@ class TasteMemoryStore:
         self.distillations_dir.mkdir(parents=True, exist_ok=True)
         stamp = distillation["generated_at"].replace(":", "").replace("-", "")
         out = self.distillations_dir / f"distillation_{stamp}.json"
-        out.write_text(json.dumps(distillation, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        out.write_text(
+            json.dumps(distillation, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         distillation["path"] = str(out)
         return distillation

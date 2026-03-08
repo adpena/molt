@@ -43,9 +43,21 @@ def main(argv: list[str] | None = None) -> int:
         distillations_dir=Path(str(args.distillations_dir)).expanduser().resolve(),
     )
     if args.cmd == "summary":
-        print(json.dumps({"events": store.load(limit=max(int(args.limit), 0))}, indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                {"events": store.load(limit=max(int(args.limit), 0))},
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 0
-    print(json.dumps(store.distill_recent(limit=max(int(args.limit), 0)), indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            store.distill_recent(limit=max(int(args.limit), 0)),
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 

@@ -556,9 +556,7 @@ ltv = a < b
     assert all(
         op.get("fast_int") is True or op.get("raw_int") is True for op in mod_ops
     )
-    assert all(
-        op.get("fast_int") is True or op.get("raw_int") is True for op in lt_ops
-    )
+    assert all(op.get("fast_int") is True or op.get("raw_int") is True for op in lt_ops)
     assert all(op.get("raw_int") is not True for op in sub_ops)
     assert all(op.get("fast_int") is True for op in sub_ops)
 
