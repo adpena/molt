@@ -576,46 +576,54 @@ jobs:
         env:
           MOLT_EXT_TARGET: ${{ matrix.lane.target }}
         run: |
+          set -euo pipefail
+          build_json="$EXT_PROJECT_DIR/build.json"
+          build_stdout_log="$EXT_PROJECT_DIR/build.stdout.log"
+          build_stderr_log="$EXT_PROJECT_DIR/build.stderr.log"
+          rm -f "$build_json" "$build_stdout_log" "$build_stderr_log"
+
+          cmd=(
+            uv run python -m molt.cli extension build
+            --project "$EXT_PROJECT_DIR"
+            --out-dir "$EXT_PROJECT_DIR/dist"
+            --json
+          )
+          if [ "$MOLT_EXT_TARGET" != "native" ]; then
+            cmd+=(--target "$MOLT_EXT_TARGET")
+          fi
+
+          set +e
+          "${cmd[@]}" >"$build_stdout_log" 2>"$build_stderr_log"
+          rc=$?
+          set -e
+
+          cp "$build_stdout_log" "$build_json"
+          if [ "$rc" -ne 0 ]; then
+            echo "extension build failed with exit code $rc" >&2
+            if [ -s "$build_stdout_log" ]; then
+              echo "--- extension build stdout ---" >&2
+              cat "$build_stdout_log" >&2
+            fi
+            if [ -s "$build_stderr_log" ]; then
+              echo "--- extension build stderr ---" >&2
+              cat "$build_stderr_log" >&2
+            fi
+            exit "$rc"
+          fi
+          if [ ! -s "$build_json" ]; then
+            echo "extension build produced empty JSON output: $build_json" >&2
+            exit 2
+          fi
+
           uv run python - <<'PY'
           import json
           import os
           import pathlib
-          import subprocess
-          import sys
 
           root = pathlib.Path(os.environ["EXT_PROJECT_DIR"])
           target = os.environ["MOLT_EXT_TARGET"]
           build_json = root / "build.json"
-          build_stdout_log = root / "build.stdout.log"
-          build_stderr_log = root / "build.stderr.log"
-
-          cmd = [
-              sys.executable,
-              "-m",
-              "molt.cli",
-              "extension",
-              "build",
-              "--project",
-              str(root),
-              "--out-dir",
-              str(root / "dist"),
-              "--json",
-          ]
-          if target != "native":
-              cmd.extend(["--target", target])
-
-          proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-          build_stdout_log.write_text(proc.stdout, encoding="utf-8")
-          build_stderr_log.write_text(proc.stderr, encoding="utf-8")
-          build_json.write_text(proc.stdout, encoding="utf-8")
-          if proc.returncode != 0:
-              if proc.stdout:
-                  print(proc.stdout, end="", file=sys.stderr)
-              if proc.stderr:
-                  print(proc.stderr, end="", file=sys.stderr)
-              raise SystemExit(proc.returncode)
-
-          payload_text = proc.stdout.strip()
+          payload_text = build_json.read_text(encoding="utf-8").strip()
           if not payload_text:
               raise RuntimeError(f"extension build produced empty JSON output: {build_json}")
 
@@ -897,6 +905,36 @@ jobs:
         uses: astral-sh/setup-uv@v3
         with:
           version: "latest"
+      - name: Normalize uv command for bash (windows)
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          if command -v uv >/dev/null 2>&1; then
+            exit 0
+          fi
+          if command -v uv.exe >/dev/null 2>&1; then
+            shim_dir="${RUNNER_TEMP}/uv-bash-shim"
+            mkdir -p "$shim_dir"
+            cat >"$shim_dir/uv" <<'EOF'
+          #!/usr/bin/env bash
+          exec uv.exe "$@"
+          EOF
+            chmod +x "$shim_dir/uv"
+            echo "$shim_dir" >> "$GITHUB_PATH"
+            exit 0
+          fi
+          echo "::error::uv command not found in PATH (neither uv nor uv.exe)." >&2
+          exit 127
+      - name: Toolchain preflight (extension lanes)
+        run: |
+          set -euo pipefail
+          echo "runner.os=${{ runner.os }}"
+          echo "shell=${SHELL:-<unset>}"
+          echo "PATH=$PATH"
+          command -v uv
+          uv --version
+          command -v python
+          python --version
       - name: Set up Python 3.12
         run: uv python install 3.12
       - name: Install dependencies
