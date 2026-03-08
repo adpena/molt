@@ -14,6 +14,9 @@ extern "C" {
 #define npy_isnan(x) isnan((x))
 #define npy_isinf(x) isinf((x))
 
+NPY_NO_EXPORT int npy_clear_floatstatus_barrier(char *param);
+NPY_NO_EXPORT int npy_get_floatstatus_barrier(char *param);
+
 #ifdef __cplusplus
 }
 #endif
