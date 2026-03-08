@@ -146,6 +146,16 @@ typedef _molt_npy_clongdouble_value npy_clongdouble;
 #define NPY_RAVEL_AXIS NPY_MIN_INT
 #endif
 
+#ifndef NPY_MIN_BUFSIZE
+#define NPY_MIN_BUFSIZE ((int)sizeof(npy_cdouble))
+#endif
+#ifndef NPY_MAX_BUFSIZE
+#define NPY_MAX_BUFSIZE (((int)sizeof(npy_cdouble)) * 1000000)
+#endif
+#ifndef NPY_BUFSIZE
+#define NPY_BUFSIZE 8192
+#endif
+
 #if !MOLT_NUMPY_INTERNAL_BUILD
 #ifndef NPY_DEFAULT_ASSIGN_CASTING
 #define NPY_DEFAULT_ASSIGN_CASTING NPY_SAME_KIND_CASTING
@@ -745,6 +755,7 @@ NPY_NO_EXPORT NPY_ARRAYMETHOD_FLAGS NpyIter_GetTransferFlags(NpyIter *iter);
 NPY_NO_EXPORT npy_bool NpyIter_IterationNeedsAPI(NpyIter *iter);
 NPY_NO_EXPORT npy_intp *NpyIter_GetInnerStrideArray(NpyIter *iter);
 NPY_NO_EXPORT npy_intp *NpyIter_GetInnerLoopSizePtr(NpyIter *iter);
+NPY_NO_EXPORT PyTypeObject NpyIter_Type;
 
 #ifndef NPY_ITER_C_INDEX
 #define NPY_ITER_C_INDEX 0x00000001
