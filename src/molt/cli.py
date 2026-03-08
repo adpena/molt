@@ -117,6 +117,7 @@ _WHEEL_TOKEN_RE = re.compile(r"[^A-Za-z0-9_.]+")
 _WHEEL_VERSION_RE = re.compile(r"[^A-Za-z0-9._]+")
 _PY_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _PY_C_API_TOKEN_RE = re.compile(r"\bPy[A-Za-z_][A-Za-z0-9_]*\b")
+_PY_C_API_PARTIAL_TOKEN_RE = re.compile(r"^Py(?:_[A-Z]|[A-Z]{1,3})$")
 _PY_C_API_DEFINE_RE = re.compile(
     r"^\s*#\s*define\s+(Py[A-Za-z_][A-Za-z0-9_]*)\b", flags=re.MULTILINE
 )
@@ -131,6 +132,10 @@ _PY_C_API_STATIC_VAR_RE = re.compile(
 )
 _PY_C_API_SIMPLE_TYPEDEF_RE = re.compile(
     r"\btypedef\b[^;{}]*\b(Py[A-Za-z_][A-Za-z0-9_]*)\b\s*;",
+    flags=re.MULTILINE,
+)
+_PY_C_API_TAG_RE = re.compile(
+    r"\b(?:struct|union|class)\s+(Py[A-Za-z_][A-Za-z0-9_]*)\b",
     flags=re.MULTILINE,
 )
 _PY_C_API_STRUCT_BLOCK_RE = re.compile(
@@ -738,6 +743,7 @@ def _extension_header_contract() -> dict[str, Any]:
     cpython_source_compat_headers = (
         "Python.h",
         "molt/Python.h",
+        "molt/cext_compat_shims.h",
         "datetime.h",
         "frameobject.h",
         "pymem.h",
@@ -12152,16 +12158,28 @@ def _strip_c_like_comments_and_literals(text: str) -> str:
     return _C_STRING_LITERAL_RE.sub(" ", without_lines)
 
 
+def _is_probable_py_c_api_token(symbol: str) -> bool:
+    if symbol.endswith("_"):
+        return False
+    if _PY_C_API_PARTIAL_TOKEN_RE.match(symbol):
+        return False
+    return True
+
+
 def _extract_py_c_api_tokens(text: str) -> set[str]:
     sanitized = _strip_c_like_comments_and_literals(text)
-    return {match.group(0) for match in _PY_C_API_TOKEN_RE.finditer(sanitized)}
+    return {
+        symbol
+        for symbol in (match.group(0) for match in _PY_C_API_TOKEN_RE.finditer(sanitized))
+        if _is_probable_py_c_api_token(symbol)
+    }
 
 
 def _extract_py_c_api_struct_member_names(text: str) -> set[str]:
     member_names: set[str] = set()
     for match in _PY_C_API_STRUCT_BLOCK_RE.finditer(text):
         alias = match.group("alias")
-        if alias:
+        if alias and _is_probable_py_c_api_token(alias):
             member_names.add(alias)
         body = match.group("body")
         for statement in body.split(";"):
@@ -12173,7 +12191,9 @@ def _extract_py_c_api_struct_member_names(text: str) -> set[str]:
                 stripped,
             )
             if member_match is not None:
-                member_names.add(member_match.group(1))
+                symbol = member_match.group(1)
+                if _is_probable_py_c_api_token(symbol):
+                    member_names.add(symbol)
     return member_names
 
 
@@ -12190,17 +12210,30 @@ def _extract_py_c_api_function_definitions(text: str) -> list[tuple[str, bool]]:
 def _extract_locally_defined_py_c_api_tokens(text: str) -> set[str]:
     sanitized = _strip_c_like_comments_and_literals(text)
     local_symbols: set[str] = {
-        match.group(1) for match in _PY_C_API_DEFINE_RE.finditer(sanitized)
+        match.group(1)
+        for match in _PY_C_API_DEFINE_RE.finditer(sanitized)
+        if _is_probable_py_c_api_token(match.group(1))
     }
     local_symbols.update(
-        match.group(1) for match in _PY_C_API_STATIC_VAR_RE.finditer(sanitized)
+        match.group(1)
+        for match in _PY_C_API_STATIC_VAR_RE.finditer(sanitized)
+        if _is_probable_py_c_api_token(match.group(1))
     )
     local_symbols.update(
-        match.group(1) for match in _PY_C_API_SIMPLE_TYPEDEF_RE.finditer(sanitized)
+        match.group(1)
+        for match in _PY_C_API_SIMPLE_TYPEDEF_RE.finditer(sanitized)
+        if _is_probable_py_c_api_token(match.group(1))
+    )
+    local_symbols.update(
+        match.group(1)
+        for match in _PY_C_API_TAG_RE.finditer(sanitized)
+        if _is_probable_py_c_api_token(match.group(1))
     )
     local_symbols.update(_extract_py_c_api_struct_member_names(sanitized))
     local_symbols.update(
-        name for name, _is_static in _extract_py_c_api_function_definitions(sanitized)
+        name
+        for name, _is_static in _extract_py_c_api_function_definitions(sanitized)
+        if _is_probable_py_c_api_token(name)
     )
     return local_symbols
 
@@ -12210,7 +12243,7 @@ def _extract_project_shared_py_c_api_tokens(text: str) -> set[str]:
     return {
         name
         for name, is_static in _extract_py_c_api_function_definitions(sanitized)
-        if not is_static
+        if not is_static and _is_probable_py_c_api_token(name)
     }
 
 
@@ -12310,6 +12343,9 @@ def _is_extension_scan_c_like_path(path: Path) -> bool:
 
 
 def _is_extension_scan_c_like_name(name: str) -> bool:
+    lower_name = name.lower()
+    if lower_name.endswith(".rst.inc"):
+        return False
     return Path(name).suffix.lower() in _EXTENSION_SCAN_SUFFIXES
 
 
@@ -12937,6 +12973,12 @@ def extension_build(
             json_output,
             command="extension-build",
         )
+    compat_shim_header = include_root / "molt" / "cext_compat_shims.h"
+    if not compat_shim_header.exists():
+        warnings.append(
+            "Extension compatibility shim header missing: "
+            f"{compat_shim_header} (build may fail for some CPython/NumPy shims)."
+        )
 
     cc = os.environ.get("CC", "clang")
     cc_cmd = shlex.split(cc)
@@ -13003,6 +13045,8 @@ def extension_build(
             object_path = build_tmp / f"{idx}_{source_path.stem}.o"
             cmd = [*cc_cmd, "-c", str(source_path), "-o", str(object_path)]
             cmd.extend(["-I", str(include_root), "-I", str(project_root)])
+            if compat_shim_header.exists():
+                cmd.extend(["-include", str(compat_shim_header)])
             for include_path in include_paths:
                 cmd.extend(["-I", str(include_path)])
             if os.name != "nt":
