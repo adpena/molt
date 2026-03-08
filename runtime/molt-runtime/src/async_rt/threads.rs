@@ -162,11 +162,7 @@ impl ThreadTaskState {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn thread_worker(rx: Receiver<ThreadWork>) {
-    loop {
-        let work = match rx.recv() {
-            Ok(work) => work,
-            Err(_) => break,
-        };
+    while let Ok(work) = rx.recv() {
         match work {
             ThreadWork::Shutdown => break,
             ThreadWork::Run(item) => {
