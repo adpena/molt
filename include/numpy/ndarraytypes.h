@@ -733,7 +733,7 @@ typedef enum {
         NPY_METH_REQUIRES_PYAPI | NPY_METH_NO_FLOATINGPOINT_ERRORS),
 } NPY_ARRAYMETHOD_FLAGS;
 #endif
-NPY_NO_EXPORT NpyIter *NpyIter_New(PyObject *op, ...);
+NPY_NO_EXPORT NpyIter *NpyIter_New(PyArrayObject *op, ...);
 NPY_NO_EXPORT NpyIter *NpyIter_MultiNew(int nop, PyArrayObject **op, ...);
 NPY_NO_EXPORT int NpyIter_Deallocate(NpyIter *iter);
 NPY_NO_EXPORT int NpyIter_Reset(NpyIter *iter, char **errmsg);

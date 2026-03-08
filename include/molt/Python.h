@@ -456,6 +456,12 @@ static inline void *PyMem_Malloc(size_t size);
 static inline void PyMem_Free(void *ptr);
 static inline PyObject *_molt_Py_NewRef(PyObject *obj);
 static inline PyObject *_molt_Py_XNewRef(PyObject *obj);
+#ifndef Py_NewRef
+#define Py_NewRef(obj) _molt_Py_NewRef((PyObject *)(obj))
+#endif
+#ifndef Py_XNewRef
+#define Py_XNewRef(obj) _molt_Py_XNewRef((PyObject *)(obj))
+#endif
 static inline PyObject *PyObject_Str(PyObject *obj);
 static inline const char *PyUnicode_AsUTF8(PyObject *value);
 static inline PyObject *PyUnicode_AsEncodedString(
