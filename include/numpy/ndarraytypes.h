@@ -684,6 +684,17 @@ typedef struct PyArrayMapIterObject {
 typedef struct NpyIter_InternalOnly NpyIter;
 typedef int (NpyIter_IterNextFunc)(NpyIter *iter);
 typedef void (NpyIter_GetMultiIndexFunc)(NpyIter *iter, npy_intp *outcoords);
+#ifndef MOLT_NUMPY_ARRAYMETHOD_FLAGS_DEFINED
+#define MOLT_NUMPY_ARRAYMETHOD_FLAGS_DEFINED 1
+typedef enum {
+    NPY_METH_REQUIRES_PYAPI = 1 << 0,
+    NPY_METH_NO_FLOATINGPOINT_ERRORS = 1 << 1,
+    NPY_METH_SUPPORTS_UNALIGNED = 1 << 2,
+    NPY_METH_IS_REORDERABLE = 1 << 3,
+    NPY_METH_RUNTIME_FLAGS = (
+        NPY_METH_REQUIRES_PYAPI | NPY_METH_NO_FLOATINGPOINT_ERRORS),
+} NPY_ARRAYMETHOD_FLAGS;
+#endif
 NPY_NO_EXPORT NpyIter *NpyIter_New(PyObject *op, ...);
 NPY_NO_EXPORT NpyIter *NpyIter_MultiNew(int nop, PyArrayObject **op, ...);
 NPY_NO_EXPORT int NpyIter_Deallocate(NpyIter *iter);
@@ -692,11 +703,8 @@ NPY_NO_EXPORT PyArrayObject **NpyIter_GetOperandArray(NpyIter *iter);
 NPY_NO_EXPORT npy_intp NpyIter_GetIterSize(NpyIter *iter);
 NPY_NO_EXPORT NpyIter_IterNextFunc *NpyIter_GetIterNext(NpyIter *iter, char **errmsg);
 NPY_NO_EXPORT char **NpyIter_GetDataPtrArray(NpyIter *iter);
-#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
-#else
-NPY_NO_EXPORT int NpyIter_GetTransferFlags(NpyIter *iter);
-NPY_NO_EXPORT int NpyIter_IterationNeedsAPI(NpyIter *iter);
-#endif
+NPY_NO_EXPORT NPY_ARRAYMETHOD_FLAGS NpyIter_GetTransferFlags(NpyIter *iter);
+NPY_NO_EXPORT npy_bool NpyIter_IterationNeedsAPI(NpyIter *iter);
 NPY_NO_EXPORT npy_intp *NpyIter_GetInnerStrideArray(NpyIter *iter);
 NPY_NO_EXPORT npy_intp *NpyIter_GetInnerLoopSizePtr(NpyIter *iter);
 
