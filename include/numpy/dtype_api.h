@@ -20,6 +20,10 @@ typedef enum {
 #define NPY_DT_PARAMETRIC (1 << 2)
 #define NPY_DT_NUMERIC (1 << 3)
 
+#ifndef _NPY_DT_ARRFUNCS_OFFSET
+#define _NPY_DT_ARRFUNCS_OFFSET (1 << 11)
+#endif
+
 #if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD) && !defined(PyArrayMethod_COMBINED_FLAGS)
 #define PyArrayMethod_COMBINED_FLAGS(lhs, rhs) \
     ((NPY_ARRAYMETHOD_FLAGS)((lhs) | (rhs)))

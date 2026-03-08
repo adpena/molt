@@ -1,19 +1,7 @@
 {
   "mcpServers": {
     "vertigo-fleet": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--with",
-        "mcp",
-        "python3",
-        "/Users/adpena/fleet/scripts/mcp/fleet-mcp-server.py"
-      ],
-      "env": {
-        "FLEET_AUTHORITY_TOKEN": "FORS72fVeAlSapBlQS7lDIX8hlJ4b3w8ry2ssM6JN5A",
-        "FLEET_AUTHORITY_HOST": "mini",
-        "FLEET_AUTHORITY_PORT": "9889"
-      }
+      "url": "http://192.168.1.170:8850/sse"
     }
   }
 }
