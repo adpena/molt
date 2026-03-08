@@ -15,7 +15,7 @@ use std::ptr;
 // ─── Thread-local error state ─────────────────────────────────────────────
 
 thread_local! {
-    static CURRENT_EXC: std::cell::RefCell<Option<(u64, String)>> = std::cell::RefCell::new(None);
+    static CURRENT_EXC: std::cell::RefCell<Option<(u64, String)>> = const { std::cell::RefCell::new(None) };
 }
 
 #[unsafe(no_mangle)]
@@ -44,7 +44,7 @@ pub unsafe extern "C" fn PyErr_Occurred() -> *mut PyObject {
     CURRENT_EXC.with(|c| {
         if c.borrow().is_some() {
             // Return a non-null sentinel — caller only checks null/non-null.
-            unsafe { &raw mut crate::abi_types::Py_None }
+            &raw mut crate::abi_types::Py_None
         } else {
             ptr::null_mut()
         }
@@ -257,7 +257,7 @@ fn molt_str_ptr(bits: u64) -> *const c_char {
     let mut len: usize = 0;
     let ptr = unsafe { (h.str_data)(bits, std::ptr::addr_of_mut!(len)) };
     if ptr.is_null() {
-        b"\0".as_ptr().cast()
+        c"".as_ptr()
     } else {
         ptr.cast()
     }

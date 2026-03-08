@@ -94,12 +94,11 @@ pub unsafe extern "C" fn PyModule_Create2(
         return ptr::null_mut();
     }
     let name = if unsafe { (*def).m_name.is_null() } {
-        b"<unnamed>\0".as_ptr().cast()
+        c"<unnamed>".as_ptr()
     } else {
         unsafe { (*def).m_name }
     };
-    let module = unsafe { PyModule_New(name) };
     // Register methods from m_methods.
     // TODO: iterate PyMethodDef array and add each method to the module dict.
-    module
+    unsafe { PyModule_New(name) }
 }

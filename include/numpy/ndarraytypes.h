@@ -79,6 +79,10 @@ typedef struct {
 } _molt_npy_clongdouble_value;
 #endif
 
+typedef _molt_npy_cfloat_value npy_cfloat;
+typedef _molt_npy_cdouble_value npy_cdouble;
+typedef _molt_npy_clongdouble_value npy_clongdouble;
+
 #ifndef NPY_INT64_FMT
 #define NPY_INT64_FMT PRId64
 #endif
@@ -91,11 +95,47 @@ typedef struct {
 #define NPY_MIN_INT64 (-NPY_MAX_INT64 - 1LL)
 #define NPY_MAX_UINT64 18446744073709551615ULL
 
+#ifndef NPY_PRIORITY
+#define NPY_PRIORITY 0.0
+#endif
+
+#ifndef NPY_SCALAR_PRIORITY
+#define NPY_SCALAR_PRIORITY -1000000.0
+#endif
+
+#ifndef NPY_SUBTYPE_PRIORITY
+#define NPY_SUBTYPE_PRIORITY 1.0
+#endif
+
 #ifndef NPY_DATETIME_FMT
 #define NPY_DATETIME_FMT NPY_INT64_FMT
 #endif
 
+#ifndef NPY_INFINITY
+#define NPY_INFINITY ((npy_double)HUGE_VAL)
+#endif
+
+#ifndef NPY_INTP_FMT
+#if defined(_WIN64)
+#define NPY_INTP_FMT "lld"
+#elif INTPTR_MAX == LONG_MAX
+#define NPY_INTP_FMT "ld"
+#elif INTPTR_MAX == INT_MAX
+#define NPY_INTP_FMT "d"
+#else
+#define NPY_INTP_FMT "lld"
+#endif
+#endif
+
 #define NPY_DATETIME_NAT NPY_MIN_INT64
+
+#ifndef NPY_GCC_OPT_3
+#if defined(__GNUC__) && !defined(__clang__)
+#define NPY_GCC_OPT_3 __attribute__((optimize("O3")))
+#else
+#define NPY_GCC_OPT_3
+#endif
+#endif
 
 #define _MOLT_NUMPY_OBJECT_HEAD PyObject *ob_base
 #define NPY_MAXDIMS 64
@@ -180,6 +220,37 @@ enum NPY_TYPECHAR {
 #define NPY_UINT64 NPY_ULONGLONG
 #endif
 
+#ifndef NPY_INT8
+#define NPY_INT8 NPY_BYTE
+#endif
+#ifndef NPY_UINT8
+#define NPY_UINT8 NPY_UBYTE
+#endif
+#ifndef NPY_INT16
+#define NPY_INT16 NPY_SHORT
+#endif
+#ifndef NPY_UINT16
+#define NPY_UINT16 NPY_USHORT
+#endif
+#ifndef NPY_INT32
+#define NPY_INT32 NPY_INT
+#endif
+#ifndef NPY_UINT32
+#define NPY_UINT32 NPY_UINT
+#endif
+#ifndef NPY_FLOAT32
+#define NPY_FLOAT32 NPY_FLOAT
+#endif
+#ifndef NPY_FLOAT64
+#define NPY_FLOAT64 NPY_DOUBLE
+#endif
+#ifndef NPY_COMPLEX64
+#define NPY_COMPLEX64 NPY_CFLOAT
+#endif
+#ifndef NPY_COMPLEX128
+#define NPY_COMPLEX128 NPY_CDOUBLE
+#endif
+
 #ifndef NPY_SAME_VALUE_CASTING_FLAG
 #define NPY_SAME_VALUE_CASTING_FLAG 64
 #endif
@@ -212,6 +283,14 @@ typedef enum {
 #define NPY_NATIVE '='
 #define NPY_SWAP 's'
 #define NPY_IGNORE '|'
+
+#ifndef NPY_CPU_LITTLE
+enum {
+    NPY_CPU_UNKNOWN_ENDIAN = -1,
+    NPY_CPU_LITTLE = 0,
+    NPY_CPU_BIG = 1,
+};
+#endif
 
 #if NPY_BYTE_ORDER == NPY_BIG_ENDIAN
 #define NPY_NATBYTE NPY_BIG
@@ -264,6 +343,7 @@ typedef enum {
 #define NPY_NSCALARKINDS (NPY_OBJECT_SCALAR + 1)
 
 typedef enum {
+    NPY_FR_ERROR = -1,
     NPY_FR_Y = 0,
     NPY_FR_M = 1,
     NPY_FR_W = 2,
@@ -279,6 +359,10 @@ typedef enum {
     NPY_FR_as = 13,
     NPY_FR_GENERIC = 14
 } NPY_DATETIMEUNIT;
+
+#ifndef NPY_DATETIME_MAX_ISO8601_STRLEN
+#define NPY_DATETIME_MAX_ISO8601_STRLEN (21 + 3 * 5 + 1 + 3 * 6 + 6 + 1)
+#endif
 
 #define NPY_DATETIME_NUMUNITS (NPY_FR_GENERIC + 1)
 
@@ -355,6 +439,7 @@ typedef struct PyArrayObject_fields {
     PyArray_Descr *descr;
     int flags;
     PyObject *weakreflist;
+    void *_buffer_info;
     void *mem_handler;
 } PyArrayObject_fields;
 
@@ -448,6 +533,9 @@ typedef struct PyArray_ArrFuncs {
     PyArray_ArgFunc *argmin;
 } PyArray_ArrFuncs;
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
+typedef struct PyArrayFlagsObject PyArrayFlagsObject;
+#else
 typedef struct PyArrayFlagsObject {
     _MOLT_NUMPY_OBJECT_HEAD;
     PyArrayObject *array;
@@ -457,6 +545,7 @@ typedef struct PyArrayArrayConverterObject {
     _MOLT_NUMPY_OBJECT_HEAD;
     PyObject *object;
 } PyArrayArrayConverterObject;
+#endif
 
 typedef char *(*npy_iter_get_dataptr_t)(PyArrayIterObject *iter, const npy_intp *);
 
@@ -507,14 +596,129 @@ typedef PyArrayIterObject PyArrayIterObject_tag;
 
 typedef struct PyArrayMultiIterObject {
     _MOLT_NUMPY_OBJECT_HEAD;
-    PyArrayObject **iters;
     int numiter;
+    npy_intp size;
+    npy_intp index;
+    int nd;
+    npy_intp dimensions[NPY_MAXDIMS_LEGACY_ITERS];
+    PyArrayIterObject *iters[64];
 } PyArrayMultiIterObject;
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
+#else
 typedef struct PyArrayMapIterObject {
     _MOLT_NUMPY_OBJECT_HEAD;
     int _molt_reserved;
 } PyArrayMapIterObject;
+#endif
+
+typedef struct NpyIter_InternalOnly NpyIter;
+typedef int (NpyIter_IterNextFunc)(NpyIter *iter);
+typedef void (NpyIter_GetMultiIndexFunc)(NpyIter *iter, npy_intp *outcoords);
+
+#ifndef NPY_ITER_C_INDEX
+#define NPY_ITER_C_INDEX 0x00000001
+#define NPY_ITER_F_INDEX 0x00000002
+#define NPY_ITER_MULTI_INDEX 0x00000004
+#define NPY_ITER_EXTERNAL_LOOP 0x00000008
+#define NPY_ITER_COMMON_DTYPE 0x00000010
+#define NPY_ITER_REFS_OK 0x00000020
+#define NPY_ITER_ZEROSIZE_OK 0x00000040
+#define NPY_ITER_REDUCE_OK 0x00000080
+#define NPY_ITER_RANGED 0x00000100
+#define NPY_ITER_BUFFERED 0x00000200
+#define NPY_ITER_GROWINNER 0x00000400
+#define NPY_ITER_DELAY_BUFALLOC 0x00000800
+#define NPY_ITER_DONT_NEGATE_STRIDES 0x00001000
+#define NPY_ITER_COPY_IF_OVERLAP 0x00002000
+#define NPY_ITER_READWRITE 0x00010000
+#define NPY_ITER_READONLY 0x00020000
+#define NPY_ITER_WRITEONLY 0x00040000
+#define NPY_ITER_NBO 0x00080000
+#define NPY_ITER_ALIGNED 0x00100000
+#define NPY_ITER_CONTIG 0x00200000
+#define NPY_ITER_COPY 0x00400000
+#define NPY_ITER_UPDATEIFCOPY 0x00800000
+#define NPY_ITER_ALLOCATE 0x01000000
+#define NPY_ITER_NO_SUBTYPE 0x02000000
+#define NPY_ITER_VIRTUAL 0x04000000
+#define NPY_ITER_NO_BROADCAST 0x08000000
+#define NPY_ITER_WRITEMASKED 0x10000000
+#define NPY_ITER_ARRAYMASK 0x20000000
+#define NPY_ITER_OVERLAP_ASSUME_ELEMENTWISE 0x40000000
+#define NPY_ITER_GLOBAL_FLAGS 0x0000ffff
+#define NPY_ITER_PER_OP_FLAGS 0xffff0000
+#endif
+
+#ifndef _PyAIT
+#define _PyAIT(it) ((PyArrayIterObject *)(it))
+#endif
+#ifndef PyArray_ITER_RESET
+#define PyArray_ITER_RESET(it)                                                      \
+    do {                                                                            \
+        _PyAIT(it)->index = 0;                                                      \
+        _PyAIT(it)->dataptr = (_PyAIT(it)->ao != NULL)                              \
+                                  ? ((PyArrayObject_fields *)_PyAIT(it)->ao)->data  \
+                                  : NULL;                                            \
+        memset(_PyAIT(it)->coordinates, 0,                                          \
+               (size_t)(_PyAIT(it)->nd_m1 + 1) * sizeof(npy_intp));                \
+    } while (0)
+#endif
+#ifndef PyArray_ITER_NEXT
+#define PyArray_ITER_NEXT(it)                                                     \
+    do {                                                                          \
+        _PyAIT(it)->index++;                                                      \
+        if (_PyAIT(it)->contiguous && _PyAIT(it)->ao != NULL) {                  \
+            _PyAIT(it)->dataptr += ((PyArrayObject_fields *)_PyAIT(it)->ao)->descr->elsize; \
+        }                                                                         \
+    } while (0)
+#endif
+#ifndef PyArray_ITER_GOTO1D
+#define PyArray_ITER_GOTO1D(it, ind)                                              \
+    do {                                                                          \
+        _PyAIT(it)->index = (ind);                                                \
+    } while (0)
+#endif
+#ifndef PyArray_ITER_GOTO
+#define PyArray_ITER_GOTO(it, destination)                                        \
+    do {                                                                          \
+        (void)(destination);                                                      \
+        _PyAIT(it)->index = 0;                                                    \
+    } while (0)
+#endif
+#ifndef PyArray_ITER_DATA
+#define PyArray_ITER_DATA(it) ((void *)(_PyAIT(it)->dataptr))
+#endif
+
+#ifndef _PyMIT
+#define _PyMIT(m) ((PyArrayMultiIterObject *)(m))
+#endif
+#ifndef PyArray_MultiIter_RESET
+#define PyArray_MultiIter_RESET(multi)                                            \
+    do {                                                                          \
+        int __npy_mi;                                                             \
+        _PyMIT(multi)->index = 0;                                                 \
+        for (__npy_mi = 0; __npy_mi < _PyMIT(multi)->numiter; __npy_mi++) {      \
+            PyArray_ITER_RESET(_PyMIT(multi)->iters[__npy_mi]);                   \
+        }                                                                         \
+    } while (0)
+#endif
+#ifndef PyArray_MultiIter_NEXT
+#define PyArray_MultiIter_NEXT(multi)                                             \
+    do {                                                                          \
+        int __npy_mi;                                                             \
+        _PyMIT(multi)->index++;                                                   \
+        for (__npy_mi = 0; __npy_mi < _PyMIT(multi)->numiter; __npy_mi++) {      \
+            PyArray_ITER_NEXT(_PyMIT(multi)->iters[__npy_mi]);                    \
+        }                                                                         \
+    } while (0)
+#endif
+#ifndef PyArray_MultiIter_DATA
+#define PyArray_MultiIter_DATA(multi, i) ((void *)(_PyMIT(multi)->iters[i]->dataptr))
+#endif
+#ifndef PyArray_MultiIter_NOTDONE
+#define PyArray_MultiIter_NOTDONE(multi) (_PyMIT(multi)->index < _PyMIT(multi)->size)
+#endif
 
 #if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
 typedef struct PyArray_DTypeMeta {
@@ -800,6 +1004,7 @@ typedef int (PyArray_ArgPartitionFunc)(
     void *
 );
 typedef int (PyArray_FinalizeFunc)();
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 typedef int (PyArray_GetDTypeCopySwapFn)();
 typedef int (PyArray_GetStridedCopySwapFn)();
 typedef int (PyArray_GetStridedCopySwapPairFn)();
@@ -813,6 +1018,7 @@ typedef int (PyArray_TransferStridedToNDim)();
 typedef int (PyArray_AssignReduceIdentityFunc)();
 typedef int (PyArray_ArgSortImpl)();
 typedef int (PyArray_SortImpl)();
+#endif
 
 typedef struct {
     _MOLT_NUMPY_OBJECT_HEAD;
@@ -909,6 +1115,7 @@ typedef enum {
 #define NPY_ARRAY_FARRAY_RO (NPY_ARRAY_F_CONTIGUOUS | NPY_ARRAY_ALIGNED)
 #define NPY_ARRAY_DEFAULT NPY_ARRAY_CARRAY
 #define NPY_ARRAY_UPDATE_ALL (NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_F_CONTIGUOUS | NPY_ARRAY_ALIGNED)
+#define NPY_ARR_HAS_DESCR 0x0800
 
 #define NPY_ITEM_REFCOUNT 0x01
 #define NPY_ITEM_HASOBJECT 0x01
@@ -989,11 +1196,24 @@ extern PyArray_DTypeMeta PyArrayDescr_TypeFull;
 #define PyArrayMethod_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #endif
 #define PyGenericArrType_Type (*_molt_numpy_builtin_type_borrowed("object"))
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
+extern PyTypeObject PyArrayArrayConverter_Type;
+extern PyTypeObject PyArrayFlags_Type;
+#else
 #define PyArrayArrayConverter_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #define PyArrayFlags_Type (*_molt_numpy_builtin_type_borrowed("object"))
+#endif
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
+extern PyTypeObject PyArrayFunctionDispatcher_Type;
+#else
 #define PyArrayFunctionDispatcher_Type (*_molt_numpy_builtin_type_borrowed("object"))
+#endif
 #define PyArrayIter_Type (*_molt_numpy_builtin_type_borrowed("object"))
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
+extern PyTypeObject PyArrayMapIter_Type;
+#else
 #define PyArrayMapIter_Type (*_molt_numpy_builtin_type_borrowed("object"))
+#endif
 #define PyArrayMultiIter_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #define PyArrayNeighborhoodIter_Type (*_molt_numpy_builtin_type_borrowed("object"))
 #define PyFortran_Type (*_molt_numpy_builtin_type_borrowed("object"))
@@ -1079,8 +1299,27 @@ extern PyArray_DTypeMeta PyArrayDescr_TypeFull;
 #define PyArray_FloatAbstractDType PyArray_PyFloatDType
 #endif
 
+#ifndef NPY_ALLOW_THREADS
+#define NPY_ALLOW_THREADS 1
+#endif
+
 #ifndef NPY_BEGIN_THREADS_DEF
-#define NPY_BEGIN_THREADS_DEF
+#define NPY_BEGIN_THREADS_DEF PyThreadState *_save = NULL;
+#if NPY_ALLOW_THREADS
+#define NPY_BEGIN_THREADS do { _save = PyEval_SaveThread(); } while (0)
+#define NPY_END_THREADS do { if (_save) { PyEval_RestoreThread(_save); _save = NULL; } } while (0)
+#define NPY_BEGIN_THREADS_DESCR(dtype) do { (void)(dtype); _save = PyEval_SaveThread(); } while (0)
+#define NPY_END_THREADS_DESCR(dtype) do { (void)(dtype); if (_save) { PyEval_RestoreThread(_save); _save = NULL; } } while (0)
+#define NPY_BEGIN_THREADS_THRESHOLDED(loop_size)                                  \
+    do {                                                                          \
+        if ((loop_size) > 500) {                                                  \
+            _save = PyEval_SaveThread();                                          \
+        }                                                                         \
+    } while (0)
+#define NPY_ALLOW_C_API_DEF PyGILState_STATE __save__;
+#define NPY_ALLOW_C_API do { __save__ = PyGILState_Ensure(); } while (0)
+#define NPY_DISABLE_C_API do { PyGILState_Release(__save__); } while (0)
+#else
 #define NPY_BEGIN_THREADS do { } while (0)
 #define NPY_END_THREADS do { } while (0)
 #define NPY_BEGIN_THREADS_DESCR(dtype) do { (void)(dtype); } while (0)
@@ -1089,6 +1328,7 @@ extern PyArray_DTypeMeta PyArrayDescr_TypeFull;
 #define NPY_ALLOW_C_API_DEF
 #define NPY_ALLOW_C_API do { } while (0)
 #define NPY_DISABLE_C_API do { } while (0)
+#endif
 #endif
 
 static PyDataMem_Handler PyDataMem_DefaultHandler = {

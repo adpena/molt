@@ -9256,14 +9256,15 @@ pub unsafe extern "C" fn molt_socket_sendmsg_afalg(
         let msg_data: Vec<u8> = if msg_obj.is_none() {
             Vec::new()
         } else {
-            let Some(msg_ptr) = msg_obj.as_ptr() else {
-                Vec::new()
-            };
-            let type_id = unsafe { object_type_id(msg_ptr) };
-            if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
-                let len = unsafe { bytes_len(msg_ptr) };
-                let data = unsafe { bytes_data(msg_ptr) };
-                unsafe { std::slice::from_raw_parts(data, len).to_vec() }
+            if let Some(msg_ptr) = msg_obj.as_ptr() {
+                let type_id = unsafe { object_type_id(msg_ptr) };
+                if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
+                    let len = unsafe { bytes_len(msg_ptr) };
+                    let data = unsafe { bytes_data(msg_ptr) };
+                    unsafe { std::slice::from_raw_parts(data, len).to_vec() }
+                } else {
+                    Vec::new()
+                }
             } else {
                 Vec::new()
             }
@@ -9280,18 +9281,21 @@ pub unsafe extern "C" fn molt_socket_sendmsg_afalg(
         let iv_data: Option<Vec<u8>> = if iv_obj.is_none() {
             None
         } else {
-            let Some(iv_ptr) = iv_obj.as_ptr() else { None };
-            let type_id = unsafe { object_type_id(iv_ptr) };
-            if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
-                let len = unsafe { bytes_len(iv_ptr) };
-                let data = unsafe { bytes_data(iv_ptr) };
-                let raw = unsafe { std::slice::from_raw_parts(data, len) };
-                // AF_ALG IV header: 4 bytes length prefix + iv data
-                let mut iv_buf = Vec::with_capacity(4 + raw.len());
-                iv_buf.extend_from_slice(&(raw.len() as u32).to_ne_bytes());
-                iv_buf.extend_from_slice(raw);
-                ancdata_size += unsafe { libc::CMSG_SPACE(iv_buf.len() as u32) } as usize;
-                Some(iv_buf)
+            if let Some(iv_ptr) = iv_obj.as_ptr() {
+                let type_id = unsafe { object_type_id(iv_ptr) };
+                if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
+                    let len = unsafe { bytes_len(iv_ptr) };
+                    let data = unsafe { bytes_data(iv_ptr) };
+                    let raw = unsafe { std::slice::from_raw_parts(data, len) };
+                    // AF_ALG IV header: 4 bytes length prefix + iv data
+                    let mut iv_buf = Vec::with_capacity(4 + raw.len());
+                    iv_buf.extend_from_slice(&(raw.len() as u32).to_ne_bytes());
+                    iv_buf.extend_from_slice(raw);
+                    ancdata_size += unsafe { libc::CMSG_SPACE(iv_buf.len() as u32) } as usize;
+                    Some(iv_buf)
+                } else {
+                    None
+                }
             } else {
                 None
             }

@@ -173,20 +173,38 @@ static inline npy_intp _molt_pyarray_size(const PyArrayObject *array_obj) {
 #define PyArray_FROM_O(obj) ((PyArrayObject *)(obj))
 #define PyArray_FROMANY(obj, type, min_depth, max_depth, flags) \
     PyArray_FromAny((obj), PyArray_DescrFromType((type)), (min_depth), (max_depth), (flags), NULL)
+#define PyArray_FROM_OT(obj, type) \
+    PyArray_FromAny((obj), PyArray_DescrFromType((type)), 0, 0, 0, NULL)
+#define PyArray_FROM_OTF(obj, type, flags)                                        \
+    PyArray_FromAny((obj), PyArray_DescrFromType((type)), 0, 0,                   \
+                    (((flags) & NPY_ARRAY_ENSURECOPY)                              \
+                         ? ((flags) | NPY_ARRAY_DEFAULT)                           \
+                         : (flags)),                                               \
+                    NULL)
 #define PyArray_ContiguousFromAny(obj, type, min_depth, max_depth) \
     PyArray_FromAny((obj), PyArray_DescrFromType((type)), (min_depth), (max_depth), NPY_ARRAY_DEFAULT, NULL)
 #define PyArray_ContiguousFromObject(obj, type, min_depth, max_depth) \
     PyArray_ContiguousFromAny((obj), (type), (min_depth), (max_depth))
 #define PyArray_Copy(obj) PyArray_NewCopy((PyArrayObject *)(obj), NPY_CORDER)
 #define PyArray_Zeros(...) _molt_numpy_unavailable_obj("PyArray_Zeros")
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
+#ifndef PyArray_MultiIter_DATA
 #define PyArray_MultiIter_DATA(iter, i) ((void)(iter), (void)(i), (char *)NULL)
+#endif
+#ifndef PyArray_MultiIter_NEXT
 #define PyArray_MultiIter_NEXT(iter) ((void)(iter))
+#endif
+#ifndef PyArray_ITER_NEXT
 #define PyArray_ITER_NEXT(iter) ((void)(iter))
+#endif
+#endif
 #define PyArray_FILLWBYTE(obj, val) memset(PyArray_DATA(obj), (val), (size_t)PyArray_NBYTES(obj))
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 #define PyArray_INCREF(obj) Py_INCREF((PyObject *)(obj))
 #define PyArray_XDECREF(obj) Py_XDECREF((PyObject *)(obj))
 #define PyArray_Item_INCREF(obj, ...) Py_INCREF((PyObject *)(obj))
 #define PyArray_Item_XDECREF(obj, ...) Py_XDECREF((PyObject *)(obj))
+#endif
 
 #define PyArray_IsScalar(obj, cls) PyObject_TypeCheck((obj), &Py##cls##ArrType_Type)
 #define PyArray_IsPythonNumber(obj) \
@@ -316,7 +334,11 @@ static inline PyArray_Descr *PyArray_DescrFromObject(PyObject *obj, PyArray_Desc
     return PyArray_DescrFromScalar(obj);
 }
 
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
+NPY_NO_EXPORT npy_intp PyArray_PyIntAsIntp(PyObject *obj);
+#else
 static inline npy_intp PyArray_PyIntAsIntp(PyObject *obj);
+#endif
 static inline PyObject *PyArray_EnsureAnyArray(PyObject *obj);
 
 #if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
@@ -822,6 +844,36 @@ static inline npy_intp _molt_PyArray_Size(PyObject *obj) {
 #define PyArray_Size(obj) _molt_PyArray_Size((PyObject *)(obj))
 
 #if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
+NPY_NO_EXPORT PyArrayObject **PyArray_ConvertToCommonType(PyObject *op, int *retn);
+NPY_NO_EXPORT PyObject *PyArray_MultiIterFromObjects(PyObject **mps, int n, int nadd, ...);
+#else
+static inline PyArrayObject **PyArray_ConvertToCommonType(PyObject *op, int *retn) {
+    (void)op;
+    if (retn != NULL) {
+        *retn = 0;
+    }
+    PyErr_SetString(PyExc_RuntimeError, "PyArray_ConvertToCommonType is not available");
+    return NULL;
+}
+
+static inline PyObject *PyArray_MultiIterFromObjects(PyObject **mps, int n, int nadd, ...) {
+    (void)mps;
+    (void)n;
+    (void)nadd;
+    PyErr_SetString(PyExc_RuntimeError, "PyArray_MultiIterFromObjects is not available");
+    return NULL;
+}
+#endif
+
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
+NPY_NO_EXPORT int PyArray_GetEndianness(void);
+#else
+static inline int PyArray_GetEndianness(void) {
+    return NPY_BYTE_ORDER == NPY_BIG_ENDIAN ? NPY_CPU_BIG : NPY_CPU_LITTLE;
+}
+#endif
+
+#if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
 NPY_NO_EXPORT npy_intp PyArray_PyIntAsIntp(PyObject *obj);
 #else
 static inline npy_intp PyArray_PyIntAsIntp(PyObject *obj) {
@@ -837,9 +889,11 @@ static inline int PyArray_PyIntAsInt(PyObject *obj) {
 }
 #endif
 
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 static inline PyObject *PyArray_PythonPyIntFromInt(int value) {
     return PyLong_FromLong((long)value);
 }
+#endif
 
 #if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 static inline PyObject *PyArray_PyIntFromIntp(npy_intp value) {
@@ -1166,11 +1220,12 @@ static inline int PyArray_CanCastSafely(int from_type, int to_type) {
     return 0;
 }
 
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 static inline int PyArray_AssignArray(
     PyArrayObject *dst,
     PyArrayObject *src,
-    PyObject *wheremask,
-    int casting
+    PyArrayObject *wheremask,
+    NPY_CASTING casting
 ) {
     (void)dst;
     (void)src;
@@ -1178,6 +1233,7 @@ static inline int PyArray_AssignArray(
     (void)casting;
     return _molt_numpy_unavailable_i32("PyArray_AssignArray");
 }
+#endif
 
 static inline npy_bool PyArray_CanCastTypeTo(
     PyArray_Descr *from_descr,
@@ -1508,6 +1564,7 @@ static inline int PyArray_SETITEM(PyArrayObject *array_obj, char *item_ptr, PyOb
 }
 #endif
 
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 static inline int PyArray_GetDTypeTransferFunction(
     int aligned,
     npy_intp src_stride,
@@ -1530,6 +1587,7 @@ static inline int PyArray_GetDTypeTransferFunction(
     (void)out_needs_api;
     return _molt_numpy_unavailable_i32("PyArray_GetDTypeTransferFunction");
 }
+#endif
 
 #if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
 NPY_NO_EXPORT npy_intp PyArray_SafeCast(
@@ -1677,25 +1735,31 @@ static inline int PyArray_GetClearFunction(PyArray_Descr *descr, ...) {
 }
 #endif
 
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 static inline int PyArray_GetMaskedDTypeTransferFunction(int aligned, ...) {
     (void)aligned;
     return _molt_numpy_unavailable_i32("PyArray_GetMaskedDTypeTransferFunction");
 }
+#endif
 
 static inline PyObject *PyArray_IterAllButAxis(PyObject *obj, int *axis) {
     (void)axis;
     return PyArray_EnsureArray(obj);
 }
 
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 static inline int PyArray_PrepareOneRawArrayIter(int ndim, ...) {
     (void)ndim;
     return _molt_numpy_unavailable_i32("PyArray_PrepareOneRawArrayIter");
 }
+#endif
 
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 static inline PyObject *PyArray_Resize_int(PyArrayObject *array_obj, ...) {
     (void)array_obj;
     return _molt_numpy_unavailable_obj("PyArray_Resize_int");
 }
+#endif
 
 static inline PyObject *PyArray_NewLikeArray(
     PyArrayObject *prototype,
@@ -1901,10 +1965,12 @@ static inline PyObject *PyArray_CheckFromAny_int(
         op, in_descr, min_depth, max_depth, requirements, context);
 }
 
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 static inline int PyArray_ClearArray(PyArrayObject *arr) {
     (void)arr;
     return _molt_numpy_unavailable_i32("PyArray_ClearArray");
 }
+#endif
 
 #if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
 NPY_NO_EXPORT int PyArray_ConvertMultiAxis(
@@ -1979,6 +2045,7 @@ static inline PyObject *PyArray_Scalar(
 }
 #endif
 
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 static inline int PyArray_ClearBuffer(
     PyArray_Descr *descr,
     void *data,
@@ -1994,6 +2061,7 @@ static inline int PyArray_ClearBuffer(
     }
     return 0;
 }
+#endif
 
 #if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 static inline int PyArray_AddCastingImplementation_FromSpec(
@@ -2145,6 +2213,7 @@ static inline int PyArray_AssignRawScalar(
     return _molt_numpy_unavailable_i32("PyArray_AssignRawScalar");
 }
 
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 static inline PyArrayMethod_StridedLoop *PyArray_GetStridedCopyFn(
     int aligned,
     npy_intp src_stride,
@@ -2157,7 +2226,9 @@ static inline PyArrayMethod_StridedLoop *PyArray_GetStridedCopyFn(
     (void)itemsize;
     return (PyArrayMethod_StridedLoop *)_molt_numpy_unavailable_obj("PyArray_GetStridedCopyFn");
 }
+#endif
 
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 static inline int PyArray_CastRawArrays(
     npy_intp count,
     char *src,
@@ -2178,7 +2249,9 @@ static inline int PyArray_CastRawArrays(
     (void)move_references;
     return _molt_numpy_unavailable_i32("PyArray_CastRawArrays");
 }
+#endif
 
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 static inline int PyArray_PrepareTwoRawArrayIter(
     int ndim,
     npy_intp const *shape,
@@ -2207,7 +2280,9 @@ static inline int PyArray_PrepareTwoRawArrayIter(
     (void)out_stridesB;
     return _molt_numpy_unavailable_i32("PyArray_PrepareTwoRawArrayIter");
 }
+#endif
 
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 static inline int PyArray_LookupSpecial(
     PyObject *obj,
     PyObject *name_unicode,
@@ -2223,6 +2298,7 @@ static inline int PyArray_LookupSpecial_OnInstance(
 ) {
     return PyObject_GetOptionalAttr(obj, name_unicode, res);
 }
+#endif
 
 #ifdef __cplusplus
 }
