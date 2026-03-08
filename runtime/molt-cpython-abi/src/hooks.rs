@@ -146,7 +146,7 @@ unsafe extern "C" fn stub_str_data(_bits: u64, out_len: *mut usize) -> *const u8
             *out_len = 0;
         }
     }
-    b"\0".as_ptr()
+    c"".as_ptr().cast()
 }
 unsafe extern "C" fn stub_bytes_data(_bits: u64, out_len: *mut usize) -> *const u8 {
     if !out_len.is_null() {

@@ -86,6 +86,7 @@ Canonical storage layout:
 - `tools/symphony_dlq.py`: inspect and replay recursive-loop dead-letter items
 - `tools/symphony_taste_memory.py`: inspect and distill recursive learning memory
 - `tools/symphony_tool_promotion.py`: distill recurring successful actions into explicit tool-promotion candidates
+- `tools/symphony_windows_admin.py`: BAT00 Windows control plane (`doctor`, `repair`, `start`, `stop`, `status`, `telemetry`, `set-concurrency`)
 
 ## Quick start
 
@@ -107,6 +108,28 @@ source ops/linear/runtime/symphony.env
 set +a
 PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_run.py WORKFLOW.md --port 8089
 ```
+
+Windows BAT00 one-step setup + operations:
+
+```powershell
+python tools/symphony_windows_admin.py doctor
+python tools/symphony_windows_admin.py repair --project-slug "<linear-project-slug>"
+python tools/symphony_windows_admin.py start --port 8089
+python tools/symphony_windows_admin.py status --port 8089
+python tools/symphony_windows_admin.py telemetry --port 8089
+python tools/symphony_windows_admin.py set-concurrency 12 --port 8089
+python tools/symphony_windows_admin.py stop
+```
+
+Fleet MCP now exposes BAT00 Symphony operations for any connected machine:
+
+- `molt_symphony_bat00_doctor`
+- `molt_symphony_bat00_repair`
+- `molt_symphony_bat00_start`
+- `molt_symphony_bat00_stop`
+- `molt_symphony_bat00_status`
+- `molt_symphony_bat00_telemetry`
+- `molt_symphony_bat00_set_concurrency`
 
 Bootstrap output now includes `formal_toolchain` with direct/fallback probes for
 Node + Quint + Lake so you can confirm formal tooling health before long runs.

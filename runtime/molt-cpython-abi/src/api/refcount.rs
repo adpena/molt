@@ -18,7 +18,6 @@ use std::ptr;
 /// # Safety
 /// `op` must be a non-null bridge-managed PyObject.
 #[unsafe(no_mangle)]
-#[inline(always)]
 pub unsafe extern "C" fn Py_INCREF(op: *mut PyObject) {
     if op.is_null() {
         return;
@@ -56,7 +55,6 @@ pub unsafe extern "C" fn Py_DECREF(op: *mut PyObject) {
 
 /// `Py_INCREF` that accepts null (null is silently ignored).
 #[unsafe(no_mangle)]
-#[inline(always)]
 pub unsafe extern "C" fn Py_XINCREF(op: *mut PyObject) {
     if !op.is_null() {
         unsafe { Py_INCREF(op) };

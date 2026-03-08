@@ -135,7 +135,7 @@ pub unsafe extern "C" fn PyDict_Check(op: *mut PyObject) -> c_int {
         return 0;
     }
     let ob_type = unsafe { (*op).ob_type };
-    (std::ptr::eq(ob_type, unsafe { &raw const crate::abi_types::PyDict_Type })) as c_int
+    (std::ptr::eq(ob_type, &raw const crate::abi_types::PyDict_Type)) as c_int
 }
 
 #[unsafe(no_mangle)]
