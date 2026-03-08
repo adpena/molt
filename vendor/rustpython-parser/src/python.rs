@@ -5706,12 +5706,12 @@ mod __parse__Top {
         }).collect()
     }
     pub(crate) struct __StateMachine<>
-    where 
+    where
     {
         __phantom: core::marker::PhantomData<()>,
     }
     impl<> __state_machine::ParserDefinition for __StateMachine<>
-    where 
+    where
     {
         type Location = TextSize;
         type Error = LexicalError;

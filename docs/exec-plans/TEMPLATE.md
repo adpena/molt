@@ -50,4 +50,3 @@ Describe the capability gap, why it matters, and expected impact.
 - Final status:
 - Evidence artifact paths:
 - Follow-up TODOs:
-

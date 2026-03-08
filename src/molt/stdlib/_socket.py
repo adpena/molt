@@ -70,6 +70,7 @@ CAPI = _PyCapsuleStub()
 # CPython `_socket` exports a large set of integer constants. Keep this shim
 # thin by mirroring whatever the intrinsic-backed `socket` module exposes.
 import sys as _sys
+
 _mod_dict = getattr(_sys.modules.get(__name__), "__dict__", None) or globals()
 del _sys
 
@@ -165,6 +166,7 @@ for _name, _fn in _CALLABLES.items():
 
 
 import sys as _all_sys
+
 _all_mod_dict = _all_sys.modules[__name__].__dict__
 __all__ = sorted(
     name

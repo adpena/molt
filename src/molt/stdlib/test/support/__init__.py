@@ -69,6 +69,7 @@ def _install_external_support(module: ModuleType, support_init: Path) -> None:
     external_dir = str(support_init.parent)
     local_dir = str(_THIS_DIR)
     import sys as _ts_sys
+
     _ts_mod_dict = getattr(_ts_sys.modules.get(__name__), "__dict__", None) or globals()
     _ts_mod_dict["__path__"] = [external_dir, local_dir]
 
@@ -107,7 +108,10 @@ if not _LOADED_EXTERNAL:
     from . import _fallback_support as _fallback
 
     import sys as _tsf_sys
-    _tsf_mod_dict = getattr(_tsf_sys.modules.get(__name__), "__dict__", None) or globals()
+
+    _tsf_mod_dict = (
+        getattr(_tsf_sys.modules.get(__name__), "__dict__", None) or globals()
+    )
     _tsf_mod_dict["__path__"] = [str(_THIS_DIR)]
     _fallback_all = getattr(_fallback, "__all__", [])
     for _name in _fallback_all:
@@ -117,6 +121,7 @@ if not _LOADED_EXTERNAL:
 
 def __dir__() -> list[str]:
     import sys as _tsd_sys
+
     _tsd_dict = getattr(_tsd_sys.modules.get(__name__), "__dict__", None) or globals()
     all_names = _tsd_dict.get("__all__")
     if isinstance(all_names, list):

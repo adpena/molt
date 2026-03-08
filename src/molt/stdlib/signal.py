@@ -283,7 +283,10 @@ def sigwait(sigset: Iterable[int]) -> int:
 # Namespace cleanup — remove names that are not part of CPython's signal API.
 # ---------------------------------------------------------------------------
 import sys as _sig_cleanup_sys
-_sig_cleanup_dict = getattr(_sig_cleanup_sys.modules.get(__name__), "__dict__", None) or globals()
+
+_sig_cleanup_dict = (
+    getattr(_sig_cleanup_sys.modules.get(__name__), "__dict__", None) or globals()
+)
 for _name in ("Iterable",):
     _sig_cleanup_dict.pop(_name, None)
 del _sig_cleanup_sys, _sig_cleanup_dict

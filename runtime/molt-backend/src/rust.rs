@@ -26,6 +26,10 @@ pub struct RustBackend {
     /// When true, emit `use molt_rs::*;` instead of the inline MoltValue prelude.
     /// The caller is responsible for adding `molt-rs` to `Cargo.toml`.
     use_crate: bool,
+    /// Tracks phi var → (frame_var, slot_var) from store_index ops inside loops.
+    /// Used to emit a writeback when loop_index_next updates the phi var,
+    /// so the locals frame stays coherent after the loop exits.
+    phi_to_frame: HashMap<String, (String, String)>,
 }
 
 impl RustBackend {
@@ -35,6 +39,7 @@ impl RustBackend {
             indent: 0,
             hoisted_vars: HashSet::new(),
             use_crate: false,
+            phi_to_frame: HashMap::new(),
         }
     }
 
@@ -281,7 +286,7 @@ impl RustBackend {
         }
 
         // range
-        if used("molt_range(") {
+        if used("molt_range(") || used("molt_builtin_func(") {
             self.output.push_str(concat!(
                 "fn molt_range(start: i64, stop: i64, step: i64) -> MoltValue {\n",
                 "    let mut result = Vec::new();\n",
@@ -404,11 +409,24 @@ impl RustBackend {
             ));
         }
 
-        // Comparison helpers — produce MoltValue::Bool
-        if used("molt_cmp(") || used("molt_eq(") || used("molt_ne(")
-            || used("molt_lt(") || used("molt_le(")
-            || used("molt_gt(") || used("molt_ge(")
-        {
+        // Comparison helpers — produce MoltValue::Bool.
+        // Some collection helpers depend on `molt_eq`/`molt_numeric_cmp` even when
+        // user IR never emits direct comparison ops, so include those dependencies.
+        let needs_compare_helpers = used("molt_cmp(")
+            || used("molt_eq(")
+            || used("molt_ne(")
+            || used("molt_lt(")
+            || used("molt_le(")
+            || used("molt_gt(")
+            || used("molt_ge(")
+            || used("molt_get_item(")
+            || used("molt_set_item(")
+            || used("molt_get_attr(")
+            || used("molt_in(")
+            || used("molt_sorted(")
+            || used("molt_min(")
+            || used("molt_max(");
+        if needs_compare_helpers {
             self.output.push_str(concat!(
                 "fn molt_numeric_cmp(a: &MoltValue, b: &MoltValue) -> std::cmp::Ordering {\n",
                 "    match (a, b) {\n",
@@ -513,7 +531,7 @@ impl RustBackend {
         }
 
         // Higher-order helpers
-        if used("molt_enumerate(") {
+        if used("molt_enumerate(") || used("molt_builtin_func(") {
             self.output.push_str(concat!(
                 "fn molt_enumerate(t: &MoltValue, start: i64) -> MoltValue {\n",
                 "    if let MoltValue::List(v) = t {\n",
@@ -525,7 +543,7 @@ impl RustBackend {
                 "}\n\n",
             ));
         }
-        if used("molt_zip(") {
+        if used("molt_zip(") || used("molt_builtin_func(") {
             self.output.push_str(concat!(
                 "fn molt_zip(a: &MoltValue, b: &MoltValue) -> MoltValue {\n",
                 "    match (a, b) {\n",
@@ -615,7 +633,7 @@ impl RustBackend {
         }
 
         // iter helper for for_iter ops
-        if used("molt_iter_list(") {
+        if used("molt_iter_list(") || used("molt_iter(") || used("molt_iter_next(") {
             self.output.push_str(concat!(
                 "fn molt_iter_list(x: &MoltValue) -> Vec<MoltValue> {\n",
                 "    match x {\n",
@@ -624,6 +642,35 @@ impl RustBackend {
                 "        MoltValue::Str(s) => s.chars().map(|c| MoltValue::Str(c.to_string())).collect(),\n",
                 "        _ => vec![],\n",
                 "    }\n",
+                "}\n\n",
+            ));
+        }
+        if used("molt_iter(") {
+            self.output.push_str(concat!(
+                "fn molt_iter(x: &MoltValue) -> MoltValue {\n",
+                "    let items = molt_iter_list(x);\n",
+                "    MoltValue::List(vec![MoltValue::Int(0), MoltValue::List(items)])\n",
+                "}\n\n",
+            ));
+        }
+        if used("molt_iter_next(") {
+            self.output.push_str(concat!(
+                "fn molt_iter_next(iter: &mut MoltValue) -> MoltValue {\n",
+                "    if let MoltValue::List(state) = iter {\n",
+                "        if state.len() >= 2 {\n",
+                "            let idx = molt_int(&state[0]);\n",
+                "            if let MoltValue::List(items) = &state[1] {\n",
+                "                let done = idx < 0 || (idx as usize) >= items.len();\n",
+                "                if done {\n",
+                "                    return MoltValue::List(vec![MoltValue::None, MoltValue::Bool(true)]);\n",
+                "                }\n",
+                "                let value = items[idx as usize].clone();\n",
+                "                state[0] = MoltValue::Int(idx + 1);\n",
+                "                return MoltValue::List(vec![value, MoltValue::Bool(false)]);\n",
+                "            }\n",
+                "        }\n",
+                "    }\n",
+                "    MoltValue::List(vec![MoltValue::None, MoltValue::Bool(true)])\n",
                 "}\n\n",
             ));
         }
@@ -693,6 +740,136 @@ impl RustBackend {
                 "}\n\n",
             ));
         }
+        if used("molt_builtin_func(") {
+            self.output.push_str(concat!(
+                "fn molt_builtin_positional(args: &[MoltValue]) -> Vec<MoltValue> {\n",
+                "    if let Some(MoltValue::List(v)) = args.first() {\n",
+                "        let rest_is_none = args.get(1..).is_some_and(|rest| rest.iter().all(|x| matches!(x, MoltValue::None)));\n",
+                "        if args.len() == 1 || rest_is_none {\n",
+                "            return v.clone();\n",
+                "        }\n",
+                "    }\n",
+                "    args.to_vec()\n",
+                "}\n\n",
+                "fn molt_builtin_func(name: &str) -> MoltValue {\n",
+                "    let canonical = match name {\n",
+                "        \"int\" => \"molt_int_builtin\",\n",
+                "        \"float\" => \"molt_float_builtin\",\n",
+                "        \"bool\" => \"molt_bool_builtin\",\n",
+                "        \"str\" => \"molt_str_builtin\",\n",
+                "        \"len\" => \"molt_len_builtin\",\n",
+                "        \"min\" => \"molt_min_builtin\",\n",
+                "        \"max\" => \"molt_max_builtin\",\n",
+                "        \"sum\" => \"molt_sum_builtin\",\n",
+                "        \"enumerate\" => \"molt_enumerate_builtin\",\n",
+                "        \"zip\" => \"molt_zip_builtin\",\n",
+                "        \"range\" => \"molt_range_builtin\",\n",
+                "        other => other,\n",
+                "    };\n",
+                "    match canonical {\n",
+                "        \"molt_function_set_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
+                "            molt_builtin_positional(&args).into_iter().next().unwrap_or(MoltValue::None)\n",
+                "        })),\n",
+                "        \"molt_int_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
+                "            let pos = molt_builtin_positional(&args);\n",
+                "            MoltValue::Int(pos.first().map_or(0, molt_int))\n",
+                "        })),\n",
+                "        \"molt_float_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
+                "            let pos = molt_builtin_positional(&args);\n",
+                "            MoltValue::Float(pos.first().map_or(0.0, molt_float))\n",
+                "        })),\n",
+                "        \"molt_bool_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
+                "            let pos = molt_builtin_positional(&args);\n",
+                "            MoltValue::Bool(pos.first().is_some_and(molt_bool))\n",
+                "        })),\n",
+                "        \"molt_str_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
+                "            let pos = molt_builtin_positional(&args);\n",
+                "            MoltValue::Str(pos.first().map_or_else(String::new, molt_str))\n",
+                "        })),\n",
+                "        \"molt_len_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
+                "            let pos = molt_builtin_positional(&args);\n",
+                "            if let Some(v) = pos.first() {\n",
+                "                match v {\n",
+                "                    MoltValue::Str(s) => MoltValue::Int(s.chars().count() as i64),\n",
+                "                    MoltValue::List(items) => MoltValue::Int(items.len() as i64),\n",
+                "                    MoltValue::Dict(items) => MoltValue::Int(items.len() as i64),\n",
+                "                    _ => MoltValue::Int(0),\n",
+                "                }\n",
+                "            } else {\n",
+                "                MoltValue::Int(0)\n",
+                "            }\n",
+                "        })),\n",
+                "        \"molt_min_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
+                "            let mut pos = molt_builtin_positional(&args);\n",
+                "            if pos.len() == 1 { if let MoltValue::List(items) = &pos[0] { pos = items.clone(); } }\n",
+                "            if pos.is_empty() {\n",
+                "                return MoltValue::None;\n",
+                "            }\n",
+                "            let mut best = pos[0].clone();\n",
+                "            for value in pos.into_iter().skip(1) {\n",
+                "                if molt_int(&value) < molt_int(&best) {\n",
+                "                    best = value;\n",
+                "                }\n",
+                "            }\n",
+                "            best\n",
+                "        })),\n",
+                "        \"molt_max_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
+                "            let mut pos = molt_builtin_positional(&args);\n",
+                "            if pos.len() == 1 { if let MoltValue::List(items) = &pos[0] { pos = items.clone(); } }\n",
+                "            if pos.is_empty() {\n",
+                "                return MoltValue::None;\n",
+                "            }\n",
+                "            let mut best = pos[0].clone();\n",
+                "            for value in pos.into_iter().skip(1) {\n",
+                "                if molt_int(&value) > molt_int(&best) {\n",
+                "                    best = value;\n",
+                "                }\n",
+                "            }\n",
+                "            best\n",
+                "        })),\n",
+                "        \"molt_sum_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
+                "            let pos = molt_builtin_positional(&args);\n",
+                "            let mut acc = if pos.len() > 1 { pos[1].clone() } else { MoltValue::Int(0) };\n",
+                "            if let Some(MoltValue::List(items)) = pos.first() {\n",
+                "                for value in items {\n",
+                "                    let next = molt_int(&acc).wrapping_add(molt_int(value));\n",
+                "                    acc = MoltValue::Int(next);\n",
+                "                }\n",
+                "            }\n",
+                "            acc\n",
+                "        })),\n",
+                "        \"molt_enumerate_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
+                "            let pos = molt_builtin_positional(&args);\n",
+                "            if let Some(iterable) = pos.first() {\n",
+                "                let start = pos.get(1).map_or(0, molt_int);\n",
+                "                molt_enumerate(iterable, start)\n",
+                "            } else {\n",
+                "                MoltValue::List(vec![])\n",
+                "            }\n",
+                "        })),\n",
+                "        \"molt_zip_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
+                "            let pos = molt_builtin_positional(&args);\n",
+                "            if pos.len() >= 2 {\n",
+                "                molt_zip(&pos[0], &pos[1])\n",
+                "            } else {\n",
+                "                MoltValue::List(vec![])\n",
+                "            }\n",
+                "        })),\n",
+                "        \"molt_range_builtin\" => MoltValue::Func(Arc::new(|args: Vec<MoltValue>| {\n",
+                "            let pos = molt_builtin_positional(&args);\n",
+                "            let (start, stop, step) = match pos.len() {\n",
+                "                0 => (0, 0, 1),\n",
+                "                1 => (0, molt_int(&pos[0]), 1),\n",
+                "                2 => (molt_int(&pos[0]), molt_int(&pos[1]), 1),\n",
+                "                _ => (molt_int(&pos[0]), molt_int(&pos[1]), molt_int(&pos[2])),\n",
+                "            };\n",
+                "            molt_range(start, stop, step)\n",
+                "        })),\n",
+                "        _ => MoltValue::None,\n",
+                "    }\n",
+                "}\n\n",
+            ));
+        }
 
         // Math module shim
         if used("molt_math_") {
@@ -756,6 +933,7 @@ impl RustBackend {
 
         // Phi hoisting — same algorithm as Luau backend
         self.hoisted_vars.clear();
+        self.phi_to_frame.clear();
         let phi_assignments = collect_phi_assignments(&ops, &mut self.hoisted_vars);
         let (phi_inject_before_else, phi_inject_before_end_if) =
             build_phi_injection_maps(&ops, &phi_assignments);
@@ -795,6 +973,16 @@ impl RustBackend {
         let func_body_start = self.output.len();
 
         // Emit ops
+        // Track the most recent store result for use by `jump`.
+        // The `jump N` IR op is a forward goto used for early function returns:
+        //   store result → var/frame[slot]; jump N; ... ; label N: load var/frame[slot]; ret
+        // We emit `return <stored_expr>;` at the jump site so the early return value is
+        // correctly returned to the caller.
+        //
+        // Two patterns (tree_shake_luau decides which):
+        //   - store_local(var, val): after optimization, `var` holds the return value
+        //   - store_index(frame, slot, val): unoptimized, must molt_get_item to recover
+        let mut last_jump_return: Option<String> = None; // the Rust expr to return at `jump`
         let mut i = 0;
         while i < ops.len() {
             if let Some(injects) = phi_inject_before_else.get(&i) {
@@ -806,6 +994,45 @@ impl RustBackend {
                 for (var, val) in injects {
                     self.emit_line(&format!("{var} = {val}.clone();"));
                 }
+            }
+
+            // Track last store for jump early-return inference.
+            match ops[i].kind.as_str() {
+                "store_local" | "store" | "store_init" => {
+                    // store_local(var, val) → var holds the return value directly
+                    if let Some(ref v) = ops[i].var {
+                        last_jump_return = Some(format!("{}.clone()", rust_ident(v)));
+                    }
+                }
+                "store_index" | "set_item" | "store_subscript" => {
+                    // store_index(frame, slot, val) → need molt_get_item to recover
+                    if let Some(args) = ops[i].args.as_deref() {
+                        if args.len() >= 2 {
+                            let frame = rust_ident(&args[0]);
+                            let slot = rust_ident(&args[1]);
+                            last_jump_return = Some(format!("molt_get_item(&{frame}, &{slot})"));
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            // Intercept `jump N`: emit early return via last stored value.
+            // This covers: store → jump → (skipped code) → label → load → ret
+            if ops[i].kind == "jump" {
+                if let Some(ref expr) = last_jump_return.clone() {
+                    self.emit_line(&format!("return {expr};"));
+                } else {
+                    self.emit_line("return MoltValue::None; /* jump: no prior store */");
+                }
+                i += 1;
+                continue;
+            }
+
+            // `label N` is the jump target — it's a no-op in structured Rust code.
+            if ops[i].kind == "label" {
+                i += 1;
+                continue;
             }
 
             if ops[i].kind == "loop_start"
@@ -877,6 +1104,7 @@ impl RustBackend {
         }
 
         self.hoisted_vars.clear();
+        self.phi_to_frame.clear();
     }
 
     // ── Op emission ───────────────────────────────────────────────────────────
@@ -982,7 +1210,7 @@ impl RustBackend {
             }
 
             // ── Arithmetic ─────────────────────────────────────────────────────
-            "add" => {
+            "add" | "inplace_add" | "binop_add" => {
                 let o = out();
                 let (a, b) = args2(op);
                 // Fast int path
@@ -996,7 +1224,7 @@ impl RustBackend {
                         &self.hoisted_vars.clone()));
                 }
             }
-            "sub" => {
+            "sub" | "inplace_sub" | "binop_sub" => {
                 let o = out(); let (a, b) = args2(op);
                 if op.fast_int == Some(true) {
                     self.emit_line(&declare(&o,
@@ -1006,7 +1234,7 @@ impl RustBackend {
                     self.emit_line(&declare(&o, &format!("molt_sub({a}.clone(), {b}.clone())"), &self.hoisted_vars.clone()));
                 }
             }
-            "mul" => {
+            "mul" | "inplace_mul" | "binop_mul" => {
                 let o = out(); let (a, b) = args2(op);
                 if op.fast_int == Some(true) {
                     self.emit_line(&declare(&o,
@@ -1020,11 +1248,11 @@ impl RustBackend {
                 let o = out(); let (a, b) = args2(op);
                 self.emit_line(&declare(&o, &format!("molt_div({a}.clone(), {b}.clone())"), &self.hoisted_vars.clone()));
             }
-            "floor_div" | "binop_floor_div" => {
+            "floor_div" | "floordiv" | "binop_floor_div" => {
                 let o = out(); let (a, b) = args2(op);
                 self.emit_line(&declare(&o, &format!("molt_floor_div({a}.clone(), {b}.clone())"), &self.hoisted_vars.clone()));
             }
-            "mod" | "binop_mod" => {
+            "mod" | "modulo" | "binop_mod" => {
                 let o = out(); let (a, b) = args2(op);
                 self.emit_line(&declare(&o, &format!("molt_mod({a}.clone(), {b}.clone())"), &self.hoisted_vars.clone()));
             }
@@ -1146,20 +1374,58 @@ impl RustBackend {
                 self.indent -= 1;
                 self.emit_line("}");
             }
+            "loop_break_if_false" => {
+                let cond = arg0(op);
+                self.emit_line(&format!("if !molt_bool(&{cond}) {{ break; }}"));
+            }
+            "loop_break_if_true" => {
+                let cond = arg0(op);
+                self.emit_line(&format!("if molt_bool(&{cond}) {{ break; }}"));
+            }
+            "loop_break" => {
+                self.emit_line("break;");
+            }
+            "loop_continue" | "loop_carry_update" | "loop_carry_init" => {
+                self.emit_line("continue;");
+            }
             "loop_index_next" => {
-                // Increment loop index
+                // Update loop index — 1-arg: assign; 2-arg: add-step.
+                // After updating the phi var, also write back to the locals frame slot
+                // (if any) so that post-loop index reads see the correct value.
                 if let Some(ref out_name) = op.out {
                     let o = rust_ident(out_name);
                     let args = op.args.as_deref().unwrap_or(&[]);
-                    if args.len() >= 2 {
+                    let new_val_expr = if args.len() >= 2 {
                         let current = rust_ident(&args[0]);
                         let step = rust_ident(&args[1]);
-                        self.emit_line(&format!("{o} = molt_add({current}.clone(), {step}.clone());"));
+                        format!("molt_add({current}.clone(), {step}.clone())")
+                    } else if let Some(new_val) = args.first() {
+                        format!("{}.clone()", rust_ident(new_val))
+                    } else {
+                        String::new()
+                    };
+                    if !new_val_expr.is_empty() {
+                        self.emit_line(&format!("{o} = {new_val_expr};"));
+                        // Write the updated phi value back to the locals frame so
+                        // post-loop `index` ops read the final (not stale) value.
+                        if let Some((frame, slot)) = self.phi_to_frame.get(&o).cloned() {
+                            self.emit_line(&format!("molt_set_item(&mut {frame}, {slot}.clone(), {o}.clone());"));
+                        }
                     }
                 }
             }
             "loop_index_start" => {
                 // Initialization is handled in the loop preamble above; skip here.
+            }
+            "iter" => {
+                let o = out();
+                let src = arg0(op);
+                self.emit_line(&declare(&o, &format!("molt_iter(&{src})"), &self.hoisted_vars.clone()));
+            }
+            "iter_next" => {
+                let o = out();
+                let iter_var = arg0(op);
+                self.emit_line(&declare(&o, &format!("molt_iter_next(&mut {iter_var})"), &self.hoisted_vars.clone()));
             }
             "for_range" => {
                 // for_range: args = [out_var, start, stop, step]
@@ -1183,16 +1449,17 @@ impl RustBackend {
                 self.indent += 1;
             }
             "end_for" => {
+                // Range loops open an extra block + while; make sure the index
+                // advances before closing the while body.
+                let closes_range = op.args.as_ref().is_some_and(|args| !args.is_empty());
+                if closes_range {
+                    self.emit_line("__range_i += __range_step;");
+                }
                 if self.indent > 0 { self.indent -= 1; }
                 self.emit_line("}");
-                // Close the range block if needed
-                if let Some(ref args) = op.args {
-                    if !args.is_empty() {
-                        // for_range closing: step increment + range block close
-                        self.emit_line("__range_i += __range_step;");
-                        if self.indent > 0 { self.indent -= 1; }
-                        self.emit_line("} }");
-                    }
+                if closes_range {
+                    if self.indent > 0 { self.indent -= 1; }
+                    self.emit_line("}");
                 }
             }
             "break" => { self.emit_line("break;"); }
@@ -1266,9 +1533,96 @@ impl RustBackend {
                     self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
                 }
             }
-            "callargs_new" | "callargs_push_pos" | "callargs_push_kw"
-            | "callargs_expand_star" | "callargs_expand_kwstar" => {
-                // Skip — callargs build is handled inline in call_func
+            "call_bind" | "call_indirect" => {
+                let o = out();
+                let args = op.args.as_deref().unwrap_or(&[]);
+                let rhs = if args.len() >= 2 {
+                    let func = rust_ident(&args[0]);
+                    let builder = rust_ident(&args[1]);
+                    let extra_args = args[2..]
+                        .iter()
+                        .map(|a| format!("{}.clone()", rust_ident(a)))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let extra_stmt = if extra_args.is_empty() {
+                        String::new()
+                    } else {
+                        format!("__call_args.extend(vec![{extra_args}]);")
+                    };
+                    format!(
+                        "{{ let mut __call_args = Vec::new(); \
+                           if let MoltValue::List(__pos) = &{builder} {{ \
+                               __call_args.extend(__pos.iter().cloned()); \
+                           }} else if !matches!({builder}, MoltValue::None) {{ \
+                               __call_args.push({builder}.clone()); \
+                           }} \
+                           {extra_stmt} \
+                           molt_call(&{func}, __call_args) }}"
+                    )
+                } else if let Some(func) = args.first() {
+                    format!("molt_call(&{}, vec![])", rust_ident(func))
+                } else {
+                    "MoltValue::None".to_string()
+                };
+                if o == "_" || o == "none" {
+                    self.emit_line(&format!("{rhs};"));
+                } else {
+                    self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
+                }
+            }
+            "callargs_new" => {
+                let o = out();
+                let args = op.args.as_deref().unwrap_or(&[]);
+                let items = args
+                    .iter()
+                    .map(|a| format!("{}.clone()", rust_ident(a)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.emit_line(&declare(
+                    &o,
+                    &format!("MoltValue::List(vec![{items}])"),
+                    &self.hoisted_vars.clone(),
+                ));
+            }
+            "callargs_push_pos" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let list = rust_ident(&args[0]);
+                    let val = rust_ident(&args[1]);
+                    self.emit_line(&format!("molt_list_append(&mut {list}, {val}.clone());"));
+                }
+            }
+            "callargs_expand_star" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let list = rust_ident(&args[0]);
+                    let other = rust_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "for __item in molt_iter_list(&{other}) {{ molt_list_append(&mut {list}, __item); }}"
+                    ));
+                }
+            }
+            "callargs_push_kw" | "callargs_expand_kwstar" => {
+                // Keyword arguments are currently ignored in the Rust subset.
+            }
+            "func_new" | "func_new_closure" => {
+                let o = out();
+                let rhs = if let Some(ref fn_name) = op.s_value {
+                    let fn_ident = rust_ident(fn_name);
+                    format!("MoltValue::Func(Arc::new(move |args: Vec<MoltValue>| {fn_ident}(args)))")
+                } else {
+                    "MoltValue::None".to_string()
+                };
+                self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
+            }
+            "builtin_func" => {
+                let o = out();
+                let builtin = op.s_value.as_deref().unwrap_or("");
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_builtin_func({})", rust_string_literal(builtin)),
+                    &self.hoisted_vars.clone(),
+                ));
             }
 
             // ── Builtins ───────────────────────────────────────────────────────
@@ -1286,7 +1640,15 @@ impl RustBackend {
                 let o = out(); let a = arg0(op);
                 self.emit_line(&declare(&o, &format!("MoltValue::Int(molt_int(&{a}))"), &self.hoisted_vars.clone()));
             }
+            "int_from_obj" => {
+                let o = out(); let a = arg0(op);
+                self.emit_line(&declare(&o, &format!("MoltValue::Int(molt_int(&{a}))"), &self.hoisted_vars.clone()));
+            }
             "float" | "cast_float" | "builtin_float" => {
+                let o = out(); let a = arg0(op);
+                self.emit_line(&declare(&o, &format!("MoltValue::Float(molt_float(&{a}))"), &self.hoisted_vars.clone()));
+            }
+            "float_from_obj" => {
                 let o = out(); let a = arg0(op);
                 self.emit_line(&declare(&o, &format!("MoltValue::Float(molt_float(&{a}))"), &self.hoisted_vars.clone()));
             }
@@ -1318,7 +1680,7 @@ impl RustBackend {
                 let items = args.iter().map(|a| format!("{}.clone()", rust_ident(a))).collect::<Vec<_>>().join(", ");
                 self.emit_line(&declare(&o, &format!("MoltValue::List(vec![{items}])"), &self.hoisted_vars.clone()));
             }
-            "build_dict" => {
+            "build_dict" | "dict_new" => {
                 let o = out();
                 let args = op.args.as_deref().unwrap_or(&[]);
                 // args: [k0, v0, k1, v1, ...]
@@ -1341,11 +1703,40 @@ impl RustBackend {
                     self.emit_line(&format!("molt_list_append(&mut {list}, {val}.clone());"));
                 }
             }
-            "get_item" | "subscript" => {
+            "get_item" | "subscript" | "index" => {
                 let o = out(); let (obj, key) = args2(op);
                 self.emit_line(&declare(&o, &format!("molt_get_item(&{obj}, &{key})"), &self.hoisted_vars.clone()));
             }
-            "set_item" => {
+            "dict_get" => {
+                let o = out();
+                let args = op.args.as_deref().unwrap_or(&[]);
+                let obj = args.first().map(|s| rust_ident(s)).unwrap_or_else(|| "MoltValue::None".to_string());
+                let key = args.get(1).map(|s| rust_ident(s)).unwrap_or_else(|| "MoltValue::None".to_string());
+                if let Some(default) = args.get(2) {
+                    let default = rust_ident(default);
+                    self.emit_line(&declare(
+                        &o,
+                        &format!(
+                            "{{ let __v = molt_get_item(&{obj}, &{key}); if matches!(__v, MoltValue::None) {{ {default}.clone() }} else {{ __v }} }}"
+                        ),
+                        &self.hoisted_vars.clone(),
+                    ));
+                } else {
+                    self.emit_line(&declare(&o, &format!("molt_get_item(&{obj}, &{key})"), &self.hoisted_vars.clone()));
+                }
+            }
+            "set_item" | "store_subscript" | "store_index" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 3 {
+                    let obj = rust_ident(&args[0]);
+                    let key = rust_ident(&args[1]);
+                    let val = rust_ident(&args[2]);
+                    // Record phi→frame mapping so loop_index_next can write back.
+                    self.phi_to_frame.insert(val.clone(), (obj.clone(), key.clone()));
+                    self.emit_line(&format!("molt_set_item(&mut {obj}, {key}.clone(), {val}.clone());"));
+                }
+            }
+            "dict_set" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 3 {
                     let obj = rust_ident(&args[0]);
@@ -1434,7 +1825,7 @@ impl RustBackend {
             | "class_apply_set_name" | "class_layout_version"
             | "class_new" | "class_set_base" | "class_set_layout_version"
             | "class_layout_field_count" | "class_layout_slot_count"
-            | "bound_method_new" | "builtin_func" | "builtin_type"
+            | "bound_method_new" | "builtin_type"
             | "box_from_raw_int" | "ascii_from_obj"
             | "bridge_unavailable" => {
                 // Stub: these ops may produce an output variable in the IR.

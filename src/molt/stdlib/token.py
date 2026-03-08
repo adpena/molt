@@ -121,6 +121,7 @@ _PAYLOAD = _load_payload()
 _CONSTANTS, _CONSTANT_ORDER = _load_constants(_PAYLOAD)
 
 import sys as _sys
+
 _mod_dict = getattr(_sys.modules.get(__name__), "__dict__", None) or globals()
 del _sys
 

@@ -20,7 +20,10 @@ def _extend_cpython_test_path() -> None:
         return
     test_path = str(test_root.resolve())
     import sys as _test_sys
-    _test_mod_dict = getattr(_test_sys.modules.get(__name__), "__dict__", None) or globals()
+
+    _test_mod_dict = (
+        getattr(_test_sys.modules.get(__name__), "__dict__", None) or globals()
+    )
     path_list = _test_mod_dict.get("__path__")
     if path_list is None:
         path_list = [str(Path(__file__).resolve().parent)]
@@ -57,6 +60,7 @@ def __getattr__(name: str):
         raise AttributeError(name)
     module = _load_test_module(*target)
     import sys as _tga_sys
+
     _tga_dict = getattr(_tga_sys.modules.get(__name__), "__dict__", None) or globals()
     _tga_dict[name] = module
     return module

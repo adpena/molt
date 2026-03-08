@@ -2955,23 +2955,36 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                 // The VALUE is the index op that comes AFTER the break check,
                 // not the first one (which is the exhausted flag).
                 let mut found_break = false;
+                let mut exhausted_flag_var: Option<String> = None;
+                let mut break_cond_var: Option<String> = None;
                 for j in (in_idx + 1)..ops.len().min(in_idx + 30) {
+                    if matches!(ops[j].kind.as_str(), "get_item" | "subscript" | "index") {
+                        let args = ops[j].args.as_deref().unwrap_or(&[]);
+                        if args.len() >= 2 && args[0] == iter_next_out {
+                            let out = ops[j].out.as_deref().unwrap_or("").to_string();
+                            if !found_break {
+                                if exhausted_flag_var.is_none() {
+                                    exhausted_flag_var = Some(out);
+                                }
+                            } else if value_var.is_empty() {
+                                value_var = out;
+                                break;
+                            }
+                        }
+                        continue;
+                    }
                     if matches!(ops[j].kind.as_str(), "loop_break_if_true" | "loop_break_if_false") {
+                        if let Some(arg) = ops[j].args.as_deref().and_then(|a| a.first()) {
+                            break_cond_var = Some(arg.clone());
+                        }
                         found_break = true;
                         continue;
                     }
-                    if found_break
-                        && matches!(ops[j].kind.as_str(), "get_item" | "subscript" | "index")
-                    {
-                        let args = ops[j].args.as_deref().unwrap_or(&[]);
-                        if args.len() >= 2 && args[0] == iter_next_out {
-                            value_var = ops[j].out.as_deref().unwrap_or("").to_string();
-                            break;
-                        }
-                    }
-                    // Also handle the older if/break/end_if pattern.
+                    // Legacy if/break/end_if forms are intentionally skipped:
+                    // without a direct loop_break_if_* guard variable we cannot
+                    // prove this is the iterator exhaustion check safely.
                     if !found_break && ops[j].kind == "break" {
-                        found_break = true;
+                        break;
                     }
                 }
 
@@ -2993,7 +3006,12 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                     }
                 }
 
-                if !value_var.is_empty() && loop_end_idx.is_some() {
+                let break_checks_exhaust_flag = matches!(
+                    (&exhausted_flag_var, &break_cond_var),
+                    (Some(flag), Some(cond)) if flag == cond
+                );
+
+                if break_checks_exhaust_flag && !value_var.is_empty() && loop_end_idx.is_some() {
                     found_pattern = true;
                 }
             }
@@ -5136,6 +5154,64 @@ mod tests {
         assert!(output.contains("-- goto label_1"));
         assert!(output.contains("-- ::label_1::"));
         assert!(output.contains("return"));
+    }
+
+    #[test]
+    fn test_lower_iter_to_for_requires_exhaustion_break_condition() {
+        let ops = vec![
+            OpIR {
+                kind: "iter".to_string(),
+                out: Some("v_it".to_string()),
+                args: Some(vec!["v_src".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_start".to_string(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "iter_next".to_string(),
+                out: Some("v_next".to_string()),
+                args: Some(vec!["v_it".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "index".to_string(),
+                out: Some("v_exhausted".to_string()),
+                args: Some(vec!["v_next".to_string(), "v_idx1".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_break_if_true".to_string(),
+                args: Some(vec!["v_other_cond".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "index".to_string(),
+                out: Some("v_value".to_string()),
+                args: Some(vec!["v_next".to_string(), "v_idx0".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_local".to_string(),
+                args: Some(vec!["v_sink".to_string(), "v_value".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_end".to_string(),
+                ..OpIR::default()
+            },
+        ];
+
+        let lowered = lower_iter_to_for(&ops);
+        assert!(
+            lowered.iter().any(|op| op.kind == "iter"),
+            "iter op should be preserved when break guard is unrelated"
+        );
+        assert!(
+            !lowered.iter().any(|op| op.kind == "for_iter"),
+            "unsafe iterator rewrite should not fire"
+        );
     }
 
     #[test]

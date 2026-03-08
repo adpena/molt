@@ -2053,6 +2053,19 @@ static inline PyObject *PyArray_GetCastingImpl(
     return _molt_numpy_unavailable_obj("PyArray_GetCastingImpl");
 }
 
+static inline int PyArray_CheckLegacyResultType(
+    PyObject *obj,
+    PyArray_Descr *dtype,
+    npy_intp ndim,
+    npy_intp *shape
+) {
+    (void)obj;
+    (void)dtype;
+    (void)ndim;
+    (void)shape;
+    return _molt_numpy_unavailable_i32("PyArray_CheckLegacyResultType");
+}
+
 static inline PyArray_Descr *PyArray_CastDescrToDType(
     PyArray_Descr *descr,
     PyArray_DTypeMeta *given_DType

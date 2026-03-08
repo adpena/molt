@@ -80,7 +80,10 @@ class EnumType(type):
         cls._member_map_: dict[str, Any] = {}
         cls._value2member_map_: dict[Any, Any] = {}
         import sys as _enum_sys
-        _enum_mod_dict = getattr(_enum_sys.modules.get(__name__), "__dict__", None) or globals()
+
+        _enum_mod_dict = (
+            getattr(_enum_sys.modules.get(__name__), "__dict__", None) or globals()
+        )
         flag_type = _enum_mod_dict.get("Flag")
         is_flag = False
         if flag_type is not None:
