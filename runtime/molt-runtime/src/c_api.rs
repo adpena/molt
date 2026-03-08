@@ -3409,14 +3409,14 @@ pub extern "C" fn PyMapping_Length(o: u64) -> isize {
 pub extern "C" fn PyMapping_Keys(o: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let view = molt_mapping_keys(o);
-        let list;
+        
         if exception_pending(_py) {
             if !obj_from_bits(view).is_none() {
                 dec_ref_bits(_py, view);
             }
             return 0;
         }
-        list = molt_sequence_to_list(view);
+        let list = molt_sequence_to_list(view);
         dec_ref_bits(_py, view);
         if exception_pending(_py) {
             if !obj_from_bits(list).is_none() {
@@ -3434,15 +3434,15 @@ pub extern "C" fn PyMapping_Values(o: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let method =
             unsafe { molt_object_getattr_bytes(o, b"values".as_ptr(), b"values".len() as u64) };
-        let view;
-        let list;
+        
+        
         if exception_pending(_py) {
             if !obj_from_bits(method).is_none() {
                 dec_ref_bits(_py, method);
             }
             return 0;
         }
-        view = molt_object_call(method, none_bits(), none_bits());
+        let view = molt_object_call(method, none_bits(), none_bits());
         if !obj_from_bits(method).is_none() {
             dec_ref_bits(_py, method);
         }
@@ -3452,7 +3452,7 @@ pub extern "C" fn PyMapping_Values(o: u64) -> u64 {
             }
             return 0;
         }
-        list = molt_sequence_to_list(view);
+        let list = molt_sequence_to_list(view);
         dec_ref_bits(_py, view);
         if exception_pending(_py) {
             if !obj_from_bits(list).is_none() {
@@ -3470,15 +3470,15 @@ pub extern "C" fn PyMapping_Items(o: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let method =
             unsafe { molt_object_getattr_bytes(o, b"items".as_ptr(), b"items".len() as u64) };
-        let view;
-        let list;
+        
+        
         if exception_pending(_py) {
             if !obj_from_bits(method).is_none() {
                 dec_ref_bits(_py, method);
             }
             return 0;
         }
-        view = molt_object_call(method, none_bits(), none_bits());
+        let view = molt_object_call(method, none_bits(), none_bits());
         if !obj_from_bits(method).is_none() {
             dec_ref_bits(_py, method);
         }
@@ -3488,7 +3488,7 @@ pub extern "C" fn PyMapping_Items(o: u64) -> u64 {
             }
             return 0;
         }
-        list = molt_sequence_to_list(view);
+        let list = molt_sequence_to_list(view);
         dec_ref_bits(_py, view);
         if exception_pending(_py) {
             if !obj_from_bits(list).is_none() {
