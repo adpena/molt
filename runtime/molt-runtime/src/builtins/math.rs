@@ -2406,8 +2406,8 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
                     }
                 }
             }
-            for j in i..n {
-                sum_sq += vals[j] * vals[j];
+            for value in vals.iter().take(n).skip(i) {
+                sum_sq += value * value;
             }
             if !sum_sq.is_finite() {
                 // Fallback to iterative hypot for numerical stability

@@ -348,9 +348,7 @@ fn b64_decode(input: &[u8], alphabet: &[u8; 64], validate: bool) -> Result<Vec<u
         if validate {
             return Err("Incorrect padding");
         }
-        for _ in 0..(4 - remainder) {
-            data.push(b'=');
-        }
+        data.extend(std::iter::repeat_n(b'=', 4 - remainder));
     }
 
     let mut out = Vec::with_capacity(data.len() / 4 * 3);
@@ -712,9 +710,7 @@ fn a85_encode(input: &[u8], foldspaces: bool, wrapcol: usize, pad: bool, adobe: 
 
     let padding = (4 - (input.len() % 4)) % 4;
     let mut padded = input.to_vec();
-    for _ in 0..padding {
-        padded.push(0);
-    }
+    padded.extend(std::iter::repeat_n(0, padding));
 
     let mut encoded = Vec::with_capacity(padded.len() * 5 / 4 + 16);
     for chunk in padded.chunks(4) {
@@ -843,9 +839,7 @@ fn a85_decode(input: &[u8], foldspaces: bool, adobe: bool) -> Result<Vec<u8>, St
     // Handle remaining partial group
     if !curr.is_empty() {
         let padding = 5 - curr.len();
-        for _ in 0..padding {
-            curr.push(b'u'); // 117 = max value char
-        }
+        curr.extend(std::iter::repeat_n(b'u', padding)); // 117 = max value char
         let mut acc: u64 = 0;
         for &digit in &curr {
             acc = acc * 85 + (digit as u64 - 33);
@@ -877,9 +871,7 @@ fn b85_encode(input: &[u8], pad: bool) -> Vec<u8> {
 
     let padding = (4 - (input.len() % 4)) % 4;
     let mut padded = input.to_vec();
-    for _ in 0..padding {
-        padded.push(0);
-    }
+    padded.extend(std::iter::repeat_n(0, padding));
 
     let mut out = Vec::with_capacity(padded.len() * 5 / 4 + 1);
     for chunk in padded.chunks(4) {
@@ -906,9 +898,7 @@ fn b85_decode(input: &[u8]) -> Result<Vec<u8>, String> {
     let table = b85_decode_table();
     let padding = (5 - (input.len() % 5)) % 5;
     let mut data = input.to_vec();
-    for _ in 0..padding {
-        data.push(b'~'); // '~' maps to value 84 (max)
-    }
+    data.extend(std::iter::repeat_n(b'~', padding)); // '~' maps to value 84 (max)
 
     let mut out = Vec::with_capacity(data.len() * 4 / 5 + 4);
     for (chunk_idx, chunk) in data.chunks(5).enumerate() {
@@ -957,11 +947,11 @@ pub extern "C" fn molt_base64_b64encode(data_bits: u64, altchars_bits: u64) -> u
                 );
             }
             // Replace + and / with custom chars
-            for i in 0..64 {
-                if alphabet[i] == b'+' {
-                    alphabet[i] = alt[0];
-                } else if alphabet[i] == b'/' {
-                    alphabet[i] = alt[1];
+            for slot in &mut alphabet {
+                if *slot == b'+' {
+                    *slot = alt[0];
+                } else if *slot == b'/' {
+                    *slot = alt[1];
                 }
             }
         }

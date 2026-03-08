@@ -320,7 +320,15 @@ jobs:
             sudo apt-get install -y musl-tools
           fi
           if ! command -v x86_64-linux-musl-g++ >/dev/null 2>&1; then
-            sudo ln -sf "$(command -v x86_64-linux-musl-gcc)" /usr/local/bin/x86_64-linux-musl-g++
+            if command -v zig >/dev/null 2>&1; then
+              cat <<'EOF' | sudo tee /usr/local/bin/x86_64-linux-musl-g++ >/dev/null
+#!/usr/bin/env bash
+exec zig c++ -target x86_64-linux-musl "$@"
+EOF
+              sudo chmod +x /usr/local/bin/x86_64-linux-musl-g++
+            else
+              sudo ln -sf "$(command -v x86_64-linux-musl-gcc)" /usr/local/bin/x86_64-linux-musl-g++
+            fi
           fi
           x86_64-linux-musl-gcc --version
           x86_64-linux-musl-g++ --version
@@ -546,6 +554,8 @@ jobs:
           root = pathlib.Path(os.environ["EXT_PROJECT_DIR"])
           target = os.environ["MOLT_EXT_TARGET"]
           build_json = root / "build.json"
+          build_stdout_log = root / "build.stdout.log"
+          build_stderr_log = root / "build.stderr.log"
 
           cmd = [
               sys.executable,
@@ -563,6 +573,8 @@ jobs:
               cmd.extend(["--target", target])
 
           proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+          build_stdout_log.write_text(proc.stdout, encoding="utf-8")
+          build_stderr_log.write_text(proc.stderr, encoding="utf-8")
           build_json.write_text(proc.stdout, encoding="utf-8")
           if proc.returncode != 0:
               if proc.stdout:
@@ -759,6 +771,8 @@ jobs:
           name: extension-pipeline-${{ matrix.lane.name }}
           path: |
             ${{ env.EXT_PROJECT_DIR }}/build.json
+            ${{ env.EXT_PROJECT_DIR }}/build.stdout.log
+            ${{ env.EXT_PROJECT_DIR }}/build.stderr.log
             ${{ env.EXT_PROJECT_DIR }}/scan.json
             ${{ env.EXT_PROJECT_DIR }}/audit.json
             ${{ env.EXT_PROJECT_DIR }}/verify.json

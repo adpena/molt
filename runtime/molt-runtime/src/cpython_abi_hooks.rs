@@ -33,7 +33,7 @@ unsafe extern "C" fn hook_alloc_str(data: *const u8, len: usize) -> u64 {
     }
     let bytes = unsafe { std::slice::from_raw_parts(data, len) };
     with_gil(|_py| {
-        let ptr = unsafe { alloc_string(&_py, bytes) };
+        let ptr = alloc_string(&_py, bytes);
         if ptr.is_null() { 0 } else { bits_from_ptr(ptr) }
     })
 }
@@ -44,14 +44,14 @@ unsafe extern "C" fn hook_alloc_bytes(data: *const u8, len: usize) -> u64 {
     }
     let bytes = unsafe { std::slice::from_raw_parts(data, len) };
     with_gil(|_py| {
-        let ptr = unsafe { alloc_bytes(&_py, bytes) };
+        let ptr = alloc_bytes(&_py, bytes);
         if ptr.is_null() { 0 } else { bits_from_ptr(ptr) }
     })
 }
 
 unsafe extern "C" fn hook_alloc_list() -> u64 {
     with_gil(|_py| {
-        let ptr = unsafe { alloc_list_with_capacity(&_py, &[], 8) };
+        let ptr = alloc_list_with_capacity(&_py, &[], 8);
         if ptr.is_null() { 0 } else { bits_from_ptr(ptr) }
     })
 }
@@ -88,7 +88,7 @@ unsafe extern "C" fn hook_list_item(bits: u64, i: usize) -> u64 {
 
 unsafe extern "C" fn hook_alloc_tuple(n: usize) -> u64 {
     with_gil(|_py| {
-        let ptr = unsafe { alloc_tuple_with_capacity(&_py, &[], n) };
+        let ptr = alloc_tuple_with_capacity(&_py, &[], n);
         if ptr.is_null() { 0 } else { bits_from_ptr(ptr) }
     })
 }
@@ -131,7 +131,7 @@ unsafe extern "C" fn hook_tuple_item(bits: u64, i: usize) -> u64 {
 
 unsafe extern "C" fn hook_alloc_dict() -> u64 {
     with_gil(|_py| {
-        let ptr = unsafe { alloc_dict_with_pairs(&_py, &[]) };
+        let ptr = alloc_dict_with_pairs(&_py, &[]);
         if ptr.is_null() { 0 } else { bits_from_ptr(ptr) }
     })
 }
@@ -281,7 +281,7 @@ unsafe extern "C" fn hook_inc_ref(bits: u64) {
 }
 
 unsafe extern "C" fn hook_dec_ref(bits: u64) {
-    with_gil(|_py| unsafe { dec_ref_bits(&_py, bits) });
+    with_gil(|_py| dec_ref_bits(&_py, bits));
 }
 
 // ─── Registration ─────────────────────────────────────────────────────────

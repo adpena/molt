@@ -2194,11 +2194,7 @@ pub extern "C" fn molt_json_dumps(
             } else {
                 ", ".to_string()
             },
-            key_separator: if indent_text.is_some() {
-                ": ".to_string()
-            } else {
-                ": ".to_string()
-            },
+            key_separator: ": ".to_string(),
             default_fn: None,
         };
         let mut out = String::with_capacity(128);
