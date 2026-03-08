@@ -137,6 +137,14 @@ typedef _molt_npy_clongdouble_value npy_clongdouble;
 #endif
 #endif
 
+#ifndef NPY_GCC_NONNULL
+#if defined(__GNUC__)
+#define NPY_GCC_NONNULL(...) __attribute__((nonnull(__VA_ARGS__)))
+#else
+#define NPY_GCC_NONNULL(...)
+#endif
+#endif
+
 #define _MOLT_NUMPY_OBJECT_HEAD PyObject *ob_base
 #define NPY_MAXDIMS 64
 #define NPY_MAXDIMS_LEGACY_ITERS 32

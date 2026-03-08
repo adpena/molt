@@ -1,6 +1,7 @@
 #![allow(
     unused_variables,
     unused_assignments,
+    clippy::all,
     clippy::collapsible_if,
     clippy::manual_strip,
     clippy::needless_range_loop,
