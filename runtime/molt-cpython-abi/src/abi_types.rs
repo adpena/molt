@@ -198,20 +198,6 @@ pub static mut Py_False: PyObject = PyObject {
     ob_type: std::ptr::null_mut(),
 };
 
-/// `PyLong_Type`, `PyFloat_Type`, etc. — static type objects.
-/// C extensions check `Py_TYPE(obj) == &PyLong_Type` for type verification.
-macro_rules! static_type {
-    ($name:ident, $tag:literal) => {
-        #[allow(non_upper_case_globals)]
-        pub static mut $name: PyTypeObject = unsafe {
-            let mut t: PyTypeObject = std::mem::zeroed();
-            // tp_name is set at runtime via init_static_types()
-            t.tp_flags = Py_TPFLAGS_READY;
-            t
-        };
-    };
-}
-
 // We can't use the macro with const-init for tp_name (C strings aren't const).
 // Instead the names are patched in `init_static_types()`.
 #[allow(non_upper_case_globals)]
@@ -240,7 +226,6 @@ pub static mut PyModule_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 /// # Safety
 /// Must be called before any C extension is loaded. Single-threaded init only.
 pub unsafe fn init_static_types() {
-    use std::ffi::CStr;
     macro_rules! set_name {
         ($ty:expr, $s:literal) => {
             $ty.tp_name = $s.as_ptr().cast();

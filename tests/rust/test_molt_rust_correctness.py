@@ -25,10 +25,10 @@ def _find_rustc() -> str:
     """Return rustc path, preferring the active toolchain."""
     for candidate in ("rustc", os.path.expanduser("~/.cargo/bin/rustc")):
         try:
-            r = subprocess.run([candidate, "--version"], capture_output=True, text=True, timeout=5)
+            r = subprocess.run([candidate, "--version"], capture_output=True, text=True, timeout=15)
             if r.returncode == 0:
                 return candidate
-        except FileNotFoundError:
+        except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
     pytest.skip("rustc not found — install Rust to run Rust backend tests")
 
@@ -87,22 +87,37 @@ def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> s
             "CARGO_TARGET_DIR": cargo_target,
             "MOLT_USE_SCCACHE": "0",
             "MOLT_BACKEND_DAEMON": "0",
+            "MOLT_DEV_CARGO_PROFILE": os.environ.get("MOLT_DEV_CARGO_PROFILE", "release-fast"),
             "MOLT_BUILD_STATE_DIR": os.environ.get(
                 "MOLT_BUILD_STATE_DIR",
                 os.path.join(ext_root, f"rust-tests-build-state-{os.getpid()}"),
             ),
             "RUSTC_WRAPPER": "",
             "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
+            "UV_LINK_MODE": os.environ.get("UV_LINK_MODE", "copy"),
+            "UV_NO_SYNC": os.environ.get("UV_NO_SYNC", "1"),
         }
+        build_timeout = int(os.environ.get("MOLT_RUST_BUILD_TIMEOUT", "1200"))
+        py_exec = sys.executable or _find_cpython()
 
         # Step 1: molt build --target rust
-        result = subprocess.run(
-            [
-                "uv", "run", "python", "-m", "molt.cli", "build",
-                py_path, "--target", "rust", "--profile", "dev", "--output", rs_path,
-            ],
-            capture_output=True, text=True, timeout=600, env=env, cwd=MOLT_DIR,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    py_exec, "-m", "molt.cli", "build",
+                    py_path, "--target", "rust", "--profile", "dev", "--output", rs_path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=build_timeout,
+                env=env,
+                cwd=MOLT_DIR,
+            )
+        except subprocess.TimeoutExpired as exc:
+            pytest.fail(
+                "molt build --target rust timed out "
+                f"after {build_timeout}s ({exc.cmd})"
+            )
         if result.returncode != 0:
             if expect_fail:
                 return ""

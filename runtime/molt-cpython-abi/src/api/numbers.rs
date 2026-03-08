@@ -1,6 +1,6 @@
 //! Numeric type bridge — PyLong_*, PyFloat_*, PyBool_*.
 
-use crate::abi_types::{Py_False, Py_None, Py_True, PyObject};
+use crate::abi_types::{Py_False, Py_True, PyObject};
 use crate::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
 use std::os::raw::{c_double, c_int, c_long, c_longlong, c_ulong, c_ulonglong};
@@ -9,6 +9,7 @@ use std::os::raw::{c_double, c_int, c_long, c_longlong, c_ulong, c_ulonglong};
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_FromLong(v: c_long) -> *mut PyObject {
+    #[allow(clippy::unnecessary_cast)]
     let bits = MoltObject::from_int(v as i64).bits();
     unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
 }
@@ -20,6 +21,7 @@ pub unsafe extern "C" fn PyLong_FromSsize_t(v: isize) -> *mut PyObject {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_FromLongLong(v: c_longlong) -> *mut PyObject {
+    #[allow(clippy::unnecessary_cast)]
     let bits = MoltObject::from_int(v as i64).bits();
     unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
 }
@@ -103,12 +105,10 @@ pub unsafe extern "C" fn PyFloat_AsDouble(op: *mut PyObject) -> c_double {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyBool_FromLong(v: c_long) -> *mut PyObject {
-    unsafe {
-        if v != 0 {
-            &raw mut Py_True
-        } else {
-            &raw mut Py_False
-        }
+    if v != 0 {
+        &raw mut Py_True
+    } else {
+        &raw mut Py_False
     }
 }
 
