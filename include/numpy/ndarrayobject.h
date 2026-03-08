@@ -133,6 +133,10 @@ NPY_NO_EXPORT PyObject *PyArray_MatrixProduct2(
 #if MOLT_NUMPY_INTERNAL_BUILD
 NPY_NO_EXPORT PyObject *PyArray_IntTupleFromIntp(int length, const npy_intp *values);
 NPY_NO_EXPORT int PyArray_CheckAnyScalarExact(PyObject *obj);
+NPY_NO_EXPORT void PyArray_Item_INCREF(char *data, PyArray_Descr *descr);
+NPY_NO_EXPORT void PyArray_Item_XDECREF(char *data, PyArray_Descr *descr);
+NPY_NO_EXPORT int PyArray_INCREF(PyArrayObject *mp);
+NPY_NO_EXPORT int PyArray_XDECREF(PyArrayObject *mp);
 #endif
 
 #define PyArray_Check(op) PyObject_TypeCheck((PyObject *)(op), &PyArray_Type)
@@ -265,9 +269,9 @@ NPY_NO_EXPORT int PyArray_CheckAnyScalarExact(PyObject *obj);
 #endif
 #endif
 #define PyArray_FILLWBYTE(obj, val) memset(PyArray_DATA(obj), (val), (size_t)PyArray_NBYTES(obj))
+#if !MOLT_NUMPY_INTERNAL_BUILD
 #define PyArray_INCREF(obj) Py_INCREF((PyObject *)(obj))
 #define PyArray_XDECREF(obj) Py_XDECREF((PyObject *)(obj))
-#if !MOLT_NUMPY_INTERNAL_BUILD
 #ifndef PyArray_Item_INCREF
 #define PyArray_Item_INCREF(obj, ...) Py_INCREF((PyObject *)(obj))
 #endif
