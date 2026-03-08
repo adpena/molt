@@ -6,6 +6,7 @@ import queue
 import re
 import select
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -109,15 +110,31 @@ class CodexAppServerClient:
         if self._proc is not None:
             return
         launch_cmd = _resolve_launch_command(self._config.command)
-        self._proc = subprocess.Popen(
-            launch_cmd,
-            cwd=self._workspace_path,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
+        self._emit(
+            "startup_launch",
+            message="launching codex process",
+            command=launch_cmd,
+            cwd=str(self._workspace_path),
         )
+        try:
+            self._proc = subprocess.Popen(
+                launch_cmd,
+                cwd=self._workspace_path,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+        except OSError as exc:
+            message = f"launch_failed:{exc.__class__.__name__}:{exc}"
+            self._emit(
+                "startup_failed",
+                message=message,
+                command=launch_cmd,
+                cwd=str(self._workspace_path),
+            )
+            raise AgentRunnerError(f"startup_failed {message}") from exc
         self._stderr_stop.clear()
         self._stdout_queue = queue.Queue()
         if self._proc.stdout is not None and sys.platform.startswith("win"):
@@ -743,7 +760,35 @@ def _resolve_launch_command(command: str) -> list[str]:
 
     expanded = _CODEX_BIN_DEFAULT_RE.sub(_replace_default, command_text)
     parts = shlex.split(expanded, posix=False)
-    return parts or ["codex", "--yolo", "app-server"]
+    if not parts:
+        parts = ["codex", "--yolo", "app-server"]
+    parts[0] = _resolve_windows_executable(parts[0])
+    return parts
+
+
+def _resolve_windows_executable(executable: str) -> str:
+    candidate = str(executable or "").strip().strip('"')
+    if not candidate:
+        return executable
+
+    resolved = shutil.which(candidate)
+    if resolved:
+        return resolved
+
+    # Windows npm global installs commonly expose .cmd launchers; resolve
+    # explicit command-suffixed variants when bare names do not resolve.
+    lower = candidate.lower()
+    has_known_extension = lower.endswith((".exe", ".cmd", ".bat", ".com"))
+    if has_known_extension:
+        return candidate
+
+    for extension in (".cmd", ".exe", ".bat", ".com"):
+        alt = f"{candidate}{extension}"
+        resolved_alt = shutil.which(alt)
+        if resolved_alt:
+            return resolved_alt
+
+    return candidate
 
 
 def _extract_text_preview(value: Any, depth: int = 0) -> str | None:

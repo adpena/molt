@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from molt.symphony.app_server import _extract_notification_details, _extract_usage
+import sys
+
+from molt.symphony.app_server import (
+    _extract_notification_details,
+    _extract_usage,
+    _resolve_launch_command,
+)
 
 
 def test_extract_usage_from_explicit_payload() -> None:
@@ -141,3 +147,34 @@ def test_extract_notification_details_ignores_uuidish_text() -> None:
         details.get("text_preview")
         == "Implemented parser and tests for throughput bug."
     )
+
+
+def test_resolve_launch_command_windows_prefers_cmd_launcher(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("CODEX_BIN", raising=False)
+
+    def fake_which(name: str) -> str | None:
+        mapping = {
+            "codex": r"C:\Users\adpen\AppData\Roaming\npm\codex.CMD",
+            "codex.cmd": r"C:\Users\adpen\AppData\Roaming\npm\codex.CMD",
+        }
+        return mapping.get(name)
+
+    monkeypatch.setattr("molt.symphony.app_server.shutil.which", fake_which)
+    command = _resolve_launch_command("${CODEX_BIN:-codex} --yolo app-server")
+    assert command == [
+        r"C:\Users\adpen\AppData\Roaming\npm\codex.CMD",
+        "--yolo",
+        "app-server",
+    ]
+
+
+def test_resolve_launch_command_windows_expands_codex_bin_env(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("CODEX_BIN", r"D:\Tools\codex.cmd")
+    monkeypatch.setattr(
+        "molt.symphony.app_server.shutil.which",
+        lambda name: r"D:\Tools\codex.cmd" if name == r"D:\Tools\codex.cmd" else None,
+    )
+    command = _resolve_launch_command("${CODEX_BIN:-codex} --yolo app-server")
+    assert command == [r"D:\Tools\codex.cmd", "--yolo", "app-server"]
