@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import queue
 import re
 import select
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -96,6 +98,8 @@ class CodexAppServerClient:
         self._response_cache: dict[int, dict[str, Any]] = {}
         self._thread_id: str | None = None
         self._stderr_thread: threading.Thread | None = None
+        self._stdout_thread: threading.Thread | None = None
+        self._stdout_queue: queue.Queue[str | None] = queue.Queue()
         self._stderr_stop = Event()
 
     def start(self) -> None:
@@ -111,6 +115,15 @@ class CodexAppServerClient:
             bufsize=1,
         )
         self._stderr_stop.clear()
+        self._stdout_queue = queue.Queue()
+        if self._proc.stdout is not None and sys.platform.startswith("win"):
+            self._stdout_thread = threading.Thread(
+                target=self._pump_stdout,
+                args=(self._proc,),
+                name="symphony-codex-stdout",
+                daemon=True,
+            )
+            self._stdout_thread.start()
         if self._proc.stderr is not None:
             self._stderr_thread = threading.Thread(
                 target=self._pump_stderr,
@@ -163,6 +176,10 @@ class CodexAppServerClient:
         self._stderr_thread = None
         if thread is not None and thread.is_alive():
             thread.join(timeout=0.25)
+        stdout_thread = self._stdout_thread
+        self._stdout_thread = None
+        if stdout_thread is not None and stdout_thread.is_alive():
+            stdout_thread.join(timeout=0.25)
         self._emit("shutdown", message="codex process stopped")
 
     def run_turn(self, issue: Issue, prompt: str) -> SessionInfo:
@@ -325,13 +342,21 @@ class CodexAppServerClient:
         if proc.poll() is not None:
             raise AgentRunnerError("port_exit")
 
-        fd = proc.stdout.fileno()
-        ready, _, _ = select.select([fd], [], [], max(timeout_seconds, 0.0))
-        if not ready:
-            return None
+        if sys.platform.startswith("win"):
+            try:
+                line = self._stdout_queue.get(timeout=max(timeout_seconds, 0.0))
+            except queue.Empty:
+                return None
+        else:
+            fd = proc.stdout.fileno()
+            ready, _, _ = select.select([fd], [], [], max(timeout_seconds, 0.0))
+            if not ready:
+                return None
+            line = proc.stdout.readline()
 
-        line = proc.stdout.readline()
         if line == "":
+            raise AgentRunnerError("port_exit")
+        if line is None:
             raise AgentRunnerError("port_exit")
 
         text = line.rstrip("\n")
@@ -342,6 +367,20 @@ class CodexAppServerClient:
         except json.JSONDecodeError:
             self._emit("malformed", message=text)
             return None
+
+    def _pump_stdout(self, proc: subprocess.Popen[str]) -> None:
+        stdout = proc.stdout
+        if stdout is None:
+            return
+        while not self._stderr_stop.is_set():
+            line = stdout.readline()
+            if line == "":
+                self._stdout_queue.put(None)
+                if proc.poll() is not None:
+                    return
+                time.sleep(0.01)
+                continue
+            self._stdout_queue.put(line)
 
     def _handle_server_request(self, message: dict[str, Any]) -> None:
         request_id = message.get("id")

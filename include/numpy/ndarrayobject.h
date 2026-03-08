@@ -133,6 +133,11 @@ NPY_NO_EXPORT PyObject *PyArray_MatrixProduct2(
 #if MOLT_NUMPY_INTERNAL_BUILD
 NPY_NO_EXPORT PyObject *PyArray_IntTupleFromIntp(int length, const npy_intp *values);
 NPY_NO_EXPORT int PyArray_CheckAnyScalarExact(PyObject *obj);
+NPY_NO_EXPORT PyObject *PyArray_View(
+    PyArrayObject *array_obj,
+    PyArray_Descr *descr,
+    PyTypeObject *subtype
+);
 NPY_NO_EXPORT void PyArray_Item_INCREF(char *data, PyArray_Descr *descr);
 NPY_NO_EXPORT void PyArray_Item_XDECREF(char *data, PyArray_Descr *descr);
 NPY_NO_EXPORT int PyArray_INCREF(PyArrayObject *mp);
