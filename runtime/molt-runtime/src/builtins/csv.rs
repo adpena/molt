@@ -1709,12 +1709,10 @@ pub extern "C" fn molt_csv_has_header(sample_bits: u64) -> u64 {
         let columns = header.len();
         let mut column_types = vec![HeaderColumnType::Unknown; columns];
 
-        let mut checked = 0usize;
-        for row in rows.iter().skip(1) {
+        for (checked, row) in rows.iter().skip(1).enumerate() {
             if checked > 20 {
                 break;
             }
-            checked += 1;
             if row.len() != columns {
                 continue;
             }

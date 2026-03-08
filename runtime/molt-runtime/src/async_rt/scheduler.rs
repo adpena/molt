@@ -2592,6 +2592,7 @@ impl MoltScheduler {
         guard.remove(&PtrSlot(task_ptr));
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn schedule_pending_continuation(
         &self,
         _py: &PyToken<'_>,

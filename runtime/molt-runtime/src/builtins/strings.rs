@@ -1063,8 +1063,8 @@ fn find_next_ascii_whitespace(hay: &[u8], start: usize) -> Option<usize> {
                         // At least one whitespace byte in this chunk — find exact position
                         let mut ws_bytes = [0u8; 16];
                         vst1q_u8(ws_bytes.as_mut_ptr(), is_ws);
-                        for j in 0..16 {
-                            if ws_bytes[j] != 0 {
+                        for (j, &ws) in ws_bytes.iter().enumerate() {
+                            if ws != 0 {
                                 return Some(i + j);
                             }
                         }
@@ -1133,12 +1133,7 @@ fn find_next_ascii_whitespace(hay: &[u8], start: usize) -> Option<usize> {
         }
     }
     // Scalar tail
-    for j in i..hay.len() {
-        if hay[j].is_ascii_whitespace() {
-            return Some(j);
-        }
-    }
-    None
+    (i..hay.len()).find(|&j| hay[j].is_ascii_whitespace())
 }
 
 /// Skip past ASCII whitespace bytes starting from `start`.
@@ -1174,8 +1169,8 @@ fn skip_ascii_whitespace(hay: &[u8], start: usize) -> usize {
                     // Mixed — find first non-whitespace
                     let mut ws_bytes = [0u8; 16];
                     vst1q_u8(ws_bytes.as_mut_ptr(), is_ws);
-                    for j in 0..16 {
-                        if ws_bytes[j] == 0 {
+                    for (j, &ws) in ws_bytes.iter().enumerate() {
+                        if ws == 0 {
                             return i + j;
                         }
                     }

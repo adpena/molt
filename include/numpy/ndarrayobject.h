@@ -87,6 +87,54 @@ static inline npy_intp _molt_pyarray_size(const PyArrayObject *array_obj) {
     return size;
 }
 
+NPY_NO_EXPORT int PyArray_OutputConverter(PyObject *object, PyArrayObject **address);
+NPY_NO_EXPORT npy_bool PyArray_CheckStrides(
+    int elsize,
+    int nd,
+    npy_intp numbytes,
+    npy_intp offset,
+    npy_intp const *dims,
+    npy_intp const *newstrides
+);
+NPY_NO_EXPORT PyObject *PyArray_Reshape(PyArrayObject *self, PyObject *shape);
+NPY_NO_EXPORT PyObject *PyArray_TakeFrom(
+    PyArrayObject *self0,
+    PyObject *indices0,
+    int axis,
+    PyArrayObject *out,
+    NPY_CLIPMODE clipmode
+);
+NPY_NO_EXPORT PyObject *PyArray_PutTo(
+    PyArrayObject *self,
+    PyObject *values0,
+    PyObject *indices0,
+    NPY_CLIPMODE clipmode
+);
+NPY_NO_EXPORT PyObject *PyArray_PutMask(
+    PyArrayObject *self,
+    PyObject *mask0,
+    PyObject *values0
+);
+NPY_NO_EXPORT int PyArray_Sort(PyArrayObject *op, int axis, NPY_SORTKIND kind);
+NPY_NO_EXPORT PyObject *PyArray_Nonzero(PyArrayObject *self);
+NPY_NO_EXPORT PyObject *PyArray_Squeeze(PyArrayObject *self);
+NPY_NO_EXPORT PyObject *PyArray_SwapAxes(PyArrayObject *ap, int a1, int a2);
+NPY_NO_EXPORT PyObject *PyArray_ToList(PyArrayObject *self);
+NPY_NO_EXPORT int PyArray_ToFile(PyArrayObject *self, FILE *fp, char *sep, char *format);
+NPY_NO_EXPORT PyObject *PyArray_ToString(PyArrayObject *self, NPY_ORDER order);
+NPY_NO_EXPORT PyObject *PyArray_MultiIterNew(int n, ...);
+NPY_NO_EXPORT char *PyArray_Zero(PyArrayObject *arr);
+NPY_NO_EXPORT char *PyArray_One(PyArrayObject *arr);
+NPY_NO_EXPORT PyObject *PyArray_MatrixProduct2(
+    PyObject *op1,
+    PyObject *op2,
+    PyArrayObject *out
+);
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT PyObject *PyArray_IntTupleFromIntp(int length, const npy_intp *values);
+NPY_NO_EXPORT int PyArray_CheckAnyScalarExact(PyObject *obj);
+#endif
+
 #define PyArray_Check(op) PyObject_TypeCheck((PyObject *)(op), &PyArray_Type)
 #define PyArray_CheckExact(op) PyObject_TypeCheck((PyObject *)(op), &PyArray_Type)
 #define PyArray_DescrCheck(op) PyObject_TypeCheck((PyObject *)(op), &PyArrayDescr_Type)
@@ -118,9 +166,11 @@ static inline npy_intp _molt_pyarray_size(const PyArrayObject *array_obj) {
 #define PyArray_ISINTEGER(arr) PyTypeNum_ISINTEGER(PyArray_TYPE(arr))
 #define PyArray_ISFLOAT(arr) PyTypeNum_ISFLOAT(PyArray_TYPE(arr))
 #define PyArray_ISCOMPLEX(arr) PyTypeNum_ISCOMPLEX(PyArray_TYPE(arr))
+#define PyArray_ISNUMBER(arr) PyTypeNum_ISNUMBER(PyArray_TYPE(arr))
 #define PyArray_ISSTRING(arr) PyTypeNum_ISSTRING(PyArray_TYPE(arr))
 #define PyArray_ISFLEXIBLE(arr) PyTypeNum_ISFLEXIBLE(PyArray_TYPE(arr))
 #define PyArray_ISOBJECT(arr) PyTypeNum_ISOBJECT(PyArray_TYPE(arr))
+#define PyArray_ISUSERDEF(arr) PyTypeNum_ISUSERDEF(PyArray_TYPE(arr))
 #define PyArray_ISSIGNED(arr) PyTypeNum_ISSIGNED(PyArray_TYPE(arr))
 #define PyArray_ISWRITEABLE(arr) PyArray_CHKFLAGS((arr), NPY_ARRAY_WRITEABLE)
 #define PyArray_ISONESEGMENT(arr) (PyArray_ISCONTIGUOUS(arr) || PyArray_ISFORTRAN(arr))
@@ -197,6 +247,8 @@ static inline npy_intp _molt_pyarray_size(const PyArrayObject *array_obj) {
     PyArray_FromAny((obj), PyArray_DescrFromType((type)), (min_depth), (max_depth), NPY_ARRAY_DEFAULT, NULL)
 #define PyArray_ContiguousFromObject(obj, type, min_depth, max_depth) \
     PyArray_ContiguousFromAny((obj), (type), (min_depth), (max_depth))
+#define PyArray_EquivArrTypes(a1, a2) \
+    PyArray_EquivTypes(PyArray_DESCR((a1)), PyArray_DESCR((a2)))
 #define PyArray_Copy(obj) PyArray_NewCopy((PyArrayObject *)(obj), NPY_CORDER)
 #define PyArray_Zeros(...) _molt_numpy_unavailable_obj("PyArray_Zeros")
 #if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
@@ -211,10 +263,12 @@ static inline npy_intp _molt_pyarray_size(const PyArrayObject *array_obj) {
 #endif
 #endif
 #define PyArray_FILLWBYTE(obj, val) memset(PyArray_DATA(obj), (val), (size_t)PyArray_NBYTES(obj))
-#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 #define PyArray_INCREF(obj) Py_INCREF((PyObject *)(obj))
 #define PyArray_XDECREF(obj) Py_XDECREF((PyObject *)(obj))
+#ifndef PyArray_Item_INCREF
 #define PyArray_Item_INCREF(obj, ...) Py_INCREF((PyObject *)(obj))
+#endif
+#ifndef PyArray_Item_XDECREF
 #define PyArray_Item_XDECREF(obj, ...) Py_XDECREF((PyObject *)(obj))
 #endif
 
@@ -230,6 +284,8 @@ static inline npy_intp _molt_pyarray_size(const PyArrayObject *array_obj) {
 #define PyArray_CheckScalar(obj) (PyArray_IsScalar((obj), Generic) || PyArray_IsZeroDim((obj)))
 #define PyArray_CheckAnyScalar(obj) (PyArray_CheckScalar((obj)) || PyBool_Check(obj) || PyLong_Check(obj) || PyFloat_Check(obj) || PyComplex_Check(obj) || PyBytes_Check(obj) || PyUnicode_Check(obj))
 #define PyArray_HASFIELDS(obj) PyDataType_HASFIELDS(PyArray_DESCR(obj))
+#define PyArray_FORTRAN_IF(arr) \
+    (PyArray_IS_F_CONTIGUOUS((arr)) ? NPY_FORTRANORDER : NPY_CORDER)
 #define DEPRECATE(msg) PyErr_WarnEx(PyExc_DeprecationWarning, (msg), 1)
 #define DEPRECATE_FUTUREWARNING(msg) PyErr_WarnEx(PyExc_FutureWarning, (msg), 1)
 

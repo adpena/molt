@@ -2246,9 +2246,7 @@ fn try_match_inner(
             if idx >= state.groups.len() {
                 return None;
             }
-            let Some((gstart, gend)) = state.groups[idx] else {
-                return None;
-            };
+            let (gstart, gend) = state.groups[idx]?;
             let ref_len = gend - gstart;
             if pos + ref_len > state.end {
                 return None;

@@ -397,6 +397,35 @@ def _check_env_file(env_file: Path) -> list[CheckResult]:
     ]
 
 
+def _check_source_repo_url(env_file: Path) -> list[CheckResult]:
+    env_map = _parse_env_file(env_file)
+    source_url = env_map.get("MOLT_SOURCE_REPO_URL", "").strip()
+    if not source_url:
+        return []
+    if sys.platform.startswith("win") and source_url.startswith("git@"):
+        return [
+            CheckResult(
+                name="symphony_source_repo_url",
+                ok=False,
+                detail=(
+                    "MOLT_SOURCE_REPO_URL uses SSH on Windows; this often blocks "
+                    "non-interactive workspace clone hooks"
+                ),
+                fix=(
+                    "set MOLT_SOURCE_REPO_URL=https://github.com/adpena/molt.git "
+                    "and rerun repair"
+                ),
+            )
+        ]
+    return [
+        CheckResult(
+            name="symphony_source_repo_url",
+            ok=True,
+            detail=source_url,
+        )
+    ]
+
+
 def _collect_doctor_report(env_file: Path) -> dict[str, Any]:
     checks: list[CheckResult] = []
     checks.append(
@@ -426,6 +455,7 @@ def _collect_doctor_report(env_file: Path) -> dict[str, Any]:
     )
     checks.extend(_check_repo_sync())
     checks.extend(_check_env_file(env_file))
+    checks.extend(_check_source_repo_url(env_file))
     checks.extend(_check_mcp_status())
 
     required_files = (
@@ -491,7 +521,7 @@ def _build_env_values(
     store = _to_posix(symphony_parent / project_key)
     state = f"{store}/state"
     logs = f"{store}/logs"
-    env.setdefault("MOLT_SOURCE_REPO_URL", "git@github.com:adpena/molt.git")
+    env.setdefault("MOLT_SOURCE_REPO_URL", "https://github.com/adpena/molt.git")
     env.setdefault("MOLT_SYMPHONY_SYNC_REMOTE", "origin")
     env.setdefault("MOLT_SYMPHONY_SYNC_BRANCH", "main")
     env.setdefault("MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS", "adpena,symphony")

@@ -3095,8 +3095,7 @@ fn importlib_load_extension_manifest_for_path(
                     _py,
                     "ImportError",
                     &format!(
-                        "invalid extension metadata in {}: {err}",
-                        format!("{archive_path}/extension_manifest.json")
+                        "invalid extension metadata in {archive_path}/extension_manifest.json: {err}"
                     ),
                 ));
             }
