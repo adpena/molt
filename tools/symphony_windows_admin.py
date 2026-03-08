@@ -23,8 +23,8 @@ DEFAULT_SYMPHONY_PARENT = Path("E:/APDataStore/symphony")
 DEFAULT_WORKFLOW = REPO_ROOT / "WORKFLOW.md"
 DEFAULT_PORT = 8089
 LINEAR_MCP_URL = "https://mcp.linear.app/mcp"
-DEFAULT_FLEET_MCP_URL = "http://192.168.1.170:8850/sse"
-DEFAULT_FLEET_MCP_NAME = "vertigo-fleet"
+DEFAULT_FLEET_MCP_URL = os.environ.get("FLEET_MCP_URL", "http://127.0.0.1:8801/sse")
+DEFAULT_FLEET_MCP_NAME = os.environ.get("FLEET_MCP_NAME", "vertigo-fleet")
 
 REQUIRED_ENV_KEYS = (
     "LINEAR_API_KEY",
