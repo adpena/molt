@@ -11,6 +11,7 @@ runs the binary, and asserts identical stdout to CPython. This catches:
 """
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,39 @@ def _find_rustc() -> str:
         except FileNotFoundError:
             pass
     pytest.skip("rustc not found — install Rust to run Rust backend tests")
+
+
+def _find_cpython() -> str:
+    """Return a working CPython executable for baseline runs."""
+    candidates: list[str] = []
+    override = os.environ.get("MOLT_DIFF_PYTHON", "").strip()
+    if override:
+        candidates.append(override)
+    candidates.extend(
+        [
+            sys.executable,
+            getattr(sys, "_base_executable", ""),
+            shutil.which("python3") or "",
+            shutil.which("python") or "",
+        ]
+    )
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if (os.sep in candidate or os.path.isabs(candidate)) and not os.path.exists(candidate):
+            continue
+        try:
+            probe = subprocess.run(
+                [candidate, "-c", "import sys; print(sys.version_info[0])"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if probe.returncode == 0 and probe.stdout.strip() == "3":
+                return candidate
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+    pytest.skip("CPython executable not found for baseline comparison")
 
 
 def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> str:
@@ -97,8 +131,9 @@ def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> s
 
 def _cpython_stdout(python_source: str) -> str:
     """Run Python source with CPython and return stdout."""
+    cpython = _find_cpython()
     r = subprocess.run(
-        [sys.executable, "-c", python_source],
+        [cpython, "-c", python_source],
         capture_output=True, text=True, timeout=30,
     )
     return r.stdout.strip()

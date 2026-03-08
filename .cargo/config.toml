@@ -17,8 +17,12 @@ linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 
 [target.aarch64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+linker = "aarch64-linux-gnu-gcc"
+rustflags = []
+
+[target.x86_64-unknown-linux-musl]
+linker = "x86_64-linux-musl-gcc"
+rustflags = []
 
 # WASM targets use a fixed feature set — do NOT set target-cpu=native.
 # The wasm32-unknown-unknown and wasm32-wasi targets use Cranelift's

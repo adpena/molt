@@ -122,7 +122,7 @@ static inline int _import_umath(void) {
         }                                                                          \
     } while (0);
 
-#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
+#if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
 #define PyUFunc_FromFuncAndDataAndSignatureAndIdentity(...) _molt_numpy_unavailable_obj("PyUFunc_FromFuncAndDataAndSignatureAndIdentity")
 #define PyUFunc_RegisterLoopForType(...) _molt_numpy_unavailable_i32("PyUFunc_RegisterLoopForType")
 #define PyUFunc_RegisterLoopForDescr(...) _molt_numpy_unavailable_i32("PyUFunc_RegisterLoopForDescr")

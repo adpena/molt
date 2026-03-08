@@ -319,7 +319,16 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y musl-tools
           fi
+          if ! command -v x86_64-linux-musl-g++ >/dev/null 2>&1; then
+            sudo ln -sf "$(command -v x86_64-linux-musl-gcc)" /usr/local/bin/x86_64-linux-musl-g++
+          fi
           x86_64-linux-musl-gcc --version
+          x86_64-linux-musl-g++ --version
+          {
+            echo "CC_x86_64_unknown_linux_musl=x86_64-linux-musl-gcc"
+            echo "CXX_x86_64_unknown_linux_musl=x86_64-linux-musl-g++"
+            echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-musl-gcc"
+          } >> "$GITHUB_ENV"
       - name: Install aarch64 GNU cross toolchain (cross lane)
         if: matrix.lane.target == 'aarch64-unknown-linux-gnu' && runner.os == 'Linux'
         run: |
@@ -328,6 +337,12 @@ jobs:
             sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           fi
           aarch64-linux-gnu-gcc --version
+          aarch64-linux-gnu-g++ --version
+          {
+            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
+            echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
+          } >> "$GITHUB_ENV"
       - name: Create extension fixture project
         env:
           MOLT_EXT_LANE: ${{ matrix.lane.name }}
@@ -560,11 +575,43 @@ jobs:
           if not payload_text:
               raise RuntimeError(f"extension build produced empty JSON output: {build_json}")
 
-          data = json.loads(payload_text).get("data", {})
+          payload = json.loads(payload_text)
+          if not isinstance(payload, dict):
+              raise RuntimeError(
+                  f"extension build produced non-object JSON payload: {type(payload)!r}"
+              )
+          if payload.get("status") != "ok":
+              errors = payload.get("errors")
+              err_text = errors if isinstance(errors, list) else [str(errors)]
+              raise RuntimeError(
+                  "extension build returned non-ok status: "
+                  + "; ".join(item for item in err_text if item)
+              )
+
+          data = payload.get("data")
+          if not isinstance(data, dict):
+              raise RuntimeError("extension build payload missing object data field")
+          wheel = data.get("wheel")
+          manifest = data.get("manifest")
+          abi = data.get("molt_c_api_version")
+          missing = [
+              label
+              for label, value in (
+                  ("wheel", wheel),
+                  ("manifest", manifest),
+                  ("molt_c_api_version", abi),
+              )
+              if not value
+          ]
+          if missing:
+              raise RuntimeError(
+                  "extension build payload missing required fields: "
+                  + ", ".join(missing)
+              )
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
-              env_file.write(f"EXT_WHEEL={data.get('wheel', '')}\n")
-              env_file.write(f"EXT_MANIFEST={data.get('manifest', '')}\n")
-              env_file.write(f"EXT_ABI={data.get('molt_c_api_version', '')}\n")
+              env_file.write(f"EXT_WHEEL={wheel}\n")
+              env_file.write(f"EXT_MANIFEST={manifest}\n")
+              env_file.write(f"EXT_ABI={abi}\n")
               env_file.write(f"EXT_EXPECTED_TARGET={target}\n")
           PY
       - name: Scan extension C-API usage
