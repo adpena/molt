@@ -256,8 +256,6 @@ static inline int NPY_TITLE_KEY_check(PyObject *key, PyObject *value) {
 static inline int PyArray_CheckAnyScalarExact(PyObject *obj) {
     return PyArray_CheckAnyScalar(obj);
 }
-#else
-NPY_NO_EXPORT int PyArray_CheckAnyScalarExact(PyObject *obj);
 #endif
 
 #if !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE) && !defined(NPY_INTERNAL_BUILD)
@@ -268,8 +266,6 @@ static inline PyArray_ArrFuncs *PyDataType_GetArrFuncs(const PyArray_Descr *desc
         "PyDataType_GetArrFuncs is not yet implemented in Molt's NumPy compatibility layer");
     return NULL;
 }
-#else
-NPY_NO_EXPORT PyArray_ArrFuncs *PyDataType_GetArrFuncs(const PyArray_Descr *descr);
 #endif
 
 static inline PyArray_Descr *PyArray_DescrFromType(int typenum) {
@@ -459,38 +455,6 @@ static inline int PyArray_DeviceConverterOptional(
 }
 #endif
 
-#if MOLT_NUMPY_INTERNAL_BUILD
-NPY_NO_EXPORT int PyArray_Converter(PyObject *object, PyObject **address);
-NPY_NO_EXPORT int PyArray_OutputConverter(PyObject *object, PyArrayObject **address);
-NPY_NO_EXPORT int PyArray_AxisConverter(PyObject *obj, int *axis_out);
-NPY_NO_EXPORT int PyArray_OrderConverter(PyObject *obj, NPY_ORDER *order_out);
-NPY_NO_EXPORT int PyArray_ClipmodeConverter(PyObject *obj, NPY_CLIPMODE *clipmode_out);
-NPY_NO_EXPORT int PyArray_CastingConverter(PyObject *obj, NPY_CASTING *casting_out);
-NPY_NO_EXPORT PyObject *PyArray_IntTupleFromIntp(int length, const npy_intp *values);
-NPY_NO_EXPORT npy_bool PyArray_CheckStrides(
-    int elsize,
-    int nd,
-    npy_intp numbytes,
-    npy_intp offset,
-    npy_intp const *dims,
-    npy_intp const *newstrides
-);
-NPY_NO_EXPORT PyObject *PyArray_Reshape(PyArrayObject *self, PyObject *shape);
-NPY_NO_EXPORT PyObject *PyArray_Squeeze(PyArrayObject *self);
-NPY_NO_EXPORT PyObject *PyArray_SwapAxes(PyArrayObject *ap, int a1, int a2);
-NPY_NO_EXPORT PyObject *PyArray_ToList(PyArrayObject *self);
-NPY_NO_EXPORT PyObject *PyArray_ToString(PyArrayObject *self, NPY_ORDER order);
-NPY_NO_EXPORT int PyArray_ToFile(PyArrayObject *self, FILE *fp, char *sep, char *format);
-NPY_NO_EXPORT PyObject *PyArray_Nonzero(PyArrayObject *self);
-NPY_NO_EXPORT int PyArray_Sort(PyArrayObject *op, int axis, NPY_SORTKIND kind);
-NPY_NO_EXPORT PyObject *PyArray_MultiIterNew(int n, ...);
-NPY_NO_EXPORT PyObject *PyArray_IterAllButAxis(PyObject *obj, int *axis);
-NPY_NO_EXPORT char *PyArray_Zero(PyArrayObject *arr);
-NPY_NO_EXPORT char *PyArray_One(PyArrayObject *arr);
-NPY_NO_EXPORT NPY_ARRAYMETHOD_FLAGS NpyIter_GetTransferFlags(NpyIter *iter);
-#endif
-
-#if !MOLT_NUMPY_INTERNAL_BUILD
 static inline int PyArray_Converter(PyObject *object, PyObject **address) {
     if (address == NULL) {
         PyErr_SetString(PyExc_TypeError, "address output pointer must not be NULL");
@@ -2348,8 +2312,6 @@ static inline int PyArray_LookupSpecial_OnInstance(
     return PyObject_GetOptionalAttr(obj, name_unicode, res);
 }
 #endif
-
-#endif  /* !MOLT_NUMPY_INTERNAL_BUILD */
 
 #ifdef __cplusplus
 }

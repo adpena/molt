@@ -60,6 +60,9 @@ typedef intptr_t npy_hash_t;
 typedef npy_int64 npy_datetime;
 typedef npy_int64 npy_timedelta;
 
+NPY_NO_EXPORT int npy_clear_floatstatus_barrier(char *param);
+NPY_NO_EXPORT int npy_get_floatstatus_barrier(char *param);
+
 #if !defined(__STDC_NO_COMPLEX__)
 typedef float _Complex _molt_npy_cfloat_value;
 typedef double _Complex _molt_npy_cdouble_value;
