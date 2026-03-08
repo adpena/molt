@@ -68,12 +68,39 @@ def _write_extension_scan_project(project_root: Path) -> None:
                 "    (void)PyDelta_Check;",
                 "    (void)PyDateTime_IMPORT;",
                 "    (void)PyLong_AsLongLongAndOverflow;",
+                "    (void)PyLong_AsUnsignedLongLong;",
+                "    (void)PyLong_FromVoidPtr;",
+                "    (void)PyLong_AsVoidPtr;",
+                "    (void)PyInt_FromLong;",
                 "    (void)PyNumber_Long;",
+                "    (void)PyNumber_Or;",
                 "    (void)PyIter_Check;",
                 "    (void)PyIter_Next;",
                 "    (void)PyOS_string_to_double;",
                 "    (void)PyObject_Vectorcall;",
                 "    (void)PyObject_CallFinalizerFromDealloc;",
+                "    (void)PyObject_CallFinalizer;",
+                "    (void)PyObject_GC_Track;",
+                "    (void)PyObject_Init;",
+                "    (void)PyObject_IsSubclass;",
+                "    (void)PySlice_GetIndicesEx;",
+                "    (void)PyImport_Import;",
+                "    (void)PyErr_SetNone;",
+                "    (void)PyContextVar_New;",
+                "    (void)PyComplex_RealAsDouble;",
+                "    (void)PyComplex_ImagAsDouble;",
+                "    (void)PyComplex_AsCComplex;",
+                "    (void)PyExc_BufferError;",
+                "    (void)PyExc_AssertionError;",
+                "    (void)PyExc_NotImplementedError;",
+                "    (void)Py_TPFLAGS_HAVE_GC;",
+                "    (void)PyBUF_ANY_CONTIGUOUS;",
+                "    (void)PyContextVar_Get;",
+                "    (void)PyBytes_Size;",
+                "    (void)PyMemoryView_FromObject;",
+                "    (void)PyObject_Del;",
+                "    (void)PyObject_GC_Del;",
+                "    (void)PyMissingSymbolForScan;",
                 "    return value;",
                 "}",
                 "",
@@ -108,7 +135,7 @@ def _write_extension_scan_directory_project(project_root: Path) -> None:
                 "#include <Python.h>",
                 "int alpha(void) {",
                 "    (void)PyLong_FromLong;",
-                "    (void)PyObject_CallFinalizerFromDealloc;",
+                "    (void)PyMissingSymbolForScan;",
                 "    return 0;",
                 "}",
                 "",
@@ -120,7 +147,7 @@ def _write_extension_scan_directory_project(project_root: Path) -> None:
             [
                 "#include <Python.h>",
                 "int beta(void) {",
-                "    (void)PyObject_CallFinalizerFromDealloc;",
+                "    (void)PyMissingSymbolForScan;",
                 "    return 0;",
                 "}",
                 "",
@@ -460,12 +487,39 @@ def test_extension_scan_reports_missing_symbols_without_gate(
     assert "PyDelta_Check" in data["supported_symbols"]
     assert "PyDateTime_IMPORT" in data["supported_symbols"]
     assert "PyLong_AsLongLongAndOverflow" in data["supported_symbols"]
+    assert "PyLong_AsUnsignedLongLong" in data["supported_symbols"]
+    assert "PyLong_FromVoidPtr" in data["supported_symbols"]
+    assert "PyLong_AsVoidPtr" in data["supported_symbols"]
+    assert "PyInt_FromLong" in data["supported_symbols"]
     assert "PyNumber_Long" in data["supported_symbols"]
+    assert "PyNumber_Or" in data["supported_symbols"]
     assert "PyIter_Check" in data["supported_symbols"]
     assert "PyIter_Next" in data["supported_symbols"]
     assert "PyOS_string_to_double" in data["supported_symbols"]
     assert "PyObject_Vectorcall" in data["supported_symbols"]
-    assert "PyObject_CallFinalizerFromDealloc" in data["missing_symbols"]
+    assert "PyObject_CallFinalizer" in data["supported_symbols"]
+    assert "PyObject_CallFinalizerFromDealloc" in data["supported_symbols"]
+    assert "PyObject_GC_Track" in data["supported_symbols"]
+    assert "PyObject_Init" in data["supported_symbols"]
+    assert "PyObject_IsSubclass" in data["supported_symbols"]
+    assert "PySlice_GetIndicesEx" in data["supported_symbols"]
+    assert "PyImport_Import" in data["supported_symbols"]
+    assert "PyErr_SetNone" in data["supported_symbols"]
+    assert "PyContextVar_New" in data["supported_symbols"]
+    assert "PyComplex_RealAsDouble" in data["supported_symbols"]
+    assert "PyComplex_ImagAsDouble" in data["supported_symbols"]
+    assert "PyComplex_AsCComplex" in data["supported_symbols"]
+    assert "PyExc_BufferError" in data["supported_symbols"]
+    assert "PyExc_AssertionError" in data["supported_symbols"]
+    assert "PyExc_NotImplementedError" in data["supported_symbols"]
+    assert "Py_TPFLAGS_HAVE_GC" in data["supported_symbols"]
+    assert "PyBUF_ANY_CONTIGUOUS" in data["supported_symbols"]
+    assert "PyContextVar_Get" in data["supported_symbols"]
+    assert "PyBytes_Size" in data["supported_symbols"]
+    assert "PyMemoryView_FromObject" in data["supported_symbols"]
+    assert "PyObject_Del" in data["supported_symbols"]
+    assert "PyObject_GC_Del" in data["supported_symbols"]
+    assert "PyMissingSymbolForScan" in data["missing_symbols"]
     assert "PyLong_FromLong" in data["supported_symbols"]
 
 
@@ -514,7 +568,7 @@ def test_extension_scan_fail_on_missing_returns_error(tmp_path: Path, capsys) ->
     assert rc == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "error"
-    assert "PyObject_CallFinalizerFromDealloc" in payload["data"]["missing_symbols"]
+    assert "PyMissingSymbolForScan" in payload["data"]["missing_symbols"]
 
 
 def test_extension_scan_supports_directory_sources(tmp_path: Path, capsys) -> None:
@@ -533,9 +587,9 @@ def test_extension_scan_supports_directory_sources(tmp_path: Path, capsys) -> No
     assert payload["status"] == "error"
     data = payload["data"]
     assert data["source_count"] == 2
-    assert data["missing_symbol_frequency"]["PyObject_CallFinalizerFromDealloc"] == 2
+    assert data["missing_symbol_frequency"]["PyMissingSymbolForScan"] == 2
     assert data["top_missing_symbols"][0] == {
-        "symbol": "PyObject_CallFinalizerFromDealloc",
+        "symbol": "PyMissingSymbolForScan",
         "file_count": 2,
     }
     assert data["coverage_ratio"] < 1.0
@@ -550,7 +604,7 @@ def test_extension_scan_supports_tar_archive_sources(tmp_path: Path, capsys) -> 
                 "#include <Python.h>",
                 "int demo(void) {",
                 "    (void)PyLong_FromLong;",
-                "    (void)PyObject_CallFinalizerFromDealloc;",
+                "    (void)PyMissingSymbolForScan;",
                 "    return 0;",
                 "}",
                 "",
@@ -573,8 +627,8 @@ def test_extension_scan_supports_tar_archive_sources(tmp_path: Path, capsys) -> 
     archive_label = f"{archive_path}!pkg/demoext.c"
     assert data["source_count"] == 1
     assert "PyLong_FromLong" in data["supported_symbols"]
-    assert "PyObject_CallFinalizerFromDealloc" in data["missing_symbols"]
-    assert data["missing_symbol_frequency"]["PyObject_CallFinalizerFromDealloc"] == 1
+    assert "PyMissingSymbolForScan" in data["missing_symbols"]
+    assert data["missing_symbol_frequency"]["PyMissingSymbolForScan"] == 1
     assert archive_label in data["required_by_file"]
 
 
@@ -629,7 +683,7 @@ def test_extension_scan_ignores_locally_defined_py_symbols(
                 "int demo(void) {",
                 "    (void)PyLocalMacro;",
                 "    (void)PyLocalHelper;",
-                "    (void)PyObject_CallFinalizerFromDealloc;",
+                "    (void)PyMissingSymbolForScan;",
                 "    return 0;",
                 "}",
                 "",
@@ -662,7 +716,7 @@ def test_extension_scan_ignores_locally_defined_py_symbols(
     assert rc == 1
     payload = json.loads(capsys.readouterr().out)
     data = payload["data"]
-    assert "PyObject_CallFinalizerFromDealloc" in data["missing_symbols"]
+    assert "PyMissingSymbolForScan" in data["missing_symbols"]
     assert "PyLocalMacro" not in data["missing_symbols"]
     assert "PyLocalHelper" not in data["missing_symbols"]
     local_defs = data["locally_defined_by_file"][str(source_path)]
@@ -701,7 +755,7 @@ def test_extension_scan_ignores_project_shared_py_symbols(
                 "int demo(void) {",
                 "    (void)PyInit_demo;",
                 "    (void)PyDateTimeToIso;",
-                "    (void)PyObject_CallFinalizerFromDealloc;",
+                "    (void)PyMissingSymbolForScan;",
                 "    return 0;",
                 "}",
                 "",
@@ -745,7 +799,7 @@ def test_extension_scan_ignores_project_shared_py_symbols(
     assert rc == 1
     payload = json.loads(capsys.readouterr().out)
     data = payload["data"]
-    assert data["missing_symbols"] == ["PyObject_CallFinalizerFromDealloc"]
+    assert data["missing_symbols"] == ["PyMissingSymbolForScan"]
     assert "PyInit_demo" not in data["missing_symbols"]
     assert "PyDateTimeToIso" not in data["missing_symbols"]
     assert "PyObjectEncoder" not in data["missing_symbols"]

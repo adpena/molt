@@ -102,6 +102,7 @@ for _name in (
     "WPARAM",
 ):
     import sys as _wt_sys
+
     _wt_mod_dict = getattr(_wt_sys.modules.get(__name__), "__dict__", None) or globals()
     _wt_mod_dict[_name] = _make_simple(_name)
 
@@ -158,6 +159,7 @@ for _name in (
     "PWORD",
 ):
     import sys as _wt_sys
+
     _wt_mod_dict = getattr(_wt_sys.modules.get(__name__), "__dict__", None) or globals()
     _wt_mod_dict[_name] = _make_pointer(_name)
 
@@ -179,6 +181,7 @@ for _name in (
     "tagSIZE",
 ):
     import sys as _wt_sys
+
     _wt_mod_dict = getattr(_wt_sys.modules.get(__name__), "__dict__", None) or globals()
     _wt_mod_dict[_name] = _make_struct(_name)
 
