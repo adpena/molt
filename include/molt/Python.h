@@ -719,7 +719,6 @@ static inline void *_molt_pyunicode_data(PyObject *unicode);
 #define PyGILState_LOCKED 0
 #define PyGILState_UNLOCKED 1
 
-#define Py_GIL_DISABLED 0
 #define Py_MOD_GIL_NOT_USED 1
 #define Py_MOD_PER_INTERPRETER_GIL_SUPPORTED 1
 #define Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED 0
@@ -748,14 +747,10 @@ static inline void *_molt_pyunicode_data(PyObject *unicode);
 #define PY_TIMEOUT_MAX LLONG_MAX
 
 #ifndef Py_BEGIN_CRITICAL_SECTION
-#define Py_BEGIN_CRITICAL_SECTION(obj) do { (void)(obj); } while (0)
-#define Py_END_CRITICAL_SECTION() do { } while (0)
-#define Py_BEGIN_CRITICAL_SECTION2(a, b)                                         \
-    do {                                                                          \
-        (void)(a);                                                                \
-        (void)(b);                                                                \
-    } while (0)
-#define Py_END_CRITICAL_SECTION2() do { } while (0)
+#define Py_BEGIN_CRITICAL_SECTION(...) do { } while (0)
+#define Py_END_CRITICAL_SECTION(...) do { } while (0)
+#define Py_BEGIN_CRITICAL_SECTION2(...) do { } while (0)
+#define Py_END_CRITICAL_SECTION2(...) do { } while (0)
 #endif
 
 #if !defined(Py_LIMITED_API) && !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
