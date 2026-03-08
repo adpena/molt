@@ -255,3 +255,41 @@ def test_handle_server_request_request_user_input_uses_answers_schema() -> None:
     ]
     assert events
     assert events[-1]["event"] == "request_user_input_required"
+
+
+def test_start_uses_utf8_text_mode_for_windows_safe_stream_decode(monkeypatch) -> None:
+    popen_kwargs: dict[str, object] = {}
+
+    class _DummyProc:
+        pid = 12345
+        stdin = None
+        stdout = None
+        stderr = None
+
+        def poll(self) -> int | None:
+            return None
+
+    def fake_popen(*args, **kwargs):  # type: ignore[no-untyped-def]
+        _ = args
+        popen_kwargs.update(kwargs)
+        return _DummyProc()
+
+    monkeypatch.setattr("molt.symphony.app_server.subprocess.Popen", fake_popen)
+
+    client = CodexAppServerClient(
+        codex_config=_codex_config(),
+        workspace_path=Path("."),
+        stop_event=Event(),
+        event_callback=lambda _event: None,
+    )
+
+    request_ids = iter((1, 2))
+    monkeypatch.setattr(client, "_send_request", lambda *_args, **_kwargs: next(request_ids))
+    monkeypatch.setattr(client, "_wait_for_response", lambda *_args, **_kwargs: {"result": {"thread": {"id": "thr_123"}}})
+    monkeypatch.setattr(client, "_send_notification", lambda *_args, **_kwargs: None)
+
+    client.start()
+
+    assert popen_kwargs["text"] is True
+    assert popen_kwargs["encoding"] == "utf-8"
+    assert popen_kwargs["errors"] == "replace"

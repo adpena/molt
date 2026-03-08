@@ -173,8 +173,8 @@ NPY_NO_EXPORT int PyArray_XDECREF(PyArrayObject *mp);
 #define PyArray_DescrCheck(op) PyObject_TypeCheck((PyObject *)(op), &PyArrayDescr_Type)
 #define PyArray_IsZeroDim(op) (PyArray_Check(op) && (PyArray_NDIM((PyArrayObject *)(op)) == 0))
 
-#define PyArray_DATA(arr) (((PyArrayObject_fields *)(arr))->data)
 #define PyArray_BYTES(arr) (((PyArrayObject_fields *)(arr))->data)
+#define PyArray_DATA(arr) ((void *)PyArray_BYTES(arr))
 #define PyArray_NDIM(arr) (((PyArrayObject_fields *)(arr))->nd)
 #define PyArray_DIMS(arr) (((PyArrayObject_fields *)(arr))->dimensions)
 #define PyArray_STRIDES(arr) (((PyArrayObject_fields *)(arr))->strides)
