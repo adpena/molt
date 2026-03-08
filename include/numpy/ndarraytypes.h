@@ -651,7 +651,10 @@ NPY_NO_EXPORT NpyIter *NpyIter_New(PyObject *op, ...);
 NPY_NO_EXPORT NpyIter *NpyIter_MultiNew(int nop, PyObject **op, ...);
 NPY_NO_EXPORT int NpyIter_Deallocate(NpyIter *iter);
 NPY_NO_EXPORT int NpyIter_Reset(NpyIter *iter, char **errmsg);
-NPY_NO_EXPORT PyObject **NpyIter_GetOperandArray(NpyIter *iter);
+NPY_NO_EXPORT PyArrayObject **NpyIter_GetOperandArray(NpyIter *iter);
+NPY_NO_EXPORT npy_intp NpyIter_GetIterSize(NpyIter *iter);
+NPY_NO_EXPORT NpyIter_IterNextFunc *NpyIter_GetIterNext(NpyIter *iter, char **errmsg);
+NPY_NO_EXPORT char **NpyIter_GetDataPtrArray(NpyIter *iter);
 
 #ifndef NPY_ITER_C_INDEX
 #define NPY_ITER_C_INDEX 0x00000001
