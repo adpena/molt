@@ -47,6 +47,7 @@ TARGET_RUST = "rust"
 TARGET_LUAU = "luau"
 TARGET_ALL = "all"
 TARGET_CHOICES = (TARGET_NATIVE, TARGET_RUST, TARGET_LUAU, TARGET_ALL)
+DEFAULT_EXTERNAL_ROOT = Path("/Volumes/APDataStore/Molt")
 
 
 def _repo_root() -> Path:
@@ -71,7 +72,41 @@ def _make_env() -> dict[str, str]:
     else:
         env["PYTHONPATH"] = src_dir
     env["PYTHONHASHSEED"] = "0"
+    ext_root_raw = env.get("MOLT_EXT_ROOT", "").strip()
+    ext_root = Path(ext_root_raw).expanduser().resolve() if ext_root_raw else DEFAULT_EXTERNAL_ROOT
+    if not ext_root.is_dir():
+        raise RuntimeError(
+            "External volume is required for translation validation artifacts. "
+            f"Set MOLT_EXT_ROOT to a mounted external path (current: {ext_root})."
+        )
+    env.setdefault("MOLT_EXT_ROOT", str(ext_root))
+    env.setdefault("CARGO_TARGET_DIR", str(ext_root / "cargo-target"))
+    env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
+    env.setdefault("MOLT_CACHE", str(ext_root / "molt_cache"))
+    env.setdefault("MOLT_DIFF_ROOT", str(ext_root / "diff"))
+    env.setdefault("MOLT_DIFF_TMPDIR", str(ext_root / "tmp"))
+    env.setdefault("UV_CACHE_DIR", str(ext_root / "uv-cache"))
+    env.setdefault("TMPDIR", env["MOLT_DIFF_TMPDIR"])
+    env.setdefault("MOLT_DEV_CARGO_PROFILE", "release-fast")
+    env.setdefault("UV_NO_SYNC", "1")
+    env.setdefault("UV_LINK_MODE", "copy")
     return env
+
+
+def _temp_parent_from_env(env: dict[str, str]) -> str | None:
+    """Return a writable temp parent path from env defaults."""
+    for key in ("MOLT_DIFF_TMPDIR", "TMPDIR"):
+        raw = env.get(key, "").strip()
+        if not raw:
+            continue
+        path = Path(raw).expanduser().resolve()
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        if path.is_dir():
+            return str(path)
+    return None
 
 
 def _extract_binary(build_json: dict) -> str | None:
@@ -242,6 +277,52 @@ def build_molt(
     if not Path(binary).exists():
         return None, f"Binary path does not exist: {binary}"
     return binary, ""
+
+
+def build_molt_native(
+    source: str,
+    profile: str,
+    output: str,
+    timeout: float,
+    env: dict[str, str],
+    verbose: bool = False,
+) -> tuple[bool, str]:
+    """Compile a Python file with Molt to an explicit native output path."""
+    cmd = [
+        sys.executable,
+        "-m",
+        "molt.cli",
+        "build",
+        source,
+        "--profile",
+        profile,
+        "--capabilities",
+        "fs,env,time,random",
+        "--output",
+        output,
+    ]
+    if verbose:
+        print(f"  Build (native): {' '.join(cmd)}")
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            cwd=str(_repo_root()),
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"Molt build (native) timed out after {timeout}s"
+
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        return False, (
+            f"Molt build (native) failed (exit {result.returncode}): {detail[:500]}"
+        )
+    if not Path(output).exists():
+        return False, f"Build (native) produced no artifact: {output}"
+    return True, ""
 
 
 def build_molt_target(
@@ -447,7 +528,17 @@ def validate_file(
     Returns a ValidationResult with status pass/fail/error.
     """
     t0 = time.monotonic()
-    env = _make_env()
+    try:
+        env = _make_env()
+    except RuntimeError as exc:
+        return ValidationResult(
+            source,
+            target,
+            ValidationResult.ERROR,
+            str(exc),
+            0.0,
+            timings={"total_sec": 0.0},
+        )
 
     timings: dict[str, float] = {}
 
@@ -471,26 +562,99 @@ def validate_file(
 
     # Step 2: Build with Molt
     run_label = "molt"
-    run_path: str | None = None
     if target == TARGET_NATIVE:
-        step_t0 = time.monotonic()
-        binary, build_error = build_molt(source, profile, timeout, env, verbose)
-        timings["build_sec"] = time.monotonic() - step_t0
-        if binary is None:
+        tmp_parent = _temp_parent_from_env(env)
+        with tempfile.TemporaryDirectory(
+            prefix="molt-translation-native-",
+            dir=tmp_parent,
+        ) as tmpdir:
+            binary_name = f"{Path(source).stem}_native"
+            if os.name == "nt":
+                binary_name += ".exe"
+            run_path = str(Path(tmpdir) / binary_name)
+
+            step_t0 = time.monotonic()
+            ok, build_error = build_molt_native(
+                source,
+                profile,
+                run_path,
+                timeout,
+                env,
+                verbose,
+            )
+            timings["build_sec"] = time.monotonic() - step_t0
+            if not ok:
+                elapsed = time.monotonic() - t0
+                timings["total_sec"] = elapsed
+                return ValidationResult(
+                    source,
+                    target,
+                    ValidationResult.ERROR,
+                    f"Build error: {build_error}",
+                    elapsed,
+                    timings=timings,
+                )
+
+            step_t0 = time.monotonic()
+            molt_stdout, molt_stderr, molt_rc = run_molt(run_path, timeout, env, verbose)
+            timings["run_sec"] = time.monotonic() - step_t0
+            if molt_rc == -1 and "timed out" in molt_stderr:
+                elapsed = time.monotonic() - t0
+                timings["total_sec"] = elapsed
+                return ValidationResult(
+                    source,
+                    target,
+                    ValidationResult.ERROR,
+                    f"Molt binary timed out after {timeout}s",
+                    elapsed,
+                    timings=timings,
+                )
+
+            step_t0 = time.monotonic()
+            mismatches: list[str] = []
+            if cpython_stdout != molt_stdout:
+                diff = _unified_diff(
+                    "cpython/stdout", "molt/stdout", cpython_stdout, molt_stdout
+                )
+                mismatches.append(f"STDOUT MISMATCH:\n{diff}")
+            if cpython_stderr != molt_stderr:
+                diff = _unified_diff(
+                    "cpython/stderr", "molt/stderr", cpython_stderr, molt_stderr
+                )
+                mismatches.append(f"STDERR MISMATCH:\n{diff}")
+            if cpython_rc != molt_rc:
+                mismatches.append(
+                    f"EXIT CODE MISMATCH: cpython={cpython_rc}, molt={molt_rc}"
+                )
+            timings["compare_sec"] = time.monotonic() - step_t0
             elapsed = time.monotonic() - t0
             timings["total_sec"] = elapsed
+            if mismatches:
+                detail = "\n".join(mismatches)
+                return ValidationResult(
+                    source,
+                    target,
+                    ValidationResult.FAIL,
+                    detail,
+                    elapsed,
+                    mismatches=mismatches,
+                    timings=timings,
+                )
             return ValidationResult(
                 source,
                 target,
-                ValidationResult.ERROR,
-                f"Build error: {build_error}",
+                ValidationResult.PASS,
+                "",
                 elapsed,
+                mismatches=[],
                 timings=timings,
             )
-        run_path = binary
     else:
         suffix = ".rs" if target == TARGET_RUST else ".luau"
-        with tempfile.TemporaryDirectory(prefix=f"molt-translation-{target}-") as tmpdir:
+        with tempfile.TemporaryDirectory(
+            prefix=f"molt-translation-{target}-",
+            dir=_temp_parent_from_env(env),
+        ) as tmpdir:
             artifact_path = str(Path(tmpdir) / f"{Path(source).stem}{suffix}")
 
             step_t0 = time.monotonic()
@@ -642,71 +806,13 @@ def validate_file(
                 timings=timings,
             )
 
-    # Native lane run/compare path
-    step_t0 = time.monotonic()
-    if run_path is None:
-        elapsed = time.monotonic() - t0
-        timings["total_sec"] = elapsed
-        return ValidationResult(
-            source,
-            target,
-            ValidationResult.ERROR,
-            "Internal error: missing native artifact path",
-            elapsed,
-            timings=timings,
-        )
-    molt_stdout, molt_stderr, molt_rc = run_molt(run_path, timeout, env, verbose)
-    timings["run_sec"] = time.monotonic() - step_t0
-    if molt_rc == -1 and "timed out" in molt_stderr:
-        elapsed = time.monotonic() - t0
-        timings["total_sec"] = elapsed
-        return ValidationResult(
-            source,
-            target,
-            ValidationResult.ERROR,
-            f"Molt binary timed out after {timeout}s",
-            elapsed,
-            timings=timings,
-        )
-
-    step_t0 = time.monotonic()
-    mismatches: list[str] = []
-
-    if cpython_stdout != molt_stdout:
-        diff = _unified_diff("cpython/stdout", "molt/stdout", cpython_stdout, molt_stdout)
-        mismatches.append(f"STDOUT MISMATCH:\n{diff}")
-
-    if cpython_stderr != molt_stderr:
-        diff = _unified_diff("cpython/stderr", "molt/stderr", cpython_stderr, molt_stderr)
-        mismatches.append(f"STDERR MISMATCH:\n{diff}")
-
-    if cpython_rc != molt_rc:
-        mismatches.append(f"EXIT CODE MISMATCH: cpython={cpython_rc}, molt={molt_rc}")
-
-    timings["compare_sec"] = time.monotonic() - step_t0
-    elapsed = time.monotonic() - t0
-    timings["total_sec"] = elapsed
-
-    if mismatches:
-        detail = "\n".join(mismatches)
-        return ValidationResult(
-            source,
-            target,
-            ValidationResult.FAIL,
-            detail,
-            elapsed,
-            mismatches=mismatches,
-            timings=timings,
-        )
-
     return ValidationResult(
         source,
         target,
-        ValidationResult.PASS,
-        "",
-        elapsed,
-        mismatches=[],
-        timings=timings,
+        ValidationResult.ERROR,
+        f"Internal error: unsupported target lane {target}",
+        0.0,
+        timings={"total_sec": 0.0},
     )
 
 
