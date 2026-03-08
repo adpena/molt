@@ -12,6 +12,11 @@ permissions:
 jobs:
   test-python:
     runs-on: ubuntu-latest
+    env:
+      MOLT_EXT_ROOT: /tmp/molt-ext
+      CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target
+      MOLT_DIFF_CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target
+      MOLT_BACKEND_DAEMON_SOCKET_DIR: /tmp/molt_backend_sockets
     strategy:
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
@@ -69,7 +74,7 @@ jobs:
           fi
       - name: Build runtime (release)
         if: matrix.python-version == '3.12'
-        run: cargo build -p molt-runtime --release
+        run: cargo build -p molt-lang-runtime --release
       - name: Run molt-diff core lane
         if: matrix.python-version == '3.12'
         run: MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run python tests/molt_diff.py --jobs 2 --files-from tests/differential/basic/CORE_TESTS.txt
@@ -234,6 +239,10 @@ jobs:
         shell: bash
     env:
       PYTHONPATH: ${{ github.workspace }}/src
+      MOLT_EXT_ROOT: ${{ runner.temp }}/molt-ext-${{ matrix.lane.name }}
+      CARGO_TARGET_DIR: ${{ runner.temp }}/molt-ext-${{ matrix.lane.name }}/cargo-target
+      MOLT_DIFF_CARGO_TARGET_DIR: ${{ runner.temp }}/molt-ext-${{ matrix.lane.name }}/cargo-target
+      MOLT_BACKEND_DAEMON_SOCKET_DIR: ${{ runner.temp }}/molt_backend_sockets
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -688,6 +697,11 @@ jobs:
 
   test-rust:
     runs-on: ubuntu-latest
+    env:
+      MOLT_EXT_ROOT: /tmp/molt-ext
+      CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target
+      MOLT_DIFF_CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target
+      MOLT_BACKEND_DAEMON_SOCKET_DIR: /tmp/molt_backend_sockets
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
@@ -748,6 +762,11 @@ jobs:
 
   test-wasm:
     runs-on: ubuntu-latest
+    env:
+      MOLT_EXT_ROOT: /tmp/molt-ext
+      CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target
+      MOLT_DIFF_CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target
+      MOLT_BACKEND_DAEMON_SOCKET_DIR: /tmp/molt_backend_sockets
     steps:
       - uses: actions/checkout@v4
       - name: Install uv

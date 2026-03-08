@@ -5,7 +5,21 @@ Canonical location is `moltlib.concurrency`.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from molt import intrinsics as _intrinsics
+
+if TYPE_CHECKING:
+    from moltlib import _concurrency_runtime as _concurrency
+
+    CancellationToken = _concurrency.CancellationToken
+    Channel = _concurrency.Channel
+    cancel_current = _concurrency.cancel_current
+    cancelled = _concurrency.cancelled
+    channel = _concurrency.channel
+    current_token = _concurrency.current_token
+    set_current_token = _concurrency.set_current_token
+    spawn = _concurrency.spawn
 
 __all__ = [
     "CancellationToken",
@@ -20,7 +34,7 @@ __all__ = [
 _RUNTIME_EXPORTS = set(__all__) | {"_call_intrinsic"}
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     if name not in _RUNTIME_EXPORTS:
         raise AttributeError(name)
     if not _intrinsics.runtime_active():

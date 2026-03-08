@@ -60,12 +60,12 @@ pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
 }
 
 mod async_rt;
-mod cpython_abi_hooks;
 mod builtins;
 mod c_api;
 mod call;
 mod concurrency;
 mod constants;
+mod cpython_abi_hooks;
 mod gui;
 mod intrinsics;
 #[cfg(target_arch = "wasm32")]

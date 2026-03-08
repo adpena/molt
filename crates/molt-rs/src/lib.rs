@@ -123,7 +123,13 @@ pub fn molt_int(x: &MoltValue) -> i64 {
     match x {
         MoltValue::Int(i) => *i,
         MoltValue::Float(f) => *f as i64,
-        MoltValue::Bool(b) => if *b { 1 } else { 0 },
+        MoltValue::Bool(b) => {
+            if *b {
+                1
+            } else {
+                0
+            }
+        }
         MoltValue::Str(s) => s.trim().parse::<i64>().unwrap_or(0),
         _ => 0,
     }
@@ -134,7 +140,13 @@ pub fn molt_float(x: &MoltValue) -> f64 {
     match x {
         MoltValue::Float(f) => *f,
         MoltValue::Int(i) => *i as f64,
-        MoltValue::Bool(b) => if *b { 1.0 } else { 0.0 },
+        MoltValue::Bool(b) => {
+            if *b {
+                1.0
+            } else {
+                0.0
+            }
+        }
         MoltValue::Str(s) => s.trim().parse::<f64>().unwrap_or(0.0),
         _ => 0.0,
     }
@@ -144,7 +156,13 @@ pub fn molt_float(x: &MoltValue) -> f64 {
 pub fn molt_str(x: &MoltValue) -> String {
     match x {
         MoltValue::None => "None".to_string(),
-        MoltValue::Bool(b) => if *b { "True".to_string() } else { "False".to_string() },
+        MoltValue::Bool(b) => {
+            if *b {
+                "True".to_string()
+            } else {
+                "False".to_string()
+            }
+        }
         MoltValue::Int(i) => i.to_string(),
         MoltValue::Float(f) => {
             if f.fract() == 0.0 && f.abs() < 1e15 {
@@ -159,7 +177,8 @@ pub fn molt_str(x: &MoltValue) -> String {
             format!("[{}]", inner.join(", "))
         }
         MoltValue::Dict(d) => {
-            let inner: Vec<String> = d.iter()
+            let inner: Vec<String> = d
+                .iter()
                 .map(|(k, v)| format!("{}: {}", molt_repr_inner(k), molt_repr_inner(v)))
                 .collect();
             format!("{{{}}}", inner.join(", "))
@@ -227,7 +246,9 @@ pub fn molt_range_iter(start: i64, stop: i64, step: i64) -> impl Iterator<Item =
     let mut i = start;
     let forward = step > 0;
     std::iter::from_fn(move || {
-        if step == 0 { return None; }
+        if step == 0 {
+            return None;
+        }
         if forward && i < stop {
             let v = i;
             i += step;
@@ -312,7 +333,11 @@ pub fn molt_div(a: MoltValue, b: MoltValue) -> MoltValue {
 pub fn molt_floor_div(a: MoltValue, b: MoltValue) -> MoltValue {
     match (&a, &b) {
         (MoltValue::Int(x), MoltValue::Int(y)) => {
-            if *y == 0 { MoltValue::None } else { MoltValue::Int(x.div_euclid(*y)) }
+            if *y == 0 {
+                MoltValue::None
+            } else {
+                MoltValue::Int(x.div_euclid(*y))
+            }
         }
         _ => {
             let af = molt_float(&a);
@@ -326,7 +351,11 @@ pub fn molt_floor_div(a: MoltValue, b: MoltValue) -> MoltValue {
 pub fn molt_mod(a: MoltValue, b: MoltValue) -> MoltValue {
     match (&a, &b) {
         (MoltValue::Int(x), MoltValue::Int(y)) => {
-            if *y == 0 { MoltValue::None } else { MoltValue::Int(x.rem_euclid(*y)) }
+            if *y == 0 {
+                MoltValue::None
+            } else {
+                MoltValue::Int(x.rem_euclid(*y))
+            }
         }
         _ => {
             let af = molt_float(&a);
@@ -365,26 +394,44 @@ pub fn molt_not(a: &MoltValue) -> MoltValue {
 fn molt_numeric_cmp(a: &MoltValue, b: &MoltValue) -> std::cmp::Ordering {
     match (a, b) {
         (MoltValue::Int(x), MoltValue::Int(y)) => x.cmp(y),
-        (MoltValue::Float(x), MoltValue::Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
-        (MoltValue::Int(x), MoltValue::Float(y)) => (*x as f64).partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
-        (MoltValue::Float(x), MoltValue::Int(y)) => x.partial_cmp(&(*y as f64)).unwrap_or(std::cmp::Ordering::Equal),
+        (MoltValue::Float(x), MoltValue::Float(y)) => {
+            x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal)
+        }
+        (MoltValue::Int(x), MoltValue::Float(y)) => (*x as f64)
+            .partial_cmp(y)
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (MoltValue::Float(x), MoltValue::Int(y)) => x
+            .partial_cmp(&(*y as f64))
+            .unwrap_or(std::cmp::Ordering::Equal),
         (MoltValue::Str(x), MoltValue::Str(y)) => x.cmp(y),
         _ => std::cmp::Ordering::Equal,
     }
 }
 
 /// Python `a == b`.
-pub fn molt_eq(a: &MoltValue, b: &MoltValue) -> bool { a == b }
+pub fn molt_eq(a: &MoltValue, b: &MoltValue) -> bool {
+    a == b
+}
 /// Python `a != b`.
-pub fn molt_ne(a: &MoltValue, b: &MoltValue) -> bool { a != b }
+pub fn molt_ne(a: &MoltValue, b: &MoltValue) -> bool {
+    a != b
+}
 /// Python `a < b`.
-pub fn molt_lt(a: &MoltValue, b: &MoltValue) -> bool { matches!(molt_numeric_cmp(a, b), std::cmp::Ordering::Less) }
+pub fn molt_lt(a: &MoltValue, b: &MoltValue) -> bool {
+    matches!(molt_numeric_cmp(a, b), std::cmp::Ordering::Less)
+}
 /// Python `a <= b`.
-pub fn molt_le(a: &MoltValue, b: &MoltValue) -> bool { !matches!(molt_numeric_cmp(a, b), std::cmp::Ordering::Greater) }
+pub fn molt_le(a: &MoltValue, b: &MoltValue) -> bool {
+    !matches!(molt_numeric_cmp(a, b), std::cmp::Ordering::Greater)
+}
 /// Python `a > b`.
-pub fn molt_gt(a: &MoltValue, b: &MoltValue) -> bool { matches!(molt_numeric_cmp(a, b), std::cmp::Ordering::Greater) }
+pub fn molt_gt(a: &MoltValue, b: &MoltValue) -> bool {
+    matches!(molt_numeric_cmp(a, b), std::cmp::Ordering::Greater)
+}
 /// Python `a >= b`.
-pub fn molt_ge(a: &MoltValue, b: &MoltValue) -> bool { !matches!(molt_numeric_cmp(a, b), std::cmp::Ordering::Less) }
+pub fn molt_ge(a: &MoltValue, b: &MoltValue) -> bool {
+    !matches!(molt_numeric_cmp(a, b), std::cmp::Ordering::Less)
+}
 
 // ─── Collection operations ────────────────────────────────────────────────────
 
@@ -392,15 +439,28 @@ pub fn molt_ge(a: &MoltValue, b: &MoltValue) -> bool { !matches!(molt_numeric_cm
 pub fn molt_get_item(obj: &MoltValue, key: &MoltValue) -> MoltValue {
     match (obj, key) {
         (MoltValue::List(l), MoltValue::Int(i)) => {
-            let idx = if *i < 0 { (l.len() as i64 + i) as usize } else { *i as usize };
+            let idx = if *i < 0 {
+                (l.len() as i64 + i) as usize
+            } else {
+                *i as usize
+            };
             l.get(idx).cloned().unwrap_or(MoltValue::None)
         }
-        (MoltValue::Dict(d), k) => {
-            d.iter().find(|(ek, _)| ek == k).map(|(_, v)| v.clone()).unwrap_or(MoltValue::None)
-        }
+        (MoltValue::Dict(d), k) => d
+            .iter()
+            .find(|(ek, _)| ek == k)
+            .map(|(_, v)| v.clone())
+            .unwrap_or(MoltValue::None),
         (MoltValue::Str(s), MoltValue::Int(i)) => {
-            let idx = if *i < 0 { (s.chars().count() as i64 + i) as usize } else { *i as usize };
-            s.chars().nth(idx).map(|c| MoltValue::Str(c.to_string())).unwrap_or(MoltValue::None)
+            let idx = if *i < 0 {
+                (s.chars().count() as i64 + i) as usize
+            } else {
+                *i as usize
+            };
+            s.chars()
+                .nth(idx)
+                .map(|c| MoltValue::Str(c.to_string()))
+                .unwrap_or(MoltValue::None)
         }
         _ => MoltValue::None,
     }
@@ -411,7 +471,11 @@ pub fn molt_set_item(obj: &mut MoltValue, key: MoltValue, val: MoltValue) {
     match obj {
         MoltValue::List(l) => {
             if let MoltValue::Int(i) = key {
-                let idx = if i < 0 { (l.len() as i64 + i) as usize } else { i as usize };
+                let idx = if i < 0 {
+                    (l.len() as i64 + i) as usize
+                } else {
+                    i as usize
+                };
                 if idx < l.len() {
                     l[idx] = val;
                 }
@@ -476,9 +540,11 @@ pub fn molt_in(elem: &MoltValue, container: &MoltValue) -> bool {
 pub fn molt_enumerate(t: &MoltValue, start: i64) -> MoltValue {
     let items = molt_iter(t);
     MoltValue::List(
-        items.into_iter().enumerate()
+        items
+            .into_iter()
+            .enumerate()
             .map(|(i, v)| MoltValue::List(vec![MoltValue::Int(start + i as i64), v]))
-            .collect()
+            .collect(),
     )
 }
 
@@ -487,9 +553,10 @@ pub fn molt_zip(a: &MoltValue, b: &MoltValue) -> MoltValue {
     let av = molt_iter(a);
     let bv = molt_iter(b);
     MoltValue::List(
-        av.into_iter().zip(bv)
+        av.into_iter()
+            .zip(bv)
             .map(|(x, y)| MoltValue::List(vec![x, y]))
-            .collect()
+            .collect(),
     )
 }
 
@@ -533,12 +600,20 @@ pub fn molt_abs(x: MoltValue) -> MoltValue {
 
 /// Python `min(a, b)`.
 pub fn molt_min(a: MoltValue, b: MoltValue) -> MoltValue {
-    if molt_le(&a, &b) { a } else { b }
+    if molt_le(&a, &b) {
+        a
+    } else {
+        b
+    }
 }
 
 /// Python `max(a, b)`.
 pub fn molt_max(a: MoltValue, b: MoltValue) -> MoltValue {
-    if molt_ge(&a, &b) { a } else { b }
+    if molt_ge(&a, &b) {
+        a
+    } else {
+        b
+    }
 }
 
 /// Python `chr(x)`.
@@ -552,7 +627,8 @@ pub fn molt_chr(x: &MoltValue) -> MoltValue {
 /// Python `ord(x)`.
 pub fn molt_ord(x: &MoltValue) -> MoltValue {
     if let MoltValue::Str(s) = x {
-        s.chars().next()
+        s.chars()
+            .next()
             .map(|c| MoltValue::Int(c as i64))
             .unwrap_or(MoltValue::None)
     } else {
@@ -584,9 +660,10 @@ pub fn molt_dict_values(d: &MoltValue) -> MoltValue {
 pub fn molt_dict_items(d: &MoltValue) -> MoltValue {
     if let MoltValue::Dict(pairs) = d {
         MoltValue::List(
-            pairs.iter()
+            pairs
+                .iter()
                 .map(|(k, v)| MoltValue::List(vec![k.clone(), v.clone()]))
-                .collect()
+                .collect(),
         )
     } else {
         MoltValue::List(vec![])
@@ -608,9 +685,10 @@ pub fn molt_map(f: &MoltValue, t: &MoltValue) -> MoltValue {
 pub fn molt_filter(f: &MoltValue, t: &MoltValue) -> MoltValue {
     if let MoltValue::Func(func) = f {
         MoltValue::List(
-            molt_iter(t).into_iter()
+            molt_iter(t)
+                .into_iter()
                 .filter(|x| molt_bool(&func(vec![x.clone()])))
-                .collect()
+                .collect(),
         )
     } else {
         MoltValue::List(vec![])
@@ -639,12 +717,30 @@ mod tests {
 
     #[test]
     fn test_arithmetic() {
-        assert_eq!(molt_add(MoltValue::Int(3), MoltValue::Int(4)), MoltValue::Int(7));
-        assert_eq!(molt_mul(MoltValue::Int(6), MoltValue::Int(7)), MoltValue::Int(42));
-        assert_eq!(molt_sub(MoltValue::Int(10), MoltValue::Int(3)), MoltValue::Int(7));
-        assert_eq!(molt_floor_div(MoltValue::Int(7), MoltValue::Int(2)), MoltValue::Int(3));
-        assert_eq!(molt_mod(MoltValue::Int(7), MoltValue::Int(3)), MoltValue::Int(1));
-        assert_eq!(molt_pow(MoltValue::Int(2), MoltValue::Int(10)), MoltValue::Int(1024));
+        assert_eq!(
+            molt_add(MoltValue::Int(3), MoltValue::Int(4)),
+            MoltValue::Int(7)
+        );
+        assert_eq!(
+            molt_mul(MoltValue::Int(6), MoltValue::Int(7)),
+            MoltValue::Int(42)
+        );
+        assert_eq!(
+            molt_sub(MoltValue::Int(10), MoltValue::Int(3)),
+            MoltValue::Int(7)
+        );
+        assert_eq!(
+            molt_floor_div(MoltValue::Int(7), MoltValue::Int(2)),
+            MoltValue::Int(3)
+        );
+        assert_eq!(
+            molt_mod(MoltValue::Int(7), MoltValue::Int(3)),
+            MoltValue::Int(1)
+        );
+        assert_eq!(
+            molt_pow(MoltValue::Int(2), MoltValue::Int(10)),
+            MoltValue::Int(1024)
+        );
     }
 
     #[test]
@@ -669,9 +765,15 @@ mod tests {
     fn test_dict_ops() {
         let mut d = MoltValue::Dict(vec![]);
         molt_set_item(&mut d, MoltValue::Str("x".to_string()), MoltValue::Int(42));
-        assert_eq!(molt_get_item(&d, &MoltValue::Str("x".to_string())), MoltValue::Int(42));
+        assert_eq!(
+            molt_get_item(&d, &MoltValue::Str("x".to_string())),
+            MoltValue::Int(42)
+        );
         molt_set_item(&mut d, MoltValue::Str("x".to_string()), MoltValue::Int(99));
-        assert_eq!(molt_get_item(&d, &MoltValue::Str("x".to_string())), MoltValue::Int(99));
+        assert_eq!(
+            molt_get_item(&d, &MoltValue::Str("x".to_string())),
+            MoltValue::Int(99)
+        );
     }
 
     #[test]
@@ -699,7 +801,10 @@ mod tests {
         let en = molt_enumerate(&l, 0);
         if let MoltValue::List(items) = &en {
             assert_eq!(items.len(), 2);
-            assert_eq!(items[0], MoltValue::List(vec![MoltValue::Int(0), MoltValue::Int(10)]));
+            assert_eq!(
+                items[0],
+                MoltValue::List(vec![MoltValue::Int(0), MoltValue::Int(10)])
+            );
         }
         let a = MoltValue::List(vec![MoltValue::Int(1), MoltValue::Int(2)]);
         let b = MoltValue::List(vec![MoltValue::Int(3), MoltValue::Int(4)]);
@@ -709,7 +814,11 @@ mod tests {
 
     #[test]
     fn test_sum_any_all() {
-        let l = MoltValue::List(vec![MoltValue::Int(1), MoltValue::Int(2), MoltValue::Int(3)]);
+        let l = MoltValue::List(vec![
+            MoltValue::Int(1),
+            MoltValue::Int(2),
+            MoltValue::Int(3),
+        ]);
         assert_eq!(molt_sum(&l), MoltValue::Int(6));
         assert!(molt_any(&l));
         assert!(molt_all(&l));

@@ -26,9 +26,9 @@
 //! in `PyArg_ParseTuple`, which is called on every C extension function entry.
 
 use crate::abi_types::{
-    MoltTypeTag, PyBool_Type, PyBytes_Type, PyDict_Type, PyFloat_Type, PyList_Type,
-    PyLong_Type, PyModule_Type, PyObject, PySet_Type, PyTuple_Type, PyTypeObject,
-    PyUnicode_Type, Py_False, Py_None, Py_True,
+    MoltTypeTag, Py_False, Py_None, Py_True, PyBool_Type, PyBytes_Type, PyDict_Type, PyFloat_Type,
+    PyList_Type, PyLong_Type, PyModule_Type, PyObject, PySet_Type, PyTuple_Type, PyTypeObject,
+    PyUnicode_Type,
 };
 use molt_lang_obj_model::MoltObject;
 use once_cell::sync::OnceCell;
@@ -64,9 +64,9 @@ pub struct ObjectBridge {
 /// Index is `MoltTypeTag as u8`, value is `*mut PyTypeObject`.
 /// Fits in exactly 16 entries (one SIMD lane on SSE/NEON).
 struct TypeTagTable {
-    tags:  [u8;             16],
+    tags: [u8; 16],
     types: [*mut PyTypeObject; 16],
-    len:   usize,
+    len: usize,
 }
 
 unsafe impl Send for TypeTagTable {}
@@ -78,28 +78,28 @@ static TAG_TABLE: OnceCell<TypeTagTable> = OnceCell::new();
 pub fn init_tag_table() {
     TAG_TABLE.get_or_init(|| unsafe {
         let mut table = TypeTagTable {
-            tags:  [0u8; 16],
+            tags: [0u8; 16],
             types: [std::ptr::null_mut(); 16],
-            len:   0,
+            len: 0,
         };
         macro_rules! push {
             ($tag:expr, $ty:expr) => {{
                 let i = table.len;
-                table.tags[i]  = $tag as u8;
+                table.tags[i] = $tag as u8;
                 table.types[i] = &raw mut $ty;
                 table.len += 1;
             }};
         }
-        push!(MoltTypeTag::None,   PyUnicode_Type); // NoneType → placeholder
-        push!(MoltTypeTag::Bool,   PyBool_Type);
-        push!(MoltTypeTag::Int,    PyLong_Type);
-        push!(MoltTypeTag::Float,  PyFloat_Type);
-        push!(MoltTypeTag::Str,    PyUnicode_Type);
-        push!(MoltTypeTag::Bytes,  PyBytes_Type);
-        push!(MoltTypeTag::List,   PyList_Type);
-        push!(MoltTypeTag::Tuple,  PyTuple_Type);
-        push!(MoltTypeTag::Dict,   PyDict_Type);
-        push!(MoltTypeTag::Set,    PySet_Type);
+        push!(MoltTypeTag::None, PyUnicode_Type); // NoneType → placeholder
+        push!(MoltTypeTag::Bool, PyBool_Type);
+        push!(MoltTypeTag::Int, PyLong_Type);
+        push!(MoltTypeTag::Float, PyFloat_Type);
+        push!(MoltTypeTag::Str, PyUnicode_Type);
+        push!(MoltTypeTag::Bytes, PyBytes_Type);
+        push!(MoltTypeTag::List, PyList_Type);
+        push!(MoltTypeTag::Tuple, PyTuple_Type);
+        push!(MoltTypeTag::Dict, PyDict_Type);
+        push!(MoltTypeTag::Set, PySet_Type);
         push!(MoltTypeTag::Module, PyModule_Type);
         table
     });
@@ -148,10 +148,10 @@ mod simd_x86 {
     pub unsafe fn lookup_type(needle: u8) -> *mut PyTypeObject {
         let table = TAG_TABLE.get().expect("init_tag_table not called");
 
-        let tags_vec   = unsafe { _mm_loadu_si128(table.tags.as_ptr().cast()) };
+        let tags_vec = unsafe { _mm_loadu_si128(table.tags.as_ptr().cast()) };
         let needle_vec = unsafe { _mm_set1_epi8(needle as i8) };
-        let cmp        = unsafe { _mm_cmpeq_epi8(tags_vec, needle_vec) };
-        let mask       = unsafe { _mm_movemask_epi8(cmp) } as u32;
+        let cmp = unsafe { _mm_cmpeq_epi8(tags_vec, needle_vec) };
+        let mask = unsafe { _mm_movemask_epi8(cmp) } as u32;
 
         if mask != 0 {
             let idx = mask.trailing_zeros() as usize;
@@ -172,9 +172,9 @@ mod simd_neon {
     pub unsafe fn lookup_type(needle: u8) -> *mut PyTypeObject {
         let table = TAG_TABLE.get().expect("init_tag_table not called");
 
-        let tags_vec   = unsafe { vld1q_u8(table.tags.as_ptr()) };
+        let tags_vec = unsafe { vld1q_u8(table.tags.as_ptr()) };
         let needle_vec = unsafe { vdupq_n_u8(needle) };
-        let cmp        = unsafe { vceqq_u8(tags_vec, needle_vec) };
+        let cmp = unsafe { vceqq_u8(tags_vec, needle_vec) };
 
         // Extract match positions via u64 lanes.
         let lo = unsafe { vgetq_lane_u64(vreinterpretq_u64_u8(cmp), 0) };
@@ -199,7 +199,7 @@ mod simd_neon {
 impl ObjectBridge {
     pub fn new() -> Self {
         Self {
-            to_py:   HashMap::new(),
+            to_py: HashMap::new(),
             from_py: HashMap::new(),
         }
     }
@@ -217,7 +217,9 @@ impl ObjectBridge {
         // Fast path: already in map.
         if let Some(entry) = self.to_py.get(&bits) {
             let ptr = entry.py_obj.as_ref() as *const PyObject as *mut PyObject;
-            unsafe { (*ptr).ob_refcnt += 1; }
+            unsafe {
+                (*ptr).ob_refcnt += 1;
+            }
             return ptr;
         }
 
@@ -239,7 +241,10 @@ impl ObjectBridge {
         let ob_type = unsafe { tag_to_type(tag) };
 
         let mut entry = Box::new(BridgeEntry {
-            py_obj: Box::new(PyObject { ob_refcnt: 1, ob_type }),
+            py_obj: Box::new(PyObject {
+                ob_refcnt: 1,
+                ob_type,
+            }),
             molt_bits: bits,
         });
 
@@ -280,24 +285,32 @@ impl ObjectBridge {
 
     fn classify_handle(&self, bits: AbiHandle) -> MoltTypeTag {
         let obj = MoltObject::from_bits(bits);
-        if obj.is_none()  { return MoltTypeTag::None; }
-        if obj.is_bool()  { return MoltTypeTag::Bool; }
-        if obj.is_int()   { return MoltTypeTag::Int;  }
-        if obj.is_float() { return MoltTypeTag::Float; }
+        if obj.is_none() {
+            return MoltTypeTag::None;
+        }
+        if obj.is_bool() {
+            return MoltTypeTag::Bool;
+        }
+        if obj.is_int() {
+            return MoltTypeTag::Int;
+        }
+        if obj.is_float() {
+            return MoltTypeTag::Float;
+        }
 
         if obj.is_ptr() {
             // Heap type: ask the runtime via the registered classify hook.
             let h = crate::hooks::hooks_or_stubs();
             let tag_u8 = unsafe { (h.classify_heap)(bits) };
             match tag_u8 {
-                t if t == MoltTypeTag::Str    as u8 => MoltTypeTag::Str,
-                t if t == MoltTypeTag::Bytes  as u8 => MoltTypeTag::Bytes,
-                t if t == MoltTypeTag::List   as u8 => MoltTypeTag::List,
-                t if t == MoltTypeTag::Tuple  as u8 => MoltTypeTag::Tuple,
-                t if t == MoltTypeTag::Dict   as u8 => MoltTypeTag::Dict,
-                t if t == MoltTypeTag::Set    as u8 => MoltTypeTag::Set,
+                t if t == MoltTypeTag::Str as u8 => MoltTypeTag::Str,
+                t if t == MoltTypeTag::Bytes as u8 => MoltTypeTag::Bytes,
+                t if t == MoltTypeTag::List as u8 => MoltTypeTag::List,
+                t if t == MoltTypeTag::Tuple as u8 => MoltTypeTag::Tuple,
+                t if t == MoltTypeTag::Dict as u8 => MoltTypeTag::Dict,
+                t if t == MoltTypeTag::Set as u8 => MoltTypeTag::Set,
                 t if t == MoltTypeTag::Module as u8 => MoltTypeTag::Module,
-                _                                   => MoltTypeTag::Other,
+                _ => MoltTypeTag::Other,
             }
         } else {
             MoltTypeTag::Other

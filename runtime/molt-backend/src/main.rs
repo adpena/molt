@@ -405,7 +405,11 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
         let output_path = job.output.clone();
         let mut ir = job.ir;
         ir.tree_shake_luau(); // Rewrites molt_main + stubs stdlib calls; our prelude handles builtins.
-        let mut backend = if job.use_crate { RustBackend::new_with_crate() } else { RustBackend::new() };
+        let mut backend = if job.use_crate {
+            RustBackend::new_with_crate()
+        } else {
+            RustBackend::new()
+        };
         let rust_source = backend.compile(&ir);
         if let Err(err) = write_output(&output_path, rust_source.as_bytes()) {
             return DaemonJobResponse {
@@ -913,18 +917,31 @@ fn main() -> io::Result<()> {
         if let Ok(filter) = std::env::var("MOLT_DUMP_IR") {
             for func in &ir.functions {
                 if filter == "1" || filter == "all" || func.name.contains(&filter) {
-                    eprintln!("=== IR [post-shake/rust] {} ({} ops) ===", func.name, func.ops.len());
+                    eprintln!(
+                        "=== IR [post-shake/rust] {} ({} ops) ===",
+                        func.name,
+                        func.ops.len()
+                    );
                     for (i, op) in func.ops.iter().enumerate() {
-                        if op.kind == "nop" { continue; }
-                        eprintln!("  [{i:4}] kind={:<24} out={:<12} s_value={:<30} args={:?}",
-                            op.kind, op.out.as_deref().unwrap_or("-"),
+                        if op.kind == "nop" {
+                            continue;
+                        }
+                        eprintln!(
+                            "  [{i:4}] kind={:<24} out={:<12} s_value={:<30} args={:?}",
+                            op.kind,
+                            op.out.as_deref().unwrap_or("-"),
                             op.s_value.as_deref().unwrap_or("-"),
-                            op.args.as_ref().map(|a| a.join(", ")).unwrap_or_default());
+                            op.args.as_ref().map(|a| a.join(", ")).unwrap_or_default()
+                        );
                     }
                 }
             }
         }
-        let mut backend = if use_crate { RustBackend::new_with_crate() } else { RustBackend::new() };
+        let mut backend = if use_crate {
+            RustBackend::new_with_crate()
+        } else {
+            RustBackend::new()
+        };
         let rust_source = backend.compile(&ir);
         file.write_all(rust_source.as_bytes())?;
         println!("Successfully compiled to {output_file}");
@@ -933,13 +950,19 @@ fn main() -> io::Result<()> {
         if let Ok(filter) = std::env::var("MOLT_DUMP_IR") {
             for func in &ir.functions {
                 if filter == "1" || filter == "all" || func.name.contains(&filter) {
-                    eprintln!("=== IR [pre-shake] {} ({} ops) ===", func.name, func.ops.len());
+                    eprintln!(
+                        "=== IR [pre-shake] {} ({} ops) ===",
+                        func.name,
+                        func.ops.len()
+                    );
                     for (i, op) in func.ops.iter().enumerate() {
-                        eprintln!("  [{i:4}] kind={:<24} out={:<12} s_value={:<30} args={:?}",
+                        eprintln!(
+                            "  [{i:4}] kind={:<24} out={:<12} s_value={:<30} args={:?}",
                             op.kind,
                             op.out.as_deref().unwrap_or("-"),
                             op.s_value.as_deref().unwrap_or("-"),
-                            op.args.as_ref().map(|a| a.join(", ")).unwrap_or_default());
+                            op.args.as_ref().map(|a| a.join(", ")).unwrap_or_default()
+                        );
                     }
                 }
             }
@@ -949,14 +972,22 @@ fn main() -> io::Result<()> {
         if let Ok(filter) = std::env::var("MOLT_DUMP_IR") {
             for func in &ir.functions {
                 if filter == "1" || filter == "all" || func.name.contains(&filter) {
-                    eprintln!("=== IR [post-shake] {} ({} ops) ===", func.name, func.ops.len());
+                    eprintln!(
+                        "=== IR [post-shake] {} ({} ops) ===",
+                        func.name,
+                        func.ops.len()
+                    );
                     for (i, op) in func.ops.iter().enumerate() {
-                        if op.kind == "nop" { continue; }
-                        eprintln!("  [{i:4}] kind={:<24} out={:<12} s_value={:<30} args={:?}",
+                        if op.kind == "nop" {
+                            continue;
+                        }
+                        eprintln!(
+                            "  [{i:4}] kind={:<24} out={:<12} s_value={:<30} args={:?}",
                             op.kind,
                             op.out.as_deref().unwrap_or("-"),
                             op.s_value.as_deref().unwrap_or("-"),
-                            op.args.as_ref().map(|a| a.join(", ")).unwrap_or_default());
+                            op.args.as_ref().map(|a| a.join(", ")).unwrap_or_default()
+                        );
                     }
                 }
             }

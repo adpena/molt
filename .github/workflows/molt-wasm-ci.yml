@@ -31,8 +31,20 @@ jobs:
     timeout-minutes: 15
     env:
       PYTHONPATH: ${{ github.workspace }}/src
+      MOLT_EXT_ROOT: /tmp/molt-ext
+      CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target
+      MOLT_DIFF_CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target
+      MOLT_BACKEND_DAEMON_SOCKET_DIR: /tmp/molt_backend_sockets
     steps:
       - uses: actions/checkout@v4
+
+      - name: Prepare portable artifact root
+        run: |
+          mkdir -p /tmp/molt-ext/tmp
+          mkdir -p /tmp/molt-ext/diff
+          mkdir -p /tmp/molt-ext/molt_cache
+          mkdir -p /tmp/molt-ext/uv-cache
+          mkdir -p /tmp/molt-ext/cargo-target
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
@@ -65,7 +77,6 @@ jobs:
           uv run --python 3.12 python3 -m molt.cli build \
             examples/hello.py --target wasm --output /tmp/test_hello.wasm
         env:
-          MOLT_EXT_ROOT: /tmp/molt-ext
           RUSTC_WRAPPER: ""
 
       - name: Validate hello.wasm is non-zero
@@ -86,7 +97,6 @@ jobs:
           uv run --python 3.12 python3 -m molt.cli build \
             examples/comprehension_fail.py --target wasm --output /tmp/test_comprehension.wasm
         env:
-          MOLT_EXT_ROOT: /tmp/molt-ext
           RUSTC_WRAPPER: ""
 
       - name: Validate comprehension.wasm is non-zero
@@ -107,7 +117,6 @@ jobs:
           uv run --python 3.12 python3 -m molt.cli build \
             examples/hello.py --target luau --output /tmp/test_hello.luau
         env:
-          MOLT_EXT_ROOT: /tmp/molt-ext
           RUSTC_WRAPPER: ""
 
       - name: Validate hello.luau is non-zero
@@ -125,7 +134,6 @@ jobs:
           uv run --python 3.12 python3 -m molt.cli build \
             examples/comprehension_fail.py --target luau --output /tmp/test_comprehension.luau
         env:
-          MOLT_EXT_ROOT: /tmp/molt-ext
           RUSTC_WRAPPER: ""
 
       - name: Validate comprehension.luau is non-zero
