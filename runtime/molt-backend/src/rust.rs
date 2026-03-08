@@ -142,9 +142,11 @@ impl RustBackend {
 
     fn note_alias(&mut self, dst: String, src: String) {
         self.clear_alias(&dst);
-        let root = self.alias_root(&src);
-        if dst != root {
-            self.aliases.insert(dst, root);
+        // Record the DIRECT parent (not the root) so emit_alias_writeback
+        // propagates mutations through each intermediate phi var correctly.
+        // e.g. v265→v130→v146 ensures both v130 and v146 get updated.
+        if dst != src {
+            self.aliases.insert(dst, src);
         }
     }
 
@@ -1782,7 +1784,11 @@ impl RustBackend {
                     if o == "_" || o == "none" {
                         self.emit_line("__call_ret;");
                     } else {
-                        self.emit_line(&declare(&o, "__call_ret.clone()", &self.hoisted_vars.clone()));
+                        self.emit_line(&declare(
+                            &o,
+                            "__call_ret.clone()",
+                            &self.hoisted_vars.clone(),
+                        ));
                     }
                 } else if args.is_empty() {
                     if o == "_" || o == "none" {
@@ -1816,7 +1822,11 @@ impl RustBackend {
                     if o == "_" || o == "none" {
                         self.emit_line("__call_ret;");
                     } else {
-                        self.emit_line(&declare(&o, "__call_ret.clone()", &self.hoisted_vars.clone()));
+                        self.emit_line(&declare(
+                            &o,
+                            "__call_ret.clone()",
+                            &self.hoisted_vars.clone(),
+                        ));
                     }
                 }
             }
@@ -1845,26 +1855,26 @@ impl RustBackend {
                     }
                 } else {
                     let rhs = match method {
-                    "keys" => format!("molt_dict_keys(&{obj})"),
-                    "values" => format!("molt_dict_values(&{obj})"),
-                    "items" => format!("molt_dict_items(&{obj})"),
-                    "get" => {
-                        let key = call_args
-                            .first()
-                            .cloned()
-                            .unwrap_or_else(|| "MoltValue::None".to_string());
-                        let default = call_args
-                            .get(1)
-                            .cloned()
-                            .unwrap_or_else(|| "MoltValue::None".to_string());
-                        format!(
-                            "{{ let __k = {key}; if let Some((_, v)) = if let MoltValue::Dict(d) = &{obj} {{ d.iter().find(|(k,_)| molt_eq(k, &__k)) }} else {{ None }} {{ v.clone() }} else {{ {default} }} }}"
-                        )
-                    }
-                    _ => format!(
-                        "/* MOLT_STUB: method {obj}.{method}({}) */ MoltValue::None",
-                        call_args.join(", ")
-                    ),
+                        "keys" => format!("molt_dict_keys(&{obj})"),
+                        "values" => format!("molt_dict_values(&{obj})"),
+                        "items" => format!("molt_dict_items(&{obj})"),
+                        "get" => {
+                            let key = call_args
+                                .first()
+                                .cloned()
+                                .unwrap_or_else(|| "MoltValue::None".to_string());
+                            let default = call_args
+                                .get(1)
+                                .cloned()
+                                .unwrap_or_else(|| "MoltValue::None".to_string());
+                            format!(
+                                "{{ let __k = {key}; if let Some((_, v)) = if let MoltValue::Dict(d) = &{obj} {{ d.iter().find(|(k,_)| molt_eq(k, &__k)) }} else {{ None }} {{ v.clone() }} else {{ {default} }} }}"
+                            )
+                        }
+                        _ => format!(
+                            "/* MOLT_STUB: method {obj}.{method}({}) */ MoltValue::None",
+                            call_args.join(", ")
+                        ),
                     };
                     if o == "_" || o == "none" {
                         self.emit_line(&format!("{rhs};"));
@@ -1901,7 +1911,10 @@ impl RustBackend {
                            __ret }}"
                     )
                 } else if let Some(func) = args.first() {
-                    format!("{{ let mut __call_args = Vec::new(); molt_call(&{}, &mut __call_args) }}", rust_ident(func))
+                    format!(
+                        "{{ let mut __call_args = Vec::new(); molt_call(&{}, &mut __call_args) }}",
+                        rust_ident(func)
+                    )
                 } else {
                     "MoltValue::None".to_string()
                 };
