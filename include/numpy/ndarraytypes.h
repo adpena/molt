@@ -107,6 +107,14 @@ typedef _molt_npy_clongdouble_value npy_clongdouble;
 #define NPY_SUBTYPE_PRIORITY 1.0
 #endif
 
+#ifndef NPY_RAVEL_AXIS
+#define NPY_RAVEL_AXIS NPY_MIN_INT
+#endif
+
+#ifndef NPY_DEFAULT_ASSIGN_CASTING
+#define NPY_DEFAULT_ASSIGN_CASTING NPY_SAME_KIND_CASTING
+#endif
+
 #ifndef NPY_DATETIME_FMT
 #define NPY_DATETIME_FMT NPY_INT64_FMT
 #endif
@@ -218,6 +226,11 @@ enum NPY_TYPECHAR {
     NPY_TIMEDELTALTR = 'm',
     NPY_CHARLTR = 'c',
     NPY_VSTRINGLTR = 'T',
+    NPY_GENBOOLLTR = 'b',
+    NPY_SIGNEDLTR = 'i',
+    NPY_UNSIGNEDLTR = 'u',
+    NPY_FLOATINGLTR = 'f',
+    NPY_COMPLEXLTR = 'c',
 };
 
 #if NPY_SIZEOF_LONG == 8
@@ -248,6 +261,9 @@ enum NPY_TYPECHAR {
 #endif
 #ifndef NPY_FLOAT32
 #define NPY_FLOAT32 NPY_FLOAT
+#endif
+#ifndef NPY_FLOAT16
+#define NPY_FLOAT16 NPY_HALF
 #endif
 #ifndef NPY_FLOAT64
 #define NPY_FLOAT64 NPY_DOUBLE
@@ -623,6 +639,11 @@ typedef struct PyArrayMapIterObject {
 typedef struct NpyIter_InternalOnly NpyIter;
 typedef int (NpyIter_IterNextFunc)(NpyIter *iter);
 typedef void (NpyIter_GetMultiIndexFunc)(NpyIter *iter, npy_intp *outcoords);
+NPY_NO_EXPORT NpyIter *NpyIter_New(PyObject *op, ...);
+NPY_NO_EXPORT NpyIter *NpyIter_MultiNew(int nop, PyObject **op, ...);
+NPY_NO_EXPORT int NpyIter_Deallocate(NpyIter *iter);
+NPY_NO_EXPORT int NpyIter_Reset(NpyIter *iter, char **errmsg);
+NPY_NO_EXPORT PyObject **NpyIter_GetOperandArray(NpyIter *iter);
 
 #ifndef NPY_ITER_C_INDEX
 #define NPY_ITER_C_INDEX 0x00000001
@@ -1314,6 +1335,8 @@ extern PyTypeObject PyArrayMapIter_Type;
 #ifndef NPY_BEGIN_THREADS_DEF
 #define NPY_BEGIN_THREADS_DEF PyThreadState *_save = NULL;
 #if NPY_ALLOW_THREADS
+#define NPY_BEGIN_ALLOW_THREADS Py_BEGIN_ALLOW_THREADS
+#define NPY_END_ALLOW_THREADS Py_END_ALLOW_THREADS
 #define NPY_BEGIN_THREADS do { _save = PyEval_SaveThread(); } while (0)
 #define NPY_END_THREADS do { if (_save) { PyEval_RestoreThread(_save); _save = NULL; } } while (0)
 #define NPY_BEGIN_THREADS_DESCR(dtype) do { (void)(dtype); _save = PyEval_SaveThread(); } while (0)
@@ -1328,6 +1351,8 @@ extern PyTypeObject PyArrayMapIter_Type;
 #define NPY_ALLOW_C_API do { __save__ = PyGILState_Ensure(); } while (0)
 #define NPY_DISABLE_C_API do { PyGILState_Release(__save__); } while (0)
 #else
+#define NPY_BEGIN_ALLOW_THREADS
+#define NPY_END_ALLOW_THREADS
 #define NPY_BEGIN_THREADS do { } while (0)
 #define NPY_END_THREADS do { } while (0)
 #define NPY_BEGIN_THREADS_DESCR(dtype) do { (void)(dtype); } while (0)
@@ -1396,6 +1421,14 @@ static inline int PyArrayNeighborhoodIter_Reset(PyArrayNeighborhoodIterObject *i
     iter->dataptr = iter->translate((PyArrayIterObject *)iter, iter->coordinates);
     return 0;
 }
+
+enum {
+    NPY_NEIGHBORHOOD_ITER_ZERO_PADDING,
+    NPY_NEIGHBORHOOD_ITER_ONE_PADDING,
+    NPY_NEIGHBORHOOD_ITER_CONSTANT_PADDING,
+    NPY_NEIGHBORHOOD_ITER_CIRCULAR_PADDING,
+    NPY_NEIGHBORHOOD_ITER_MIRROR_PADDING,
+};
 
 #ifdef __cplusplus
 }
