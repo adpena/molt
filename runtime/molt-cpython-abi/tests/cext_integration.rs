@@ -43,9 +43,8 @@ fn build_extension() -> PathBuf {
     let out_dir = std::env::temp_dir().join("molt-cext-integration-test");
     std::fs::create_dir_all(&out_dir).expect("create out dir");
 
-    let cargo_target = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| {
-        repo_root().join("target").display().to_string()
-    });
+    let cargo_target = std::env::var("CARGO_TARGET_DIR")
+        .unwrap_or_else(|_| repo_root().join("target").display().to_string());
 
     let status = Command::new("bash")
         .arg(root.join("scripts/build-cext.sh"))
@@ -109,9 +108,7 @@ fn test_load_testmolt_extension() {
     unsafe { preload_and_init_dylib() };
 
     // SAFETY: we compiled this ourselves; it links against libmolt_cpython_abi.
-    let result = unsafe {
-        molt_cpython_abi::loader::load_cpython_extension(&so_path, "_testmolt")
-    };
+    let result = unsafe { molt_cpython_abi::loader::load_cpython_extension(&so_path, "_testmolt") };
 
     match result {
         Ok(bits) => {

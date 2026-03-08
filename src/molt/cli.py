@@ -5948,7 +5948,7 @@ def _ensure_runtime_lib(
             )
         if not json_output:
             print("Runtime sources changed; rebuilding runtime...")
-        cmd = ["cargo", "build", "-p", "molt-runtime", "--profile", cargo_profile]
+        cmd = ["cargo", "build", "-p", "molt-lang-runtime", "--profile", cargo_profile]
         if runtime_features:
             cmd.extend(["--features", ",".join(runtime_features)])
         if target_triple:
@@ -6356,7 +6356,7 @@ def _ensure_runtime_wasm(
             "cargo",
             "build",
             "--package",
-            "molt-runtime",
+            "molt-lang-runtime",
             "--profile",
             cargo_profile,
             "--target",
@@ -10506,7 +10506,7 @@ def build(
                 "cache": cache_info,
                 "emit": emit_mode,
             }
-            payload = _build_json_payload("build", "ok", data=data, warnings=warnings)
+            payload = _json_payload("build", "ok", data=data, warnings=warnings)
             _emit_json(payload, json_output)
         else:
             print(f"Successfully built {output_artifact}")
@@ -12088,7 +12088,7 @@ def doctor(
         runtime_lib.exists(),
         str(runtime_lib),
         level="warning",
-        advice=["cargo build --release --package molt-runtime"]
+        advice=["cargo build --release --package molt-lang-runtime"]
         if not runtime_lib.exists()
         else None,
     )
