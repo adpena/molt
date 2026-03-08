@@ -3,6 +3,7 @@
 
 #include <numpy/ndarraytypes.h>
 #include <numpy/dtype_api.h>
+#include <numpy/arrayscalars.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -180,6 +181,7 @@ NPY_NO_EXPORT int PyArray_XDECREF(PyArrayObject *mp);
 #define PyArray_ISFLEXIBLE(arr) PyTypeNum_ISFLEXIBLE(PyArray_TYPE(arr))
 #define PyArray_ISOBJECT(arr) PyTypeNum_ISOBJECT(PyArray_TYPE(arr))
 #define PyArray_ISUSERDEF(arr) PyTypeNum_ISUSERDEF(PyArray_TYPE(arr))
+#define PyArray_ISEXTENDED(arr) PyTypeNum_ISEXTENDED(PyArray_TYPE(arr))
 #define PyArray_ISSIGNED(arr) PyTypeNum_ISSIGNED(PyArray_TYPE(arr))
 #define PyArray_ISWRITEABLE(arr) PyArray_CHKFLAGS((arr), NPY_ARRAY_WRITEABLE)
 #define PyArray_ISONESEGMENT(arr) (PyArray_ISCONTIGUOUS(arr) || PyArray_ISFORTRAN(arr))
@@ -524,7 +526,9 @@ static inline int PyArray_DeviceConverterOptional(
 }
 #endif
 
-#if !MOLT_NUMPY_INTERNAL_BUILD
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT int PyArray_Converter(PyObject *object, PyObject **address);
+#else
 static inline int PyArray_Converter(PyObject *object, PyObject **address) {
     if (address == NULL) {
         PyErr_SetString(PyExc_TypeError, "address output pointer must not be NULL");
@@ -591,7 +595,9 @@ static inline int PyArray_CorrelatemodeConverter(
 }
 #endif
 
-#if !MOLT_NUMPY_INTERNAL_BUILD
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT int PyArray_OrderConverter(PyObject *obj, NPY_ORDER *order_out);
+#else
 static inline int PyArray_OrderConverter(PyObject *obj, NPY_ORDER *order_out) {
     const char *text;
     if (order_out == NULL) {
@@ -682,7 +688,9 @@ static inline int PyArray_SearchsideConverter(
 }
 #endif
 
-#if !MOLT_NUMPY_INTERNAL_BUILD
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT int PyArray_ClipmodeConverter(PyObject *obj, NPY_CLIPMODE *clipmode_out);
+#else
 static inline int PyArray_ClipmodeConverter(PyObject *obj, NPY_CLIPMODE *clipmode_out) {
     if (clipmode_out == NULL) {
         PyErr_SetString(PyExc_TypeError, "clipmode output pointer must not be NULL");
@@ -732,7 +740,9 @@ static inline int PyArray_ByteorderConverter(PyObject *obj, char *byteorder_out)
 }
 #endif
 
-#if !MOLT_NUMPY_INTERNAL_BUILD
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT int PyArray_CastingConverter(PyObject *obj, NPY_CASTING *casting_out);
+#else
 static inline int PyArray_CastingConverter(PyObject *obj, NPY_CASTING *casting_out) {
     const char *text;
     if (casting_out == NULL) {
@@ -801,7 +811,15 @@ static inline int PyArray_BufferConverter(PyObject *obj, PyArray_Chunk *buf) {
 }
 #endif
 
-#if !MOLT_NUMPY_INTERNAL_BUILD
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT int PyArray_CompareLists(
+    const npy_intp *lhs,
+    const npy_intp *rhs,
+    int length
+);
+NPY_NO_EXPORT npy_intp PyArray_MultiplyList(const npy_intp *values, int length);
+NPY_NO_EXPORT int PyArray_EquivTypes(PyArray_Descr *lhs, PyArray_Descr *rhs);
+#else
 static inline int PyArray_CompareLists(
     const npy_intp *lhs,
     const npy_intp *rhs,
@@ -917,7 +935,9 @@ static inline int PyArray_IntpFromSequence(PyObject *obj, npy_intp *values, int 
 }
 #endif
 
-#if !MOLT_NUMPY_INTERNAL_BUILD
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT PyArrayObject *PyArray_NewCopy(PyArrayObject *array_obj, int order);
+#else
 static inline PyArrayObject *PyArray_NewCopy(PyArrayObject *array_obj, int order) {
     (void)order;
     if (array_obj == NULL) {
@@ -935,7 +955,11 @@ static inline npy_intp _molt_PyArray_Size(PyObject *obj) {
     return (npy_intp)PySequence_Size(obj);
 }
 
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT npy_intp PyArray_Size(PyObject *op);
+#else
 #define PyArray_Size(obj) _molt_PyArray_Size((PyObject *)(obj))
+#endif
 
 #if defined(_MULTIARRAYMODULE) || defined(_UMATHMODULE) || defined(NPY_INTERNAL_BUILD)
 NPY_NO_EXPORT PyArrayObject **PyArray_ConvertToCommonType(PyObject *op, int *retn);
@@ -995,7 +1019,9 @@ static inline PyObject *PyArray_PyIntFromIntp(npy_intp value) {
 }
 #endif
 
-#if !MOLT_NUMPY_INTERNAL_BUILD
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT int PyArray_FailUnlessWriteable(PyArrayObject *array_obj, const char *who);
+#else
 static inline int PyArray_FailUnlessWriteable(PyArrayObject *array_obj, const char *who) {
     (void)who;
     if ((PyArray_FLAGS(array_obj) & NPY_ARRAY_WRITEABLE) == 0) {
@@ -1077,7 +1103,9 @@ static inline int PyArray_ObjectType(PyObject *obj, int minimum_type) {
 }
 #endif
 
-#if !MOLT_NUMPY_INTERNAL_BUILD
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT int PyArray_SetBaseObject(PyArrayObject *array_obj, PyObject *base);
+#else
 static inline int PyArray_SetBaseObject(PyArrayObject *array_obj, PyObject *base) {
     if (array_obj == NULL) {
         PyErr_SetString(PyExc_TypeError, "array must not be NULL");
@@ -1173,7 +1201,9 @@ static inline PyObject *PyArray_NewFromDescr(
     return _molt_numpy_unavailable_obj("PyArray_NewFromDescr");
 }
 
-#if !MOLT_NUMPY_INTERNAL_BUILD
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT void PyArray_UpdateFlags(PyArrayObject *array_obj, int flagmask);
+#else
 static inline void PyArray_UpdateFlags(PyArrayObject *array_obj, int flagmask) {
     if (array_obj == NULL) {
         return;
@@ -1278,7 +1308,9 @@ static inline PyObject *PyArray_NewFromDescr_int(
 }
 #endif
 
-#if !MOLT_NUMPY_INTERNAL_BUILD
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT PyObject *PyArray_IterNew(PyObject *obj);
+#else
 static inline PyObject *PyArray_IterNew(PyObject *obj) {
     (void)obj;
     return _molt_numpy_unavailable_obj("PyArray_IterNew");
@@ -1590,7 +1622,17 @@ static inline PyObject *PyArray_TupleFromItems(
 }
 #endif
 
-#if !MOLT_NUMPY_INTERNAL_BUILD
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT npy_intp PyArray_OverflowMultiplyList(
+    const npy_intp *values,
+    int length
+);
+NPY_NO_EXPORT int PyArray_ResolveWritebackIfCopy(PyArrayObject *array_obj);
+NPY_NO_EXPORT int PyArray_SetWritebackIfCopyBase(
+    PyArrayObject *array_obj,
+    PyArrayObject *base
+);
+#else
 static inline npy_intp PyArray_OverflowMultiplyList(
     const npy_intp *values,
     int length
@@ -1801,7 +1843,9 @@ static inline void PyArray_CreateSortedStridePerm(
     }
 }
 
-#if !MOLT_NUMPY_INTERNAL_BUILD
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT int PyArray_AxisConverter(PyObject *obj, int *axis_out);
+#else
 static inline int PyArray_AxisConverter(PyObject *obj, int *axis_out) {
     if (axis_out == NULL) {
         PyErr_SetString(PyExc_TypeError, "axis output pointer must not be NULL");
@@ -1848,7 +1892,9 @@ static inline int PyArray_GetMaskedDTypeTransferFunction(int aligned, ...) {
 }
 #endif
 
-#if !MOLT_NUMPY_INTERNAL_BUILD
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT PyObject *PyArray_IterAllButAxis(PyObject *obj, int *axis);
+#else
 static inline PyObject *PyArray_IterAllButAxis(PyObject *obj, int *axis) {
     (void)axis;
     return PyArray_EnsureArray(obj);
@@ -1965,7 +2011,12 @@ static inline PyObject *PyArray_Flatten(PyArrayObject *a, NPY_ORDER order) {
     return PyArray_Ravel(a, order);
 }
 
-#if !MOLT_NUMPY_INTERNAL_BUILD
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT PyArray_DTypeMeta *PyArray_CommonDType(
+    PyArray_DTypeMeta *dtype1,
+    PyArray_DTypeMeta *dtype2
+);
+#else
 static inline PyArray_DTypeMeta *PyArray_CommonDType(
     PyArray_DTypeMeta *dtype1,
     PyArray_DTypeMeta *dtype2
@@ -2002,7 +2053,14 @@ static inline PyArray_Descr *PyArray_CastToDTypeAndPromoteDescriptors(
 }
 #endif
 
-#if !MOLT_NUMPY_INTERNAL_BUILD
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT PyObject *PyArray_Diagonal(
+    PyArrayObject *self,
+    int offset,
+    int axis1,
+    int axis2
+);
+#else
 static inline PyObject *PyArray_Any(
     PyArrayObject *self,
     int axis,
@@ -2138,7 +2196,9 @@ static inline int PyArray_AssignFromCache(PyArrayObject *self, void *cache) {
     return _molt_numpy_unavailable_i32("PyArray_AssignFromCache");
 }
 #endif
-#if !MOLT_NUMPY_INTERNAL_BUILD
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT double PyArray_GetPriority(PyObject *obj, double default_priority);
+#else
 static inline double PyArray_GetPriority(PyObject *obj, double default_priority) {
     (void)obj;
     return default_priority;
@@ -2213,7 +2273,87 @@ static inline PyBoundArrayMethodObject *PyArrayMethod_FromSpec_int(
  * declarations centralize source compatibility for libmolt without claiming
  * that ndarray kernel/runtime semantics are implemented yet.
  */
-#if !MOLT_NUMPY_INTERNAL_BUILD
+#if MOLT_NUMPY_INTERNAL_BUILD
+NPY_NO_EXPORT int PyArray_CopyObject(PyArrayObject *dst, PyObject *src_object);
+NPY_NO_EXPORT PyArray_DTypeMeta *PyArray_PromoteDTypeSequence(
+    npy_intp n,
+    PyArray_DTypeMeta **dtypes
+);
+NPY_NO_EXPORT int PyArray_FillWithScalar(PyArrayObject *arr, PyObject *obj);
+NPY_NO_EXPORT PyObject *PyArray_Repeat(PyArrayObject *aop, PyObject *op, int axis);
+NPY_NO_EXPORT PyObject *PyArray_Choose(
+    PyArrayObject *ip,
+    PyObject *op,
+    PyArrayObject *out,
+    NPY_CLIPMODE clipmode
+);
+NPY_NO_EXPORT int PyArray_Partition(
+    PyArrayObject *op,
+    PyArrayObject *ktharray,
+    int axis,
+    NPY_SELECTKIND which
+);
+NPY_NO_EXPORT PyObject *PyArray_ArgSort(PyArrayObject *op, int axis, NPY_SORTKIND flags);
+NPY_NO_EXPORT PyObject *PyArray_ArgPartition(
+    PyArrayObject *op,
+    PyArrayObject *ktharray,
+    int axis,
+    NPY_SELECTKIND which
+);
+NPY_NO_EXPORT PyObject *PyArray_SearchSorted(
+    PyArrayObject *op1,
+    PyObject *op2,
+    NPY_SEARCHSIDE side,
+    PyObject *perm
+);
+NPY_NO_EXPORT npy_intp PyArray_CountNonzero(PyArrayObject *self);
+NPY_NO_EXPORT PyObject *PyArray_FromFile(
+    FILE *fp,
+    PyArray_Descr *dtype,
+    npy_intp num,
+    char *sep
+);
+NPY_NO_EXPORT PyObject *PyArray_FromBuffer(
+    PyObject *buf,
+    PyArray_Descr *type,
+    npy_intp count,
+    npy_intp offset
+);
+NPY_NO_EXPORT PyObject *PyArray_FromString(
+    char *data,
+    npy_intp slen,
+    PyArray_Descr *dtype,
+    npy_intp num,
+    char *sep
+);
+NPY_NO_EXPORT PyObject *PyArray_FromIter(
+    PyObject *obj,
+    PyArray_Descr *dtype,
+    npy_intp count
+);
+NPY_NO_EXPORT NpyIter_GetMultiIndexFunc *NpyIter_GetGetMultiIndex(
+    NpyIter *iter,
+    char **errmsg
+);
+NPY_NO_EXPORT npy_intp count_nonzero_trivial_dispatcher(
+    npy_intp count,
+    const char *data,
+    npy_intp stride,
+    int dtype_num
+);
+NPY_NO_EXPORT int small_correlate(
+    const char *d_,
+    npy_intp dstride,
+    npy_intp nd,
+    enum NPY_TYPES dtype,
+    const char *k_,
+    npy_intp kstride,
+    npy_intp nk,
+    enum NPY_TYPES ktype,
+    char *out_,
+    npy_intp ostride
+);
+#else
 static inline int PyArray_CopyObject(PyArrayObject *dst, PyObject *src_object) {
     (void)dst;
     (void)src_object;
