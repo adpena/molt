@@ -66,15 +66,35 @@ def _run(
     check: bool = False,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    proc = subprocess.run(
-        args,
-        cwd=str(cwd or REPO_ROOT),
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=env,
-    )
+    run_kwargs = {
+        "cwd": str(cwd or REPO_ROOT),
+        "check": False,
+        "capture_output": True,
+        "text": True,
+        "timeout": timeout,
+        "env": env,
+    }
+    try:
+        proc = subprocess.run(args, **run_kwargs)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=-1,
+            stdout="",
+            stderr=f"timed out after {timeout}s",
+        )
+    except FileNotFoundError:
+        if not sys.platform.startswith("win"):
+            raise
+        try:
+            proc = subprocess.run(["cmd", "/c", *args], **run_kwargs)
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(
+                args=["cmd", "/c", *args],
+                returncode=-1,
+                stdout="",
+                stderr=f"timed out after {timeout}s",
+            )
     if check and proc.returncode != 0:
         cmd = " ".join(shlex.quote(part) for part in args)
         raise RuntimeError(
@@ -123,6 +143,10 @@ def _to_posix(path: Path) -> str:
     return path.as_posix()
 
 
+def _uv_python_entrypoint() -> str:
+    return "python" if sys.platform.startswith("win") else "python3"
+
+
 def _coerce_ext_root(value: str | None) -> Path:
     raw = (value or "").strip()
     if raw:
@@ -144,17 +168,56 @@ def _coerce_symphony_parent(value: str | None) -> Path:
 
 
 def _check_py_version(version: str) -> CheckResult:
+    detail = ""
+    ok = False
     py = _which("py")
-    if py is None:
-        return CheckResult(
-            name=f"python_{version}",
-            ok=False,
-            detail="py launcher missing",
-            fix=f"uv python install {version}",
+    if py is not None:
+        proc = _run(["py", f"-{version}", "--version"], timeout=30)
+        ok = proc.returncode == 0
+        detail = (proc.stdout or proc.stderr).strip() or "no version output"
+    if not ok:
+        uv_find = _run(["uv", "python", "find", version], timeout=60)
+        if uv_find.returncode == 0:
+            candidates = (uv_find.stdout or "").strip().splitlines()
+            if candidates:
+                resolved = candidates[-1].strip()
+                if resolved:
+                    resolved_proc = _run([resolved, "--version"], timeout=30)
+                    if resolved_proc.returncode == 0:
+                        ok = True
+                        resolved_detail = (
+                            resolved_proc.stdout or resolved_proc.stderr
+                        ).strip()
+                        detail = (
+                            f"{resolved_detail} (via uv-managed interpreter)"
+                            if resolved_detail
+                            else "resolved via uv-managed interpreter"
+                        )
+                    elif not detail:
+                        detail = (
+                            f"{resolved}; version check failed rc={resolved_proc.returncode}"
+                        )
+        if ok:
+            return CheckResult(
+                name=f"python_{version}",
+                ok=True,
+                detail=detail,
+            )
+    if not ok:
+        uv_proc = _run(
+            ["uv", "run", "--python", version, _uv_python_entrypoint(), "--version"],
+            timeout=60,
         )
-    proc = _run(["py", f"-{version}", "--version"], timeout=30)
-    ok = proc.returncode == 0
-    detail = (proc.stdout or proc.stderr).strip() or "no version output"
+        if uv_proc.returncode == 0:
+            ok = True
+            uv_detail = (uv_proc.stdout or uv_proc.stderr).strip()
+            detail = (
+                f"{uv_detail} (via uv-managed interpreter)"
+                if uv_detail
+                else "resolved via uv-managed interpreter"
+            )
+        elif not detail:
+            detail = (uv_proc.stderr or uv_proc.stdout).strip() or "no version output"
     return CheckResult(
         name=f"python_{version}",
         ok=ok,
@@ -546,6 +609,14 @@ def _runtime_env(env_file: Path) -> dict[str, str]:
     loaded = _parse_env_file(env_file)
     merged = dict(os.environ)
     merged.update({k: v for k, v in loaded.items() if v is not None})
+    repo_src = str((REPO_ROOT / "src").resolve())
+    existing_pythonpath = str(merged.get("PYTHONPATH") or "").strip()
+    if not existing_pythonpath:
+        merged["PYTHONPATH"] = repo_src
+    else:
+        parts = [part for part in existing_pythonpath.split(os.pathsep) if part]
+        if repo_src not in parts:
+            merged["PYTHONPATH"] = os.pathsep.join([repo_src, *parts])
     return merged
 
 
@@ -821,6 +892,23 @@ def _validate_runtime_env_for_start(runtime_env: dict[str, str]) -> str | None:
     return None
 
 
+def _resolve_python_command(version: str) -> list[str] | None:
+    uv_find = _run(["uv", "python", "find", version], timeout=45)
+    if uv_find.returncode == 0:
+        candidate = (uv_find.stdout or "").strip().splitlines()
+        if candidate:
+            resolved = candidate[-1].strip()
+            if resolved:
+                return [resolved]
+    py_launcher = _which("py")
+    if py_launcher:
+        return ["py", f"-{version}"]
+    fallback = _which(_uv_python_entrypoint())
+    if fallback:
+        return [fallback]
+    return None
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     env_file = Path(args.env_file).expanduser().resolve()
     runtime_env = _runtime_env(env_file)
@@ -855,12 +943,19 @@ def cmd_start(args: argparse.Namespace) -> int:
     log_dir = _log_root(runtime_env) / "daemon"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "symphony.log"
+    python_cmd = _resolve_python_command("3.12")
+    if not python_cmd:
+        payload = {
+            "ok": False,
+            "error": "python_3_12_unavailable",
+            "detail": "Unable to resolve a runnable Python 3.12 executable.",
+            "fix": "Run: uv python install 3.12",
+        }
+        _print_json_or_human(payload, as_json=bool(args.json))
+        return 2
+
     command = [
-        "uv",
-        "run",
-        "--python",
-        "3.12",
-        "python3",
+        *python_cmd,
         "tools/symphony_run.py",
         str(Path(args.workflow).as_posix()),
         "--env-file",
@@ -878,6 +973,8 @@ def cmd_start(args: argparse.Namespace) -> int:
         creationflags |= int(subprocess.DETACHED_PROCESS)
     if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
         creationflags |= int(subprocess.CREATE_NEW_PROCESS_GROUP)
+    if hasattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB"):
+        creationflags |= int(subprocess.CREATE_BREAKAWAY_FROM_JOB)
 
     with log_file.open("a", encoding="utf-8") as sink:
         sink.write(f"\n[{_utc_now()}] launching: {' '.join(command)}\n")

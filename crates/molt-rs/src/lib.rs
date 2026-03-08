@@ -249,11 +249,7 @@ pub fn molt_range_iter(start: i64, stop: i64, step: i64) -> impl Iterator<Item =
         if step == 0 {
             return None;
         }
-        if forward && i < stop {
-            let v = i;
-            i += step;
-            Some(MoltValue::Int(v))
-        } else if !forward && i > stop {
+        if (forward && i < stop) || (!forward && i > stop) {
             let v = i;
             i += step;
             Some(MoltValue::Int(v))
@@ -563,7 +559,7 @@ pub fn molt_zip(a: &MoltValue, b: &MoltValue) -> MoltValue {
 /// Python `sorted(t)`.
 pub fn molt_sorted(t: &MoltValue) -> MoltValue {
     let mut items = molt_iter(t);
-    items.sort_by(|a, b| molt_numeric_cmp(a, b));
+    items.sort_by(molt_numeric_cmp);
     MoltValue::List(items)
 }
 

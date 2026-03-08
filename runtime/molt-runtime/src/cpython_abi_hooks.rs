@@ -15,7 +15,7 @@ use crate::object::builders::{
     alloc_bytes, alloc_dict_with_pairs, alloc_list_with_capacity, alloc_string,
     alloc_tuple_with_capacity,
 };
-use crate::object::layout::seq_vec_ref;
+use crate::object::layout::{seq_vec, seq_vec_ref};
 use crate::object::type_ids::{
     TYPE_ID_BYTES, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_SET, TYPE_ID_STRING,
     TYPE_ID_TUPLE,
@@ -62,9 +62,7 @@ unsafe extern "C" fn hook_list_append(list_bits: u64, item_bits: u64) {
         Some(p) => p,
         None => return,
     };
-    // SAFETY: seq_vec_ref returns a shared ref; we cast to mut for the append.
-    let vec = unsafe { seq_vec_ref(ptr) as *const Vec<u64> as *mut Vec<u64> };
-    unsafe { (*vec).push(item_bits) };
+    unsafe { seq_vec(ptr) }.push(item_bits);
 }
 
 unsafe extern "C" fn hook_list_len(bits: u64) -> usize {
@@ -101,8 +99,7 @@ unsafe extern "C" fn hook_tuple_set(bits: u64, i: usize, val_bits: u64) {
         Some(p) => p,
         None => return,
     };
-    let vec = unsafe { seq_vec_ref(ptr) as *const Vec<u64> as *mut Vec<u64> };
-    let v = unsafe { &mut *vec };
+    let v = unsafe { seq_vec(ptr) };
     if i < v.len() {
         v[i] = val_bits;
     } else {

@@ -61,7 +61,6 @@ pub unsafe extern "C" fn PyType_GenericNew(
 
 /// Py_TYPE(op) — return ob_type pointer.
 #[unsafe(no_mangle)]
-#[inline]
 pub unsafe extern "C" fn _Py_TYPE(op: *mut PyObject) -> *mut PyTypeObject {
     if op.is_null() {
         return ptr::null_mut();
@@ -100,7 +99,7 @@ pub unsafe extern "C" fn PyObject_Repr(op: *mut PyObject) -> *mut PyObject {
     if op.is_null() {
         return ptr::null_mut();
     }
-    unsafe { crate::api::strings::PyUnicode_FromString(b"<molt object>\0".as_ptr().cast()) }
+    unsafe { crate::api::strings::PyUnicode_FromString(c"<molt object>".as_ptr()) }
 }
 
 #[unsafe(no_mangle)]
@@ -110,12 +109,12 @@ pub unsafe extern "C" fn PyObject_Str(op: *mut PyObject) -> *mut PyObject {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_RichCompare(
-    v: *mut PyObject,
-    w: *mut PyObject,
+    _v: *mut PyObject,
+    _w: *mut PyObject,
     _op: c_int,
 ) -> *mut PyObject {
     // Stub — return Py_NotImplemented sentinel.
-    unsafe { &raw mut crate::abi_types::Py_None }
+    &raw mut crate::abi_types::Py_None
 }
 
 #[unsafe(no_mangle)]

@@ -121,7 +121,19 @@ typedef uint16_t Py_UCS2;
 typedef uint32_t Py_UCS4;
 typedef intptr_t Py_intptr_t;
 typedef uintptr_t Py_uintptr_t;
-typedef MoltBufferView Py_buffer;
+typedef struct {
+    void *buf;
+    PyObject *obj;
+    Py_ssize_t len;
+    Py_ssize_t itemsize;
+    int readonly;
+    int ndim;
+    char *format;
+    Py_ssize_t *shape;
+    Py_ssize_t *strides;
+    Py_ssize_t *suboffsets;
+    void *internal;
+} Py_buffer;
 typedef PyObject PyBytesObject;
 typedef PyObject PyUnicodeObject;
 typedef PyObject PyDictObject;
@@ -174,6 +186,8 @@ typedef void (*PyCapsule_Destructor)(PyObject *);
 
 typedef PyObject *(*PyCFunction)(PyObject *, PyObject *);
 typedef PyObject *(*PyCFunctionWithKeywords)(PyObject *, PyObject *, PyObject *);
+typedef int (*getbufferproc)(PyObject *, Py_buffer *, int);
+typedef void (*releasebufferproc)(PyObject *, Py_buffer *);
 typedef PyObject *(*getter)(PyObject *, void *);
 typedef int (*setter)(PyObject *, PyObject *, void *);
 typedef Py_ssize_t (*lenfunc)(PyObject *);
@@ -509,7 +523,7 @@ static inline void *PyCapsule_Import(const char *name, int no_block);
 static inline int PyCapsule_SetName(PyObject *capsule, const char *name);
 static inline PyObject *PyObject_Dir(PyObject *obj);
 static inline PyObject *PyMemoryView_FromObject(PyObject *obj);
-static inline PyObject *PyMethod_New(PyObject *func, PyObject *self, PyObject *cls);
+static inline PyObject *PyMethod_New(PyObject *func, PyObject *self);
 static inline int PyObject_CheckBuffer(PyObject *obj);
 static inline void PyObject_ClearWeakRefs(PyObject *obj);
 static inline int PyObject_DelAttrString(PyObject *obj, const char *name);
@@ -721,9 +735,27 @@ static inline void *_molt_pyunicode_data(PyObject *unicode);
 #define PyBUF_F_CONTIGUOUS (0x0040 | PyBUF_STRIDES)
 #define PyBUF_ANY_CONTIGUOUS (0x0080 | PyBUF_STRIDES)
 #define PyBUF_WRITEABLE PyBUF_WRITABLE
+#define PyBUF_INDIRECT (0x0100 | PyBUF_STRIDES)
+#define PyBUF_STRIDED (PyBUF_STRIDES | PyBUF_WRITABLE)
+#define PyBUF_STRIDED_RO (PyBUF_STRIDES)
+#define PyBUF_RECORDS (PyBUF_STRIDES | PyBUF_WRITABLE | PyBUF_FORMAT)
+#define PyBUF_RECORDS_RO (PyBUF_STRIDES | PyBUF_FORMAT)
+#define PyBUF_FULL (PyBUF_INDIRECT | PyBUF_WRITABLE | PyBUF_FORMAT)
+#define PyBUF_FULL_RO (PyBUF_INDIRECT | PyBUF_FORMAT)
 #define WAIT_LOCK 1
 #define NOWAIT_LOCK 0
 #define PY_TIMEOUT_MAX LLONG_MAX
+
+#ifndef Py_BEGIN_CRITICAL_SECTION
+#define Py_BEGIN_CRITICAL_SECTION(obj) do { (void)(obj); } while (0)
+#define Py_END_CRITICAL_SECTION() do { } while (0)
+#define Py_BEGIN_CRITICAL_SECTION2(a, b)                                         \
+    do {                                                                          \
+        (void)(a);                                                                \
+        (void)(b);                                                                \
+    } while (0)
+#define Py_END_CRITICAL_SECTION2() do { } while (0)
+#endif
 
 #if !defined(Py_LIMITED_API) && !defined(_MULTIARRAYMODULE) && !defined(_UMATHMODULE)
 #define Py_LIMITED_API 0x030C0000
@@ -4681,20 +4713,78 @@ static inline int PyBytes_AsStringAndSize(PyObject *value, char **buf, Py_ssize_
     return 0;
 }
 
+typedef struct {
+    MoltBufferView view;
+    Py_ssize_t shape[1];
+    Py_ssize_t strides[1];
+    char format[2];
+} _MoltPyBufferBridge;
+
 static inline int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) {
-    (void)flags;
+    _MoltPyBufferBridge *bridge;
+    Py_ssize_t itemsize;
+    Py_ssize_t len;
+    if (obj == NULL) {
+        PyErr_SetString(PyExc_TypeError, "buffer object must not be NULL");
+        return -1;
+    }
     if (view == NULL) {
         PyErr_SetString(PyExc_TypeError, "buffer view must not be NULL");
         return -1;
     }
-    return molt_buffer_acquire(_molt_py_handle(obj), view);
+    memset(view, 0, sizeof(*view));
+    bridge = (_MoltPyBufferBridge *)PyMem_Calloc(1, sizeof(*bridge));
+    if (bridge == NULL) {
+        PyErr_NoMemory();
+        return -1;
+    }
+    if (molt_buffer_acquire(_molt_py_handle(obj), &bridge->view) != 0) {
+        PyMem_Free(bridge);
+        return -1;
+    }
+    len = (Py_ssize_t)bridge->view.len;
+    itemsize = bridge->view.itemsize > 0 ? (Py_ssize_t)bridge->view.itemsize : 1;
+    bridge->shape[0] = itemsize > 0 ? len / itemsize : len;
+    bridge->strides[0] = bridge->view.stride != 0 ? (Py_ssize_t)bridge->view.stride : itemsize;
+    bridge->format[0] = 'B';
+    bridge->format[1] = '\0';
+
+    view->buf = bridge->view.data;
+    view->obj = obj;
+    Py_INCREF(obj);
+    view->len = len;
+    view->itemsize = itemsize;
+    view->readonly = bridge->view.readonly != 0 ? 1 : 0;
+    view->ndim = 1;
+    view->format = (flags & PyBUF_FORMAT) != 0 ? bridge->format : NULL;
+    view->shape = (flags & PyBUF_ND) != 0 ? bridge->shape : NULL;
+    view->strides = (flags & PyBUF_STRIDES) != 0 ? bridge->strides : NULL;
+    view->suboffsets = NULL;
+    view->internal = bridge;
+
+    if ((flags & PyBUF_WRITABLE) != 0 && view->readonly) {
+        (void)molt_buffer_release(&bridge->view);
+        Py_DECREF(obj);
+        PyMem_Free(bridge);
+        memset(view, 0, sizeof(*view));
+        PyErr_SetString(PyExc_BufferError, "requested writable buffer from readonly object");
+        return -1;
+    }
+    return 0;
 }
 
 static inline void PyBuffer_Release(Py_buffer *view) {
+    _MoltPyBufferBridge *bridge;
     if (view == NULL) {
         return;
     }
-    (void)molt_buffer_release(view);
+    bridge = (_MoltPyBufferBridge *)view->internal;
+    if (bridge != NULL) {
+        (void)molt_buffer_release(&bridge->view);
+        PyMem_Free(bridge);
+    }
+    Py_XDECREF(view->obj);
+    memset(view, 0, sizeof(*view));
 }
 
 static inline char *PyBytes_AsString(PyObject *value) {
@@ -5728,11 +5818,10 @@ static inline PyObject *PyMemoryView_FromObject(PyObject *obj) {
     return result;
 }
 
-static inline PyObject *PyMethod_New(PyObject *func, PyObject *self, PyObject *cls) {
+static inline PyObject *PyMethod_New(PyObject *func, PyObject *self) {
     PyObject *types_module;
     PyObject *method_type;
     PyObject *out;
-    (void)cls;
     if (func == NULL) {
         PyErr_SetString(PyExc_TypeError, "function must not be NULL");
         return NULL;

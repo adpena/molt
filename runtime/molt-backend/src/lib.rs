@@ -1,3 +1,15 @@
+#![allow(
+    unused_variables,
+    unused_assignments,
+    clippy::collapsible_if,
+    clippy::manual_strip,
+    clippy::needless_range_loop,
+    clippy::unnecessary_map_or,
+    clippy::if_same_then_else,
+    clippy::derivable_impls,
+    clippy::new_without_default
+)]
+
 use cranelift::codegen::Context;
 use cranelift::codegen::ir::{FuncRef, Function};
 use cranelift::codegen::isa;

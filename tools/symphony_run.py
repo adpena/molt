@@ -229,8 +229,12 @@ def _detect_uv_binary() -> str | None:
     return None
 
 
+def _uv_python_entrypoint() -> str:
+    return "python" if sys.platform.startswith("win") else "python3"
+
+
 def _uv_python_args(uv_bin: str, *python_args: str) -> list[str]:
-    return [uv_bin, "run", "--python", "3.12", "python3", *python_args]
+    return [uv_bin, "run", "--python", "3.12", _uv_python_entrypoint(), *python_args]
 
 
 def _has_respect_pythonpath_flag(args: list[str]) -> bool:

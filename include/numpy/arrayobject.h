@@ -2,6 +2,7 @@
 #define MOLT_NUMPY_ARRAYOBJECT_H
 
 #include <numpy/ndarrayobject.h>
+#include <numpy/arrayscalars.h>
 #include <numpy/ufuncobject.h>
 
 #ifdef __cplusplus

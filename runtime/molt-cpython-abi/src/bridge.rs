@@ -43,8 +43,6 @@ pub type AbiHandle = u64;
 struct BridgeEntry {
     /// The CPython-layout header C code sees.
     py_obj: Box<PyObject>,
-    /// Original Molt handle — used to recover the value on the return path.
-    molt_bits: AbiHandle,
 }
 
 /// Global bridge — one per process (extensions are global singletons).
@@ -76,7 +74,7 @@ static TAG_TABLE: OnceCell<TypeTagTable> = OnceCell::new();
 
 /// Build the tag table once at init time.
 pub fn init_tag_table() {
-    TAG_TABLE.get_or_init(|| unsafe {
+    TAG_TABLE.get_or_init(|| {
         let mut table = TypeTagTable {
             tags: [0u8; 16],
             types: [std::ptr::null_mut(); 16],
@@ -134,7 +132,7 @@ pub unsafe fn tag_to_type(tag: MoltTypeTag) -> *mut PyTypeObject {
             }
         }
         // SAFETY: PyUnicode_Type is a valid static with the same lifetime as the program.
-        unsafe { &raw mut PyUnicode_Type }
+        &raw mut PyUnicode_Type
     }
 }
 
@@ -159,7 +157,7 @@ mod simd_x86 {
                 return table.types[idx];
             }
         }
-        unsafe { &raw mut PyUnicode_Type }
+        &raw mut PyUnicode_Type
     }
 }
 
@@ -185,13 +183,13 @@ mod simd_neon {
         } else if hi != 0 {
             8 + hi.trailing_zeros() as usize / 8
         } else {
-            return unsafe { &raw mut PyUnicode_Type };
+            return &raw mut PyUnicode_Type;
         };
 
         if idx < table.len {
             table.types[idx]
         } else {
-            unsafe { &raw mut PyUnicode_Type }
+            &raw mut PyUnicode_Type
         }
     }
 }
@@ -227,13 +225,13 @@ impl ObjectBridge {
 
         // Singletons: None, True, False — return static pointers, no allocation.
         if obj.is_none() {
-            return unsafe { &raw mut Py_None };
+            return &raw mut Py_None;
         }
         if obj.is_bool() {
             return if obj.as_bool().unwrap_or(false) {
-                unsafe { &raw mut Py_True }
+                &raw mut Py_True
             } else {
-                unsafe { &raw mut Py_False }
+                &raw mut Py_False
             };
         }
 
@@ -245,7 +243,6 @@ impl ObjectBridge {
                 ob_refcnt: 1,
                 ob_type,
             }),
-            molt_bits: bits,
         });
 
         let raw_ptr = entry.py_obj.as_mut() as *mut PyObject;
@@ -262,16 +259,14 @@ impl ObjectBridge {
             return None;
         }
         // Singletons — compare against static addresses.
-        unsafe {
-            if std::ptr::eq(ptr, &raw const Py_None as *const _ as *const PyObject) {
-                return Some(MoltObject::none().bits());
-            }
-            if std::ptr::eq(ptr, &raw const Py_True as *const _ as *const PyObject) {
-                return Some(MoltObject::from_bool(true).bits());
-            }
-            if std::ptr::eq(ptr, &raw const Py_False as *const _ as *const PyObject) {
-                return Some(MoltObject::from_bool(false).bits());
-            }
+        if std::ptr::eq(ptr, &raw const Py_None as *const _) {
+            return Some(MoltObject::none().bits());
+        }
+        if std::ptr::eq(ptr, &raw const Py_True as *const _) {
+            return Some(MoltObject::from_bool(true).bits());
+        }
+        if std::ptr::eq(ptr, &raw const Py_False as *const _) {
+            return Some(MoltObject::from_bool(false).bits());
         }
         self.from_py.get(&(ptr as usize)).copied()
     }
@@ -315,6 +310,12 @@ impl ObjectBridge {
         } else {
             MoltTypeTag::Other
         }
+    }
+}
+
+impl Default for ObjectBridge {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
