@@ -692,8 +692,8 @@ NPY_NO_EXPORT PyArrayObject **NpyIter_GetOperandArray(NpyIter *iter);
 NPY_NO_EXPORT npy_intp NpyIter_GetIterSize(NpyIter *iter);
 NPY_NO_EXPORT NpyIter_IterNextFunc *NpyIter_GetIterNext(NpyIter *iter, char **errmsg);
 NPY_NO_EXPORT char **NpyIter_GetDataPtrArray(NpyIter *iter);
-NPY_NO_EXPORT int NpyIter_GetTransferFlags(NpyIter *iter);
-NPY_NO_EXPORT int NpyIter_IterationNeedsAPI(NpyIter *iter);
+NPY_NO_EXPORT NPY_ARRAYMETHOD_FLAGS NpyIter_GetTransferFlags(NpyIter *iter);
+NPY_NO_EXPORT npy_bool NpyIter_IterationNeedsAPI(NpyIter *iter);
 NPY_NO_EXPORT npy_intp *NpyIter_GetInnerStrideArray(NpyIter *iter);
 NPY_NO_EXPORT npy_intp *NpyIter_GetInnerLoopSizePtr(NpyIter *iter);
 
