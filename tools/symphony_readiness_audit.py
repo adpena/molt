@@ -23,6 +23,7 @@ import tools.symphony_launchd as symphony_launchd  # noqa: E402
 from molt.symphony.dlq import DeadLetterQueue  # noqa: E402
 from molt.symphony.paths import (  # noqa: E402
     is_within,
+    resolve_molt_ext_root,
     resolve_symphony_parent_root,
     resolve_symphony_store_root,
     symphony_api_token_file,
@@ -2252,7 +2253,6 @@ def _synthesize_next_tranche(report: dict[str, Any]) -> dict[str, Any]:
             "title": "Restore external artifact volume mount",
             "why": "Build/test evidence loops are blocked without external artifact routing.",
             "commands": [
-                "export MOLT_EXT_ROOT=/Volumes/APDataStore/Molt",
                 "tools/throughput_env.sh --apply",
             ],
         },
@@ -3161,7 +3161,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--index", default="ops/linear/manifests/index.json")
     parser.add_argument(
         "--ext-root",
-        default=os.environ.get("MOLT_EXT_ROOT") or "/Volumes/APDataStore/Molt",
+        default=os.environ.get("MOLT_EXT_ROOT") or str(resolve_molt_ext_root()),
     )
     parser.add_argument(
         "--durable-root",

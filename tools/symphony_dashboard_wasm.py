@@ -2,11 +2,21 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+import sys
 from pathlib import Path
+
+try:
+    from molt.symphony.paths import default_molt_ext_root
+except ModuleNotFoundError:  # pragma: no cover - script execution path.
+    _REPO_ROOT = Path(__file__).resolve().parents[1]
+    _SRC_ROOT = _REPO_ROOT / "src"
+    if str(_SRC_ROOT) not in sys.path:
+        sys.path.insert(0, str(_SRC_ROOT))
+    from molt.symphony.paths import default_molt_ext_root
 
 
 def _default_ext_root() -> Path:
-    return Path("/Volumes/APDataStore/Molt")
+    return default_molt_ext_root()
 
 
 def default_output_path() -> Path:

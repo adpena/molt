@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from molt.symphony.paths import (
+    default_molt_ext_root,
     resolve_symphony_parent_root,
     resolve_symphony_store_root,
     symphony_api_token_file,
@@ -29,7 +30,7 @@ from molt.symphony.paths import (
 )
 
 
-DEFAULT_EXT_ROOT = Path("/Volumes/APDataStore/Molt")
+DEFAULT_EXT_ROOT = default_molt_ext_root()
 DEFAULT_ENV_FILE = Path("ops/linear/runtime/symphony.env")
 LINEAR_MCP_NAME = "linear"
 LINEAR_MCP_URL = "https://mcp.linear.app/mcp"
@@ -85,6 +86,14 @@ def _require_command(name: str) -> str:
     if not resolved:
         raise RuntimeError(f"required command not found on PATH: {name}")
     return resolved
+
+
+def _require_python_command() -> str:
+    for name in ("python3", "python"):
+        resolved = shutil.which(name)
+        if resolved:
+            return resolved
+    raise RuntimeError("required command not found on PATH: python3/python")
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:
@@ -337,7 +346,7 @@ def _sync_env_defaults(
 
     merged.setdefault("MOLT_SYMPHONY_SYNC_REMOTE", "origin")
     merged.setdefault("MOLT_SYMPHONY_SYNC_BRANCH", "main")
-    merged.setdefault("MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS", "adpena,symphony")
+    merged.setdefault("MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS", "symphony")
     merged.setdefault("MOLT_SYMPHONY_TOOL_STATE_DETAIL", "compact")
     merged.setdefault("MOLT_SYMPHONY_MAX_CODEX_EVENT_COUNTERS", "64")
     merged.setdefault("MOLT_SYMPHONY_DURABLE_MEMORY", "1")
@@ -570,7 +579,7 @@ def main(argv: list[str] | None = None) -> int:
         "codex": _require_command("codex"),
         "rg": _require_command("rg"),
         "uv": _require_command("uv"),
-        "python": _require_command("python3"),
+        "python": _require_python_command(),
     }
 
     if not ext_root.exists():

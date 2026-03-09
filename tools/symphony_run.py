@@ -6,6 +6,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -31,6 +32,14 @@ DEFAULT_ENV_FILE = Path("ops/linear/runtime/symphony.env")
 
 
 def _default_quint_node_fallback() -> str:
+    if os.name == "nt":
+        for candidate in (
+            Path("C:/Program Files/nodejs/node.exe"),
+            Path("C:/Program Files (x86)/nodejs/node.exe"),
+        ):
+            if candidate.exists():
+                return str(candidate)
+        return "npx -y node@22"
     for candidate in (
         Path("/opt/homebrew/opt/node@22/bin/node"),
         Path("/usr/local/opt/node@22/bin/node"),
@@ -45,6 +54,24 @@ def _default_java_home() -> str | None:
         raw = str(os.environ.get(env_key) or "").strip()
         if raw and (Path(raw) / "bin" / "java").exists():
             return raw
+    if os.name == "nt":
+        for candidate in (
+            Path("C:/Program Files/Eclipse Adoptium/jdk-21"),
+            Path("C:/Program Files/Java/jdk-21"),
+            Path("C:/Program Files/Java/jdk-17"),
+        ):
+            if (candidate / "bin" / "java.exe").exists():
+                return str(candidate)
+        return None
+    if sys.platform.startswith("linux"):
+        for candidate in (
+            Path("/usr/lib/jvm/java-21-openjdk"),
+            Path("/usr/lib/jvm/temurin-21-jdk"),
+            Path("/usr/lib/jvm/default-java"),
+        ):
+            if (candidate / "bin" / "java").exists():
+                return str(candidate)
+        return None
     for candidate in (
         Path("/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"),
         Path("/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home"),
@@ -237,6 +264,12 @@ def _uv_python_args(uv_bin: str, *python_args: str) -> list[str]:
     return [uv_bin, "run", "--python", "3.12", _uv_python_entrypoint(), *python_args]
 
 
+def _default_daemon_socket_dir() -> str:
+    if os.name == "nt":
+        return str(Path(tempfile.gettempdir()) / "molt_backend_sockets")
+    return "/tmp/molt_backend_sockets"
+
+
 def _has_respect_pythonpath_flag(args: list[str]) -> bool:
     return any(
         item == "--respect-pythonpath" or item.startswith("--respect-pythonpath=")
@@ -251,7 +284,9 @@ def _ensure_dashboard_security_defaults(
         # Standalone callers (including unit tests) can pin a temporary store root
         # without mutating the committed env file.
         env.setdefault("MOLT_EXT_ROOT", str(ext_root))
-        env.setdefault("MOLT_SYMPHONY_STORE_ROOT", str(ext_root / "symphony"))
+        env.setdefault("MOLT_SYMPHONY_PARENT_ROOT", str(ext_root.parent / "symphony"))
+        env.setdefault("MOLT_SYMPHONY_PROJECT_KEY", "molt")
+        env.setdefault("MOLT_SYMPHONY_STORE_ROOT", str(resolve_symphony_store_root(env)))
     env.setdefault("MOLT_SYMPHONY_SECURITY_PROFILE", "local")
     env.setdefault("MOLT_SYMPHONY_BIND_HOST", "127.0.0.1")
     env.setdefault("MOLT_SYMPHONY_ALLOW_NONLOCAL_BIND", "0")
@@ -357,7 +392,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     env.setdefault("MOLT_APALACHE_WORK_DIR", str(ext_root / "tmp" / "apalache"))
     env.setdefault("UV_CACHE_DIR", str(ext_root / "uv-cache"))
-    env.setdefault("MOLT_BACKEND_DAEMON_SOCKET_DIR", "/tmp/molt_backend_sockets")
+    env.setdefault("MOLT_BACKEND_DAEMON_SOCKET_DIR", _default_daemon_socket_dir())
     env.setdefault("TMPDIR", str(ext_root / "tmp"))
     env.setdefault("PYTHONPATH", "src")
     env.setdefault("MOLT_SYMPHONY_LOG_ROOT", str(symphony_log_root(env)))
@@ -394,7 +429,7 @@ def main(argv: list[str] | None = None) -> int:
         env.setdefault("MOLT_SOURCE_REPO_URL", repo_url)
     env.setdefault("MOLT_SYMPHONY_SYNC_REMOTE", "origin")
     env.setdefault("MOLT_SYMPHONY_SYNC_BRANCH", "main")
-    env.setdefault("MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS", "adpena,symphony")
+    env.setdefault("MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS", "symphony")
     env.setdefault("MOLT_QUINT_NODE_FALLBACK", _default_quint_node_fallback())
     default_java_home = _default_java_home()
     if default_java_home:

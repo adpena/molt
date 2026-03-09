@@ -13,6 +13,15 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 try:
+    from molt.symphony.paths import default_molt_ext_root, default_symphony_parent_root
+except ModuleNotFoundError:  # pragma: no cover - script execution path.
+    _REPO_ROOT = Path(__file__).resolve().parents[1]
+    _SRC_ROOT = _REPO_ROOT / "src"
+    if str(_SRC_ROOT) not in sys.path:
+        sys.path.insert(0, str(_SRC_ROOT))
+    from molt.symphony.paths import default_molt_ext_root, default_symphony_parent_root
+
+try:
     import tools.symphony_launchd as symphony_launchd
 except ImportError:  # pragma: no cover - script execution path.
     import symphony_launchd  # type: ignore[no-redef]
@@ -27,8 +36,10 @@ DEFAULT_PATTERNS = (
     "tools/symphony_watchdog.py",
     "tools/symphony_launchd.py",
 )
-DEFAULT_EXT_ROOT = Path("/Volumes/APDataStore/Molt")
-DEFAULT_SYMPHONY_PARENT_ROOT = Path("/Volumes/APDataStore/symphony")
+DEFAULT_EXT_ROOT = default_molt_ext_root()
+DEFAULT_SYMPHONY_PARENT_ROOT = default_symphony_parent_root(
+    {"MOLT_EXT_ROOT": str(DEFAULT_EXT_ROOT)}
+)
 
 
 def _utc_now_iso() -> str:
