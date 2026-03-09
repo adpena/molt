@@ -202,11 +202,12 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   `wait()`, `as_completed()` all delegate to Rust. Replaced 661-line Python
   reimplementation. Dual-mode Future supports both Rust-backed (from submit) and
   Python-managed (standalone construction) paths.
-- Completed: `asyncio` event loop RT2 — wired 28 `molt_event_loop_*` intrinsics
+- Completed: `asyncio` event loop RT2 — wired 30 `molt_event_loop_*` intrinsics
   into _EventLoop class. call_soon/call_later/call_at, add_reader/remove_reader,
   add_writer/remove_writer, run_once (hot path), time, start/stop, is_running/
-  is_closed/close, debug mode, exception handler, task factory all delegate to
-  Rust-owned event loop handle. _run_once() now executes entirely in Rust.
+  is_closed/close, debug mode, exception handler, task factory, and pipe-connect
+  hooks all delegate to Rust-owned event loop handle. _run_once() now executes
+  entirely in Rust.
 - Completed: `asyncio` Queue waiters — wired 6 intrinsics (add_getter/putter,
   notify_getters/putters, getter_count/putter_count). Eliminated Python-side
   `_getters`/`_putters` deques that duplicated Rust VecDeque state — fixes
