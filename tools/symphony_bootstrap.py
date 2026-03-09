@@ -154,8 +154,28 @@ def _default_quint_node_fallback() -> str:
 def _default_java_home() -> str | None:
     for env_key in ("JAVA_HOME", "MOLT_JAVA_HOME"):
         raw = str(os.environ.get(env_key) or "").strip()
-        if raw and (Path(raw) / "bin" / "java").exists():
-            return raw
+        if raw:
+            java_bin_dir = Path(raw) / "bin"
+            if (java_bin_dir / "java").exists() or (java_bin_dir / "java.exe").exists():
+                return raw
+    if os.name == "nt":
+        for candidate in (
+            Path("C:/Program Files/Eclipse Adoptium/jdk-21"),
+            Path("C:/Program Files/Java/jdk-21"),
+            Path("C:/Program Files/Java/jdk-17"),
+        ):
+            if (candidate / "bin" / "java.exe").exists():
+                return str(candidate)
+        return None
+    if sys.platform.startswith("linux"):
+        for candidate in (
+            Path("/usr/lib/jvm/java-21-openjdk"),
+            Path("/usr/lib/jvm/temurin-21-jdk"),
+            Path("/usr/lib/jvm/default-java"),
+        ):
+            if (candidate / "bin" / "java").exists():
+                return str(candidate)
+        return None
     for candidate in (
         Path("/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"),
         Path("/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home"),
@@ -677,6 +697,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--install-launchd", action="store_true")
     parser.add_argument("--launchd-port", type=int, default=8089)
     parser.add_argument("--force-git-hooks-path", action="store_true")
+    parser.add_argument(
+        "--sync-env",
+        action="store_true",
+        help=(
+            "Legacy alias for env synchronization only. Equivalent to "
+            "--profile core without optional stacks."
+        ),
+    )
     parser.add_argument("--python", default=sys.executable)
     return parser
 
@@ -686,6 +714,14 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = Path(args.repo_root).resolve()
     ext_root = Path(args.ext_root).expanduser().resolve()
     env_file = Path(args.env_file).expanduser().resolve()
+
+    if args.sync_env:
+        # Keep backwards compatibility with older operator playbooks that used
+        # `--sync-env` directly.
+        args.profile = "core"
+        args.with_mcp = False
+        args.with_dev_tools = False
+        args.with_luau = False
 
     profile_options = _resolve_profile_options(
         profile=args.profile,

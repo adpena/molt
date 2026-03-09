@@ -27,6 +27,19 @@ to_lower_trim() {
   printf "%s" "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g'
 }
 
+escape_regex() {
+  # shellcheck disable=SC2001
+  printf "%s" "$1" | sed -E 's/[][(){}.^$*+?|\\]/\\&/g'
+}
+
+token_boundary_match() {
+  local haystack="$1"
+  local token="$2"
+  local escaped
+  escaped="$(escape_regex "$token")"
+  [[ "$haystack" =~ (^|[^[:alnum:]])$escaped([^[:alnum:]]|$) ]]
+}
+
 env_enabled() {
   local raw normalized
   raw="${1:-}"
@@ -49,7 +62,10 @@ token_match() {
     if [[ -z "$normalized_token" ]]; then
       continue
     fi
-    if [[ "$normalized_haystack" == *"$normalized_token"* ]]; then
+    if [[ "$normalized_haystack" == "$normalized_token" ]]; then
+      return 0
+    fi
+    if token_boundary_match "$normalized_haystack" "$normalized_token"; then
       return 0
     fi
   done
@@ -68,7 +84,10 @@ machine_allowed() {
     if [[ -z "$normalized_token" ]]; then
       continue
     fi
-    if [[ "$normalized_machine" == *"$normalized_token"* ]]; then
+    if [[ "$normalized_machine" == "$normalized_token" ]]; then
+      return 0
+    fi
+    if token_boundary_match "$normalized_machine" "$normalized_token"; then
       return 0
     fi
   done

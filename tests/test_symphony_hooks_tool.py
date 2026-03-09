@@ -111,3 +111,33 @@ def test_python_after_run_autolands_and_sets_guard_pythonpath(tmp_path: Path) ->
     assert "ok status=pushed mode=direct-main branch=main" in proc.stdout
     last_subject = _git(worker, "log", "-1", "--pretty=%s").stdout.strip()
     assert last_subject == "chore: sync all changes"
+
+
+def test_python_after_run_rejects_substring_identity_matches(tmp_path: Path) -> None:
+    _seed, worker = _setup_repo(tmp_path)
+    _git(worker, "config", "user.name", "badpena")
+    _git(worker, "config", "user.email", "badpena@example.com")
+    (worker / "app.py").write_text("print('ok')\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env["MOLT_SYMPHONY_AUTOLAND_ENABLED"] = "1"
+    env["MOLT_SYMPHONY_AUTOLAND_MODE"] = "direct-main"
+    env["MOLT_SYMPHONY_SYNC_REMOTE"] = "origin"
+    env["MOLT_SYMPHONY_SYNC_BRANCH"] = "main"
+    env["MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS"] = "adpena,symphony"
+    env["MOLT_SYMPHONY_TRUSTED_USERS"] = "adpena,symphony"
+    env["MOLT_SYMPHONY_TRUSTED_MACHINES"] = ""
+
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), "after_run"],
+        cwd=worker,
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert proc.returncode == 0
+    assert "skip reason=untrusted_identity" in proc.stdout
+    last_subject = _git(worker, "log", "-1", "--pretty=%s").stdout.strip()
+    assert last_subject == "seed"

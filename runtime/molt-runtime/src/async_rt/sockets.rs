@@ -29,6 +29,8 @@ use std::os::raw::{c_int, c_void};
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, BorrowedSocket, FromRawSocket, IntoRawSocket, RawSocket};
+#[cfg(all(not(target_arch = "wasm32"), windows))]
+use windows_sys::Win32::Networking::WinSock as winsock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Mutex, OnceLock};
@@ -89,6 +91,82 @@ type SocketFd = RawFd;
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(windows)]
 type SocketFd = RawSocket;
+
+#[cfg(all(not(target_arch = "wasm32"), windows))]
+const SOCKET_AF_UNSPEC: i32 = winsock::AF_UNSPEC as i32;
+#[cfg(not(all(not(target_arch = "wasm32"), windows)))]
+const SOCKET_AF_UNSPEC: i32 = SOCKET_AF_UNSPEC;
+#[cfg(all(not(target_arch = "wasm32"), windows))]
+const SOCKET_AF_INET: i32 = winsock::AF_INET as i32;
+#[cfg(not(all(not(target_arch = "wasm32"), windows)))]
+const SOCKET_AF_INET: i32 = SOCKET_AF_INET;
+#[cfg(all(not(target_arch = "wasm32"), windows))]
+const SOCKET_AF_INET6: i32 = winsock::AF_INET6 as i32;
+#[cfg(not(all(not(target_arch = "wasm32"), windows)))]
+const SOCKET_AF_INET6: i32 = SOCKET_AF_INET6;
+#[cfg(all(not(target_arch = "wasm32"), windows))]
+const SOCKET_SOCK_STREAM: i32 = winsock::SOCK_STREAM as i32;
+#[cfg(not(all(not(target_arch = "wasm32"), windows)))]
+const SOCKET_SOCK_STREAM: i32 = SOCKET_SOCK_STREAM;
+#[cfg(all(not(target_arch = "wasm32"), windows))]
+const SOCKET_IPPROTO_TCP: i32 = winsock::IPPROTO_TCP as i32;
+#[cfg(not(all(not(target_arch = "wasm32"), windows)))]
+const SOCKET_IPPROTO_TCP: i32 = SOCKET_IPPROTO_TCP;
+
+#[cfg(all(not(target_arch = "wasm32"), windows))]
+type NativeAddrInfo = winsock::ADDRINFOA;
+#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
+type NativeAddrInfo = libc::addrinfo;
+
+#[cfg(all(not(target_arch = "wasm32"), windows))]
+type NativeSockAddrStorage = winsock::SOCKADDR_STORAGE;
+#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
+type NativeSockAddrStorage = libc::sockaddr_storage;
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn native_getaddrinfo(
+    host: *const libc::c_char,
+    service: *const libc::c_char,
+    hints: *const NativeAddrInfo,
+    result: *mut *mut NativeAddrInfo,
+) -> i32 {
+    #[cfg(windows)]
+    {
+        winsock::getaddrinfo(host.cast::<u8>(), service.cast::<u8>(), hints, result)
+    }
+    #[cfg(not(windows))]
+    {
+        libc::getaddrinfo(host, service, hints, result)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn native_freeaddrinfo(result: *mut NativeAddrInfo) {
+    #[cfg(windows)]
+    {
+        winsock::freeaddrinfo(result);
+    }
+    #[cfg(not(windows))]
+    {
+        libc::freeaddrinfo(result);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn native_gai_error_string(code: i32) -> String {
+    #[cfg(windows)]
+    {
+        // Winsock exposes numeric getaddrinfo/getnameinfo status codes; provide
+        // a deterministic message shape even when textual lookup APIs vary.
+        format!("winsock error {code}")
+    }
+    #[cfg(not(windows))]
+    {
+        CStr::from_ptr(libc::gai_strerror(code))
+            .to_string_lossy()
+            .to_string()
+    }
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn socket_fd_map() -> &'static Mutex<HashMap<SocketFd, PtrSlot>> {
@@ -1568,7 +1646,7 @@ fn sockaddr_from_bits(_py: &PyToken<'_>, addr_bits: u64, family: i32) -> Result<
         }
         let host = host_from_bits(_py, elems[0])?;
         let port = port_from_bits(_py, elems[1])?;
-        if family == libc::AF_INET {
+        if family == SOCKET_AF_INET {
             let host = host.unwrap_or_else(|| "0.0.0.0".to_string());
             let ip = host
                 .parse::<Ipv4Addr>()
@@ -1587,7 +1665,7 @@ fn sockaddr_from_bits(_py: &PyToken<'_>, addr_bits: u64, family: i32) -> Result<
                 .map_err(|_| "invalid IPv4 address".to_string())?;
             return Ok(SockAddr::from(SocketAddr::new(IpAddr::V4(ip), port)));
         }
-        if family == libc::AF_INET6 {
+        if family == SOCKET_AF_INET6 {
             let host = host.unwrap_or_else(|| "::".to_string());
             let mut flowinfo = 0u32;
             let mut scope_id = 0u32;
@@ -1703,7 +1781,7 @@ fn encode_sockaddr(_py: &PyToken<'_>, addr_bits: u64, family: i32) -> Result<Vec
         let mut out = Vec::new();
         out.extend_from_slice(&(family as u16).to_le_bytes());
         out.extend_from_slice(&port.to_le_bytes());
-        if family == libc::AF_INET {
+        if family == SOCKET_AF_INET {
             let host = host.unwrap_or_else(|| "0.0.0.0".to_string());
             let ip = host
                 .parse::<Ipv4Addr>()
@@ -1711,7 +1789,7 @@ fn encode_sockaddr(_py: &PyToken<'_>, addr_bits: u64, family: i32) -> Result<Vec
             out.extend_from_slice(&ip.octets());
             return Ok(out);
         }
-        if family == libc::AF_INET6 {
+        if family == SOCKET_AF_INET6 {
             let host = host.unwrap_or_else(|| "::".to_string());
             let ip = host
                 .parse::<Ipv6Addr>()
@@ -1740,7 +1818,7 @@ fn decode_sockaddr(_py: &PyToken<'_>, buf: &[u8]) -> Result<u64, String> {
     }
     let family = u16::from_le_bytes([buf[0], buf[1]]) as i32;
     let port = u16::from_le_bytes([buf[2], buf[3]]);
-    if family == libc::AF_INET {
+    if family == SOCKET_AF_INET {
         if buf.len() < 8 {
             return Err("invalid IPv4 sockaddr".to_string());
         }
@@ -1760,7 +1838,7 @@ fn decode_sockaddr(_py: &PyToken<'_>, buf: &[u8]) -> Result<u64, String> {
         } else {
             Ok(MoltObject::from_ptr(tuple_ptr).bits())
         }
-    } else if family == libc::AF_INET6 {
+    } else if family == SOCKET_AF_INET6 {
         if buf.len() < 28 {
             return Err("invalid IPv6 sockaddr".to_string());
         }
@@ -2105,8 +2183,8 @@ pub extern "C" fn molt_socket_new(
             }
         };
         let domain = match family {
-            val if val == libc::AF_INET => Domain::IPV4,
-            val if val == libc::AF_INET6 => Domain::IPV6,
+            val if val == SOCKET_AF_INET => Domain::IPV4,
+            val if val == SOCKET_AF_INET6 => Domain::IPV6,
             #[cfg(unix)]
             val if val == libc::AF_UNIX => Domain::UNIX,
             _ => {
@@ -2122,7 +2200,7 @@ pub extern "C" fn molt_socket_new(
         #[cfg(not(unix))]
         let base_type = sock_type;
         let socket_type = match base_type {
-            val if val == libc::SOCK_STREAM => Type::STREAM,
+            val if val == SOCKET_SOCK_STREAM => Type::STREAM,
             val if val == libc::SOCK_DGRAM => Type::DGRAM,
             val if val == libc::SOCK_RAW => Type::from(val),
             _ => {
@@ -2730,7 +2808,7 @@ pub unsafe extern "C" fn molt_socket_accept(sock_bits: u64) -> u64 {
                     inner: Mutex::new(MoltSocketInner {
                         kind: accepted_kind,
                         family,
-                        sock_type: libc::SOCK_STREAM,
+                        sock_type: SOCKET_SOCK_STREAM,
                         proto: 0,
                         connect_pending: false,
                     }),
@@ -4847,7 +4925,7 @@ pub extern "C" fn molt_socket_new(
             None => return raise_exception::<_>(_py, "TypeError", "family must be int"),
         };
         let sock_type = if obj_from_bits(_type_bits).is_none() {
-            libc::SOCK_STREAM
+            SOCKET_SOCK_STREAM
         } else {
             match to_i64(obj_from_bits(_type_bits)) {
                 Some(val) => val as i32,
@@ -5114,7 +5192,7 @@ pub extern "C" fn molt_socket_accept(_sock_bits: u64) -> u64 {
                     new_handle,
                     WasmSocketMeta {
                         family,
-                        sock_type: libc::SOCK_STREAM,
+                        sock_type: SOCKET_SOCK_STREAM,
                         proto: 0,
                         timeout,
                         connect_pending: false,
@@ -6421,7 +6499,7 @@ fn socket_close_raw_windows(raw: RawSocket) {
 
 #[cfg(all(not(target_arch = "wasm32"), windows))]
 fn socketpair_windows_loopback_raw(family: i32) -> Result<(RawSocket, RawSocket), std::io::Error> {
-    let loopback = if family == libc::AF_INET6 {
+    let loopback = if family == SOCKET_AF_INET6 {
         "[::1]:0"
     } else {
         "127.0.0.1:0"
@@ -6452,7 +6530,7 @@ pub unsafe extern "C" fn molt_socketpair(family_bits: u64, type_bits: u64, proto
                 }
                 #[cfg(not(unix))]
                 {
-                    libc::AF_INET
+                    SOCKET_AF_INET
                 }
             } else {
                 match to_i64(obj_from_bits(family_bits)) {
@@ -6461,7 +6539,7 @@ pub unsafe extern "C" fn molt_socketpair(family_bits: u64, type_bits: u64, proto
                 }
             };
             let sock_type = if obj_from_bits(type_bits).is_none() {
-                libc::SOCK_STREAM
+                SOCKET_SOCK_STREAM
             } else {
                 match to_i64(obj_from_bits(type_bits)) {
                     Some(val) => val as i32,
@@ -6514,21 +6592,21 @@ pub unsafe extern "C" fn molt_socketpair(family_bits: u64, type_bits: u64, proto
             }
             #[cfg(windows)]
             {
-                if family != libc::AF_INET && family != libc::AF_INET6 {
+                if family != SOCKET_AF_INET && family != SOCKET_AF_INET6 {
                     return raise_os_error_errno::<u64>(
                         _py,
                         libc::EAFNOSUPPORT as i64,
                         "socketpair family",
                     );
                 }
-                if sock_type != libc::SOCK_STREAM {
+                if sock_type != SOCKET_SOCK_STREAM {
                     return raise_os_error_errno::<u64>(
                         _py,
                         libc::EPROTOTYPE as i64,
                         "socketpair type",
                     );
                 }
-                if proto != 0 && proto != libc::IPPROTO_TCP {
+                if proto != 0 && proto != SOCKET_IPPROTO_TCP {
                     return raise_os_error_errno::<u64>(
                         _py,
                         libc::EPROTONOSUPPORT as i64,
@@ -6591,7 +6669,7 @@ pub extern "C" fn molt_socketpair(_family_bits: u64, _type_bits: u64, _proto_bit
             }
             #[cfg(not(unix))]
             {
-                libc::AF_INET
+                SOCKET_AF_INET
             }
         } else {
             match to_i64(obj_from_bits(_family_bits)) {
@@ -6600,7 +6678,7 @@ pub extern "C" fn molt_socketpair(_family_bits: u64, _type_bits: u64, _proto_bit
             }
         };
         let sock_type = if obj_from_bits(_type_bits).is_none() {
-            libc::SOCK_STREAM
+            SOCKET_SOCK_STREAM
         } else {
             match to_i64(obj_from_bits(_type_bits)) {
                 Some(val) => val as i32,
@@ -6869,7 +6947,7 @@ pub extern "C" fn molt_socket_getaddrinfo(
                         );
                     }
                 }
-            } else if family == libc::AF_INET6 {
+            } else if family == SOCKET_AF_INET6 {
                 IpAddr::V6(Ipv6Addr::UNSPECIFIED)
             } else {
                 IpAddr::V4(Ipv4Addr::UNSPECIFIED)
@@ -7068,9 +7146,9 @@ pub unsafe extern "C" fn molt_socket_getnameinfo(addr_bits: u64, flags_bits: u64
             }
             let elems = seq_vec_ref(ptr);
             let family = if elems.len() >= 4 {
-                libc::AF_INET6
+                SOCKET_AF_INET6
             } else {
-                libc::AF_INET
+                SOCKET_AF_INET
             };
             let sockaddr = match sockaddr_from_bits(_py, addr_bits, family) {
                 Ok(addr) => addr,
@@ -7233,7 +7311,7 @@ fn socket_af_unspec() -> i32 {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        libc::AF_UNSPEC
+        SOCKET_AF_UNSPEC
     }
 }
 
@@ -7512,7 +7590,7 @@ fn socket_reverse_pointer_name(addr: &IpAddr) -> String {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_gethostbyname(host_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let family_bits = MoltObject::from_int(libc::AF_INET as i64).bits();
+        let family_bits = MoltObject::from_int(SOCKET_AF_INET as i64).bits();
         let zero_bits = MoltObject::from_int(0).bits();
         let none_bits = MoltObject::none().bits();
         let info_bits = socket_getaddrinfo_call(
@@ -7687,8 +7765,8 @@ pub extern "C" fn molt_socket_gethostbyaddr(host_bits: u64) -> u64 {
         }
 
         let family_hint = parsed_host_ip.as_ref().map(|ip| match ip {
-            IpAddr::V4(_) => libc::AF_INET,
-            IpAddr::V6(_) => libc::AF_INET6,
+            IpAddr::V4(_) => SOCKET_AF_INET,
+            IpAddr::V6(_) => SOCKET_AF_INET6,
         });
         let (mut aliases, mut addr_list) =
             socket_collect_reverse_lookup_details(_py, &resolved, &resolved, family_hint);
@@ -8094,7 +8172,7 @@ pub unsafe extern "C" fn molt_socket_inet_pton(family_bits: u64, address_bits: u
             Ok(None) => return raise_exception::<_>(_py, "TypeError", "address cannot be None"),
             Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
         };
-        if family == libc::AF_INET {
+        if family == SOCKET_AF_INET {
             let ip: Ipv4Addr = match addr.parse() {
                 Ok(ip) => ip,
                 Err(_) => {
@@ -8111,7 +8189,7 @@ pub unsafe extern "C" fn molt_socket_inet_pton(family_bits: u64, address_bits: u
             }
             return MoltObject::from_ptr(ptr).bits();
         }
-        if family == libc::AF_INET6 {
+        if family == SOCKET_AF_INET6 {
             let ip: Ipv6Addr = match addr.parse() {
                 Ok(ip) => ip,
                 Err(_) => {
@@ -8142,7 +8220,7 @@ pub extern "C" fn molt_socket_inet_pton(_family_bits: u64, _address_bits: u64) -
             Ok(None) => return raise_exception::<_>(_py, "TypeError", "address cannot be None"),
             Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
         };
-        if family == libc::AF_INET {
+        if family == SOCKET_AF_INET {
             let ip: Ipv4Addr = match addr.parse() {
                 Ok(ip) => ip,
                 Err(_) => {
@@ -8159,7 +8237,7 @@ pub extern "C" fn molt_socket_inet_pton(_family_bits: u64, _address_bits: u64) -
             }
             return MoltObject::from_ptr(ptr).bits();
         }
-        if family == libc::AF_INET6 {
+        if family == SOCKET_AF_INET6 {
             let ip: Ipv6Addr = match addr.parse() {
                 Ok(ip) => ip,
                 Err(_) => {
@@ -8217,7 +8295,7 @@ pub unsafe extern "C" fn molt_socket_inet_ntop(family_bits: u64, packed_bits: u6
             } else {
                 return raise_exception::<_>(_py, "TypeError", "packed address must be bytes-like");
             };
-            if family == libc::AF_INET {
+            if family == SOCKET_AF_INET {
                 if data.len() != 4 {
                     return raise_exception::<_>(_py, "ValueError", "invalid IPv4 packed length");
                 }
@@ -8229,7 +8307,7 @@ pub unsafe extern "C" fn molt_socket_inet_ntop(family_bits: u64, packed_bits: u6
                 }
                 return MoltObject::from_ptr(ptr).bits();
             }
-            if family == libc::AF_INET6 {
+            if family == SOCKET_AF_INET6 {
                 if data.len() != 16 {
                     return raise_exception::<_>(_py, "ValueError", "invalid IPv6 packed length");
                 }
@@ -8263,7 +8341,7 @@ pub extern "C" fn molt_socket_inet_ntop(_family_bits: u64, _packed_bits: u64) ->
         } else {
             return raise_exception::<_>(_py, "TypeError", "packed must be bytes-like");
         };
-        if family == libc::AF_INET {
+        if family == SOCKET_AF_INET {
             if data.len() != 4 {
                 return raise_exception::<_>(_py, "ValueError", "invalid IPv4 packed length");
             }
@@ -8277,7 +8355,7 @@ pub extern "C" fn molt_socket_inet_ntop(_family_bits: u64, _packed_bits: u64) ->
             }
             return MoltObject::from_ptr(ptr).bits();
         }
-        if family == libc::AF_INET6 {
+        if family == SOCKET_AF_INET6 {
             if data.len() != 16 {
                 return raise_exception::<_>(_py, "ValueError", "invalid IPv6 packed length");
             }

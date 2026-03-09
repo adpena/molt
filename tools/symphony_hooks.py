@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -27,7 +28,18 @@ def _token_match(value: str, tokens: list[str]) -> bool:
     haystack = value.strip().lower()
     if not haystack:
         return False
-    return any(token in haystack for token in tokens if token)
+    for token in tokens:
+        normalized = token.strip().lower()
+        if not normalized:
+            continue
+        if haystack == normalized:
+            return True
+        pattern = re.compile(
+            rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])"
+        )
+        if pattern.search(haystack):
+            return True
+    return False
 
 
 def _run(
