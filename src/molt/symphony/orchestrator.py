@@ -3602,7 +3602,7 @@ def _resolve_quint_workdir() -> Path:
         raw = str(os.environ.get(env_key, "")).strip()
         if raw:
             candidates.append(Path(raw).expanduser())
-    candidates.append(Path("/Volumes/APDataStore/Molt/tmp/apalache"))
+    candidates.append(resolve_molt_ext_root() / "tmp" / "apalache")
     candidates.append(Path("/tmp/molt_apalache"))
     for candidate in candidates:
         try:
