@@ -8,6 +8,7 @@ import json
 import os
 import select
 import shlex
+import socket
 import subprocess
 import sys
 import time
@@ -52,6 +53,8 @@ class StateProvider(Protocol):
 
 class _QuietThreadingHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
+    allow_reuse_address = False
+    allow_reuse_port = False
 
     def __init__(
         self,
@@ -64,6 +67,16 @@ class _QuietThreadingHTTPServer(ThreadingHTTPServer):
         self._request_slots = BoundedSemaphore(max(max_active_requests, 8))
         self._on_overload = on_overload
         super().__init__(server_address, request_handler_class)
+
+    def server_bind(self) -> None:
+        # Windows permits duplicate binds with SO_REUSEADDR; force exclusive
+        # ownership so accidental duplicate Symphony daemons cannot share a port.
+        if sys.platform.startswith("win") and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            try:
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            except OSError:
+                pass
+        super().server_bind()
 
     def process_request(self, request: Any, client_address: Any) -> None:
         if not self._request_slots.acquire(blocking=False):
