@@ -69,6 +69,7 @@ pub(crate) mod secrets;
 pub(crate) mod select;
 pub(crate) mod shutil;
 pub(crate) mod signal_ext;
+pub(crate) mod sqlite3;
 pub(crate) mod sitebuiltins;
 pub(crate) mod ssl;
 pub(crate) mod string_ext;

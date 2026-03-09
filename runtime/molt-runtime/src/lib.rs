@@ -319,6 +319,7 @@ pub(crate) use crate::call::function::{
 pub(crate) use crate::call::lookup_call_attr;
 pub(crate) use crate::constants::*;
 pub use crate::gui::tk::*;
+pub use crate::builtins::sqlite3::*;
 pub use crate::intrinsics::capabilities::*;
 pub use crate::intrinsics::molt_intrinsic_lookup;
 pub(crate) use crate::object::accessors::{

@@ -94,24 +94,24 @@ type SocketFd = RawSocket;
 
 #[cfg(all(not(target_arch = "wasm32"), windows))]
 const SOCKET_AF_UNSPEC: i32 = winsock::AF_UNSPEC as i32;
-#[cfg(not(all(not(target_arch = "wasm32"), windows)))]
-const SOCKET_AF_UNSPEC: i32 = SOCKET_AF_UNSPEC;
+#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
+const SOCKET_AF_UNSPEC: i32 = libc::AF_UNSPEC;
 #[cfg(all(not(target_arch = "wasm32"), windows))]
 const SOCKET_AF_INET: i32 = winsock::AF_INET as i32;
-#[cfg(not(all(not(target_arch = "wasm32"), windows)))]
-const SOCKET_AF_INET: i32 = SOCKET_AF_INET;
+#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
+const SOCKET_AF_INET: i32 = libc::AF_INET;
 #[cfg(all(not(target_arch = "wasm32"), windows))]
 const SOCKET_AF_INET6: i32 = winsock::AF_INET6 as i32;
-#[cfg(not(all(not(target_arch = "wasm32"), windows)))]
-const SOCKET_AF_INET6: i32 = SOCKET_AF_INET6;
+#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
+const SOCKET_AF_INET6: i32 = libc::AF_INET6;
 #[cfg(all(not(target_arch = "wasm32"), windows))]
 const SOCKET_SOCK_STREAM: i32 = winsock::SOCK_STREAM as i32;
-#[cfg(not(all(not(target_arch = "wasm32"), windows)))]
-const SOCKET_SOCK_STREAM: i32 = SOCKET_SOCK_STREAM;
+#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
+const SOCKET_SOCK_STREAM: i32 = libc::SOCK_STREAM;
 #[cfg(all(not(target_arch = "wasm32"), windows))]
 const SOCKET_IPPROTO_TCP: i32 = winsock::IPPROTO_TCP as i32;
-#[cfg(not(all(not(target_arch = "wasm32"), windows)))]
-const SOCKET_IPPROTO_TCP: i32 = SOCKET_IPPROTO_TCP;
+#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
+const SOCKET_IPPROTO_TCP: i32 = libc::IPPROTO_TCP;
 
 #[cfg(all(not(target_arch = "wasm32"), windows))]
 type NativeAddrInfo = winsock::ADDRINFOA;
@@ -857,7 +857,7 @@ fn encode_sendmsg_ancillary_buffer(items: &[AncillaryItem]) -> Result<Vec<u8>, S
     let mut control = vec![0u8; total];
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
     msg.msg_control = control.as_mut_ptr() as *mut c_void;
-    msg.msg_controllen = control.len();
+    msg.msg_controllen = control.len() as _;
     let mut cmsg = unsafe { libc::CMSG_FIRSTHDR(&msg as *const _) };
     for (level, kind, data) in items {
         if cmsg.is_null() {
@@ -4123,14 +4123,14 @@ pub unsafe extern "C" fn molt_socket_sendmsg(
                             msg.msg_iovlen = 0;
                         } else {
                             msg.msg_iov = iovecs.as_mut_ptr();
-                            msg.msg_iovlen = iovecs.len();
+                            msg.msg_iovlen = iovecs.len() as _;
                         }
                         if ancillary_control.is_empty() {
                             msg.msg_control = std::ptr::null_mut();
                             msg.msg_controllen = 0;
                         } else {
                             msg.msg_control = ancillary_control.as_mut_ptr() as *mut c_void;
-                            msg.msg_controllen = ancillary_control.len();
+                            msg.msg_controllen = ancillary_control.len() as _;
                         }
                         let ret = libc::sendmsg(libc_socket(fd), &msg as *const _, flags);
                         if ret >= 0 {
@@ -4294,7 +4294,7 @@ pub unsafe extern "C" fn molt_socket_recvmsg(
                         msg.msg_controllen = 0;
                     } else {
                         msg.msg_control = control.as_mut_ptr() as *mut c_void;
-                        msg.msg_controllen = control.len();
+                        msg.msg_controllen = control.len() as _;
                     }
                     let ret = unsafe { libc::recvmsg(libc_socket(fd), &mut msg as *mut _, flags) };
                     if ret >= 0 {
@@ -4473,7 +4473,7 @@ pub unsafe extern "C" fn molt_socket_recvmsg_into(
                         msg.msg_controllen = 0;
                     } else {
                         msg.msg_control = control.as_mut_ptr() as *mut c_void;
-                        msg.msg_controllen = control.len();
+                        msg.msg_controllen = control.len() as _;
                     }
                     let ret = unsafe { libc::recvmsg(libc_socket(fd), &mut msg as *mut _, flags) };
                     if ret >= 0 {
