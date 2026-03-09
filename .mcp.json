@@ -1,7 +1,20 @@
 {
   "mcpServers": {
     "vertigo-fleet": {
-      "url": "http://127.0.0.1:8850/sse"
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "../fleet",
+        "--with",
+        "mcp[sse]",
+        "--with",
+        "starlette",
+        "--with",
+        "uvicorn",
+        "python",
+        "scripts/mcp/fleet-mcp-server.py"
+      ]
     }
   }
 }
