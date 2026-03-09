@@ -179,6 +179,7 @@ tests/differential/stdlib/asyncio_call_at_fifo_tiebreak.py
 tests/differential/stdlib/asyncio_call_later_call_at_context_closed.py
 tests/differential/stdlib/asyncio_call_later_fifo_tiebreak.py
 tests/differential/stdlib/asyncio_call_later_cancel.py
+tests/differential/stdlib/asyncio_close_running_loop.py
 tests/differential/stdlib/asyncio_call_soon_order.py
 tests/differential/stdlib/asyncio_cancel_sleep.py
 tests/differential/stdlib/asyncio_cancel_try_finally.py
@@ -193,6 +194,8 @@ tests/differential/stdlib/asyncio_current_task_loop_filter_intrinsic.py
 tests/differential/stdlib/asyncio_ensure_future_passthrough.py
 tests/differential/stdlib/asyncio_event_basic.py
 tests/differential/stdlib/asyncio_event_cancelled_waiter.py
+tests/differential/stdlib/asyncio_exception_handler_invalid.py
+tests/differential/stdlib/asyncio_exception_handler_raises.py
 tests/differential/stdlib/asyncio_event_loop_policy_basic.py
 tests/differential/stdlib/asyncio_executor_run_in_executor.py
 tests/differential/stdlib/asyncio_fd_watcher_unregister_intrinsic.py
@@ -223,11 +226,13 @@ tests/differential/stdlib/asyncio_queue_priority_lifo.py
 tests/differential/stdlib/asyncio_queue_task_done_join.py
 tests/differential/stdlib/asyncio_ready_queue_drain_order.py
 tests/differential/stdlib/asyncio_run_from_running_loop_error.py
+tests/differential/stdlib/asyncio_run_forever_prestopped.py
 tests/differential/stdlib/asyncio_run_pending_task_cleanup.py
 tests/differential/stdlib/asyncio_run_runner_lifecycle.py
 tests/differential/stdlib/asyncio_run_shutdown_asyncgens.py
 tests/differential/stdlib/asyncio_runner_get_loop.py
 tests/differential/stdlib/asyncio_selector_epoll_kqueue.py
+tests/differential/stdlib/asyncio_selector_closed_fd_watchers.py
 tests/differential/stdlib/asyncio_semaphore_basic.py
 tests/differential/stdlib/asyncio_shield_cancel.py
 tests/differential/stdlib/asyncio_shield_wait_for.py
@@ -262,6 +267,7 @@ tests/differential/stdlib/asyncio_task_cancelling_uncancel.py
 tests/differential/stdlib/asyncio_task_context_explicit.py
 tests/differential/stdlib/asyncio_task_current_identity.py
 tests/differential/stdlib/asyncio_task_factory_naming.py
+tests/differential/stdlib/asyncio_task_factory_invalid.py
 tests/differential/stdlib/asyncio_task_future_repr.py
 tests/differential/stdlib/asyncio_task_name_set.py
 tests/differential/stdlib/asyncio_task_registry_errors.py
@@ -2010,5 +2016,4 @@ tests/differential/stdlib/zipfile_roundtrip_basic.py
 tests/differential/stdlib/zipimport_api_surface_basic.py
 tests/differential/stdlib/zipimport_basic.py
 tests/differential/stdlib/zipimport_prefix_error_edges.py
-tests/differential/stdlib/zlib_basic.py
-tests/differential/stdlib/zoneinfo_dst_fold.py
+tests/differential/stdlib/z
