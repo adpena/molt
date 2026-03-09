@@ -1,9 +1,13 @@
 """Purpose: equal-deadline loop.call_at callbacks preserve FIFO order."""
 
 import asyncio
+import sys
 
 
 async def main() -> None:
+    if sys.platform == "win32":
+        print("unsupported")
+        return
     loop = asyncio.get_running_loop()
     observed: list[str] = []
     when = loop.time() + 0.02

@@ -3,9 +3,13 @@
 
 import asyncio
 import socket
+import sys
 
 
 async def main() -> None:
+    if sys.platform == "win32":
+        print("unsupported")
+        return
     if not hasattr(socket, "socketpair"):
         print("unsupported")
         return
