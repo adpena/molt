@@ -45,8 +45,10 @@ before splitting `molt-runtime` into focused modules.
 - Owner: runtime
 - Current location: `runtime/molt-runtime/src/async_rt/` (scheduler, poll helpers,
   task pointer resolution, channels, sockets, and cancellation).
-- Notes: custom scheduler + sleep queue; native I/O poller lives in runtime;
-  WASM runs a single-threaded loop.
+- Notes: Rust-backed `asyncio` core with a deterministic single-loop scheduler,
+  FIFO tie-breaking for equal-deadline timers, native I/O poller waiter-order
+  preservation, and cancellation propagation through timer/readiness queues;
+  WASM runs a capability-gated single-threaded loop.
 
 ### Builtins + Dispatch
 - Owner: runtime
