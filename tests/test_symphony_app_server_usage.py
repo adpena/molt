@@ -200,6 +200,40 @@ def test_resolve_launch_command_windows_expands_codex_bin_env(monkeypatch) -> No
     assert command == [r"D:\Tools\codex.cmd", "--yolo", "app-server"]
 
 
+def test_resolve_launch_command_windows_expands_generic_env_defaults(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("CODEX_BIN", r"D:\Tools\codex.cmd")
+    monkeypatch.setenv(
+        "MOLT_SYMPHONY_CODEX_ARGS",
+        "-c model_reasoning_effort=low -c model_reasoning_summary=none",
+    )
+
+    def fake_which(name: str) -> str | None:
+        mapping = {
+            r"D:\Tools\codex.cmd": r"D:\Tools\codex.cmd",
+        }
+        return mapping.get(name)
+
+    monkeypatch.setattr("molt.symphony.app_server.shutil.which", fake_which)
+    command = _resolve_launch_command(
+        (
+            "${CODEX_BIN:-codex} --yolo "
+            "${MOLT_SYMPHONY_CODEX_ARGS:--c model_reasoning_effort=medium} app-server"
+        )
+    )
+    assert command == [
+        r"D:\Tools\codex.cmd",
+        "--yolo",
+        "-c",
+        "model_reasoning_effort=low",
+        "-c",
+        "model_reasoning_summary=none",
+        "app-server",
+    ]
+
+
 def test_build_request_user_input_result_includes_question_ids() -> None:
     payload = {
         "method": "item/tool/requestUserInput",
@@ -284,8 +318,14 @@ def test_start_uses_utf8_text_mode_for_windows_safe_stream_decode(monkeypatch) -
     )
 
     request_ids = iter((1, 2))
-    monkeypatch.setattr(client, "_send_request", lambda *_args, **_kwargs: next(request_ids))
-    monkeypatch.setattr(client, "_wait_for_response", lambda *_args, **_kwargs: {"result": {"thread": {"id": "thr_123"}}})
+    monkeypatch.setattr(
+        client, "_send_request", lambda *_args, **_kwargs: next(request_ids)
+    )
+    monkeypatch.setattr(
+        client,
+        "_wait_for_response",
+        lambda *_args, **_kwargs: {"result": {"thread": {"id": "thr_123"}}},
+    )
     monkeypatch.setattr(client, "_send_notification", lambda *_args, **_kwargs: None)
 
     client.start()

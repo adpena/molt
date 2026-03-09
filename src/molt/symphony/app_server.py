@@ -31,7 +31,9 @@ EventCallback = Callable[[dict[str, Any]], None]
 ToolHandler = Callable[[str, dict[str, Any] | str | None], dict[str, Any]]
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-_CODEX_BIN_DEFAULT_RE = re.compile(r"\$\{CODEX_BIN:-([^}]+)\}")
+_ENV_DEFAULT_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\:-([^}]*)\}")
+_ENV_BRACED_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_ENV_SHORT_RE = re.compile(r"(?<!\{)\$([A-Za-z_][A-Za-z0-9_]*)")
 _USAGE_KEYS = (
     "input_tokens",
     "inputtokens",
@@ -771,16 +773,31 @@ def _resolve_launch_command(command: str) -> list[str]:
     if not sys.platform.startswith("win"):
         return ["bash", "-lc", command_text]
 
-    def _replace_default(match: re.Match[str]) -> str:
-        default_value = match.group(1).strip() or "codex"
-        return os.environ.get("CODEX_BIN", default_value)
-
-    expanded = _CODEX_BIN_DEFAULT_RE.sub(_replace_default, command_text)
+    expanded = _expand_windows_env_tokens(command_text)
     parts = shlex.split(expanded, posix=False)
     if not parts:
         parts = ["codex", "--yolo", "app-server"]
     parts[0] = _resolve_windows_executable(parts[0])
     return parts
+
+
+def _expand_windows_env_tokens(command_text: str) -> str:
+    def _replace_default(match: re.Match[str]) -> str:
+        key = str(match.group(1) or "").strip()
+        default_value = str(match.group(2) or "").strip()
+        current = str(os.environ.get(key) or "").strip()
+        return current or default_value
+
+    expanded = _ENV_DEFAULT_RE.sub(_replace_default, command_text)
+    expanded = _ENV_BRACED_RE.sub(
+        lambda match: str(os.environ.get(str(match.group(1) or "").strip()) or ""),
+        expanded,
+    )
+    expanded = _ENV_SHORT_RE.sub(
+        lambda match: str(os.environ.get(str(match.group(1) or "").strip()) or ""),
+        expanded,
+    )
+    return expanded
 
 
 def _resolve_windows_executable(executable: str) -> str:

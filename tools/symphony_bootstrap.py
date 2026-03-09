@@ -369,7 +369,27 @@ def _sync_env_defaults(
 
     merged.setdefault("MOLT_SYMPHONY_SYNC_REMOTE", "origin")
     merged.setdefault("MOLT_SYMPHONY_SYNC_BRANCH", "main")
-    merged.setdefault("MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS", "symphony")
+    merged.setdefault("MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS", "adpena,symphony")
+    merged.setdefault("MOLT_SYMPHONY_TRUSTED_USERS", "adpena,symphony")
+    merged.setdefault("MOLT_SYMPHONY_TRUSTED_MACHINES", "")
+    merged.setdefault("MOLT_SYMPHONY_AUTOLAND_ENABLED", "1")
+    merged.setdefault("MOLT_SYMPHONY_AUTOLAND_MODE", "direct-main")
+    merged.setdefault(
+        "MOLT_SYMPHONY_AUTOLAND_COMMIT_MESSAGE", "chore: sync all changes"
+    )
+    merged.setdefault("MOLT_SYMPHONY_AUTOLAND_PR_AUTOMERGE", "1")
+    merged.setdefault("MOLT_SYMPHONY_AUTOLAND_PR_BASE", "main")
+    merged.setdefault(
+        "MOLT_SYMPHONY_CODEX_ARGS",
+        (
+            "-c model_reasoning_effort=low "
+            "-c model_reasoning_summary=none "
+            "-c hide_agent_reasoning=true "
+            "-c model_verbosity=low "
+            "-c tool_output_token_limit=6000 "
+            "-c model_auto_compact_token_limit=120000"
+        ),
+    )
     merged.setdefault("MOLT_SYMPHONY_TOOL_STATE_DETAIL", "compact")
     merged.setdefault("MOLT_SYMPHONY_MAX_CODEX_EVENT_COUNTERS", "64")
     merged.setdefault("MOLT_SYMPHONY_DURABLE_MEMORY", "1")
@@ -688,7 +708,9 @@ def main(argv: list[str] | None = None) -> int:
     if include_mcp:
         tool_paths["codex"] = _require_command("codex")
     if include_dev_tools and args.strict_optional and not optional_tools.get("rg"):
-        raise RuntimeError("rg is required for --with-dev-tools when --strict-optional is set")
+        raise RuntimeError(
+            "rg is required for --with-dev-tools when --strict-optional is set"
+        )
 
     if not ext_root.exists():
         raise RuntimeError(

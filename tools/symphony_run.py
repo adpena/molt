@@ -286,7 +286,9 @@ def _ensure_dashboard_security_defaults(
         env.setdefault("MOLT_EXT_ROOT", str(ext_root))
         env.setdefault("MOLT_SYMPHONY_PARENT_ROOT", str(ext_root.parent / "symphony"))
         env.setdefault("MOLT_SYMPHONY_PROJECT_KEY", "molt")
-        env.setdefault("MOLT_SYMPHONY_STORE_ROOT", str(resolve_symphony_store_root(env)))
+        env.setdefault(
+            "MOLT_SYMPHONY_STORE_ROOT", str(resolve_symphony_store_root(env))
+        )
     env.setdefault("MOLT_SYMPHONY_SECURITY_PROFILE", "local")
     env.setdefault("MOLT_SYMPHONY_BIND_HOST", "127.0.0.1")
     env.setdefault("MOLT_SYMPHONY_ALLOW_NONLOCAL_BIND", "0")
@@ -429,7 +431,25 @@ def main(argv: list[str] | None = None) -> int:
         env.setdefault("MOLT_SOURCE_REPO_URL", repo_url)
     env.setdefault("MOLT_SYMPHONY_SYNC_REMOTE", "origin")
     env.setdefault("MOLT_SYMPHONY_SYNC_BRANCH", "main")
-    env.setdefault("MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS", "symphony")
+    env.setdefault("MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS", "adpena,symphony")
+    env.setdefault("MOLT_SYMPHONY_TRUSTED_USERS", "adpena,symphony")
+    env.setdefault("MOLT_SYMPHONY_TRUSTED_MACHINES", "")
+    env.setdefault("MOLT_SYMPHONY_AUTOLAND_ENABLED", "1")
+    env.setdefault("MOLT_SYMPHONY_AUTOLAND_MODE", "direct-main")
+    env.setdefault("MOLT_SYMPHONY_AUTOLAND_COMMIT_MESSAGE", "chore: sync all changes")
+    env.setdefault("MOLT_SYMPHONY_AUTOLAND_PR_AUTOMERGE", "1")
+    env.setdefault("MOLT_SYMPHONY_AUTOLAND_PR_BASE", "main")
+    env.setdefault(
+        "MOLT_SYMPHONY_CODEX_ARGS",
+        (
+            "-c model_reasoning_effort=low "
+            "-c model_reasoning_summary=none "
+            "-c hide_agent_reasoning=true "
+            "-c model_verbosity=low "
+            "-c tool_output_token_limit=6000 "
+            "-c model_auto_compact_token_limit=120000"
+        ),
+    )
     env.setdefault("MOLT_QUINT_NODE_FALLBACK", _default_quint_node_fallback())
     default_java_home = _default_java_home()
     if default_java_home:

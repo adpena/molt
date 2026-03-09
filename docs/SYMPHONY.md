@@ -83,7 +83,9 @@ Canonical storage layout:
 - `WORKFLOW.md`: repository-owned workflow contract
 - `tools/symphony_bootstrap.py`: one-command setup for MCP/env/launchd
 - `tools/symphony_run.py`: launch helper with external-volume checks and optional wait-for-mount startup behavior for launchd
+- `tools/symphony_hooks.py`: cross-platform `before_run`/`after_run` hook runner (git sync + trusted autoland)
 - `tools/symphony_git_sync.sh`: best-effort workspace git sync with author allowlist gating
+- `tools/symphony_autoland.sh`: best-effort trusted auto-commit/push hook (direct-main or PR auto-merge mode)
 - `tools/symphony_launchd.py`: launchd lifecycle helper for Symphony + watchdog
 - `tools/symphony_watchdog.py`: file-watch daemon that auto-restarts Symphony service on changes and repairs unhealthy launchd jobs via authenticated health probes
 - `tools/symphony_dlq.py`: inspect and replay recursive-loop dead-letter items
@@ -115,8 +117,9 @@ BAT00 host orchestration and machine-control tooling is maintained in the privat
 `fleet` repository (not in public `molt`). Use Fleet MCP tools for remote
 operations.
 
-Default Codex command for Symphony is `codex --yolo app-server` (override with
-`codex.command` in `WORKFLOW.md` when needed).
+Default Codex command for Symphony now applies token-efficiency presets via
+`MOLT_SYMPHONY_CODEX_ARGS` (reasoning effort/summary/output limits/auto-compaction)
+and can still be overridden via `codex.command` in `WORKFLOW.md` when needed.
 
 Public `molt` documents runtime behavior and local workflow contracts; host-level
 automation, credentials handling, and remote orchestration APIs remain fleet-owned.
@@ -441,7 +444,14 @@ It also reports `linear_cli_compat` to explicitly flag npm `lin` schema drift an
 - `after_create` hook failures fail the attempt.
 - `before_run` git sync is best-effort: dirty/diverged workspaces are logged and skipped (non-fatal) to avoid retry flicker loops.
 - `after_run` and `before_remove` hook failures are logged and ignored.
-- Automated sync/merge behavior is author-gated via `MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS` (default `symphony`).
+- Automated sync/merge behavior is author-gated via `MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS` (default `adpena,symphony`).
+- Workflow hooks invoke `uv run --python 3.12 python tools/symphony_hooks.py <before_run|after_run>` for cross-platform shell parity.
+- `after_run` can auto-land trusted changes (via `tools/symphony_hooks.py` / `tools/symphony_autoland.sh`):
+  - `MOLT_SYMPHONY_AUTOLAND_ENABLED=1` (default)
+  - `MOLT_SYMPHONY_AUTOLAND_MODE=direct-main|pr-automerge` (default `direct-main`)
+  - `MOLT_SYMPHONY_TRUSTED_USERS` / `MOLT_SYMPHONY_TRUSTED_MACHINES` control trusted identities.
+  - `MOLT_SYMPHONY_AUTOLAND_COMMIT_MESSAGE` defaults to `chore: sync all changes`.
+- Codex launch args are machine-overridable via `MOLT_SYMPHONY_CODEX_ARGS` and are expanded on Windows/macOS/Linux for cross-platform parity.
 - Unknown prompt variables and unknown filters fail rendering.
 - Unsupported dynamic tool calls are rejected without stalling the session.
 - Rate-limit exhaustion now activates a system suspension (`rate_limited`) and auto-resume window instead of hot-loop retries.

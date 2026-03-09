@@ -7,6 +7,17 @@ set -u
 
 prefix="[symphony_git_sync]"
 
+if [[ -f tools/symphony_hooks.py ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    python3 tools/symphony_hooks.py before_run
+    exit 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    python tools/symphony_hooks.py before_run
+    exit 0
+  fi
+fi
+
 log() {
   printf "%s %s\n" "$prefix" "$*"
 }
@@ -39,7 +50,7 @@ author_allowed() {
 
 REMOTE="${MOLT_SYMPHONY_SYNC_REMOTE:-origin}"
 BRANCH="${MOLT_SYMPHONY_SYNC_BRANCH:-main}"
-ALLOWLIST_RAW="${MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS:-symphony}"
+ALLOWLIST_RAW="${MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS:-adpena,symphony}"
 
 IFS=',' read -r -a ALLOWED_TOKENS <<<"$ALLOWLIST_RAW"
 
