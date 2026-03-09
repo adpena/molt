@@ -1973,8 +1973,15 @@ class SymphonyOrchestrator:
         if port is None:
             self._server_port = None
             return
-        self._server = DashboardServer(provider=self, port=port)
-        bound_port = self._server.start()
+        server = DashboardServer(provider=self, port=port)
+        try:
+            bound_port = server.start()
+        except OSError as exc:
+            raise SymphonyError(
+                f"Failed to bind Symphony dashboard/API on port {port}: {exc}. "
+                "Another instance may already be running on this host."
+            ) from exc
+        self._server = server
         self._server_port = bound_port
         log("INFO", "http_server_started", port=bound_port)
 
