@@ -67,7 +67,11 @@ def test_sync_env_defaults_fills_external_paths(monkeypatch, tmp_path: Path) -> 
     assert loaded["MOLT_SOURCE_REPO_URL"] == "git@github.com:org/molt.git"
     assert loaded["MOLT_SYMPHONY_SYNC_REMOTE"] == "origin"
     assert loaded["MOLT_SYMPHONY_SYNC_BRANCH"] == "main"
-    assert loaded["MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS"] == "symphony"
+    assert loaded["MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS"] == "adpena,symphony"
+    assert loaded["MOLT_SYMPHONY_TRUSTED_USERS"] == "adpena,symphony"
+    assert loaded["MOLT_SYMPHONY_TRUSTED_MACHINES"] == ""
+    assert "model_reasoning_effort=low" in loaded["MOLT_SYMPHONY_CODEX_ARGS"]
+    assert "model_auto_compact_token_limit=120000" in loaded["MOLT_SYMPHONY_CODEX_ARGS"]
     assert loaded["MOLT_SYMPHONY_TOOL_STATE_DETAIL"] == "compact"
     assert loaded["MOLT_SYMPHONY_MAX_CODEX_EVENT_COUNTERS"] == "64"
     assert loaded["MOLT_SYMPHONY_DURABLE_MEMORY"] == "1"
