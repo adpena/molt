@@ -993,8 +993,10 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   (TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P0, status:partial): expand browser socket coverage (UDP/listen/server sockets) + add more parity tests.)
 - Structured codecs: MsgPack is the production default while JSON remains for compatibility/debug.
 - Cancellation: cooperative checks plus automatic cancellation injection on await
-  boundaries; async I/O cancellation propagation still pending.
-  (TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): async I/O cancellation propagation.)
+  boundaries; async I/O cancellation propagates through the Rust event loop and
+  I/O poller, and equal-deadline timers / surviving I/O waiters preserve
+  deterministic FIFO scheduling within a loop turn.
+  (Implemented(async-runtime, owner:runtime, milestone:RT2, priority:P0, status:done): Rust event loop + I/O poller with cancellation propagation and deterministic scheduling guarantees; exposed as the asyncio core.)
 - `db_query` Arrow IPC uses best-effort type inference; mixed-type columns error without a declared schema; wasm client shims now consume DB response streams into bytes/Arrow IPC via `molt_db` (async) using MsgPack header parsing (Node/WASI host adapter is implemented in `run_wasm.js`).
 - collections: `deque` remains list-backed (left ops are O(n)); no runtime deque type yet.
   (TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P1, status:missing): runtime deque type.)
@@ -1292,7 +1294,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 ## TODO Mirror Ledger (Auto-Generated)
 <!-- BEGIN TODO MIRROR LEDGER -->
 - DONE(async-runtime, owner:frontend, milestone:TC2, priority:P1, status:done): async generator lowering and runtime parity (`async def` with `yield`) — fully implemented at all layers. PEP 479 analog StopAsyncIteration→RuntimeError conversion fixed 2026-03-01.
-- TODO(async-runtime, owner:runtime, milestone:RT2, priority:P0, status:planned): Rust event loop + I/O poller with cancellation propagation and deterministic scheduling guarantees; expose as asyncio core.
+- DONE(async-runtime, owner:runtime, milestone:RT2, priority:P0, status:done): Rust event loop + I/O poller with cancellation propagation and deterministic scheduling guarantees; exposed as the asyncio core. Landed with timer cancellation synchronization, deterministic FIFO scheduling for equal-deadline timers and surviving I/O waiters, and Rust-backed `asyncio` loop wiring.
 - TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): cancellation injection on await).
 - TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): task-based concurrency).
 - TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): wasm async iteration/scheduler parity.

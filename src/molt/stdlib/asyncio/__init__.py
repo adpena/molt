@@ -3167,6 +3167,10 @@ class TimerHandle(Handle):
 
     def cancel(self) -> None:
         super().cancel()
+        rust_timer_id = getattr(self, "_rust_timer_id", None)
+        if rust_timer_id is not None:
+            self._loop._cancel_rust_timer(rust_timer_id)  # type: ignore[attr-defined]
+            self._rust_timer_id = None
         _require_asyncio_intrinsic(
             molt_asyncio_timer_handle_cancel, "asyncio_timer_handle_cancel"
         )(
@@ -3592,6 +3596,8 @@ class _EventLoop(AbstractEventLoop):
     def set_exception_handler(
         self, handler: Callable[["EventLoop", dict[str, Any]], Any] | None
     ) -> None:
+        if handler is not None and not callable(handler):
+            raise TypeError(f"A callable object or None is expected, got {handler!r}")
         _require_asyncio_intrinsic(
             molt_event_loop_set_exception_handler, "event_loop_set_exception_handler"
         )(self._loop_handle, handler)
@@ -3606,8 +3612,17 @@ class _EventLoop(AbstractEventLoop):
     def call_exception_handler(self, context: dict[str, Any]) -> None:
         handler = self.get_exception_handler()
         if handler is not None:
-            handler(self, context)
-            return
+            try:
+                handler(self, context)
+                return
+            except (SystemExit, KeyboardInterrupt):
+                raise
+            except BaseException as exc:
+                context = {
+                    "message": "Unhandled error in exception handler",
+                    "exception": exc,
+                    "context": context,
+                }
         message = context.get("message", "Unhandled exception in event loop")
         exc = context.get("exception")
         if exc is None:
@@ -3628,6 +3643,8 @@ class _EventLoop(AbstractEventLoop):
         )
 
     def set_task_factory(self, factory: Callable[..., Task] | None) -> None:
+        if factory is not None and not callable(factory):
+            raise TypeError("task factory must be a callable or None")
         _require_asyncio_intrinsic(
             molt_event_loop_set_task_factory, "event_loop_set_task_factory"
         )(self._loop_handle, factory)
@@ -3667,6 +3684,8 @@ class _EventLoop(AbstractEventLoop):
     def close(self) -> None:
         if self.is_closed():
             return
+        if self.is_running():
+            raise RuntimeError("Cannot close a running event loop")
         _require_asyncio_intrinsic(molt_event_loop_close, "event_loop_close")(
             self._loop_handle
         )
@@ -3693,6 +3712,8 @@ class _EventLoop(AbstractEventLoop):
         return wrap_future(submitted, loop=self)
 
     def add_reader(self, fd: Any, callback: Any, *args: Any) -> None:
+        if self.is_closed():
+            raise RuntimeError("Event loop is closed")
         fileno = _fd_from_fileobj(fd)
         # Register with Rust event loop for I/O readiness notification.
         _require_asyncio_intrinsic(molt_event_loop_add_reader, "event_loop_add_reader")(
@@ -3703,6 +3724,8 @@ class _EventLoop(AbstractEventLoop):
         )(self, self._readers, fileno, callback, args, 1)
 
     def remove_reader(self, fd: Any) -> bool:
+        if self.is_closed():
+            return False
         fileno = _fd_from_fileobj(fd)
         _require_asyncio_intrinsic(
             molt_event_loop_remove_reader, "event_loop_remove_reader"
@@ -3714,6 +3737,8 @@ class _EventLoop(AbstractEventLoop):
         )
 
     def add_writer(self, fd: Any, callback: Any, *args: Any) -> None:
+        if self.is_closed():
+            raise RuntimeError("Event loop is closed")
         fileno = _fd_from_fileobj(fd)
         # Register with Rust event loop for I/O writability notification.
         _require_asyncio_intrinsic(molt_event_loop_add_writer, "event_loop_add_writer")(
@@ -3774,6 +3799,8 @@ class _EventLoop(AbstractEventLoop):
         return await fut
 
     def remove_writer(self, fd: Any) -> bool:
+        if self.is_closed():
+            return False
         fileno = _fd_from_fileobj(fd)
         _require_asyncio_intrinsic(
             molt_event_loop_remove_writer, "event_loop_remove_writer"
@@ -3911,6 +3938,28 @@ class _EventLoop(AbstractEventLoop):
         return result
 
     def run_forever(self) -> None:
+        if self.is_closed():
+            raise RuntimeError("Event loop is closed")
+        if self.is_running():
+            raise RuntimeError("Event loop is already running")
+        if self._stopping:
+            prev = _get_running_loop()
+            _set_running_loop(self)
+            _require_asyncio_intrinsic(molt_event_loop_start, "event_loop_start")(
+                self._loop_handle
+            )
+            try:
+                if self._ready:
+                    self._ensure_ready_runner()
+                self._run_once()
+            finally:
+                _require_asyncio_intrinsic(molt_event_loop_stop, "event_loop_stop")(
+                    self._loop_handle
+                )
+                self._stopping = False
+                _set_running_loop(prev)
+            return
+
         async def _spin() -> None:
             while not self._stopping:
                 await sleep(0.0)
@@ -6940,18 +6989,4 @@ for _fn in _builtin_targets:
 _TYPE_CHECKING = TYPE_CHECKING
 _cast = cast
 for _name in (
-    "TYPE_CHECKING",
-    "Any",
-    "Callable",
-    "Iterable",
-    "Iterator",
-    "cast",
-    "dataclass",
-    "typing",
-):
-    import sys as _aio_cleanup_sys
-
-    _aio_cleanup_dict = (
-        getattr(_aio_cleanup_sys.modules.get(__name__), "__dict__", None) or globals()
-    )
-    _aio_cleanup_dict.pop(_name, None)
+    "TYPE_C

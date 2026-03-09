@@ -137,6 +137,37 @@ impl EventLoopState {
     fn is_closed(&self) -> bool {
         self.state.load(Ordering::Relaxed) == STATE_CLOSED
     }
+
+    fn prune_cancelled_timer_callbacks(&mut self) -> Vec<u64> {
+        let mut callbacks = Vec::new();
+        while self
+            .timers
+            .peek()
+            .is_some_and(|entry| self.cancelled_timers.contains(&entry.sequence))
+        {
+            let entry = self.timers.pop().expect("peeked timer must pop");
+            self.cancelled_timers.remove(&entry.sequence);
+            callbacks.push(entry.callback_bits);
+        }
+        callbacks
+    }
+
+    fn has_pending_work(&self) -> bool {
+        !self.ready.is_empty()
+            || !self.timers.is_empty()
+            || !self.readers.is_empty()
+            || !self.writers.is_empty()
+    }
+
+    fn cancel_timer_seq(&mut self, timer_id: u64) -> bool {
+        if self.cancelled_timers.contains(&timer_id) {
+            return false;
+        }
+        if !self.timers.iter().any(|entry| entry.sequence == timer_id) {
+            return false;
+        }
+        self.cancelled_timers.insert(timer_id)
+    }
 }
 
 // --- Global handle registry (cross-thread safe, GIL-serialized) ---
@@ -279,13 +310,16 @@ pub extern "C" fn molt_event_loop_call_at(
 }
 
 /// Cancel a scheduled timer by its sequence ID.
-/// Uses an O(1) HashSet lookup during timer drain to skip cancelled entries.
+/// Returns True only when a live timer is newly marked cancelled.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_cancel_timer(loop_handle: u64, timer_id_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let timer_id = crate::to_i64(crate::obj_from_bits(timer_id_bits)).unwrap_or(-1) as u64;
+        let timer_id = crate::to_i64(crate::obj_from_bits(timer_id_bits)).unwrap_or(-1);
+        if timer_id < 0 {
+            return MoltObject::from_bool(false).bits();
+        }
         let Some(cancelled) =
-            with_loop(loop_handle, |state| state.cancelled_timers.insert(timer_id))
+            with_loop(loop_handle, |state| state.cancel_timer_seq(timer_id as u64))
         else {
             return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
         };
@@ -452,6 +486,16 @@ pub extern "C" fn molt_event_loop_run_once(loop_handle: u64) -> u64 {
         let Some(handle) = decode_loop_handle(loop_handle) else {
             return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
         };
+        let cancelled = {
+            let mut map = LOOPS.lock().unwrap();
+            let Some(state) = map.get_mut(&handle) else {
+                return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
+            };
+            state.prune_cancelled_timer_callbacks()
+        };
+        for cb_bits in cancelled {
+            dec_ref_bits(_py, cb_bits);
+        }
         let mut callbacks_run: i64 = 0;
 
         // Phase 1: Drain ready queue.
@@ -554,19 +598,23 @@ pub extern "C" fn molt_event_loop_time(loop_handle: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_next_deadline_delay(loop_handle: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let Some(delay) = with_loop(loop_handle, |state| {
+        let Some((cancelled, delay)) = with_loop(loop_handle, |state| {
+            let cancelled = state.prune_cancelled_timer_callbacks();
             let Some(top) = state.timers.peek() else {
-                return -1.0f64;
+                return (cancelled, -1.0f64);
             };
             let now_ns = state.monotonic_ns();
             if top.deadline_ns <= now_ns {
-                0.0f64
+                (cancelled, 0.0f64)
             } else {
-                (top.deadline_ns - now_ns) as f64 / 1e9
+                (cancelled, (top.deadline_ns - now_ns) as f64 / 1e9)
             }
         }) else {
             return MoltObject::from_float(-1.0).bits();
         };
+        for cb_bits in cancelled {
+            dec_ref_bits(_py, cb_bits);
+        }
         MoltObject::from_float(delay).bits()
     })
 }
@@ -575,15 +623,15 @@ pub extern "C" fn molt_event_loop_next_deadline_delay(loop_handle: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_event_loop_has_pending(loop_handle: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let Some(has) = with_loop(loop_handle, |state| {
-            !state.ready.is_empty()
-                || state
-                    .timers
-                    .peek()
-                    .is_some_and(|t| t.deadline_ns <= state.monotonic_ns())
+        let Some((cancelled, has)) = with_loop(loop_handle, |state| {
+            let cancelled = state.prune_cancelled_timer_callbacks();
+            (cancelled, state.has_pending_work())
         }) else {
             return MoltObject::from_bool(false).bits();
         };
+        for cb_bits in cancelled {
+            dec_ref_bits(_py, cb_bits);
+        }
         MoltObject::from_bool(has).bits()
     })
 }
@@ -1352,4 +1400,84 @@ pub extern "C" fn molt_event_loop_connect_write_pipe(
             "connect_write_pipe is not supported on WASM",
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn push_timer(state: &mut EventLoopState, sequence: u64) {
+        state.timers.push(TimerEntry {
+            deadline_ns: state.monotonic_ns() + 1_000,
+            sequence,
+            callback_bits: 0,
+        });
+    }
+
+    #[test]
+    fn cancel_timer_seq_returns_false_for_unknown_timer() {
+        let mut state = EventLoopState::new();
+
+        assert!(!state.cancel_timer_seq(99));
+        assert!(state.cancelled_timers.is_empty());
+    }
+
+    #[test]
+    fn cancel_timer_seq_returns_true_once_for_live_timer() {
+        let mut state = EventLoopState::new();
+        push_timer(&mut state, 7);
+
+        assert!(state.cancel_timer_seq(7));
+        assert!(!state.cancel_timer_seq(7));
+        assert!(state.cancelled_timers.contains(&7));
+    }
+
+    #[test]
+    fn has_pending_work_counts_future_timers_and_watchers() {
+        let mut state = EventLoopState::new();
+        assert!(!state.has_pending_work());
+
+        push_timer(&mut state, 1);
+        assert!(state.has_pending_work());
+
+        state.timers.clear();
+        state
+            .readers
+            .insert(3, IoCallbackEntry { callback_bits: 0 });
+        assert!(state.has_pending_work());
+
+        state.readers.clear();
+        state
+            .writers
+            .insert(4, IoCallbackEntry { callback_bits: 0 });
+        assert!(state.has_pending_work());
+    }
+
+    #[test]
+    fn prune_cancelled_timer_callbacks_removes_cancelled_head() {
+        let mut state = EventLoopState::new();
+        push_timer(&mut state, 1);
+        push_timer(&mut state, 2);
+
+        assert!(state.cancel_timer_seq(1));
+        let callbacks = state.prune_cancelled_timer_callbacks();
+
+        assert_eq!(callbacks, vec![0]);
+        assert!(!state.cancelled_timers.contains(&1));
+        assert_eq!(state.timers.peek().map(|entry| entry.sequence), Some(2));
+    }
+
+    #[test]
+    fn prune_cancelled_timer_callbacks_clears_pending_when_only_cancelled_timer_remains() {
+        let mut state = EventLoopState::new();
+        push_timer(&mut state, 7);
+
+        assert!(state.cancel_timer_seq(7));
+        let callbacks = state.prune_cancelled_timer_callbacks();
+
+        assert_eq!(callbacks, vec![0]);
+        assert!(state.timers.is_empty());
+        assert!(state.cancelled_timers.is_empty());
+        assert!(!state.has_pending_work());
+    }
 }
