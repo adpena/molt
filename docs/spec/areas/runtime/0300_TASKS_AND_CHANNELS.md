@@ -1,73 +1,104 @@
 # Molt Tasks, Channels, and Native Concurrency
-**Status:** Priority / Core Feature
+**Status:** Active Runtime Contract
 **Audience:** Compiler engineers, runtime engineers
 
 ## Executive Summary
-Native concurrency is foundational to Molt. This document defines a goroutine-class task model with channels, designed for Python ergonomics and Go-like performance.
+Molt's RT2 async-runtime milestone is implemented as a Rust-backed `asyncio`
+core. The production contract today is a deterministic single-loop scheduler
+with a native I/O poller, cancellation propagation across timers and readiness
+waiters, and a Python stdlib surface exposed through intrinsic-backed asyncio
+shims.
+
+This document is the canonical runtime-level contract for the current async
+execution model. It does not promise a general M:N task runtime, channel-first
+execution model, or no-GIL multicore scheduler. Those remain future design
+space and must not be inferred from this spec.
+
+## Current RT2 Contract
+- Default async execution is powered by
+  `runtime/molt-runtime/src/async_rt/event_loop.rs`.
+- Native readiness polling is powered by
+  `runtime/molt-runtime/src/async_rt/io_poller.rs`.
+- Cancellation state is tracked and propagated by
+  `runtime/molt-runtime/src/async_rt/cancellation.rs`.
+- Scheduler coordination and runtime-facing queues live in
+  `runtime/molt-runtime/src/async_rt/scheduler.rs`.
+- Python-facing `asyncio` integration is exposed through
+  `src/molt/stdlib/_asyncio.py` and the surrounding stdlib asyncio modules.
 
 ## Goals
-- Millions of cheap tasks
-- No GIL
-- M:N scheduling
-- Structured cancellation
-- Typed channels
-- Native streaming I/O (HTTP streaming, WebSockets)
-- Production-grade semantics
+- Deterministic scheduling within a loop turn
+- Rust-owned timer and readiness queues
+- Structured cancellation propagation
+- Asyncio-compatible semantics for supported Python 3.12+ surfaces
+- No host-Python fallback in compiled binaries
+- Native and wasm behavior that stay aligned behind explicit capability gates
 
-## User Model
-```python
-from moltlib.concurrency import Channel, channel, spawn
+## Runtime Model
+- The runtime event loop is single-loop and deterministic by design.
+- The ready queue drains in insertion order for a given loop turn.
+- Timers use a deadline heap with a FIFO tiebreak sequence for equal deadlines.
+- The I/O poller preserves waiter ordering and removes cancelled waiters from
+  poll queues before wake-up.
+- Cancellation must propagate through timer handles, waiting tasks, and socket
+  readiness registrations without leaving stale wakeups behind.
+- Runtime mutation remains serialized by the GIL-like runtime lock; the async
+  runtime is not a no-lock design today.
 
-async def worker(jobs, results):
-    while True:
-        value = jobs.recv()
-        results.send(value)
+## Determinism Guarantees
+The RT2 acceptance bar requires deterministic behavior for the cases that most
+often regress async runtimes:
 
-def main():
-    jobs: Channel[int] = channel()
-    results: Channel[int] = channel()
-    spawn(worker())
-```
+- Equal-deadline `call_later` / `call_at` callbacks resume in FIFO order.
+- Surviving I/O waiters preserve registration order after neighbouring waiters
+  are cancelled.
+- Cancelled timers and readiness waiters do not produce spurious wakeups in a
+  later turn.
+- Task cancellation propagation is observable through the `asyncio` surface
+  rather than being swallowed inside runtime queues.
 
-### Current API Surface (CPython fallback)
-- `moltlib.concurrency.channel()` and `moltlib.concurrency.Channel` wrap
-  `molt_chan_*` intrinsics via shims.
-- `moltlib.concurrency.spawn()` dispatches to `molt_spawn` or falls back to a
-  background event loop.
-- Async-friendly helpers: `Channel.send_async()` / `Channel.recv_async()` for event-loop usage.
-- Compatibility note: `molt.concurrency.*` remains available as a shim, but the
-  root `molt` package no longer re-exports these helpers.
+These guarantees are covered by differential tests including
+`asyncio_call_later_fifo_tiebreak.py`,
+`asyncio_call_at_fifo_tiebreak.py`,
+`asyncio_sock_recv_cancel_deterministic.py`,
+`asyncio_sock_recv_cancel_survivor_order.py`, and
+`asyncio_wait_for_cancel_propagation.py`.
 
-### Cancellation Tokens (Structured)
-- Each task runs with a **current cancellation token**; by default tasks inherit
-  the token from their parent (request-scoped default).
-- Tokens can be overridden inside a task (task-scoped override) by setting a new
-  current token; the new token becomes the inherited token for any spawned work.
-- Cancellation is **cooperative**: handlers should check
-  `moltlib.concurrency.cancelled()` (or the `molt.concurrency` shim) or call
-  `token.cancelled()` at safe points and abort work promptly.
+## Python Surface
+- The user-facing async contract is the stdlib `asyncio` surface, not a custom
+  channel-first API.
+- `src/molt/stdlib/_asyncio.py` is an intrinsic-backed bridge for loop/task
+  state and must remain Rust-lowered in compiled binaries.
+- Unsupported async capabilities must fail explicitly via capability gating or
+  missing-intrinsic errors; they must not silently route through host Python.
 
-## Runtime
-- Work-stealing scheduler (multicore scaling)
-- OS threads
-- Cooperative yields at channel and I/O ops
+## Channels And Broader Concurrency
+Molt may grow richer task/channel primitives over time, but they are not the
+current RT2 production contract. Any future channel or multicore task design
+must integrate with the deterministic async scheduler instead of bypassing it,
+and must be specified separately with:
 
-## Safety
-- Immutable sharing allowed
-- Mutable state via channels only (Tier 0)
-- Compile-time rejection of unsafe sharing
+- lock ordering and memory model
+- cancellation semantics
+- fairness guarantees
+- native/wasm parity story
+- differential and performance validation
 
-## I/O
-- epoll / kqueue integration
-- One task per connection/request
-- WebSocket streams map to bounded channels with backpressure
+## Non-Goals For This Contract
+- Promising a general-purpose M:N scheduler
+- Claiming linear multicore scaling for Python async code
+- Removing the runtime GIL from the current async implementation
+- Reintroducing CPython fallback/background-loop behavior to satisfy APIs
 
-See `docs/spec/areas/web/0600_STREAMING_AND_WEBSOCKETS.md` for the streaming/WebSocket API and capability model.
+## Verification Expectations
+Changes to the async runtime must ship with deterministic verification, not
+just passing smoke tests. Minimum evidence includes:
 
-## Partner Library
-`molt_accel` provides CPython integration via a Molt worker binary and IPC.
+- targeted differential coverage for timer ordering, cancellation propagation,
+  and I/O waiter ordering
+- runtime tests for queue cleanup and wake-up behavior
+- documentation updates when scheduler or cancellation semantics move
 
-## Acceptance
-- 10× CPython throughput for I/O services
-- Linear core scaling
-- No global lock
+See also `docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md` for the runtime
+locking contract and `docs/spec/areas/runtime/0027_RUNTIME_ARCHITECTURE_MAP.md`
+for subsystem ownership.
