@@ -141,9 +141,7 @@ fn rust_backend_lowers_class_slots_without_stub_placeholders() {
     assert!(source.contains(
         "molt_set_item(&mut point_obj, MoltValue::Str(\"__slot_0\".to_string()), x.clone());"
     ));
-    assert!(
-        source.contains("molt_get_item(&point_obj, &MoltValue::Str(\"__slot_8\".to_string()))")
-    );
+    assert!(source.contains("molt_get_item(&point_obj, &MoltValue::Str(\"__slot_8\".to_string()))"));
 }
 
 #[test]
@@ -190,9 +188,7 @@ fn rust_backend_lowers_module_attr_round_trip() {
 
     assert!(!source.contains("MOLT_STUB: module_set_attr"));
     assert!(!source.contains("MOLT_STUB: module_get_attr"));
-    assert!(
-        source
-            .contains("molt_set_attr_name(&mut module_obj, attr_name.clone(), point_cls.clone());")
-    );
+    assert!(source
+        .contains("molt_set_attr_name(&mut module_obj, attr_name.clone(), point_cls.clone());"));
     assert!(source.contains("molt_get_attr_name(&module_obj, &attr_name)"));
 }
