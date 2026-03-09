@@ -102,7 +102,7 @@ def test_symphony_run_main_uses_env_file_and_launches(
     assert env["MOLT_SYMPHONY_EXEC_MODE"] == "python"
     assert env["MOLT_SYMPHONY_SYNC_REMOTE"] == "origin"
     assert env["MOLT_SYMPHONY_SYNC_BRANCH"] == "main"
-    assert env["MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS"] == "adpena,symphony"
+    assert env["MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS"] == "symphony"
     assert (
         env["MOLT_QUINT_NODE_FALLBACK"] == symphony_run._default_quint_node_fallback()
     )

@@ -6,9 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from .paths import resolve_molt_ext_root
+
 _ASSET_DIR = Path(__file__).with_name("dashboard_assets")
-_DEFAULT_DASHBOARD_KERNEL_WASM = Path(
-    "/Volumes/APDataStore/Molt/wasm/symphony/dashboard_kernel.wasm"
+_DEFAULT_DASHBOARD_KERNEL_WASM = (
+    resolve_molt_ext_root() / "wasm" / "symphony" / "dashboard_kernel.wasm"
 )
 
 

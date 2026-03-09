@@ -13,6 +13,7 @@ from pathlib import Path
 from molt.symphony.dlq import DeadLetterQueue, dead_letter_fingerprint
 from molt.symphony.loop_hooks import HookDecision, LoopHookRunner
 from molt.symphony.paths import (
+    default_molt_ext_root,
     symphony_dlq_events_file,
     resolve_molt_ext_root,
     symphony_perf_reports_dir,
@@ -25,7 +26,7 @@ from molt.symphony.paths import (
 from molt.symphony.taste_memory import TasteMemoryStore
 from molt.symphony.tool_promotion import ToolPromotionStore
 
-DEFAULT_EXT_ROOT = "/Volumes/APDataStore/Molt"
+DEFAULT_EXT_ROOT = str(default_molt_ext_root())
 DEFAULT_TEAM = "Moltlang"
 DEFAULT_ENV_FILE = Path("ops/linear/runtime/symphony.env")
 
@@ -788,7 +789,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--ext-root",
-        default=os.environ.get("MOLT_EXT_ROOT", DEFAULT_EXT_ROOT),
+        default=os.environ.get("MOLT_EXT_ROOT") or DEFAULT_EXT_ROOT,
         help="External artifact root.",
     )
     parser.add_argument(

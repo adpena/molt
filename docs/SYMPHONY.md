@@ -23,10 +23,10 @@ Harness engineering alignment:
 - [docs/exec-plans/TEMPLATE.md](docs/exec-plans/TEMPLATE.md)
 
 Canonical storage layout:
-- compiler/build artifacts stay under `MOLT_EXT_ROOT` (default `/Volumes/APDataStore/Molt`)
-- long-lived Symphony logs/state/artifacts live under the shared parent
-  `/Volumes/APDataStore/symphony/<project>` with Molt defaulting to
-  `/Volumes/APDataStore/symphony/molt`
+- compiler/build artifacts stay under `MOLT_EXT_ROOT` (auto-detected per host unless explicitly set)
+- long-lived Symphony logs/state/artifacts live under
+  `MOLT_SYMPHONY_PARENT_ROOT/<project>` with Molt defaulting to
+  `MOLT_SYMPHONY_STORE_ROOT`
 
 ## What is implemented
 
@@ -146,14 +146,14 @@ Launchd hardening details:
 PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_perf.py WORKFLOW.md --iterations 3
 ```
 
-This writes JSON reports under `/Volumes/APDataStore/symphony/molt/logs/` by default.
+This writes JSON reports under `MOLT_SYMPHONY_LOG_ROOT` by default.
 
 Optional client-side WASM lane (Python -> Molt -> WASM) for dashboard kernels:
 
 ```bash
 PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_dashboard_wasm.py \
   --profile release \
-  --output /Volumes/APDataStore/Molt/wasm/symphony/dashboard_kernel.wasm
+  --output "$MOLT_EXT_ROOT/wasm/symphony/dashboard_kernel.wasm"
 ```
 
 Kernel source is `src/molt/symphony/dashboard_kernel.py`.
@@ -187,7 +187,7 @@ Compare current run vs a previous report to detect regressions:
 ```bash
 PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_perf.py WORKFLOW.md \
   --iterations 3 \
-  --compare-with /Volumes/APDataStore/symphony/molt/logs/symphony_perf_<previous>.json
+  --compare-with "$MOLT_SYMPHONY_LOG_ROOT/symphony_perf_<previous>.json"
 ```
 
 Strict regression gate (CI/local hard-fail budget):
@@ -195,7 +195,7 @@ Strict regression gate (CI/local hard-fail budget):
 ```bash
 PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_perf.py WORKFLOW.md \
   --iterations 3 \
-  --compare-with /Volumes/APDataStore/symphony/molt/logs/symphony_perf_<previous>.json \
+  --compare-with "$MOLT_SYMPHONY_LOG_ROOT/symphony_perf_<previous>.json" \
   --max-avg-regression-ratio 0.15 \
   --max-p95-regression-ratio 0.20 \
   --max-dashboard-avg-latency-regression-ms 5 \
@@ -220,9 +220,9 @@ Compile the helper with Molt (release + max optimization) and wire it:
 ```bash
 PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build \
   --profile release --optimize max \
-  --output /Volumes/APDataStore/Molt/bin/symphony_state_hasher_molt \
+  --output "$MOLT_EXT_ROOT/bin/symphony_state_hasher_molt" \
   tools/symphony_state_hasher.py
-export MOLT_SYMPHONY_STATE_HASH_HELPER="/Volumes/APDataStore/Molt/bin/symphony_state_hasher_molt"
+export MOLT_SYMPHONY_STATE_HASH_HELPER="$MOLT_EXT_ROOT/bin/symphony_state_hasher_molt"
 ```
 
 ## Security + Secret Hygiene
@@ -233,7 +233,7 @@ export MOLT_SYMPHONY_STATE_HASH_HELPER="/Volumes/APDataStore/Molt/bin/symphony_s
 - Use `.gitignore`-protected local files for machine-specific overrides (`WORKFLOW.local.md`, `.env`, `ops/linear/*.secret*`).
 - `tools/secret_guard.py --staged` is enforced by `.githooks/pre-commit` (installed by `tools/symphony_bootstrap.py` via `core.hooksPath=.githooks` unless a custom hooks path already exists).
 - For intentional fake fixtures, add `# secret-guard: allow` on the specific test line.
-- Secret-guard blocked commits emit security events to `MOLT_SYMPHONY_SECURITY_EVENTS_FILE` (default `/Volumes/APDataStore/symphony/molt/logs/security/events.jsonl`), surfaced in dashboard `Security Telemetry`.
+- Secret-guard blocked commits emit security events to `MOLT_SYMPHONY_SECURITY_EVENTS_FILE` (default under `MOLT_SYMPHONY_LOG_ROOT/security/events.jsonl`), surfaced in dashboard `Security Telemetry`.
 - Network bind is loopback-only by default (`MOLT_SYMPHONY_BIND_HOST=127.0.0.1`). Non-loopback bind requires explicit opt-in (`MOLT_SYMPHONY_ALLOW_NONLOCAL_BIND=1`).
 - `MOLT_SYMPHONY_SECURITY_PROFILE=production` enables stricter startup rules (API token required; dashboard UI disabled by default via `MOLT_SYMPHONY_DISABLE_DASHBOARD_UI=1`; query-token auth disabled by default via `MOLT_SYMPHONY_ALLOW_QUERY_TOKEN=0`).
 - Full adversarial review checklist: [docs/SYMPHONY_RED_TEAM_CHECKLIST.md](docs/SYMPHONY_RED_TEAM_CHECKLIST.md).
@@ -278,10 +278,10 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --
 
 Outputs are written under:
 
-- `/Volumes/APDataStore/symphony/molt/logs/readiness/latest.json`
-- `/Volumes/APDataStore/symphony/molt/logs/readiness/latest.md`
-- `/Volumes/APDataStore/symphony/molt/logs/readiness/next_tranche.json`
-- `/Volumes/APDataStore/symphony/molt/logs/readiness/next_tranche.md`
+- `$MOLT_SYMPHONY_LOG_ROOT/readiness/latest.json`
+- `$MOLT_SYMPHONY_LOG_ROOT/readiness/latest.md`
+- `$MOLT_SYMPHONY_LOG_ROOT/readiness/next_tranche.json`
+- `$MOLT_SYMPHONY_LOG_ROOT/readiness/next_tranche.md`
 - `sections.dlq_health` reports replay backlog and recurring unresolved fingerprints
 - `sections.tool_promotion` reports latest candidate and ready-candidate counts
 - top-level `improvement_issue_sync` emits a dry-run or applied Linear issue sync plan for DLQ backlog and promotion-ready candidates
@@ -307,19 +307,19 @@ PYTHONPATH=src uv run --group dev --python 3.12 python3 tools/symphony_recursive
 
 Artifacts are written under:
 
-- `/Volumes/APDataStore/symphony/molt/logs/recursive_loop/<timestamp>-cycleXX/summary.json`
-- `/Volumes/APDataStore/symphony/molt/logs/recursive_loop/<timestamp>-cycleXX/summary.md`
+- `$MOLT_SYMPHONY_LOG_ROOT/recursive_loop/<timestamp>-cycleXX/summary.json`
+- `$MOLT_SYMPHONY_LOG_ROOT/recursive_loop/<timestamp>-cycleXX/summary.md`
 
 Recursive-loop self-improvement surfaces:
 
-- dead-letter queue: `/Volumes/APDataStore/symphony/molt/state/dlq/events.jsonl`
-- taste-memory events: `/Volumes/APDataStore/symphony/molt/state/taste_memory/events.jsonl`
+- dead-letter queue: `$MOLT_SYMPHONY_STORE_ROOT/state/dlq/events.jsonl`
+- taste-memory events: `$MOLT_SYMPHONY_STORE_ROOT/state/taste_memory/events.jsonl`
 - taste-memory distillations:
-  `/Volumes/APDataStore/symphony/molt/state/taste_memory/distillations/`
+  `$MOLT_SYMPHONY_STORE_ROOT/state/taste_memory/distillations/`
 - tool-promotion events:
-  `/Volumes/APDataStore/symphony/molt/state/tool_promotion/events.jsonl`
+  `$MOLT_SYMPHONY_STORE_ROOT/state/tool_promotion/events.jsonl`
 - tool-promotion distillations:
-  `/Volumes/APDataStore/symphony/molt/state/tool_promotion/distillations/`
+  `$MOLT_SYMPHONY_STORE_ROOT/state/tool_promotion/distillations/`
 - optional typed hook command: `MOLT_SYMPHONY_LOOP_HOOK_CMD`
 
 DLQ inspection/replay:
@@ -409,7 +409,7 @@ export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
 ```
 
 Bootstrap/runtime also seed `MOLT_APALACHE_WORK_DIR` (default:
-`/Volumes/APDataStore/Molt/tmp/apalache`) so Quint/Apalache `_apalache-out`
+`$MOLT_EXT_ROOT/tmp/apalache`) so Quint/Apalache `_apalache-out`
 artifacts stay off the repo root.
 
 ### Linear Hygiene + Swarm Routing
@@ -441,7 +441,7 @@ It also reports `linear_cli_compat` to explicitly flag npm `lin` schema drift an
 - `after_create` hook failures fail the attempt.
 - `before_run` git sync is best-effort: dirty/diverged workspaces are logged and skipped (non-fatal) to avoid retry flicker loops.
 - `after_run` and `before_remove` hook failures are logged and ignored.
-- Automated sync/merge behavior is author-gated via `MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS` (default `adpena,symphony`).
+- Automated sync/merge behavior is author-gated via `MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS` (default `symphony`).
 - Unknown prompt variables and unknown filters fail rendering.
 - Unsupported dynamic tool calls are rejected without stalling the session.
 - Rate-limit exhaustion now activates a system suspension (`rate_limited`) and auto-resume window instead of hot-loop retries.

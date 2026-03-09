@@ -8,11 +8,20 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    from molt.symphony.paths import default_molt_ext_root
+except ModuleNotFoundError:  # pragma: no cover - script execution path.
+    _REPO_ROOT = Path(__file__).resolve().parents[1]
+    _SRC_ROOT = _REPO_ROOT / "src"
+    if str(_SRC_ROOT) not in sys.path:
+        sys.path.insert(0, str(_SRC_ROOT))
+    from molt.symphony.paths import default_molt_ext_root
+
 
 LABEL = "com.molt.symphony"
 WATCHDOG_LABEL = "com.molt.symphony.watchdog"
 DEFAULT_ENV_FILE = Path("ops/linear/runtime/symphony.env")
-DEFAULT_EXT_ROOT = Path("/Volumes/APDataStore/Molt")
+DEFAULT_EXT_ROOT = default_molt_ext_root()
 DEFAULT_WAIT_FOR_EXTERNAL_ROOT_SECONDS = -1
 DEFAULT_WAIT_FOR_EXTERNAL_ROOT_INTERVAL_MS = 5_000
 DEFAULT_HEALTH_INTERVAL_MS = 10_000

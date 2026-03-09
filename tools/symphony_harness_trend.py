@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from molt.symphony.paths import symphony_metrics_dir
+from molt.symphony.paths import default_molt_ext_root, symphony_metrics_dir
 
 
 def _parse_iso(value: str) -> datetime:
@@ -143,7 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--ext-root",
-        default="/Volumes/APDataStore/Molt",
+        default=str(default_molt_ext_root()),
         help="Build external root; metrics default to Symphony log root when --csv is unset.",
     )
     parser.add_argument(
