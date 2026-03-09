@@ -47,6 +47,11 @@ ordered to avoid deadlocks and performance regressions.
   must only be acquired while holding the GIL unless a subsystem explicitly
   documents a GIL-free path.
 - Host I/O, sleeps, or blocking calls must not occur while holding the GIL.
+- The Rust async runtime event loop and I/O poller now provide the default
+  `asyncio` core: timer cancellation propagates into the runtime scheduler,
+  readiness waiter cancellation is removed from poll queues, and equal-deadline
+  timers plus surviving I/O waiters resume in deterministic FIFO order within a
+  single loop turn.
 
 ## 4.1 GIL-Exempt Operations (Explicit Exceptions)
 - Runtime entrypoints that mutate state must acquire a `PyToken` via
