@@ -9,7 +9,11 @@ from typing import Any
 
 import pytest
 
-from molt.symphony.http_server import DashboardServer, _state_hasher_from_env
+from molt.symphony.http_server import (
+    DashboardServer,
+    _QuietThreadingHTTPServer,
+    _state_hasher_from_env,
+)
 
 
 class _Provider:
@@ -145,6 +149,11 @@ def _read_text(url: str) -> tuple[int, str]:
     with urllib.request.urlopen(url, timeout=5.0) as resp:
         payload = resp.read().decode("utf-8")
         return int(resp.status), payload
+
+
+def test_http_server_socket_reuse_is_disabled() -> None:
+    assert _QuietThreadingHTTPServer.allow_reuse_address is False
+    assert _QuietThreadingHTTPServer.allow_reuse_port is False
 
 
 def test_refresh_endpoint_includes_requested_at() -> None:
