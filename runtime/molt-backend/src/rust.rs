@@ -483,6 +483,9 @@ impl RustBackend {
             || used("molt_get_item(")
             || used("molt_set_item(")
             || used("molt_get_attr(")
+            || used("molt_get_attr_name(")
+            || used("molt_get_attr_name_default(")
+            || used("molt_set_attr_name(")
             || used("molt_in(")
             || used("molt_sorted(")
             || used("molt_min(")
@@ -534,7 +537,7 @@ impl RustBackend {
                 "}\n\n",
             ));
         }
-        if used("molt_set_item(") {
+        if used("molt_set_item(") || used("molt_set_attr_name(") {
             self.output.push_str(concat!(
                 "fn molt_set_item(obj: &mut MoltValue, key: MoltValue, val: MoltValue) {\n",
                 "    match obj {\n",
@@ -565,14 +568,41 @@ impl RustBackend {
         if used("molt_get_attr(") {
             self.output.push_str(concat!(
                 "fn molt_get_attr(obj: &MoltValue, attr: &str) -> MoltValue {\n",
-                "    // Dict key lookup by string attribute name\n",
+                "    molt_get_attr_name(obj, &MoltValue::Str(attr.to_string()))\n",
+                "}\n\n",
+            ));
+        }
+        if used("molt_get_attr(")
+            || used("molt_get_attr_name(")
+            || used("molt_get_attr_name_default(")
+        {
+            self.output.push_str(concat!(
+                "fn molt_get_attr_name(obj: &MoltValue, name: &MoltValue) -> MoltValue {\n",
                 "    if let MoltValue::Dict(d) = obj {\n",
-                "        let key = MoltValue::Str(attr.to_string());\n",
-                "        if let Some((_, v)) = d.iter().find(|(k, _)| molt_eq(k, &key)) {\n",
+                "        if let Some((_, v)) = d.iter().find(|(k, _)| molt_eq(k, name)) {\n",
                 "            return v.clone();\n",
+                "        }\n",
+                "        let class_key = MoltValue::Str(\"__class__\".to_string());\n",
+                "        if let Some((_, class_obj)) = d.iter().find(|(k, _)| molt_eq(k, &class_key)) {\n",
+                "            if let MoltValue::Dict(class_dict) = class_obj {\n",
+                "                if let Some((_, v)) = class_dict.iter().find(|(k, _)| molt_eq(k, name)) {\n",
+                "                    return v.clone();\n",
+                "                }\n",
+                "            }\n",
                 "        }\n",
                 "    }\n",
                 "    MoltValue::None\n",
+                "}\n\n",
+                "fn molt_get_attr_name_default(obj: &MoltValue, name: &MoltValue, default: &MoltValue) -> MoltValue {\n",
+                "    let value = molt_get_attr_name(obj, name);\n",
+                "    if matches!(value, MoltValue::None) { default.clone() } else { value }\n",
+                "}\n\n",
+            ));
+        }
+        if used("molt_set_attr_name(") {
+            self.output.push_str(concat!(
+                "fn molt_set_attr_name(obj: &mut MoltValue, name: MoltValue, val: MoltValue) {\n",
+                "    molt_set_item(obj, name, val);\n",
                 "}\n\n",
             ));
         }
@@ -1263,7 +1293,7 @@ impl RustBackend {
             }
 
             // ── Variable access ────────────────────────────────────────────────
-            "load_local" | "load" | "guarded_load" => {
+            "load_local" => {
                 let o = out();
                 let v = var_ref(op);
                 self.emit_line(&declare(
@@ -1272,6 +1302,20 @@ impl RustBackend {
                     &self.hoisted_vars.clone(),
                 ));
                 self.note_alias(o, v);
+            }
+            "load" | "guarded_load" => {
+                let o = out();
+                if let Some(obj) = op.args.as_ref().and_then(|a| a.first()) {
+                    let obj = rust_value(obj);
+                    let slot_key = rust_slot_key(op.value.unwrap_or(0));
+                    self.emit_line(&declare(
+                        &o,
+                        &format!("molt_get_item(&{obj}, &{slot_key})"),
+                        &self.hoisted_vars.clone(),
+                    ));
+                } else {
+                    self.emit_line(&declare(&o, "MoltValue::None", &self.hoisted_vars.clone()));
+                }
             }
             "closure_load" => {
                 let o = out();
@@ -1288,7 +1332,7 @@ impl RustBackend {
                 ));
                 self.note_alias(o, slot);
             }
-            "store_local" | "store" | "store_init" => {
+            "store_local" => {
                 let v = var_ref(op);
                 if let Some(src) = op.args.as_ref().and_then(|a| a.first()) {
                     let s = rust_ident(src);
@@ -1296,6 +1340,18 @@ impl RustBackend {
                     self.note_alias(v, s);
                 } else {
                     self.clear_alias(&v);
+                }
+            }
+            "store" | "store_init" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let obj = rust_ident(&args[0]);
+                    let value = rust_clone(&args[1]);
+                    let slot_key = rust_slot_key(op.value.unwrap_or(0));
+                    if is_assignable_var(&obj) {
+                        self.emit_line(&format!("molt_set_item(&mut {obj}, {slot_key}, {value});"));
+                        self.emit_alias_writeback(&obj);
+                    }
                 }
             }
             "closure_store" => {
@@ -1767,10 +1823,7 @@ impl RustBackend {
                 if let Some(ref fn_name) = op.s_value {
                     // Direct static call with mutable arg-vector writeback.
                     let fn_ident = rust_ident(fn_name);
-                    let call_args: Vec<String> = args
-                        .iter()
-                        .map(|a| format!("{}.clone()", rust_ident(a)))
-                        .collect();
+                    let call_args: Vec<String> = args.iter().map(|a| rust_clone(a)).collect();
                     self.emit_line(&format!(
                         "let mut __call_args: Vec<MoltValue> = vec![{}];",
                         call_args.join(", ")
@@ -1805,10 +1858,7 @@ impl RustBackend {
                 } else {
                     // Dynamic call: args[0] is the MoltValue::Func to invoke.
                     let func_var = rust_ident(&args[0]);
-                    let call_args: Vec<String> = args[1..]
-                        .iter()
-                        .map(|a| format!("{}.clone()", rust_ident(a)))
-                        .collect();
+                    let call_args: Vec<String> = args[1..].iter().map(|a| rust_clone(a)).collect();
                     self.emit_line(&format!(
                         "let mut __call_args: Vec<MoltValue> = vec![{}];",
                         call_args.join(", ")
@@ -1845,10 +1895,7 @@ impl RustBackend {
                     .map(|s| rust_ident(s))
                     .unwrap_or_else(|| "_".to_string());
                 let method = args.get(1).map(|s| s.as_str()).unwrap_or("");
-                let call_args: Vec<String> = args[2..]
-                    .iter()
-                    .map(|a| format!("{}.clone()", rust_ident(a)))
-                    .collect();
+                let call_args: Vec<String> = args[2..].iter().map(|a| rust_clone(a)).collect();
                 if method == "append" {
                     let arg = call_args
                         .first()
@@ -1897,7 +1944,7 @@ impl RustBackend {
                     let builder = rust_ident(&args[1]);
                     let extra_args = args[2..]
                         .iter()
-                        .map(|a| format!("{}.clone()", rust_ident(a)))
+                        .map(|a| rust_clone(a))
                         .collect::<Vec<_>>()
                         .join(", ");
                     let extra_stmt = if extra_args.is_empty() {
@@ -1935,7 +1982,7 @@ impl RustBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let items = args
                     .iter()
-                    .map(|a| format!("{}.clone()", rust_ident(a)))
+                    .map(|a| rust_clone(a))
                     .collect::<Vec<_>>()
                     .join(", ");
                 self.emit_line(&declare(
@@ -1994,7 +2041,7 @@ impl RustBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let arg_list = args
                     .iter()
-                    .map(|a| format!("{}.clone()", rust_ident(a)))
+                    .map(|a| rust_clone(a))
                     .collect::<Vec<_>>()
                     .join(", ");
                 self.emit_line(&format!("molt_print(&[{arg_list}]);"));
@@ -2096,7 +2143,7 @@ impl RustBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let items = args
                     .iter()
-                    .map(|a| format!("{}.clone()", rust_ident(a)))
+                    .map(|a| rust_clone(a))
                     .collect::<Vec<_>>()
                     .join(", ");
                 self.emit_line(&declare(
@@ -2210,16 +2257,58 @@ impl RustBackend {
                     &self.hoisted_vars.clone(),
                 ));
             }
-            "set_attr" | "store_attr" => {
-                // stub — attribute assignment on dict
+            "get_attr_name" => {
+                let o = out();
                 let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 3 {
+                if args.len() >= 2 {
+                    let obj = rust_value(&args[0]);
+                    let attr = rust_value(&args[1]);
+                    self.emit_line(&declare(
+                        &o,
+                        &format!("molt_get_attr_name(&{obj}, &{attr})"),
+                        &self.hoisted_vars.clone(),
+                    ));
+                } else {
+                    self.emit_line(&declare(&o, "MoltValue::None", &self.hoisted_vars.clone()));
+                }
+            }
+            "get_attr_name_default" => {
+                let o = out();
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let obj = rust_value(&args[0]);
+                    let attr = rust_value(&args[1]);
+                    let default = args
+                        .get(2)
+                        .map(|name| rust_value(name))
+                        .unwrap_or_else(|| "MoltValue::None".to_string());
+                    self.emit_line(&declare(
+                        &o,
+                        &format!("molt_get_attr_name_default(&{obj}, &{attr}, &{default})"),
+                        &self.hoisted_vars.clone(),
+                    ));
+                } else {
+                    self.emit_line(&declare(&o, "MoltValue::None", &self.hoisted_vars.clone()));
+                }
+            }
+            "set_attr" | "store_attr" | "set_attr_generic_obj" | "set_attr_generic_ptr" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
                     let obj = rust_ident(&args[0]);
-                    let attr = &args[1];
-                    let val = rust_ident(&args[2]);
-                    self.emit_line(&format!("molt_set_item(&mut {obj}, MoltValue::Str({attr_lit}.to_string()), {val}.clone());",
-                        attr_lit = rust_string_literal(attr)));
-                    self.emit_alias_writeback(&obj);
+                    let value_index = if args.len() >= 3 { 2 } else { 1 };
+                    let value = rust_clone(&args[value_index]);
+                    let attr = op
+                        .s_value
+                        .as_deref()
+                        .or_else(|| args.get(1).map(|s| s.as_str()))
+                        .unwrap_or("__unknown__");
+                    if is_assignable_var(&obj) {
+                        self.emit_line(&format!(
+                            "molt_set_attr_name(&mut {obj}, MoltValue::Str({attr_lit}.to_string()), {value});",
+                            attr_lit = rust_string_literal(attr)
+                        ));
+                        self.emit_alias_writeback(&obj);
+                    }
                 }
             }
 
@@ -2324,6 +2413,125 @@ impl RustBackend {
                 ));
             }
 
+            "class_new" | "module_new" | "object_new" | "builtin_type" => {
+                let o = out();
+                self.emit_line(&declare(
+                    &o,
+                    "MoltValue::Dict(vec![])",
+                    &self.hoisted_vars.clone(),
+                ));
+            }
+            "bound_method_new" => {
+                let o = out();
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let method = rust_value(&args[0]);
+                    let obj = rust_value(&args[1]);
+                    self.emit_line(&declare(
+                        &o,
+                        &format!(
+                            "MoltValue::Func(Arc::new(move |args: &mut Vec<MoltValue>| {{ let mut __bound = vec![{obj}.clone()]; __bound.extend(args.iter().cloned()); molt_call(&{method}, &mut __bound) }}))"
+                        ),
+                        &self.hoisted_vars.clone(),
+                    ));
+                } else {
+                    self.emit_line(&declare(&o, "MoltValue::None", &self.hoisted_vars.clone()));
+                }
+            }
+            "alloc_class_static" | "alloc_class_trusted" | "alloc_class" => {
+                let o = out();
+                self.emit_line(&declare(
+                    &o,
+                    "MoltValue::Dict(vec![])",
+                    &self.hoisted_vars.clone(),
+                ));
+            }
+            "object_set_class" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let obj = rust_ident(&args[0]);
+                    let class = rust_clone(&args[1]);
+                    if is_assignable_var(&obj) {
+                        self.emit_line(&format!(
+                            "molt_set_attr_name(&mut {obj}, MoltValue::Str(\"__class__\".to_string()), {class});"
+                        ));
+                        self.emit_alias_writeback(&obj);
+                    }
+                }
+            }
+            "class_set_base" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let class_obj = rust_ident(&args[0]);
+                    let base = rust_clone(&args[1]);
+                    if is_assignable_var(&class_obj) {
+                        self.emit_line(&format!(
+                            "molt_set_attr_name(&mut {class_obj}, MoltValue::Str(\"__base__\".to_string()), {base});"
+                        ));
+                        self.emit_alias_writeback(&class_obj);
+                    }
+                }
+            }
+            "class_set_layout_version" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let class_obj = rust_ident(&args[0]);
+                    let version = rust_clone(&args[1]);
+                    if is_assignable_var(&class_obj) {
+                        self.emit_line(&format!(
+                            "molt_set_attr_name(&mut {class_obj}, MoltValue::Str(\"__molt_layout_version__\".to_string()), {version});"
+                        ));
+                        self.emit_alias_writeback(&class_obj);
+                    }
+                }
+            }
+            "class_apply_set_name"
+            | "class_layout_version"
+            | "class_layout_field_count"
+            | "class_layout_slot_count" => {}
+            "module_get_attr" | "module_get_name" => {
+                let o = out();
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(attr_str) = op.s_value.as_deref().filter(|s| !s.is_empty()) {
+                    let module = args
+                        .first()
+                        .map(|name| rust_value(name))
+                        .unwrap_or_else(|| "MoltValue::None".to_string());
+                    self.emit_line(&declare(
+                        &o,
+                        &format!(
+                            "molt_get_attr_name(&{module}, &MoltValue::Str({}.to_string()))",
+                            rust_string_literal(attr_str)
+                        ),
+                        &self.hoisted_vars.clone(),
+                    ));
+                } else if args.len() >= 2 {
+                    let module = rust_value(&args[0]);
+                    let attr = rust_value(&args[1]);
+                    self.emit_line(&declare(
+                        &o,
+                        &format!("molt_get_attr_name(&{module}, &{attr})"),
+                        &self.hoisted_vars.clone(),
+                    ));
+                } else {
+                    self.emit_line(&declare(&o, "MoltValue::None", &self.hoisted_vars.clone()));
+                }
+            }
+            "module_set_attr" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 3 {
+                    let module = rust_ident(&args[0]);
+                    let attr = rust_clone(&args[1]);
+                    let value = rust_clone(&args[2]);
+                    if is_assignable_var(&module) {
+                        self.emit_line(&format!(
+                            "molt_set_attr_name(&mut {module}, {attr}, {value});"
+                        ));
+                        self.emit_alias_writeback(&module);
+                    }
+                }
+            }
+
             // ── No-ops / markers ───────────────────────────────────────────────
             "nop"
             | "comment"
@@ -2345,18 +2553,6 @@ impl RustBackend {
             | "cancel_token_set_current"
             | "cancelled"
             | "check_exception"
-            | "alloc_class_static"
-            | "alloc_class_trusted"
-            | "alloc_class"
-            | "class_apply_set_name"
-            | "class_layout_version"
-            | "class_new"
-            | "class_set_base"
-            | "class_set_layout_version"
-            | "class_layout_field_count"
-            | "class_layout_slot_count"
-            | "bound_method_new"
-            | "builtin_type"
             | "box_from_raw_int"
             | "ascii_from_obj"
             | "bridge_unavailable" => {
@@ -2442,7 +2638,7 @@ impl RustBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let items = args
                     .iter()
-                    .map(|a| format!("{}.clone()", rust_ident(a)))
+                    .map(|a| rust_clone(a))
                     .collect::<Vec<_>>()
                     .join(", ");
                 self.emit_line(&declare(
@@ -2748,6 +2944,26 @@ pub(crate) fn rust_ident(name: &str) -> String {
     }
 }
 
+fn rust_value(name: &str) -> String {
+    if name.is_empty() || name == "none" || name == "_" {
+        "MoltValue::None".to_string()
+    } else {
+        rust_ident(name)
+    }
+}
+
+fn rust_clone(name: &str) -> String {
+    if name.is_empty() || name == "none" || name == "_" {
+        "MoltValue::None".to_string()
+    } else {
+        format!("{}.clone()", rust_ident(name))
+    }
+}
+
+fn rust_slot_key(offset: i64) -> String {
+    format!("MoltValue::Str(\"__slot_{offset}\".to_string())")
+}
+
 fn is_assignable_var(name: &str) -> bool {
     !(name.is_empty() || name == "_" || name == "none")
 }
@@ -2764,7 +2980,7 @@ fn arg0(op: &OpIR) -> String {
     op.args
         .as_deref()
         .and_then(|a| a.first())
-        .map(|s| rust_ident(s))
+        .map(|s| rust_value(s))
         .unwrap_or_else(|| "MoltValue::None".to_string())
 }
 
@@ -2772,11 +2988,11 @@ fn args2(op: &OpIR) -> (String, String) {
     let args = op.args.as_deref().unwrap_or(&[]);
     let a = args
         .first()
-        .map(|s| rust_ident(s))
+        .map(|s| rust_value(s))
         .unwrap_or_else(|| "MoltValue::None".to_string());
     let b = args
         .get(1)
-        .map(|s| rust_ident(s))
+        .map(|s| rust_value(s))
         .unwrap_or_else(|| "MoltValue::None".to_string());
     (a, b)
 }
