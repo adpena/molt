@@ -39,6 +39,15 @@ fn trace_io_wait_errors() -> bool {
     *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_IO_WAIT_ERRORS").as_deref() == Ok("1"))
 }
 
+#[inline]
+fn delivered_ready_mask(waiter_events: u32, ready_mask: u32) -> Option<u32> {
+    let matched = ready_mask & waiter_events;
+    if matched == 0 {
+        return None;
+    }
+    Some(matched | (ready_mask & IO_EVENT_ERROR))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn socket_debug_fd(socket_ptr: *mut u8) -> Option<i64> {
     with_socket_mut(socket_ptr, |inner| {
@@ -300,7 +309,9 @@ impl IoPoller {
             } else {
                 rc as u32
             };
-            ready.push((future, mask));
+            if let Some(delivered) = delivered_ready_mask(events, mask) {
+                ready.push((future, delivered));
+            }
         }
         if ready.is_empty() {
             return;
@@ -946,7 +957,9 @@ fn io_worker(poller: Arc<IoPoller>) {
                                     socket_id, fd, waiter.0 as usize, ready_mask, info.events
                                 );
                             }
-                            ready_futures.push((waiter, ready_mask, socket_id, entry.debug_fd));
+                            let delivered = delivered_ready_mask(info.events, ready_mask)
+                                .expect("matched waiter must yield delivered readiness");
+                            ready_futures.push((waiter, delivered, socket_id, entry.debug_fd));
                             waiters.remove(&waiter);
                         } else {
                             remaining.push(waiter);
@@ -990,6 +1003,37 @@ fn io_worker(poller: Arc<IoPoller>) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, delivered_ready_mask};
+
+    #[test]
+    fn delivered_ready_mask_filters_to_waiter_interest() {
+        assert_eq!(
+            delivered_ready_mask(IO_EVENT_READ, IO_EVENT_READ | IO_EVENT_WRITE),
+            Some(IO_EVENT_READ)
+        );
+        assert_eq!(
+            delivered_ready_mask(IO_EVENT_WRITE, IO_EVENT_READ | IO_EVENT_WRITE),
+            Some(IO_EVENT_WRITE)
+        );
+        assert_eq!(delivered_ready_mask(IO_EVENT_READ, IO_EVENT_WRITE), None);
+    }
+
+    #[test]
+    fn delivered_ready_mask_preserves_error_for_matching_waiters() {
+        let error_mask = IO_EVENT_ERROR | IO_EVENT_READ | IO_EVENT_WRITE;
+        assert_eq!(
+            delivered_ready_mask(IO_EVENT_READ, error_mask),
+            Some(IO_EVENT_ERROR | IO_EVENT_READ)
+        );
+        assert_eq!(
+            delivered_ready_mask(IO_EVENT_WRITE, error_mask),
+            Some(IO_EVENT_ERROR | IO_EVENT_WRITE)
+        );
     }
 }
 

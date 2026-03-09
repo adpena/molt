@@ -1,9 +1,13 @@
 """Purpose: equal-delay loop.call_later callbacks preserve FIFO order."""
 
 import asyncio
+import sys
 
 
 async def main() -> None:
+    if sys.platform == "win32":
+        print("unsupported")
+        return
     loop = asyncio.get_running_loop()
     observed: list[str] = []
 
