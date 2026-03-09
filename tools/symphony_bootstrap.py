@@ -34,6 +34,7 @@ DEFAULT_EXT_ROOT = default_molt_ext_root()
 DEFAULT_ENV_FILE = Path("ops/linear/runtime/symphony.env")
 LINEAR_MCP_NAME = "linear"
 LINEAR_MCP_URL = "https://mcp.linear.app/mcp"
+BOOTSTRAP_PROFILES = ("core", "dev", "full")
 
 
 def _run(
@@ -88,6 +89,10 @@ def _require_command(name: str) -> str:
     return resolved
 
 
+def _optional_command(name: str) -> str | None:
+    return shutil.which(name)
+
+
 def _require_python_command() -> str:
     for name in ("python3", "python"):
         resolved = shutil.which(name)
@@ -120,6 +125,23 @@ def _write_env_file(path: Path, env: dict[str, str]) -> None:
 
 
 def _default_quint_node_fallback() -> str:
+    if os.name == "nt":
+        for candidate in (
+            Path("C:/Program Files/nodejs/node.exe"),
+            Path("C:/Program Files (x86)/nodejs/node.exe"),
+        ):
+            if candidate.exists():
+                return str(candidate)
+        return "npx -y node@22"
+    if sys.platform.startswith("linux"):
+        for candidate in (
+            Path("/usr/bin/node"),
+            Path("/usr/local/bin/node"),
+            Path("/opt/node/bin/node"),
+        ):
+            if candidate.exists():
+                return str(candidate)
+        return "npx -y node@22"
     for candidate in (
         Path("/opt/homebrew/opt/node@22/bin/node"),
         Path("/usr/local/opt/node@22/bin/node"),
@@ -311,6 +333,7 @@ def _sync_env_defaults(
     env_file: Path,
     project_slug: str | None,
     source_repo_url: str | None,
+    require_tracker_keys: bool = True,
 ) -> dict[str, Any]:
     current = _parse_env_file(env_file)
     merged = dict(current)
@@ -423,15 +446,10 @@ def _sync_env_defaults(
         merged.setdefault("LINEAR_API_KEY", os.environ["LINEAR_API_KEY"])
 
     _write_env_file(env_file, merged)
-    missing = [
-        key
-        for key in (
-            "LINEAR_API_KEY",
-            "MOLT_LINEAR_PROJECT_SLUG",
-            "MOLT_SOURCE_REPO_URL",
-        )
-        if not merged.get(key)
-    ]
+    required_keys: list[str] = ["MOLT_SOURCE_REPO_URL"]
+    if require_tracker_keys:
+        required_keys.extend(("LINEAR_API_KEY", "MOLT_LINEAR_PROJECT_SLUG"))
+    missing = [key for key in required_keys if not merged.get(key)]
 
     return {
         "env_file": str(env_file),
@@ -460,6 +478,51 @@ def _ensure_ext_dirs(ext_root: Path) -> list[str]:
         path.mkdir(parents=True, exist_ok=True)
         created.append(str(path))
     return created
+
+
+def _sync_dev_environment(repo_root: Path) -> dict[str, Any]:
+    proc = _run(["uv", "sync", "--group", "dev", "--python", "3.12"], cwd=repo_root)
+    return {
+        "ok": proc.returncode == 0,
+        "returncode": proc.returncode,
+        "stdout": proc.stdout.strip()[-500:],
+        "stderr": proc.stderr.strip()[-500:],
+    }
+
+
+def _luau_tooling_report() -> dict[str, Any]:
+    probes = {
+        "rojo": _optional_command("rojo"),
+        "stylua": _optional_command("stylua"),
+        "selene": _optional_command("selene"),
+        "luau-lsp": _optional_command("luau-lsp"),
+    }
+    available = [name for name, path in probes.items() if path]
+    missing = [name for name, path in probes.items() if not path]
+    return {
+        "enabled": True,
+        "status": "pass" if not missing else "warn",
+        "available": available,
+        "missing": missing,
+        "paths": probes,
+    }
+
+
+def _resolve_profile_options(
+    *,
+    profile: str,
+    with_mcp: bool,
+    with_dev_tools: bool,
+    with_luau: bool,
+) -> dict[str, bool]:
+    include_dev_tools = with_dev_tools or profile in {"dev", "full"}
+    include_mcp = with_mcp or profile == "full"
+    include_luau = with_luau
+    return {
+        "include_dev_tools": include_dev_tools,
+        "include_mcp": include_mcp,
+        "include_luau": include_luau,
+    }
 
 
 def _configure_lin_cli(
@@ -560,6 +623,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo-root", default=".")
     parser.add_argument("--ext-root", default=str(DEFAULT_EXT_ROOT))
     parser.add_argument("--env-file", default=str(DEFAULT_ENV_FILE))
+    parser.add_argument(
+        "--profile",
+        choices=BOOTSTRAP_PROFILES,
+        default="core",
+        help=(
+            "Bootstrap profile: core (minimal cross-platform), dev (core + dev env), "
+            "full (dev + MCP wiring)."
+        ),
+    )
+    parser.add_argument(
+        "--with-mcp",
+        action="store_true",
+        help="Enable MCP wiring even when profile is not full.",
+    )
+    parser.add_argument(
+        "--with-dev-tools",
+        action="store_true",
+        help="Enable dev extras (uv sync + git hooks) even when profile is core.",
+    )
+    parser.add_argument(
+        "--with-luau",
+        action="store_true",
+        help="Include optional Luau tooling checks (non-blocking by default).",
+    )
+    parser.add_argument(
+        "--strict-optional",
+        action="store_true",
+        help="Fail if an explicitly requested optional stack is missing.",
+    )
     parser.add_argument("--project-slug", default=None)
     parser.add_argument("--source-repo-url", default=None)
     parser.add_argument("--install-launchd", action="store_true")
@@ -575,12 +667,28 @@ def main(argv: list[str] | None = None) -> int:
     ext_root = Path(args.ext_root).expanduser().resolve()
     env_file = Path(args.env_file).expanduser().resolve()
 
+    profile_options = _resolve_profile_options(
+        profile=args.profile,
+        with_mcp=bool(args.with_mcp),
+        with_dev_tools=bool(args.with_dev_tools),
+        with_luau=bool(args.with_luau),
+    )
+    include_mcp = profile_options["include_mcp"]
+    include_dev_tools = profile_options["include_dev_tools"]
+    include_luau = profile_options["include_luau"]
+
     tool_paths = {
-        "codex": _require_command("codex"),
-        "rg": _require_command("rg"),
         "uv": _require_command("uv"),
         "python": _require_python_command(),
     }
+    optional_tools: dict[str, str | None] = {
+        "rg": _optional_command("rg"),
+        "codex": _optional_command("codex"),
+    }
+    if include_mcp:
+        tool_paths["codex"] = _require_command("codex")
+    if include_dev_tools and args.strict_optional and not optional_tools.get("rg"):
+        raise RuntimeError("rg is required for --with-dev-tools when --strict-optional is set")
 
     if not ext_root.exists():
         raise RuntimeError(
@@ -588,20 +696,72 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     created_dirs = _ensure_ext_dirs(ext_root)
-    mcp = _ensure_linear_mcp()
+    if include_mcp:
+        mcp = _ensure_linear_mcp()
+    else:
+        mcp = {
+            "configured": False,
+            "enabled": False,
+            "auth_state": "skipped",
+            "actions": [],
+            "skipped": True,
+            "reason": "profile_without_mcp",
+        }
     env_summary = _sync_env_defaults(
         repo_root=repo_root,
         ext_root=ext_root,
         env_file=env_file,
         project_slug=args.project_slug,
         source_repo_url=args.source_repo_url,
+        require_tracker_keys=include_mcp,
     )
     formal_toolchain = _formal_toolchain_report(repo_root, env_file)
-    hooks_summary = _ensure_git_hooks_path(
-        repo_root=repo_root,
-        force_path=bool(args.force_git_hooks_path),
-    )
-    lin_cli_summary = _configure_lin_cli(env_file=env_file)
+    if include_dev_tools:
+        hooks_summary = _ensure_git_hooks_path(
+            repo_root=repo_root,
+            force_path=bool(args.force_git_hooks_path),
+        )
+        dev_sync_summary = _sync_dev_environment(repo_root)
+    else:
+        hooks_summary = {
+            "ok": True,
+            "updated": False,
+            "path": None,
+            "reason": "skipped_by_profile",
+        }
+        dev_sync_summary = {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+            "skipped": True,
+            "reason": "skipped_by_profile",
+        }
+    if include_mcp:
+        lin_cli_summary = _configure_lin_cli(env_file=env_file)
+    else:
+        lin_cli_summary = {
+            "configured": False,
+            "reason": "skipped_without_mcp",
+            "lin_path": _optional_command("lin"),
+            "skipped": True,
+        }
+    luau_summary: dict[str, Any]
+    if include_luau:
+        luau_summary = _luau_tooling_report()
+        if args.strict_optional and luau_summary.get("missing"):
+            raise RuntimeError(
+                "missing optional Luau tools: " + ", ".join(luau_summary["missing"])
+            )
+    else:
+        luau_summary = {
+            "enabled": False,
+            "status": "skipped",
+            "available": [],
+            "missing": [],
+            "paths": {},
+            "reason": "skipped_by_profile",
+        }
 
     launchd_summary: dict[str, Any] = {"installed": False}
     if args.install_launchd:
@@ -631,26 +791,39 @@ def main(argv: list[str] | None = None) -> int:
     output = {
         "repo_root": str(repo_root),
         "ext_root": str(ext_root),
+        "profile": args.profile,
+        "profile_options": profile_options,
         "tool_paths": tool_paths,
+        "optional_tools": optional_tools,
         "created_dirs": created_dirs,
         "mcp_linear": mcp,
         "env": env_summary,
         "formal_toolchain": formal_toolchain,
+        "dev_sync": dev_sync_summary,
+        "luau": luau_summary,
         "git_hooks": hooks_summary,
         "lin_cli": lin_cli_summary,
         "launchd": launchd_summary,
         "notes": [
-            "LINEAR_API_KEY is still required in env file for direct GraphQL tracker access.",
-            "lin CLI API key store is auto-seeded from LINEAR_API_KEY when lin is installed.",
-            "If mcp_linear.auth_state is missing, run: codex mcp login linear",
+            "Core profile is cross-platform and keeps optional stacks non-blocking by default.",
+            "LINEAR_API_KEY + MOLT_LINEAR_PROJECT_SLUG are required only when MCP wiring is enabled.",
+            "lin CLI API key store is auto-seeded from LINEAR_API_KEY when lin is installed and MCP is enabled.",
             "Optional DSPy routing is controlled by MOLT_SYMPHONY_DSPY_* env keys.",
         ],
+        "recommended_commands": {
+            "core": "uv run --python 3.12 python tools/symphony_bootstrap.py --profile core",
+            "dev": "uv run --python 3.12 python tools/symphony_bootstrap.py --profile dev",
+            "full": "uv run --python 3.12 python tools/symphony_bootstrap.py --profile full",
+            "luau_optional": "uv run --python 3.12 python tools/symphony_bootstrap.py --profile dev --with-luau",
+        },
     }
     print(json.dumps(output, indent=2, sort_keys=True))
 
     missing = env_summary["missing_required"]
     if missing:
         return 2
+    if include_dev_tools and not dev_sync_summary.get("ok", False):
+        return 1
     if args.install_launchd and not launchd_summary.get("installed"):
         return 1
     return 0
