@@ -175,7 +175,9 @@ tests/differential/stdlib/asyncio_as_completed_order.py
 tests/differential/stdlib/asyncio_as_completed_timeout_results.py
 tests/differential/stdlib/asyncio_barrier_basic.py
 tests/differential/stdlib/asyncio_bounded_semaphore_overrelease.py
+tests/differential/stdlib/asyncio_call_at_fifo_tiebreak.py
 tests/differential/stdlib/asyncio_call_later_call_at_context_closed.py
+tests/differential/stdlib/asyncio_call_later_fifo_tiebreak.py
 tests/differential/stdlib/asyncio_call_later_cancel.py
 tests/differential/stdlib/asyncio_call_soon_order.py
 tests/differential/stdlib/asyncio_cancel_sleep.py
@@ -233,6 +235,8 @@ tests/differential/stdlib/asyncio_shim.py
 tests/differential/stdlib/asyncio_sleep_result.py
 tests/differential/stdlib/asyncio_sock_connect_accept.py
 tests/differential/stdlib/asyncio_sock_datagram_sendto_recvfrom.py
+tests/differential/stdlib/asyncio_sock_recv_cancel_deterministic.py
+tests/differential/stdlib/asyncio_sock_recv_cancel_survivor_order.py
 tests/differential/stdlib/asyncio_sock_recv_into_sendall.py
 tests/differential/stdlib/asyncio_ssl_capability_intrinsic.py
 tests/differential/stdlib/asyncio_ssl_create_unix_connection_intrinsic.py
