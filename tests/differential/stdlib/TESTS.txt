@@ -189,15 +189,19 @@ tests/differential/stdlib/asyncio_condition_fairness.py
 tests/differential/stdlib/asyncio_condition_wait_for.py
 tests/differential/stdlib/asyncio_contextvars_callback_propagation.py
 tests/differential/stdlib/asyncio_contextvars_task_propagation.py
+tests/differential/stdlib/asyncio_create_future_loop_binding.py
 tests/differential/stdlib/asyncio_current_task_enter_leave.py
 tests/differential/stdlib/asyncio_current_task_loop_filter_intrinsic.py
+tests/differential/stdlib/asyncio_default_exception_handler.py
 tests/differential/stdlib/asyncio_ensure_future_passthrough.py
+tests/differential/stdlib/asyncio_ensure_future_loop_mismatch.py
 tests/differential/stdlib/asyncio_event_basic.py
 tests/differential/stdlib/asyncio_event_cancelled_waiter.py
 tests/differential/stdlib/asyncio_exception_handler_invalid.py
 tests/differential/stdlib/asyncio_exception_handler_raises.py
 tests/differential/stdlib/asyncio_event_loop_policy_basic.py
 tests/differential/stdlib/asyncio_executor_run_in_executor.py
+tests/differential/stdlib/asyncio_set_default_executor_invalid.py
 tests/differential/stdlib/asyncio_fd_watcher_unregister_intrinsic.py
 tests/differential/stdlib/asyncio_future_basic.py
 tests/differential/stdlib/asyncio_future_callback_context.py
@@ -279,6 +283,7 @@ tests/differential/stdlib/asyncio_taskgroup_context_name.py
 tests/differential/stdlib/asyncio_taskgroup_error_fanout.py
 tests/differential/stdlib/asyncio_taskgroup_error_order.py
 tests/differential/stdlib/asyncio_taskgroup_exceptiongroup_order.py
+tests/differential/stdlib/asyncio_wrap_future_loop_binding.py
 tests/differential/stdlib/asyncio_timeout_at_basic.py
 tests/differential/stdlib/asyncio_timeout_context.py
 tests/differential/stdlib/asyncio_timeout_nested_deadline.py
@@ -2016,4 +2021,5 @@ tests/differential/stdlib/zipfile_roundtrip_basic.py
 tests/differential/stdlib/zipimport_api_surface_basic.py
 tests/differential/stdlib/zipimport_basic.py
 tests/differential/stdlib/zipimport_prefix_error_edges.py
-tests/differential/stdlib/z
+tests/differential/stdlib/zlib_basic.py
+tests/differential/stdlib/zoneinfo_dst_fold.py

@@ -3445,7 +3445,9 @@ class _EventLoop(AbstractEventLoop):
                 pass
 
     def create_future(self) -> Future:
-        return Future()
+        future = Future()
+        future._loop = self
+        return future
 
     def create_task(
         self, coro: Any, *, name: str | None = None, context: Any | None = None
@@ -3623,6 +3625,9 @@ class _EventLoop(AbstractEventLoop):
                     "exception": exc,
                     "context": context,
                 }
+        self.default_exception_handler(context)
+
+    def default_exception_handler(self, context: dict[str, Any]) -> None:
         message = context.get("message", "Unhandled exception in event loop")
         exc = context.get("exception")
         if exc is None:
@@ -3975,10 +3980,8 @@ class _EventLoop(AbstractEventLoop):
         return None
 
     def set_default_executor(self, executor: Any) -> None:
-        if executor is not None:
-            submit = getattr(executor, "submit", None)
-            if submit is None or not callable(submit):
-                raise TypeError("executor must define submit()")
+        if not isinstance(executor, _concurrent.futures.ThreadPoolExecutor):
+            raise TypeError("executor must be ThreadPoolExecutor instance")
         self._default_executor = executor
 
     def add_signal_handler(
@@ -5472,6 +5475,10 @@ def create_task(
 
 def ensure_future(awaitable: Any, *, loop: EventLoop | None = None) -> Future:
     if isinstance(awaitable, Future):
+        if loop is not None and awaitable.get_loop() is not loop:
+            raise ValueError(
+                "The future belongs to a different loop than the one specified as the loop argument"
+            )
         return awaitable
     if loop is None:
         try:
@@ -5517,6 +5524,7 @@ def wrap_future(fut: Any, *, loop: EventLoop | None = None) -> Future:
         except RuntimeError:
             loop = get_event_loop()
     proxy = Future()
+    proxy._loop = loop
 
     def _transfer(done_obj: Any) -> None:
         try:
@@ -6989,4 +6997,18 @@ for _fn in _builtin_targets:
 _TYPE_CHECKING = TYPE_CHECKING
 _cast = cast
 for _name in (
-    "TYPE_C
+    "TYPE_CHECKING",
+    "Any",
+    "Callable",
+    "Iterable",
+    "Iterator",
+    "cast",
+    "dataclass",
+    "typing",
+):
+    import sys as _aio_cleanup_sys
+
+    _aio_cleanup_dict = (
+        getattr(_aio_cleanup_sys.modules.get(__name__), "__dict__", None) or globals()
+    )
+    _aio_cleanup_dict.pop(_name, None)
