@@ -2271,7 +2271,8 @@ def _synthesize_next_tranche(report: dict[str, Any]) -> dict[str, Any]:
             "title": "Restore Linear API auth in runtime env",
             "why": "Linear hygiene and dispatch cannot run without API auth.",
             "commands": [
-                "grep '^LINEAR_API_KEY=' ops/linear/runtime/symphony.env",
+                "PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_bootstrap.py --sync-env",
+                "PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_readiness_audit.py --strict-autonomy --fail-on warn",
             ],
         },
         "symphony_storage_layout_invalid": {
