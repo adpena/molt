@@ -10,8 +10,8 @@
 
 ## Progress Summary (Generated)
 - Total audited modules: `877`
-- `intrinsic-backed`: `41`
-- `intrinsic-partial`: `836`
+- `intrinsic-backed`: `43`
+- `intrinsic-partial`: `834`
 - `probe-only`: `0`
 - `python-only`: `0`
 
@@ -75,6 +75,7 @@
 - `_operator`
 - `_pickle`
 - `_queue`
+- `_sqlite3`
 - `ast`
 - `binascii`
 - `colorsys`
@@ -97,6 +98,7 @@
 - `select`
 - `selectors`
 - `socket`
+- `sqlite3`
 - `struct`
 - `this`
 - `time`
@@ -197,7 +199,6 @@
 - `_signal`
 - `_sitebuiltins`
 - `_socket`
-- `_sqlite3`
 - `_sre`
 - `_ssl`
 - `_stat`
@@ -780,7 +781,6 @@
 - `sndhdr`
 - `socketserver`
 - `spwd`
-- `sqlite3`
 - `sqlite3.__main__`
 - `sqlite3.dbapi2`
 - `sqlite3.dump`
