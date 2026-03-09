@@ -513,8 +513,20 @@ Add to your `.mcp.json`:
 {
   "mcpServers": {
     "vertigo-fleet": {
-      "command": "python3",
-      "args": ["/Users/adpena/PycharmProjects/fleet/scripts/mcp/fleet-mcp-server.py"]
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "../fleet",
+        "--with",
+        "mcp[sse]",
+        "--with",
+        "starlette",
+        "--with",
+        "uvicorn",
+        "python",
+        "scripts/mcp/fleet-mcp-server.py"
+      ]
     }
   }
 }
