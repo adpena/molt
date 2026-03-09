@@ -1123,7 +1123,10 @@ impl RustBackend {
             // Intercept `jump N`: emit early return via last stored value.
             // This covers: store → jump → (skipped code) → label → load → ret
             if ops[i].kind == "jump" {
-                if let Some(ref expr) = last_jump_return.clone() {
+                if self.current_is_main {
+                    self.emit_param_writeback();
+                    self.emit_line("return;");
+                } else if let Some(ref expr) = last_jump_return.clone() {
                     self.emit_param_writeback();
                     self.emit_line(&format!("return {expr};"));
                 } else {
@@ -1822,7 +1825,10 @@ impl RustBackend {
 
             // ── Return ─────────────────────────────────────────────────────────
             "return" | "ret" => {
-                if let Some(val) = op.args.as_ref().and_then(|a| a.first()) {
+                if self.current_is_main {
+                    self.emit_param_writeback();
+                    self.emit_line("return;");
+                } else if let Some(val) = op.args.as_ref().and_then(|a| a.first()) {
                     let v = rust_ident(val);
                     self.emit_param_writeback();
                     self.emit_line(&format!("return {v}.clone();"));
@@ -1835,9 +1841,13 @@ impl RustBackend {
                     self.emit_line("return MoltValue::None;");
                 }
             }
-            "return_none" | "ret_none" => {
+            "return_none" | "ret_none" | "ret_void" => {
                 self.emit_param_writeback();
-                self.emit_line("return MoltValue::None;");
+                if self.current_is_main {
+                    self.emit_line("return;");
+                } else {
+                    self.emit_line("return MoltValue::None;");
+                }
             }
 
             // ── Function calls ─────────────────────────────────────────────────
