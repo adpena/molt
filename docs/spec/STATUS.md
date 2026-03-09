@@ -1294,7 +1294,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 ## TODO Mirror Ledger (Auto-Generated)
 <!-- BEGIN TODO MIRROR LEDGER -->
 - DONE(async-runtime, owner:frontend, milestone:TC2, priority:P1, status:done): async generator lowering and runtime parity (`async def` with `yield`) — fully implemented at all layers. PEP 479 analog StopAsyncIteration→RuntimeError conversion fixed 2026-03-01.
-- DONE(async-runtime, owner:runtime, milestone:RT2, priority:P0, status:done): Rust event loop + I/O poller with cancellation propagation and deterministic scheduling guarantees; exposed as the asyncio core. Landed with timer cancellation synchronization, deterministic FIFO scheduling for equal-deadline timers and surviving I/O waiters, and Rust-backed `asyncio` loop wiring.
+- DONE(async-runtime, owner:runtime, milestone:RT2, priority:P0, status:done): Rust event loop + I/O poller with cancellation propagation and deterministic scheduling guarantees; exposed as the asyncio core. Landed with timer cancellation synchronization, deterministic FIFO scheduling for equal-deadline timers and surviving I/O waiters (including mid-queue cancellation cases), and Rust-backed `asyncio` loop wiring.
 - TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): cancellation injection on await).
 - TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): task-based concurrency).
 - TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): wasm async iteration/scheduler parity.

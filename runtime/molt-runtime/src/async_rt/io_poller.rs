@@ -113,12 +113,12 @@ impl WaiterList {
         let Some(idx) = self.index.remove(&waiter) else {
             return false;
         };
-        let Some(last) = self.order.pop() else {
+        if idx >= self.order.len() {
             return false;
-        };
-        if idx < self.order.len() {
-            self.order[idx] = last;
-            self.index.insert(last, idx);
+        }
+        self.order.remove(idx);
+        for (offset, waiter) in self.order[idx..].iter().copied().enumerate() {
+            self.index.insert(waiter, idx + offset);
         }
         true
     }
@@ -368,11 +368,11 @@ impl BlockingWaiterList {
         if idx >= self.order.len() {
             return None;
         }
-        let removed = self.order.swap_remove(idx);
+        let removed = self.order.remove(idx);
         self.index.remove(&blocking_waiter_id(&removed));
-        if idx < self.order.len() {
-            let moved_id = blocking_waiter_id(&self.order[idx]);
-            self.index.insert(moved_id, idx);
+        for (offset, waiter) in self.order[idx..].iter().enumerate() {
+            let moved_id = blocking_waiter_id(waiter);
+            self.index.insert(moved_id, idx + offset);
         }
         Some(removed)
     }
@@ -1008,7 +1008,11 @@ fn io_worker(poller: Arc<IoPoller>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, delivered_ready_mask};
+    use super::{
+        BlockingWaiter, BlockingWaiterList, IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE,
+        PtrSlot, WaiterList, blocking_waiter_id, delivered_ready_mask,
+    };
+    use std::sync::{Arc, Condvar, Mutex};
 
     #[test]
     fn delivered_ready_mask_filters_to_waiter_interest() {
@@ -1033,6 +1037,59 @@ mod tests {
         assert_eq!(
             delivered_ready_mask(IO_EVENT_WRITE, error_mask),
             Some(IO_EVENT_ERROR | IO_EVENT_WRITE)
+        );
+    }
+
+    #[test]
+    fn waiter_list_remove_preserves_survivor_fifo_order() {
+        let a = PtrSlot(1usize as *mut u8);
+        let b = PtrSlot(2usize as *mut u8);
+        let c = PtrSlot(3usize as *mut u8);
+        let d = PtrSlot(4usize as *mut u8);
+
+        let mut waiters = WaiterList::default();
+        assert!(waiters.insert(a));
+        assert!(waiters.insert(b));
+        assert!(waiters.insert(c));
+        assert!(waiters.insert(d));
+
+        assert!(waiters.remove(b));
+        assert_eq!(waiters.drain(), vec![a, c, d]);
+    }
+
+    #[test]
+    fn blocking_waiter_list_remove_preserves_survivor_fifo_order() {
+        let waiter = |events| {
+            Arc::new(BlockingWaiter {
+                ready: Mutex::new(None),
+                condvar: Condvar::new(),
+                events,
+            })
+        };
+        let a = waiter(IO_EVENT_READ);
+        let b = waiter(IO_EVENT_WRITE);
+        let c = waiter(IO_EVENT_READ | IO_EVENT_WRITE);
+        let d = waiter(IO_EVENT_READ);
+
+        let mut waiters = BlockingWaiterList::default();
+        assert!(waiters.insert(Arc::clone(&a)));
+        assert!(waiters.insert(Arc::clone(&b)));
+        assert!(waiters.insert(Arc::clone(&c)));
+        assert!(waiters.insert(Arc::clone(&d)));
+
+        assert!(waiters.remove(blocking_waiter_id(&b)));
+        let drained: Vec<usize> = waiters
+            .drain()
+            .into_iter()
+            .map(|entry| blocking_waiter_id(&entry))
+            .collect();
+        assert_eq!(
+            drained,
+            vec![
+                blocking_waiter_id(&a),
+                blocking_waiter_id(&c),
+                blocking_waiter_id(&d),
+            ]
         );
     }
 }
