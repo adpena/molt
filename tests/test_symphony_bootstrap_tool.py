@@ -274,3 +274,45 @@ def test_configure_lin_cli_writes_store_file(monkeypatch, tmp_path: Path) -> Non
     store_file = tmp_path / ".lin" / "store.apiKey.json"
     assert store_file.exists()
     assert json.loads(store_file.read_text(encoding="utf-8")) == "test-token"
+
+
+def test_resolve_profile_options_defaults() -> None:
+    core = symphony_bootstrap._resolve_profile_options(
+        profile="core",
+        with_mcp=False,
+        with_dev_tools=False,
+        with_luau=False,
+    )
+    assert core == {
+        "include_dev_tools": False,
+        "include_mcp": False,
+        "include_luau": False,
+    }
+
+    dev = symphony_bootstrap._resolve_profile_options(
+        profile="dev",
+        with_mcp=False,
+        with_dev_tools=False,
+        with_luau=False,
+    )
+    assert dev["include_dev_tools"] is True
+    assert dev["include_mcp"] is False
+    assert dev["include_luau"] is False
+
+    full = symphony_bootstrap._resolve_profile_options(
+        profile="full",
+        with_mcp=False,
+        with_dev_tools=False,
+        with_luau=False,
+    )
+    assert full["include_dev_tools"] is True
+    assert full["include_mcp"] is True
+    assert full["include_luau"] is False
+
+
+def test_luau_tooling_report_marks_missing_tools(monkeypatch) -> None:
+    monkeypatch.setattr(symphony_bootstrap, "_optional_command", lambda _: None)
+    report = symphony_bootstrap._luau_tooling_report()
+    assert report["enabled"] is True
+    assert report["status"] == "warn"
+    assert set(report["missing"]) == {"rojo", "stylua", "selene", "luau-lsp"}
