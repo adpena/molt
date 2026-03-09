@@ -1162,10 +1162,34 @@ impl RustBackend {
             }
         }
 
+        let needs_implicit_none = ops
+            .iter()
+            .rev()
+            .find(|op| {
+                !matches!(
+                    op.kind.as_str(),
+                    "nop" | "comment" | "debug_label" | "line" | "check_exception" | "label"
+                )
+            })
+            .is_none_or(|op| {
+                !matches!(
+                    op.kind.as_str(),
+                    "ret"
+                        | "return"
+                        | "return_value"
+                        | "return_none"
+                        | "ret_none"
+                        | "ret_void"
+                        | "jump"
+                        | "raise"
+                        | "reraise"
+                )
+            });
+
         self.indent -= 1;
         if is_main {
             // main doesn't have an explicit return
-        } else {
+        } else if needs_implicit_none {
             self.emit_param_writeback();
             self.emit_line("MoltValue::None");
         }
@@ -2430,7 +2454,7 @@ impl RustBackend {
                     self.emit_line(&declare(
                         &o,
                         &format!(
-                            "MoltValue::Func(Arc::new(move |args: &mut Vec<MoltValue>| {{ let mut __bound = vec![{obj}.clone()]; __bound.extend(args.iter().cloned()); molt_call(&{method}, &mut __bound) }}))"
+                            "{{ let __bound_method = {method}.clone(); let __bound_self = {obj}.clone(); MoltValue::Func(Arc::new(move |args: &mut Vec<MoltValue>| {{ let mut __bound = vec![__bound_self.clone()]; __bound.extend(args.iter().cloned()); molt_call(&__bound_method, &mut __bound) }})) }}"
                         ),
                         &self.hoisted_vars.clone(),
                     ));
