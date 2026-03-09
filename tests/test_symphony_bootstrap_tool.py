@@ -33,6 +33,22 @@ def test_write_env_file_quotes_whitespace_values(tmp_path: Path) -> None:
     assert parsed["MOLT_QUINT_NODE_FALLBACK"] == "npx -y node@22"
 
 
+def test_build_parser_supports_sync_env_flag() -> None:
+    args = symphony_bootstrap.build_parser().parse_args(["--sync-env"])
+    assert args.sync_env is True
+
+
+def test_default_java_home_accepts_windows_java_exe_env(
+    monkeypatch, tmp_path: Path
+) -> None:
+    java_home = tmp_path / "jdk"
+    (java_home / "bin").mkdir(parents=True)
+    (java_home / "bin" / "java.exe").write_text("", encoding="utf-8")
+    monkeypatch.setenv("JAVA_HOME", str(java_home))
+    monkeypatch.delenv("MOLT_JAVA_HOME", raising=False)
+    assert symphony_bootstrap._default_java_home() == str(java_home)
+
+
 def test_sync_env_defaults_fills_external_paths(monkeypatch, tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
