@@ -245,6 +245,7 @@ tests/differential/stdlib/asyncio_sleep_result.py
 tests/differential/stdlib/asyncio_sock_connect_accept.py
 tests/differential/stdlib/asyncio_sock_datagram_sendto_recvfrom.py
 tests/differential/stdlib/asyncio_sock_recv_cancel_deterministic.py
+tests/differential/stdlib/asyncio_sock_recv_cancel_survivor_fifo_many.py
 tests/differential/stdlib/asyncio_sock_recv_cancel_survivor_order.py
 tests/differential/stdlib/asyncio_sock_recv_into_sendall.py
 tests/differential/stdlib/asyncio_ssl_capability_intrinsic.py
