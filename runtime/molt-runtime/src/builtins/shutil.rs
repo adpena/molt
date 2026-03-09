@@ -328,9 +328,9 @@ pub extern "C" fn molt_shutil_disk_usage(path_bits: u64) -> u64 {
                 return shutil_err(_py, err, "disk_usage");
             }
             let bsize = stat.f_frsize;
-            let total = stat.f_blocks * bsize;
-            let free = stat.f_bavail * bsize;
-            let used = total.saturating_sub(stat.f_bfree * bsize);
+            let total = (stat.f_blocks as u64) * (bsize as u64);
+            let free = (stat.f_bavail as u64) * (bsize as u64);
+            let used = total.saturating_sub((stat.f_bfree as u64) * (bsize as u64));
             let elems = [
                 MoltObject::from_int(total as i64).bits(),
                 MoltObject::from_int(used as i64).bits(),

@@ -14,6 +14,8 @@ molt_hosted_extension = []
 molt_tk_native = ["dep:libloading"]
 
 [dependencies]
+molt-lang-db = { path = "../molt-db", features = ["sqlite"] }
+rusqlite = { version = "0.38", features = ["bundled"] }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
 molt-lang-cpython-abi = { path = "../molt-cpython-abi" }
 serde_json = "1.0"

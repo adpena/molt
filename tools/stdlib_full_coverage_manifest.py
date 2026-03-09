@@ -59,6 +59,8 @@ STDLIB_FULLY_COVERED_MODULES: tuple[str, ...] = (
     "time",
     "types",
     "weakref",
+    "_sqlite3",
+    "sqlite3",
 )
 
 # Every module listed in STDLIB_FULLY_COVERED_MODULES must have a key here.
@@ -592,6 +594,12 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_time_tzname",
     ),
     "types": ("molt_types_bootstrap",),
+    "_sqlite3": (
+        "molt_sqlite3_connect",
+        "molt_sqlite3_execute",
+        "molt_sqlite3_close",
+    ),
+    "sqlite3": (),
     "weakref": (
         "molt_weakref_callback",
         "molt_weakref_collect",
