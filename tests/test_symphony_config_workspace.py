@@ -8,6 +8,7 @@ import pytest
 
 from molt.symphony.config import build_runtime_config
 from molt.symphony.models import WorkflowDefinition
+from molt.symphony.paths import default_molt_ext_root
 from molt.symphony.workspace import (
     WorkspaceError,
     WorkspaceManager,
@@ -94,6 +95,10 @@ def test_workspace_root_defaults_to_external_root(
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
     monkeypatch.delenv("MOLT_SYMPHONY_WORKSPACE_ROOT", raising=False)
     monkeypatch.delenv("MOLT_WORKSPACE_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_SYMPHONY_PARENT_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_SYMPHONY_CANONICAL_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_SYMPHONY_STORE_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_SYMPHONY_PROJECT_KEY", raising=False)
     monkeypatch.delenv("TMPDIR", raising=False)
     monkeypatch.setattr(
         "molt.symphony.config.tempfile.gettempdir",
@@ -111,7 +116,10 @@ def test_workspace_root_defaults_to_external_root(
         },
     )
     config = build_runtime_config(workflow)
-    assert config.workspace.root == (ext_root / "symphony_workspaces").resolve()
+    assert (
+        config.workspace.root
+        == (ext_root.parent / "symphony" / "molt" / "sessions" / "workspaces").resolve()
+    )
 
 
 def test_workspace_root_fallback_survives_missing_system_tempdir(
@@ -120,6 +128,10 @@ def test_workspace_root_fallback_survives_missing_system_tempdir(
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     monkeypatch.delenv("MOLT_SYMPHONY_WORKSPACE_ROOT", raising=False)
     monkeypatch.delenv("MOLT_WORKSPACE_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_SYMPHONY_PARENT_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_SYMPHONY_CANONICAL_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_SYMPHONY_STORE_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_SYMPHONY_PROJECT_KEY", raising=False)
     monkeypatch.delenv("TMPDIR", raising=False)
     monkeypatch.setattr(
         "molt.symphony.config.tempfile.gettempdir",
@@ -137,7 +149,16 @@ def test_workspace_root_fallback_survives_missing_system_tempdir(
         },
     )
     config = build_runtime_config(workflow)
-    assert config.workspace.root == Path("/tmp/symphony_workspaces").resolve()
+    assert (
+        config.workspace.root
+        == (
+            default_molt_ext_root().parent
+            / "symphony"
+            / "molt"
+            / "sessions"
+            / "workspaces"
+        ).resolve()
+    )
 
 
 def test_workspace_creation_and_after_create_only_once(tmp_path: Path) -> None:

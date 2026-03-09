@@ -22,21 +22,9 @@ hooks:
   after_create: |
     git clone --depth 1 "$MOLT_SOURCE_REPO_URL" .
   before_run: |
-    if [ -f tools/symphony_git_sync.sh ]; then
-      bash tools/symphony_git_sync.sh
-    else
-      echo "[symphony_git_sync] missing tools/symphony_git_sync.sh; using inline fallback"
-      remote="${MOLT_SYMPHONY_SYNC_REMOTE:-origin}"
-      branch="${MOLT_SYMPHONY_SYNC_BRANCH:-main}"
-      git fetch --prune "$remote" "$branch" >/dev/null 2>&1 || true
-      target="refs/remotes/$remote/$branch"
-      if git show-ref --verify --quiet "$target"; then
-        if [ -z "$(git status --porcelain --untracked-files=all)" ]; then
-          git merge --ff-only "$target" >/dev/null 2>&1 || true
-        fi
-      fi
-    fi
+    uv run --python 3.12 python tools/symphony_hooks.py before_run
   after_run: |
+    uv run --python 3.12 python tools/symphony_hooks.py after_run
     git status --short
   timeout_ms: 120000
 agent:
@@ -55,7 +43,7 @@ agent:
     todo: 1
     rework: 1
 codex:
-  command: ${CODEX_BIN:-codex} --yolo app-server
+  command: ${CODEX_BIN:-codex} --yolo ${MOLT_SYMPHONY_CODEX_ARGS:--c model_reasoning_effort=low -c model_reasoning_summary=none -c hide_agent_reasoning=true -c model_verbosity=low -c tool_output_token_limit=6000 -c model_auto_compact_token_limit=120000} app-server
   approval_policy:
     reject:
       sandbox_approval: true

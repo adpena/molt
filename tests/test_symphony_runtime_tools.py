@@ -102,13 +102,18 @@ def test_symphony_run_main_uses_env_file_and_launches(
     assert env["MOLT_SYMPHONY_EXEC_MODE"] == "python"
     assert env["MOLT_SYMPHONY_SYNC_REMOTE"] == "origin"
     assert env["MOLT_SYMPHONY_SYNC_BRANCH"] == "main"
-    assert env["MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS"] == "symphony"
+    assert env["MOLT_SYMPHONY_AUTOMERGE_ALLOWED_AUTHORS"] == "adpena,symphony"
+    assert env["MOLT_SYMPHONY_TRUSTED_USERS"] == "adpena,symphony"
+    assert env["MOLT_SYMPHONY_TRUSTED_MACHINES"] == ""
+    assert "model_reasoning_effort=low" in env["MOLT_SYMPHONY_CODEX_ARGS"]
+    assert "model_auto_compact_token_limit=120000" in env["MOLT_SYMPHONY_CODEX_ARGS"]
     assert (
         env["MOLT_QUINT_NODE_FALLBACK"] == symphony_run._default_quint_node_fallback()
     )
-    assert Path(env["MOLT_APALACHE_WORK_DIR"]).resolve() == (
-        Path(env["MOLT_EXT_ROOT"]) / "tmp" / "apalache"
-    ).resolve()
+    assert (
+        Path(env["MOLT_APALACHE_WORK_DIR"]).resolve()
+        == (Path(env["MOLT_EXT_ROOT"]) / "tmp" / "apalache").resolve()
+    )
     assert env["JAVA_HOME"] == str(java_home)
     assert env["PATH"].split(os.pathsep)[0] == str(java_home / "bin")
     assert env["MOLT_SYMPHONY_ENFORCE_ORIGIN"] == "1"
