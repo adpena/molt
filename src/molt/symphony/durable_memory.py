@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import queue
 import shutil
 import subprocess
@@ -14,12 +15,35 @@ from typing import Any
 
 from .logging_utils import log
 
-try:  # pragma: no cover - optional dependency
-    import duckdb as _duckdb_module
-except Exception:  # pragma: no cover - optional dependency
-    _duckdb: Any = None
-else:
-    _duckdb = _duckdb_module
+_DUCKDB_DISABLED = str(os.environ.get("MOLT_SYMPHONY_DISABLE_DUCKDB", "0")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+_duckdb: Any = None
+_duckdb_import_attempted = False
+
+
+def _duckdb_module() -> Any:
+    global _duckdb, _duckdb_import_attempted
+    if _DUCKDB_DISABLED:
+        return None
+    if _duckdb_import_attempted:
+        return _duckdb
+    _duckdb_import_attempted = True
+    try:
+        import duckdb as module  # type: ignore
+    except Exception as exc:  # pragma: no cover - optional dependency
+        log(
+            "WARNING",
+            "durable_memory_duckdb_import_failed",
+            error=str(exc),
+        )
+        _duckdb = None
+    else:
+        _duckdb = module
+    return _duckdb
 
 
 class DurableMemoryStore:
@@ -461,7 +485,8 @@ class DurableMemoryStore:
             )
 
     def _sync_duckdb_parquet(self) -> None:
-        if _duckdb is None and self._duckdb_bin is None:
+        duckdb_mod = _duckdb_module()
+        if duckdb_mod is None and self._duckdb_bin is None:
             return
         sql = (
             "CREATE OR REPLACE TABLE events AS "
@@ -473,9 +498,9 @@ class DurableMemoryStore:
             f"'{_sql_quote(str(self._parquet_path))}' "
             "(FORMAT PARQUET, COMPRESSION ZSTD);"
         )
-        if _duckdb is not None:
+        if duckdb_mod is not None:
             try:
-                conn = _duckdb.connect(str(self._duckdb_path))
+                conn = duckdb_mod.connect(str(self._duckdb_path))
                 try:
                     conn.execute(sql)
                 finally:
@@ -547,9 +572,10 @@ class DurableMemoryStore:
         if not self._duckdb_path.exists():
             return {"ok": True, "reason": "missing"}
         query = "SELECT COUNT(*) AS c FROM events"
-        if _duckdb is not None:
+        duckdb_mod = _duckdb_module()
+        if duckdb_mod is not None:
             try:
-                conn = _duckdb.connect(str(self._duckdb_path), read_only=True)
+                conn = duckdb_mod.connect(str(self._duckdb_path), read_only=True)
                 try:
                     rows = conn.execute(query).fetchall()
                 finally:
@@ -612,15 +638,16 @@ class DurableMemoryStore:
     def _check_parquet_readable(self) -> dict[str, Any]:
         if not self._parquet_path.exists():
             return {"ok": True, "reason": "missing"}
-        if _duckdb is None and self._duckdb_bin is None:
+        duckdb_mod = _duckdb_module()
+        if duckdb_mod is None and self._duckdb_bin is None:
             return {"ok": True, "reason": "duckdb_unavailable"}
         query = (
             "SELECT COUNT(*) AS c FROM read_parquet("
             f"'{_sql_quote(str(self._parquet_path))}')"
         )
-        if _duckdb is not None:
+        if duckdb_mod is not None:
             try:
-                conn = _duckdb.connect(":memory:")
+                conn = duckdb_mod.connect(":memory:")
                 try:
                     rows = conn.execute(query).fetchall()
                 finally:
