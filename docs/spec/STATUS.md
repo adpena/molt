@@ -20,6 +20,10 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
   outside the active compiled-binary parity target unless explicitly re-approved.
 - Deployment contract: compiled Molt binaries are standalone artifacts that must
   run without any host Python installation and must not use host CPython fallback.
+- Desktop app optimization stance: compiled Tk/Molt GUI applications are a valid
+  primary benchmark harness for Molt. Performance work should favor lower event-loop
+  wakeups, cheaper callback/marshalling paths, reusable Rust or `moltlib` primitives,
+  and standalone packaging quality that preserves the no-host-Python contract.
 
 ## Orchestration Harness Engineering (2026-03-05)
 - Implemented: canonical harness architecture docs are now explicit and linked:
