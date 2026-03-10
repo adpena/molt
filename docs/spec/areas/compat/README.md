@@ -11,6 +11,8 @@
 - No dual truth: if a file is generated, humans do not hand-edit semantic status in that file.
 - Native and wasm compatibility must be tracked as first-class dimensions, not hidden in prose notes.
 - Version-gated behavior for 3.12/3.13/3.14 must be explicit and test-backed.
+- The architectural target is full CPython `>=3.12` parity for compiled Molt outputs, except for the explicit carve-outs in the dynamic execution policy contract.
+- Compiled binaries must remain self-contained and must not rely on a host CPython fallback lane.
 
 ## CPython Reference Inputs
 Canonical local CPython documentation mirror:
