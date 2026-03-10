@@ -51,3 +51,14 @@ def test_core_policy_docs_keep_carveouts_and_standalone_binary_story() -> None:
     assert "full CPython `>=3.12` parity" in fallback
     assert "except for the carve-outs below" in dynamic
     assert "runtime monkeypatching" in verified
+
+
+def test_packaging_docs_call_out_standalone_binary_contract() -> None:
+    packaging_readme = _read_text("packaging/README.md")
+    install_doc = _read_text("packaging/INSTALL.md")
+
+    assert "standalone artifacts" in packaging_readme
+    assert "host Python installation" in packaging_readme
+    assert "hidden host-CPython fallback" in packaging_readme
+    assert "without any" in install_doc
+    assert "host Python installation" in install_doc

@@ -23,6 +23,15 @@ This folder holds release assets, install scripts, and packaging templates.
 2. GitHub Actions builds artifacts for macOS/Linux/Windows and publishes a release.
 3. Update external package repos (Homebrew/Scoop/Winget) using the templates.
 
+## Packaging invariants
+
+- The Molt toolchain itself may depend on local Python/Rust toolchains to build software,
+  but binaries produced by `molt build` are expected to be standalone artifacts that run
+  without a host Python installation.
+- Shipped artifacts must not rely on hidden host-CPython fallback or a production bridge lane.
+- Release packaging should minimize SmartScreen/Gatekeeper/quarantine friction through
+  predictable artifact names, signatures/notarization where supported, and explicit checksums.
+
 ## External package repos
 
 This repo only contains templates. You will need to push updates to:
