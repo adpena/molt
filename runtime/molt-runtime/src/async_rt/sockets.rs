@@ -29,8 +29,6 @@ use std::os::raw::{c_int, c_void};
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, BorrowedSocket, FromRawSocket, IntoRawSocket, RawSocket};
-#[cfg(all(not(target_arch = "wasm32"), windows))]
-use windows_sys::Win32::Networking::WinSock as winsock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Mutex, OnceLock};
@@ -40,6 +38,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 #[cfg(target_arch = "wasm32")]
 use std::time::Duration;
+#[cfg(all(not(target_arch = "wasm32"), windows))]
+use windows_sys::Win32::Networking::WinSock as winsock;
 
 // --- Sockets ---
 

@@ -666,7 +666,13 @@ def _base_env() -> dict[str, str]:
     env["PYTHONPATH"] = "src"
     env.setdefault("PYTHONHASHSEED", "0")
     env.setdefault("PYTHONUNBUFFERED", "1")
-    env.setdefault("MOLT_MACOSX_DEPLOYMENT_TARGET", "26.2")
+    if sys.platform == "darwin":
+        default_target = (
+            "11.0"
+            if platform.machine().lower() in {"arm64", "aarch64"}
+            else "10.13"
+        )
+        env.setdefault("MOLT_MACOSX_DEPLOYMENT_TARGET", default_target)
     # Keep wasm benchmark compiles deterministic and bounded when mid-end
     # optimization passes regress on specific stress benchmarks.
     env.setdefault("MOLT_SCCP_MAX_ITERS", "8")
