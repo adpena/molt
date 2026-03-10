@@ -1,10 +1,5 @@
-use molt_lang_backend::luau::LuauBackend;
-use molt_lang_backend::rust::RustBackend;
-use molt_lang_backend::wasm::WasmBackend;
-use molt_lang_backend::{
-    SIMPLE_IR_CONTRACT_NAME, SIMPLE_IR_CONTRACT_VERSION, SimpleBackend, SimpleIR,
-    validate_simple_ir,
-};
+use molt_backend::wasm::WasmBackend;
+use molt_backend::{SimpleBackend, SimpleIR};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -24,17 +19,10 @@ const BACKEND_DAEMON_DEFAULT_MAX_JOBS: usize = 8;
 struct DaemonJobRequest {
     id: String,
     is_wasm: bool,
-    #[serde(default)]
-    is_luau: bool,
-    #[serde(default)]
-    is_rust: bool,
-    #[serde(default)]
-    use_crate: bool,
     target_triple: Option<String>,
     output: String,
     cache_key: String,
     function_cache_key: Option<String>,
-    env_overrides: Option<HashMap<String, String>>,
     ir: SimpleIR,
 }
 
@@ -237,64 +225,6 @@ fn daemon_health(
     }
 }
 
-fn ir_contract_missing_allowed() -> bool {
-    matches!(
-        env::var("MOLT_IR_CONTRACT_ALLOW_MISSING")
-            .ok()
-            .as_deref()
-            .map(str::trim)
-            .map(str::to_ascii_lowercase)
-            .as_deref(),
-        Some("1") | Some("true") | Some("yes") | Some("on")
-    )
-}
-
-fn validate_ir_contract_object(ir: &serde_json::Value) -> Result<(), String> {
-    let name_field = ir.get("ir_contract_name");
-    let version_field = ir.get("ir_contract_version");
-    if name_field.is_none() && version_field.is_none() {
-        if ir_contract_missing_allowed() {
-            return Ok(());
-        }
-        return Err(format!(
-            "missing `ir_contract_name`/`ir_contract_version` (expected `{}` v{})",
-            SIMPLE_IR_CONTRACT_NAME, SIMPLE_IR_CONTRACT_VERSION
-        ));
-    }
-    let Some(name) = name_field.and_then(serde_json::Value::as_str) else {
-        return Err("`ir_contract_name` must be a string".to_string());
-    };
-    if name != SIMPLE_IR_CONTRACT_NAME {
-        return Err(format!(
-            "unsupported `ir_contract_name` `{}` (expected `{}`)",
-            name, SIMPLE_IR_CONTRACT_NAME
-        ));
-    }
-    let Some(version) = version_field.and_then(serde_json::Value::as_u64) else {
-        return Err("`ir_contract_version` must be an integer".to_string());
-    };
-    if version != SIMPLE_IR_CONTRACT_VERSION as u64 {
-        return Err(format!(
-            "unsupported `ir_contract_version` {} (expected {})",
-            version, SIMPLE_IR_CONTRACT_VERSION
-        ));
-    }
-    Ok(())
-}
-
-fn validate_daemon_request_ir_contract(request: &serde_json::Value) -> Result<(), String> {
-    let Some(jobs) = request.get("jobs").and_then(serde_json::Value::as_array) else {
-        return Ok(());
-    };
-    for (idx, job) in jobs.iter().enumerate() {
-        let Some(ir) = job.get("ir") else {
-            continue;
-        };
-        validate_ir_contract_object(ir).map_err(|err| format!("jobs[{idx}].ir: {err}"))?;
-    }
-    Ok(())
-}
-
 fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJobResponse {
     let cache_key = job.cache_key.trim().to_string();
     let function_cache_key = job
@@ -353,82 +283,6 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
         }
     }
 
-    if let Err(err) = validate_simple_ir(&job.ir) {
-        return DaemonJobResponse {
-            id: job.id,
-            ok: false,
-            cached: false,
-            cache_tier: None,
-            message: Some(err),
-        };
-    }
-
-    let _env_guard = DaemonEnvOverridesGuard::apply(job.env_overrides.as_ref());
-    if job.is_luau {
-        let job_id = job.id.clone();
-        let output_path = job.output.clone();
-        let mut ir = job.ir;
-        ir.tree_shake_luau();
-        let mut backend = LuauBackend::new();
-        let luau_source = match backend.compile_checked(&ir) {
-            Ok(source) => source,
-            Err(err) => {
-                return DaemonJobResponse {
-                    id: job_id,
-                    ok: false,
-                    cached: false,
-                    cache_tier: None,
-                    message: Some(err),
-                };
-            }
-        };
-        if let Err(err) = write_output(&output_path, luau_source.as_bytes()) {
-            return DaemonJobResponse {
-                id: job_id,
-                ok: false,
-                cached: false,
-                cache_tier: None,
-                message: Some(format!("failed to write output: {err}")),
-            };
-        }
-        return DaemonJobResponse {
-            id: job_id,
-            ok: true,
-            cached: false,
-            cache_tier: None,
-            message: None,
-        };
-    }
-
-    if job.is_rust {
-        let job_id = job.id.clone();
-        let output_path = job.output.clone();
-        let mut ir = job.ir;
-        ir.tree_shake_luau(); // Rewrites molt_main + stubs stdlib calls; our prelude handles builtins.
-        let mut backend = if job.use_crate {
-            RustBackend::new_with_crate()
-        } else {
-            RustBackend::new()
-        };
-        let rust_source = backend.compile(&ir);
-        if let Err(err) = write_output(&output_path, rust_source.as_bytes()) {
-            return DaemonJobResponse {
-                id: job_id,
-                ok: false,
-                cached: false,
-                cache_tier: None,
-                message: Some(format!("failed to write output: {err}")),
-            };
-        }
-        return DaemonJobResponse {
-            id: job_id,
-            ok: true,
-            cached: false,
-            cache_tier: None,
-            message: None,
-        };
-    }
-
     let output_bytes = if job.is_wasm {
         let backend = WasmBackend::new();
         backend.compile(job.ir)
@@ -460,44 +314,6 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
         cached: false,
         cache_tier: None,
         message: None,
-    }
-}
-
-struct DaemonEnvOverridesGuard {
-    saved: Vec<(String, Option<String>)>,
-}
-
-impl DaemonEnvOverridesGuard {
-    fn apply(overrides: Option<&HashMap<String, String>>) -> Self {
-        let mut saved: Vec<(String, Option<String>)> = Vec::new();
-        if let Some(overrides) = overrides {
-            for (key, value) in overrides {
-                let key = key.trim();
-                if key.is_empty() {
-                    continue;
-                }
-                saved.push((key.to_string(), env::var(key).ok()));
-                unsafe {
-                    env::set_var(key, value);
-                }
-            }
-        }
-        Self { saved }
-    }
-}
-
-impl Drop for DaemonEnvOverridesGuard {
-    fn drop(&mut self) {
-        for (key, previous) in self.saved.drain(..).rev() {
-            match previous {
-                Some(value) => unsafe {
-                    env::set_var(&key, value);
-                },
-                None => unsafe {
-                    env::remove_var(&key);
-                },
-            }
-        }
     }
 }
 
@@ -639,7 +455,7 @@ fn handle_daemon_connection(
         write_daemon_response(stream, &response)?;
         return Ok(());
     }
-    let req_json: serde_json::Value = match serde_json::from_str(&raw) {
+    let req: DaemonRequest = match serde_json::from_str(&raw) {
         Ok(req) => req,
         Err(err) => {
             let response = DaemonResponse {
@@ -647,43 +463,6 @@ fn handle_daemon_connection(
                 pong: false,
                 jobs: Vec::new(),
                 error: Some(format!("invalid request JSON: {err}")),
-                health: Some(daemon_health(
-                    cache,
-                    stats,
-                    started_at,
-                    request_limit_bytes,
-                    max_jobs,
-                )),
-            };
-            write_daemon_response(stream, &response)?;
-            return Ok(());
-        }
-    };
-    if let Err(err) = validate_daemon_request_ir_contract(&req_json) {
-        let response = DaemonResponse {
-            ok: false,
-            pong: false,
-            jobs: Vec::new(),
-            error: Some(format!("invalid IR contract: {err}")),
-            health: Some(daemon_health(
-                cache,
-                stats,
-                started_at,
-                request_limit_bytes,
-                max_jobs,
-            )),
-        };
-        write_daemon_response(stream, &response)?;
-        return Ok(());
-    }
-    let req: DaemonRequest = match serde_json::from_value(req_json) {
-        Ok(req) => req,
-        Err(err) => {
-            let response = DaemonResponse {
-                ok: false,
-                pong: false,
-                jobs: Vec::new(),
-                error: Some(format!("invalid request payload: {err}")),
                 health: Some(daemon_health(
                     cache,
                     stats,
@@ -858,9 +637,6 @@ fn main() -> io::Result<()> {
         return run_daemon(socket_path);
     }
     let is_wasm = args.contains(&"--target".to_string()) && args.contains(&"wasm".to_string());
-    let is_luau = args.contains(&"--target".to_string()) && args.contains(&"luau".to_string());
-    let is_rust = args.contains(&"--target".to_string()) && args.contains(&"rust".to_string());
-    let use_crate = args.contains(&"--use-crate".to_string());
     let target_triple = args
         .iter()
         .position(|arg| arg == "--target-triple")
@@ -874,20 +650,9 @@ fn main() -> io::Result<()> {
 
     let mut buffer = String::new();
     io::stdin().read_to_string(&mut buffer)?;
-    let ir_value: serde_json::Value = match serde_json::from_str(&buffer) {
-        Ok(value) => value,
-        Err(err) => {
-            eprintln!("Invalid IR JSON: {err}");
-            std::process::exit(1);
-        }
-    };
-    if let Err(err) = validate_ir_contract_object(&ir_value) {
-        eprintln!("Invalid IR contract: {err}");
-        std::process::exit(1);
-    }
 
     let mut deserializer = serde_json::Deserializer::from_str(&buffer);
-    let mut ir: SimpleIR = match serde_path_to_error::deserialize(&mut deserializer) {
+    let ir: SimpleIR = match serde_path_to_error::deserialize(&mut deserializer) {
         Ok(ir) => ir,
         Err(err) => {
             let path = err.path().to_string();
@@ -896,113 +661,11 @@ fn main() -> io::Result<()> {
             std::process::exit(1);
         }
     };
-    if let Err(err) = validate_simple_ir(&ir) {
-        eprintln!("{err}");
-        std::process::exit(1);
-    }
 
-    let output_file = output_path.unwrap_or(if is_luau {
-        "output.luau"
-    } else if is_rust {
-        "output.rs"
-    } else if is_wasm {
-        "output.wasm"
-    } else {
-        "output.o"
-    });
+    let output_file = output_path.unwrap_or(if is_wasm { "output.wasm" } else { "output.o" });
     let mut file = File::create(output_file)?;
 
-    if is_rust {
-        ir.tree_shake_luau(); // Rewrites molt_main + stubs stdlib calls; our prelude handles builtins.
-        if let Ok(filter) = std::env::var("MOLT_DUMP_IR") {
-            for func in &ir.functions {
-                if filter == "1" || filter == "all" || func.name.contains(&filter) {
-                    eprintln!(
-                        "=== IR [post-shake/rust] {} ({} ops) ===",
-                        func.name,
-                        func.ops.len()
-                    );
-                    for (i, op) in func.ops.iter().enumerate() {
-                        if op.kind == "nop" {
-                            continue;
-                        }
-                        eprintln!(
-                            "  [{i:4}] kind={:<24} out={:<12} s_value={:<30} args={:?}",
-                            op.kind,
-                            op.out.as_deref().unwrap_or("-"),
-                            op.s_value.as_deref().unwrap_or("-"),
-                            op.args.as_ref().map(|a| a.join(", ")).unwrap_or_default()
-                        );
-                    }
-                }
-            }
-        }
-        let mut backend = if use_crate {
-            RustBackend::new_with_crate()
-        } else {
-            RustBackend::new()
-        };
-        let rust_source = backend.compile(&ir);
-        file.write_all(rust_source.as_bytes())?;
-        println!("Successfully compiled to {output_file}");
-    } else if is_luau {
-        // Dump IR before tree shaking if MOLT_DUMP_IR is set
-        if let Ok(filter) = std::env::var("MOLT_DUMP_IR") {
-            for func in &ir.functions {
-                if filter == "1" || filter == "all" || func.name.contains(&filter) {
-                    eprintln!(
-                        "=== IR [pre-shake] {} ({} ops) ===",
-                        func.name,
-                        func.ops.len()
-                    );
-                    for (i, op) in func.ops.iter().enumerate() {
-                        eprintln!(
-                            "  [{i:4}] kind={:<24} out={:<12} s_value={:<30} args={:?}",
-                            op.kind,
-                            op.out.as_deref().unwrap_or("-"),
-                            op.s_value.as_deref().unwrap_or("-"),
-                            op.args.as_ref().map(|a| a.join(", ")).unwrap_or_default()
-                        );
-                    }
-                }
-            }
-        }
-        ir.tree_shake_luau();
-        // Dump IR after tree shaking if MOLT_DUMP_IR is set
-        if let Ok(filter) = std::env::var("MOLT_DUMP_IR") {
-            for func in &ir.functions {
-                if filter == "1" || filter == "all" || func.name.contains(&filter) {
-                    eprintln!(
-                        "=== IR [post-shake] {} ({} ops) ===",
-                        func.name,
-                        func.ops.len()
-                    );
-                    for (i, op) in func.ops.iter().enumerate() {
-                        if op.kind == "nop" {
-                            continue;
-                        }
-                        eprintln!(
-                            "  [{i:4}] kind={:<24} out={:<12} s_value={:<30} args={:?}",
-                            op.kind,
-                            op.out.as_deref().unwrap_or("-"),
-                            op.s_value.as_deref().unwrap_or("-"),
-                            op.args.as_ref().map(|a| a.join(", ")).unwrap_or_default()
-                        );
-                    }
-                }
-            }
-        }
-        let mut backend = LuauBackend::new();
-        let luau_source = match backend.compile_checked(&ir) {
-            Ok(source) => source,
-            Err(err) => {
-                eprintln!("{err}");
-                std::process::exit(1);
-            }
-        };
-        file.write_all(luau_source.as_bytes())?;
-        println!("Successfully compiled to {output_file}");
-    } else if is_wasm {
+    if is_wasm {
         let backend = WasmBackend::new();
         let wasm_bytes = backend.compile(ir);
         file.write_all(&wasm_bytes)?;

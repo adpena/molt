@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ast
 import bisect
-import json
 import os
 import sys
 import time
@@ -29,9 +28,6 @@ from molt.type_facts import normalize_type_hint
 
 if TYPE_CHECKING:
     from molt.type_facts import TypeFacts
-
-SIMPLE_IR_CONTRACT_NAME = "molt.simple_ir"
-SIMPLE_IR_CONTRACT_VERSION = 1
 
 
 @dataclass
@@ -153,85 +149,6 @@ GEN_THROW_OFFSET = 8
 GEN_CLOSED_OFFSET = 16
 GEN_YIELD_FROM_OFFSET = 32
 GEN_CONTROL_SIZE = 48
-
-INLINE_INT_MIN = -(1 << 46)
-INLINE_INT_MAX = (1 << 46) - 1
-
-FAST_INT_BINARY_OPS = {
-    "ADD",
-    "SUB",
-    "MUL",
-    "INPLACE_ADD",
-    "INPLACE_SUB",
-    "INPLACE_MUL",
-    "BIT_OR",
-    "BIT_AND",
-    "BIT_XOR",
-    "INPLACE_BIT_OR",
-    "INPLACE_BIT_AND",
-    "INPLACE_BIT_XOR",
-    "LSHIFT",
-    "RSHIFT",
-    "DIV",
-    "FLOORDIV",
-    "MOD",
-    "LT",
-    "LE",
-    "GT",
-    "GE",
-    "EQ",
-    "NE",
-}
-
-FAST_INT_UNARY_OPS = {"ABS", "INVERT"}
-
-FAST_INT_INT_RESULT_OPS = {
-    "ADD",
-    "SUB",
-    "MUL",
-    "INPLACE_ADD",
-    "INPLACE_SUB",
-    "INPLACE_MUL",
-    "BIT_OR",
-    "BIT_AND",
-    "BIT_XOR",
-    "INPLACE_BIT_OR",
-    "INPLACE_BIT_AND",
-    "INPLACE_BIT_XOR",
-    "LSHIFT",
-    "RSHIFT",
-    "FLOORDIV",
-    "MOD",
-    "ABS",
-    "INVERT",
-}
-
-FAST_INT_BOOL_RESULT_OPS = {"LT", "LE", "GT", "GE", "EQ", "NE"}
-FAST_INT_FLOAT_RESULT_OPS = {"DIV"}
-INLINE_SAFE_INT_RESULT_OPS = {
-    "BIT_OR",
-    "BIT_AND",
-    "BIT_XOR",
-    "INPLACE_BIT_OR",
-    "INPLACE_BIT_AND",
-    "INPLACE_BIT_XOR",
-    "RSHIFT",
-    "MOD",
-    "INVERT",
-}
-
-# Raw-int lowering is intentionally narrower than the general fast-int surface.
-# These ops currently have explicit raw-i64 handling end-to-end; everything else
-# must stay boxed/fast_int until the backend/runtime contract grows with tests.
-RAW_INT_PROMOTABLE_OPS = {"ADD", "INPLACE_ADD", "MUL", "MOD", "LT"}
-RAW_INT_CONTROL_CONSUMERS = {"LOOP_BREAK_IF_TRUE", "LOOP_BREAK_IF_FALSE"}
-RAW_INT_CARRIER_OPS = {
-    "LOOP_INDEX_START",
-    "LOOP_INDEX_NEXT",
-    "LOOP_CARRY_INIT",
-    "LOOP_CARRY_UPDATE",
-}
-RAW_INT_LOWERABLE_OPS = RAW_INT_PROMOTABLE_OPS | RAW_INT_CONTROL_CONSUMERS | {"CONST"}
 
 BUILTIN_TYPE_TAGS = {
     "int": 1,
@@ -724,33 +641,37 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
 }
 
 MOLT_REEXPORT_FUNCTIONS = {
-    "cancel_current": "moltlib.concurrency",
-    "cancelled": "moltlib.concurrency",
-    "CancellationToken": "moltlib.concurrency",
-    "Channel": "moltlib.concurrency",
-    "channel": "moltlib.concurrency",
-    "current_token": "moltlib.concurrency",
-    "set_current_token": "moltlib.concurrency",
-    "spawn": "moltlib.concurrency",
-    "Request": "moltlib.net",
-    "Response": "moltlib.net",
-    "Stream": "moltlib.net",
-    "StreamSender": "moltlib.net",
-    "WebSocket": "moltlib.net",
-    "stream": "moltlib.net",
-    "stream_channel": "moltlib.net",
-    "ws_connect": "moltlib.net",
-    "ws_pair": "moltlib.net",
+    "cancel_current": "molt.concurrency",
+    "cancelled": "molt.concurrency",
+    "CancellationToken": "molt.concurrency",
+    "Channel": "molt.concurrency",
+    "channel": "molt.concurrency",
+    "current_token": "molt.concurrency",
+    "set_current_token": "molt.concurrency",
+    "spawn": "molt.concurrency",
+    "Request": "molt.net",
+    "Response": "molt.net",
+    "Stream": "molt.net",
+    "StreamSender": "molt.net",
+    "WebSocket": "molt.net",
+    "stream": "molt.net",
+    "stream_channel": "molt.net",
+    "ws_connect": "molt.net",
+    "ws_pair": "molt.net",
 }
 
 MOLT_DIRECT_CALLS = {
-    "moltlib.concurrency": {
+    "molt": {
         "cancel_current",
         "cancelled",
         "channel",
         "current_token",
         "set_current_token",
         "spawn",
+        "stream",
+        "stream_channel",
+        "ws_connect",
+        "ws_pair",
     },
     "molt.concurrency": {
         "cancel_current",
@@ -759,12 +680,6 @@ MOLT_DIRECT_CALLS = {
         "current_token",
         "set_current_token",
         "spawn",
-    },
-    "moltlib.net": {
-        "stream",
-        "stream_channel",
-        "ws_connect",
-        "ws_pair",
     },
     "molt.net": {
         "stream",
@@ -890,9 +805,7 @@ MOLT_DIRECT_CALL_BIND_ALWAYS = {
 }
 
 STDLIB_DIRECT_CALL_MODULES = {
-    module
-    for module in MOLT_DIRECT_CALLS
-    if not module.startswith(("molt.", "moltlib."))
+    module for module in MOLT_DIRECT_CALLS if not module.startswith("molt.")
 }
 
 
@@ -1010,9 +923,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.boxed_locals: dict[str, MoltValue] = {}
         self.closure_locals: set[str] = set()
         self.boxed_local_hints: dict[str, str] = {}
-        self.loop_carry_vars: set[str] = (
-            set()
-        )  # Variables using loop-carried block params
         self.free_vars: dict[str, int] = {}
         self.free_var_hints: dict[str, str] = {}
         self.global_decls: set[str] = set()
@@ -1103,7 +1013,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.module_frame_entered = False
         self.module_frame_exited = False
         self.module_frame_code_id: int | None = None
-        self._runtime_feedback: dict[str, Any] | None = self._load_runtime_feedback()
         self.class_annotation_items: list[tuple[str, ast.expr, int]] = []
         self.class_annotation_exec_map: MoltValue | None = None
         self.class_annotation_exec_name: str | None = None
@@ -1464,7 +1373,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.boxed_locals = {}
         self.closure_locals = set()
         self.boxed_local_hints = {}
-        self.loop_carry_vars = set()
         self.free_vars = {}
         self.free_var_hints = {}
         self.global_decls = set()
@@ -1515,7 +1423,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.loop_layout_guards = []
         self.loop_guard_assumptions = []
         self.active_exceptions = []
-        self._module_cache_values = {}
 
     def _c3_merge(self, seqs: list[list[str]]) -> list[str] | None:
         merged: list[str] = []
@@ -1718,35 +1625,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
 
     def emit(self, op: MoltOp) -> None:
-        # Module-cache SSA values are only valid along paths that dominate later
-        # uses. Clear cached aliases at control-flow boundaries so branch-local
-        # MODULE_CACHE_GET temporaries are never reused on sibling paths.
-        if op.kind in {
-            "TRY_START",
-            "TRY_END",
-            "LABEL",
-            "STATE_LABEL",
-            "JUMP",
-            "BR_IF",
-            "IF",
-            "ELSE",
-            "END_IF",
-            "LOOP_START",
-            "LOOP_END",
-            "LOOP_CONTINUE",
-            "LOOP_BREAK",
-            "LOOP_BREAK_IF_TRUE",
-            "LOOP_BREAK_IF_FALSE",
-            "LOOP_INDEX_START",
-            "LOOP_INDEX_NEXT",
-            "LOOP_CARRY_INIT",
-            "LOOP_CARRY_UPDATE",
-            "STATE_TRANSITION",
-            "STATE_YIELD",
-            "PHI",
-            "ret",
-        }:
-            self._module_cache_values = {}
         if (
             op.kind == "CONST"
             and op.result
@@ -1785,8 +1663,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "LOOP_BREAK_IF_FALSE",
             "LOOP_INDEX_START",
             "LOOP_INDEX_NEXT",
-            "LOOP_CARRY_INIT",
-            "LOOP_CARRY_UPDATE",
             "STATE_TRANSITION",
             "STATE_YIELD",
             "PHI",
@@ -1820,8 +1696,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_line_marker(self, lineno: int) -> None:
         if lineno <= 0:
             return
-        if getattr(self, "_suppress_line_markers", False):
-            return
         if self.current_line == lineno:
             return
         self.current_line = lineno
@@ -1850,283 +1724,37 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _hints_enabled(self) -> bool:
         return self.type_hint_policy in {"trust", "check"} or self.stdlib_hint_trust
 
-    @staticmethod
-    def _is_inline_int_literal(value: Any) -> bool:
-        return (
-            isinstance(value, int)
-            and not isinstance(value, bool)
-            and INLINE_INT_MIN <= value <= INLINE_INT_MAX
-        )
-
-    def _compute_inline_int_safe_names(self, ops: list[MoltOp]) -> set[str]:
-        """Names whose current value can be blindly unboxed by fast-int lanes.
-
-        This is stricter than `type_hint == "int"`: it models values that are
-        guaranteed to remain inside Molt's inline-int representation, so
-        downstream fast_int/raw_int consumers cannot accidentally unbox a boxed
-        bigint or other non-inline integer payload.
-        """
-        inline_safe: set[str] = set()
-
-        def args_are_inline_safe(*, count: int | None = None) -> bool:
-            if count is not None and len(op.args) != count:
-                return False
-            return all(
-                isinstance(arg, MoltValue)
-                and arg.type_hint == "int"
-                and arg.name in inline_safe
-                for arg in op.args
-            )
-
-        for op in ops:
-            if not isinstance(op.result, MoltValue):
-                continue
-            result_name = op.result.name
-            if result_name == "none":
-                continue
-
-            result_safe = False
-            if op.kind == "CONST":
-                result_safe = bool(op.args) and self._is_inline_int_literal(op.args[0])
-            elif op.kind == "UNBOX_TO_RAW_INT" and len(op.args) == 1:
-                arg = op.args[0]
-                result_safe = isinstance(arg, MoltValue) and arg.name in inline_safe
-            elif op.kind == "BOX_FROM_RAW_INT" and len(op.args) == 1:
-                arg = op.args[0]
-                result_safe = isinstance(arg, MoltValue) and arg.name in inline_safe
-            elif op.kind == "PHI":
-                result_safe = op.result.type_hint == "int" and args_are_inline_safe()
-            elif op.kind == "LEN":
-                # len() always returns a non-negative int that fits inline
-                # representation (bounded by collection size).
-                result_safe = op.result.type_hint == "int"
-            elif op.kind in {"LOOP_INDEX_START", "LOOP_INDEX_NEXT"} and op.args:
-                # Loop counters are inherently small integers (range iteration).
-                src = op.args[0]
-                result_safe = (
-                    op.result.type_hint == "int"
-                    and isinstance(src, MoltValue)
-                    and src.name in inline_safe
-                )
-            elif op.kind in {"LOOP_CARRY_INIT", "LOOP_CARRY_UPDATE"} and op.args:
-                src = op.args[-1]
-                result_safe = (
-                    op.result.type_hint == "int"
-                    and isinstance(src, MoltValue)
-                    and src.name in inline_safe
-                )
-            elif op.kind in INLINE_SAFE_INT_RESULT_OPS:
-                expected_count = 1 if op.kind in FAST_INT_UNARY_OPS else 2
-                result_safe = op.result.type_hint == "int" and args_are_inline_safe(
-                    count=expected_count
-                )
-
-            if result_safe:
-                inline_safe.add(result_name)
-            else:
-                inline_safe.discard(result_name)
-
-        return inline_safe
-
-    def _should_fast_int(
-        self, op: MoltOp, inline_int_safe_names: set[str] | None = None
-    ) -> bool:
-        # Guard-proven ops bypass the hint policy gate, but they still need
-        # representation proof that the operands remain inline-int safe.
-        if (
-            not (op.metadata and op.metadata.get("guard_fast_int"))
-            and not self._fast_int_enabled()
-        ):
-            return False
-        if op.kind not in FAST_INT_BINARY_OPS | FAST_INT_UNARY_OPS:
-            return False
-        if inline_int_safe_names is None:
-            inline_int_safe_names = set()
-        return all(
-            isinstance(arg, MoltValue)
-            and arg.type_hint == "int"
-            and arg.name in inline_int_safe_names
-            for arg in op.args
-        )
-
-    @staticmethod
-    def _is_raw_int(op: MoltOp) -> bool:
-        """Check if the raw_int promotion pass marked this op for raw i64 mode."""
-        return bool(op.metadata and op.metadata.get("raw_int"))
-
-    def _collect_specialized_int_failures(
-        self,
-        ops: list[MoltOp],
-        *,
-        inline_int_safe_names: set[str] | None = None,
-    ) -> list[tuple[int, str, str]]:
-        if inline_int_safe_names is None:
-            inline_int_safe_names = self._compute_inline_int_safe_names(ops)
-
-        failures: list[tuple[int, str, str]] = []
-        raw_value_names: set[str] = set()
-
-        def raw_arg_names(op: MoltOp) -> list[str]:
-            return [
-                arg.name
-                for arg in op.args
-                if isinstance(arg, MoltValue) and arg.name != "none"
-            ]
-
-        for idx, op in enumerate(ops):
-            result_name = op.result.name
-            guard_fast_int = bool(op.metadata and op.metadata.get("guard_fast_int"))
-            raw_int = self._is_raw_int(op)
-
-            if guard_fast_int:
-                if op.kind not in FAST_INT_BINARY_OPS | FAST_INT_UNARY_OPS:
-                    failures.append(
-                        (
-                            idx,
-                            op.kind,
-                            "guard_fast_int is only legal on fast-int arithmetic/comparison ops",
-                        )
-                    )
-                unsafe_args: list[str] = []
-                for arg_index, arg in enumerate(op.args):
-                    if not isinstance(arg, MoltValue):
-                        unsafe_args.append(f"arg{arg_index}")
-                        continue
-                    if arg.type_hint != "int" or arg.name not in inline_int_safe_names:
-                        unsafe_args.append(arg.name)
-                if unsafe_args:
-                    failures.append(
-                        (
-                            idx,
-                            op.kind,
-                            "guard_fast_int operands are not inline-int safe: "
-                            + ", ".join(sorted(unsafe_args)),
-                        )
-                    )
-
-            if raw_int:
-                if op.kind not in RAW_INT_LOWERABLE_OPS:
-                    failures.append(
-                        (
-                            idx,
-                            op.kind,
-                            "raw_int is not supported for this op kind",
-                        )
-                    )
-                elif op.kind == "CONST":
-                    if (
-                        not op.args
-                        or not self._is_inline_int_literal(op.args[0])
-                        or op.result.type_hint != "int"
-                    ):
-                        failures.append(
-                            (
-                                idx,
-                                op.kind,
-                                "raw_int const must be an inline-safe int literal with int result hint",
-                            )
-                        )
-                elif op.kind in RAW_INT_PROMOTABLE_OPS:
-                    raw_inputs = raw_arg_names(op)
-                    missing_raw = [
-                        name for name in raw_inputs if name not in raw_value_names
-                    ]
-                    if missing_raw:
-                        failures.append(
-                            (
-                                idx,
-                                op.kind,
-                                "raw_int operands are not proven raw values: "
-                                + ", ".join(sorted(missing_raw)),
-                            )
-                        )
-                    if (
-                        op.kind in FAST_INT_INT_RESULT_OPS
-                        and op.result.type_hint != "int"
-                    ):
-                        failures.append(
-                            (
-                                idx,
-                                op.kind,
-                                "raw_int integer result ops must keep int result hints",
-                            )
-                        )
-                    if (
-                        op.kind in FAST_INT_BOOL_RESULT_OPS
-                        and op.result.type_hint != "bool"
-                    ):
-                        failures.append(
-                            (
-                                idx,
-                                op.kind,
-                                "raw_int comparison ops must keep bool result hints",
-                            )
-                        )
-                elif op.kind in RAW_INT_CONTROL_CONSUMERS:
-                    cond = op.args[0] if op.args else None
-                    cond_name = cond.name if isinstance(cond, MoltValue) else None
-                    if cond_name is None or cond_name not in raw_value_names:
-                        failures.append(
-                            (
-                                idx,
-                                op.kind,
-                                "raw_int loop conditions must consume raw compare values",
-                            )
-                        )
-
-            produces_raw = False
-            if op.kind == "UNBOX_TO_RAW_INT":
-                produces_raw = True
-            elif raw_int and op.kind in RAW_INT_PROMOTABLE_OPS | {"CONST"}:
-                produces_raw = True
-            elif op.kind in RAW_INT_CARRIER_OPS:
-                carrier_arg: MoltValue | None = None
-                if op.kind in {
-                    "LOOP_INDEX_START",
-                    "LOOP_INDEX_NEXT",
-                    "LOOP_CARRY_INIT",
-                }:
-                    first_arg = op.args[0] if op.args else None
-                    if isinstance(first_arg, MoltValue):
-                        carrier_arg = first_arg
-                elif op.kind == "LOOP_CARRY_UPDATE" and len(op.args) >= 2:
-                    last_arg = op.args[-1]
-                    if isinstance(last_arg, MoltValue):
-                        carrier_arg = last_arg
-                produces_raw = (
-                    carrier_arg is not None and carrier_arg.name in raw_value_names
-                )
-
-            if result_name != "none":
-                if produces_raw:
-                    raw_value_names.add(result_name)
-                else:
-                    raw_value_names.discard(result_name)
-
-        return failures
-
-    def _should_fast_float(self, op: MoltOp) -> bool:
-        if not self._hints_enabled():
+    def _should_fast_int(self, op: MoltOp) -> bool:
+        if not self._fast_int_enabled():
             return False
         if op.kind not in {
             "ADD",
             "SUB",
             "MUL",
-            "DIV",
             "INPLACE_ADD",
             "INPLACE_SUB",
             "INPLACE_MUL",
+            "BIT_OR",
+            "BIT_AND",
+            "BIT_XOR",
+            "INPLACE_BIT_OR",
+            "INPLACE_BIT_AND",
+            "INPLACE_BIT_XOR",
+            "LSHIFT",
+            "RSHIFT",
+            "DIV",
+            "FLOORDIV",
+            "MOD",
             "LT",
             "LE",
             "GT",
             "GE",
             "EQ",
             "NE",
-            "ABS",
         }:
             return False
         return all(
-            isinstance(arg, MoltValue) and arg.type_hint == "float" for arg in op.args
+            isinstance(arg, MoltValue) and arg.type_hint == "int" for arg in op.args
         )
 
     def _emit_bridge_unavailable(self, message: str) -> MoltValue:
@@ -2522,7 +2150,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.locals_cache_val = None
         self.boxed_locals = {}
         self.closure_locals = set()
-        self.loop_carry_vars = set()
         self.boxed_local_hints = {}
         self.free_vars = {}
         self.free_var_hints = {}
@@ -3074,7 +2701,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "boxed_locals": self.boxed_locals,
             "closure_locals": self.closure_locals,
             "boxed_local_hints": self.boxed_local_hints,
-            "loop_carry_vars": self.loop_carry_vars,
             "free_vars": self.free_vars,
             "free_var_hints": self.free_var_hints,
             "global_decls": self.global_decls,
@@ -3129,7 +2755,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.boxed_locals = state["boxed_locals"]
         self.closure_locals = state["closure_locals"]
         self.boxed_local_hints = state["boxed_local_hints"]
-        self.loop_carry_vars = state["loop_carry_vars"]
         self.free_vars = state["free_vars"]
         self.free_var_hints = state["free_var_hints"]
         self.global_decls = state["global_decls"]
@@ -4216,7 +3841,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             kw_default_exprs=[],
             docstring=None,
             module_override=module_override,
-            fn_ptr_symbol=func_symbol,
         )
 
         prev_func = self.current_func_name
@@ -4633,7 +4257,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         is_generator: bool = False,
         is_async_generator: bool = False,
         bind_kind: int | None = None,
-        fn_ptr_symbol: str | None = None,
         poll_fn_symbol: str | None = None,
         emit_code: bool = True,
         varnames: list[str] | None = None,
@@ -4794,28 +4417,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         metadata={"code_id": code_id},
                     )
                 )
-            fn_ptr_arity = (
-                len(posonly_params)
-                + len(pos_or_kw_params)
-                + len(kwonly_params)
-                + (1 if vararg is not None else 0)
-                + (1 if varkw is not None else 0)
-            )
-            if fn_ptr_symbol is not None:
-                self.emit(
-                    MoltOp(
-                        kind="FN_PTR_CODE_SET",
-                        args=[fn_ptr_symbol, code_val],
-                        metadata={"arity": fn_ptr_arity},
-                        result=MoltValue("none"),
-                    )
-                )
-            if poll_fn_symbol is not None and poll_fn_symbol != fn_ptr_symbol:
+            if poll_fn_symbol is not None:
                 self.emit(
                     MoltOp(
                         kind="FN_PTR_CODE_SET",
                         args=[poll_fn_symbol, code_val],
-                        metadata={"arity": fn_ptr_arity},
                         result=MoltValue("none"),
                     )
                 )
@@ -4915,7 +4521,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             kw_default_exprs=[],
             docstring="Return the current module globals.",
             module_override="builtins",
-            fn_ptr_symbol=func_symbol,
         )
         set_builtin = self._emit_builtin_function("_molt_function_set_builtin")
         builtin_res = MoltValue(self.next_var(), type_hint="None")
@@ -5160,9 +4765,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return False
         if module_name == "molt.stdlib" or module_name.startswith("molt.stdlib."):
             return False
-        return module_name in {"molt", "moltlib"} or module_name.startswith(
-            ("molt.", "moltlib.")
-        )
+        return module_name == "molt" or module_name.startswith("molt.")
 
     @staticmethod
     def _display_allowlist_module(module_name: str) -> str:
@@ -5283,21 +4886,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if module_defaults is None:
             return None
         return module_defaults.get(func_id)
-
-    def _direct_call_target_name(self, module_name: str, func_id: str) -> str:
-        normalized = self._normalize_allowlist_module(module_name)
-        resolved_module = normalized or module_name
-        return f"{self._sanitize_module_name(resolved_module)}__{func_id}"
-
-    def _can_lower_direct_module_call(self, module_name: str, func_id: str) -> bool:
-        normalized = self._normalize_allowlist_module(module_name)
-        resolved_module = normalized or module_name
-        if (
-            resolved_module != self.module_name
-            and resolved_module not in self.known_modules
-        ):
-            return False
-        return self._lookup_func_defaults(resolved_module, func_id) is not None
 
     def _emit_module_attr_get_on(self, module_name: str, name: str) -> MoltValue:
         module_val = self._emit_module_load(module_name)
@@ -5530,8 +5118,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         func_id: str,
         args: list[MoltValue],
         node: ast.AST,
-        *,
-        include_kwonly_defaults: bool = True,
     ) -> list[MoltValue] | None:
         info = self._lookup_func_defaults(module_name, func_id)
         if info is None:
@@ -5539,15 +5125,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         total_params = info.get("params")
         defaults = info.get("defaults", [])
         kwonly_count = info.get("kwonly")
-        if not include_kwonly_defaults:
-            defaults = [
-                spec for spec in defaults if not bool(spec.get("kwonly", False))
-            ]
         positional_limit = None
         if total_params is not None and isinstance(kwonly_count, int):
             positional_limit = total_params - kwonly_count
-            if not include_kwonly_defaults:
-                total_params = positional_limit
         func_obj = None
         if total_params is not None:
             missing = total_params - len(args)
@@ -7207,20 +6787,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return
         if self.control_flow_depth == 0 and name in self.unbound_check_names:
             self.unbound_check_names.discard(name)
-        if name in self.loop_carry_vars:
-            # Loop-carried variable: update via block param, not boxed cell
-            carry_name = f"__carry_{name}"
-            carry_out = MoltValue(carry_name, type_hint=value.type_hint)
-            self.emit(
-                MoltOp(
-                    kind="LOOP_CARRY_UPDATE",
-                    args=[carry_name, value],
-                    result=carry_out,
-                )
-            )
-            self.locals[name] = carry_out
-            update_locals_cache()
-            return
         cell = self._load_boxed_cell(name)
         if cell is not None:
             idx = MoltValue(self.next_var(), type_hint="int")
@@ -8650,41 +8216,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="LIST_FROM_RANGE", args=[start, stop, step], result=res))
         return res
 
-    def _emit_range_list_repeat(
-        self, item: MoltValue, start: MoltValue, stop: MoltValue, step: MoltValue
-    ) -> MoltValue:
-        res = MoltValue(self.next_var(), type_hint="list")
-        self.emit(
-            MoltOp(
-                kind="LIST_REPEAT_RANGE",
-                args=[item, start, stop, step],
-                result=res,
-            )
-        )
-        if item.type_hint in {"int", "float", "str", "bytes", "bytearray", "bool"}:
-            if self.current_func_name == "molt_main":
-                self.global_elem_hints[res.name] = item.type_hint
-            else:
-                self.container_elem_hints[res.name] = item.type_hint
-        return res
-
-    def _emit_bytearray_fill_range(
-        self,
-        target: MoltValue,
-        start: MoltValue,
-        stop: MoltValue,
-        fill_byte: MoltValue,
-    ) -> MoltValue:
-        res = MoltValue(self.next_var(), type_hint="int")
-        self.emit(
-            MoltOp(
-                kind="BYTEARRAY_FILL_RANGE",
-                args=[target, start, stop, fill_byte],
-                result=res,
-            )
-        )
-        return res
-
     def _match_simple_range_list_comp(
         self, node: ast.ListComp
     ) -> tuple[MoltValue, MoltValue, MoltValue] | None:
@@ -8702,27 +8233,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return None
         start, stop, step, _ = parsed
         return start, stop, step
-
-    def _match_simple_range_constant_list_comp(
-        self, node: ast.ListComp
-    ) -> tuple[MoltValue, MoltValue, MoltValue, MoltValue] | None:
-        if len(node.generators) != 1:
-            return None
-        comp = node.generators[0]
-        if comp.is_async or comp.ifs:
-            return None
-        if not isinstance(comp.target, ast.Name):
-            return None
-        parsed = self._parse_range_call(comp.iter)
-        if parsed is None:
-            return None
-        if not isinstance(node.elt, ast.Constant):
-            return None
-        item = self.visit(node.elt)
-        if item is None:
-            return None
-        start, stop, step, _ = parsed
-        return item, start, stop, step
 
     def _emit_list_from_iter(self, iterable: MoltValue) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="list")
@@ -9801,78 +9311,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return None
         return index_name, bound.value, node.body[:-1]
 
-    def _match_counted_while_name_bound(
-        self, node: ast.While
-    ) -> tuple[str, MoltValue, list[ast.stmt]] | None:
-        if node.orelse:
-            return None
-        if not isinstance(node.test, ast.Compare):
-            return None
-        if len(node.test.ops) != 1 or not isinstance(node.test.ops[0], ast.Lt):
-            return None
-        if not isinstance(node.test.left, ast.Name):
-            return None
-        if len(node.test.comparators) != 1:
-            return None
-        bound_expr = node.test.comparators[0]
-        if not isinstance(bound_expr, ast.Name):
-            return None
-        if not node.body:
-            return None
-        index_name = node.test.left.id
-        incr_stmt = node.body[-1]
-        if not self._is_unit_increment(incr_stmt, index_name):
-            return None
-        body = node.body[:-1]
-        assigned = self._collect_assigned_names(body)
-        if index_name in assigned or bound_expr.id in assigned:
-            return None
-        bound_val = self._load_local_value(bound_expr.id)
-        if bound_val is None:
-            return None
-        return index_name, bound_val, body
-
-    def _try_emit_counted_while_bytearray_fill(
-        self, index_name: str, bound: int | MoltValue, body: list[ast.stmt]
-    ) -> bool:
-        if len(body) != 1:
-            return False
-        stmt = body[0]
-        if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
-            return False
-        target = stmt.targets[0]
-        if not isinstance(target, ast.Subscript):
-            return False
-        if not isinstance(target.value, ast.Name):
-            return False
-        target_container = self._load_local_value(target.value.id)
-        if target_container is None or target_container.type_hint != "bytearray":
-            return False
-        index_expr = target.slice
-        if not isinstance(index_expr, ast.Name) or index_expr.id != index_name:
-            return False
-        if not (
-            isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, int)
-        ):
-            return False
-        fill_byte = self.visit(stmt.value)
-        if fill_byte is None:
-            return False
-        start = self._load_local_value(index_name)
-        if start is None:
-            start = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=start))
-        if isinstance(bound, MoltValue):
-            stop = bound
-        else:
-            stop = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[bound], result=stop))
-        final_index = self._emit_bytearray_fill_range(
-            target_container, start, stop, fill_byte
-        )
-        self._store_local_value(index_name, final_index)
-        return True
-
     def _match_counted_while_sum(
         self, index_name: str, body: list[ast.stmt]
     ) -> str | None:
@@ -10014,366 +9452,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return True
         return False
 
-    def _is_int_expr_ast(self, expr: ast.expr, int_names: set[str]) -> bool:
-        """Check if an AST expression is provably int-typed given known int names."""
-        if (
-            isinstance(expr, ast.Constant)
-            and isinstance(expr.value, int)
-            and not isinstance(expr.value, bool)
-        ):
-            return True
-        if isinstance(expr, ast.Name) and expr.id in int_names:
-            return True
-        if isinstance(expr, ast.BinOp) and isinstance(
-            expr.op,
-            (
-                ast.Add,
-                ast.Sub,
-                ast.Mult,
-                ast.FloorDiv,
-                ast.Mod,
-                ast.Pow,
-                ast.BitAnd,
-                ast.BitOr,
-                ast.BitXor,
-                ast.LShift,
-                ast.RShift,
-            ),
-        ):
-            return self._is_int_expr_ast(
-                expr.left, int_names
-            ) and self._is_int_expr_ast(expr.right, int_names)
-        if isinstance(expr, ast.UnaryOp) and isinstance(
-            expr.op, (ast.USub, ast.UAdd, ast.Invert)
-        ):
-            return self._is_int_expr_ast(expr.operand, int_names)
-        if isinstance(expr, ast.IfExp):
-            return self._is_int_expr_ast(
-                expr.body, int_names
-            ) and self._is_int_expr_ast(expr.orelse, int_names)
-        return False
-
-    def _find_int_initialized_vars(self, while_node: ast.While) -> set[str]:
-        """Find variables initialized with int literals before a while loop.
-
-        Walks the enclosing function body to find simple assignments like
-        ``total = 0`` or ``total: int = 0`` that precede *while_node*.
-        """
-        func_body = getattr(self, "_current_func_body", None)
-        if func_body is None:
-            return set()
-        int_inited: set[str] = set()
-        for stmt in func_body:
-            if stmt is while_node:
-                break
-            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
-                target = stmt.targets[0]
-                if (
-                    isinstance(target, ast.Name)
-                    and isinstance(stmt.value, ast.Constant)
-                    and isinstance(stmt.value.value, int)
-                    and not isinstance(stmt.value.value, bool)
-                ):
-                    int_inited.add(target.id)
-            elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
-                if (
-                    isinstance(stmt.target, ast.Name)
-                    and isinstance(stmt.value, ast.Constant)
-                    and isinstance(stmt.value.value, int)
-                    and not isinstance(stmt.value.value, bool)
-                ):
-                    int_inited.add(stmt.target.id)
-        return int_inited
-
-    @staticmethod
-    def _names_assigned_in_nested_loops(body: list[ast.stmt]) -> set[str]:
-        """Collect variable names assigned inside nested while/for loops."""
-        nested: set[str] = set()
-        for stmt in body:
-            if isinstance(stmt, (ast.While, ast.For)):
-                for node in ast.walk(stmt):
-                    if isinstance(node, ast.Assign):
-                        for t in node.targets:
-                            if isinstance(t, ast.Name):
-                                nested.add(t.id)
-                    elif isinstance(node, ast.AugAssign):
-                        if isinstance(node.target, ast.Name):
-                            nested.add(node.target.id)
-        return nested
-
-    def _infer_int_carry_structural(
-        self,
-        assigned: set[str],
-        body: list[ast.stmt],
-        index_name: str,
-        while_node: ast.While,
-        exclude: set[str] | None = None,
-    ) -> set[str]:
-        """Infer int carry candidates structurally without trusting type hints.
-
-        A variable qualifies if:
-        1. It was initialized with an int literal before the while loop
-        2. Every assignment to it in the loop body is pure int arithmetic
-           involving only int constants, the index variable, or other candidates.
-        3. It is NOT assigned inside a nested while/for loop (nested carry
-           vars require multi-level block param threading not yet supported).
-        """
-        closure_captured = getattr(self, "closure_locals", set())
-        int_inited = self._find_int_initialized_vars(while_node)
-        nested_assigned = self._names_assigned_in_nested_loops(body)
-        # First pass: find candidates with known int pre-loop values
-        potential: set[str] = set()
-        for name in sorted(assigned):
-            if exclude and name in exclude:
-                continue
-            if name in self.global_decls or name in self.nonlocal_decls:
-                continue
-            if name in self.free_vars or name in closure_captured:
-                continue
-            if name in self.del_targets:
-                continue
-            if name in nested_assigned:
-                continue
-            if name in int_inited:
-                potential.add(name)
-        if not potential:
-            return set()
-        # Known int names: index + potential candidates
-        int_names = potential | {index_name}
-        # Second pass: verify all assignments in body are pure int arithmetic
-        confirmed: set[str] = set()
-        for name in sorted(potential):
-            all_int = True
-            for stmt in body:
-                if not all_int:
-                    break
-                if isinstance(stmt, ast.Assign):
-                    for target in stmt.targets:
-                        if isinstance(target, ast.Name) and target.id == name:
-                            if not self._is_int_expr_ast(stmt.value, int_names):
-                                all_int = False
-                                break
-                elif isinstance(stmt, ast.AugAssign):
-                    if isinstance(stmt.target, ast.Name) and stmt.target.id == name:
-                        if not isinstance(
-                            stmt.op,
-                            (
-                                ast.Add,
-                                ast.Sub,
-                                ast.Mult,
-                                ast.FloorDiv,
-                                ast.Mod,
-                                ast.Pow,
-                                ast.BitAnd,
-                                ast.BitOr,
-                                ast.BitXor,
-                                ast.LShift,
-                                ast.RShift,
-                            ),
-                        ):
-                            all_int = False
-                        elif not self._is_int_expr_ast(stmt.value, int_names):
-                            all_int = False
-                elif isinstance(stmt, ast.AnnAssign):
-                    if isinstance(stmt.target, ast.Name) and stmt.target.id == name:
-                        if stmt.value is None or not self._is_int_expr_ast(
-                            stmt.value, int_names
-                        ):
-                            all_int = False
-            if all_int:
-                confirmed.add(name)
-        return confirmed
-
-    def _identify_carry_candidates(
-        self,
-        assigned: set[str],
-        exclude: set[str] | None = None,
-        body: list[ast.stmt] | None = None,
-        index_name: str | None = None,
-        while_node: ast.While | None = None,
-    ) -> set[str]:
-        """Identify int-typed locals eligible for loop-carried block params.
-
-        Uses trusted type hints when available, otherwise falls back to
-        structural inference from int-constant initialization and pure
-        int arithmetic in the loop body.
-        """
-        closure_captured = getattr(self, "closure_locals", set())
-        nested_assigned = (
-            self._names_assigned_in_nested_loops(body) if body is not None else set()
-        )
-        candidates: set[str] = set()
-        # Path 1: trusted type hints
-        if self._hints_enabled() and self.type_hint_policy == "trust":
-            for name in sorted(assigned):
-                if exclude and name in exclude:
-                    continue
-                if name in self.global_decls or name in self.nonlocal_decls:
-                    continue
-                if name in self.free_vars or name in closure_captured:
-                    continue
-                if name in self.del_targets:
-                    continue
-                if name in nested_assigned:
-                    continue
-                hint = self.explicit_type_hints.get(name)
-                if hint == "int":
-                    candidates.add(name)
-            return candidates
-        # Path 2: structural inference (no type hints needed)
-        if body is not None and index_name is not None and while_node is not None:
-            return self._infer_int_carry_structural(
-                assigned, body, index_name, while_node, exclude
-            )
-        return set()
-
-    def _emit_counted_while_with_carry(
-        self,
-        index_name: str,
-        bound: int | MoltValue,
-        body: list[ast.stmt],
-        carry_vars: set[str],
-    ) -> None:
-        """Counted while loop using carry vars plus indexed loop progression.
-
-        Carry variables use LOOP_CARRY_INIT/UPDATE with raw i64 values, while
-        the loop index preserves the canonical LOOP_INDEX_START/NEXT contract.
-        """
-        if not carry_vars:
-            self._emit_counted_while(index_name, bound, body)
-            return
-        all_carry = set(carry_vars)
-        start = self._load_local_value(index_name)
-        if start is None:
-            start = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=start))
-        if isinstance(bound, MoltValue):
-            stop = bound
-        else:
-            stop = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[bound], result=stop))
-        guard_map = self._emit_hoisted_loop_guards(body)
-        # Pre-compute initial values and unbox to raw i64 before the loop
-        prev_carry = set(self.loop_carry_vars)
-        saved_cells: dict[str, MoltValue] = {}
-        carry_init_vals: list[tuple[str, MoltValue]] = []
-        for name in sorted(all_carry):
-            init_val = self._load_local_value(name)
-            if init_val is None:
-                init_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[0], result=init_val))
-            # Unbox to raw i64 before the loop
-            raw_init = MoltValue(f"__carry_raw_init_{name}", type_hint="int")
-            self.emit(MoltOp(kind="UNBOX_TO_RAW_INT", args=[init_val], result=raw_init))
-            carry_init_vals.append((name, raw_init))
-            if name in self.boxed_locals:
-                saved_cells[name] = self.boxed_locals.pop(name)
-        # If the loop index is currently boxed, temporarily unbox/write-through
-        # it like other loop-carried values and restore at loop exit.
-        if index_name in self.boxed_locals:
-            saved_cells[index_name] = self.boxed_locals.pop(index_name)
-        raw_start = MoltValue("__raw_loop_start", type_hint="int")
-        self.emit(MoltOp(kind="UNBOX_TO_RAW_INT", args=[start], result=raw_start))
-        # Unbox loop bound to raw i64 (loop-invariant)
-        raw_stop = MoltValue("__raw_loop_stop", type_hint="int")
-        self.emit(MoltOp(kind="UNBOX_TO_RAW_INT", args=[stop], result=raw_stop))
-        # Emit LOOP_START + LOOP_INDEX_START + LOOP_CARRY_INIT.
-        self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-        idx_carry_name = f"__carry_{index_name}"
-        idx_carry = MoltValue(idx_carry_name, type_hint="int")
-        self.emit(MoltOp(kind="LOOP_INDEX_START", args=[raw_start], result=idx_carry))
-        self.locals[index_name] = idx_carry
-        for name, raw_init in carry_init_vals:
-            carry_out = MoltValue(f"__carry_{name}", type_hint="int")
-            self.emit(MoltOp(kind="LOOP_CARRY_INIT", args=[raw_init], result=carry_out))
-            self.locals[name] = carry_out
-            self.loop_carry_vars.add(name)
-        # Suppress exception checks and raise-if-pending inside the entire
-        # carry-var loop body (condition + body + increment).  These loops only
-        # contain pure integer arithmetic, so no exceptions can be raised.
-        prev_locals_cache = self.locals_cache_val
-        self.locals_cache_val = None
-        prev_raise_suppress = getattr(self, "_suppress_raise_if_pending", False)
-        self._suppress_raise_if_pending = True
-        prev_line_suppress = getattr(self, "_suppress_line_markers", False)
-        self._suppress_line_markers = True
-        with self._suppress_check_exception(emit_on_exit=False):
-            # Condition: __carry_i < raw_stop (both raw i64)
-            idx_carry = self.locals[index_name]
-            cond = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(
-                    kind="LT",
-                    args=[idx_carry, raw_stop],
-                    result=cond,
-                    metadata={"raw_int": True},
-                )
-            )
-            self.emit(
-                MoltOp(
-                    kind="LOOP_BREAK_IF_FALSE",
-                    args=[cond],
-                    result=MoltValue("none"),
-                    metadata={"raw_int": True},
-                )
-            )
-            self._visit_loop_body(body, guard_map)
-            # Increment index: __carry_i + 1 (raw i64)
-            raw_one = MoltValue("__raw_loop_one", type_hint="int")
-            self.emit(
-                MoltOp(
-                    kind="CONST", args=[1], result=raw_one, metadata={"raw_int": True}
-                )
-            )
-            idx_carry_cur = self.locals[index_name]
-            next_idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(
-                MoltOp(
-                    kind="ADD",
-                    args=[idx_carry_cur, raw_one],
-                    result=next_idx,
-                    metadata={"raw_int": True},
-                )
-            )
-            idx_next = MoltValue(idx_carry_name, type_hint="int")
-            self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx_next))
-            self.locals[index_name] = idx_next
-            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
-        self._suppress_raise_if_pending = prev_raise_suppress
-        self._suppress_line_markers = prev_line_suppress
-        self.locals_cache_val = prev_locals_cache
-        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
-        self.loop_carry_vars = prev_carry
-        # Restore boxed cells and write final values back
-        for name, cell in saved_cells.items():
-            self.boxed_locals[name] = cell
-            final_val = self.locals.get(name)
-            if final_val is not None:
-                store_val = final_val
-                if name in all_carry or name == index_name:
-                    boxed_final = MoltValue(
-                        self.next_var(), type_hint=final_val.type_hint
-                    )
-                    self.emit(
-                        MoltOp(
-                            kind="BOX_FROM_RAW_INT",
-                            args=[final_val],
-                            result=boxed_final,
-                        )
-                    )
-                    store_val = boxed_final
-                idx_var = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[0], result=idx_var))
-                self.emit(
-                    MoltOp(
-                        kind="STORE_INDEX",
-                        args=[cell, idx_var, store_val],
-                        result=MoltValue("none"),
-                    )
-                )
-
     def _emit_counted_while(
-        self, index_name: str, bound: int | MoltValue, body: list[ast.stmt]
+        self, index_name: str, bound: int, body: list[ast.stmt]
     ) -> None:
         start = self._load_local_value(index_name)
         if start is None:
@@ -10381,11 +9461,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="CONST", args=[0], result=start))
         one = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[1], result=one))
-        if isinstance(bound, MoltValue):
-            stop = bound
-        else:
-            stop = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[bound], result=stop))
+        stop = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[bound], result=stop))
         guard_map = self._emit_hoisted_loop_guards(body)
         self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
         idx = MoltValue(self.next_var(), type_hint="int")
@@ -10692,7 +9769,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         for literal_text, field_name, format_spec, conversion in parsed:
             if literal_text:
                 if tokens and isinstance(tokens[-1], FormatLiteral):
-                    prior = tokens[-1]
+                    prior = cast(FormatLiteral, tokens[-1])
                     tokens[-1] = FormatLiteral(prior.text + literal_text)
                 else:
                     tokens.append(FormatLiteral(literal_text))
@@ -11119,10 +10196,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if simple_range is not None:
                 start, stop, step = simple_range
                 return self._emit_range_list(start, stop, step)
-            simple_range_repeat = self._match_simple_range_constant_list_comp(node)
-            if simple_range_repeat is not None:
-                item, start, stop, step = simple_range_repeat
-                return self._emit_range_list_repeat(item, start, stop, step)
         genexp = ast.GeneratorExp(elt=node.elt, generators=node.generators)
         gen_val = self.visit(genexp)
         if gen_val is None:
@@ -12162,7 +11235,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 kw_default_exprs=[],
                 docstring=ast.get_docstring(item),
                 is_generator=True,
-                fn_ptr_symbol=poll_symbol,
                 varnames=varnames,
             )
             if func_spill is not None:
@@ -12471,7 +11543,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 default_exprs=[],
                 kw_default_exprs=[],
                 docstring=ast.get_docstring(item),
-                fn_ptr_symbol=method_symbol,
                 varnames=varnames,
             )
             if func_spill is not None:
@@ -12841,7 +11912,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     kw_default_exprs=[],
                     docstring=ast.get_docstring(item),
                     is_async_generator=True,
-                    fn_ptr_symbol=wrapper_symbol,
                     poll_fn_symbol=poll_symbol,
                     varnames=varnames,
                 )
@@ -13141,7 +12211,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 kw_default_exprs=[],
                 docstring=ast.get_docstring(item),
                 is_coroutine=True,
-                fn_ptr_symbol=wrapper_symbol,
                 varnames=varnames,
             )
             if func_spill is not None:
@@ -14548,15 +13617,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="LIST_NEW", args=[init], result=res_cell))
                 self.emit(MoltOp(kind="IF", args=[matches], result=MoltValue("none")))
                 direct_res = MoltValue(self.next_var(), type_hint=res_hint)
-                direct_call_kind = (
-                    "CALL_INTERNAL" if func_symbol in self.funcs_map else "CALL"
-                )
                 self.emit(
-                    MoltOp(
-                        kind=direct_call_kind,
-                        args=[func_symbol] + args,
-                        result=direct_res,
-                    )
+                    MoltOp(kind="CALL", args=[func_symbol] + args, result=direct_res)
                 )
                 self.emit(
                     MoltOp(
@@ -14586,10 +13648,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="INDEX", args=[res_cell, zero], result=res))
                 return res
             res = MoltValue(self.next_var(), type_hint=res_hint)
-            # Use CALL_INTERNAL for calls to functions defined in this module —
-            # skips recursion guard and trace overhead for direct calls.
-            call_kind = "CALL_INTERNAL" if func_symbol in self.funcs_map else "CALL"
-            self.emit(MoltOp(kind=call_kind, args=[func_symbol] + args, result=res))
+            self.emit(MoltOp(kind="CALL", args=[func_symbol] + args, result=res))
             return res
         callargs = self._emit_call_args_builder(node)
         res = MoltValue(self.next_var(), type_hint=res_hint)
@@ -16327,16 +15386,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     return self._emit_dataclasses_field_call(allowlist_key, node)
                 if func_id == "open" and allowlist_key == "builtins":
                     return self._emit_open_call(node)
-                is_known_module = (
-                    allowlist_key in self.known_modules
-                    or (
-                        normalized is not None and normalized in self.known_modules
-                    )
-                )
                 enforce_allowlist = (
                     allowlist_key in MOLT_DIRECT_CALLS
                     or allowlist_key in self.stdlib_allowlist
-                    or is_known_module
                 )
                 if (
                     allowlist_key in MOLT_DIRECT_CALLS
@@ -16347,13 +15399,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                     if func_id[:1].isupper():
                         force_bind = True
-                    if (
-                        needs_bind
-                        or force_bind
-                        or not self._can_lower_direct_module_call(
-                            allowlist_key, func_id
-                        )
-                    ):
+                    if needs_bind or force_bind:
                         callee = self.visit(node.func)
                         if callee is None:
                             raise NotImplementedError("Unsupported call target")
@@ -16383,32 +15429,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                         return res
                     res = MoltValue(self.next_var(), type_hint="Any")
-                    target_name = self._direct_call_target_name(allowlist_key, func_id)
+                    target_name = (
+                        f"{self._sanitize_module_name(allowlist_key)}__{func_id}"
+                    )
                     self.emit(
                         MoltOp(kind="CALL", args=[target_name] + args, result=res)
                     )
                     return res
-                if is_known_module:
-                    if not needs_bind and self._can_lower_direct_module_call(
-                        allowlist_key, func_id
-                    ):
-                        args = self._emit_direct_call_args(allowlist_key, func_id, node)
-                        if args is not None:
-                            res = MoltValue(self.next_var(), type_hint="Any")
-                            target_name = self._direct_call_target_name(
-                                allowlist_key, func_id
-                            )
-                            self.emit(
-                                MoltOp(
-                                    kind="CALL",
-                                    args=[target_name] + args,
-                                    result=res,
-                                )
-                            )
-                            return res
                 if allowlist_key in self.stdlib_allowlist or self._is_internal_module(
                     module_name
-                ) or is_known_module:
+                ):
                     callee = self.visit(node.func)
                     if callee is None:
                         raise NotImplementedError("Unsupported call target")
@@ -18432,26 +17462,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             )
                             return res
                         res = MoltValue(self.next_var(), type_hint="Any")
-                        # Closure functions include an implicit closure payload
-                        # argument in their concrete symbol signature, so guarded
-                        # direct-call metadata can mis-model arity. Keep closure
-                        # calls on CALL_FUNC to preserve runtime dispatch shape.
                         self.emit(
                             MoltOp(
-                                kind="CALL_FUNC",
+                                kind="CALL_GUARDED",
                                 args=[callee] + args,
                                 result=res,
+                                metadata={"target": func_symbol},
                             )
                         )
                         return res
                     args = self._emit_call_args(node.args)
                     if imported_from:
                         args = self._apply_direct_call_defaults(
-                            imported_from,
-                            func_id,
-                            args,
-                            node,
-                            include_kwonly_defaults=False,
+                            imported_from, func_id, args, node
                         )
                         if args is None:
                             callargs = self._emit_call_args_builder(node)
@@ -19045,7 +18068,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         kw_default_exprs=[],
                         docstring=None,
                         module_override="builtins",
-                        fn_ptr_symbol="molt_iter_sentinel",
                     )
                     res = MoltValue(self.next_var(), type_hint="iter")
                     self.emit(
@@ -19642,16 +18664,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         and func_id in MOLT_DIRECT_CALLS[imported_from]
                     ):
                         target_module = imported_from
-                    elif (
-                        normalized is not None and normalized in self.known_modules
-                    ):
-                        target_module = normalized
-                    elif imported_from in self.known_modules:
-                        target_module = imported_from
                 if target_module is not None:
-                    if needs_bind or not self._can_lower_direct_module_call(
-                        target_module, func_id
-                    ):
+                    if needs_bind:
                         callee = self.visit(node.func)
                         if callee is None:
                             raise NotImplementedError("Unsupported call target")
@@ -19681,7 +18695,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                         return res
                     res = MoltValue(self.next_var(), type_hint="Any")
-                    target_name = self._direct_call_target_name(target_module, func_id)
+                    target_name = (
+                        f"{self._sanitize_module_name(target_module)}__{func_id}"
+                    )
                     self.emit(
                         MoltOp(kind="CALL", args=[target_name] + args, result=res)
                     )
@@ -19693,8 +18709,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if imported_from is not None and (
                 imported_from in self.stdlib_allowlist
                 or (normalized is not None and normalized in self.stdlib_allowlist)
-                or imported_from in self.known_modules
-                or (normalized is not None and normalized in self.known_modules)
                 or self._is_internal_module(imported_from)
             ):
                 callee = self.visit(node.func)
@@ -23305,99 +22319,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.emit(MoltOp(kind="CONST", args=[final_index], result=idx_res))
                     self._store_local_value(index_name, idx_res)
                     return None
-            if self._try_emit_counted_while_bytearray_fill(index_name, bound, body):
-                return None
             assigned = self._collect_assigned_names(node.body)
-            carry_in_counted = self._identify_carry_candidates(
-                assigned,
-                exclude={index_name},
-                body=body,
-                index_name=index_name,
-                while_node=node,
-            )
             for name in sorted(assigned):
-                if name not in carry_in_counted:
-                    self._box_local(name)
-            self._emit_counted_while_with_carry(
-                index_name, bound, body, carry_in_counted
-            )
-            return None
-        counted_name_bound = (
-            None
-            if break_name is not None
-            else self._match_counted_while_name_bound(node)
-        )
-        if counted_name_bound is not None and not self.is_async():
-            index_name, bound_val, body = counted_name_bound
-            if self._try_emit_counted_while_bytearray_fill(index_name, bound_val, body):
-                return None
-            assigned = self._collect_assigned_names(node.body)
-            carry_in_counted = self._identify_carry_candidates(
-                assigned,
-                exclude={index_name},
-                body=body,
-                index_name=index_name,
-                while_node=node,
-            )
-            for name in sorted(assigned):
-                if name not in carry_in_counted:
-                    self._box_local(name)
-            self._emit_counted_while_with_carry(
-                index_name, bound_val, body, carry_in_counted
-            )
+                self._box_local(name)
+            self._emit_counted_while(index_name, bound, body)
             return None
         assigned = self._collect_assigned_names(node.body)
         assigned |= self._collect_namedexpr_names(node.test)
-        # Identify int-typed locals that can use loop-carried block params
-        # instead of boxed cells (avoids NaN-box overhead per iteration).
-        carry_candidates: set[str] = set()
-        if (
-            not self.is_async()
-            and self._hints_enabled()
-            and self.type_hint_policy == "trust"
-        ):
-            closure_captured = set()
-            if hasattr(self, "closure_locals"):
-                closure_captured = self.closure_locals
-            for name in sorted(assigned):
-                if name in self.global_decls or name in self.nonlocal_decls:
-                    continue
-                if name in self.free_vars or name in closure_captured:
-                    continue
-                if name in self.del_targets:
-                    continue
-                hint = self.explicit_type_hints.get(name)
-                if hint == "int":
-                    carry_candidates.add(name)
         for name in sorted(assigned):
             if not self.is_async():
-                if name not in carry_candidates:
-                    self._box_local(name)
+                self._box_local(name)
         guard_map = self._emit_hoisted_loop_guards(node.body)
-
-        carry_vars_for_loop = carry_candidates
 
         def emit_loop_body() -> None:
             self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-            # Emit LOOP_CARRY_INIT for each carry variable
-            prev_carry = set(self.loop_carry_vars)
-            for name in sorted(carry_vars_for_loop):
-                init_val = self.locals.get(name)
-                if init_val is None:
-                    # Variable not yet initialized — use 0
-                    init_val = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="CONST", args=[0], result=init_val))
-                    self.locals[name] = init_val
-                carry_out = MoltValue(f"__carry_{name}", type_hint="int")
-                self.emit(
-                    MoltOp(
-                        kind="LOOP_CARRY_INIT",
-                        args=[init_val],
-                        result=carry_out,
-                    )
-                )
-                self.locals[name] = carry_out
-                self.loop_carry_vars.add(name)
             cond = self.visit(node.test)
             self.emit(
                 MoltOp(
@@ -23409,8 +22344,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self._visit_loop_body(node.body, None, loop_break_flag=break_name)
             self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
-            # Restore carry vars state
-            self.loop_carry_vars = prev_carry
 
         if guard_map:
             guard_cond = self._emit_guard_map_condition(guard_map)
@@ -23583,8 +22516,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         clear_handlers: bool = False,
         force_exit: bool = False,
     ) -> None:
-        if getattr(self, "_suppress_raise_if_pending", False):
-            return
         with self._suppress_check_exception():
             if (
                 self.current_func_name == "molt_main"
@@ -25047,15 +23978,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if needs_locals_cache:
                 self._init_locals_cache()
             self._push_qualname(func_name, True)
-            prev_func_body = getattr(self, "_current_func_body", None)
-            self._current_func_body = node.body
             try:
                 for item in node.body:
                     self.visit(item)
                     if isinstance(item, (ast.Return, ast.Raise)):
                         break
             finally:
-                self._current_func_body = prev_func_body
                 self._pop_qualname()
             if self.return_label is not None:
                 if not self._ends_with_return_jump():
@@ -25153,7 +24081,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 kw_default_exprs=node.args.kw_defaults,
                 docstring=ast.get_docstring(node),
                 is_async_generator=True,
-                fn_ptr_symbol=func_symbol,
                 poll_fn_symbol=poll_func_name,
                 varnames=varnames,
             )
@@ -25374,13 +24301,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if needs_locals_cache:
             self._init_locals_cache()
         self._push_qualname(func_name, True)
-        prev_func_body = getattr(self, "_current_func_body", None)
-        self._current_func_body = node.body
         try:
             for item in node.body:
                 self.visit(item)
         finally:
-            self._current_func_body = prev_func_body
             self._pop_qualname()
         if self.return_label is not None:
             if not self._ends_with_return_jump():
@@ -25444,7 +24368,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             kw_default_exprs=node.args.kw_defaults,
             docstring=ast.get_docstring(node),
             is_coroutine=True,
-            fn_ptr_symbol=func_symbol,
             varnames=varnames,
         )
         if func_spill is not None:
@@ -25651,7 +24574,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 kw_default_exprs=node.args.kw_defaults,
                 docstring=ast.get_docstring(node),
                 is_generator=True,
-                fn_ptr_symbol=poll_func_name,
                 varnames=varnames,
             )
             if func_spill is not None:
@@ -25710,15 +24632,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if needs_locals_cache:
                 self._init_locals_cache()
             self._push_qualname(func_name, True)
-            prev_func_body = getattr(self, "_current_func_body", None)
-            self._current_func_body = node.body
             try:
                 for item in node.body:
                     self.visit(item)
                     if isinstance(item, (ast.Return, ast.Raise)):
                         break
             finally:
-                self._current_func_body = prev_func_body
                 self._pop_qualname()
             if self.return_label is not None:
                 if not self._ends_with_return_jump():
@@ -25918,7 +24837,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             default_exprs=node.args.defaults,
             kw_default_exprs=node.args.kw_defaults,
             docstring=ast.get_docstring(node),
-            fn_ptr_symbol=func_symbol,
             varnames=varnames,
         )
         if func_spill is not None:
@@ -25987,13 +24905,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if needs_locals_cache:
                 self._init_locals_cache()
         self._push_qualname(func_name, True)
-        prev_func_body = getattr(self, "_current_func_body", None)
-        self._current_func_body = node.body
         try:
             for item in node.body:
                 self.visit(item)
         finally:
-            self._current_func_body = prev_func_body
             self._pop_qualname()
         if self.return_label is not None:
             if not self._ends_with_return_jump():
@@ -26133,7 +25048,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 kw_default_exprs=node.args.kw_defaults,
                 docstring=None,
                 is_generator=True,
-                fn_ptr_symbol=poll_func_name,
                 varnames=varnames,
             )
             if func_spill is not None:
@@ -26345,7 +25259,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             default_exprs=node.args.defaults,
             kw_default_exprs=node.args.kw_defaults,
             docstring=None,
-            fn_ptr_symbol=func_symbol,
             varnames=self._collect_varnames_for_body(
                 posonly_params=posonly_names,
                 pos_or_kw_params=pos_or_kw_names,
@@ -26434,7 +25347,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.exact_locals.pop(bind_name, None)
             if self.current_func_name == "molt_main":
                 self.globals[bind_name] = bound_val
-                self.module_chunk_globals.add(bind_name)
             self._emit_module_attr_set(bind_name, bound_val)
             self.imported_modules[bind_name] = module_name
             if self.current_func_name == "molt_main":
@@ -26523,7 +25435,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.exact_locals.pop(bind_name, None)
             if self.current_func_name == "molt_main":
                 self.globals[bind_name] = attr_val
-                self.module_chunk_globals.add(bind_name)
             self._emit_module_attr_set(bind_name, attr_val)
             if self.known_modules:
                 if submodule_name in self.known_modules:
@@ -27326,25 +26237,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         else:
             self._active_midend_function_name = "<direct>"
         ops = self._run_ir_midend_passes(ops)
-        inline_int_safe_names = self._compute_inline_int_safe_names(ops)
-        specialization_failures = self._collect_specialized_int_failures(
-            ops, inline_int_safe_names=inline_int_safe_names
-        )
-        if specialization_failures:
-            message = [
-                "specialized-int IR verifier rejected invalid fast_int/raw_int annotations:"
-            ]
-            for idx, kind, detail in specialization_failures[:8]:
-                message.append(f"- op#{idx} {kind}: {detail}")
-            if len(specialization_failures) > 8:
-                message.append(
-                    f"- ... {len(specialization_failures) - 8} more failure(s)"
-                )
-            raise RuntimeError("\n".join(message))
         json_ops: list[dict[str, Any]] = []
-
-        def should_fast_int(op: MoltOp) -> bool:
-            return self._should_fast_int(op, inline_int_safe_names)
 
         def field_offset(expected_class: str, attr: str) -> int | None:
             class_info = self.classes.get(expected_class)
@@ -27376,29 +26269,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 value = op.args[0]
                 if isinstance(value, bool):
                     value = 1 if value else 0
-                const_entry: dict[str, Any] = {
-                    "kind": "const",
-                    "value": value,
-                    "out": op.result.name,
-                }
-                if self._is_raw_int(op):
-                    const_entry["raw_int"] = True
-                json_ops.append(const_entry)
-            elif op.kind == "UNBOX_TO_RAW_INT":
                 json_ops.append(
-                    {
-                        "kind": "unbox_to_raw_int",
-                        "args": [op.args[0].name],
-                        "out": op.result.name,
-                    }
-                )
-            elif op.kind == "BOX_FROM_RAW_INT":
-                json_ops.append(
-                    {
-                        "kind": "box_from_raw_int",
-                        "args": [op.args[0].name],
-                        "out": op.result.name,
-                    }
+                    {"kind": "const", "value": value, "out": op.result.name}
                 )
             elif op.kind == "CONST_BIGINT":
                 json_ops.append(
@@ -27456,14 +26328,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._is_raw_int(op):
-                    add_entry["raw_int"] = True
-                elif should_fast_int(op):
+                if self._should_fast_int(op):
                     add_entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    add_entry["fast_float"] = True
-                elif op.result.type_hint in ("int", "float"):
-                    add_entry["type_hint"] = op.result.type_hint
                 json_ops.append(add_entry)
             elif op.kind == "INPLACE_ADD":
                 add_entry = {
@@ -27471,14 +26337,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._is_raw_int(op):
-                    add_entry["raw_int"] = True
-                elif should_fast_int(op):
+                if self._should_fast_int(op):
                     add_entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    add_entry["fast_float"] = True
-                elif op.result.type_hint in ("int", "float"):
-                    add_entry["type_hint"] = op.result.type_hint
                 json_ops.append(add_entry)
             elif op.kind == "SUB":
                 sub_entry: dict[str, Any] = {
@@ -27486,10 +26346,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if should_fast_int(op):
+                if self._should_fast_int(op):
                     sub_entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    sub_entry["fast_float"] = True
                 json_ops.append(sub_entry)
             elif op.kind == "INPLACE_SUB":
                 sub_entry = {
@@ -27497,10 +26355,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if should_fast_int(op):
+                if self._should_fast_int(op):
                     sub_entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    sub_entry["fast_float"] = True
                 json_ops.append(sub_entry)
             elif op.kind == "MUL":
                 mul_entry: dict[str, Any] = {
@@ -27508,12 +26364,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._is_raw_int(op):
-                    mul_entry["raw_int"] = True
-                elif should_fast_int(op):
+                if self._should_fast_int(op):
                     mul_entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    mul_entry["fast_float"] = True
                 json_ops.append(mul_entry)
             elif op.kind == "INPLACE_MUL":
                 mul_entry = {
@@ -27521,10 +26373,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if should_fast_int(op):
+                if self._should_fast_int(op):
                     mul_entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    mul_entry["fast_float"] = True
                 json_ops.append(mul_entry)
             elif op.kind == "DIV":
                 div_entry: dict[str, Any] = {
@@ -27532,10 +26382,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if should_fast_int(op):
+                if self._should_fast_int(op):
                     div_entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    div_entry["fast_float"] = True
                 json_ops.append(div_entry)
             elif op.kind == "FLOORDIV":
                 floordiv_entry: dict[str, Any] = {
@@ -27543,7 +26391,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if should_fast_int(op):
+                if self._should_fast_int(op):
                     floordiv_entry["fast_int"] = True
                 json_ops.append(floordiv_entry)
             elif op.kind == "MOD":
@@ -27552,9 +26400,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._is_raw_int(op):
-                    mod_entry["raw_int"] = True
-                elif should_fast_int(op):
+                if self._should_fast_int(op):
                     mod_entry["fast_int"] = True
                 json_ops.append(mod_entry)
             elif op.kind == "POW":
@@ -27571,7 +26417,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if should_fast_int(op):
+                if self._should_fast_int(op):
                     bit_or_entry["fast_int"] = True
                 json_ops.append(bit_or_entry)
             elif op.kind == "INPLACE_BIT_OR":
@@ -27580,7 +26426,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if should_fast_int(op):
+                if self._should_fast_int(op):
                     bit_or_entry["fast_int"] = True
                 json_ops.append(bit_or_entry)
             elif op.kind == "BIT_AND":
@@ -27589,7 +26435,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if should_fast_int(op):
+                if self._should_fast_int(op):
                     bit_and_entry["fast_int"] = True
                 json_ops.append(bit_and_entry)
             elif op.kind == "INPLACE_BIT_AND":
@@ -27598,7 +26444,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if should_fast_int(op):
+                if self._should_fast_int(op):
                     bit_and_entry["fast_int"] = True
                 json_ops.append(bit_and_entry)
             elif op.kind == "BIT_XOR":
@@ -27607,7 +26453,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if should_fast_int(op):
+                if self._should_fast_int(op):
                     bit_xor_entry["fast_int"] = True
                 json_ops.append(bit_xor_entry)
             elif op.kind == "INPLACE_BIT_XOR":
@@ -27616,7 +26462,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if should_fast_int(op):
+                if self._should_fast_int(op):
                     bit_xor_entry["fast_int"] = True
                 json_ops.append(bit_xor_entry)
             elif op.kind == "LSHIFT":
@@ -27625,7 +26471,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if should_fast_int(op):
+                if self._should_fast_int(op):
                     lshift_entry["fast_int"] = True
                 json_ops.append(lshift_entry)
             elif op.kind == "RSHIFT":
@@ -27634,7 +26480,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if should_fast_int(op):
+                if self._should_fast_int(op):
                     rshift_entry["fast_int"] = True
                 json_ops.append(rshift_entry)
             elif op.kind == "MATMUL":
@@ -27675,12 +26521,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if self._is_raw_int(op):
-                    lt_entry["raw_int"] = True
-                elif should_fast_int(op):
+                if self._should_fast_int(op):
                     lt_entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    lt_entry["fast_float"] = True
                 json_ops.append(lt_entry)
             elif op.kind == "LE":
                 le_entry: dict[str, Any] = {
@@ -27688,10 +26530,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if should_fast_int(op):
+                if self._should_fast_int(op):
                     le_entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    le_entry["fast_float"] = True
                 json_ops.append(le_entry)
             elif op.kind == "GT":
                 gt_entry: dict[str, Any] = {
@@ -27699,10 +26539,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if should_fast_int(op):
+                if self._should_fast_int(op):
                     gt_entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    gt_entry["fast_float"] = True
                 json_ops.append(gt_entry)
             elif op.kind == "GE":
                 ge_entry: dict[str, Any] = {
@@ -27710,10 +26548,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if should_fast_int(op):
+                if self._should_fast_int(op):
                     ge_entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    ge_entry["fast_float"] = True
                 json_ops.append(ge_entry)
             elif op.kind == "EQ":
                 eq_entry: dict[str, Any] = {
@@ -27721,10 +26557,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if should_fast_int(op):
+                if self._should_fast_int(op):
                     eq_entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    eq_entry["fast_float"] = True
                 json_ops.append(eq_entry)
             elif op.kind == "NE":
                 ne_entry: dict[str, Any] = {
@@ -27732,10 +26566,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if should_fast_int(op):
+                if self._should_fast_int(op):
                     ne_entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    ne_entry["fast_float"] = True
                 json_ops.append(ne_entry)
             elif op.kind == "STRING_EQ":
                 json_ops.append(
@@ -27754,70 +26586,45 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                 )
             elif op.kind == "INVERT":
-                invert_entry: dict[str, object] = {
-                    "kind": "invert",
-                    "args": [op.args[0].name],
-                    "out": op.result.name,
-                }
-                if should_fast_int(op):
-                    invert_entry["fast_int"] = True
-                json_ops.append(invert_entry)
+                json_ops.append(
+                    {
+                        "kind": "invert",
+                        "args": [op.args[0].name],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "NOT":
-                not_entry: dict[str, object] = {
-                    "kind": "not",
-                    "args": [op.args[0].name],
-                    "out": op.result.name,
-                }
-                cond_arg = op.args[0]
-                if isinstance(cond_arg, MoltValue) and cond_arg.type_hint in {
-                    "bool",
-                    "int",
-                    "float",
-                    "NoneType",
-                }:
-                    not_entry["type_hint"] = cond_arg.type_hint
-                json_ops.append(not_entry)
+                json_ops.append(
+                    {
+                        "kind": "not",
+                        "args": [op.args[0].name],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "ABS":
-                abs_entry: dict[str, object] = {
-                    "kind": "abs",
-                    "args": [op.args[0].name],
-                    "out": op.result.name,
-                }
-                if should_fast_int(op):
-                    abs_entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    abs_entry["fast_float"] = True
-                json_ops.append(abs_entry)
+                json_ops.append(
+                    {
+                        "kind": "abs",
+                        "args": [op.args[0].name],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "AND":
-                and_entry: dict[str, object] = {
-                    "kind": "and",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-                lhs_arg = op.args[0]
-                if isinstance(lhs_arg, MoltValue) and lhs_arg.type_hint in {
-                    "bool",
-                    "int",
-                    "float",
-                    "NoneType",
-                }:
-                    and_entry["type_hint"] = lhs_arg.type_hint
-                json_ops.append(and_entry)
+                json_ops.append(
+                    {
+                        "kind": "and",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "OR":
-                or_entry: dict[str, object] = {
-                    "kind": "or",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-                lhs_arg = op.args[0]
-                if isinstance(lhs_arg, MoltValue) and lhs_arg.type_hint in {
-                    "bool",
-                    "int",
-                    "float",
-                    "NoneType",
-                }:
-                    or_entry["type_hint"] = lhs_arg.type_hint
-                json_ops.append(or_entry)
+                json_ops.append(
+                    {
+                        "kind": "or",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "CONTAINS":
                 entry: dict[str, object] = {
                     "kind": "contains",
@@ -27835,16 +26642,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     entry["container_type"] = container_arg.type_hint
                 json_ops.append(entry)
             elif op.kind == "IF":
-                if_entry: dict[str, object] = {"kind": "if", "args": [op.args[0].name]}
-                cond_arg = op.args[0]
-                if isinstance(cond_arg, MoltValue) and cond_arg.type_hint in {
-                    "bool",
-                    "int",
-                    "float",
-                    "NoneType",
-                }:
-                    if_entry["type_hint"] = cond_arg.type_hint
-                json_ops.append(if_entry)
+                json_ops.append({"kind": "if", "args": [op.args[0].name]})
             elif op.kind == "ELSE":
                 json_ops.append({"kind": "else"})
             elif op.kind == "END_IF":
@@ -27994,14 +26792,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             elif op.kind == "FN_PTR_CODE_SET":
                 func_name, code_val = op.args
-                arity = 0
-                if op.metadata and "arity" in op.metadata:
-                    arity = int(op.metadata["arity"])
                 json_ops.append(
                     {
                         "kind": "fn_ptr_code_set",
                         "s_value": func_name,
-                        "value": arity,
                         "args": [code_val.name],
                     }
                 )
@@ -28504,25 +27298,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             elif op.kind == "PRINT_NEWLINE":
                 json_ops.append({"kind": "print_newline"})
             elif op.kind == "ALLOC":
-                alloc_entry: dict[str, Any] = {
-                    "kind": "alloc",
-                    "value": self.classes[op.args[0]]["size"],
-                    "out": op.result.name,
-                }
-                if op.metadata and op.metadata.get("stack_eligible"):
-                    alloc_entry["stack_eligible"] = True
-                json_ops.append(alloc_entry)
+                json_ops.append(
+                    {
+                        "kind": "alloc",
+                        "value": self.classes[op.args[0]]["size"],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "ALLOC_CLASS":
                 class_ref, class_id = op.args
-                alloc_class_entry: dict[str, Any] = {
-                    "kind": "alloc_class",
-                    "args": [class_ref.name],
-                    "value": self.classes[class_id]["size"],
-                    "out": op.result.name,
-                }
-                if op.metadata and op.metadata.get("stack_eligible"):
-                    alloc_class_entry["stack_eligible"] = True
-                json_ops.append(alloc_class_entry)
+                json_ops.append(
+                    {
+                        "kind": "alloc_class",
+                        "args": [class_ref.name],
+                        "value": self.classes[class_id]["size"],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "ALLOC_CLASS_TRUSTED":
                 class_ref, class_id = op.args
                 json_ops.append(
@@ -29034,17 +27826,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                 )
             elif op.kind == "LEN":
-                len_entry: dict[str, Any] = {
-                    "kind": "len",
-                    "args": [
-                        arg.name if hasattr(arg, "name") else str(arg)
-                        for arg in op.args
-                    ],
-                    "out": op.result.name,
-                }
-                if op.result.type_hint:
-                    len_entry["type_hint"] = op.result.type_hint
-                json_ops.append(len_entry)
+                json_ops.append(
+                    {
+                        "kind": "len",
+                        "args": [
+                            arg.name if hasattr(arg, "name") else str(arg)
+                            for arg in op.args
+                        ],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "ID":
                 json_ops.append(
                     {
@@ -29137,22 +27928,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "list_from_range",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
-            elif op.kind == "LIST_REPEAT_RANGE":
-                json_ops.append(
-                    {
-                        "kind": "list_repeat_range",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
-            elif op.kind == "BYTEARRAY_FILL_RANGE":
-                json_ops.append(
-                    {
-                        "kind": "bytearray_fill_range",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }
@@ -29680,80 +28455,29 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             elif op.kind == "LOOP_START":
                 json_ops.append({"kind": "loop_start"})
             elif op.kind == "LOOP_INDEX_START":
-                lis_entry: dict[str, Any] = {
-                    "kind": "loop_index_start",
-                    "args": [op.args[0].name],
-                    "out": op.result.name,
-                }
-                if op.result.type_hint:
-                    lis_entry["type_hint"] = op.result.type_hint
-                json_ops.append(lis_entry)
-            elif op.kind == "LOOP_INDEX_NEXT":
-                lin_entry: dict[str, Any] = {
-                    "kind": "loop_index_next",
-                    "args": [op.args[0].name],
-                    "out": op.result.name,
-                }
-                if op.result.type_hint:
-                    lin_entry["type_hint"] = op.result.type_hint
-                json_ops.append(lin_entry)
-            elif op.kind == "LOOP_CARRY_INIT":
                 json_ops.append(
                     {
-                        "kind": "loop_carry_init",
-                        "args": [
-                            op.args[0].name
-                            if isinstance(op.args[0], MoltValue)
-                            else str(op.args[0])
-                        ],
+                        "kind": "loop_index_start",
+                        "args": [op.args[0].name],
                         "out": op.result.name,
                     }
                 )
-            elif op.kind == "LOOP_CARRY_UPDATE":
+            elif op.kind == "LOOP_INDEX_NEXT":
                 json_ops.append(
                     {
-                        "kind": "loop_carry_update",
-                        "args": [
-                            str(op.args[0]),  # carry variable name
-                            op.args[1].name
-                            if isinstance(op.args[1], MoltValue)
-                            else str(op.args[1]),
-                        ],
+                        "kind": "loop_index_next",
+                        "args": [op.args[0].name],
                         "out": op.result.name,
                     }
                 )
             elif op.kind == "LOOP_BREAK_IF_TRUE":
-                lbt_entry: dict[str, object] = {
-                    "kind": "loop_break_if_true",
-                    "args": [op.args[0].name],
-                }
-                if self._is_raw_int(op):
-                    lbt_entry["raw_int"] = True
-                cond_arg = op.args[0]
-                if isinstance(cond_arg, MoltValue) and cond_arg.type_hint in {
-                    "bool",
-                    "int",
-                    "float",
-                    "NoneType",
-                }:
-                    lbt_entry["type_hint"] = cond_arg.type_hint
-                json_ops.append(lbt_entry)
+                json_ops.append(
+                    {"kind": "loop_break_if_true", "args": [op.args[0].name]}
+                )
             elif op.kind == "LOOP_BREAK_IF_FALSE":
-                lbf_entry: dict[str, object] = {
-                    "kind": "loop_break_if_false",
-                    "args": [op.args[0].name],
-                }
-                if self._is_raw_int(op):
-                    lbf_entry["raw_int"] = True
-                cond_arg = op.args[0]
-                if isinstance(cond_arg, MoltValue) and cond_arg.type_hint in {
-                    "bool",
-                    "int",
-                    "float",
-                    "NoneType",
-                }:
-                    lbf_entry["type_hint"] = cond_arg.type_hint
-                json_ops.append(lbf_entry)
+                json_ops.append(
+                    {"kind": "loop_break_if_false", "args": [op.args[0].name]}
+                )
             elif op.kind == "LOOP_BREAK":
                 json_ops.append({"kind": "loop_break"})
             elif op.kind == "LOOP_CONTINUE":
@@ -30831,57 +29555,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return fallback
         return parsed
 
-    @staticmethod
-    def _load_runtime_feedback() -> dict[str, Any] | None:
-        """Load runtime feedback JSON from a prior profiling run.
-
-        Reads MOLT_RUNTIME_FEEDBACK_JSON env var pointing to a JSON file
-        emitted by the runtime with MOLT_RUNTIME_FEEDBACK=1.
-        """
-        path = os.getenv("MOLT_RUNTIME_FEEDBACK_JSON", "").strip()
-        if not path:
-            return None
-        try:
-            with open(path) as f:
-                data = json.load(f)
-            if not isinstance(data, dict):
-                return None
-            if data.get("kind") != "runtime_feedback":
-                return None
-            return data
-        except (OSError, ValueError):
-            return None
-
-    def _feedback_guard_failures(self) -> int:
-        """Return total guard-tag type mismatch deopts from feedback."""
-        fb = self._runtime_feedback
-        if fb is None:
-            return 0
-        deopt = fb.get("deopt_reasons")
-        if not isinstance(deopt, dict):
-            return 0
-        return int(deopt.get("guard_tag_type_mismatch", 0))
-
-    def _feedback_alloc_count(self) -> int:
-        """Return total allocation count from feedback."""
-        fb = self._runtime_feedback
-        if fb is None:
-            return 0
-        profile = fb.get("profile")
-        if not isinstance(profile, dict):
-            return 0
-        return int(profile.get("alloc_count", 0))
-
-    def _feedback_call_dispatch(self) -> int:
-        """Return total call dispatch count from feedback."""
-        fb = self._runtime_feedback
-        if fb is None:
-            return 0
-        profile = fb.get("profile")
-        if not isinstance(profile, dict):
-            return 0
-        return int(profile.get("call_dispatch", 0))
-
     def _midend_hot_function_match(self, function_name: str) -> str | None:
         if not self.midend_hot_functions:
             return None
@@ -30945,21 +29618,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return MidendTierClassification(
                 tier="B",
                 source="function_override",
-                allow_hot_promotion=False,
-            )
-
-        # Comprehension lowering emits synthetic generator helper functions
-        # (`__genexpr_`, `__listcomp_`, etc.). Keep them on the conservative
-        # tier until release-lane optimizer regressions are fully eliminated.
-        if (
-            "__genexpr_" in function_name
-            or "__listcomp_" in function_name
-            or "__setcomp_" in function_name
-            or "__dictcomp_" in function_name
-        ):
-            return MidendTierClassification(
-                tier="C",
-                source="comprehension_safety_default",
                 allow_hot_promotion=False,
             )
 
@@ -31067,18 +29725,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     promoted = True
                     promotion_source = "pgo_hot_functions"
                     promotion_signal = hot_signal
-        # Runtime feedback-driven tier promotion: if a prior run shows
-        # high call dispatch (indicating a hot program), promote tier.
-        if not promoted and self._runtime_feedback is not None:
-            fb_dispatch = self._feedback_call_dispatch()
-            # Threshold: >1000 calls suggests a hot workload worth optimizing.
-            if fb_dispatch > 1000 and tier in {"B", "C"}:
-                fb_promoted = self._promote_midend_tier_one_step(tier)
-                if fb_promoted != tier:
-                    tier = fb_promoted
-                    promoted = True
-                    promotion_source = "runtime_feedback"
-                    promotion_signal = f"call_dispatch={fb_dispatch}"
         defaults: dict[tuple[MidendProfile, MidendTier], dict[str, Any]] = {
             ("dev", "A"): {
                 "max_rounds": 2,
@@ -31564,7 +30210,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "SET_ATTR",
             "STORE_INDEX",
             "SET_INDEX",
-            "BYTEARRAY_FILL_RANGE",
             "LIST_APPEND",
             "LIST_EXTEND",
             "LIST_POP",
@@ -31770,8 +30415,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "LIST_REVERSE",
         }:
             return {"list", "indexable"}
-        if op.kind == "BYTEARRAY_FILL_RANGE":
-            return {"indexable"}
         if op.kind in {
             "STORE_ATTR",
             "SET_ATTR",
@@ -32809,10 +31452,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if isinstance(value, MoltValue):
             out.add(value.name)
             return
-        if isinstance(value, str):
-            if self._looks_like_value_name_token(value):
-                out.add(value)
-            return
         if isinstance(value, list):
             for item in value:
                 self._collect_arg_value_names(item, out)
@@ -32825,16 +31464,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             for key, item in value.items():
                 self._collect_arg_value_names(key, out)
                 self._collect_arg_value_names(item, out)
-
-    @staticmethod
-    def _looks_like_value_name_token(value: str) -> bool:
-        if value in {"none", "True", "False"}:
-            return False
-        if value == "self":
-            return True
-        if value.startswith("v") and value[1:].isdigit():
-            return True
-        return value.startswith("__molt_")
 
     def _compute_block_use_def(self, ops: list[MoltOp]) -> tuple[set[str], set[str]]:
         use: set[str] = set()
@@ -32873,16 +31502,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return missing
 
     def _infer_predefined_value_names(self, ops: list[MoltOp]) -> set[str]:
-        # Predefined values must be limited to true function-entry bindings
-        # (params/closure params). Inferring from `used - defined` can hide
-        # optimizer-introduced undefined-value bugs and let invalid IR pass.
-        function_info = self.funcs_map.get(self._active_midend_function_name)
-        if not function_info:
-            return set()
-        params = function_info.get("params", [])
-        return {
-            name for name in params if isinstance(name, str) and name and name != "none"
-        }
+        used: set[str] = set()
+        for op in ops:
+            for arg in op.args:
+                self._collect_arg_value_names(arg, used)
+        defined = self._collect_defined_value_names(ops)
+        return used - defined
 
     def _verify_definite_assignment_in_ops(
         self,
@@ -32990,9 +31615,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         continue
                     def_idx = definition_index.get(name)
                     if def_idx is None:
-                        # Any non-predefined value used without a definition
-                        # is invalid IR, regardless of provenance.
-                        failures.append((op_idx, op.kind, name))
+                        # Value is used but has no definition at all — if it
+                        # was originally a MISSING sentinel that got removed,
+                        # flag this as a failure.
+                        if name in missing_value_defs:
+                            failures.append((op_idx, op.kind, name))
                         continue
                     def_block = definition_block[name]
                     if def_block not in cfg.dominators.get(block_id, set()):
@@ -36363,7 +34990,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "midend deterministic fixed-point failed to converge within "
                     f"{max_rounds} rounds for {self._active_midend_function_name}"
                 )
-            rewritten_ops = validated_ops
 
         if enable_idempotence_probe:
             probe_ops = rewritten_ops
@@ -36382,28 +35008,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if probe_ops != rewritten_ops:
                 self.midend_stats["fixed_point_fail_fast"] += 1
                 if not hard_fail_on_non_convergence:
-                    degraded = True
-                    probe_predefined = self._infer_predefined_value_names(probe_ops)
-                    probe_failures = self._verify_definite_assignment_in_ops(
-                        probe_ops,
-                        predefined_value_names=probe_predefined,
+                    add_degrade_event(
+                        "idempotence_probe_mismatch",
+                        "idempotence_probe",
+                        "accept_probe_ops",
                     )
-                    if probe_failures:
-                        add_degrade_event(
-                            "idempotence_probe_invalid_ir",
-                            "idempotence_probe",
-                            "retain_last_verified_round",
-                            value={"failure_count": len(probe_failures)},
-                        )
-                        self.midend_stats["invalid_unbound_rollback"] += 1
-                        self.midend_stats["invalid_unbound_uses"] += len(probe_failures)
-                    else:
-                        add_degrade_event(
-                            "idempotence_probe_mismatch",
-                            "idempotence_probe",
-                            "accept_probe_ops",
-                        )
-                        rewritten_ops = probe_ops
+                    degraded = True
+                    rewritten_ops = probe_ops
                 else:
                     self._record_midend_policy_outcome(
                         policy=policy,
@@ -36416,22 +35027,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "midend idempotence check failed after convergence for "
                         f"{self._active_midend_function_name}"
                     )
-
-        final_predefined = self._infer_predefined_value_names(rewritten_ops)
-        final_missing_uses = self._find_unbound_value_uses(
-            rewritten_ops, params=tuple(final_predefined)
-        )
-        if final_missing_uses:
-            add_degrade_event(
-                "final_unbound_values",
-                "midend_exit",
-                "fallback_to_pre_midend_ops",
-                value={"failure_count": len(final_missing_uses)},
-            )
-            degraded = True
-            self.midend_stats["invalid_unbound_rollback"] += 1
-            self.midend_stats["invalid_unbound_uses"] += len(final_missing_uses)
-            rewritten_ops = validated_ops
 
         self.midend_stats["sccp_branch_prunes"] += total_branch_prunes
         self.midend_stats["loop_edge_thread_prunes"] += (
@@ -36536,13 +35131,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         safe_ops = self._canonicalize_control_aware_ops_impl(
             ops, allow_cross_block_const_dedupe=False
         )
-        safe_failures = self._verify_definite_assignment_in_ops(
-            safe_ops, predefined_value_names=predefined
-        )
-        if safe_failures:
-            self.midend_stats["invalid_unbound_rollback"] += 1
-            self.midend_stats["invalid_unbound_uses"] += len(safe_failures)
-            return ops
         return safe_ops
 
     def _coalesce_check_exception_ops(self, ops: list[MoltOp]) -> list[MoltOp]:
@@ -36563,696 +35151,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if pending_check is not None:
             out.append(pending_check)
         return out
-
-    def _inline_small_functions(self) -> None:
-        """Inline small functions at the TIR level before codegen.
-
-        Identifies callees that are small (<80 ops), have few call sites
-        (<=4), and lack yield/try/recursion. Inlines their bodies at call
-        sites by alpha-renaming SSA variables and replacing ret ops with
-        assigns to the call result variable.
-
-        This exposes inlined code to SCCP/CSE/DCE which can simplify it
-        further. Runs before _finalize_code_ids().
-        """
-        inline_env = os.getenv("MOLT_ENABLE_INLINING", "").strip().lower()
-        if inline_env in {"0", "false", "no", "off"}:
-            return
-
-        MAX_INLINE_OPS = 80
-        MAX_CALL_SITES = 4
-        MAX_PARAMS = 3
-        NEVER_INLINE = {"molt_main"}
-        BLOCKING_OPS = {"YIELD", "YIELD_FROM", "AWAIT", "TRY_START", "TRY_END"}
-
-        inline_counter = 0
-        attempted = 0
-        accepted = 0
-        ops_saved = 0
-        inlined_targets: dict[str, int] = {}
-
-        # Count call sites per target across all functions.
-        call_site_counts: dict[str, int] = {}
-        for _fname, fdata in self.funcs_map.items():
-            for op in fdata["ops"]:
-                if op.kind in {"CALL_FUNC", "CALL_GUARDED"} and op.args:
-                    target = (
-                        op.args[0]
-                        if isinstance(op.args[0], str)
-                        else (op.metadata.get("target", "") if op.metadata else "")
-                    )
-                    if target:
-                        call_site_counts[target] = call_site_counts.get(target, 0) + 1
-
-        # Identify inlineable callees.
-        inlineable: set[str] = set()
-        for fname, fdata in self.funcs_map.items():
-            if fname in NEVER_INLINE:
-                continue
-            fops = fdata["ops"]
-            if len(fops) > MAX_INLINE_OPS:
-                continue
-            if len(fdata.get("params", [])) > MAX_PARAMS:
-                continue
-            if call_site_counts.get(fname, 0) > MAX_CALL_SITES:
-                continue
-            if call_site_counts.get(fname, 0) == 0:
-                continue
-            has_blocking = any(op.kind in BLOCKING_OPS for op in fops)
-            if has_blocking:
-                continue
-            # Check for recursion.
-            has_recursion = any(
-                op.kind in {"CALL_FUNC", "CALL_GUARDED"}
-                and op.args
-                and (op.args[0] if isinstance(op.args[0], str) else "") == fname
-                for op in fops
-            )
-            if has_recursion:
-                continue
-            inlineable.add(fname)
-
-        if not inlineable:
-            return
-
-        # Inline at each call site.
-        for caller_name, caller_data in list(self.funcs_map.items()):
-            new_ops: list[MoltOp] = []
-            modified = False
-            for op in caller_data["ops"]:
-                if op.kind != "CALL_FUNC" or not op.args:
-                    new_ops.append(op)
-                    continue
-                target = op.args[0] if isinstance(op.args[0], str) else ""
-                if target not in inlineable:
-                    new_ops.append(op)
-                    continue
-
-                attempted += 1
-                callee_data = self.funcs_map.get(target)
-                if callee_data is None:
-                    new_ops.append(op)
-                    continue
-
-                callee_params = callee_data.get("params", [])
-                callee_ops = callee_data["ops"]
-                call_args = op.args[1:]
-                result_var = op.result
-
-                # Alpha-rename prefix.
-                inline_counter += 1
-                prefix = f"_inl{inline_counter}_"
-
-                def rename(val: Any) -> Any:
-                    if isinstance(val, MoltValue) and val.name != "none":
-                        return MoltValue(prefix + val.name, type_hint=val.type_hint)
-                    return val
-
-                # Map params to caller's arguments.
-                param_map: dict[str, Any] = {}
-                for i, param_name in enumerate(callee_params):
-                    if i < len(call_args):
-                        param_map[param_name] = call_args[i]
-                    else:
-                        param_map[param_name] = MoltValue("none")
-
-                # Rewrite callee ops.
-                for cop in callee_ops:
-                    if cop.kind == "ret":
-                        # Replace return with assign to caller's result var.
-                        ret_val = cop.args[0] if cop.args else MoltValue("none")
-                        if isinstance(ret_val, MoltValue) and ret_val.name in param_map:
-                            ret_val = param_map[ret_val.name]
-                        elif isinstance(ret_val, MoltValue) and ret_val.name != "none":
-                            ret_val = rename(ret_val)
-                        new_ops.append(
-                            MoltOp(kind="ASSIGN", args=[ret_val], result=result_var)
-                        )
-                        continue
-                    # Alpha-rename args and result.
-                    new_args = []
-                    for a in cop.args:
-                        if isinstance(a, MoltValue) and a.name in param_map:
-                            new_args.append(param_map[a.name])
-                        else:
-                            new_args.append(rename(a))
-                    new_result = rename(cop.result)
-                    if (
-                        isinstance(cop.result, MoltValue)
-                        and cop.result.name in param_map
-                    ):
-                        new_result = param_map[cop.result.name]
-                    new_ops.append(
-                        MoltOp(
-                            kind=cop.kind,
-                            args=new_args,
-                            result=new_result,
-                            metadata=cop.metadata,
-                        )
-                    )
-
-                accepted += 1
-                ops_saved += 1  # At least saved the CALL_FUNC op.
-                inlined_targets[target] = inlined_targets.get(target, 0) + 1
-                modified = True
-
-            if modified:
-                caller_data["ops"] = new_ops
-
-        # Remove only functions that were actually inlined and are now unreferenced.
-        # Keep guarded/direct-call and function-object references intact.
-        for fname in list(inlined_targets):
-            referenced = False
-            for _cn, cdata in self.funcs_map.items():
-                for op in cdata["ops"]:
-                    if (
-                        op.kind
-                        in {"CALL", "CALL_INTERNAL", "FUNC_NEW", "FUNC_NEW_CLOSURE"}
-                        and op.args
-                        and isinstance(op.args[0], str)
-                        and op.args[0] == fname
-                    ):
-                        referenced = True
-                        break
-                    if (
-                        op.kind == "CALL_FUNC"
-                        and op.args
-                        and isinstance(op.args[0], str)
-                        and op.args[0] == fname
-                    ):
-                        referenced = True
-                        break
-                    if op.kind == "CALL_GUARDED":
-                        target = ""
-                        if op.metadata:
-                            candidate = op.metadata.get("target", "")
-                            if isinstance(candidate, str):
-                                target = candidate
-                        if not target and op.args and isinstance(op.args[0], str):
-                            target = op.args[0]
-                        if target == fname:
-                            referenced = True
-                            break
-                if referenced:
-                    break
-            if not referenced and fname in self.funcs_map:
-                del self.funcs_map[fname]
-
-        self.midend_stats["inline_attempted"] = (
-            self.midend_stats.get("inline_attempted", 0) + attempted
-        )
-        self.midend_stats["inline_accepted"] = (
-            self.midend_stats.get("inline_accepted", 0) + accepted
-        )
-        self.midend_stats["inline_ops_saved"] = (
-            self.midend_stats.get("inline_ops_saved", 0) + ops_saved
-        )
-
-    def _specialize_guarded_int_arithmetic(self, ops: list[MoltOp]) -> list[MoltOp]:
-        """Mark arithmetic ops as fast_int when both operands are guard-proven
-        inline-safe integers.
-
-        Scans for GUARD_TAG ops that prove a variable is an integer and then
-        tracks the stricter subset that still fits Molt's inline-int
-        representation. Only inline-safe operands may bypass tag checks in the
-        backend fast_int path.
-        """
-        enable_env = os.getenv("MOLT_ENABLE_INT_SPECIALIZATION", "").strip().lower()
-        if enable_env in {"0", "false", "no", "off"}:
-            return ops
-        # Bail out if runtime feedback shows guard failures.
-        if self._feedback_guard_failures() > 0:
-            return ops
-
-        # First pass: map CONST var names to values for GUARD_TAG detection.
-        const_values: dict[str, Any] = {}
-        for op in ops:
-            if op.kind == "CONST" and isinstance(op.result, MoltValue):
-                if op.args and isinstance(op.args[0], (int, float)):
-                    const_values[op.result.name] = op.args[0]
-
-        specializable_ops = FAST_INT_BINARY_OPS
-        unary_specializable = FAST_INT_UNARY_OPS
-        control_flow_ops = {
-            "IF",
-            "ELSE",
-            "END_IF",
-            "LOOP_START",
-            "LOOP_END",
-            "TRY_START",
-            "TRY_END",
-            "LABEL",
-            "JUMP",
-        }
-
-        int_proven: set[str] = set()
-        inline_int_safe: set[str] = set()
-        applied = 0
-
-        for op in ops:
-            if op.kind in control_flow_ops:
-                int_proven.clear()
-                inline_int_safe.clear()
-
-            # Track GUARD_TAG ops: GUARD_TAG(value, tag_const).
-            if op.kind == "GUARD_TAG" and len(op.args) >= 2:
-                guarded_var = op.args[0]
-                tag_var = op.args[1]
-                if isinstance(guarded_var, MoltValue) and isinstance(
-                    tag_var, MoltValue
-                ):
-                    tag_val = const_values.get(tag_var.name)
-                    if tag_val == 1:  # TAG_INT = 1
-                        int_proven.add(guarded_var.name)
-
-            # CONST int ops produce int-proven results.
-            if op.kind == "CONST" and isinstance(op.result, MoltValue):
-                if (
-                    op.args
-                    and isinstance(op.args[0], int)
-                    and not isinstance(op.args[0], bool)
-                ):
-                    int_proven.add(op.result.name)
-                    if self._is_inline_int_literal(op.args[0]):
-                        inline_int_safe.add(op.result.name)
-                    else:
-                        inline_int_safe.discard(op.result.name)
-
-            # Binary: specialize when both operands are int-proven.
-            if op.kind in specializable_ops and len(op.args) == 2:
-                left, right = op.args[0], op.args[1]
-                if (
-                    isinstance(left, MoltValue)
-                    and isinstance(right, MoltValue)
-                    and left.name in int_proven
-                    and right.name in int_proven
-                ):
-                    left.type_hint = "int"
-                    right.type_hint = "int"
-                    can_fast_int = (
-                        left.name in inline_int_safe and right.name in inline_int_safe
-                    )
-                    if can_fast_int:
-                        if op.metadata is None:
-                            op.metadata = {}
-                        op.metadata["guard_fast_int"] = True
-                    if isinstance(op.result, MoltValue) and op.result.name != "none":
-                        if op.kind in FAST_INT_INT_RESULT_OPS:
-                            op.result.type_hint = "int"
-                            int_proven.add(op.result.name)
-                            if can_fast_int and op.kind in INLINE_SAFE_INT_RESULT_OPS:
-                                inline_int_safe.add(op.result.name)
-                            else:
-                                inline_int_safe.discard(op.result.name)
-                        elif op.kind in FAST_INT_BOOL_RESULT_OPS:
-                            op.result.type_hint = "bool"
-                            int_proven.discard(op.result.name)
-                            inline_int_safe.discard(op.result.name)
-                        elif op.kind in FAST_INT_FLOAT_RESULT_OPS:
-                            op.result.type_hint = "float"
-                            int_proven.discard(op.result.name)
-                            inline_int_safe.discard(op.result.name)
-                    applied += 1
-
-            # Unary: specialize when operand is int-proven.
-            elif op.kind in unary_specializable and len(op.args) >= 1:
-                arg = op.args[0]
-                if isinstance(arg, MoltValue) and arg.name in int_proven:
-                    arg.type_hint = "int"
-                    can_fast_int = arg.name in inline_int_safe
-                    if can_fast_int:
-                        if op.metadata is None:
-                            op.metadata = {}
-                        op.metadata["guard_fast_int"] = True
-                    if isinstance(op.result, MoltValue) and op.result.name != "none":
-                        op.result.type_hint = "int"
-                        int_proven.add(op.result.name)
-                        if can_fast_int and op.kind in INLINE_SAFE_INT_RESULT_OPS:
-                            inline_int_safe.add(op.result.name)
-                        else:
-                            inline_int_safe.discard(op.result.name)
-                    applied += 1
-
-        if applied > 0:
-            self.midend_stats["int_specialization_applied"] = (
-                self.midend_stats.get("int_specialization_applied", 0) + applied
-            )
-        return ops
-
-    def _promote_raw_int_chains(self, ops: list[MoltOp]) -> list[MoltOp]:
-        """Promote guard_fast_int arithmetic chains to raw_int mode.
-
-        When consecutive operations all have guard_fast_int=True, we can
-        eliminate the per-operation NaN-box/unbox overhead by:
-        1. Unboxing variables once at the start of the chain
-        2. Operating on raw i64 values throughout the chain
-        3. Re-boxing only when values escape to non-raw-int consumers
-
-        This eliminates ~25 instructions per arithmetic op (unbox+box+overflow check).
-        """
-        enable_env = os.getenv("MOLT_RAW_INT_PROMOTION", "").strip().lower()
-        if enable_env in {"0", "false", "no", "off"}:
-            return ops
-
-        raw_int_ops = RAW_INT_PROMOTABLE_OPS
-        loop_cond_ops = {"LOOP_BREAK_IF_TRUE", "LOOP_BREAK_IF_FALSE"}
-        # Ops that safely consume raw i64 values (don't need boxing)
-        raw_safe_consumers = loop_cond_ops | {"LOOP_CARRY_UPDATE", "LOOP_INDEX_NEXT"}
-        inline_int_safe_names = self._compute_inline_int_safe_names(ops)
-
-        # Phase 1: identify variables that are produced AND consumed entirely
-        # within guard_fast_int arithmetic chains.
-        int_producers: dict[str, int] = {}  # var_name -> op_index
-        int_consumers: dict[
-            str, list[int]
-        ] = {}  # var_name -> list of consuming op indices
-        fast_int_ops: set[int] = set()
-
-        for i, op in enumerate(ops):
-            for arg in op.args:
-                if isinstance(arg, MoltValue):
-                    int_consumers.setdefault(arg.name, []).append(i)
-
-            is_fast = (
-                (op.metadata is not None and op.metadata.get("guard_fast_int"))
-                or (
-                    op.kind == "CONST"
-                    and isinstance(op.result, MoltValue)
-                    and op.result.name in inline_int_safe_names
-                )
-                or (
-                    op.kind in raw_int_ops
-                    and all(
-                        isinstance(a, MoltValue)
-                        and a.type_hint == "int"
-                        and a.name in inline_int_safe_names
-                        for a in op.args
-                    )
-                )
-            )
-            if is_fast and op.kind in raw_int_ops:
-                fast_int_ops.add(i)
-                if isinstance(op.result, MoltValue) and op.result.name != "none":
-                    int_producers[op.result.name] = i
-            elif is_fast and op.kind == "CONST" and isinstance(op.result, MoltValue):
-                # Track CONST int results as producers so Phase 2 can mark them
-                # raw_eligible when all their consumers are fast_int ops.
-                int_producers[op.result.name] = i
-
-        # Phase 2: find variables that can stay in raw form.
-        # A variable can be raw if ALL its consumers are fast_int ops or loop_cond ops.
-        raw_eligible: set[str] = set()
-        for var_name, prod_idx in int_producers.items():
-            consumers = int_consumers.get(var_name, [])
-            if not consumers:
-                continue
-            all_fast = all(
-                ci in fast_int_ops or ops[ci].kind in raw_safe_consumers
-                for ci in consumers
-            )
-            if all_fast:
-                raw_eligible.add(var_name)
-
-        if not raw_eligible:
-            return ops
-
-        # Phase 3: rewrite ops using a raw/boxed variable tracking map.
-        # Never mutate MoltValue.name in place — create new MoltValue copies.
-        new_ops: list[MoltOp] = []
-        # Track which variable names currently hold raw i64 values
-        raw_vars: set[str] = set()
-        # Bridge counter for unique names
-        bridge_id = 0
-        promoted = 0
-
-        def ensure_raw(var: MoltValue) -> MoltValue:
-            """Return a MoltValue guaranteed to be in raw i64 form."""
-            nonlocal bridge_id
-            if var.name in raw_vars:
-                return MoltValue(var.name, var.type_hint)
-            # Insert unbox bridge
-            raw_name = f"__ri{bridge_id}"
-            bridge_id += 1
-            new_ops.append(
-                MoltOp(
-                    kind="UNBOX_TO_RAW_INT",
-                    args=[MoltValue(var.name, var.type_hint)],
-                    result=MoltValue(raw_name, "int"),
-                )
-            )
-            raw_vars.add(raw_name)
-            return MoltValue(raw_name, "int")
-
-        def ensure_boxed(var: MoltValue) -> MoltValue:
-            """Return a MoltValue guaranteed to be in NaN-boxed form."""
-            nonlocal bridge_id
-            if var.name not in raw_vars:
-                return MoltValue(var.name, var.type_hint)
-            # Insert box bridge
-            boxed_name = f"__bi{bridge_id}"
-            bridge_id += 1
-            new_ops.append(
-                MoltOp(
-                    kind="BOX_FROM_RAW_INT",
-                    args=[MoltValue(var.name, var.type_hint)],
-                    result=MoltValue(boxed_name, "int"),
-                )
-            )
-            return MoltValue(boxed_name, "int")
-
-        for i, op in enumerate(ops):
-            if i in fast_int_ops and op.kind in raw_int_ops:
-                # Promote this op to raw_int mode
-                new_args = []
-                can_promote = True
-                for arg in op.args:
-                    if isinstance(arg, MoltValue):
-                        if arg.name in raw_vars or arg.name in inline_int_safe_names:
-                            new_args.append(ensure_raw(arg))
-                        else:
-                            can_promote = False
-                            new_args.append(MoltValue(arg.name, arg.type_hint))
-                    else:
-                        new_args.append(arg)
-
-                if can_promote:
-                    result_name = (
-                        op.result.name if isinstance(op.result, MoltValue) else "none"
-                    )
-                    # Only keep the result raw when every consumer is raw-safe.
-                    # This prevents compare chains from leaking raw 0/1 integers
-                    # across normal Python value boundaries like RETURN/CALL/STORE.
-                    if result_name == "none" or result_name in raw_eligible:
-                        if (
-                            result_name != "none"
-                            and op.kind not in {"LT", "LE", "GT", "GE", "EQ", "NE"}
-                            and result_name not in inline_int_safe_names
-                        ):
-                            new_ops.append(op)
-                            continue
-                        meta = dict(op.metadata) if op.metadata else {}
-                        meta["raw_int"] = True
-                        new_result = MoltValue(
-                            result_name,
-                            op.result.type_hint
-                            if isinstance(op.result, MoltValue)
-                            else "Unknown",
-                        )
-                        new_op = MoltOp(
-                            kind=op.kind,
-                            args=new_args,
-                            result=new_result,
-                            metadata=meta,
-                        )
-                        if result_name != "none":
-                            raw_vars.add(result_name)
-                        promoted += 1
-                        new_ops.append(new_op)
-                    else:
-                        new_ops.append(op)
-                else:
-                    new_ops.append(op)
-
-            elif op.kind in loop_cond_ops:
-                if (
-                    op.args
-                    and isinstance(op.args[0], MoltValue)
-                    and op.args[0].name in raw_vars
-                ):
-                    meta = dict(op.metadata) if op.metadata else {}
-                    meta["raw_int"] = True
-                    new_op = MoltOp(
-                        kind=op.kind,
-                        args=[MoltValue(op.args[0].name, op.args[0].type_hint)],
-                        result=MoltValue(op.result.name, op.result.type_hint)
-                        if isinstance(op.result, MoltValue)
-                        else op.result,
-                        metadata=meta,
-                    )
-                    promoted += 1
-                    new_ops.append(new_op)
-                else:
-                    new_ops.append(op)
-
-            elif op.kind == "CONST" and isinstance(op.result, MoltValue):
-                if op.result.name in raw_eligible or (
-                    op.metadata and op.metadata.get("raw_int")
-                ):
-                    meta = dict(op.metadata) if op.metadata else {}
-                    meta["raw_int"] = True
-                    new_op = MoltOp(
-                        kind=op.kind,
-                        args=list(op.args),
-                        result=MoltValue(op.result.name, op.result.type_hint),
-                        metadata=meta,
-                    )
-                    raw_vars.add(op.result.name)
-                    promoted += 1
-                    new_ops.append(new_op)
-                else:
-                    new_ops.append(op)
-
-            elif op.kind == "UNBOX_TO_RAW_INT" and isinstance(op.result, MoltValue):
-                # UNBOX_TO_RAW_INT by definition produces a raw i64 value,
-                # whether emitted by the frontend or by this pass's ensure_raw.
-                raw_vars.add(op.result.name)
-                new_ops.append(op)
-
-            elif op.kind in RAW_INT_CARRIER_OPS:
-                # If the input value is raw, propagate raw-ness to the carry var.
-                last_arg = (
-                    op.args[-1]
-                    if op.kind == "LOOP_CARRY_UPDATE"
-                    else (op.args[0] if op.args else None)
-                )
-                if (
-                    last_arg is not None
-                    and isinstance(last_arg, MoltValue)
-                    and last_arg.name in raw_vars
-                ):
-                    out_name = (
-                        op.result.name if isinstance(op.result, MoltValue) else "none"
-                    )
-                    if out_name != "none":
-                        raw_vars.add(out_name)
-                    new_ops.append(op)
-                else:
-                    new_ops.append(op)
-
-            else:
-                # Non-raw op — box any raw args it consumes
-                needs_boxing = False
-                for arg in getattr(op, "args", None) or []:
-                    if isinstance(arg, MoltValue) and arg.name in raw_vars:
-                        needs_boxing = True
-                        break
-
-                if needs_boxing:
-                    new_args = []
-                    for arg in op.args:
-                        if isinstance(arg, MoltValue) and arg.name in raw_vars:
-                            new_args.append(ensure_boxed(arg))
-                        else:
-                            new_args.append(
-                                arg
-                                if not isinstance(arg, MoltValue)
-                                else MoltValue(arg.name, arg.type_hint)
-                            )
-                    new_op = MoltOp(
-                        kind=op.kind,
-                        args=new_args,
-                        result=MoltValue(op.result.name, op.result.type_hint)
-                        if isinstance(op.result, MoltValue)
-                        else op.result,
-                        metadata=dict(op.metadata) if op.metadata else op.metadata,
-                    )
-                    new_ops.append(new_op)
-                else:
-                    new_ops.append(op)
-
-        if promoted > 0:
-            self.midend_stats["raw_int_promoted"] = (
-                self.midend_stats.get("raw_int_promoted", 0) + promoted
-            )
-        return new_ops
-
-    def _analyze_escaping_allocations(self, ops: list[MoltOp]) -> set[str]:
-        """Return set of SSA variable names that are non-escaping allocations.
-
-        An allocation result escapes if it is:
-        - passed as argument to any CALL op
-        - stored to a module attribute
-        - stored to a container (list/dict/set)
-        - returned from the function
-        - used in a yield/yield_from
-        - stored to a closure capture
-        """
-        alloc_vars: set[str] = set()
-        escaped: set[str] = set()
-
-        # Identify allocation results.
-        for op in ops:
-            if op.kind in {"ALLOC", "ALLOC_CLASS"} and isinstance(op.result, MoltValue):
-                alloc_vars.add(op.result.name)
-
-        if not alloc_vars:
-            return set()
-
-        # Scan for escaping uses.
-        escape_call_ops = {
-            "CALL_FUNC",
-            "CALL_GUARDED",
-            "CALL_BIND",
-            "CALL_METHOD",
-            "CALL3",
-            "CALLN",
-        }
-        escape_store_ops = {
-            "MODULE_SET_ATTR",
-            "LIST_SET",
-            "DICT_SET",
-            "SET_ADD",
-            "LIST_APPEND",
-            "DICT_SETITEM",
-        }
-        escape_control_ops = {"YIELD", "YIELD_FROM", "ret"}
-
-        for op in ops:
-            if op.kind in escape_call_ops:
-                for arg in op.args:
-                    if isinstance(arg, MoltValue) and arg.name in alloc_vars:
-                        escaped.add(arg.name)
-            elif op.kind in escape_store_ops:
-                for arg in op.args:
-                    if isinstance(arg, MoltValue) and arg.name in alloc_vars:
-                        escaped.add(arg.name)
-            elif op.kind in escape_control_ops:
-                for arg in op.args:
-                    if isinstance(arg, MoltValue) and arg.name in alloc_vars:
-                        escaped.add(arg.name)
-            elif op.kind == "CLOSURE_SET":
-                for arg in op.args:
-                    if isinstance(arg, MoltValue) and arg.name in alloc_vars:
-                        escaped.add(arg.name)
-
-        non_escaping = alloc_vars - escaped
-
-        if non_escaping:
-            self.midend_stats["escape_analysis_non_escaping"] = self.midend_stats.get(
-                "escape_analysis_non_escaping", 0
-            ) + len(non_escaping)
-            # Mark non-escaping allocations in metadata.
-            for op in ops:
-                if (
-                    op.kind in {"ALLOC", "ALLOC_CLASS"}
-                    and isinstance(op.result, MoltValue)
-                    and op.result.name in non_escaping
-                ):
-                    if op.metadata is None:
-                        op.metadata = {}
-                    op.metadata["stack_eligible"] = True
-
-        return non_escaping
 
     def _finalize_code_ids(self) -> None:
         for data in self.funcs_map.values():
@@ -37284,12 +35182,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             ops.insert(0, init_op)
 
     def to_json(self) -> dict[str, Any]:
-        # Late optimization passes run before finalization.
-        self._inline_small_functions()
-        for _fname, fdata in self.funcs_map.items():
-            fdata["ops"] = self._specialize_guarded_int_arithmetic(fdata["ops"])
-            fdata["ops"] = self._promote_raw_int_chains(fdata["ops"])
-            self._analyze_escaping_allocations(fdata["ops"])
         self._finalize_code_ids()
         self._ensure_code_slots_init()
         funcs_json: list[dict[str, Any]] = []
@@ -37322,11 +35214,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 break
         self._maybe_report_midend_stats()
-        return {
-            "ir_contract_name": SIMPLE_IR_CONTRACT_NAME,
-            "ir_contract_version": SIMPLE_IR_CONTRACT_VERSION,
-            "functions": funcs_json,
-        }
+        return {"functions": funcs_json}
 
 
 def compile_to_tir(

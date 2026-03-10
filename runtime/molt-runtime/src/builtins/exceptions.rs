@@ -601,18 +601,6 @@ fn exception_slot_is_valid(ptr: PtrSlot) -> bool {
     unsafe { object_type_id(live_ptr) == TYPE_ID_EXCEPTION }
 }
 
-#[inline]
-fn thread_exception_key() -> u64 {
-    crate::concurrency::current_thread_id()
-}
-
-#[inline]
-fn refresh_last_exception_pending(state: &RuntimeState, guard: &HashMap<u64, PtrSlot>) {
-    state
-        .last_exception_pending
-        .store(!guard.is_empty(), AtomicOrdering::Relaxed);
-}
-
 pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
     let state = runtime_state(_py);
     let debug_pending = debug_exception_pending();
@@ -646,13 +634,14 @@ pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
             None
         };
         let global_pending = if state.last_exception_pending.load(AtomicOrdering::Relaxed) {
-            let thread_key = thread_exception_key();
             let mut guard = state.last_exception.lock().unwrap();
-            match guard.get(&thread_key).copied() {
+            match *guard {
                 Some(ptr) if exception_slot_is_valid(ptr) => true,
                 _ => {
-                    guard.remove(&thread_key);
-                    refresh_last_exception_pending(state, &guard);
+                    *guard = None;
+                    state
+                        .last_exception_pending
+                        .store(false, AtomicOrdering::Relaxed);
                     false
                 }
             }
@@ -675,13 +664,14 @@ pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
         return pending;
     }
     let pending = if state.last_exception_pending.load(AtomicOrdering::Relaxed) {
-        let thread_key = thread_exception_key();
         let mut guard = state.last_exception.lock().unwrap();
-        match guard.get(&thread_key).copied() {
+        match *guard {
             Some(ptr) if exception_slot_is_valid(ptr) => true,
             _ => {
-                guard.remove(&thread_key);
-                refresh_last_exception_pending(state, &guard);
+                *guard = None;
+                state
+                    .last_exception_pending
+                    .store(false, AtomicOrdering::Relaxed);
                 false
             }
         }
@@ -689,9 +679,8 @@ pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
         false
     };
     if debug_pending && pending {
-        let thread_key = thread_exception_key();
         let guard = state.last_exception.lock().unwrap();
-        if let Some(ptr) = guard.get(&thread_key).copied() {
+        if let Some(ptr) = *guard {
             let kind_bits = unsafe { exception_kind_bits(ptr.0) };
             let kind = string_obj_to_owned(obj_from_bits(kind_bits))
                 .unwrap_or_else(|| "<unknown>".to_string());
@@ -711,8 +700,7 @@ pub(crate) fn exception_is_rooted(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
         .last_exception
         .lock()
         .unwrap()
-        .values()
-        .any(|slot| slot.0 == ptr)
+        .is_some_and(|slot| slot.0 == ptr)
     {
         return true;
     }
@@ -760,26 +748,22 @@ pub(crate) fn exception_last_bits_noinc(_py: &PyToken<'_>) -> Option<u64> {
     {
         return Some(MoltObject::from_ptr(ptr.0).bits());
     }
-    let thread_key = thread_exception_key();
     let guard = runtime_state(_py).last_exception.lock().unwrap();
-    guard
-        .get(&thread_key)
-        .copied()
-        .map(|ptr| MoltObject::from_ptr(ptr.0).bits())
+    guard.map(|ptr| MoltObject::from_ptr(ptr.0).bits())
 }
 
 pub(crate) fn clear_exception_state(_py: &PyToken<'_>) {
     crate::gil_assert();
     let state = runtime_state(_py);
-    let pointers = {
+    let ptr = {
         let mut guard = state.last_exception.lock().unwrap();
-        let old = std::mem::take(&mut *guard);
+        let ptr = guard.take();
         state
             .last_exception_pending
             .store(false, AtomicOrdering::Relaxed);
-        old.into_values().collect::<Vec<_>>()
+        ptr
     };
-    for ptr in pointers {
+    if let Some(ptr) = ptr {
         let bits = MoltObject::from_ptr(ptr.0).bits();
         dec_ref_bits(_py, bits);
     }
@@ -1185,12 +1169,13 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
                 .store(false, AtomicOrdering::Relaxed);
         }
     } else {
-        let thread_key = thread_exception_key();
         let mut guard = state.last_exception.lock().unwrap();
-        if let Some(old_ptr) = guard.remove(&thread_key) {
+        if let Some(old_ptr) = guard.take() {
             prior_ptr = Some(old_ptr.0);
         }
-        refresh_last_exception_pending(state, &guard);
+        state
+            .last_exception_pending
+            .store(false, AtomicOrdering::Relaxed);
     }
     if let Some(old_ptr) = prior_ptr {
         let old_bits = MoltObject::from_ptr(old_ptr).bits();
@@ -1298,10 +1283,11 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
             .task_last_exception_pending
             .store(true, AtomicOrdering::Relaxed);
     } else {
-        let thread_key = thread_exception_key();
         let mut guard = state.last_exception.lock().unwrap();
-        guard.insert(thread_key, PtrSlot(ptr));
-        refresh_last_exception_pending(state, &guard);
+        *guard = Some(PtrSlot(ptr));
+        state
+            .last_exception_pending
+            .store(true, AtomicOrdering::Relaxed);
     }
     if std::env::var("MOLT_DEBUG_EXCEPTIONS").as_deref() == Ok("1") {
         let debug_pending = debug_exception_pending();
@@ -1378,11 +1364,12 @@ pub(crate) fn clear_exception(_py: &PyToken<'_>) {
         }
         return;
     }
-    let thread_key = thread_exception_key();
     let old_ptr = {
         let mut guard = state.last_exception.lock().unwrap();
-        let old = guard.remove(&thread_key);
-        refresh_last_exception_pending(state, &guard);
+        let old = guard.take();
+        state
+            .last_exception_pending
+            .store(false, AtomicOrdering::Relaxed);
         old
     };
     if let Some(old_ptr) = old_ptr {
@@ -1407,35 +1394,35 @@ pub(crate) fn exception_set_last_bits_raw(_py: &PyToken<'_>, exc_bits: u64) {
             let mut guard = task_last_exceptions(_py).lock().unwrap();
             guard.insert(task_key, PtrSlot(ptr))
         };
-        // Always take a fresh slot-owned reference for the incoming exception before
-        // reconciling the prior slot entry. This keeps the slot correct even if the
-        // previous entry is a stale same-address pointer from an earlier runtime/test
-        // generation and the allocator has reused the address for a new exception.
-        inc_ref_bits(_py, exc_bits);
-        if let Some(old_ptr) = old_ptr
-            && exception_slot_is_valid(old_ptr)
-        {
-            let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
-            dec_ref_bits(_py, old_bits);
+        if let Some(old_ptr) = old_ptr {
+            if old_ptr.0 != ptr {
+                let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
+                dec_ref_bits(_py, old_bits);
+                inc_ref_bits(_py, exc_bits);
+            }
+        } else {
+            inc_ref_bits(_py, exc_bits);
         }
         state
             .task_last_exception_pending
             .store(true, AtomicOrdering::Relaxed);
     } else {
-        let thread_key = thread_exception_key();
         let old_ptr = {
             let mut guard = state.last_exception.lock().unwrap();
-            guard.insert(thread_key, PtrSlot(ptr))
+            guard.replace(PtrSlot(ptr))
         };
-        inc_ref_bits(_py, exc_bits);
-        if let Some(old_ptr) = old_ptr
-            && exception_slot_is_valid(old_ptr)
-        {
-            let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
-            dec_ref_bits(_py, old_bits);
+        if let Some(old_ptr) = old_ptr {
+            if old_ptr.0 != ptr {
+                let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
+                dec_ref_bits(_py, old_bits);
+                inc_ref_bits(_py, exc_bits);
+            }
+        } else {
+            inc_ref_bits(_py, exc_bits);
         }
-        let guard = state.last_exception.lock().unwrap();
-        refresh_last_exception_pending(state, &guard);
+        state
+            .last_exception_pending
+            .store(true, AtomicOrdering::Relaxed);
     }
 }
 
@@ -3581,24 +3568,14 @@ unsafe fn frame_globals_field_for_code(_py: &PyToken<'_>, code_bits: u64) -> Opt
             let filename_bits = code_filename_bits(code_ptr);
             filename = string_obj_to_owned(obj_from_bits(filename_bits));
         }
-        let (module_bits, main_bits, name_lookup) = {
+        let (module_bits, main_bits) = {
             let cache = runtime_state(_py).module_cache.lock().unwrap();
-            // Derive module name from filename for direct cache lookup.
-            // Bundled stdlib modules use filenames like "types.py" or
-            // "json/__init__.py" which may not match the module's __file__.
-            let name_lookup = filename.as_deref().and_then(|f| {
-                let stem = f.strip_suffix(".py").unwrap_or(f);
-                let stem = stem.strip_suffix("/__init__").unwrap_or(stem);
-                let module_name = stem.replace('/', ".");
-                cache.get(module_name.as_str()).copied()
-            });
             (
                 cache.values().copied().collect::<Vec<u64>>(),
                 cache.get("__main__").copied(),
-                name_lookup,
             )
         };
-        if let Some(ref filename) = filename {
+        if let Some(filename) = filename {
             let file_name_bits = intern_static_name(_py, &FILE_NAME, b"__file__");
             for module_bits in &module_bits {
                 let Some(module_ptr) = obj_from_bits(*module_bits).as_ptr() else {
@@ -3618,29 +3595,13 @@ unsafe fn frame_globals_field_for_code(_py: &PyToken<'_>, code_bits: u64) -> Opt
                     continue;
                 };
                 if string_obj_to_owned(obj_from_bits(file_bits))
-                    .is_some_and(|value| value == *filename)
+                    .is_some_and(|value| value == filename)
                 {
                     return Some(FrameField {
                         bits: dict_bits,
                         owned: false,
                     });
                 }
-            }
-        }
-        // Fallback: derive module name from filename and look up in cache directly.
-        // This handles bundled stdlib modules where __file__ may not be set yet.
-        if let Some(module_bits) = name_lookup
-            && let Some(module_ptr) = obj_from_bits(module_bits).as_ptr()
-            && object_type_id(module_ptr) == TYPE_ID_MODULE
-        {
-            let dict_bits = module_dict_bits(module_ptr);
-            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                && object_type_id(dict_ptr) == TYPE_ID_DICT
-            {
-                return Some(FrameField {
-                    bits: dict_bits,
-                    owned: false,
-                });
             }
         }
         if let Some(main_bits) = main_bits
@@ -5055,35 +5016,36 @@ pub extern "C" fn molt_exception_set_last(exc_bits: u64) -> u64 {
                 let mut guard = task_last_exceptions(_py).lock().unwrap();
                 guard.insert(task_key, PtrSlot(ptr))
             };
-            // See exception_set_last_bits_raw: the slot must always own a fresh
-            // reference to the incoming exception, even if the previous slot entry
-            // reused the same raw address.
-            inc_ref_bits(_py, new_bits);
-            if let Some(old_ptr) = old_ptr
-                && exception_slot_is_valid(old_ptr)
-            {
-                let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
-                dec_ref_bits(_py, old_bits);
+            if let Some(old_ptr) = old_ptr {
+                if old_ptr.0 != ptr {
+                    let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
+                    dec_ref_bits(_py, old_bits);
+                    inc_ref_bits(_py, new_bits);
+                }
+            } else {
+                inc_ref_bits(_py, new_bits);
             }
             state
                 .task_last_exception_pending
                 .store(true, AtomicOrdering::Relaxed);
         } else {
             let state = runtime_state(_py);
-            let thread_key = thread_exception_key();
             let old_ptr = {
                 let mut guard = state.last_exception.lock().unwrap();
-                guard.insert(thread_key, PtrSlot(ptr))
+                guard.replace(PtrSlot(ptr))
             };
-            inc_ref_bits(_py, new_bits);
-            if let Some(old_ptr) = old_ptr
-                && exception_slot_is_valid(old_ptr)
-            {
-                let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
-                dec_ref_bits(_py, old_bits);
+            if let Some(old_ptr) = old_ptr {
+                if old_ptr.0 != ptr {
+                    let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
+                    dec_ref_bits(_py, old_bits);
+                    inc_ref_bits(_py, new_bits);
+                }
+            } else {
+                inc_ref_bits(_py, new_bits);
             }
-            let guard = state.last_exception.lock().unwrap();
-            refresh_last_exception_pending(state, &guard);
+            state
+                .last_exception_pending
+                .store(true, AtomicOrdering::Relaxed);
         }
         MoltObject::none().bits()
     })
@@ -5129,15 +5091,16 @@ pub extern "C" fn molt_exception_last() -> u64 {
                 return bits;
             }
         }
-        let thread_key = thread_exception_key();
         let ptr = {
             let state = runtime_state(_py);
             let mut guard = state.last_exception.lock().unwrap();
-            match guard.get(&thread_key).copied() {
+            match *guard {
                 Some(ptr) if exception_slot_is_valid(ptr) => Some(ptr),
                 _ => {
-                    guard.remove(&thread_key);
-                    refresh_last_exception_pending(state, &guard);
+                    *guard = None;
+                    state
+                        .last_exception_pending
+                        .store(false, AtomicOrdering::Relaxed);
                     None
                 }
             }
@@ -5287,13 +5250,14 @@ pub extern "C" fn molt_exception_pending_fast() -> u64 {
         }
     }
     if state.last_exception_pending.load(AtomicOrdering::Relaxed) {
-        let thread_key = thread_exception_key();
         let mut guard = state.last_exception.lock().unwrap();
-        match guard.get(&thread_key).copied() {
+        match *guard {
             Some(ptr) if exception_slot_is_valid(ptr) => 1,
             _ => {
-                guard.remove(&thread_key);
-                refresh_last_exception_pending(state, &guard);
+                *guard = None;
+                state
+                    .last_exception_pending
+                    .store(false, AtomicOrdering::Relaxed);
                 0
             }
         }
@@ -5487,21 +5451,15 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_exception, clear_exception_state, exception_pending, exception_type_bits_from_name,
         generator_exception_stack_drop, generator_exception_stack_store,
-        generator_exception_stack_take, molt_exception_new_from_class, molt_exception_set_last,
-        task_exception_stack_drop, task_exception_stack_store, task_exception_stack_take,
+        generator_exception_stack_take, task_exception_stack_drop, task_exception_stack_store,
+        task_exception_stack_take,
     };
-    use crate::state::runtime_state::runtime_state;
-    use crate::{PtrSlot, alloc_string, dec_ref_bits, inc_ref_bits, obj_from_bits};
     use molt_obj_model::MoltObject;
-    use std::sync::atomic::Ordering as AtomicOrdering;
 
     #[test]
     fn generator_exception_stack_drop_clears_entries() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
         crate::with_gil_entry!(_py, {
             let boxed = Box::new(0_u8);
             let ptr = Box::into_raw(boxed);
@@ -5521,9 +5479,7 @@ mod tests {
 
     #[test]
     fn task_exception_stack_drop_clears_entries() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
         crate::with_gil_entry!(_py, {
             let boxed = Box::new(0_u8);
             let ptr = Box::into_raw(boxed);
@@ -5535,86 +5491,6 @@ mod tests {
             unsafe {
                 drop(Box::from_raw(ptr));
             }
-        });
-    }
-
-    #[test]
-    fn exception_set_last_refreshes_slot_ref_when_pointer_matches_stale_entry() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::with_gil_entry!(_py, {
-            clear_exception(_py);
-
-            let runtime_error = exception_type_bits_from_name(_py, "RuntimeError");
-            assert_ne!(runtime_error, 0);
-            let msg_ptr = alloc_string(_py, b"boom");
-            assert!(!msg_ptr.is_null());
-            let msg_bits = MoltObject::from_ptr(msg_ptr).bits();
-            let exc_bits = molt_exception_new_from_class(runtime_error, msg_bits);
-            dec_ref_bits(_py, msg_bits);
-            assert!(!obj_from_bits(exc_bits).is_none());
-
-            let exc_ptr = obj_from_bits(exc_bits)
-                .as_ptr()
-                .expect("exception object should expose a pointer");
-            let state = runtime_state(_py);
-            {
-                let mut guard = state.last_exception.lock().unwrap();
-                guard.insert(super::thread_exception_key(), PtrSlot(exc_ptr));
-            }
-            state
-                .last_exception_pending
-                .store(true, AtomicOrdering::Relaxed);
-
-            let _ = molt_exception_set_last(exc_bits);
-            dec_ref_bits(_py, exc_bits);
-
-            assert!(
-                exception_pending(_py),
-                "last-exception slot should retain the exception even when a stale same-address entry is replaced"
-            );
-
-            clear_exception(_py);
-        });
-    }
-
-    #[test]
-    fn exception_pending_ignores_other_threads_last_exception_slots() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::with_gil_entry!(_py, {
-            let runtime_error = exception_type_bits_from_name(_py, "RuntimeError");
-            let msg = b"boom";
-            let msg_ptr = alloc_string(_py, msg);
-            assert!(!msg_ptr.is_null());
-            let msg_bits = MoltObject::from_ptr(msg_ptr).bits();
-            let exc_bits = molt_exception_new_from_class(runtime_error, msg_bits);
-            dec_ref_bits(_py, msg_bits);
-            assert!(!obj_from_bits(exc_bits).is_none());
-            let exc_ptr = obj_from_bits(exc_bits)
-                .as_ptr()
-                .expect("exception object should expose a pointer");
-
-            clear_exception_state(_py);
-            let other_thread_key = super::thread_exception_key().saturating_add(1);
-            let state = runtime_state(_py);
-            inc_ref_bits(_py, exc_bits);
-            {
-                let mut guard = state.last_exception.lock().unwrap();
-                guard.insert(other_thread_key, PtrSlot(exc_ptr));
-            }
-            state
-                .last_exception_pending
-                .store(true, AtomicOrdering::Relaxed);
-
-            assert!(
-                !exception_pending(_py),
-                "current thread should ignore pending exception slots owned by a different thread id"
-            );
-            clear_exception_state(_py);
-            dec_ref_bits(_py, exc_bits);
         });
     }
 }

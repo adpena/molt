@@ -5,11 +5,8 @@ import pytest
 from molt import intrinsics as _intrinsics
 
 
-if not _intrinsics.runtime_active() or _intrinsics.load("molt_io_class") is None:
-    pytest.skip(
-        "Molt runtime io intrinsics not active (missing molt_io_class)",
-        allow_module_level=True,
-    )
+if not _intrinsics.runtime_active():
+    pytest.skip("Molt runtime intrinsics not active", allow_module_level=True)
 
 from molt.stdlib import io
 

@@ -1,16 +1,3 @@
-#![allow(
-    unused_variables,
-    unused_assignments,
-    clippy::all,
-    clippy::collapsible_if,
-    clippy::manual_strip,
-    clippy::needless_range_loop,
-    clippy::unnecessary_map_or,
-    clippy::if_same_then_else,
-    clippy::derivable_impls,
-    clippy::new_without_default
-)]
-
 use cranelift::codegen::Context;
 use cranelift::codegen::ir::{FuncRef, Function};
 use cranelift::codegen::isa;
@@ -23,10 +10,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::OnceLock;
 
-mod ir_schema;
-pub mod luau;
-pub mod rust;
 pub mod wasm;
+
+#[cfg(feature = "egraphs")]
+pub mod egraph_simplify;
 
 const QNAN: u64 = 0x7ff8_0000_0000_0000;
 const TAG_INT: u64 = 0x0001_0000_0000_0000;
@@ -48,8 +35,6 @@ const FUNC_DEFAULT_DICT_POP: i64 = 2;
 const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
 const HEADER_SIZE_BYTES: i32 = 40;
 const HEADER_STATE_OFFSET: i32 = -(HEADER_SIZE_BYTES - 16);
-pub const SIMPLE_IR_CONTRACT_NAME: &str = "molt.simple_ir";
-pub const SIMPLE_IR_CONTRACT_VERSION: u32 = 1;
 
 fn find_zero_pred_blocks(func: &Function) -> Vec<Block> {
     let mut preds: HashMap<Block, usize> = HashMap::new();
@@ -189,24 +174,6 @@ fn int_value_fits_inline(builder: &mut FunctionBuilder, val: Value) -> Value {
     builder.ins().icmp(IntCC::Equal, val, unboxed)
 }
 
-fn mul_value_fits_inline(
-    builder: &mut FunctionBuilder,
-    lhs: Value,
-    rhs: Value,
-    prod: Value,
-) -> Value {
-    // `smulhi` exposes the high 64 bits of the full 128-bit signed product.
-    // When those bits equal the sign-extension of the low 64 bits, the multiply
-    // did not overflow `i64`. We also require the product to fit Molt's inline
-    // int payload before boxing it on the fast path.
-    let hi = builder.ins().smulhi(lhs, rhs);
-    let sixty_three = builder.ins().iconst(types::I64, 63);
-    let sign_ext = builder.ins().sshr(prod, sixty_three);
-    let no_overflow = builder.ins().icmp(IntCC::Equal, hi, sign_ext);
-    let fits_inline = int_value_fits_inline(builder, prod);
-    builder.ins().band(no_overflow, fits_inline)
-}
-
 fn box_bool_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     let one = builder.ins().iconst(types::I64, 1);
     let zero = builder.ins().iconst(types::I64, 0);
@@ -231,23 +198,10 @@ fn box_ptr_value(builder: &mut FunctionBuilder, val: Value) -> Value {
 }
 
 fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: FuncRef) {
-    // Inline tag check: only call the runtime for pointer-tagged values.
-    // Non-pointers (int, bool, none, pending) are NaN-boxed inline and
-    // never touch the heap — skip the function call entirely.
-    let masked = builder.ins().band_imm(val, (QNAN | TAG_MASK) as i64);
-    let ptr_tag = builder.ins().iconst(types::I64, (QNAN | TAG_PTR) as i64);
-    let is_ptr = builder.ins().icmp(IntCC::Equal, masked, ptr_tag);
-    let call_block = builder.create_block();
-    let merge_block = builder.create_block();
-    builder
-        .ins()
-        .brif(is_ptr, call_block, &[], merge_block, &[]);
-    builder.switch_to_block(call_block);
-    builder.seal_block(call_block);
-    builder.ins().call(obj_ref_fn, &[val]);
-    builder.ins().jump(merge_block, &[]);
-    builder.switch_to_block(merge_block);
-    builder.seal_block(merge_block);
+    // Keep ref-adjust control flow linear. Hidden branch blocks here can invalidate
+    // block-local tracked-value carry if callers do not explicitly propagate tracking.
+    // The runtime ref helpers already no-op for non-pointer boxed values.
+    let _ = builder.ins().call(obj_ref_fn, &[val]);
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
@@ -263,1237 +217,6 @@ pub struct SimpleIR {
     pub functions: Vec<FunctionIR>,
     #[serde(default)]
     pub profile: Option<PgoProfileIR>,
-}
-
-impl SimpleIR {
-    /// Dead-code elimination: keep only functions reachable from `molt_main`.
-    ///
-    /// Walks the call graph starting from `molt_main` and any function whose
-    /// name contains `__main__` (the user's module). Removes all unreachable
-    /// functions (stdlib, unused modules).
-    pub fn tree_shake(&mut self) {
-        // Build name → index map.
-        let name_to_idx: HashMap<&str, usize> = self
-            .functions
-            .iter()
-            .enumerate()
-            .map(|(i, f)| (f.name.as_str(), i))
-            .collect();
-
-        // Collect all function names referenced by a given function's ops.
-        let callees = |func: &FunctionIR| -> HashSet<String> {
-            let mut refs = HashSet::new();
-            for op in &func.ops {
-                match op.kind.as_str() {
-                    "call" | "call_guarded" | "call_internal" => {
-                        // s_value holds the function name in pedagogical IR.
-                        if let Some(ref s) = op.s_value {
-                            refs.insert(s.clone());
-                        }
-                        // args[0] holds the callable in real IR.
-                        if let Some(ref args) = op.args {
-                            if let Some(first) = args.first() {
-                                refs.insert(first.clone());
-                            }
-                        }
-                    }
-                    "call_func" | "call_indirect" | "call_async" | "block_on" | "spawn"
-                    | "call_bind" => {
-                        if let Some(ref args) = op.args {
-                            if let Some(first) = args.first() {
-                                refs.insert(first.clone());
-                            }
-                        }
-                    }
-                    "call_method" => {
-                        if let Some(ref args) = op.args {
-                            if let Some(first) = args.first() {
-                                refs.insert(first.clone());
-                            }
-                        }
-                    }
-                    "func_new" | "func_new_closure" | "builtin_func" | "code_new" => {
-                        if let Some(ref s) = op.s_value {
-                            refs.insert(s.clone());
-                        }
-                    }
-                    "bound_method_new" => {
-                        if let Some(ref args) = op.args {
-                            for a in args {
-                                refs.insert(a.clone());
-                            }
-                        }
-                    }
-                    _ => {
-                        // Some ops reference functions via s_value or args.
-                        // Conservatively include s_value if it matches a function name.
-                        if let Some(ref s) = op.s_value {
-                            if name_to_idx.contains_key(s.as_str()) {
-                                refs.insert(s.clone());
-                            }
-                        }
-                    }
-                }
-            }
-            refs
-        };
-
-        // Mark phase: BFS from roots.
-        let mut live: HashSet<usize> = HashSet::new();
-        let mut worklist: Vec<usize> = Vec::new();
-
-        // Seed with molt_main and the module initializer.
-        for (i, f) in self.functions.iter().enumerate() {
-            if f.name == "molt_main" || f.name == "molt_init___main__" {
-                if live.insert(i) {
-                    worklist.push(i);
-                }
-            }
-        }
-
-        while let Some(idx) = worklist.pop() {
-            let refs = callees(&self.functions[idx]);
-            for r in &refs {
-                if let Some(&callee_idx) = name_to_idx.get(r.as_str()) {
-                    if live.insert(callee_idx) {
-                        worklist.push(callee_idx);
-                    }
-                }
-            }
-        }
-
-        // Sweep: retain only live functions.
-        let total = self.functions.len();
-        let mut kept = Vec::with_capacity(live.len());
-        for (i, f) in self.functions.drain(..).enumerate() {
-            if live.contains(&i) {
-                kept.push(f);
-            }
-        }
-        self.functions = kept;
-
-        // Log DCE stats to stderr if significant reduction.
-        let removed = total - self.functions.len();
-        if removed > 0 {
-            eprintln!(
-                "[molt-dce] Tree shake: {total} functions → {} kept, {removed} removed",
-                self.functions.len()
-            );
-        }
-    }
-
-    /// Aggressive Luau-specific DCE: rewrites `molt_main` to skip runtime
-    /// bootstrap and directly call user code, then runs standard tree_shake.
-    ///
-    /// This exploits the fact that the Luau prelude provides native equivalents
-    /// for Python builtins (math, json, range, etc.), so the entire stdlib init
-    /// chain can be elided.
-    pub fn tree_shake_luau(&mut self) {
-        // Phase 1: Rewrite molt_main to only call molt_init___main__().
-        // The original molt_main calls:
-        //   molt_runtime_init() → molt_sys_set_version_info() → ...string constants...
-        //   → molt_init_sys() → molt_init___main__() → molt_runtime_shutdown()
-        // We replace it with just: molt_init___main__().
-        let has_init_main = self
-            .functions
-            .iter()
-            .any(|f| f.name == "molt_init___main__");
-        if has_init_main {
-            if let Some(main_func) = self.functions.iter_mut().find(|f| f.name == "molt_main") {
-                main_func.ops = vec![
-                    OpIR {
-                        kind: "call".to_string(),
-                        s_value: Some("molt_init___main__".to_string()),
-                        out: Some("__init_result".to_string()),
-                        args: Some(vec![]),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
-                    },
-                ];
-                eprintln!("[molt-dce] Rewrote molt_main to skip runtime bootstrap");
-            }
-        }
-
-        // Phase 2: In molt_init___main__, stub out calls to stdlib init
-        // functions. These set up Python module objects that aren't needed
-        // when the Luau prelude provides native equivalents.
-        if let Some(init_main) = self
-            .functions
-            .iter_mut()
-            .find(|f| f.name == "molt_init___main__")
-        {
-            let mut stubbed = 0;
-            for op in &mut init_main.ops {
-                let is_stdlib_init_call = match op.kind.as_str() {
-                    "call" | "call_guarded" | "call_internal" | "call_func" => {
-                        // Check if the call target is a stdlib init function.
-                        let target = op
-                            .s_value
-                            .as_deref()
-                            .or_else(|| {
-                                op.args.as_ref().and_then(|a| a.first().map(|s| s.as_str()))
-                            })
-                            .unwrap_or("");
-                        target.starts_with("molt_init_") && target != "molt_init___main__"
-                            || target.starts_with("molt_runtime_")
-                            || target.starts_with("molt_sys_")
-                    }
-                    _ => false,
-                };
-                if is_stdlib_init_call {
-                    // Replace with a nop.
-                    op.kind = "nop".to_string();
-                    op.s_value = None;
-                    op.args = None;
-                    stubbed += 1;
-                }
-            }
-            if stubbed > 0 {
-                eprintln!("[molt-dce] Stubbed {stubbed} stdlib init calls in molt_init___main__");
-            }
-        }
-
-        // Phase 2.5: Strip module-init boilerplate from molt_init___main__.
-        // The boilerplate before the first func_new sets up __file__,
-        // __package__, importlib, __spec__ — all Python runtime metadata
-        // meaningless in Luau.  Also strip func_attr_set patterns (setting
-        // __defaults__, __kwdefaults__, __doc__, __code__) and module_set_attr
-        // which writes metadata to the module dict.
-        if let Some(init_main) = self
-            .functions
-            .iter_mut()
-            .find(|f| f.name == "molt_init___main__")
-        {
-            // Part A: Strip everything before the first func_new.
-            let first_user_op = init_main
-                .ops
-                .iter()
-                .position(|op| matches!(op.kind.as_str(), "func_new" | "make_function"));
-            let mut stripped = 0;
-            if let Some(cutoff) = first_user_op {
-                // Only strip known module-init boilerplate ops.
-                // Preserve everything else (data construction, assignments, etc.)
-                // to avoid breaking list literals and dict construction.
-                let boilerplate_kinds: HashSet<&str> = [
-                    "module_get_attr",
-                    "module_del_global",
-                    "import_name",
-                    "import_from",
-                    "call_guarded",
-                    "call",
-                    "check_exception",
-                    "exception_last",
-                    "is",
-                    "not",
-                    "if",
-                    "else",
-                    "end_if",
-                    "func_attr_set",
-                ]
-                .iter()
-                .copied()
-                .collect();
-                for op in &mut init_main.ops[..cutoff] {
-                    let kind = op.kind.as_str();
-                    // Only strip ops that are definitely module metadata boilerplate.
-                    if !boilerplate_kinds.contains(kind) {
-                        continue;
-                    }
-                    op.kind = "nop".to_string();
-                    op.s_value = None;
-                    op.args = None;
-                    stripped += 1;
-                }
-            }
-
-            // Part B: Strip function attribute setup patterns.
-            // Strip function attribute setup and module metadata writes.
-            // Preserve module_set_attr for user-visible variables (non-dunder names).
-            for op in init_main.ops.iter_mut() {
-                let should_strip = match op.kind.as_str() {
-                    "func_attr_set" | "module_del_global" => true,
-                    "module_set_attr" => {
-                        // Only strip if the attribute name is a dunder (__xxx__).
-                        // User variable assignments like `nums = [1,2,3]` must be kept.
-                        let attr_name = op
-                            .s_value
-                            .as_deref()
-                            .or_else(|| {
-                                op.args
-                                    .as_deref()
-                                    .and_then(|a| a.get(1).map(|s| s.as_str()))
-                            })
-                            .unwrap_or("");
-                        attr_name.starts_with("__") && attr_name.ends_with("__")
-                    }
-                    _ => false,
-                };
-                if should_strip {
-                    op.kind = "nop".to_string();
-                    op.out = None;
-                    op.s_value = None;
-                    op.args = None;
-                    op.var = None;
-                    stripped += 1;
-                }
-            }
-
-            if stripped > 0 {
-                eprintln!(
-                    "[molt-dce] Stripped {stripped} module-init boilerplate ops in molt_init___main__"
-                );
-            }
-        }
-
-        // Phase 3: Strip exception-handling boilerplate from all functions.
-        // Pattern: exception_last → const_none → is → not → if → [body] → end_if
-        // In Luau there are no exceptions, so this entire chain is dead code.
-        // We use a sequential scan to recognize and nop the complete pattern.
-        let dead_kinds: HashSet<&str> = [
-            "check_exception",
-            "exception_stack_depth",
-            "exception_stack_set_depth",
-            "exception_stack_exit",
-            "exception_stack_enter",
-            "exception_new",
-            "raise",
-            "exception_reraise",
-            "frame_locals_set",
-        ]
-        .iter()
-        .copied()
-        .collect();
-
-        for func in &mut self.functions {
-            let mut stripped = 0;
-            let len = func.ops.len();
-            let mut i = 0;
-            while i < len {
-                let kind = func.ops[i].kind.as_str();
-
-                // Simple dead ops — nop individually.
-                if dead_kinds.contains(kind) {
-                    func.ops[i].kind = "nop".to_string();
-                    func.ops[i].s_value = None;
-                    func.ops[i].args = None;
-                    func.ops[i].out = None;
-                    stripped += 1;
-                    i += 1;
-                    continue;
-                }
-
-                // Recognize the full exception-check pattern:
-                //   exception_last → const_none → is → not → if → ... → end_if
-                if kind == "exception_last" && i + 4 < len {
-                    let k1 = func.ops[i + 1].kind.as_str();
-                    let k2 = func.ops[i + 2].kind.as_str();
-                    let k3 = func.ops[i + 3].kind.as_str();
-                    let k4 = func.ops[i + 4].kind.as_str();
-                    if k1 == "const_none" && k2 == "is" && k3 == "not" && k4 == "if" {
-                        // Nop: exception_last, const_none, is, not, if
-                        for j in i..=i + 4 {
-                            func.ops[j].kind = "nop".to_string();
-                            func.ops[j].s_value = None;
-                            func.ops[j].args = None;
-                            func.ops[j].out = None;
-                            stripped += 1;
-                        }
-                        // Nop everything until matching end_if.
-                        let mut depth: i32 = 1;
-                        let mut j = i + 5;
-                        while j < len && depth > 0 {
-                            if func.ops[j].kind == "if" {
-                                depth += 1;
-                            } else if func.ops[j].kind == "end_if" {
-                                depth -= 1;
-                            }
-                            func.ops[j].kind = "nop".to_string();
-                            func.ops[j].s_value = None;
-                            func.ops[j].args = None;
-                            func.ops[j].out = None;
-                            stripped += 1;
-                            j += 1;
-                        }
-                        i = j;
-                        continue;
-                    }
-                    // Fallback: just nop the exception_last.
-                    func.ops[i].kind = "nop".to_string();
-                    func.ops[i].s_value = None;
-                    func.ops[i].args = None;
-                    func.ops[i].out = None;
-                    stripped += 1;
-                    i += 1;
-                    continue;
-                }
-
-                i += 1;
-            }
-            if stripped > 0 {
-                eprintln!(
-                    "[molt-dce] Stripped {stripped} exception-handling ops from {}",
-                    func.name
-                );
-            }
-        }
-
-        // Phase 3.1: In genexpr/poll functions, strip the send()/throw() check
-        // after state_yield. The pattern:
-        //   state_yield → closure_load → [exception check] → closure_store(self, nil)
-        //   → closure_load → closure_store(self, nil) → loop_continue
-        // The code between state_yield and loop_continue is generator protocol
-        // handling that is meaningless in Luau. Nop everything between them
-        // (exclusive) EXCEPT the loop_continue itself.
-        for func in &mut self.functions {
-            if !(func.name.contains("genexpr") || func.name.contains("listcomp")) {
-                continue;
-            }
-            let len = func.ops.len();
-            let mut i = 0;
-            let mut stripped = 0;
-            while i < len {
-                if func.ops[i].kind == "state_yield" {
-                    // Nop everything from i+1 until loop_continue or loop_end
-                    let mut j = i + 1;
-                    while j < len {
-                        let k = func.ops[j].kind.as_str();
-                        if k == "loop_continue" || k == "loop_end" {
-                            break;
-                        }
-                        func.ops[j].kind = "nop".to_string();
-                        func.ops[j].out = None;
-                        func.ops[j].s_value = None;
-                        func.ops[j].args = None;
-                        func.ops[j].var = None;
-                        stripped += 1;
-                        j += 1;
-                    }
-                    i = j;
-                    continue;
-                }
-                i += 1;
-            }
-            if stripped > 0 {
-                eprintln!(
-                    "[molt-dce] Stripped {stripped} post-yield ops from genexpr {}",
-                    func.name
-                );
-            }
-        }
-
-        // Phase 3.5: Flatten frame-slot wrappers.
-        // Pattern A: `missing:vM → list_new:vW(vM)` — default arg sentinel cells.
-        // Pattern B: `const_none:vM → list_new:vW(vM)` — closure/frame slot cells.
-        // Both create single-element tables used as mutable cells. All accesses
-        // use constant index 0. Replace with plain local variables.
-        for func in &mut self.functions {
-            // Step 1: Identify wrapper tables (missing/const_none → list_new pairs).
-            let mut wrapper_vars: HashSet<String> = HashSet::new();
-            let mut i = 0;
-            while i < func.ops.len() {
-                let is_wrapper_source =
-                    matches!(func.ops[i].kind.as_str(), "missing" | "const_none");
-                if is_wrapper_source {
-                    let source_out = func.ops[i].out.clone().unwrap_or_default();
-                    // Skip check_exception and nop ops to find the list_new.
-                    // (Phase 3 may have already converted check_exception to nop.)
-                    let mut j = i + 1;
-                    while j < func.ops.len()
-                        && matches!(func.ops[j].kind.as_str(), "check_exception" | "nop")
-                    {
-                        j += 1;
-                    }
-                    if j < func.ops.len()
-                        && matches!(func.ops[j].kind.as_str(), "list_new" | "build_list")
-                    {
-                        let args = func.ops[j].args.as_deref().unwrap_or(&[]);
-                        if args.len() == 1 && args[0] == source_out {
-                            if let Some(ref wrapper_name) = func.ops[j].out {
-                                wrapper_vars.insert(wrapper_name.clone());
-                            }
-                            // Nop the source op.
-                            func.ops[i].kind = "nop".to_string();
-                            func.ops[i].out = None;
-                            func.ops[i].args = None;
-                            // Convert list_new to const_none (plain nil variable).
-                            func.ops[j].kind = "const_none".to_string();
-                            func.ops[j].args = None;
-                        }
-                    }
-                }
-                i += 1;
-            }
-
-            if wrapper_vars.is_empty() {
-                continue;
-            }
-
-            // Step 2: Rewrite index/store_index on wrappers to direct access.
-            let mut rewritten = 0;
-            for op in &mut func.ops {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                match op.kind.as_str() {
-                    "index" | "get_item" | "subscript" if args.len() >= 2 => {
-                        if wrapper_vars.contains(&args[0]) {
-                            // index(wrapper, idx) → load wrapper directly.
-                            let wrapper = args[0].clone();
-                            op.kind = "load_local".to_string();
-                            op.var = Some(wrapper);
-                            op.args = None;
-                            rewritten += 1;
-                        }
-                    }
-                    "store_index" | "store_subscript" | "set_item" if args.len() >= 3 => {
-                        if wrapper_vars.contains(&args[0]) {
-                            // store_index(wrapper, idx, val) → store to wrapper.
-                            let wrapper = args[0].clone();
-                            let val = args[2].clone();
-                            op.kind = "store_local".to_string();
-                            op.var = Some(wrapper);
-                            op.args = Some(vec![val]);
-                            rewritten += 1;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            if rewritten > 0 {
-                eprintln!(
-                    "[molt-dce] Flattened {} wrapper accesses ({} wrappers) in {}",
-                    rewritten,
-                    wrapper_vars.len(),
-                    func.name
-                );
-            }
-        }
-
-        // Phase 4.5: Dead variable elimination.
-        // Remove ops whose `out` variable is never consumed by any other op
-        // and whose kind is side-effect-free (constants, pure math, table literals).
-        let side_effect_free: HashSet<&str> = [
-            "const",
-            "const_int",
-            "const_float",
-            "const_string",
-            "const_bytes",
-            "const_none",
-            "const_bool",
-            "const_true",
-            "const_false",
-            "const_ellipsis",
-            "const_complex",
-            "load_local",
-            "load_global",
-            "load_fast",
-            "build_list",
-            "list_new",
-            "build_tuple",
-            "tuple_new",
-            "build_dict",
-            "dict_new",
-            "build_set",
-            "set_new",
-            "build_string",
-            "format_string",
-            "binary_add",
-            "binary_sub",
-            "binary_mul",
-            "binary_div",
-            "binary_floor_div",
-            "binary_mod",
-            "binary_pow",
-            "binary_and",
-            "binary_or",
-            "binary_xor",
-            "binary_lshift",
-            "binary_rshift",
-            "unary_neg",
-            "unary_pos",
-            "unary_not",
-            "unary_invert",
-            "compare",
-            "is",
-            "is_not",
-            "in",
-            "not_in",
-            "not",
-            "add",
-            "sub",
-            "mul",
-            "div",
-            "floor_div",
-            "mod",
-            "pow",
-            "lshift",
-            "rshift",
-            "bit_and",
-            "bit_or",
-            "bit_xor",
-            "get_item",
-            "index",
-            "subscript",
-            "get_attr",
-            "missing",
-            "nop",
-            "module_get_attr",
-            "module_get_global",
-            "module_get_name",
-            "callargs_new",
-            "func_new",
-            "make_function",
-        ]
-        .iter()
-        .copied()
-        .collect();
-
-        for func in &mut self.functions {
-            let mut total_eliminated = 0;
-            loop {
-                // Collect all variable *uses* (reads) across the function.
-                let mut used_vars: HashSet<String> = HashSet::new();
-                // Params are always "used" (entry points).
-                for p in &func.params {
-                    used_vars.insert(p.clone());
-                }
-                for op in func.ops.iter() {
-                    if let Some(ref args) = op.args {
-                        for a in args {
-                            used_vars.insert(a.clone());
-                        }
-                    }
-                    if let Some(ref v) = op.var {
-                        used_vars.insert(v.clone());
-                    }
-                }
-
-                let mut eliminated = 0;
-                for op in &mut func.ops {
-                    if let Some(ref out_var) = op.out {
-                        if !used_vars.contains(out_var)
-                            && side_effect_free.contains(op.kind.as_str())
-                        {
-                            op.kind = "nop".to_string();
-                            op.out = None;
-                            op.args = None;
-                            op.var = None;
-                            op.s_value = None;
-                            eliminated += 1;
-                        }
-                    }
-                }
-                total_eliminated += eliminated;
-                if eliminated == 0 {
-                    break;
-                }
-            }
-            if total_eliminated > 0 {
-                eprintln!(
-                    "[molt-dce] Eliminated {total_eliminated} dead variables in {}",
-                    func.name
-                );
-            }
-        }
-
-        // Phase 4.6: Strip __annotate__ machinery.
-        // Python 3.12+ emits __annotate__ callbacks for type annotations.
-        // These are pure metadata, never needed at runtime in Luau.
-        // Nop func_new ops that create __annotate__ functions, and any ops
-        // that only exist to wire them into module dicts.
-        if let Some(init_main) = self
-            .functions
-            .iter_mut()
-            .find(|f| f.name == "molt_init___main__")
-        {
-            let mut annotate_vars: HashSet<String> = HashSet::new();
-            // Find func_new ops that create __annotate__ functions.
-            for op in init_main.ops.iter_mut() {
-                if matches!(op.kind.as_str(), "func_new" | "make_function") {
-                    if let Some(ref s) = op.s_value {
-                        if s.contains("__annotate__") {
-                            if let Some(ref out) = op.out {
-                                annotate_vars.insert(out.clone());
-                            }
-                            op.kind = "nop".to_string();
-                            op.out = None;
-                            op.args = None;
-                            op.s_value = None;
-                        }
-                    }
-                }
-            }
-            if !annotate_vars.is_empty() {
-                // Nop any op that references an annotate var in args or var.
-                let mut stripped = 0;
-                for op in init_main.ops.iter_mut() {
-                    if op.kind == "nop" {
-                        continue;
-                    }
-                    let refs_annotate = op
-                        .args
-                        .as_deref()
-                        .unwrap_or(&[])
-                        .iter()
-                        .any(|a| annotate_vars.contains(a))
-                        || op
-                            .var
-                            .as_deref()
-                            .map_or(false, |v| annotate_vars.contains(v));
-                    if refs_annotate {
-                        // Also collect the output var so downstream uses are eliminated.
-                        if let Some(ref out) = op.out {
-                            annotate_vars.insert(out.clone());
-                        }
-                        op.kind = "nop".to_string();
-                        op.out = None;
-                        op.args = None;
-                        op.var = None;
-                        op.s_value = None;
-                        stripped += 1;
-                    }
-                }
-                eprintln!(
-                    "[molt-dce] Stripped {} __annotate__ ops ({} vars)",
-                    stripped,
-                    annotate_vars.len()
-                );
-            }
-        }
-
-        // Phase 4.5: Inline list comprehension generators.
-        // Python list comprehensions compile as generator expressions (genexpr_N_poll)
-        // that use state_yield to produce values. The consumer uses alloc_task + iter
-        // + iter_next to collect them. This pattern is:
-        //
-        //   alloc_task vTASK = genexpr_N_poll
-        //   list_new   vRESULT = []
-        //   iter       vITER = vTASK
-        //   loop_start
-        //     iter_next  vNEXT = vITER
-        //     index      vFLAG = vNEXT[1]
-        //     loop_break_if_true vFLAG
-        //     index      vVAL = vNEXT[0]
-        //     list_append vRESULT, vVAL
-        //     loop_continue
-        //   loop_end
-        //
-        // We inline this by extracting the genexpr's source iterable and body
-        // expression, then replacing the consumer with a direct for_iter loop.
-        {
-            // Collect genexpr functions: name → (source_list_ops, body_ops, iter_var, body_result_var)
-            struct GenExprInfo {
-                /// Ops that build the source iterable (e.g., list_new with constants)
-                source_ops: Vec<OpIR>,
-                /// The output var of the source iterable
-                source_var: String,
-                /// The variable holding the current loop item (stored via closure_store after index extraction)
-                item_var: String,
-                /// Ops for the body expression (between item extraction and state_yield)
-                body_ops: Vec<OpIR>,
-                /// The yielded result variable (first element of the state_yield tuple)
-                result_var: String,
-            }
-
-            let mut genexpr_map: HashMap<String, GenExprInfo> = HashMap::new();
-
-            for func in &self.functions {
-                if !(func.name.contains("genexpr") && func.name.contains("_poll")) {
-                    continue;
-                }
-
-                // Find the source iterable: look for list_new followed by iter
-                let mut source_var = String::new();
-                let mut source_ops: Vec<OpIR> = Vec::new();
-                let mut iter_target = String::new();
-
-                // Collect all ops that contribute to the source iterable.
-                // Two patterns:
-                // A) Literal list: const ops → list_new → iter
-                // B) Variable ref: const_str → module_cache_get → module_get_global → iter
-                let mut preceding_ops: Vec<OpIR> = Vec::new();
-                let mut last_out_var = String::new();
-                for op in &func.ops {
-                    let k = op.kind.as_str();
-                    match k {
-                        "check_exception"
-                        | "nop"
-                        | "exception_stack_enter"
-                        | "exception_stack_depth"
-                        | "dict_new"
-                        | "frame_locals_set"
-                        | "state_switch" => {}
-                        "iter" => {
-                            if let Some(ref args) = op.args {
-                                if let Some(src) = args.first() {
-                                    // The iter target should be the last variable we tracked
-                                    source_var = src.clone();
-                                    iter_target = op.out.clone().unwrap_or_default();
-                                    break;
-                                }
-                            }
-                        }
-                        _ => {
-                            if let Some(ref out) = op.out {
-                                last_out_var = out.clone();
-                            }
-                            preceding_ops.push(op.clone());
-                        }
-                    }
-                }
-
-                if source_var.is_empty() || iter_target.is_empty() {
-                    continue;
-                }
-
-                // Filter source_ops to only include ops needed to produce source_var.
-                // Walk backwards from source_var to find its dependency chain.
-                {
-                    let mut needed: HashSet<String> = HashSet::new();
-                    needed.insert(source_var.clone());
-                    let mut filtered = Vec::new();
-                    for op in preceding_ops.iter().rev() {
-                        let out = op.out.as_deref().unwrap_or("");
-                        if needed.contains(out) {
-                            // This op produces a needed value; add its args as needed too
-                            if let Some(ref args) = op.args {
-                                for arg in args {
-                                    needed.insert(arg.clone());
-                                }
-                            }
-                            filtered.push(op.clone());
-                        }
-                    }
-                    filtered.reverse();
-                    source_ops = filtered;
-                }
-
-                // Find the body: between closure_store(self, item) and state_yield
-                // Pattern: closure_store self, vITEM → [body ops] → state_yield [vTUPLE]
-                // where vTUPLE is built from the body result
-                let mut item_var = String::new();
-                let mut body_ops: Vec<OpIR> = Vec::new();
-                let mut result_var = String::new();
-                let mut in_body = false;
-                let mut first_closure_store_after_index = false;
-
-                for (idx, op) in func.ops.iter().enumerate() {
-                    // Find the pattern: index(vNEXT, 0) → closure_store(self, value)
-                    // This is where the loop item is extracted and stored.
-                    // We need to find the SECOND index (first is exhausted flag check,
-                    // second is value extraction), followed by closure_store.
-                    // Skip check_exception/nop between them.
-                    if op.kind == "index" && !first_closure_store_after_index {
-                        // Look ahead for closure_store, skipping check_exception/nop
-                        let mut look = idx + 1;
-                        while look < func.ops.len() {
-                            let k = func.ops[look].kind.as_str();
-                            if k == "check_exception" || k == "nop" {
-                                look += 1;
-                                continue;
-                            }
-                            break;
-                        }
-                        if look < func.ops.len() && func.ops[look].kind == "closure_store" {
-                            if let Some(ref args) = func.ops[look].args {
-                                if args.len() >= 2 && args[0] == "self" {
-                                    item_var = args[1].clone();
-                                    first_closure_store_after_index = true;
-                                    in_body = true;
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-
-                    if in_body {
-                        match op.kind.as_str() {
-                            "closure_store"
-                                if op
-                                    .args
-                                    .as_ref()
-                                    .map_or(false, |a| a.len() >= 2 && a[0] == "self") =>
-                            {
-                                // Skip — this is storing the item var
-                                if op.args.as_ref().map(|a| &a[1]) == Some(&item_var) {
-                                    continue;
-                                }
-                            }
-                            "state_yield" => {
-                                // The yield argument is a tuple {result, false}
-                                // We need to find what was yielded: look at the tuple
-                                // construction just before this
-                                if let Some(ref args) = op.args {
-                                    if let Some(tuple_var) = args.first() {
-                                        // Find the tuple construction: build_tuple or list_new
-                                        // that created this tuple
-                                        for prev_op in func.ops[..idx].iter().rev() {
-                                            if prev_op.out.as_deref() == Some(tuple_var.as_str()) {
-                                                // The first arg of the tuple is the result
-                                                if let Some(ref pargs) = prev_op.args {
-                                                    if let Some(res) = pargs.first() {
-                                                        result_var = res.clone();
-                                                    }
-                                                }
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Count unclosed if/end_if in body_ops to close them
-                                let mut open_ifs = 0i32;
-                                for bop in &body_ops {
-                                    match bop.kind.as_str() {
-                                        "if" => open_ifs += 1,
-                                        "end_if" => open_ifs -= 1,
-                                        _ => {}
-                                    }
-                                }
-                                // Append end_if ops for any unclosed if blocks
-                                for _ in 0..open_ifs {
-                                    body_ops.push(OpIR {
-                                        kind: "end_if".to_string(),
-                                        ..OpIR::default()
-                                    });
-                                }
-
-                                in_body = false;
-                                break;
-                            }
-                            "dict_set" | "frame_locals_set" | "check_exception" => {
-                                // Skip metadata ops
-                                continue;
-                            }
-                            "closure_load" => {
-                                // Rewrite closure_load(self) → load the item variable
-                                let mut rewritten = op.clone();
-                                rewritten.kind = "load_local".to_string();
-                                rewritten.args = None;
-                                rewritten.var = Some(item_var.clone());
-                                body_ops.push(rewritten);
-                                continue;
-                            }
-                            _ => {
-                                body_ops.push(op.clone());
-                            }
-                        }
-                    }
-                }
-
-                if !result_var.is_empty() {
-                    eprintln!(
-                        "[molt-dce] Found inlinable genexpr: {} (source={}, item={}, result={}, {} body ops)",
-                        func.name,
-                        source_var,
-                        item_var,
-                        result_var,
-                        body_ops.len()
-                    );
-                    genexpr_map.insert(
-                        func.name.clone(),
-                        GenExprInfo {
-                            source_ops,
-                            source_var,
-                            item_var,
-                            body_ops,
-                            result_var,
-                        },
-                    );
-                }
-            }
-
-            // Now rewrite consumer functions that use alloc_task for these genexprs
-            if !genexpr_map.is_empty() {
-                for func in &mut self.functions {
-                    let mut replacements: Vec<(usize, usize, Vec<OpIR>)> = Vec::new();
-
-                    for (i, op) in func.ops.iter().enumerate() {
-                        if op.kind != "alloc_task" {
-                            continue;
-                        }
-                        let task_func = op.s_value.as_deref().unwrap_or("");
-                        let info = match genexpr_map.get(task_func) {
-                            Some(info) => info,
-                            None => continue,
-                        };
-                        let task_var = op.out.as_deref().unwrap_or("").to_string();
-
-                        // Find the consumer pattern: alloc_task → list_new → iter → loop
-                        // Skip check_exception/nop ops between them.
-                        let skip_kinds =
-                            |k: &str| k == "check_exception" || k == "nop" || k == "line";
-                        let mut next_idx = i + 1;
-                        while next_idx < func.ops.len()
-                            && skip_kinds(func.ops[next_idx].kind.as_str())
-                        {
-                            next_idx += 1;
-                        }
-                        if next_idx >= func.ops.len() {
-                            continue;
-                        }
-
-                        let result_list_var = match func.ops[next_idx].kind.as_str() {
-                            "list_new" | "build_list" => {
-                                func.ops[next_idx].out.clone().unwrap_or_default()
-                            }
-                            _ => continue,
-                        };
-
-                        let mut iter_idx = next_idx + 1;
-                        while iter_idx < func.ops.len()
-                            && skip_kinds(func.ops[iter_idx].kind.as_str())
-                        {
-                            iter_idx += 1;
-                        }
-                        if iter_idx >= func.ops.len() {
-                            continue;
-                        }
-
-                        let iter_var = match func.ops[iter_idx].kind.as_str() {
-                            "iter" => func.ops[iter_idx].out.clone().unwrap_or_default(),
-                            _ => continue,
-                        };
-
-                        // Find loop_start and loop_end
-                        let mut loop_start = 0;
-                        let mut loop_end = 0;
-                        for j in (iter_idx + 1)..func.ops.len() {
-                            if func.ops[j].kind == "loop_start" && loop_start == 0 {
-                                loop_start = j;
-                            }
-                            if func.ops[j].kind == "loop_end" && loop_start > 0 {
-                                loop_end = j;
-                                break;
-                            }
-                        }
-                        if loop_start == 0 || loop_end == 0 {
-                            continue;
-                        }
-
-                        // Build replacement ops:
-                        // 1. Source iterable construction (const ops + list_new)
-                        // 2. Result list construction
-                        // 3. for_iter loop with body expression + list_append
-                        let mut new_ops: Vec<OpIR> = Vec::new();
-
-                        // Determine the actual source variable for iteration.
-                        // If the genexpr's source_ops reference a module global (module_get_global),
-                        // resolve it in the consumer's scope by finding the dict_set that stored
-                        // that global name. This avoids emitting module_cache lookups that return nil.
-                        let mut effective_source_var = info.source_var.clone();
-                        let has_module_get = info.source_ops.iter().any(|op| {
-                            op.kind == "module_get_global" || op.kind == "module_cache_get"
-                        });
-
-                        if has_module_get {
-                            // Extract the global name from the module_get_global op
-                            let global_name = info
-                                .source_ops
-                                .iter()
-                                .filter(|op| op.kind == "module_get_global")
-                                .filter_map(|op| op.args.as_ref().and_then(|a| a.get(1)).cloned())
-                                .next();
-
-                            // Extract the global name: resolve the variable reference in
-                            // module_get_global's second arg to a const_str value.
-                            let global_name: Option<String> = info
-                                .source_ops
-                                .iter()
-                                .filter(|op| op.kind == "module_get_global")
-                                .filter_map(|op| {
-                                    let name_var = op.args.as_ref()?.get(1)?;
-                                    // Find the const_str that defined this variable
-                                    info.source_ops
-                                        .iter()
-                                        .find(|o| {
-                                            o.kind == "const_str"
-                                                && o.out.as_deref() == Some(name_var.as_str())
-                                        })
-                                        .and_then(|o| o.s_value.clone())
-                                })
-                                .next();
-
-                            if let Some(ref name) = global_name {
-                                // Search backwards in consumer for module_set_attr/dict_set
-                                // that stores this global name.
-                                // Pattern: const_str(key="name") then module_set_attr(dict, key, value)
-                                for j in (0..i).rev() {
-                                    let jk = func.ops[j].kind.as_str();
-                                    if jk == "module_set_attr"
-                                        || jk == "dict_set"
-                                        || jk == "set_attr"
-                                        || jk == "store_subscr"
-                                    {
-                                        if let Some(ref args) = func.ops[j].args {
-                                            if args.len() >= 3 {
-                                                let key_var = &args[1];
-                                                // Resolve key_var to its const_str value
-                                                for k in (0..j).rev() {
-                                                    if func.ops[k].out.as_deref()
-                                                        == Some(key_var.as_str())
-                                                    {
-                                                        if (func.ops[k].kind == "const_str"
-                                                            || func.ops[k].kind == "const")
-                                                            && func.ops[k].s_value.as_deref()
-                                                                == Some(name.as_str())
-                                                        {
-                                                            effective_source_var = args[2].clone();
-                                                            eprintln!(
-                                                                "[molt-dce] Resolved module global '{}' to consumer var '{}'",
-                                                                name, effective_source_var
-                                                            );
-                                                        }
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    if effective_source_var != info.source_var {
-                                        break;
-                                    }
-                                }
-                            }
-
-                            // Only emit source_ops if we couldn't resolve in consumer scope
-                            if effective_source_var == info.source_var {
-                                for src_op in &info.source_ops {
-                                    new_ops.push(src_op.clone());
-                                }
-                            }
-                        } else {
-                            // Literal source — emit source construction ops directly
-                            for src_op in &info.source_ops {
-                                new_ops.push(src_op.clone());
-                            }
-                        }
-
-                        // Emit result list
-                        new_ops.push(OpIR {
-                            kind: "list_new".to_string(),
-                            out: Some(result_list_var.clone()),
-                            ..OpIR::default()
-                        });
-
-                        // Emit for_iter: for item in source
-                        let iter_item_var = format!("__comp_item_{}", i);
-                        new_ops.push(OpIR {
-                            kind: "for_iter".to_string(),
-                            out: Some(iter_item_var.clone()),
-                            args: Some(vec![effective_source_var.clone()]),
-                            ..OpIR::default()
-                        });
-
-                        // Split body_ops into core ops and trailing end_if closers.
-                        // For filter comprehensions, list_append goes inside the if block.
-                        let mut trailing_end_ifs = 0;
-                        for bop in info.body_ops.iter().rev() {
-                            if bop.kind == "end_if" {
-                                trailing_end_ifs += 1;
-                            } else {
-                                break;
-                            }
-                        }
-                        let core_end = info.body_ops.len() - trailing_end_ifs;
-
-                        // Emit core body ops (before trailing end_ifs)
-                        for body_op in &info.body_ops[..core_end] {
-                            let mut new_op = body_op.clone();
-                            if new_op.var.as_deref() == Some(&info.item_var) {
-                                new_op.var = Some(iter_item_var.clone());
-                            }
-                            if let Some(ref mut args) = new_op.args {
-                                for arg in args.iter_mut() {
-                                    if arg == &info.item_var {
-                                        *arg = iter_item_var.clone();
-                                    }
-                                }
-                            }
-                            if new_op.kind == "load_local"
-                                && new_op.var.as_deref() == Some(&iter_item_var)
-                            {
-                                new_op.var = Some(iter_item_var.clone());
-                            }
-                            new_ops.push(new_op);
-                        }
-
-                        // Emit list_append (inside any filter if-block)
-                        new_ops.push(OpIR {
-                            kind: "list_append".to_string(),
-                            out: Some("none".to_string()),
-                            args: Some(vec![result_list_var.clone(), info.result_var.clone()]),
-                            ..OpIR::default()
-                        });
-
-                        // Emit trailing end_if closers
-                        for _ in 0..trailing_end_ifs {
-                            new_ops.push(OpIR {
-                                kind: "end_if".to_string(),
-                                ..OpIR::default()
-                            });
-                        }
-
-                        // Emit end_for
-                        new_ops.push(OpIR {
-                            kind: "end_for".to_string(),
-                            ..OpIR::default()
-                        });
-
-                        replacements.push((i, loop_end, new_ops));
-                    }
-
-                    // Apply replacements in reverse order
-                    for (start, end, new_ops) in replacements.into_iter().rev() {
-                        // Nop everything from start to end (inclusive)
-                        for j in start..=end {
-                            func.ops[j].kind = "nop".to_string();
-                            func.ops[j].out = None;
-                            func.ops[j].s_value = None;
-                            func.ops[j].args = None;
-                            func.ops[j].var = None;
-                        }
-                        // Insert new ops after start
-                        let insert_pos = start;
-                        for (offset, op) in new_ops.into_iter().enumerate() {
-                            func.ops.insert(insert_pos + offset, op);
-                        }
-                        eprintln!(
-                            "[molt-dce] Inlined genexpr in {} (replaced ops {}-{})",
-                            func.name, start, end
-                        );
-                    }
-                }
-            }
-        }
-
-        // Phase 5: Run standard tree_shake to remove now-unreachable functions.
-        self.tree_shake();
-    }
-}
-
-impl Default for OpIR {
-    fn default() -> Self {
-        OpIR {
-            kind: String::new(),
-            value: None,
-            f_value: None,
-            s_value: None,
-            bytes: None,
-            var: None,
-            args: None,
-            out: None,
-            fast_int: None,
-            task_kind: None,
-            container_type: None,
-            stack_eligible: None,
-            fast_float: None,
-            type_hint: None,
-            raw_int: None,
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -1519,293 +242,6 @@ pub struct OpIR {
     pub task_kind: Option<String>,
     #[serde(default)]
     pub container_type: Option<String>,
-    #[serde(default)]
-    pub stack_eligible: Option<bool>,
-    #[serde(default)]
-    pub fast_float: Option<bool>,
-    #[serde(default)]
-    pub type_hint: Option<String>,
-    /// When true, operands are raw i64 (already unboxed) and result is raw i64.
-    /// Skips all NaN-box encode/decode — chain of raw_int ops eliminates box/unbox overhead.
-    #[serde(default)]
-    pub raw_int: Option<bool>,
-}
-
-fn is_probable_value_token(token: &str) -> bool {
-    if token == "self" || token.starts_with("__molt_") {
-        return true;
-    }
-    let mut chars = token.chars();
-    let Some(prefix) = chars.next() else {
-        return false;
-    };
-    if prefix != 'v' && prefix != 'p' {
-        return false;
-    }
-    let mut saw_digit = false;
-    for ch in chars {
-        if !ch.is_ascii_digit() {
-            return false;
-        }
-        saw_digit = true;
-    }
-    saw_digit
-}
-
-fn should_validate_operand(kind: &str, arg_index: usize) -> bool {
-    // Frontend dict-mutator lowering can reference merge-state dictionary handles
-    // that are materialized through control-flow joins instead of explicit linear
-    // defs in the JSON op stream. Keep backend validation strict for all other
-    // operands while avoiding false positives on these dict receivers.
-    if arg_index == 0 {
-        return !matches!(
-            kind,
-            "dict_set" | "dict_setdefault" | "dict_setdefault_empty_list" | "dict_update_missing"
-        );
-    }
-    true
-}
-
-fn supports_fast_int(kind: &str) -> bool {
-    matches!(
-        kind,
-        "add"
-            | "inplace_add"
-            | "sub"
-            | "inplace_sub"
-            | "mul"
-            | "inplace_mul"
-            | "bit_or"
-            | "inplace_bit_or"
-            | "bit_and"
-            | "inplace_bit_and"
-            | "bit_xor"
-            | "inplace_bit_xor"
-            | "lshift"
-            | "rshift"
-            | "div"
-            | "floordiv"
-            | "mod"
-            | "lt"
-            | "le"
-            | "gt"
-            | "ge"
-            | "eq"
-            | "ne"
-            | "abs"
-            | "invert"
-    )
-}
-
-fn supports_raw_int(kind: &str) -> bool {
-    matches!(
-        kind,
-        "const"
-            | "add"
-            | "inplace_add"
-            | "mul"
-            | "mod"
-            | "lt"
-            | "loop_break_if_true"
-            | "loop_break_if_false"
-    )
-}
-
-fn specialized_int_expected_arity(kind: &str) -> Option<usize> {
-    match kind {
-        "abs" | "invert" | "loop_break_if_true" | "loop_break_if_false" => Some(1),
-        "const" => Some(0),
-        _ if supports_fast_int(kind) || supports_raw_int(kind) => Some(2),
-        _ => None,
-    }
-}
-
-pub fn validate_simple_ir(ir: &SimpleIR) -> Result<(), String> {
-    let mut errors: Vec<String> = Vec::new();
-    for func in &ir.functions {
-        if func.name.trim().is_empty() {
-            errors.push("function name cannot be empty".to_string());
-        }
-        let mut defined: HashSet<String> = HashSet::new();
-        for param in &func.params {
-            if param == "none" || param.trim().is_empty() {
-                errors.push(format!(
-                    "function `{}` has invalid param name `{}`",
-                    func.name, param
-                ));
-                continue;
-            }
-            defined.insert(param.clone());
-        }
-        for (op_idx, op) in func.ops.iter().enumerate() {
-            if let Err(detail) = ir_schema::validate_required_fields(op) {
-                errors.push(format!(
-                    "function `{}` op#{op_idx} `{}` {detail}",
-                    func.name, op.kind
-                ));
-            }
-            if let Some(out) = &op.out
-                && out != "none"
-            {
-                if out.trim().is_empty() {
-                    errors.push(format!(
-                        "function `{}` op#{op_idx} `{}` has empty output name",
-                        func.name, op.kind
-                    ));
-                } else {
-                    defined.insert(out.clone());
-                }
-            }
-            if errors.len() >= 32 {
-                break;
-            }
-        }
-        if errors.len() >= 32 {
-            break;
-        }
-        for (op_idx, op) in func.ops.iter().enumerate() {
-            let fast_int = op.fast_int.unwrap_or(false);
-            let raw_int = op.raw_int.unwrap_or(false);
-            if fast_int && raw_int {
-                errors.push(format!(
-                    "function `{}` op#{op_idx} `{}` cannot set both `fast_int` and `raw_int`",
-                    func.name, op.kind
-                ));
-            }
-            if fast_int && !supports_fast_int(&op.kind) {
-                errors.push(format!(
-                    "function `{}` op#{op_idx} `{}` does not support `fast_int`",
-                    func.name, op.kind
-                ));
-            }
-            if raw_int && !supports_raw_int(&op.kind) {
-                errors.push(format!(
-                    "function `{}` op#{op_idx} `{}` does not support `raw_int`",
-                    func.name, op.kind
-                ));
-            }
-            if fast_int || raw_int {
-                if let Some(expected_arity) = specialized_int_expected_arity(&op.kind) {
-                    let actual_arity = op.args.as_ref().map_or(0, Vec::len);
-                    if actual_arity != expected_arity {
-                        errors.push(format!(
-                            "function `{}` op#{op_idx} `{}` specialized-int path requires `args` length {}",
-                            func.name, op.kind, expected_arity
-                        ));
-                    }
-                }
-            }
-            if let Some(args) = &op.args {
-                for (arg_index, arg) in args.iter().enumerate() {
-                    if !should_validate_operand(&op.kind, arg_index) {
-                        continue;
-                    }
-                    if arg == "none" {
-                        continue;
-                    }
-                    let should_validate = defined.contains(arg) || is_probable_value_token(arg);
-                    if should_validate && !defined.contains(arg) {
-                        errors.push(format!(
-                            "function `{}` op#{op_idx} `{}` uses undefined value `{}`",
-                            func.name, op.kind, arg
-                        ));
-                    }
-                }
-            }
-            if errors.len() >= 32 {
-                break;
-            }
-        }
-        let mut raw_defined: HashSet<String> = HashSet::new();
-        for (op_idx, op) in func.ops.iter().enumerate() {
-            let raw_int = op.raw_int.unwrap_or(false);
-            if raw_int {
-                match op.kind.as_str() {
-                    "add" | "inplace_add" | "mul" | "mod" | "lt" => {
-                        if let Some(args) = &op.args {
-                            for arg in args {
-                                if !raw_defined.contains(arg) {
-                                    errors.push(format!(
-                                        "function `{}` op#{op_idx} `{}` consumes non-raw value `{}` in `raw_int` mode",
-                                        func.name, op.kind, arg
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                    "loop_break_if_true" | "loop_break_if_false" => {
-                        if let Some(arg) = op.args.as_ref().and_then(|args| args.first()) {
-                            if !raw_defined.contains(arg) {
-                                errors.push(format!(
-                                    "function `{}` op#{op_idx} `{}` consumes non-raw loop condition `{}`",
-                                    func.name, op.kind, arg
-                                ));
-                            }
-                        }
-                    }
-                    "const" => {
-                        if op.value.is_none() {
-                            errors.push(format!(
-                                "function `{}` op#{op_idx} `const` requires `value` when `raw_int` is set",
-                                func.name
-                            ));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if let Some(out) = &op.out
-                && out != "none"
-            {
-                let carrier_input_is_raw = match op.kind.as_str() {
-                    "loop_index_start" | "loop_index_next" | "loop_carry_init" => op
-                        .args
-                        .as_ref()
-                        .and_then(|args| args.first())
-                        .is_some_and(|arg| raw_defined.contains(arg)),
-                    "loop_carry_update" => op
-                        .args
-                        .as_ref()
-                        .and_then(|args| args.last())
-                        .is_some_and(|arg| raw_defined.contains(arg)),
-                    _ => false,
-                };
-                let produces_raw = op.kind == "unbox_to_raw_int"
-                    || carrier_input_is_raw
-                    || (raw_int
-                        && !matches!(
-                            op.kind.as_str(),
-                            "loop_break_if_true" | "loop_break_if_false"
-                        ));
-                if produces_raw {
-                    raw_defined.insert(out.clone());
-                } else {
-                    raw_defined.remove(out);
-                }
-            }
-            if errors.len() >= 32 {
-                break;
-            }
-        }
-        if errors.len() >= 32 {
-            break;
-        }
-    }
-    if errors.is_empty() {
-        return Ok(());
-    }
-    let mut message = format!(
-        "invalid simple IR ({} error{}):",
-        errors.len(),
-        if errors.len() == 1 { "" } else { "s" }
-    );
-    for error in errors.iter().take(8) {
-        let _ = write!(message, "\n- {error}");
-    }
-    if errors.len() > 8 {
-        let _ = write!(message, "\n- ... {} more", errors.len() - 8);
-    }
-    Err(message)
 }
 
 #[derive(Clone, Copy)]
@@ -2128,17 +564,18 @@ fn is_inlineable(func: &FunctionIR, defined_functions: &std::collections::HashSe
         match op.kind.as_str() {
             // Control flow that creates complexity for inlining
             "loop_index_start" | "loop_index_end" | "loop_start" | "loop_end"
-            | "for_iter_start" | "for_iter_end" | "while_start" | "while_end" | "try_start"
-            | "try_end" | "except" | "finally" | "yield" | "yield_from" | "await"
-            | "async_for_start" | "ASYNCGEN_NEW" | "GENERATOR_NEW" | "COROUTINE_NEW" => {
+            | "for_iter_start" | "for_iter_end" | "while_start" | "while_end"
+            | "try_start" | "try_end" | "except" | "finally"
+            | "yield" | "yield_from" | "await" | "async_for_start"
+            | "ASYNCGEN_NEW" | "GENERATOR_NEW" | "COROUTINE_NEW" => {
                 return false;
             }
             // Nested internal calls would cause recursive inlining
             "call_internal" => {
-                if let Some(target) = op.s_value.as_deref()
-                    && defined_functions.contains(target)
-                {
-                    return false;
+                if let Some(target) = op.s_value.as_deref() {
+                    if defined_functions.contains(target) {
+                        return false;
+                    }
                 }
             }
             _ => {}
@@ -2221,11 +658,7 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
 
             // Perform inlining: generate unique prefix for all callee variables
             inline_counter += 1;
-            let prefix = format!(
-                "_inl{}_{}_",
-                inline_counter,
-                target_name.replace(|c: char| !c.is_alphanumeric(), "_")
-            );
+            let prefix = format!("_inl{}_{}_", inline_counter, target_name.replace(|c: char| !c.is_alphanumeric(), "_"));
 
             // Build param → arg mapping
             let mut rename_map: std::collections::HashMap<String, String> =
@@ -2240,31 +673,27 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
             for callee_op in callee_ops {
                 if callee_op.kind == "ret" || callee_op.kind == "ret_void" {
                     // Replace return with assignment to call output variable
-                    if callee_op.kind == "ret"
-                        && let Some(ret_var) = callee_op.var.as_deref()
-                    {
-                        let renamed = rename_map
-                            .get(ret_var)
-                            .cloned()
-                            .unwrap_or_else(|| format!("{prefix}{ret_var}"));
-                        // Emit a copy: out = ret_var
-                        new_ops.push(OpIR {
-                            kind: "copy".to_string(),
-                            value: None,
-                            f_value: None,
-                            s_value: None,
-                            bytes: None,
-                            var: None,
-                            args: Some(vec![renamed]),
-                            out: Some(call_out.clone()),
-                            fast_int: None,
-                            task_kind: None,
-                            container_type: None,
-                            stack_eligible: None,
-                            fast_float: None,
-                            raw_int: None,
-                            type_hint: None,
-                        });
+                    if callee_op.kind == "ret" {
+                        if let Some(ret_var) = callee_op.var.as_deref() {
+                            let renamed = rename_map
+                                .get(ret_var)
+                                .cloned()
+                                .unwrap_or_else(|| format!("{prefix}{ret_var}"));
+                            // Emit a copy: out = ret_var
+                            new_ops.push(OpIR {
+                                kind: "copy".to_string(),
+                                value: None,
+                                f_value: None,
+                                s_value: None,
+                                bytes: None,
+                                var: None,
+                                args: Some(vec![renamed]),
+                                out: Some(call_out.clone()),
+                                fast_int: None,
+                                task_kind: None,
+                                container_type: None,
+                            });
+                        }
                     }
                     // Skip the ret op itself (don't emit it into the caller)
                     continue;
@@ -2281,7 +710,9 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
                         .unwrap_or_else(|| format!("{prefix}{out}"));
                     inlined_op.out = Some(renamed.clone());
                     // Also add to rename_map for subsequent ops
-                    rename_map.entry(out).or_insert(renamed);
+                    if !rename_map.contains_key(&out) {
+                        rename_map.insert(out, renamed);
+                    }
                 }
 
                 // Rename args
@@ -2549,11 +980,6 @@ struct LoopFrame {
     after_block: Block,
     index_name: Option<String>,
     next_index: Option<Value>,
-    /// Additional loop-carried variables (name → current Value).
-    /// Used by LOOP_CARRY_INIT / LOOP_CARRY_UPDATE to pass typed locals
-    /// through block params instead of boxed cells.
-    carry_names: Vec<String>,
-    carry_values: Vec<Value>,
 }
 
 fn parse_truthy_env(raw: &str) -> bool {
@@ -2642,11 +1068,15 @@ impl SimpleBackend {
         flag_builder.set("enable_alias_analysis", "true").unwrap();
         // Emit CFG metadata in machine code output — enables downstream tools
         // and profilers to reconstruct control-flow graphs from compiled objects.
-        flag_builder.set("machine_code_cfg_info", "true").unwrap();
+        flag_builder
+            .set("machine_code_cfg_info", "true")
+            .unwrap();
         // Use colocated libcalls: our generated code and runtime libcalls live
         // in the same link unit — colocated calls skip GOT/PLT indirection and
         // use direct PC-relative calls instead.
-        flag_builder.set("use_colocated_libcalls", "true").unwrap();
+        flag_builder
+            .set("use_colocated_libcalls", "true")
+            .unwrap();
         // Frame pointers: keep for debug builds (profilers, debuggers need them),
         // omit for release builds to free up a register (rbp/x29).
         flag_builder
@@ -2669,7 +1099,9 @@ impl SimpleBackend {
             .unwrap();
         // Inline stack probing: avoids a function call for stack probes, instead
         // inlining touch instructions — faster for deep recursion.
-        flag_builder.set("probestack_strategy", "inline").unwrap();
+        flag_builder
+            .set("probestack_strategy", "inline")
+            .unwrap();
         // MOLT_PORTABLE=1 forces baseline ISA (no host-specific features like AVX2).
         // This ensures reproducible codegen across different machines at the cost of
         // ~5-15% runtime performance on modern CPUs with advanced features.
@@ -2743,11 +1175,6 @@ impl SimpleBackend {
             elide_dead_struct_allocs(func_ir);
         }
         inline_functions(&mut ir);
-        if cfg!(debug_assertions) {
-            if let Err(err) = validate_simple_ir(&ir) {
-                panic!("SimpleBackend::compile received invalid simple IR: {err}");
-            }
-        }
         // Conditional trace elimination: skip emitting trace_enter/trace_exit calls
         // when tracing is disabled. Each guarded call site emits 2 trace function calls
         // (enter + exit); eliminating them saves ~10ns per call in release builds.
@@ -2762,8 +1189,6 @@ impl SimpleBackend {
         let mut task_kinds: BTreeMap<String, TrampolineKind> = BTreeMap::new();
         // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
         let mut task_closure_sizes: BTreeMap<String, i64> = BTreeMap::new();
-        // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
-        let mut function_has_closure: BTreeMap<String, bool> = BTreeMap::new();
         for func_ir in &ir.functions {
             let mut func_obj_names: HashMap<String, String> = HashMap::new();
             let mut const_values: HashMap<String, i64> = HashMap::new();
@@ -2788,11 +1213,6 @@ impl SimpleBackend {
                         let Some(name) = op.s_value.as_ref() else {
                             continue;
                         };
-                        let has_closure = op.kind == "func_new_closure";
-                        function_has_closure
-                            .entry(name.clone())
-                            .and_modify(|seen| *seen |= has_closure)
-                            .or_insert(has_closure);
                         if let Some(out) = op.out.as_ref() {
                             func_obj_names.insert(out.clone(), name.clone());
                         }
@@ -2863,7 +1283,6 @@ impl SimpleBackend {
                 func_ir,
                 &task_kinds,
                 &task_closure_sizes,
-                &function_has_closure,
                 &defined_functions,
                 emit_traces,
             );
@@ -3058,18 +1477,13 @@ impl SimpleBackend {
                     }
                     for idx in 0..arity {
                         let arg_offset = (idx * std::mem::size_of::<u64>()) as i32;
-                        let arg_val = builder.ins().load(
-                            types::I64,
-                            MemFlags::trusted(),
-                            args_ptr,
-                            arg_offset,
-                        );
-                        builder.ins().store(
-                            MemFlags::trusted(),
-                            arg_val,
-                            obj_ptr,
-                            offset + arg_offset,
-                        );
+                        let arg_val =
+                            builder
+                                .ins()
+                                .load(types::I64, MemFlags::trusted(), args_ptr, arg_offset);
+                        builder
+                            .ins()
+                            .store(MemFlags::trusted(), arg_val, obj_ptr, offset + arg_offset);
                         builder.ins().call(local_inc_ref_obj, &[arg_val]);
                     }
                 }
@@ -3177,10 +1591,9 @@ impl SimpleBackend {
                 }
                 for idx in 0..arity {
                     let offset = (idx * std::mem::size_of::<u64>()) as i32;
-                    let arg_val =
-                        builder
-                            .ins()
-                            .load(types::I64, MemFlags::trusted(), args_ptr, offset);
+                    let arg_val = builder
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), args_ptr, offset);
                     call_args.push(arg_val);
                 }
 
@@ -3220,7 +1633,6 @@ impl SimpleBackend {
         func_ir: FunctionIR,
         task_kinds: &BTreeMap<String, TrampolineKind>,
         task_closure_sizes: &BTreeMap<String, i64>,
-        function_has_closure: &BTreeMap<String, bool>,
         defined_functions: &HashSet<String>,
         emit_traces: bool,
     ) {
@@ -3537,29 +1949,9 @@ impl SimpleBackend {
             match op.kind.as_str() {
                 "const" => {
                     let val = op.value.unwrap();
-                    if op.raw_int.unwrap_or(false) {
-                        // Emit raw i64 constant — no NaN-boxing
-                        let iconst = builder.ins().iconst(types::I64, val);
-                        def_var_named(&mut builder, &vars, op.out.unwrap(), iconst);
-                    } else {
-                        let boxed = box_int(val);
-                        let iconst = builder.ins().iconst(types::I64, boxed);
-                        def_var_named(&mut builder, &vars, op.out.unwrap(), iconst);
-                    }
-                }
-                "unbox_to_raw_int" => {
-                    // Bridge: NaN-boxed int → raw i64
-                    let args = op.args.as_ref().unwrap();
-                    let val = var_get(&mut builder, &vars, &args[0]).expect("value not found");
-                    let raw = unbox_int(&mut builder, *val);
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), raw);
-                }
-                "box_from_raw_int" => {
-                    // Bridge: raw i64 → NaN-boxed int
-                    let args = op.args.as_ref().unwrap();
-                    let val = var_get(&mut builder, &vars, &args[0]).expect("value not found");
-                    let boxed = box_int_value(&mut builder, *val);
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), boxed);
+                    let boxed = box_int(val);
+                    let iconst = builder.ins().iconst(types::I64, boxed);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), iconst);
                 }
                 "const_bigint" => {
                     let s = op.s_value.as_ref().expect("BigInt string not found");
@@ -3665,9 +2057,7 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[ptr, len, out_ptr]);
-                    let boxed = builder
-                        .ins()
-                        .load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                    let boxed = builder.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
 
                     def_var_named(&mut builder, &vars, out_name, boxed);
                 }
@@ -3705,9 +2095,7 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[ptr, len, out_ptr]);
-                    let boxed = builder
-                        .ins()
-                        .load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                    let boxed = builder.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
 
                     def_var_named(&mut builder, &vars, out_name, boxed);
                 }
@@ -3715,11 +2103,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.raw_int.unwrap_or(false) {
-                        // Raw i64 path: operands are already unboxed, result stays unboxed.
-                        // No NaN-boxing overhead — just a single iadd instruction.
-                        builder.ins().iadd(*lhs, *rhs)
-                    } else if op.fast_int.unwrap_or(false) {
+                    let res = if op.fast_int.unwrap_or(false) {
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
@@ -3810,9 +2194,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.raw_int.unwrap_or(false) {
-                        builder.ins().iadd(*lhs, *rhs)
-                    } else if op.fast_int.unwrap_or(false) {
+                    let res = if op.fast_int.unwrap_or(false) {
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
@@ -4459,46 +2841,11 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.raw_int.unwrap_or(false) {
-                        builder.ins().imul(*lhs, *rhs)
-                    } else if op.fast_int.unwrap_or(false) {
+                    let res = if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
                         let prod = builder.ins().imul(lhs_val, rhs_val);
-                        let can_inline =
-                            mul_value_fits_inline(&mut builder, lhs_val, rhs_val, prod);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
-                        builder
-                            .ins()
-                            .brif(can_inline, fast_block, &[], slow_block, &[]);
-
-                        builder.switch_to_block(fast_block);
-                        builder.seal_block(fast_block);
-                        let fast_res = box_int_value(&mut builder, prod);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
-
-                        builder.switch_to_block(slow_block);
-                        builder.seal_block(slow_block);
-                        let mut sig = self.module.make_signature();
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.returns.push(AbiParam::new(types::I64));
-                        let callee = self
-                            .module
-                            .declare_function("molt_mul", Linkage::Import, &sig)
-                            .unwrap();
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
-
-                        builder.switch_to_block(merge_block);
-                        builder.seal_block(merge_block);
-                        builder.block_params(merge_block)[0]
+                        box_int_value(&mut builder, prod)
                     } else {
                         let lhs_is_int = is_int_tag(&mut builder, *lhs);
                         let rhs_is_int = is_int_tag(&mut builder, *rhs);
@@ -4517,15 +2864,6 @@ impl SimpleBackend {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
                         let prod = builder.ins().imul(lhs_val, rhs_val);
-                        let can_inline =
-                            mul_value_fits_inline(&mut builder, lhs_val, rhs_val, prod);
-                        let inline_block = builder.create_block();
-                        builder
-                            .ins()
-                            .brif(can_inline, inline_block, &[], slow_block, &[]);
-
-                        builder.switch_to_block(inline_block);
-                        builder.seal_block(inline_block);
                         let fast_res = box_int_value(&mut builder, prod);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
@@ -4558,40 +2896,7 @@ impl SimpleBackend {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
                         let prod = builder.ins().imul(lhs_val, rhs_val);
-                        let can_inline =
-                            mul_value_fits_inline(&mut builder, lhs_val, rhs_val, prod);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
-                        builder
-                            .ins()
-                            .brif(can_inline, fast_block, &[], slow_block, &[]);
-
-                        builder.switch_to_block(fast_block);
-                        builder.seal_block(fast_block);
-                        let fast_res = box_int_value(&mut builder, prod);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
-
-                        builder.switch_to_block(slow_block);
-                        builder.seal_block(slow_block);
-                        let mut sig = self.module.make_signature();
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.returns.push(AbiParam::new(types::I64));
-                        let callee = self
-                            .module
-                            .declare_function("molt_inplace_mul", Linkage::Import, &sig)
-                            .unwrap();
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
-
-                        builder.switch_to_block(merge_block);
-                        builder.seal_block(merge_block);
-                        builder.block_params(merge_block)[0]
+                        box_int_value(&mut builder, prod)
                     } else {
                         let lhs_is_int = is_int_tag(&mut builder, *lhs);
                         let rhs_is_int = is_int_tag(&mut builder, *rhs);
@@ -4610,15 +2915,6 @@ impl SimpleBackend {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
                         let prod = builder.ins().imul(lhs_val, rhs_val);
-                        let can_inline =
-                            mul_value_fits_inline(&mut builder, lhs_val, rhs_val, prod);
-                        let inline_block = builder.create_block();
-                        builder
-                            .ins()
-                            .brif(can_inline, inline_block, &[], slow_block, &[]);
-
-                        builder.switch_to_block(inline_block);
-                        builder.seal_block(inline_block);
                         let fast_res = box_int_value(&mut builder, prod);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
@@ -5684,20 +3980,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.raw_int.unwrap_or(false) {
-                        // Python mod: result = lhs - (lhs / rhs) * rhs, with sign matching rhs
-                        let quot = builder.ins().sdiv(*lhs, *rhs);
-                        let prod = builder.ins().imul(quot, *rhs);
-                        let rem = builder.ins().isub(*lhs, prod);
-                        // Adjust sign: if rem != 0 and (rem ^ rhs) < 0, add rhs
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        let rem_nonzero = builder.ins().icmp(IntCC::NotEqual, rem, zero);
-                        let xor = builder.ins().bxor(rem, *rhs);
-                        let sign_diff = builder.ins().icmp(IntCC::SignedLessThan, xor, zero);
-                        let need_adjust = builder.ins().band(rem_nonzero, sign_diff);
-                        let adjusted = builder.ins().iadd(rem, *rhs);
-                        builder.ins().select(need_adjust, adjusted, rem)
-                    } else if op.fast_int.unwrap_or(false) {
+                    let res = if op.fast_int.unwrap_or(false) {
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
@@ -6128,60 +4411,6 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*start, *stop, *step]);
-                    let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
-                }
-                "list_repeat_range" => {
-                    let args = op.args.as_ref().unwrap();
-                    let item = var_get(&mut builder, &vars, &args[0])
-                        .expect("List-repeat-range item not found");
-                    let start = var_get(&mut builder, &vars, &args[1])
-                        .expect("List-repeat-range start not found");
-                    let stop = var_get(&mut builder, &vars, &args[2])
-                        .expect("List-repeat-range stop not found");
-                    let step = var_get(&mut builder, &vars, &args[3])
-                        .expect("List-repeat-range step not found");
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_list_repeat_range", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder
-                        .ins()
-                        .call(local_callee, &[*item, *start, *stop, *step]);
-                    let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
-                }
-                "bytearray_fill_range" => {
-                    let args = op.args.as_ref().unwrap();
-                    let target = var_get(&mut builder, &vars, &args[0])
-                        .expect("Bytearray-fill target not found");
-                    let start = var_get(&mut builder, &vars, &args[1])
-                        .expect("Bytearray-fill start not found");
-                    let stop = var_get(&mut builder, &vars, &args[2])
-                        .expect("Bytearray-fill stop not found");
-                    let fill = var_get(&mut builder, &vars, &args[3])
-                        .expect("Bytearray-fill value not found");
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_bytearray_fill_range", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder
-                        .ins()
-                        .call(local_callee, &[*target, *start, *stop, *fill]);
                     let res = builder.inst_results(call)[0];
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
@@ -8923,12 +7152,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.raw_int.unwrap_or(false) {
-                        // Raw comparison: returns raw i64 (0 or 1) — NOT NaN-boxed bool.
-                        // The consumer must handle this as raw_int too.
-                        let cmp = builder.ins().icmp(IntCC::SignedLessThan, *lhs, *rhs);
-                        builder.ins().uextend(types::I64, cmp)
-                    } else if op.fast_int.unwrap_or(false) {
+                    let res = if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, rhs_val);
@@ -9449,10 +7673,7 @@ impl SimpleBackend {
 
                         builder.switch_to_block(ok_block);
                         builder.seal_block(ok_block);
-                        let ok_res =
-                            builder
-                                .ins()
-                                .load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                        let ok_res = builder.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
                         jump_block(&mut builder, merge_block, &[ok_res]);
 
                         builder.switch_to_block(err_block);
@@ -9532,10 +7753,7 @@ impl SimpleBackend {
 
                         builder.switch_to_block(ok_block);
                         builder.seal_block(ok_block);
-                        let ok_res =
-                            builder
-                                .ins()
-                                .load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                        let ok_res = builder.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
                         jump_block(&mut builder, merge_block, &[ok_res]);
 
                         builder.switch_to_block(err_block);
@@ -9619,10 +7837,7 @@ impl SimpleBackend {
 
                         builder.switch_to_block(ok_block);
                         builder.seal_block(ok_block);
-                        let ok_res =
-                            builder
-                                .ins()
-                                .load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                        let ok_res = builder.ins().load(types::I64, MemFlags::trusted(), out_ptr, 0);
                         jump_block(&mut builder, merge_block, &[ok_res]);
 
                         builder.switch_to_block(err_block);
@@ -9797,12 +8012,9 @@ impl SimpleBackend {
                         builder.ins().call(local_callee, &[self_ptr, offset, res]);
                     }
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
-                    builder.ins().store(
-                        MemFlags::trusted(),
-                        state_val,
-                        self_ptr,
-                        HEADER_STATE_OFFSET,
-                    );
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), state_val, self_ptr, HEADER_STATE_OFFSET);
                     if args.len() <= 1 {
                         def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                     }
@@ -9819,12 +8031,9 @@ impl SimpleBackend {
                     let self_ptr = unbox_ptr_value(&mut builder, self_bits);
 
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
-                    builder.ins().store(
-                        MemFlags::trusted(),
-                        state_val,
-                        self_ptr,
-                        HEADER_STATE_OFFSET,
-                    );
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), state_val, self_ptr, HEADER_STATE_OFFSET);
 
                     reachable_blocks.insert(master_return_block);
                     if has_ret {
@@ -9895,12 +8104,9 @@ impl SimpleBackend {
 
                     switch_to_block_tracking(&mut builder, ready_path, &mut is_block_filled);
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
-                    builder.ins().store(
-                        MemFlags::trusted(),
-                        state_val,
-                        self_ptr,
-                        HEADER_STATE_OFFSET,
-                    );
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), state_val, self_ptr, HEADER_STATE_OFFSET);
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                     reachable_blocks.insert(next_block);
                     jump_block(&mut builder, next_block, &[]);
@@ -9960,12 +8166,9 @@ impl SimpleBackend {
 
                     switch_to_block_tracking(&mut builder, ready_path, &mut is_block_filled);
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
-                    builder.ins().store(
-                        MemFlags::trusted(),
-                        state_val,
-                        self_ptr,
-                        HEADER_STATE_OFFSET,
-                    );
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), state_val, self_ptr, HEADER_STATE_OFFSET);
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                     reachable_blocks.insert(next_block);
                     jump_block(&mut builder, next_block, &[]);
@@ -10590,13 +8793,6 @@ impl SimpleBackend {
                     if func_name.ends_with("_poll") {
                         func_sig.params.push(AbiParam::new(types::I64));
                     } else {
-                        if function_has_closure
-                            .get(func_name)
-                            .copied()
-                            .unwrap_or(false)
-                        {
-                            func_sig.params.push(AbiParam::new(types::I64));
-                        }
                         let arity = op.value.unwrap_or(0);
                         for _ in 0..arity {
                             func_sig.params.push(AbiParam::new(types::I64));
@@ -11303,9 +9499,7 @@ impl SimpleBackend {
                     builder.seal_block(func_block);
                     let resolve_call = builder.ins().call(resolve_local, &[*callee_bits]);
                     let func_ptr = builder.inst_results(resolve_call)[0];
-                    let fn_ptr = builder
-                        .ins()
-                        .load(types::I64, MemFlags::trusted(), func_ptr, 0);
+                    let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), func_ptr, 0);
                     let matches = builder.ins().icmp(IntCC::Equal, fn_ptr, expected_addr);
                     let then_block = builder.create_block();
                     let else_block = builder.create_block();
@@ -11505,10 +9699,9 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .load(types::I64, MemFlags::trusted(), method_ptr, 0);
-                    let self_bits =
-                        builder
-                            .ins()
-                            .load(types::I64, MemFlags::trusted(), method_ptr, 8);
+                    let self_bits = builder
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), method_ptr, 8);
                     let bound_resolve = builder.ins().call(resolve_local, &[bound_func_bits]);
                     let bound_func_ptr = builder.inst_results(bound_resolve)[0];
                     let bound_fn_ptr =
@@ -11572,6 +9765,48 @@ impl SimpleBackend {
 
                     builder.switch_to_block(bound_closure_block);
                     builder.seal_block(bound_closure_block);
+                    let mut new_sig = self.module.make_signature();
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_new = self
+                        .module
+                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
+                        .unwrap();
+                    let callargs_new_local =
+                        self.module.declare_func_in_func(callargs_new, builder.func);
+                    let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
+                    let kw_capacity = builder.ins().iconst(types::I64, 0);
+                    let callargs_call = builder
+                        .ins()
+                        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                    let callargs_ptr = builder.inst_results(callargs_call)[0];
+                    let mut push_sig = self.module.make_signature();
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_push_pos = self
+                        .module
+                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
+                        .unwrap();
+                    let callargs_push_local = self
+                        .module
+                        .declare_func_in_func(callargs_push_pos, builder.func);
+                    for arg in &args {
+                        builder
+                            .ins()
+                            .call(callargs_push_local, &[callargs_ptr, *arg]);
+                    }
+                    let mut bind_sig = self.module.make_signature();
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.returns.push(AbiParam::new(types::I64));
+                    let call_bind = self
+                        .module
+                        .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
+                        .unwrap();
+                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
                     let bound_closure_label = format!("{call_site_prefix}_bound_closure");
                     let site_bits = builder.ins().iconst(
                         types::I64,
@@ -11581,87 +9816,10 @@ impl SimpleBackend {
                             bound_closure_label.as_str(),
                         )),
                     );
-                    let bound_res = if args.len() <= 8 {
-                        let mut bind_sig = self.module.make_signature();
-                        bind_sig.params.push(AbiParam::new(types::I64)); // site_bits
-                        bind_sig.params.push(AbiParam::new(types::I64)); // call_bits
-                        for _ in 0..args.len() {
-                            bind_sig.params.push(AbiParam::new(types::I64)); // positional arg
-                        }
-                        bind_sig.returns.push(AbiParam::new(types::I64));
-                        let bind_name = match args.len() {
-                            0 => "molt_call_bind_pos0_ic",
-                            1 => "molt_call_bind_pos1_ic",
-                            2 => "molt_call_bind_pos2_ic",
-                            3 => "molt_call_bind_pos3_ic",
-                            4 => "molt_call_bind_pos4_ic",
-                            5 => "molt_call_bind_pos5_ic",
-                            6 => "molt_call_bind_pos6_ic",
-                            7 => "molt_call_bind_pos7_ic",
-                            8 => "molt_call_bind_pos8_ic",
-                            _ => unreachable!("call_func fast-call arity must be <= 8"),
-                        };
-                        let call_bind = self
-                            .module
-                            .declare_function(bind_name, Linkage::Import, &bind_sig)
-                            .unwrap();
-                        let call_bind_local =
-                            self.module.declare_func_in_func(call_bind, builder.func);
-                        let mut call_args = Vec::with_capacity(args.len() + 2);
-                        call_args.push(site_bits);
-                        call_args.push(*func_bits);
-                        call_args.extend(args.iter().copied());
-                        let call = builder.ins().call(call_bind_local, &call_args);
-                        builder.inst_results(call)[0]
-                    } else {
-                        let mut new_sig = self.module.make_signature();
-                        new_sig.params.push(AbiParam::new(types::I64));
-                        new_sig.params.push(AbiParam::new(types::I64));
-                        new_sig.returns.push(AbiParam::new(types::I64));
-                        let callargs_new = self
-                            .module
-                            .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                            .unwrap();
-                        let callargs_new_local =
-                            self.module.declare_func_in_func(callargs_new, builder.func);
-                        let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
-                        let kw_capacity = builder.ins().iconst(types::I64, 0);
-                        let callargs_call = builder
-                            .ins()
-                            .call(callargs_new_local, &[pos_capacity, kw_capacity]);
-                        let callargs_ptr = builder.inst_results(callargs_call)[0];
-                        let mut push_sig = self.module.make_signature();
-                        push_sig.params.push(AbiParam::new(types::I64));
-                        push_sig.params.push(AbiParam::new(types::I64));
-                        push_sig.returns.push(AbiParam::new(types::I64));
-                        let callargs_push_pos = self
-                            .module
-                            .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                            .unwrap();
-                        let callargs_push_local = self
-                            .module
-                            .declare_func_in_func(callargs_push_pos, builder.func);
-                        for arg in &args {
-                            builder
-                                .ins()
-                                .call(callargs_push_local, &[callargs_ptr, *arg]);
-                        }
-                        let mut bind_sig = self.module.make_signature();
-                        bind_sig.params.push(AbiParam::new(types::I64));
-                        bind_sig.params.push(AbiParam::new(types::I64));
-                        bind_sig.params.push(AbiParam::new(types::I64));
-                        bind_sig.returns.push(AbiParam::new(types::I64));
-                        let call_bind = self
-                            .module
-                            .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
-                            .unwrap();
-                        let call_bind_local =
-                            self.module.declare_func_in_func(call_bind, builder.func);
-                        let bound_call = builder
-                            .ins()
-                            .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
-                        builder.inst_results(bound_call)[0]
-                    };
+                    let bound_call = builder
+                        .ins()
+                        .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
+                    let bound_res = builder.inst_results(bound_call)[0];
                     jump_block(&mut builder, merge_block, &[bound_res]);
 
                     builder.switch_to_block(bound_direct_block);
@@ -12002,6 +10160,48 @@ impl SimpleBackend {
 
                     builder.switch_to_block(bound_error_block);
                     builder.seal_block(bound_error_block);
+                    let mut new_sig = self.module.make_signature();
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_new = self
+                        .module
+                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
+                        .unwrap();
+                    let callargs_new_local =
+                        self.module.declare_func_in_func(callargs_new, builder.func);
+                    let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
+                    let kw_capacity = builder.ins().iconst(types::I64, 0);
+                    let callargs_call = builder
+                        .ins()
+                        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                    let callargs_ptr = builder.inst_results(callargs_call)[0];
+                    let mut push_sig = self.module.make_signature();
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_push_pos = self
+                        .module
+                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
+                        .unwrap();
+                    let callargs_push_local = self
+                        .module
+                        .declare_func_in_func(callargs_push_pos, builder.func);
+                    for arg in &args {
+                        builder
+                            .ins()
+                            .call(callargs_push_local, &[callargs_ptr, *arg]);
+                    }
+                    let mut bind_sig = self.module.make_signature();
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.returns.push(AbiParam::new(types::I64));
+                    let call_bind = self
+                        .module
+                        .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
+                        .unwrap();
+                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
                     let bound_error_label = format!("{call_site_prefix}_bound_error");
                     let site_bits = builder.ins().iconst(
                         types::I64,
@@ -12011,87 +10211,10 @@ impl SimpleBackend {
                             bound_error_label.as_str(),
                         )),
                     );
-                    let fallback_res = if args.len() <= 8 {
-                        let mut bind_sig = self.module.make_signature();
-                        bind_sig.params.push(AbiParam::new(types::I64)); // site_bits
-                        bind_sig.params.push(AbiParam::new(types::I64)); // call_bits
-                        for _ in 0..args.len() {
-                            bind_sig.params.push(AbiParam::new(types::I64)); // positional arg
-                        }
-                        bind_sig.returns.push(AbiParam::new(types::I64));
-                        let bind_name = match args.len() {
-                            0 => "molt_call_bind_pos0_ic",
-                            1 => "molt_call_bind_pos1_ic",
-                            2 => "molt_call_bind_pos2_ic",
-                            3 => "molt_call_bind_pos3_ic",
-                            4 => "molt_call_bind_pos4_ic",
-                            5 => "molt_call_bind_pos5_ic",
-                            6 => "molt_call_bind_pos6_ic",
-                            7 => "molt_call_bind_pos7_ic",
-                            8 => "molt_call_bind_pos8_ic",
-                            _ => unreachable!("call_func fast-call arity must be <= 8"),
-                        };
-                        let call_bind = self
-                            .module
-                            .declare_function(bind_name, Linkage::Import, &bind_sig)
-                            .unwrap();
-                        let call_bind_local =
-                            self.module.declare_func_in_func(call_bind, builder.func);
-                        let mut call_args = Vec::with_capacity(args.len() + 2);
-                        call_args.push(site_bits);
-                        call_args.push(*func_bits);
-                        call_args.extend(args.iter().copied());
-                        let call = builder.ins().call(call_bind_local, &call_args);
-                        builder.inst_results(call)[0]
-                    } else {
-                        let mut new_sig = self.module.make_signature();
-                        new_sig.params.push(AbiParam::new(types::I64));
-                        new_sig.params.push(AbiParam::new(types::I64));
-                        new_sig.returns.push(AbiParam::new(types::I64));
-                        let callargs_new = self
-                            .module
-                            .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                            .unwrap();
-                        let callargs_new_local =
-                            self.module.declare_func_in_func(callargs_new, builder.func);
-                        let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
-                        let kw_capacity = builder.ins().iconst(types::I64, 0);
-                        let callargs_call = builder
-                            .ins()
-                            .call(callargs_new_local, &[pos_capacity, kw_capacity]);
-                        let callargs_ptr = builder.inst_results(callargs_call)[0];
-                        let mut push_sig = self.module.make_signature();
-                        push_sig.params.push(AbiParam::new(types::I64));
-                        push_sig.params.push(AbiParam::new(types::I64));
-                        push_sig.returns.push(AbiParam::new(types::I64));
-                        let callargs_push_pos = self
-                            .module
-                            .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                            .unwrap();
-                        let callargs_push_local = self
-                            .module
-                            .declare_func_in_func(callargs_push_pos, builder.func);
-                        for arg in &args {
-                            builder
-                                .ins()
-                                .call(callargs_push_local, &[callargs_ptr, *arg]);
-                        }
-                        let mut bind_sig = self.module.make_signature();
-                        bind_sig.params.push(AbiParam::new(types::I64));
-                        bind_sig.params.push(AbiParam::new(types::I64));
-                        bind_sig.params.push(AbiParam::new(types::I64));
-                        bind_sig.returns.push(AbiParam::new(types::I64));
-                        let call_bind = self
-                            .module
-                            .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
-                            .unwrap();
-                        let call_bind_local =
-                            self.module.declare_func_in_func(call_bind, builder.func);
-                        let fallback_call = builder
-                            .ins()
-                            .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
-                        builder.inst_results(fallback_call)[0]
-                    };
+                    let fallback_call = builder
+                        .ins()
+                        .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
+                    let fallback_res = builder.inst_results(fallback_call)[0];
                     jump_block(&mut builder, merge_block, &[fallback_res]);
 
                     builder.switch_to_block(non_bound_block);
@@ -12107,6 +10230,48 @@ impl SimpleBackend {
 
                     builder.switch_to_block(fallback_block);
                     builder.seal_block(fallback_block);
+                    let mut new_sig = self.module.make_signature();
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_new = self
+                        .module
+                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
+                        .unwrap();
+                    let callargs_new_local =
+                        self.module.declare_func_in_func(callargs_new, builder.func);
+                    let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
+                    let kw_capacity = builder.ins().iconst(types::I64, 0);
+                    let callargs_call = builder
+                        .ins()
+                        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                    let callargs_ptr = builder.inst_results(callargs_call)[0];
+                    let mut push_sig = self.module.make_signature();
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_push_pos = self
+                        .module
+                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
+                        .unwrap();
+                    let callargs_push_local = self
+                        .module
+                        .declare_func_in_func(callargs_push_pos, builder.func);
+                    for arg in &args {
+                        builder
+                            .ins()
+                            .call(callargs_push_local, &[callargs_ptr, *arg]);
+                    }
+                    let mut bind_sig = self.module.make_signature();
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.returns.push(AbiParam::new(types::I64));
+                    let call_bind = self
+                        .module
+                        .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
+                        .unwrap();
+                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
                     let nonfunc_fallback_label = format!("{call_site_prefix}_nonfunc_fallback");
                     let site_bits = builder.ins().iconst(
                         types::I64,
@@ -12116,87 +10281,10 @@ impl SimpleBackend {
                             nonfunc_fallback_label.as_str(),
                         )),
                     );
-                    let fallback_res = if args.len() <= 8 {
-                        let mut bind_sig = self.module.make_signature();
-                        bind_sig.params.push(AbiParam::new(types::I64)); // site_bits
-                        bind_sig.params.push(AbiParam::new(types::I64)); // call_bits
-                        for _ in 0..args.len() {
-                            bind_sig.params.push(AbiParam::new(types::I64)); // positional arg
-                        }
-                        bind_sig.returns.push(AbiParam::new(types::I64));
-                        let bind_name = match args.len() {
-                            0 => "molt_call_bind_pos0_ic",
-                            1 => "molt_call_bind_pos1_ic",
-                            2 => "molt_call_bind_pos2_ic",
-                            3 => "molt_call_bind_pos3_ic",
-                            4 => "molt_call_bind_pos4_ic",
-                            5 => "molt_call_bind_pos5_ic",
-                            6 => "molt_call_bind_pos6_ic",
-                            7 => "molt_call_bind_pos7_ic",
-                            8 => "molt_call_bind_pos8_ic",
-                            _ => unreachable!("call_func fast-call arity must be <= 8"),
-                        };
-                        let call_bind = self
-                            .module
-                            .declare_function(bind_name, Linkage::Import, &bind_sig)
-                            .unwrap();
-                        let call_bind_local =
-                            self.module.declare_func_in_func(call_bind, builder.func);
-                        let mut call_args = Vec::with_capacity(args.len() + 2);
-                        call_args.push(site_bits);
-                        call_args.push(*func_bits);
-                        call_args.extend(args.iter().copied());
-                        let call = builder.ins().call(call_bind_local, &call_args);
-                        builder.inst_results(call)[0]
-                    } else {
-                        let mut new_sig = self.module.make_signature();
-                        new_sig.params.push(AbiParam::new(types::I64));
-                        new_sig.params.push(AbiParam::new(types::I64));
-                        new_sig.returns.push(AbiParam::new(types::I64));
-                        let callargs_new = self
-                            .module
-                            .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                            .unwrap();
-                        let callargs_new_local =
-                            self.module.declare_func_in_func(callargs_new, builder.func);
-                        let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
-                        let kw_capacity = builder.ins().iconst(types::I64, 0);
-                        let callargs_call = builder
-                            .ins()
-                            .call(callargs_new_local, &[pos_capacity, kw_capacity]);
-                        let callargs_ptr = builder.inst_results(callargs_call)[0];
-                        let mut push_sig = self.module.make_signature();
-                        push_sig.params.push(AbiParam::new(types::I64));
-                        push_sig.params.push(AbiParam::new(types::I64));
-                        push_sig.returns.push(AbiParam::new(types::I64));
-                        let callargs_push_pos = self
-                            .module
-                            .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                            .unwrap();
-                        let callargs_push_local = self
-                            .module
-                            .declare_func_in_func(callargs_push_pos, builder.func);
-                        for arg in &args {
-                            builder
-                                .ins()
-                                .call(callargs_push_local, &[callargs_ptr, *arg]);
-                        }
-                        let mut bind_sig = self.module.make_signature();
-                        bind_sig.params.push(AbiParam::new(types::I64));
-                        bind_sig.params.push(AbiParam::new(types::I64));
-                        bind_sig.params.push(AbiParam::new(types::I64));
-                        bind_sig.returns.push(AbiParam::new(types::I64));
-                        let call_bind = self
-                            .module
-                            .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
-                            .unwrap();
-                        let call_bind_local =
-                            self.module.declare_func_in_func(call_bind, builder.func);
-                        let fallback_call = builder
-                            .ins()
-                            .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
-                        builder.inst_results(fallback_call)[0]
-                    };
+                    let fallback_call = builder
+                        .ins()
+                        .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
+                    let fallback_res = builder.inst_results(fallback_call)[0];
                     jump_block(&mut builder, merge_block, &[fallback_res]);
 
                     builder.switch_to_block(func_block);
@@ -12257,6 +10345,48 @@ impl SimpleBackend {
 
                     builder.switch_to_block(func_closure_block);
                     builder.seal_block(func_closure_block);
+                    let mut new_sig = self.module.make_signature();
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_new = self
+                        .module
+                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
+                        .unwrap();
+                    let callargs_new_local =
+                        self.module.declare_func_in_func(callargs_new, builder.func);
+                    let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
+                    let kw_capacity = builder.ins().iconst(types::I64, 0);
+                    let callargs_call = builder
+                        .ins()
+                        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                    let callargs_ptr = builder.inst_results(callargs_call)[0];
+                    let mut push_sig = self.module.make_signature();
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_push_pos = self
+                        .module
+                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
+                        .unwrap();
+                    let callargs_push_local = self
+                        .module
+                        .declare_func_in_func(callargs_push_pos, builder.func);
+                    for arg in &args {
+                        builder
+                            .ins()
+                            .call(callargs_push_local, &[callargs_ptr, *arg]);
+                    }
+                    let mut bind_sig = self.module.make_signature();
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.returns.push(AbiParam::new(types::I64));
+                    let call_bind = self
+                        .module
+                        .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
+                        .unwrap();
+                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
                     let closure_label = format!("{call_site_prefix}_closure");
                     let site_bits = builder.ins().iconst(
                         types::I64,
@@ -12266,97 +10396,17 @@ impl SimpleBackend {
                             closure_label.as_str(),
                         )),
                     );
-                    let closure_res = if args.len() <= 8 {
-                        let mut bind_sig = self.module.make_signature();
-                        bind_sig.params.push(AbiParam::new(types::I64)); // site_bits
-                        bind_sig.params.push(AbiParam::new(types::I64)); // call_bits
-                        for _ in 0..args.len() {
-                            bind_sig.params.push(AbiParam::new(types::I64)); // positional arg
-                        }
-                        bind_sig.returns.push(AbiParam::new(types::I64));
-                        let bind_name = match args.len() {
-                            0 => "molt_call_bind_pos0_ic",
-                            1 => "molt_call_bind_pos1_ic",
-                            2 => "molt_call_bind_pos2_ic",
-                            3 => "molt_call_bind_pos3_ic",
-                            4 => "molt_call_bind_pos4_ic",
-                            5 => "molt_call_bind_pos5_ic",
-                            6 => "molt_call_bind_pos6_ic",
-                            7 => "molt_call_bind_pos7_ic",
-                            8 => "molt_call_bind_pos8_ic",
-                            _ => unreachable!("call_func fast-call arity must be <= 8"),
-                        };
-                        let call_bind = self
-                            .module
-                            .declare_function(bind_name, Linkage::Import, &bind_sig)
-                            .unwrap();
-                        let call_bind_local =
-                            self.module.declare_func_in_func(call_bind, builder.func);
-                        let mut call_args = Vec::with_capacity(args.len() + 2);
-                        call_args.push(site_bits);
-                        call_args.push(*func_bits);
-                        call_args.extend(args.iter().copied());
-                        let call = builder.ins().call(call_bind_local, &call_args);
-                        builder.inst_results(call)[0]
-                    } else {
-                        let mut new_sig = self.module.make_signature();
-                        new_sig.params.push(AbiParam::new(types::I64));
-                        new_sig.params.push(AbiParam::new(types::I64));
-                        new_sig.returns.push(AbiParam::new(types::I64));
-                        let callargs_new = self
-                            .module
-                            .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                            .unwrap();
-                        let callargs_new_local =
-                            self.module.declare_func_in_func(callargs_new, builder.func);
-                        let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
-                        let kw_capacity = builder.ins().iconst(types::I64, 0);
-                        let callargs_call = builder
-                            .ins()
-                            .call(callargs_new_local, &[pos_capacity, kw_capacity]);
-                        let callargs_ptr = builder.inst_results(callargs_call)[0];
-                        let mut push_sig = self.module.make_signature();
-                        push_sig.params.push(AbiParam::new(types::I64));
-                        push_sig.params.push(AbiParam::new(types::I64));
-                        push_sig.returns.push(AbiParam::new(types::I64));
-                        let callargs_push_pos = self
-                            .module
-                            .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                            .unwrap();
-                        let callargs_push_local = self
-                            .module
-                            .declare_func_in_func(callargs_push_pos, builder.func);
-                        for arg in &args {
-                            builder
-                                .ins()
-                                .call(callargs_push_local, &[callargs_ptr, *arg]);
-                        }
-                        let mut bind_sig = self.module.make_signature();
-                        bind_sig.params.push(AbiParam::new(types::I64));
-                        bind_sig.params.push(AbiParam::new(types::I64));
-                        bind_sig.params.push(AbiParam::new(types::I64));
-                        bind_sig.returns.push(AbiParam::new(types::I64));
-                        let call_bind = self
-                            .module
-                            .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
-                            .unwrap();
-                        let call_bind_local =
-                            self.module.declare_func_in_func(call_bind, builder.func);
-                        let closure_call = builder
-                            .ins()
-                            .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
-                        builder.inst_results(closure_call)[0]
-                    };
+                    let closure_call = builder
+                        .ins()
+                        .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
+                    let closure_res = builder.inst_results(closure_call)[0];
                     jump_block(&mut builder, merge_block, &[closure_res]);
 
                     builder.switch_to_block(func_direct_block);
                     builder.seal_block(func_direct_block);
                     let resolve_call = builder.ins().call(resolve_local, &[*func_bits]);
                     let func_ptr = builder.inst_results(resolve_call)[0];
-                    let func_arity =
-                        builder
-                            .ins()
-                            .load(types::I64, MemFlags::trusted(), func_ptr, 8);
+                    let func_arity = builder.ins().load(types::I64, MemFlags::trusted(), func_ptr, 8);
                     let provided_arity = builder.ins().iconst(types::I64, args.len() as i64);
                     let arity_match = builder.ins().icmp(IntCC::Equal, func_arity, provided_arity);
                     let func_direct_call_block = builder.create_block();
@@ -12372,6 +10422,48 @@ impl SimpleBackend {
 
                     builder.switch_to_block(func_bind_block);
                     builder.seal_block(func_bind_block);
+                    let mut new_sig = self.module.make_signature();
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_new = self
+                        .module
+                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
+                        .unwrap();
+                    let callargs_new_local =
+                        self.module.declare_func_in_func(callargs_new, builder.func);
+                    let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
+                    let kw_capacity = builder.ins().iconst(types::I64, 0);
+                    let callargs_call = builder
+                        .ins()
+                        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                    let callargs_ptr = builder.inst_results(callargs_call)[0];
+                    let mut push_sig = self.module.make_signature();
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_push_pos = self
+                        .module
+                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
+                        .unwrap();
+                    let callargs_push_local = self
+                        .module
+                        .declare_func_in_func(callargs_push_pos, builder.func);
+                    for arg in &args {
+                        builder
+                            .ins()
+                            .call(callargs_push_local, &[callargs_ptr, *arg]);
+                    }
+                    let mut bind_sig = self.module.make_signature();
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.returns.push(AbiParam::new(types::I64));
+                    let call_bind = self
+                        .module
+                        .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
+                        .unwrap();
+                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
                     let bind_label = format!("{call_site_prefix}_bind");
                     let site_bits = builder.ins().iconst(
                         types::I64,
@@ -12381,94 +10473,15 @@ impl SimpleBackend {
                             bind_label.as_str(),
                         )),
                     );
-                    let bind_res = if args.len() <= 8 {
-                        let mut bind_sig = self.module.make_signature();
-                        bind_sig.params.push(AbiParam::new(types::I64)); // site_bits
-                        bind_sig.params.push(AbiParam::new(types::I64)); // call_bits
-                        for _ in 0..args.len() {
-                            bind_sig.params.push(AbiParam::new(types::I64)); // positional arg
-                        }
-                        bind_sig.returns.push(AbiParam::new(types::I64));
-                        let bind_name = match args.len() {
-                            0 => "molt_call_bind_pos0_ic",
-                            1 => "molt_call_bind_pos1_ic",
-                            2 => "molt_call_bind_pos2_ic",
-                            3 => "molt_call_bind_pos3_ic",
-                            4 => "molt_call_bind_pos4_ic",
-                            5 => "molt_call_bind_pos5_ic",
-                            6 => "molt_call_bind_pos6_ic",
-                            7 => "molt_call_bind_pos7_ic",
-                            8 => "molt_call_bind_pos8_ic",
-                            _ => unreachable!("call_func fast-call arity must be <= 8"),
-                        };
-                        let call_bind = self
-                            .module
-                            .declare_function(bind_name, Linkage::Import, &bind_sig)
-                            .unwrap();
-                        let call_bind_local =
-                            self.module.declare_func_in_func(call_bind, builder.func);
-                        let mut call_args = Vec::with_capacity(args.len() + 2);
-                        call_args.push(site_bits);
-                        call_args.push(*func_bits);
-                        call_args.extend(args.iter().copied());
-                        let call = builder.ins().call(call_bind_local, &call_args);
-                        builder.inst_results(call)[0]
-                    } else {
-                        let mut new_sig = self.module.make_signature();
-                        new_sig.params.push(AbiParam::new(types::I64));
-                        new_sig.params.push(AbiParam::new(types::I64));
-                        new_sig.returns.push(AbiParam::new(types::I64));
-                        let callargs_new = self
-                            .module
-                            .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                            .unwrap();
-                        let callargs_new_local =
-                            self.module.declare_func_in_func(callargs_new, builder.func);
-                        let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
-                        let kw_capacity = builder.ins().iconst(types::I64, 0);
-                        let callargs_call = builder
-                            .ins()
-                            .call(callargs_new_local, &[pos_capacity, kw_capacity]);
-                        let callargs_ptr = builder.inst_results(callargs_call)[0];
-                        let mut push_sig = self.module.make_signature();
-                        push_sig.params.push(AbiParam::new(types::I64));
-                        push_sig.params.push(AbiParam::new(types::I64));
-                        push_sig.returns.push(AbiParam::new(types::I64));
-                        let callargs_push_pos = self
-                            .module
-                            .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                            .unwrap();
-                        let callargs_push_local = self
-                            .module
-                            .declare_func_in_func(callargs_push_pos, builder.func);
-                        for arg in &args {
-                            builder
-                                .ins()
-                                .call(callargs_push_local, &[callargs_ptr, *arg]);
-                        }
-                        let mut bind_sig = self.module.make_signature();
-                        bind_sig.params.push(AbiParam::new(types::I64));
-                        bind_sig.params.push(AbiParam::new(types::I64));
-                        bind_sig.params.push(AbiParam::new(types::I64));
-                        bind_sig.returns.push(AbiParam::new(types::I64));
-                        let call_bind = self
-                            .module
-                            .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
-                            .unwrap();
-                        let call_bind_local =
-                            self.module.declare_func_in_func(call_bind, builder.func);
-                        let bind_call = builder
-                            .ins()
-                            .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
-                        builder.inst_results(bind_call)[0]
-                    };
+                    let bind_call = builder
+                        .ins()
+                        .call(call_bind_local, &[site_bits, *func_bits, callargs_ptr]);
+                    let bind_res = builder.inst_results(bind_call)[0];
                     jump_block(&mut builder, merge_block, &[bind_res]);
 
                     builder.switch_to_block(func_direct_call_block);
                     builder.seal_block(func_direct_call_block);
-                    let fn_ptr = builder
-                        .ins()
-                        .load(types::I64, MemFlags::trusted(), func_ptr, 0);
+                    let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), func_ptr, 0);
 
                     let mut sig = self.module.make_signature();
                     for _ in 0..args.len() {
@@ -12516,6 +10529,40 @@ impl SimpleBackend {
                     for name in &args_names[1..] {
                         args.push(*var_get(&mut builder, &vars, name).expect("Arg not found"));
                     }
+                    let mut new_sig = self.module.make_signature();
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_new = self
+                        .module
+                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
+                        .unwrap();
+                    let callargs_new_local =
+                        self.module.declare_func_in_func(callargs_new, builder.func);
+                    let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
+                    let kw_capacity = builder.ins().iconst(types::I64, 0);
+                    let callargs_call = builder
+                        .ins()
+                        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                    let callargs_ptr = builder.inst_results(callargs_call)[0];
+
+                    let mut push_sig = self.module.make_signature();
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_push_pos = self
+                        .module
+                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
+                        .unwrap();
+                    let callargs_push_local = self
+                        .module
+                        .declare_func_in_func(callargs_push_pos, builder.func);
+                    for arg in &args {
+                        builder
+                            .ins()
+                            .call(callargs_push_local, &[callargs_ptr, *arg]);
+                    }
+
                     let bridge_lane = op.s_value.as_deref() == Some("bridge");
                     let call_site_label = if bridge_lane {
                         "invoke_ffi_bridge"
@@ -12533,93 +10580,23 @@ impl SimpleBackend {
                     let require_bridge_cap = builder
                         .ins()
                         .iconst(types::I64, box_bool(if bridge_lane { 1 } else { 0 }));
-                    let res = if args.len() <= 8 {
-                        let mut invoke_sig = self.module.make_signature();
-                        invoke_sig.params.push(AbiParam::new(types::I64)); // site_bits
-                        invoke_sig.params.push(AbiParam::new(types::I64)); // call_bits
-                        for _ in 0..args.len() {
-                            invoke_sig.params.push(AbiParam::new(types::I64)); // positional arg
-                        }
-                        invoke_sig.params.push(AbiParam::new(types::I64)); // require_bridge_cap_bits
-                        invoke_sig.returns.push(AbiParam::new(types::I64));
-                        let invoke_name = match args.len() {
-                            0 => "molt_invoke_ffi_pos0_ic",
-                            1 => "molt_invoke_ffi_pos1_ic",
-                            2 => "molt_invoke_ffi_pos2_ic",
-                            3 => "molt_invoke_ffi_pos3_ic",
-                            4 => "molt_invoke_ffi_pos4_ic",
-                            5 => "molt_invoke_ffi_pos5_ic",
-                            6 => "molt_invoke_ffi_pos6_ic",
-                            7 => "molt_invoke_ffi_pos7_ic",
-                            8 => "molt_invoke_ffi_pos8_ic",
-                            _ => unreachable!("invoke_ffi fast-call arity must be <= 8"),
-                        };
-                        let invoke_fn = self
-                            .module
-                            .declare_function(invoke_name, Linkage::Import, &invoke_sig)
-                            .unwrap();
-                        let invoke_local =
-                            self.module.declare_func_in_func(invoke_fn, builder.func);
-                        let mut invoke_args = Vec::with_capacity(args.len() + 3);
-                        invoke_args.push(site_bits);
-                        invoke_args.push(*func_bits);
-                        invoke_args.extend(args.iter().copied());
-                        invoke_args.push(require_bridge_cap);
-                        let invoke_call = builder.ins().call(invoke_local, &invoke_args);
-                        builder.inst_results(invoke_call)[0]
-                    } else {
-                        let mut new_sig = self.module.make_signature();
-                        new_sig.params.push(AbiParam::new(types::I64));
-                        new_sig.params.push(AbiParam::new(types::I64));
-                        new_sig.returns.push(AbiParam::new(types::I64));
-                        let callargs_new = self
-                            .module
-                            .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                            .unwrap();
-                        let callargs_new_local =
-                            self.module.declare_func_in_func(callargs_new, builder.func);
-                        let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
-                        let kw_capacity = builder.ins().iconst(types::I64, 0);
-                        let callargs_call = builder
-                            .ins()
-                            .call(callargs_new_local, &[pos_capacity, kw_capacity]);
-                        let callargs_ptr = builder.inst_results(callargs_call)[0];
 
-                        let mut push_sig = self.module.make_signature();
-                        push_sig.params.push(AbiParam::new(types::I64));
-                        push_sig.params.push(AbiParam::new(types::I64));
-                        push_sig.returns.push(AbiParam::new(types::I64));
-                        let callargs_push_pos = self
-                            .module
-                            .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                            .unwrap();
-                        let callargs_push_local = self
-                            .module
-                            .declare_func_in_func(callargs_push_pos, builder.func);
-                        for arg in &args {
-                            builder
-                                .ins()
-                                .call(callargs_push_local, &[callargs_ptr, *arg]);
-                        }
-
-                        let mut invoke_sig = self.module.make_signature();
-                        invoke_sig.params.push(AbiParam::new(types::I64));
-                        invoke_sig.params.push(AbiParam::new(types::I64));
-                        invoke_sig.params.push(AbiParam::new(types::I64));
-                        invoke_sig.params.push(AbiParam::new(types::I64));
-                        invoke_sig.returns.push(AbiParam::new(types::I64));
-                        let invoke_fn = self
-                            .module
-                            .declare_function("molt_invoke_ffi_ic", Linkage::Import, &invoke_sig)
-                            .unwrap();
-                        let invoke_local =
-                            self.module.declare_func_in_func(invoke_fn, builder.func);
-                        let invoke_call = builder.ins().call(
-                            invoke_local,
-                            &[site_bits, *func_bits, callargs_ptr, require_bridge_cap],
-                        );
-                        builder.inst_results(invoke_call)[0]
-                    };
+                    let mut invoke_sig = self.module.make_signature();
+                    invoke_sig.params.push(AbiParam::new(types::I64));
+                    invoke_sig.params.push(AbiParam::new(types::I64));
+                    invoke_sig.params.push(AbiParam::new(types::I64));
+                    invoke_sig.params.push(AbiParam::new(types::I64));
+                    invoke_sig.returns.push(AbiParam::new(types::I64));
+                    let invoke_fn = self
+                        .module
+                        .declare_function("molt_invoke_ffi_ic", Linkage::Import, &invoke_sig)
+                        .unwrap();
+                    let invoke_local = self.module.declare_func_in_func(invoke_fn, builder.func);
+                    let invoke_call = builder.ins().call(
+                        invoke_local,
+                        &[site_bits, *func_bits, callargs_ptr, require_bridge_cap],
+                    );
+                    let res = builder.inst_results(invoke_call)[0];
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "call_bind" | "call_indirect" => {
@@ -12701,6 +10678,48 @@ impl SimpleBackend {
                         extra_args
                             .push(*var_get(&mut builder, &vars, name).expect("Arg not found"));
                     }
+                    let mut new_sig = self.module.make_signature();
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_new = self
+                        .module
+                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
+                        .unwrap();
+                    let callargs_new_local =
+                        self.module.declare_func_in_func(callargs_new, builder.func);
+                    let pos_capacity = builder.ins().iconst(types::I64, extra_args.len() as i64);
+                    let kw_capacity = builder.ins().iconst(types::I64, 0);
+                    let callargs_call = builder
+                        .ins()
+                        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                    let callargs_ptr = builder.inst_results(callargs_call)[0];
+                    let mut push_sig = self.module.make_signature();
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_push_pos = self
+                        .module
+                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
+                        .unwrap();
+                    let callargs_push_local = self
+                        .module
+                        .declare_func_in_func(callargs_push_pos, builder.func);
+                    for arg in &extra_args {
+                        builder
+                            .ins()
+                            .call(callargs_push_local, &[callargs_ptr, *arg]);
+                    }
+                    let mut bind_sig = self.module.make_signature();
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.returns.push(AbiParam::new(types::I64));
+                    let call_bind = self
+                        .module
+                        .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
+                        .unwrap();
+                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
                     let site_bits = builder.ins().iconst(
                         types::I64,
                         box_int(stable_ic_site_id(
@@ -12709,88 +10728,10 @@ impl SimpleBackend {
                             "call_method",
                         )),
                     );
-                    let res = if extra_args.len() <= 8 {
-                        let mut bind_sig = self.module.make_signature();
-                        bind_sig.params.push(AbiParam::new(types::I64)); // site_bits
-                        bind_sig.params.push(AbiParam::new(types::I64)); // call_bits
-                        for _ in 0..extra_args.len() {
-                            bind_sig.params.push(AbiParam::new(types::I64)); // positional arg
-                        }
-                        bind_sig.returns.push(AbiParam::new(types::I64));
-                        let bind_name = match extra_args.len() {
-                            0 => "molt_call_bind_pos0_ic",
-                            1 => "molt_call_bind_pos1_ic",
-                            2 => "molt_call_bind_pos2_ic",
-                            3 => "molt_call_bind_pos3_ic",
-                            4 => "molt_call_bind_pos4_ic",
-                            5 => "molt_call_bind_pos5_ic",
-                            6 => "molt_call_bind_pos6_ic",
-                            7 => "molt_call_bind_pos7_ic",
-                            8 => "molt_call_bind_pos8_ic",
-                            _ => unreachable!("call_method fast-call arity must be <= 8"),
-                        };
-                        let call_bind = self
-                            .module
-                            .declare_function(bind_name, Linkage::Import, &bind_sig)
-                            .unwrap();
-                        let call_bind_local =
-                            self.module.declare_func_in_func(call_bind, builder.func);
-                        let mut call_args = Vec::with_capacity(extra_args.len() + 2);
-                        call_args.push(site_bits);
-                        call_args.push(*method_bits);
-                        call_args.extend(extra_args.iter().copied());
-                        let call = builder.ins().call(call_bind_local, &call_args);
-                        builder.inst_results(call)[0]
-                    } else {
-                        let mut new_sig = self.module.make_signature();
-                        new_sig.params.push(AbiParam::new(types::I64));
-                        new_sig.params.push(AbiParam::new(types::I64));
-                        new_sig.returns.push(AbiParam::new(types::I64));
-                        let callargs_new = self
-                            .module
-                            .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                            .unwrap();
-                        let callargs_new_local =
-                            self.module.declare_func_in_func(callargs_new, builder.func);
-                        let pos_capacity =
-                            builder.ins().iconst(types::I64, extra_args.len() as i64);
-                        let kw_capacity = builder.ins().iconst(types::I64, 0);
-                        let callargs_call = builder
-                            .ins()
-                            .call(callargs_new_local, &[pos_capacity, kw_capacity]);
-                        let callargs_ptr = builder.inst_results(callargs_call)[0];
-                        let mut push_sig = self.module.make_signature();
-                        push_sig.params.push(AbiParam::new(types::I64));
-                        push_sig.params.push(AbiParam::new(types::I64));
-                        push_sig.returns.push(AbiParam::new(types::I64));
-                        let callargs_push_pos = self
-                            .module
-                            .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                            .unwrap();
-                        let callargs_push_local = self
-                            .module
-                            .declare_func_in_func(callargs_push_pos, builder.func);
-                        for arg in &extra_args {
-                            builder
-                                .ins()
-                                .call(callargs_push_local, &[callargs_ptr, *arg]);
-                        }
-                        let mut bind_sig = self.module.make_signature();
-                        bind_sig.params.push(AbiParam::new(types::I64));
-                        bind_sig.params.push(AbiParam::new(types::I64));
-                        bind_sig.params.push(AbiParam::new(types::I64));
-                        bind_sig.returns.push(AbiParam::new(types::I64));
-                        let call_bind = self
-                            .module
-                            .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
-                            .unwrap();
-                        let call_bind_local =
-                            self.module.declare_func_in_func(call_bind, builder.func);
-                        let call = builder
-                            .ins()
-                            .call(call_bind_local, &[site_bits, *method_bits, callargs_ptr]);
-                        builder.inst_results(call)[0]
-                    };
+                    let call = builder
+                        .ins()
+                        .call(call_bind_local, &[site_bits, *method_bits, callargs_ptr]);
+                    let res = builder.inst_results(call)[0];
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "module_new" => {
@@ -14435,27 +12376,10 @@ impl SimpleBackend {
                     }
                 }
                 "loop_start" => {
-                    // Scan ahead for loop_index_start, skipping carry-var setup
-                    // ops (box_from_raw_int, unbox_to_raw_int, loop_carry_init)
-                    // that may be inserted between loop_start and loop_index_start.
-                    let mut indexed_loop_follows = false;
-                    {
-                        let mut scan = op_idx + 1;
-                        while scan < ops.len() {
-                            let kind = ops[scan].kind.as_str();
-                            match kind {
-                                "loop_index_start" => {
-                                    indexed_loop_follows = true;
-                                    break;
-                                }
-                                "box_from_raw_int" | "unbox_to_raw_int" | "loop_carry_init"
-                                | "check_exception" => {
-                                    scan += 1;
-                                }
-                                _ => break,
-                            }
-                        }
-                    }
+                    let indexed_loop_follows = func_ir
+                        .ops
+                        .get(op_idx + 1)
+                        .is_some_and(|next| next.kind == "loop_index_start");
                     if indexed_loop_follows {
                         // Indexed loops are emitted as LOOP_START + LOOP_INDEX_START.
                         // LOOP_INDEX_START owns the loop frame and IV block param.
@@ -14464,61 +12388,20 @@ impl SimpleBackend {
                     let loop_block = builder.create_block();
                     let body_block = builder.create_block();
                     let after_block = builder.create_block();
-
-                    // Scan ahead for loop_carry_init ops to set up block params
-                    let mut carry_init_ops: Vec<(String, String)> = Vec::new(); // (out_name, init_arg_name)
-                    {
-                        let mut scan = op_idx + 1;
-                        while scan < ops.len() && ops[scan].kind == "loop_carry_init" {
-                            let ci_op = &ops[scan];
-                            let ci_args = ci_op.args.as_ref().unwrap();
-                            let ci_out = ci_op.out.clone().unwrap();
-                            carry_init_ops.push((ci_out, ci_args[0].clone()));
-                            scan += 1;
-                        }
-                    }
-
-                    // Create block params for carry vars
-                    let mut carry_names: Vec<String> = Vec::new();
-                    let mut carry_init_values: Vec<Value> = Vec::new();
-                    for (out_name, init_arg_name) in &carry_init_ops {
-                        let param = builder.append_block_param(loop_block, types::I64);
-                        let init_val = var_get(&mut builder, &vars, init_arg_name)
-                            .expect("Loop carry init value not found");
-                        carry_names.push(out_name.clone());
-                        carry_init_values.push(*init_val);
-                        // We'll define the variable after switching to loop_block
-                        let _ = param; // used after switch_to_block
-                    }
-
                     if !is_block_filled {
                         ensure_block_in_layout(&mut builder, loop_block);
                         reachable_blocks.insert(loop_block);
-                        jump_block(&mut builder, loop_block, &carry_init_values);
+                        jump_block(&mut builder, loop_block, &[]);
                         switch_to_block_tracking(&mut builder, loop_block, &mut is_block_filled);
                     } else {
                         is_block_filled = true;
                     }
-
-                    // Now define carry variables using block params
-                    if reachable_blocks.contains(&loop_block) {
-                        let param_vals: Vec<Value> = builder.block_params(loop_block).to_vec();
-                        for (i, (out_name, _)) in carry_init_ops.iter().enumerate() {
-                            def_var_named(&mut builder, &vars, out_name.clone(), param_vals[i]);
-                        }
-                    }
-
-                    // Store carry values for loop_continue to use
-                    let carry_values = carry_init_values;
-
                     loop_stack.push(LoopFrame {
                         loop_block,
                         body_block,
                         after_block,
                         index_name: None,
                         next_index: None,
-                        carry_names,
-                        carry_values,
                     });
                     loop_depth += 1;
                 }
@@ -14531,51 +12414,16 @@ impl SimpleBackend {
                     let body_block = builder.create_block();
                     let after_block = builder.create_block();
                     let idx_param = builder.append_block_param(loop_block, types::I64);
-
-                    // Scan ahead for loop_carry_init ops
-                    let mut carry_init_ops: Vec<(String, String)> = Vec::new();
-                    {
-                        let mut scan = op_idx + 1;
-                        while scan < ops.len() && ops[scan].kind == "loop_carry_init" {
-                            let ci_op = &ops[scan];
-                            let ci_args = ci_op.args.as_ref().unwrap();
-                            let ci_out = ci_op.out.clone().unwrap();
-                            carry_init_ops.push((ci_out, ci_args[0].clone()));
-                            scan += 1;
-                        }
-                    }
-
-                    // Create block params for carry vars
-                    let mut carry_names: Vec<String> = Vec::new();
-                    let mut carry_init_values: Vec<Value> = Vec::new();
-                    for (ci_out, ci_init_name) in &carry_init_ops {
-                        let _carry_param = builder.append_block_param(loop_block, types::I64);
-                        let init_val = var_get(&mut builder, &vars, ci_init_name)
-                            .expect("Loop carry init value not found");
-                        carry_names.push(ci_out.clone());
-                        carry_init_values.push(*init_val);
-                    }
-
-                    // Build initial jump args: [index_start, carry_init_1, carry_init_2, ...]
-                    let mut jump_args = vec![*start];
-                    jump_args.extend_from_slice(&carry_init_values);
-
                     if !is_block_filled {
                         ensure_block_in_layout(&mut builder, loop_block);
                         reachable_blocks.insert(loop_block);
-                        jump_block(&mut builder, loop_block, &jump_args);
+                        jump_block(&mut builder, loop_block, &[*start]);
                         switch_to_block_tracking(&mut builder, loop_block, &mut is_block_filled);
                     } else {
                         is_block_filled = true;
                     }
                     if reachable_blocks.contains(&loop_block) {
                         def_var_named(&mut builder, &vars, out_name.clone(), idx_param);
-                        // Define carry variables from block params
-                        let all_params: Vec<Value> = builder.block_params(loop_block).to_vec();
-                        for (i, (ci_out, _)) in carry_init_ops.iter().enumerate() {
-                            // Block param 0 is idx, carry params start at 1
-                            def_var_named(&mut builder, &vars, ci_out.clone(), all_params[i + 1]);
-                        }
                     }
                     loop_stack.push(LoopFrame {
                         loop_block,
@@ -14583,8 +12431,6 @@ impl SimpleBackend {
                         after_block,
                         index_name: Some(out_name),
                         next_index: None,
-                        carry_names,
-                        carry_values: carry_init_values,
                     });
                     loop_depth += 1;
                 }
@@ -14604,22 +12450,17 @@ impl SimpleBackend {
                         .get(&current_block)
                         .map(|names| collect_cleanup_tracked(names, &last_use, op_idx, None))
                         .unwrap_or_default();
-                    let cond_bool = if op.raw_int.unwrap_or(false) {
-                        // raw_int: cond is already 0 or 1, skip molt_is_truthy call
-                        builder.ins().icmp_imm(IntCC::NotEqual, *cond, 0)
-                    } else {
-                        let mut sig = self.module.make_signature();
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.returns.push(AbiParam::new(types::I64));
-                        let callee = self
-                            .module
-                            .declare_function("molt_is_truthy", Linkage::Import, &sig)
-                            .unwrap();
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let call = builder.ins().call(local_callee, &[*cond]);
-                        let truthy = builder.inst_results(call)[0];
-                        builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0)
-                    };
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_is_truthy", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*cond]);
+                    let truthy = builder.inst_results(call)[0];
+                    let cond_bool = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
                     let cleanup_block = builder.create_block();
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(cleanup_block, current_block);
@@ -14669,21 +12510,17 @@ impl SimpleBackend {
                         .get(&current_block)
                         .map(|names| collect_cleanup_tracked(names, &last_use, op_idx, None))
                         .unwrap_or_default();
-                    let cond_bool = if op.raw_int.unwrap_or(false) {
-                        builder.ins().icmp_imm(IntCC::NotEqual, *cond, 0)
-                    } else {
-                        let mut sig = self.module.make_signature();
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.returns.push(AbiParam::new(types::I64));
-                        let callee = self
-                            .module
-                            .declare_function("molt_is_truthy", Linkage::Import, &sig)
-                            .unwrap();
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let call = builder.ins().call(local_callee, &[*cond]);
-                        let truthy = builder.inst_results(call)[0];
-                        builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0)
-                    };
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_is_truthy", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*cond]);
+                    let truthy = builder.inst_results(call)[0];
+                    let cond_bool = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
                     let cleanup_block = builder.create_block();
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(cleanup_block, current_block);
@@ -14763,28 +12600,6 @@ impl SimpleBackend {
                     let out_name = op.out.unwrap();
                     def_var_named(&mut builder, &vars, out_name, *next_idx);
                 }
-                "loop_carry_init" => {
-                    // Already processed by LOOP_START scan-ahead — skip.
-                    // The block param and variable definition were set up in LOOP_START.
-                }
-                "loop_carry_update" => {
-                    // Update the carry value for a loop-carried variable.
-                    // args[0] = variable name (string), args[1] = new value
-                    let args = op.args.as_ref().unwrap();
-                    let carry_name = &args[0];
-                    let new_val = var_get(&mut builder, &vars, &args[1])
-                        .expect("Loop carry update val not found");
-                    let frame = loop_stack.last_mut().unwrap_or_else(|| {
-                        panic!("No loop on stack in {} at op {}", func_ir.name, op_idx)
-                    });
-                    // Find the carry var by name and update its value
-                    if let Some(pos) = frame.carry_names.iter().position(|n| n == carry_name) {
-                        frame.carry_values[pos] = *new_val;
-                    }
-                    // Also redefine the SSA variable so subsequent ops see the new value
-                    let out_name = op.out.clone().unwrap();
-                    def_var_named(&mut builder, &vars, out_name, *new_val);
-                }
                 "loop_continue" => {
                     let frame = loop_stack.last_mut().unwrap_or_else(|| {
                         panic!("No loop on stack in {} at op {}", func_ir.name, op_idx)
@@ -14817,19 +12632,15 @@ impl SimpleBackend {
                         }
                     }
                     reachable_blocks.insert(frame.loop_block);
-                    let mut jump_args: Vec<Value> = Vec::new();
                     if let Some(next_idx) = frame.next_index.take() {
-                        jump_args.push(next_idx);
+                        jump_block(&mut builder, frame.loop_block, &[next_idx]);
                     } else if let Some(name) = frame.index_name.as_ref() {
                         let current_idx =
                             var_get(&mut builder, &vars, name).expect("Loop index not found");
-                        jump_args.push(*current_idx);
+                        jump_block(&mut builder, frame.loop_block, &[*current_idx]);
+                    } else {
+                        jump_block(&mut builder, frame.loop_block, &[]);
                     }
-                    // Append carry values for loop-carried variables
-                    for val in &frame.carry_values {
-                        jump_args.push(*val);
-                    }
-                    jump_block(&mut builder, frame.loop_block, &jump_args);
                     is_block_filled = true;
                 }
                 "loop_end" => {
@@ -14840,19 +12651,15 @@ impl SimpleBackend {
                     if !is_block_filled {
                         ensure_block_in_layout(&mut builder, frame.loop_block);
                         reachable_blocks.insert(frame.loop_block);
-                        let mut jump_args: Vec<Value> = Vec::new();
                         if let Some(next_idx) = frame.next_index.take() {
-                            jump_args.push(next_idx);
+                            jump_block(&mut builder, frame.loop_block, &[next_idx]);
                         } else if let Some(name) = frame.index_name.as_ref() {
                             let current_idx =
                                 var_get(&mut builder, &vars, name).expect("Loop index not found");
-                            jump_args.push(*current_idx);
+                            jump_block(&mut builder, frame.loop_block, &[*current_idx]);
+                        } else {
+                            jump_block(&mut builder, frame.loop_block, &[]);
                         }
-                        // Append carry values so the jump matches the block params
-                        for val in &frame.carry_values {
-                            jump_args.push(*val);
-                        }
-                        jump_block(&mut builder, frame.loop_block, &jump_args);
                     }
                     if builder.func.layout.is_block_inserted(frame.loop_block) {
                         builder.seal_block(frame.loop_block);
@@ -14873,36 +12680,20 @@ impl SimpleBackend {
                 }
                 "alloc" => {
                     let size = op.value.unwrap();
+                    let iconst = builder.ins().iconst(types::I64, size);
+
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64)); // Returns object bits
+                    let callee = self
+                        .module
+                        .declare_function("molt_alloc", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[iconst]);
+                    let res = builder.inst_results(call)[0];
                     let out_name = op.out.unwrap();
-
-                    if op.stack_eligible.unwrap_or(false) && size > 0 && size <= 4096 {
-                        // Stack allocation: non-escaping object proven by escape analysis.
-                        // Allocate on the stack frame instead of calling molt_alloc.
-                        let slot = builder.create_sized_stack_slot(StackSlotData::new(
-                            StackSlotKind::ExplicitSlot,
-                            size as u32,
-                            0,
-                        ));
-                        let addr = builder.ins().stack_addr(types::I64, slot, 0);
-                        // Box the stack address as TAG_PTR.
-                        let tag = builder.ins().iconst(types::I64, (QNAN | TAG_PTR) as i64);
-                        let res = builder.ins().bor(addr, tag);
-                        def_var_named(&mut builder, &vars, out_name, res);
-                    } else {
-                        let iconst = builder.ins().iconst(types::I64, size);
-
-                        let mut sig = self.module.make_signature();
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.returns.push(AbiParam::new(types::I64));
-                        let callee = self
-                            .module
-                            .declare_function("molt_alloc", Linkage::Import, &sig)
-                            .unwrap();
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let call = builder.ins().call(local_callee, &[iconst]);
-                        let res = builder.inst_results(call)[0];
-                        def_var_named(&mut builder, &vars, out_name, res);
-                    }
+                    def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "alloc_class" => {
                     let size = op.value.unwrap();
@@ -15688,12 +13479,7 @@ impl SimpleBackend {
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-
-                    let site_id_val = stable_ic_site_id(func_ir.name.as_str(), op_idx, "setattr");
-                    let site_id_const = builder.ins().iconst(types::I64, site_id_val);
-
                     let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -15701,13 +13487,12 @@ impl SimpleBackend {
                     sig.returns.push(AbiParam::new(types::I64));
                     let callee = self
                         .module
-                        .declare_function("molt_set_attr_object_ic", Linkage::Import, &sig)
+                        .declare_function("molt_set_attr_object", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(
-                        local_callee,
-                        &[*obj, attr_ptr, attr_len, *val, site_id_const],
-                    );
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*obj, attr_ptr, attr_len, *val]);
                     let res = builder.inst_results(call)[0];
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
@@ -16162,16 +13947,8 @@ impl SimpleBackend {
                 }
             }
 
-            // Skip tracking for raw_int ops — their outputs are raw i64
-            // values, not NaN-boxed objects, so dec_ref must NOT be called.
-            let skip_tracking = op.raw_int.unwrap_or(false)
-                || matches!(
-                    op.kind.as_str(),
-                    "unbox_to_raw_int" | "loop_carry_init" | "loop_carry_update"
-                );
             if let Some(name) = out_name.as_ref()
                 && name != "none"
-                && !skip_tracking
                 && let Some(block) = builder.current_block()
             {
                 if block == entry_block && loop_depth == 0 {
@@ -16263,25 +14040,6 @@ impl SimpleBackend {
             && (filter == "1" || filter == func_ir.name || func_ir.name.contains(&filter))
         {
             eprintln!("CLIF {}:\n{}", func_ir.name, self.ctx.func.display());
-            // Optional file sink for debug captures. We only write when explicitly
-            // configured to avoid unexpected local-disk churn.
-            if let Ok(path) = std::env::var("MOLT_DUMP_CLIF_FILE")
-                && !path.trim().is_empty()
-            {
-                use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                {
-                    let _ = writeln!(
-                        f,
-                        "=== CLIF {} ===\n{}",
-                        func_ir.name,
-                        self.ctx.func.display()
-                    );
-                }
-            }
         }
 
         let id = self

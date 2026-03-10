@@ -4,11 +4,8 @@ members = [
     "runtime/molt-obj-model",
     "runtime/molt-backend",
     "runtime/molt-db",
-    "runtime/molt-python",
     "runtime/molt-worker",
     "runtime/molt-wasm-host",
-    "runtime/molt-cpython-abi",
-    "crates/molt-rs",
 ]
 resolver = "2"
 
@@ -42,6 +39,3 @@ lto = "thin"
 codegen-units = 4
 panic = "abort"
 strip = true
-
-[patch.crates-io]
-rustpython-parser = { path = "vendor/rustpython-parser" }

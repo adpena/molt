@@ -1,7 +1,5 @@
 use molt_obj_model::MoltObject;
-#[cfg(not(target_arch = "wasm32"))]
 use num_bigint::BigInt as NumBigInt;
-#[cfg(not(target_arch = "wasm32"))]
 use rustpython_parser::{Mode as ParseMode, ParseErrorType, ast as pyast, parse as parse_python};
 
 use crate::{
@@ -11,7 +9,6 @@ use crate::{
     obj_from_bits, object_type_id, raise_exception, string_obj_to_owned,
 };
 
-#[cfg(not(target_arch = "wasm32"))]
 struct AstParseCtors {
     module: u64,
     expression: u64,
@@ -29,7 +26,6 @@ struct AstParseCtors {
     store: u64,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl AstParseCtors {
     fn from_bits(_py: &crate::PyToken<'_>, ctors_bits: u64) -> Result<Self, u64> {
         let Some(values) = decode_value_list(obj_from_bits(ctors_bits)) else {
@@ -125,7 +121,6 @@ fn call_ctor3(
     Ok(out)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn parse_error_type(error: &ParseErrorType) -> &'static str {
     if error.is_tab_error() {
         "TabError"
@@ -136,7 +131,6 @@ fn parse_error_type(error: &ParseErrorType) -> &'static str {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn unsupported_expr(_py: &crate::PyToken<'_>, kind: &str) -> u64 {
     raise_exception::<_>(
         _py,
@@ -145,7 +139,6 @@ fn unsupported_expr(_py: &crate::PyToken<'_>, kind: &str) -> u64 {
     )
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn unsupported_stmt(_py: &crate::PyToken<'_>, kind: &str) -> u64 {
     raise_exception::<_>(
         _py,
@@ -154,7 +147,6 @@ fn unsupported_stmt(_py: &crate::PyToken<'_>, kind: &str) -> u64 {
     )
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn stmt_kind_name(stmt: &pyast::Stmt) -> &'static str {
     match stmt {
         pyast::Stmt::FunctionDef(_) => "FunctionDef",
@@ -188,7 +180,6 @@ fn stmt_kind_name(stmt: &pyast::Stmt) -> &'static str {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn convert_constant_value(_py: &crate::PyToken<'_>, value: &pyast::Constant) -> Result<u64, u64> {
     match value {
         pyast::Constant::None => Ok(MoltObject::none().bits()),
@@ -245,7 +236,6 @@ fn convert_constant_value(_py: &crate::PyToken<'_>, value: &pyast::Constant) -> 
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn convert_name_with_ctx(
     _py: &crate::PyToken<'_>,
     name: &str,
@@ -260,7 +250,6 @@ fn convert_name_with_ctx(
     out
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn convert_expr(
     _py: &crate::PyToken<'_>,
     expr: &pyast::Expr,
@@ -308,7 +297,6 @@ fn convert_expr(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn convert_arg(
     _py: &crate::PyToken<'_>,
     arg: &pyast::ArgWithDefault,
@@ -334,7 +322,6 @@ fn convert_arg(
     out
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn convert_assign_target(
     _py: &crate::PyToken<'_>,
     target: &pyast::Expr,
@@ -346,7 +333,6 @@ fn convert_assign_target(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn convert_stmt(
     _py: &crate::PyToken<'_>,
     stmt: &pyast::Stmt,
@@ -620,7 +606,6 @@ fn collect_child_nodes(_py: &crate::PyToken<'_>, node_bits: u64) -> Result<Vec<u
 }
 
 #[unsafe(no_mangle)]
-#[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn molt_ast_parse(
     source_bits: u64,
     filename_bits: u64,
@@ -712,31 +697,6 @@ pub extern "C" fn molt_ast_parse(
                 "molt ast.parse intrinsic unsupported parse mode result",
             ),
         }
-    })
-}
-
-#[unsafe(no_mangle)]
-#[cfg(target_arch = "wasm32")]
-pub extern "C" fn molt_ast_parse(
-    source_bits: u64,
-    filename_bits: u64,
-    mode_bits: u64,
-    type_comments_bits: u64,
-    feature_version_bits: u64,
-    ctors_bits: u64,
-) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let _ = source_bits;
-        let _ = filename_bits;
-        let _ = mode_bits;
-        let _ = type_comments_bits;
-        let _ = feature_version_bits;
-        let _ = ctors_bits;
-        raise_exception::<_>(
-            _py,
-            "RuntimeError",
-            "ast.parse is unsupported on wasm targets",
-        )
     })
 }
 

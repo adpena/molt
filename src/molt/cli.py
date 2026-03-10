@@ -10,7 +10,6 @@ import hashlib
 import http.client
 import io
 import tempfile
-import tarfile
 import json
 import os
 import platform
@@ -38,11 +37,7 @@ from typing import Any, Iterable, Literal, Mapping, MutableMapping, NamedTuple, 
 from packaging.markers import InvalidMarker, Marker
 from packaging.requirements import InvalidRequirement, Requirement
 from molt.compat import CompatibilityError
-from molt.frontend import (
-    SIMPLE_IR_CONTRACT_NAME,
-    SIMPLE_IR_CONTRACT_VERSION,
-    SimpleTIRGenerator,
-)
+from molt.frontend import SimpleTIRGenerator
 from molt.type_facts import (
     collect_type_facts_from_paths,
     load_type_facts,
@@ -90,15 +85,6 @@ _WASM_CODEGEN_ENV_KNOBS = (
     "MOLT_WASM_LINK",
     "MOLT_WASM_TABLE_BASE",
 )
-_WASM_RUNTIME_TARGET_FEATURE_MODE_ENV = "MOLT_WASM_RUNTIME_TARGET_FEATURE_MODE"
-_WASM_RUNTIME_TARGET_FEATURES_ENV = "MOLT_WASM_RUNTIME_TARGET_FEATURES"
-_WASM_RUNTIME_TARGET_FEATURES_EXTRA_ENV = "MOLT_WASM_RUNTIME_TARGET_FEATURES_EXTRA"
-_WASM_RUNTIME_TARGET_CPU_ENV = "MOLT_WASM_RUNTIME_TARGET_CPU"
-_WASM_RUNTIME_TARGET_FEATURES_BASELINE = "+simd128"
-_WASM_RUNTIME_TARGET_FEATURES_AGGRESSIVE = (
-    "+simd128,+bulk-memory,+mutable-globals,"
-    "+nontrapping-fptoint,+sign-ext,+reference-types,+multivalue"
-)
 CAPABILITY_PROFILES: dict[str, list[str]] = {
     "core": [],
     "fs": ["fs.read", "fs.write"],
@@ -117,47 +103,9 @@ _WHEEL_TOKEN_RE = re.compile(r"[^A-Za-z0-9_.]+")
 _WHEEL_VERSION_RE = re.compile(r"[^A-Za-z0-9._]+")
 _PY_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _PY_C_API_TOKEN_RE = re.compile(r"\bPy[A-Za-z_][A-Za-z0-9_]*\b")
-_PY_C_API_PARTIAL_TOKEN_RE = re.compile(r"^Py(?:_[A-Z]|[A-Z]{1,3})$")
-_PY_C_API_DEFINE_RE = re.compile(
-    r"^\s*#\s*define\s+(Py[A-Za-z_][A-Za-z0-9_]*)\b", flags=re.MULTILINE
-)
-_PY_C_API_FUNC_DEF_RE = re.compile(
-    r"(^|[;{}])\s*(?P<prefix>[A-Za-z_][A-Za-z0-9_\s\*]*?)\b"
-    r"(?P<name>Py[A-Za-z_][A-Za-z0-9_]*)\s*\([^{};]*\)\s*\{",
-    flags=re.MULTILINE,
-)
-_PY_C_API_STATIC_VAR_RE = re.compile(
-    r"^\s*static\b[^\n;{}]*\b(Py[A-Za-z_][A-Za-z0-9_]*)\b\s*(?:=|;)",
-    flags=re.MULTILINE,
-)
-_PY_C_API_SIMPLE_TYPEDEF_RE = re.compile(
-    r"\btypedef\b[^;{}]*\b(Py[A-Za-z_][A-Za-z0-9_]*)\b\s*;",
-    flags=re.MULTILINE,
-)
-_PY_C_API_TAG_RE = re.compile(
-    r"\b(?:struct|union|class)\s+(Py[A-Za-z_][A-Za-z0-9_]*)\b",
-    flags=re.MULTILINE,
-)
-_PY_C_API_STRUCT_BLOCK_RE = re.compile(
-    r"\b(?:typedef\s+)?(?:struct|union)\b[^{};]*\{(?P<body>.*?)\}"
-    r"\s*(?P<alias>Py[A-Za-z_][A-Za-z0-9_]*)?\s*;",
-    flags=re.DOTALL,
-)
 _C_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", flags=re.DOTALL)
 _C_LINE_COMMENT_RE = re.compile(r"//.*?$", flags=re.MULTILINE)
 _C_STRING_LITERAL_RE = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
-_EXTENSION_SCAN_SUFFIXES = {
-    ".c",
-    ".cc",
-    ".cpp",
-    ".cxx",
-    ".h",
-    ".hh",
-    ".hpp",
-    ".hxx",
-    ".inc",
-    ".inl",
-}
 _SUPPORTED_PKG_ABI_MAJOR = 0
 _SUPPORTED_PKG_ABI_MINOR = 1
 _SUPPORTED_PKG_ABI = f"{_SUPPORTED_PKG_ABI_MAJOR}.{_SUPPORTED_PKG_ABI_MINOR}"
@@ -225,12 +173,6 @@ class ExtensionManifestValidation:
     abi_tag: str | None
     capabilities: list[str]
     wheel_tags: tuple[str, str, str] | None
-
-
-@dataclass(frozen=True)
-class ExtensionScanSourceUnit:
-    label: str
-    text: str
 
 
 def _emit_json(payload: dict[str, Any], json_output: bool) -> None:
@@ -736,100 +678,6 @@ def _default_molt_c_api_version(molt_root: Path) -> str:
     if match is None:
         return "1"
     return match.group(1)
-
-
-def _extension_header_contract() -> dict[str, Any]:
-    stable_abi_headers = ("molt/molt.h",)
-    cpython_source_compat_headers = (
-        "Python.h",
-        "molt/Python.h",
-        "molt/cext_compat_shims.h",
-        "datetime.h",
-        "frameobject.h",
-        "pymem.h",
-        "structmember.h",
-    )
-    numpy_source_compat_headers = (
-        "arrayobject.h",
-        "_numpyconfig.h",
-        "config.h",
-        "npy_cpu_dispatch_config.h",
-        "numpy/__multiarray_api.h",
-        "numpy/__ufunc_api.h",
-        "numpy/_public_dtype_api_table.h",
-        "numpy/arrayobject.h",
-        "numpy/arrayscalars.h",
-        "numpy/dtype_api.h",
-        "numpy/halffloat.h",
-        "numpy/ndarrayobject.h",
-        "numpy/ndarraytypes.h",
-        "numpy/npy_2_compat.h",
-        "numpy/npy_2_complexcompat.h",
-        "numpy/npy_3kcompat.h",
-        "numpy/npy_common.h",
-        "numpy/npy_cpu.h",
-        "numpy/npy_endian.h",
-        "numpy/npy_math.h",
-        "numpy/npy_no_deprecated_api.h",
-        "numpy/npy_os.h",
-        "numpy/numpyconfig.h",
-        "numpy/random/bitgen.h",
-        "numpy/random/distributions.h",
-        "numpy/ufuncobject.h",
-        "numpy/utils.h",
-    )
-    source_compat_headers = (
-        *cpython_source_compat_headers,
-        *numpy_source_compat_headers,
-    )
-    return {
-        "version": "v0",
-        "include_root": "include",
-        "stable_abi_headers": list(stable_abi_headers),
-        "source_compat_headers": list(source_compat_headers),
-        "header_groups": [
-            {"name": "stable_abi", "headers": list(stable_abi_headers)},
-            {
-                "name": "cpython_source_compat",
-                "headers": list(cpython_source_compat_headers),
-            },
-            {
-                "name": "numpy_source_compat",
-                "headers": list(numpy_source_compat_headers),
-            },
-        ],
-        "excluded_private_headers": [
-            "numpy/arraytypes.h",
-            "numpy/_core/src/**",
-            "numpy/**/generated/**",
-        ],
-        "notes": [
-            "Only molt/molt.h is the stable libmolt ABI header.",
-            "Python.h, datetime.h, structmember.h, frameobject.h, pymem.h, "
-            "arrayobject.h, and numpy/* are bounded source-compat overlays.",
-            "Private/generated third-party build headers are outside the libmolt "
-            "contract and must not be treated as stable ABI.",
-        ],
-    }
-
-
-def _extension_header_contract_paths(
-    molt_root: Path,
-) -> tuple[dict[str, Any], list[Path], list[str]]:
-    contract = _extension_header_contract()
-    include_root = molt_root / str(contract["include_root"])
-    consulted_paths: list[Path] = []
-    missing_headers: list[str] = []
-    for rel_path in [
-        *contract["stable_abi_headers"],
-        *contract["source_compat_headers"],
-    ]:
-        header_path = include_root / str(rel_path)
-        if header_path.exists():
-            consulted_paths.append(header_path)
-        else:
-            missing_headers.append(str(rel_path))
-    return contract, consulted_paths, missing_headers
 
 
 def _wheel_filename_tags(path: Path) -> tuple[str, str, str] | None:
@@ -2865,8 +2713,6 @@ def _ensure_core_stdlib_modules(
     module_graph: dict[str, Path], stdlib_root: Path
 ) -> None:
     for name in (
-        "_intrinsics",
-        "_sitebuiltins",
         "builtins",
         "sys",
         "types",
@@ -3109,54 +2955,18 @@ def _emit_build_diagnostics(
                     print(f"- midend.degrade_reason.{reason}: {value}", file=sys.stderr)
         hotspots = midend.get("pass_hotspots_top")
         if isinstance(hotspots, list):
-            total_ranked_passes: list[tuple[str, str, str, float, float]] = []
-            for item in hotspots[:10]:
+            for idx, item in enumerate(hotspots[:10], start=1):
                 if not isinstance(item, dict):
                     continue
-                total_ranked_passes.append(
-                    (
-                        str(item.get("module", "")),
-                        str(item.get("function", "")),
-                        str(item.get("pass", "")),
-                        float(item.get("ms_total", 0.0)),
-                        float(item.get("ms_p95", 0.0)),
-                    )
-                )
-            total_ranked_passes.sort(
-                key=lambda entry: (-entry[3], entry[0], entry[1], entry[2])
-            )
-            for idx, entry in enumerate(total_ranked_passes, start=1):
-                module_name, function_name, pass_name, total_ms, p95_ms = entry
+                module_name = str(item.get("module", ""))
+                function_name = str(item.get("function", ""))
+                pass_name = str(item.get("pass", ""))
+                total_ms = float(item.get("ms_total", 0.0))
+                p95_ms = float(item.get("ms_p95", 0.0))
                 print(
                     "- midend.hotspot."
                     f"{idx}: {module_name}::{function_name}:{pass_name} "
                     f"total_ms={total_ms:.3f} p95_ms={p95_ms:.3f}",
-                    file=sys.stderr,
-                )
-        p95_hotspots = midend.get("pass_hotspots_p95_top")
-        if isinstance(p95_hotspots, list):
-            p95_ranked_passes: list[tuple[str, str, str, float, float]] = []
-            for item in p95_hotspots[:10]:
-                if not isinstance(item, dict):
-                    continue
-                p95_ranked_passes.append(
-                    (
-                        str(item.get("module", "")),
-                        str(item.get("function", "")),
-                        str(item.get("pass", "")),
-                        float(item.get("ms_total", 0.0)),
-                        float(item.get("ms_p95", 0.0)),
-                    )
-                )
-            p95_ranked_passes.sort(
-                key=lambda entry: (-entry[4], entry[0], entry[1], entry[2])
-            )
-            for idx, entry in enumerate(p95_ranked_passes, start=1):
-                module_name, function_name, pass_name, total_ms, p95_ms = entry
-                print(
-                    "- midend.hotspot_p95."
-                    f"{idx}: {module_name}::{function_name}:{pass_name} "
-                    f"p95_ms={p95_ms:.3f} total_ms={total_ms:.3f}",
                     file=sys.stderr,
                 )
         function_hotspots = midend.get("function_hotspots_top")
@@ -4080,14 +3890,12 @@ def _runtime_fingerprint(
     target_triple: str | None,
     rustflags: str,
     runtime_features: tuple[str, ...] = (),
-    macos_deployment_target: str | None = None,
 ) -> dict[str, str | None] | None:
     hasher = hashlib.sha256()
     feature_list = tuple(_dedupe_preserve_order(sorted(runtime_features)))
     meta = f"profile:{cargo_profile}\ntarget:{target_triple or 'native'}\n"
     meta += f"rustflags:{rustflags}\n"
     meta += f"features:{','.join(feature_list)}\n"
-    meta += f"macos_deployment_target:{macos_deployment_target or ''}\n"
     hasher.update(meta.encode("utf-8"))
     rustc_info = _rustc_version()
     try:
@@ -4106,15 +3914,11 @@ def _runtime_fingerprint(
 def _runtime_cargo_features(target_triple: str | None) -> tuple[str, ...]:
     if target_triple is not None and target_triple.startswith("wasm32"):
         return ()
-    features: list[str] = []
     raw = os.environ.get("MOLT_RUNTIME_TK_NATIVE")
     enabled = True if raw is None or raw.strip() == "" else _coerce_bool(raw, True)
-    if enabled:
-        features.append("molt_tk_native")
-    hosted_extension = os.environ.get("MOLT_RUNTIME_HOSTED_EXTENSION")
-    if hosted_extension and _coerce_bool(hosted_extension, False):
-        features.append("molt_hosted_extension")
-    return tuple(features)
+    if not enabled:
+        return ()
+    return ("molt_tk_native",)
 
 
 def _read_runtime_fingerprint(path: Path) -> dict[str, str | None] | None:
@@ -4351,16 +4155,6 @@ def _artifact_needs_rebuild(
     return False
 
 
-def _is_valid_static_archive(path: Path) -> bool:
-    try:
-        if path.suffix.lower() == ".a":
-            with path.open("rb") as handle:
-                return handle.read(8) == b"!<arch>\n"
-        return path.stat().st_size > 0
-    except OSError:
-        return False
-
-
 def _is_valid_wasm_binary(path: Path) -> bool:
     try:
         with path.open("rb") as handle:
@@ -4448,7 +4242,7 @@ def _build_lock(project_root: Path, name: str):
         yield
         return
     try:
-        import fcntl
+        import fcntl  # type: ignore
     except Exception:
         yield
         return
@@ -5167,23 +4961,6 @@ def _resolve_wasm_cargo_profile(cargo_profile: str) -> str:
     return cargo_profile
 
 
-def _resolve_luau_cargo_profile(cargo_profile: str) -> str:
-    """Map cargo profile for Luau transpilation targets.
-
-    Luau output is source code, not machine code, so the backend binary's
-    optimization level has negligible impact on output quality.  Uses
-    ``release-fast`` (no LTO, 128 codegen-units) instead of ``release``
-    for ~10x faster backend compilation.  Override with
-    ``MOLT_LUAU_CARGO_PROFILE``.
-    """
-    override = os.environ.get("MOLT_LUAU_CARGO_PROFILE", "").strip()
-    if override:
-        return override
-    if cargo_profile == "release":
-        return "release-fast"
-    return cargo_profile
-
-
 def _native_arch_perf_requested() -> bool:
     profile = os.environ.get("MOLT_PERF_PROFILE", "").strip().lower()
     if profile in {"native-arch", "native_arch", "native"}:
@@ -5282,7 +5059,7 @@ def _backend_daemon_max_jobs() -> int:
     return _BACKEND_DAEMON_DEFAULT_MAX_JOBS
 
 
-def _backend_daemon_start_timeout(default: float = 90.0) -> float:
+def _backend_daemon_start_timeout(default: float = 5.0) -> float:
     raw = os.environ.get("MOLT_BACKEND_DAEMON_START_TIMEOUT", "").strip()
     if not raw:
         return default
@@ -5295,56 +5072,11 @@ def _backend_daemon_start_timeout(default: float = 90.0) -> float:
     return default
 
 
-def _backend_daemon_default_socket_dir_candidates() -> list[Path]:
-    temp_dir = Path(tempfile.gettempdir()) / "molt-backend-daemon"
-    if os.name == "nt":
-        return [temp_dir]
-    local_tmp_dir = Path("/tmp") / "molt-backend-daemon"
-    if local_tmp_dir == temp_dir:
-        return [local_tmp_dir]
-    return [local_tmp_dir, temp_dir]
-
-
-def _backend_daemon_socket_dir_supports_unix(path: Path) -> bool:
-    if os.name == "nt":
-        return True
-    try:
-        path.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return False
-    probe = path / f".moltbd-probe-{os.getpid()}-{time.monotonic_ns()}.sock"
-    try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.bind(str(probe))
-    except OSError:
-        return False
-    finally:
-        try:
-            probe.unlink()
-        except OSError:
-            pass
-    return True
-
-
-def _backend_daemon_default_socket_dir() -> Path:
-    candidates = _backend_daemon_default_socket_dir_candidates()
-    if os.name == "nt":
-        return candidates[0]
-    for candidate in candidates:
-        if _backend_daemon_socket_dir_supports_unix(candidate):
-            return candidate
-    return candidates[0]
-
-
 def _backend_daemon_socket_dir(project_root: Path) -> Path:
     # Unix sockets can fail on some external/shared volumes (e.g. exFAT).
-    # Keep sockets on a local socket-capable path by default, independent
-    # from TMPDIR when it points to a non-socket filesystem.
-    explicit_dir = os.environ.get("MOLT_BACKEND_DAEMON_SOCKET_DIR", "").strip()
-    if explicit_dir:
-        socket_dir = _resolve_env_path("MOLT_BACKEND_DAEMON_SOCKET_DIR", Path())
-    else:
-        socket_dir = _backend_daemon_default_socket_dir()
+    # Keep sockets on a local socket-capable path by default.
+    default_dir = Path(tempfile.gettempdir()) / "molt-backend-daemon"
+    socket_dir = _resolve_env_path("MOLT_BACKEND_DAEMON_SOCKET_DIR", default_dir)
     socket_dir.mkdir(parents=True, exist_ok=True)
     return socket_dir
 
@@ -5696,29 +5428,23 @@ def _compile_with_backend_daemon(
     ir: dict[str, Any],
     backend_output: Path,
     is_wasm: bool,
-    is_luau: bool = False,
-    is_rust: bool = False,
     target_triple: str | None,
     cache_key: str | None,
     function_cache_key: str | None,
     config_digest: str | None,
-    env_overrides: dict[str, str] | None,
     timeout: float | None,
 ) -> _BackendDaemonCompileResult:
-    job_payload: dict[str, Any] = {
-        "id": "job0",
-        "is_wasm": is_wasm,
-        "is_luau": is_luau,
-        "is_rust": is_rust,
-        "target_triple": target_triple,
-        "output": str(backend_output),
-        "cache_key": cache_key or "",
-        "function_cache_key": function_cache_key or "",
-        "ir": ir,
-    }
-    if env_overrides:
-        job_payload["env_overrides"] = env_overrides
-    jobs: list[dict[str, Any]] = [job_payload]
+    jobs: list[dict[str, Any]] = [
+        {
+            "id": "job0",
+            "is_wasm": is_wasm,
+            "target_triple": target_triple,
+            "output": str(backend_output),
+            "cache_key": cache_key or "",
+            "function_cache_key": function_cache_key or "",
+            "ir": ir,
+        }
+    ]
     if len(jobs) > _backend_daemon_max_jobs():
         return _BackendDaemonCompileResult(
             False,
@@ -5822,12 +5548,10 @@ def _backend_fingerprint(
     *,
     cargo_profile: str,
     rustflags: str,
-    macos_deployment_target: str | None = None,
 ) -> dict[str, str | None] | None:
     hasher = hashlib.sha256()
     meta = f"profile:{cargo_profile}\n"
     meta += f"rustflags:{rustflags}\n"
-    meta += f"macos_deployment_target:{macos_deployment_target or ''}\n"
     hasher.update(meta.encode("utf-8"))
     rustc_info = _rustc_version()
     try:
@@ -5852,12 +5576,10 @@ def _ensure_backend_binary(
     project_root: Path,
 ) -> bool:
     rustflags = os.environ.get("RUSTFLAGS", "")
-    macos_deployment_target = _macos_deployment_target_for_target(None)
     fingerprint = _backend_fingerprint(
         project_root,
         cargo_profile=cargo_profile,
         rustflags=rustflags,
-        macos_deployment_target=macos_deployment_target,
     )
     fingerprint_path = _backend_fingerprint_path(
         project_root, backend_bin, cargo_profile
@@ -5877,12 +5599,11 @@ def _ensure_backend_binary(
             "cargo",
             "build",
             "--package",
-            "molt-lang-backend",
+            "molt-backend",
             "--profile",
             cargo_profile,
         ]
         build_env = os.environ.copy()
-        _apply_macos_deployment_target_env(build_env, None)
         _maybe_enable_sccache(build_env)
         try:
             build = _run_cargo_with_sccache_retry(
@@ -5931,14 +5652,12 @@ def _ensure_runtime_lib(
 ) -> bool:
     rustflags = os.environ.get("RUSTFLAGS", "")
     runtime_features = _runtime_cargo_features(target_triple)
-    macos_deployment_target = _macos_deployment_target_for_target(target_triple)
     fingerprint = _runtime_fingerprint(
         project_root,
         cargo_profile=cargo_profile,
         target_triple=target_triple,
         rustflags=rustflags,
         runtime_features=runtime_features,
-        macos_deployment_target=macos_deployment_target,
     )
     fingerprint_path = _runtime_fingerprint_path(
         project_root, runtime_lib, cargo_profile, target_triple
@@ -5951,25 +5670,16 @@ def _ensure_runtime_lib(
             if fingerprint_path.exists()
             else None
         )
-        needs_rebuild = _artifact_needs_rebuild(
-            runtime_lib, fingerprint, stored_fingerprint
-        )
-        if not needs_rebuild and _is_valid_static_archive(runtime_lib):
+        if not _artifact_needs_rebuild(runtime_lib, fingerprint, stored_fingerprint):
             return True
-        if not needs_rebuild and not json_output:
-            print(
-                "Runtime build artifact invalid/corrupt; forcing rebuild.",
-                file=sys.stderr,
-            )
         if not json_output:
             print("Runtime sources changed; rebuilding runtime...")
-        cmd = ["cargo", "build", "-p", "molt-lang-runtime", "--profile", cargo_profile]
+        cmd = ["cargo", "build", "-p", "molt-runtime", "--profile", cargo_profile]
         if runtime_features:
             cmd.extend(["--features", ",".join(runtime_features)])
         if target_triple:
             cmd.extend(["--target", target_triple])
         build_env = os.environ.copy()
-        _apply_macos_deployment_target_env(build_env, target_triple)
         _maybe_enable_sccache(build_env)
         try:
             build = _run_cargo_with_sccache_retry(
@@ -5994,13 +5704,6 @@ def _ensure_runtime_lib(
             if err:
                 print(err, file=sys.stderr)
             return False
-        if not _is_valid_static_archive(runtime_lib):
-            if not json_output:
-                print(
-                    f"Runtime build produced invalid archive: {runtime_lib}",
-                    file=sys.stderr,
-                )
-            return False
         if fingerprint is not None:
             try:
                 fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -6018,157 +5721,6 @@ def _append_rustflags(env: MutableMapping[str, str], flags: str) -> None:
     existing = env.get("RUSTFLAGS", "")
     joined = f"{existing} {flags}".strip()
     env["RUSTFLAGS"] = joined
-
-
-def _rustflags_codegen_values(rustflags: str, key: str) -> list[str]:
-    try:
-        tokens = shlex.split(rustflags)
-    except ValueError:
-        tokens = rustflags.split()
-    values: list[str] = []
-    index = 0
-    key_prefix = f"{key}="
-    while index < len(tokens):
-        token = tokens[index]
-        arg: str | None = None
-        if token == "-C":
-            if index + 1 < len(tokens):
-                arg = tokens[index + 1]
-            index += 2
-        else:
-            if token.startswith("-C"):
-                arg = token[2:]
-            index += 1
-        if arg is None:
-            continue
-        if arg.startswith(key_prefix):
-            value = arg[len(key_prefix) :].strip()
-            if value:
-                values.append(value)
-    return values
-
-
-def _rustflags_without_codegen_key(rustflags: str, key: str) -> str:
-    try:
-        tokens = shlex.split(rustflags)
-    except ValueError:
-        tokens = rustflags.split()
-    key_prefix = f"{key}="
-    kept: list[str] = []
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-        if token == "-C":
-            if index + 1 >= len(tokens):
-                kept.append(token)
-                index += 1
-                continue
-            arg = tokens[index + 1]
-            if arg.startswith(key_prefix):
-                index += 2
-                continue
-            kept.append(token)
-            kept.append(arg)
-            index += 2
-            continue
-        if token.startswith("-C") and token[2:].startswith(key_prefix):
-            index += 1
-            continue
-        kept.append(token)
-        index += 1
-    return " ".join(kept)
-
-
-def _parse_wasm_target_feature_spec(spec: str) -> list[tuple[str, str]]:
-    items: list[tuple[str, str]] = []
-    for raw in spec.split(","):
-        token = raw.strip()
-        if not token:
-            continue
-        sign = "+"
-        if token[0] in "+-":
-            sign = token[0]
-            token = token[1:].strip()
-        if token:
-            items.append((token, sign))
-    return items
-
-
-def _merge_wasm_target_feature_specs(*specs: str) -> str:
-    order: list[str] = []
-    signs: dict[str, str] = {}
-    for spec in specs:
-        if not spec:
-            continue
-        for feature, sign in _parse_wasm_target_feature_spec(spec):
-            if feature not in signs:
-                order.append(feature)
-            signs[feature] = sign
-    return ",".join(f"{signs[name]}{name}" for name in order)
-
-
-def _wasm_runtime_target_features_default() -> str:
-    mode = os.environ.get(_WASM_RUNTIME_TARGET_FEATURE_MODE_ENV, "").strip().lower()
-    if mode in {"off", "none"}:
-        return ""
-    if mode in {"baseline", "safe"}:
-        return _WASM_RUNTIME_TARGET_FEATURES_BASELINE
-    return _WASM_RUNTIME_TARGET_FEATURES_AGGRESSIVE
-
-
-def _configure_wasm_runtime_codegen_flags(
-    env: MutableMapping[str, str], *, reloc: bool
-) -> str:
-    use_legacy_wasm_flags = os.environ.get("MOLT_WASM_LEGACY_LINK_FLAGS") == "1"
-    if use_legacy_wasm_flags:
-        if reloc:
-            flags = (
-                "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
-                " -C relocation-model=pic"
-            )
-        else:
-            flags = (
-                "-C link-arg=--import-memory -C link-arg=--import-table"
-                " -C link-arg=--growable-table"
-            )
-    else:
-        flags = (
-            "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
-            " -C relocation-model=pic"
-            if reloc
-            else ""
-        )
-
-    rustflags = env.get("RUSTFLAGS", "").strip()
-    if flags:
-        rustflags = f"{rustflags} {flags}".strip()
-
-    target_features = os.environ.get(_WASM_RUNTIME_TARGET_FEATURES_ENV, "").strip()
-    if not target_features:
-        target_features = _wasm_runtime_target_features_default()
-    target_features_extra = os.environ.get(
-        _WASM_RUNTIME_TARGET_FEATURES_EXTRA_ENV, ""
-    ).strip()
-
-    existing_target_features = _rustflags_codegen_values(rustflags, "target-feature")
-    rustflags = _rustflags_without_codegen_key(rustflags, "target-feature")
-    merged_target_features = _merge_wasm_target_feature_specs(
-        target_features,
-        target_features_extra,
-        *existing_target_features,
-    )
-    if merged_target_features:
-        rustflags = f"{rustflags} -C target-feature={merged_target_features}".strip()
-
-    target_cpu = os.environ.get(_WASM_RUNTIME_TARGET_CPU_ENV, "").strip()
-    if target_cpu:
-        existing_target_cpu = _rustflags_codegen_values(rustflags, "target-cpu")
-        if not existing_target_cpu:
-            rustflags = f"{rustflags} -C target-cpu={target_cpu}".strip()
-
-    if rustflags:
-        env["RUSTFLAGS"] = rustflags
-    return rustflags
 
 
 def _configure_wasm_cc_env(env: dict[str, str]) -> None:
@@ -6191,55 +5743,6 @@ def _wasm_runtime_artifact_path(target_root: Path, profile_dir: str) -> Path:
 
 def _wasm_runtime_recovery_target_root(target_root: Path) -> Path:
     return target_root.parent / f"{target_root.name}-wasm-runtime-recovery"
-
-
-def _is_wasm_unsafe_volume(path: Path) -> bool:
-    """Detect filesystems where WASM linker output is unreliable (e.g. ExFAT on USB).
-
-    The ``wasm-ld`` linker uses mmap-based output that silently produces
-    zeroed files on non-native filesystems like ExFAT.  Returns True when
-    *path* resides on such a volume.
-    """
-    try:
-        real = str(path.resolve())
-        # Find the device backing this path via df, then look up its fs type in mount.
-        df_result = subprocess.run(
-            ["df", real],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if df_result.returncode != 0:
-            return False
-        lines = df_result.stdout.strip().split("\n")
-        if len(lines) < 2:
-            return False
-        device = lines[1].split()[0]
-        mount_result = subprocess.run(
-            ["mount"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        for line in mount_result.stdout.split("\n"):
-            if device in line and "(" in line:
-                fstype = line.split("(")[1].split(",")[0].strip().lower()
-                return fstype in {"exfat", "msdos", "smbfs", "nfs", "webdav"}
-    except (subprocess.TimeoutExpired, OSError, IndexError):
-        pass
-    return False
-
-
-def _wasm_local_target_root(target_root: Path) -> Path:
-    """Return a local (APFS) target dir for WASM builds when the main target is on an unsafe volume."""
-    # Use /tmp (always APFS on macOS) rather than tempfile.gettempdir() which
-    # may itself point to the unsafe volume via TMPDIR.
-    safe_name = str(target_root).replace("/", "_").strip("_")
-    local_base = Path("/tmp")
-    if _is_wasm_unsafe_volume(local_base):
-        # Extremely unlikely, but fall back to home dir
-        local_base = Path.home() / ".molt" / "wasm-target"
-    return local_base / f"molt-wasm-{safe_name}"
 
 
 def _run_runtime_wasm_cargo_build(
@@ -6290,12 +5793,6 @@ def _run_runtime_wasm_cargo_build(
             check=False,
             text=True,
         )
-    if (
-        not src.exists() or not _is_valid_wasm_binary(src)
-    ) and src.parent.name != "deps":
-        deps_src = src.parent / "deps" / src.name
-        if deps_src.exists() and _is_valid_wasm_binary(deps_src):
-            src = deps_src
     return build, src
 
 
@@ -6311,7 +5808,34 @@ def _ensure_runtime_wasm(
     root = project_root or Path(__file__).resolve().parents[2]
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     env = os.environ.copy()
-    rustflags = _configure_wasm_runtime_codegen_flags(env, reloc=reloc)
+    use_legacy_wasm_flags = os.environ.get("MOLT_WASM_LEGACY_LINK_FLAGS") == "1"
+    if use_legacy_wasm_flags:
+        if reloc:
+            flags = (
+                "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
+                " -C relocation-model=pic"
+            )
+        else:
+            flags = (
+                "-C link-arg=--import-memory -C link-arg=--import-table"
+                " -C link-arg=--growable-table"
+            )
+    else:
+        flags = (
+            "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
+            " -C relocation-model=pic"
+            if reloc
+            else ""
+        )
+    rustflags = env.get("RUSTFLAGS", "").strip()
+    if flags:
+        rustflags = f"{rustflags} {flags}".strip()
+    # Enable WASM SIMD (128-bit) for vectorized string/bytes operations.
+    # All modern WASM runtimes support simd128: Node.js >=16, wasmtime,
+    # Chrome/Firefox/Safari since 2021. This dramatically speeds up
+    # string search, hex encode, base64, and whitespace scanning.
+    if "-C target-feature" not in rustflags:
+        rustflags = f"{rustflags} -C target-feature=+simd128".strip()
     fingerprint = _runtime_fingerprint(
         root,
         cargo_profile=cargo_profile,
@@ -6342,6 +5866,8 @@ def _ensure_runtime_wasm(
             )
         if not json_output:
             print("Runtime sources changed; rebuilding runtime...")
+        if flags:
+            _append_rustflags(env, flags)
         if os.environ.get("MOLT_WASM_FORCE_CC") == "1":
             _configure_wasm_cc_env(env)
         # Enable incremental compilation for dev-fast WASM builds; disable for
@@ -6357,22 +5883,11 @@ def _ensure_runtime_wasm(
         else:
             env.pop("RUSTC_WRAPPER", None)
         profile_dir = _cargo_profile_dir(cargo_profile)
-        # Detect ExFAT/non-native volumes where wasm-ld produces zeroed output.
-        main_target_root = _cargo_target_root(root)
-        wasm_target_override: Path | None = None
-        if _is_wasm_unsafe_volume(main_target_root):
-            wasm_target_override = _wasm_local_target_root(main_target_root)
-            wasm_target_override.mkdir(parents=True, exist_ok=True)
-            if not json_output:
-                print(
-                    f"WASM build: target dir is on non-native filesystem; redirecting to {wasm_target_override}",
-                    file=sys.stderr,
-                )
         cmd = [
             "cargo",
             "build",
             "--package",
-            "molt-lang-runtime",
+            "molt-runtime",
             "--profile",
             cargo_profile,
             "--target",
@@ -6385,7 +5900,6 @@ def _ensure_runtime_wasm(
                 env=env,
                 cargo_timeout=cargo_timeout,
                 profile_dir=profile_dir,
-                target_root_override=wasm_target_override,
                 json_output=json_output,
             )
         except subprocess.TimeoutExpired:
@@ -6417,21 +5931,11 @@ def _ensure_runtime_wasm(
             recovery_target_root = _wasm_runtime_recovery_target_root(
                 _cargo_target_root(root)
             )
-            recovery_env = env
-            wrapper = env.get("RUSTC_WRAPPER", "")
-            if wrapper and Path(wrapper).name == "sccache":
-                recovery_env = env.copy()
-                recovery_env.pop("RUSTC_WRAPPER", None)
-                if not json_output:
-                    print(
-                        "Runtime wasm recovery build: invalid artifact under sccache; retrying without sccache.",
-                        file=sys.stderr,
-                    )
             try:
                 build, recovery_src = _run_runtime_wasm_cargo_build(
                     cmd=cmd,
                     root=root,
-                    env=recovery_env,
+                    env=env,
                     cargo_timeout=cargo_timeout,
                     profile_dir=profile_dir,
                     target_root_override=recovery_target_root,
@@ -6462,7 +5966,7 @@ def _ensure_runtime_wasm(
                     "MOLT_WASM_RUNTIME_FALLBACK_PROFILE", "release-fast"
                 ).strip()
                 can_try_fallback_profile = (
-                    cargo_profile in {"release", "wasm-release"}
+                    cargo_profile == "release"
                     and fallback_profile
                     and fallback_profile != cargo_profile
                     and _CARGO_PROFILE_NAME_RE.match(fallback_profile) is not None
@@ -6490,7 +5994,7 @@ def _ensure_runtime_wasm(
                     build, fallback_src = _run_runtime_wasm_cargo_build(
                         cmd=fallback_cmd,
                         root=root,
-                        env=recovery_env,
+                        env=env,
                         cargo_timeout=cargo_timeout,
                         profile_dir=fallback_profile_dir,
                         target_root_override=fallback_target_root,
@@ -6798,33 +6302,6 @@ def _resolve_env_path(var: str, default: Path) -> Path:
     return path
 
 
-def _cargo_target_root_from_config(project_root: Path) -> Path | None:
-    current = project_root.resolve()
-    config_names = ("config.toml", "config")
-    for root in (current, *current.parents):
-        cargo_dir = root / ".cargo"
-        for config_name in config_names:
-            config_path = cargo_dir / config_name
-            if not config_path.is_file():
-                continue
-            try:
-                data = tomllib.loads(config_path.read_text())
-            except (OSError, tomllib.TOMLDecodeError):
-                continue
-            build_table = data.get("build")
-            if not isinstance(build_table, dict):
-                continue
-            raw_target_dir = build_table.get("target-dir")
-            if not isinstance(raw_target_dir, str) or not raw_target_dir.strip():
-                continue
-            target_dir = Path(raw_target_dir).expanduser()
-            if not target_dir.is_absolute():
-                # Cargo config paths under .cargo/config.toml are workspace-relative.
-                target_dir = (cargo_dir.parent / target_dir).resolve()
-            return target_dir
-    return None
-
-
 def _safe_output_base(name: str) -> str:
     cleaned = _OUTPUT_BASE_SAFE_RE.sub("_", name)
     return cleaned or "molt"
@@ -6861,13 +6338,7 @@ def _default_molt_cache() -> Path:
 
 
 def _cargo_target_root(project_root: Path) -> Path:
-    env_target_root = os.environ.get("CARGO_TARGET_DIR")
-    if env_target_root:
-        return _resolve_env_path("CARGO_TARGET_DIR", project_root / "target")
-    configured_target_root = _cargo_target_root_from_config(project_root)
-    if configured_target_root is not None:
-        return configured_target_root
-    return project_root / "target"
+    return _resolve_env_path("CARGO_TARGET_DIR", project_root / "target")
 
 
 def _build_state_root(project_root: Path) -> Path:
@@ -6885,9 +6356,8 @@ def _wasm_runtime_root(project_root: Path) -> Path:
     if env_root:
         return Path(env_root).expanduser()
     external_root = Path("/Volumes/APDataStore/Molt")
-    if external_root.is_dir() and not _is_wasm_unsafe_volume(external_root):
+    if external_root.is_dir():
         return external_root / "wasm"
-    # Keep WASM artifacts on a native filesystem to avoid mmap corruption.
     return project_root / "wasm"
 
 
@@ -7186,17 +6656,7 @@ def _darwin_binary_imports_validation_error(binary_path: Path) -> str | None:
         part.strip() for part in (proc.stdout, proc.stderr) if part and part.strip()
     )
     needle = combined.lower()
-    dyld_corruption_markers = (
-        "unknown imports_format",
-        "unknown imports format",
-        "rebase opcodes terminated early",
-        "bind opcodes terminated early",
-        "lazy bind opcodes terminated early",
-        "weak bind opcodes terminated early",
-        "malformed trie",
-        "malformed fixups",
-    )
-    if any(marker in needle for marker in dyld_corruption_markers):
+    if "unknown imports_format" in needle or "unknown imports format" in needle:
         return combined or "dyld_info reported unknown imports format."
     return None
 
@@ -7675,146 +7135,26 @@ def _detect_macos_arch(obj_path: Path) -> str | None:
     return archs[0] if archs else None
 
 
-def _default_macos_deployment_target(arch: str | None) -> str:
-    normalized = (arch or platform.machine()).lower()
-    if normalized in {"arm64", "aarch64"}:
-        return "11.0"
-    if normalized in {"x86_64", "amd64"}:
-        return "10.13"
-    return "11.0"
-
-
-def _detect_macos_deployment_target(arch: str | None = None) -> str | None:
+def _detect_macos_deployment_target() -> str | None:
     env_target = os.environ.get("MOLT_MACOSX_DEPLOYMENT_TARGET")
     if env_target:
         return env_target
     env_target = os.environ.get("MACOSX_DEPLOYMENT_TARGET")
     if env_target:
         return env_target
-    return _default_macos_deployment_target(arch)
-
-
-def _target_is_darwin(target_triple: str | None) -> bool:
-    if target_triple is None:
-        return sys.platform == "darwin"
-    lowered = target_triple.lower()
-    return "apple" in lowered or "darwin" in lowered or "macos" in lowered
-
-
-def _target_arch_for_macos_deployment(target_triple: str | None) -> str | None:
-    if target_triple is None:
-        return platform.machine()
-    if not _target_is_darwin(target_triple):
-        return None
-    return target_triple.split("-", 1)[0]
-
-
-def _macos_deployment_target_for_target(target_triple: str | None) -> str | None:
-    if not _target_is_darwin(target_triple):
-        return None
-    return _detect_macos_deployment_target(
-        _target_arch_for_macos_deployment(target_triple)
-    )
-
-
-def _append_env_flag(
-    env: MutableMapping[str, str], key: str, flag: str
-) -> None:
-    current = env.get(key, "")
-    tokens = shlex.split(current) if current else []
-    if flag not in tokens:
-        tokens.append(flag)
-    env[key] = " ".join(tokens).strip()
-
-
-def _apply_macos_deployment_target_env(
-    env: MutableMapping[str, str], target_triple: str | None
-) -> str | None:
-    deployment_target = _macos_deployment_target_for_target(target_triple)
-    if not deployment_target:
-        return None
-    env.setdefault("MACOSX_DEPLOYMENT_TARGET", deployment_target)
-    min_flag = f"-mmacosx-version-min={deployment_target}"
-    _append_env_flag(env, "CFLAGS", min_flag)
-    _append_env_flag(env, "CXXFLAGS", min_flag)
-    _append_rustflags(env, f"-C link-arg={min_flag}")
-    return deployment_target
-
-
-def _link_args_has_framework(args: list[str], framework: str) -> bool:
-    for idx in range(len(args) - 1):
-        if args[idx] == "-framework" and args[idx + 1] == framework:
-            return True
-    return False
-
-
-def _append_darwin_runtime_frameworks(
-    args: list[str], *, target_triple: str | None
-) -> None:
-    if target_triple:
-        lowered = target_triple.lower()
-        is_darwin_target = (
-            "apple" in lowered or "darwin" in lowered or "macos" in lowered
+    try:
+        result = subprocess.run(
+            ["xcrun", "--show-sdk-version"],
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        if not is_darwin_target:
-            return
-    elif sys.platform != "darwin":
-        return
-
-    for framework in ("Security", "CoreFoundation"):
-        if not _link_args_has_framework(args, framework):
-            args.extend(["-framework", framework])
-
-
-def _append_env_cflags(args: list[str]) -> None:
-    cflags = os.environ.get("CFLAGS", "")
-    if cflags:
-        args.extend(shlex.split(cflags))
-
-
-def _append_dev_linker_hint(args: list[str], *, profile: BuildProfile) -> str | None:
-    if profile != "dev":
+    except OSError:
         return None
-    linker_hint = _resolve_dev_linker()
-    if linker_hint and not any(arg.startswith("-fuse-ld=") for arg in args):
-        args.append(f"-fuse-ld={linker_hint}")
-    return linker_hint
-
-
-def _apply_host_darwin_link_flags(
-    args: list[str], *, target_triple: str | None, reference_obj: Path
-) -> list[str]:
-    if sys.platform != "darwin" or target_triple:
-        return args
-    args = _strip_arch_flags(args)
-    arch = (
-        os.environ.get("MOLT_ARCH")
-        or _detect_macos_arch(reference_obj)
-        or platform.machine()
-    )
-    args.extend(["-arch", arch])
-    deployment_target = _detect_macos_deployment_target(arch)
-    if deployment_target:
-        args.append(f"-mmacosx-version-min={deployment_target}")
-    return args
-
-
-def _append_platform_runtime_link_flags(
-    args: list[str], *, target_triple: str | None
-) -> None:
-    if target_triple:
-        lowered = target_triple.lower()
-        if "apple" in lowered or "darwin" in lowered or "macos" in lowered:
-            args.append("-lc++")
-            _append_darwin_runtime_frameworks(args, target_triple=target_triple)
-        elif "linux" in lowered:
-            args.extend(["-lstdc++", "-lm"])
-        return
-    if sys.platform == "darwin":
-        args.append("-lc++")
-        _append_darwin_runtime_frameworks(args, target_triple=None)
-    elif sys.platform.startswith("linux"):
-        args.extend(["-lstdc++", "-lm"])
+    if result.returncode != 0:
+        return None
+    version = result.stdout.strip()
+    return version or None
 
 
 def build(
@@ -7840,7 +7180,7 @@ def build(
     emit: EmitMode | None = None,
     out_dir: str | None = None,
     profile: BuildProfile = "release",
-    linked: bool | None = None,
+    linked: bool = False,
     linked_output: str | None = None,
     require_linked: bool = False,
     respect_pythonpath: bool = False,
@@ -8388,10 +7728,6 @@ def build(
                     _record_module_reason(module_reasons, name, "namespace_stub")
     namespace_module_names = set(namespace_modules)
     is_wasm = target == "wasm"
-    is_luau = target == "luau"
-    is_rust = target == "rust"
-    if is_luau:
-        backend_cargo_profile = _resolve_luau_cargo_profile(backend_cargo_profile)
     if trusted and is_wasm:
         return _fail(
             "Trusted mode is not supported for wasm targets",
@@ -8404,31 +7740,29 @@ def build(
             json_output,
             command="build",
         )
-    if linked_output and linked is not True and not require_linked:
+    if linked_output and not linked and not require_linked:
         return _fail(
             "--linked-output requires --linked",
             json_output,
             command="build",
         )
-    if linked is True and not is_wasm:
+    if linked and not is_wasm:
         return _fail(
             "Linked output is only supported for wasm targets",
             json_output,
             command="build",
         )
-    if require_linked and linked is not True:
+    if require_linked and not linked:
         linked = True
     # Default to linked mode for WASM targets (10-20% faster runtime, single
     # module output).  Opt out with MOLT_WASM_LINKED=0.
-    if is_wasm and linked is None:
+    if is_wasm and not linked:
         wasm_linked_env = os.environ.get("MOLT_WASM_LINKED", "1").strip().lower()
         if wasm_linked_env not in {"0", "false", "no", "off"}:
             linked = True
-    if linked is None:
-        linked = False
-    target_triple = None if target in {"native", "wasm", "luau", "rust"} else target
-    emit_mode = emit or ("luau" if is_luau else "rust" if is_rust else "wasm" if is_wasm else "bin")
-    if emit_mode not in {"bin", "obj", "wasm", "luau", "rust"}:
+    target_triple = None if target in {"native", "wasm"} else target
+    emit_mode = emit or ("wasm" if is_wasm else "bin")
+    if emit_mode not in {"bin", "obj", "wasm"}:
         return _fail(
             f"Invalid emit mode: {emit_mode}",
             json_output,
@@ -8448,15 +7782,7 @@ def build(
         )
     output_binary: Path | None = None
     linked_output_path: Path | None = None
-    if is_luau:
-        output_luau = _resolve_output_path(
-            output,
-            output_root / "output.luau",
-            out_dir=out_dir_path,
-            project_root=project_root,
-        )
-        output_artifact = output_luau
-    elif is_wasm:
+    if is_wasm:
         output_wasm = _resolve_output_path(
             output,
             output_root / "output.wasm",
@@ -8478,14 +7804,6 @@ def build(
                     out_dir=out_dir_path,
                     project_root=project_root,
                 )
-    elif is_rust:
-        output_rust = _resolve_output_path(
-            output,
-            output_root / "output.rs",
-            out_dir=out_dir_path,
-            project_root=project_root,
-        )
-        output_artifact = output_rust
     else:
         output_obj = artifacts_root / "output.o"
         if emit_mode == "obj":
@@ -8685,26 +8003,17 @@ def build(
             func["ops"] = remapped_ops
 
     enable_phi = not is_wasm
-    default_module_chunk_max_ops = 2000 if is_wasm else 0
-    module_chunk_max_ops = default_module_chunk_max_ops
-    env_chunk_name = "MOLT_MODULE_CHUNK_OPS"
-    env_chunk_ops = os.environ.get(env_chunk_name, "").strip()
-    if not env_chunk_ops and is_wasm:
-        env_chunk_name = "MOLT_WASM_MODULE_CHUNK_OPS"
-        env_chunk_ops = os.environ.get(env_chunk_name, "").strip()
-    if env_chunk_ops:
-        try:
-            module_chunk_max_ops = max(0, int(env_chunk_ops))
-        except ValueError:
-            default_label = (
-                str(default_module_chunk_max_ops)
-                if default_module_chunk_max_ops > 0
-                else "disabled"
-            )
-            warnings.append(
-                f"Invalid {env_chunk_name}; using default of {default_label}."
-            )
-    module_chunking_enabled = module_chunk_max_ops > 0
+    module_chunk_max_ops = 0
+    if is_wasm:
+        module_chunk_max_ops = 2000
+        env_chunk_ops = os.environ.get("MOLT_WASM_MODULE_CHUNK_OPS")
+        if env_chunk_ops:
+            try:
+                module_chunk_max_ops = max(0, int(env_chunk_ops))
+            except ValueError:
+                warnings.append(
+                    "Invalid MOLT_WASM_MODULE_CHUNK_OPS; using default of 2000."
+                )
     if target_triple:
         _ensure_rustup_target(target_triple, warnings)
     known_classes: dict[str, Any] = {}
@@ -8823,7 +8132,7 @@ def build(
             known_classes=known_classes,
             stdlib_allowlist=stdlib_allowlist,
             known_func_defaults=known_func_defaults,
-            module_chunking=module_chunking_enabled,
+            module_chunking=is_wasm and module_chunk_max_ops > 0,
             module_chunk_max_ops=module_chunk_max_ops,
             optimization_profile=profile,
             pgo_hot_functions=pgo_hot_function_names,
@@ -9025,7 +8334,7 @@ def build(
                                 "known_classes": known_classes_snapshot,
                                 "stdlib_allowlist": sorted(stdlib_allowlist),
                                 "known_func_defaults": known_func_defaults,
-                                "module_chunking": module_chunking_enabled,
+                                "module_chunking": is_wasm and module_chunk_max_ops > 0,
                                 "module_chunk_max_ops": module_chunk_max_ops,
                                 "optimization_profile": profile,
                                 "pgo_hot_functions": sorted(pgo_hot_function_names),
@@ -9444,7 +8753,7 @@ def build(
             known_classes=known_classes,
             stdlib_allowlist=stdlib_allowlist,
             known_func_defaults=known_func_defaults,
-            module_chunking=module_chunking_enabled,
+            module_chunking=is_wasm and module_chunk_max_ops > 0,
             module_chunk_max_ops=module_chunk_max_ops,
             optimization_profile=profile,
             pgo_hot_functions=pgo_hot_function_names,
@@ -9842,11 +9151,7 @@ def build(
     functions.append(
         {"name": "molt_isolate_import", "params": ["p0"], "ops": import_ops}
     )
-    ir = {
-        "ir_contract_name": SIMPLE_IR_CONTRACT_NAME,
-        "ir_contract_version": SIMPLE_IR_CONTRACT_VERSION,
-        "functions": functions,
-    }
+    ir = {"functions": functions}
     if pgo_profile_summary is not None:
         ir["profile"] = {
             "version": pgo_profile_summary.version,
@@ -9875,10 +9180,10 @@ def build(
         target_root = _cargo_target_root(molt_root)
         if target_triple:
             runtime_lib = (
-                target_root / target_triple / profile_dir / "libmolt_lang_runtime.a"
+                target_root / target_triple / profile_dir / "libmolt_runtime.a"
             )
         else:
-            runtime_lib = target_root / profile_dir / "libmolt_lang_runtime.a"
+            runtime_lib = target_root / profile_dir / "libmolt_runtime.a"
         if not _ensure_runtime_lib(
             runtime_lib,
             target_triple,
@@ -9970,7 +9275,7 @@ def build(
             warnings.append(f"Cache disabled: {exc}")
             cache = False
         else:
-            ext = "luau" if is_luau else "rs" if is_rust else "wasm" if is_wasm else "o"
+            ext = "wasm" if is_wasm else "o"
             cache_path = cache_root / f"{cache_key}.{ext}"
 
             if function_cache_key and function_cache_key != cache_key:
@@ -10116,21 +9421,6 @@ def build(
                             )
             if reloc_requested and backend_env is not None:
                 backend_env["MOLT_WASM_LINK"] = "1"
-            daemon_env_overrides: dict[str, str] | None = None
-            if is_wasm and backend_env is not None:
-                env_keys = (
-                    "MOLT_WASM_LINK",
-                    "MOLT_WASM_DATA_BASE",
-                    "MOLT_WASM_TABLE_BASE",
-                    "MOLT_WASM_MIN_PAGES",
-                )
-                daemon_env_overrides = {
-                    key: value
-                    for key in env_keys
-                    if (value := backend_env.get(key)) is not None
-                }
-                if not daemon_env_overrides:
-                    daemon_env_overrides = None
             backend_bin = _backend_bin_path(molt_root, backend_cargo_profile)
             if not _ensure_backend_binary(
                 backend_bin,
@@ -10197,13 +9487,7 @@ def build(
             ) as backend_dir:
                 backend_dir_path = Path(backend_dir)
                 backend_output = backend_dir_path / (
-                    "output.luau"
-                    if is_luau
-                    else "output.wasm"
-                    if is_wasm
-                    else "output.rs"
-                    if is_rust
-                    else "output.o"
+                    "output.wasm" if is_wasm else "output.o"
                 )
                 backend_compiled = False
                 daemon_error: str | None = None
@@ -10218,13 +9502,10 @@ def build(
                         ir=ir,
                         backend_output=backend_output,
                         is_wasm=is_wasm,
-                        is_luau=is_luau,
-                        is_rust=is_rust,
                         target_triple=target_triple,
                         cache_key=cache_key,
                         function_cache_key=function_cache_key,
                         config_digest=backend_daemon_config_digest,
-                        env_overrides=daemon_env_overrides,
                         timeout=backend_timeout,
                     )
                     backend_compiled = daemon_compile.ok
@@ -10272,13 +9553,10 @@ def build(
                                 ir=ir,
                                 backend_output=backend_output,
                                 is_wasm=is_wasm,
-                                is_luau=is_luau,
-                                is_rust=is_rust,
                                 target_triple=target_triple,
                                 cache_key=cache_key,
                                 function_cache_key=function_cache_key,
                                 config_digest=backend_daemon_config_digest,
-                                env_overrides=daemon_env_overrides,
                                 timeout=backend_timeout,
                             )
                             backend_compiled = daemon_compile.ok
@@ -10308,11 +9586,7 @@ def build(
                     ):
                         phase_starts["backend_subprocess_compile"] = time.perf_counter()
                     cmd = [str(backend_bin)]
-                    if is_luau:
-                        cmd.extend(["--target", "luau"])
-                    elif is_rust:
-                        cmd.extend(["--target", "rust"])
-                    elif is_wasm:
+                    if is_wasm:
                         cmd.extend(["--target", "wasm"])
                     elif target_triple:
                         cmd.extend(["--target-triple", target_triple])
@@ -10391,43 +9665,6 @@ def build(
                             _atomic_copy_file(output_artifact, function_cache_path)
                         except OSError as exc:
                             warnings.append(f"Function cache write failed: {exc}")
-
-    if is_luau:
-        # Luau transpilation complete — no linking step needed.
-        diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
-        if json_output:
-            cache_info_luau: dict[str, Any] = _attach_daemon_cache_info(
-                {"enabled": cache, "hit": cache_hit}
-            )
-            if cache_key:
-                cache_info_luau["key"] = cache_key
-            if function_cache_key:
-                cache_info_luau["function_key"] = function_cache_key
-            data = {
-                "target": target,
-                "target_triple": target_triple,
-                "entry": str(source_path),
-                "output": str(output_artifact),
-                "emit": emit_mode,
-                "cache": cache_info_luau,
-            }
-            if diagnostics_payload is not None:
-                data["compile_diagnostics"] = diagnostics_payload
-            payload = _json_payload(
-                "build",
-                "ok",
-                data=data,
-                warnings=warnings,
-            )
-            _emit_json(payload, json_output)
-        else:
-            print(f"Successfully built {output_artifact}")
-        _emit_build_diagnostics(
-            diagnostics=diagnostics_payload,
-            diagnostics_path=diagnostics_path,
-            json_output=json_output,
-        )
-        return 0
 
     if is_wasm:
         output_wasm = output_artifact
@@ -10603,27 +9840,6 @@ def build(
         )
         return 0
 
-    if is_rust:
-        # Rust target: backend emitted .rs source; nothing left to do.
-        if json_output:
-            cache_info = _attach_daemon_cache_info({"enabled": cache, "hit": cache_hit})
-            if cache_key:
-                cache_info["key"] = cache_key
-            if cache_hit_tier:
-                cache_info["hit_tier"] = cache_hit_tier
-            data = {
-                "target": target,
-                "entry": str(source_path),
-                "output": str(output_artifact),
-                "cache": cache_info,
-                "emit": emit_mode,
-            }
-            payload = _json_payload("build", "ok", data=data, warnings=warnings)
-            _emit_json(payload, json_output)
-        else:
-            print(f"Successfully built {output_artifact}")
-        return 0
-
     # 3. Linking: output.o + main.c -> binary
     trusted_snippet = ""
     trusted_call = ""
@@ -10756,10 +9972,10 @@ int main(int argc, char** argv) {
         target_root = _cargo_target_root(molt_root)
         if target_triple:
             runtime_lib = (
-                target_root / target_triple / profile_dir / "libmolt_lang_runtime.a"
+                target_root / target_triple / profile_dir / "libmolt_runtime.a"
             )
         else:
-            runtime_lib = target_root / profile_dir / "libmolt_lang_runtime.a"
+            runtime_lib = target_root / profile_dir / "libmolt_runtime.a"
 
     cc = os.environ.get("CC", "clang")
     link_cmd = shlex.split(cc)
@@ -10791,15 +10007,40 @@ int main(int argc, char** argv) {
         ) or (not target_triple and sys.platform == "darwin"):
             sysroot_flag = "-isysroot"
         link_cmd.extend([sysroot_flag, str(sysroot_path)])
-    _append_env_cflags(link_cmd)
-    linker_hint = _append_dev_linker_hint(link_cmd, profile=profile)
-    link_cmd = _apply_host_darwin_link_flags(
-        link_cmd, target_triple=target_triple, reference_obj=output_obj
-    )
+    cflags = os.environ.get("CFLAGS", "")
+    if cflags:
+        link_cmd.extend(shlex.split(cflags))
+    linker_hint: str | None = None
+    if profile == "dev":
+        linker_hint = _resolve_dev_linker()
+        if linker_hint and not any(arg.startswith("-fuse-ld=") for arg in link_cmd):
+            link_cmd.append(f"-fuse-ld={linker_hint}")
+    if sys.platform == "darwin" and not target_triple:
+        link_cmd = _strip_arch_flags(link_cmd)
+        arch = (
+            os.environ.get("MOLT_ARCH")
+            or _detect_macos_arch(output_obj)
+            or platform.machine()
+        )
+        link_cmd.extend(["-arch", arch])
+        deployment_target = _detect_macos_deployment_target()
+        if deployment_target:
+            link_cmd.append(f"-mmacosx-version-min={deployment_target}")
     link_cmd.extend(
         [str(stub_path), str(output_obj), str(runtime_lib), "-o", str(output_binary)]
     )
-    _append_platform_runtime_link_flags(link_cmd, target_triple=target_triple)
+    if target_triple:
+        if "apple" in target_triple or "darwin" in target_triple:
+            link_cmd.append("-lc++")
+        elif "linux" in target_triple:
+            link_cmd.append("-lstdc++")
+            link_cmd.append("-lm")
+    else:
+        if sys.platform == "darwin":
+            link_cmd.append("-lc++")
+        elif sys.platform.startswith("linux"):
+            link_cmd.append("-lstdc++")
+            link_cmd.append("-lm")
 
     if diagnostics_enabled and "link" not in phase_starts:
         phase_starts["link"] = time.perf_counter()
@@ -11742,7 +10983,7 @@ def _internal_batch_build_server(
                         type_facts_path=params.get("type_facts"),
                         pgo_profile=params.get("pgo_profile"),
                         output=params.get("output"),
-                        json_output=bool(params.get("json_output", False)),
+                        json_output=False,
                         verbose=bool(params.get("verbose", False)),
                         deterministic=bool(params.get("deterministic", True)),
                         deterministic_warn=bool(
@@ -12079,10 +11320,7 @@ def doctor(
         record("backend-daemon", True, "unsupported on non-posix hosts")
 
     cargo_target_dir = _resolved_env_dir("CARGO_TARGET_DIR")
-    configured_cargo_target_dir = None
     if cargo_target_dir is None:
-        configured_cargo_target_dir = _cargo_target_root_from_config(root)
-    if cargo_target_dir is None and configured_cargo_target_dir is None:
         record(
             "cargo-target-dir",
             False,
@@ -12093,14 +11331,8 @@ def doctor(
                 "export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR",
             ],
         )
-    elif cargo_target_dir is not None:
-        record("cargo-target-dir", True, str(cargo_target_dir))
     else:
-        record(
-            "cargo-target-dir",
-            True,
-            f"{configured_cargo_target_dir} (.cargo/config.toml)",
-        )
+        record("cargo-target-dir", True, str(cargo_target_dir))
 
     molt_cache_dir = _resolved_env_dir("MOLT_CACHE")
     if molt_cache_dir is None:
@@ -12203,13 +11435,13 @@ def doctor(
                     advice=["Ensure uv.lock exists and is readable"],
                 )
 
-    runtime_lib = _cargo_target_root(root) / "release" / "libmolt_lang_runtime.a"
+    runtime_lib = _cargo_target_root(root) / "release" / "libmolt_runtime.a"
     record(
         "molt-runtime",
         runtime_lib.exists(),
         str(runtime_lib),
         level="warning",
-        advice=["cargo build --release --package molt-lang-runtime"]
+        advice=["cargo build --release --package molt-runtime"]
         if not runtime_lib.exists()
         else None,
     )
@@ -12273,344 +11505,44 @@ def _strip_c_like_comments_and_literals(text: str) -> str:
     return _C_STRING_LITERAL_RE.sub(" ", without_lines)
 
 
-def _is_probable_py_c_api_token(symbol: str) -> bool:
-    if symbol.endswith("_"):
-        return False
-    if _PY_C_API_PARTIAL_TOKEN_RE.match(symbol):
-        return False
-    return True
-
-
 def _extract_py_c_api_tokens(text: str) -> set[str]:
     sanitized = _strip_c_like_comments_and_literals(text)
-    return {
-        symbol
-        for symbol in (match.group(0) for match in _PY_C_API_TOKEN_RE.finditer(sanitized))
-        if _is_probable_py_c_api_token(symbol)
-    }
-
-
-def _extract_py_c_api_struct_member_names(text: str) -> set[str]:
-    member_names: set[str] = set()
-    for match in _PY_C_API_STRUCT_BLOCK_RE.finditer(text):
-        alias = match.group("alias")
-        if alias and _is_probable_py_c_api_token(alias):
-            member_names.add(alias)
-        body = match.group("body")
-        for statement in body.split(";"):
-            stripped = statement.strip()
-            if not stripped:
-                continue
-            member_match = re.search(
-                r"\b(Py[A-Za-z_][A-Za-z0-9_]*)\b\s*(?:\[[^\]]*\])?\s*$",
-                stripped,
-            )
-            if member_match is not None:
-                symbol = member_match.group(1)
-                if _is_probable_py_c_api_token(symbol):
-                    member_names.add(symbol)
-    return member_names
-
-
-def _extract_py_c_api_function_definitions(text: str) -> list[tuple[str, bool]]:
-    definitions: list[tuple[str, bool]] = []
-    for match in _PY_C_API_FUNC_DEF_RE.finditer(text):
-        prefix = match.group("prefix")
-        name = match.group("name")
-        is_static = bool(re.search(r"\bstatic\b", prefix))
-        definitions.append((name, is_static))
-    return definitions
-
-
-def _extract_locally_defined_py_c_api_tokens(text: str) -> set[str]:
-    sanitized = _strip_c_like_comments_and_literals(text)
-    local_symbols: set[str] = {
-        match.group(1)
-        for match in _PY_C_API_DEFINE_RE.finditer(sanitized)
-        if _is_probable_py_c_api_token(match.group(1))
-    }
-    local_symbols.update(
-        match.group(1)
-        for match in _PY_C_API_STATIC_VAR_RE.finditer(sanitized)
-        if _is_probable_py_c_api_token(match.group(1))
-    )
-    local_symbols.update(
-        match.group(1)
-        for match in _PY_C_API_SIMPLE_TYPEDEF_RE.finditer(sanitized)
-        if _is_probable_py_c_api_token(match.group(1))
-    )
-    local_symbols.update(
-        match.group(1)
-        for match in _PY_C_API_TAG_RE.finditer(sanitized)
-        if _is_probable_py_c_api_token(match.group(1))
-    )
-    local_symbols.update(_extract_py_c_api_struct_member_names(sanitized))
-    local_symbols.update(
-        name
-        for name, _is_static in _extract_py_c_api_function_definitions(sanitized)
-        if _is_probable_py_c_api_token(name)
-    )
-    return local_symbols
-
-
-def _extract_project_shared_py_c_api_tokens(text: str) -> set[str]:
-    sanitized = _strip_c_like_comments_and_literals(text)
-    return {
-        name
-        for name, is_static in _extract_py_c_api_function_definitions(sanitized)
-        if not is_static and _is_probable_py_c_api_token(name)
-    }
-
-
-def _is_extension_scan_header_like_name(name: str) -> bool:
-    return Path(name).suffix.lower() in {".h", ".hh", ".hpp", ".hxx"}
-
-
-def _collect_extension_scan_local_symbols(
-    source_units: list[ExtensionScanSourceUnit],
-) -> tuple[dict[str, list[str]], dict[str, set[str]], set[str]]:
-    locally_defined_by_file: dict[str, list[str]] = {}
-    file_local_symbols: dict[str, set[str]] = {}
-    project_shared_symbols: set[str] = set()
-    for source_unit in source_units:
-        local_symbols = _extract_locally_defined_py_c_api_tokens(source_unit.text)
-        file_local_symbols[source_unit.label] = local_symbols
-        if local_symbols:
-            locally_defined_by_file[source_unit.label] = sorted(local_symbols)
-        project_shared_symbols.update(
-            _extract_project_shared_py_c_api_tokens(source_unit.text)
-        )
-        if _is_extension_scan_header_like_name(source_unit.label):
-            project_shared_symbols.update(local_symbols)
-    return locally_defined_by_file, file_local_symbols, project_shared_symbols
-
-
-def _effective_extension_scan_local_symbols(
-    label: str,
-    file_local_symbols: dict[str, set[str]],
-    project_shared_symbols: set[str],
-) -> set[str]:
-    return file_local_symbols.get(label, set()) | project_shared_symbols
-
-
-def _scan_extension_source_unit(
-    source_unit: ExtensionScanSourceUnit,
-    effective_local_symbols: set[str],
-    supported_surface: set[str],
-) -> tuple[list[str], list[str]]:
-    file_required = sorted(
-        symbol
-        for symbol in _extract_py_c_api_tokens(source_unit.text)
-        if symbol not in effective_local_symbols
-    )
-    file_missing = sorted(
-        symbol for symbol in file_required if symbol not in supported_surface
-    )
-    return file_required, file_missing
+    return {match.group(0) for match in _PY_C_API_TOKEN_RE.finditer(sanitized)}
 
 
 def _load_supported_py_c_api_surface(
     molt_root: Path,
-) -> tuple[set[str], Path, str | None, dict[str, Any], list[str], list[str]]:
+) -> tuple[set[str], Path, str | None]:
     header_path = molt_root / "include" / "molt" / "Python.h"
     supported_tokens: set[str] = set()
-    contract, consulted_paths, missing_headers = _extension_header_contract_paths(
-        molt_root
-    )
-    if not header_path.exists():
-        return (
-            set(),
-            header_path,
-            f"No such file: {header_path}",
-            contract,
-            [],
-            missing_headers,
-        )
-    consulted_headers: list[str] = []
-    for contract_header in consulted_paths:
-        try:
-            header_text = contract_header.read_text()
-        except OSError as exc:
-            return (
-                set(),
-                header_path,
-                f"Failed to read header {contract_header}: {exc}",
-                contract,
-                consulted_headers,
-                missing_headers,
-            )
-        consulted_headers.append(
-            str(contract_header.relative_to(molt_root / "include")).replace("\\", "/")
-        )
-        supported_tokens.update(_extract_py_c_api_tokens(header_text))
-    return (
-        supported_tokens,
-        header_path,
-        None,
-        contract,
-        consulted_headers,
-        missing_headers,
-    )
-
-
-def _is_extension_scan_c_like_path(path: Path) -> bool:
-    return path.suffix.lower() in _EXTENSION_SCAN_SUFFIXES
-
-
-def _is_extension_scan_c_like_name(name: str) -> bool:
-    lower_name = name.lower()
-    if lower_name.endswith(".rst.inc"):
-        return False
-    return Path(name).suffix.lower() in _EXTENSION_SCAN_SUFFIXES
-
-
-def _is_extension_scan_archive(path: Path) -> bool:
-    lower_name = path.name.lower()
-    return lower_name.endswith(
-        (".zip", ".whl", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz")
-    )
-
-
-def _decode_extension_scan_text(
-    raw: bytes,
-    label: str,
-    warnings: list[str],
-) -> str:
     try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        warnings.append(
-            f"Source {label} contained non-UTF-8 bytes; invalid bytes were replaced."
-        )
-        return raw.decode("utf-8", errors="replace")
-
-
-def _collect_extension_scan_units_from_file(
-    path: Path,
-    warnings: list[str],
-    errors: list[str],
-) -> list[ExtensionScanSourceUnit]:
-    try:
-        raw = path.read_bytes()
+        header_text = header_path.read_text()
     except OSError as exc:
-        errors.append(f"failed to read source file {path}: {exc}")
-        return []
-    return [
-        ExtensionScanSourceUnit(
-            label=str(path),
-            text=_decode_extension_scan_text(raw, str(path), warnings),
-        )
-    ]
-
-
-def _collect_extension_scan_units_from_directory(
-    path: Path,
-    warnings: list[str],
-    errors: list[str],
-) -> list[ExtensionScanSourceUnit]:
-    candidates = sorted(
-        candidate
-        for candidate in path.rglob("*")
-        if candidate.is_file() and _is_extension_scan_c_like_path(candidate)
-    )
-    if not candidates:
-        errors.append(
-            f"source directory has no C/C++ files with known suffixes: {path}"
-        )
-        return []
-    units: list[ExtensionScanSourceUnit] = []
-    for candidate in candidates:
-        units.extend(
-            _collect_extension_scan_units_from_file(candidate, warnings, errors)
-        )
-    return units
-
-
-def _collect_extension_scan_units_from_zip_archive(
-    path: Path,
-    warnings: list[str],
-    errors: list[str],
-) -> list[ExtensionScanSourceUnit]:
-    try:
-        with zipfile.ZipFile(path) as zf:
-            member_names = sorted(
-                name for name in zf.namelist() if _is_extension_scan_c_like_name(name)
-            )
-            if not member_names:
-                errors.append(f"archive has no C/C++ files with known suffixes: {path}")
-                return []
-            units: list[ExtensionScanSourceUnit] = []
-            for member_name in member_names:
-                raw = zf.read(member_name)
-                label = f"{path}!{member_name}"
-                units.append(
-                    ExtensionScanSourceUnit(
-                        label=label,
-                        text=_decode_extension_scan_text(raw, label, warnings),
-                    )
-                )
-            return units
-    except (OSError, zipfile.BadZipFile) as exc:
-        errors.append(f"failed to read archive {path}: {exc}")
-        return []
-
-
-def _collect_extension_scan_units_from_tar_archive(
-    path: Path,
-    warnings: list[str],
-    errors: list[str],
-) -> list[ExtensionScanSourceUnit]:
-    try:
-        with tarfile.open(path, mode="r:*") as tf:
-            members = sorted(
-                (
-                    member
-                    for member in tf.getmembers()
-                    if member.isfile() and _is_extension_scan_c_like_name(member.name)
-                ),
-                key=lambda member: member.name,
-            )
-            if not members:
-                errors.append(f"archive has no C/C++ files with known suffixes: {path}")
-                return []
-            units: list[ExtensionScanSourceUnit] = []
-            for member in members:
-                extracted = tf.extractfile(member)
-                if extracted is None:
-                    errors.append(
-                        f"failed to read archive member {member.name!r} from {path}"
-                    )
-                    continue
-                raw = extracted.read()
-                label = f"{path}!{member.name}"
-                units.append(
-                    ExtensionScanSourceUnit(
-                        label=label,
-                        text=_decode_extension_scan_text(raw, label, warnings),
-                    )
-                )
-            return units
-    except (OSError, tarfile.TarError) as exc:
-        errors.append(f"failed to read archive {path}: {exc}")
-        return []
-
-
-def _collect_extension_scan_units_from_archive(
-    path: Path,
-    warnings: list[str],
-    errors: list[str],
-) -> list[ExtensionScanSourceUnit]:
-    lower_name = path.name.lower()
-    if lower_name.endswith((".zip", ".whl")):
-        return _collect_extension_scan_units_from_zip_archive(path, warnings, errors)
-    return _collect_extension_scan_units_from_tar_archive(path, warnings, errors)
+        return set(), header_path, str(exc)
+    supported_tokens.update(_extract_py_c_api_tokens(header_text))
+    datetime_header = molt_root / "include" / "datetime.h"
+    if datetime_header.exists():
+        try:
+            datetime_text = datetime_header.read_text()
+        except OSError:
+            datetime_text = ""
+        if datetime_text:
+            supported_tokens.update(_extract_py_c_api_tokens(datetime_text))
+    numpy_include_root = molt_root / "include" / "numpy"
+    if numpy_include_root.exists():
+        for numpy_header in sorted(numpy_include_root.rglob("*.h")):
+            try:
+                numpy_text = numpy_header.read_text()
+            except OSError:
+                continue
+            supported_tokens.update(_extract_py_c_api_tokens(numpy_text))
+    return supported_tokens, header_path, None
 
 
 def _resolve_extension_scan_sources(
     project_root: Path, explicit_sources: list[str] | None
-) -> tuple[list[ExtensionScanSourceUnit], list[str], list[str]]:
+) -> tuple[list[Path], list[str]]:
     errors: list[str] = []
-    warnings: list[str] = []
     source_entries: list[str] = []
     if explicit_sources:
         source_entries = [
@@ -12634,46 +11566,16 @@ def _resolve_extension_scan_sources(
                 errors.append(
                     "tool.molt.extension.sources must include at least one source"
                 )
-
-    scan_units: list[ExtensionScanSourceUnit] = []
+    source_paths: list[Path] = []
     for entry in source_entries:
         source_path = Path(entry).expanduser()
         if not source_path.is_absolute():
             source_path = (project_root / source_path).absolute()
-        if not source_path.exists():
-            errors.append(f"source path not found: {source_path}")
+        if not source_path.exists() or not source_path.is_file():
+            errors.append(f"source file not found: {source_path}")
             continue
-        if source_path.is_dir():
-            scan_units.extend(
-                _collect_extension_scan_units_from_directory(
-                    source_path, warnings, errors
-                )
-            )
-            continue
-        if source_path.is_file() and _is_extension_scan_archive(source_path):
-            scan_units.extend(
-                _collect_extension_scan_units_from_archive(
-                    source_path, warnings, errors
-                )
-            )
-            continue
-        if source_path.is_file():
-            scan_units.extend(
-                _collect_extension_scan_units_from_file(source_path, warnings, errors)
-            )
-            continue
-        errors.append(f"unsupported source path type: {source_path}")
-
-    deduped_units: list[ExtensionScanSourceUnit] = []
-    seen_labels: set[str] = set()
-    for unit in scan_units:
-        if unit.label in seen_labels:
-            continue
-        seen_labels.add(unit.label)
-        deduped_units.append(unit)
-    if not deduped_units and not errors:
-        errors.append("no source files resolved for extension scan")
-    return deduped_units, errors, warnings
+        source_paths.append(source_path)
+    return source_paths, errors
 
 
 def extension_scan(
@@ -12693,9 +11595,7 @@ def extension_scan(
             command="extension-scan",
         )
 
-    source_units, errors, source_warnings = _resolve_extension_scan_sources(
-        project_root, sources
-    )
+    source_paths, errors = _resolve_extension_scan_sources(project_root, sources)
     if errors:
         return _fail(
             "Extension scan configuration errors: " + "; ".join(errors),
@@ -12709,14 +11609,9 @@ def extension_scan(
     if root_error is not None:
         return root_error
 
-    (
-        supported_surface,
-        header_path,
-        header_error,
-        header_contract,
-        consulted_headers,
-        missing_contract_headers,
-    ) = _load_supported_py_c_api_surface(molt_root)
+    supported_surface, header_path, header_error = _load_supported_py_c_api_surface(
+        molt_root
+    )
     if header_error is not None:
         return _fail(
             f"Failed to read libmolt Python.h surface ({header_path}): {header_error}",
@@ -12726,34 +11621,24 @@ def extension_scan(
 
     required_by_file: dict[str, list[str]] = {}
     missing_by_file: dict[str, list[str]] = {}
-    (
-        locally_defined_by_file,
-        file_local_symbols,
-        project_shared_symbols,
-    ) = _collect_extension_scan_local_symbols(source_units)
     required_symbols: set[str] = set()
-    missing_symbol_frequency: dict[str, int] = {}
-    chars_scanned = 0
-    for source_unit in source_units:
-        chars_scanned += len(source_unit.text)
-        effective_local_symbols = _effective_extension_scan_local_symbols(
-            source_unit.label,
-            file_local_symbols,
-            project_shared_symbols,
-        )
-        file_required, file_missing = _scan_extension_source_unit(
-            source_unit,
-            effective_local_symbols,
-            supported_surface,
-        )
-        required_by_file[source_unit.label] = file_required
+    for source_path in source_paths:
+        try:
+            source_text = source_path.read_text()
+        except OSError as exc:
+            return _fail(
+                f"Failed to read source file {source_path}: {exc}",
+                json_output,
+                command="extension-scan",
+            )
+        file_required = sorted(_extract_py_c_api_tokens(source_text))
+        required_by_file[str(source_path)] = file_required
         required_symbols.update(file_required)
+        file_missing = sorted(
+            symbol for symbol in file_required if symbol not in supported_surface
+        )
         if file_missing:
-            missing_by_file[source_unit.label] = file_missing
-            for symbol in file_missing:
-                missing_symbol_frequency[symbol] = (
-                    missing_symbol_frequency.get(symbol, 0) + 1
-                )
+            missing_by_file[str(source_path)] = file_missing
 
     required_sorted = sorted(required_symbols)
     missing_sorted = sorted(
@@ -12762,29 +11647,14 @@ def extension_scan(
     supported_used_sorted = sorted(
         symbol for symbol in required_sorted if symbol in supported_surface
     )
-    warnings = list(source_warnings)
+    warnings: list[str] = []
     if missing_sorted and not fail_on_missing:
         warnings.append(
             "Unsupported Py* C-API symbols detected (run with --fail-on-missing to gate)."
         )
-    if missing_contract_headers:
-        warnings.append(
-            "Extension header contract is missing shipped headers: "
-            + ", ".join(missing_contract_headers)
-        )
     status = "ok"
     if fail_on_missing and missing_sorted:
         status = "error"
-    coverage_ratio = (
-        (len(supported_used_sorted) / len(required_sorted)) if required_sorted else 1.0
-    )
-    top_missing_symbols = [
-        {"symbol": symbol, "file_count": missing_symbol_frequency.get(symbol, 0)}
-        for symbol in sorted(
-            missing_sorted,
-            key=lambda symbol: (-missing_symbol_frequency.get(symbol, 0), symbol),
-        )
-    ]
 
     if json_output:
         payload = _json_payload(
@@ -12793,24 +11663,15 @@ def extension_scan(
             data={
                 "project": str(project_root),
                 "header": str(header_path),
-                "header_contract": header_contract,
-                "headers_consulted": consulted_headers,
-                "headers_consulted_count": len(consulted_headers),
-                "missing_contract_headers": missing_contract_headers,
-                "source_count": len(source_units),
-                "chars_scanned": chars_scanned,
+                "source_count": len(source_paths),
                 "required_symbol_count": len(required_sorted),
                 "supported_symbol_count": len(supported_used_sorted),
                 "missing_symbol_count": len(missing_sorted),
-                "coverage_ratio": coverage_ratio,
                 "required_symbols": required_sorted,
                 "supported_symbols": supported_used_sorted,
                 "missing_symbols": missing_sorted,
-                "missing_symbol_frequency": missing_symbol_frequency,
-                "top_missing_symbols": top_missing_symbols,
                 "required_by_file": required_by_file,
                 "missing_by_file": missing_by_file,
-                "locally_defined_by_file": locally_defined_by_file,
                 "fail_on_missing": fail_on_missing,
             },
             warnings=warnings,
@@ -12819,31 +11680,14 @@ def extension_scan(
         _emit_json(payload, json_output=True)
     else:
         print(f"Extension C-API scan header: {header_path}")
-        print(
-            "Header contract: "
-            f"{header_contract['version']} "
-            f"({len(header_contract['stable_abi_headers'])} stable ABI, "
-            f"{len(header_contract['source_compat_headers'])} source-compat; "
-            f"{len(consulted_headers)} consulted)"
-        )
-        print(f"Scanned source files: {len(source_units)}")
-        print(f"Scanned source characters: {chars_scanned}")
+        print(f"Scanned source files: {len(source_paths)}")
         print(f"Required Py* symbols: {len(required_sorted)}")
         print(f"Supported Py* symbols used: {len(supported_used_sorted)}")
         print(f"Missing Py* symbols: {len(missing_sorted)}")
-        print(f"Coverage ratio: {coverage_ratio:.3f}")
         if missing_sorted:
-            ranked_missing = sorted(
-                missing_sorted,
-                key=lambda symbol: (-missing_symbol_frequency.get(symbol, 0), symbol),
-            )
-            limit = len(ranked_missing) if verbose else min(30, len(ranked_missing))
-            for symbol in ranked_missing[:limit]:
-                usage_count = missing_symbol_frequency.get(symbol, 0)
-                if usage_count > 1:
-                    print(f"MISSING [{usage_count} files]: {symbol}")
-                else:
-                    print(f"MISSING: {symbol}")
+            limit = len(missing_sorted) if verbose else min(30, len(missing_sorted))
+            for symbol in missing_sorted[:limit]:
+                print(f"MISSING: {symbol}")
             if limit < len(missing_sorted):
                 print(f"... {len(missing_sorted) - limit} additional symbols omitted")
         if verbose and missing_by_file:
@@ -13016,7 +11860,6 @@ def extension_build(
     root_error = _require_molt_root(molt_root, json_output, "extension-build")
     if root_error is not None:
         return root_error
-    header_contract = _extension_header_contract()
 
     lock_error = _check_lockfiles(
         molt_root,
@@ -13066,20 +11909,19 @@ def extension_build(
     if runtime_target_triple:
         _ensure_rustup_target(runtime_target_triple, warnings)
         runtime_lib = (
-            target_root / runtime_target_triple / profile_dir / "libmolt_lang_runtime.a"
+            target_root / runtime_target_triple / profile_dir / "libmolt_runtime.a"
         )
     else:
-        runtime_lib = target_root / profile_dir / "libmolt_lang_runtime.a"
-    with _temporary_env_overrides({"MOLT_RUNTIME_HOSTED_EXTENSION": "1"}):
-        if not _ensure_runtime_lib(
-            runtime_lib,
-            runtime_target_triple,
-            json_output,
-            runtime_cargo_profile,
-            molt_root,
-            cargo_timeout,
-        ):
-            return _fail("Runtime build failed", json_output, command="extension-build")
+        runtime_lib = target_root / profile_dir / "libmolt_runtime.a"
+    if not _ensure_runtime_lib(
+        runtime_lib,
+        runtime_target_triple,
+        json_output,
+        runtime_cargo_profile,
+        molt_root,
+        cargo_timeout,
+    ):
+        return _fail("Runtime build failed", json_output, command="extension-build")
 
     include_root = molt_root / "include"
     if not include_root.exists():
@@ -13087,12 +11929,6 @@ def extension_build(
             f"Missing Molt header root: {include_root}",
             json_output,
             command="extension-build",
-        )
-    compat_shim_header = include_root / "molt" / "cext_compat_shims.h"
-    if not compat_shim_header.exists():
-        warnings.append(
-            "Extension compatibility shim header missing: "
-            f"{compat_shim_header} (build may fail for some CPython/NumPy shims)."
         )
 
     cc = os.environ.get("CC", "clang")
@@ -13160,8 +11996,6 @@ def extension_build(
             object_path = build_tmp / f"{idx}_{source_path.stem}.o"
             cmd = [*cc_cmd, "-c", str(source_path), "-o", str(object_path)]
             cmd.extend(["-I", str(include_root), "-I", str(project_root)])
-            if compat_shim_header.exists():
-                cmd.extend(["-include", str(compat_shim_header)])
             for include_path in include_paths:
                 cmd.extend(["-I", str(include_path)])
             if os.name != "nt":
@@ -13194,20 +12028,10 @@ def extension_build(
         built_extension = build_tmp / module_rel
         built_extension.parent.mkdir(parents=True, exist_ok=True)
         link_command = [*cc_cmd, "-shared"]
-        _append_env_cflags(link_command)
-        linker_hint = _append_dev_linker_hint(link_command, profile=profile)
-        link_command = _apply_host_darwin_link_flags(
-            link_command,
-            target_triple=runtime_target_triple,
-            reference_obj=object_paths[0],
-        )
         link_command.extend(str(path) for path in object_paths)
         link_command.append(str(runtime_lib))
         link_command.extend(["-o", str(built_extension)])
         link_command.extend(link_args)
-        _append_platform_runtime_link_flags(
-            link_command, target_triple=runtime_target_triple
-        )
         link_result = subprocess.run(
             link_command,
             cwd=project_root,
@@ -13216,27 +12040,6 @@ def extension_build(
             text=True,
             check=False,
         )
-        if link_result.returncode != 0 and linker_hint is not None:
-            retry_command = [
-                arg for arg in link_command if arg != f"-fuse-ld={linker_hint}"
-            ]
-            if retry_command != link_command:
-                retry_result = subprocess.run(
-                    retry_command,
-                    cwd=project_root,
-                    env=build_env,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                if retry_result.returncode == 0:
-                    warnings.append(
-                        "Linker fallback: "
-                        f"-fuse-ld={linker_hint} failed for extension build; "
-                        "retried default linker."
-                    )
-                    link_command = retry_command
-                    link_result = retry_result
         if link_result.returncode != 0:
             detail = link_result.stderr.strip() or link_result.stdout.strip()
             if not detail:
@@ -13272,7 +12075,6 @@ def extension_build(
             "deterministic": deterministic,
             "determinism": determinism_mode,
             "effects": effects,
-            "header_contract": header_contract,
             "wheel": wheel_name,
             "extension": extension_archive_path,
             "build": {
@@ -13360,7 +12162,6 @@ def extension_build(
                 "determinism": determinism_mode,
                 "capabilities": capabilities_list,
                 "capability_profiles": capability_profiles,
-                "header_contract": header_contract,
                 "wheel_sha256": wheel_sha,
                 "extension_sha256": extension_sha,
             },
@@ -15881,7 +14682,7 @@ def main() -> int:
     build_parser.add_argument(
         "--target",
         default=None,
-        help="Target backend: native, wasm, luau, or a target triple.",
+        help="Target backend: native, wasm, or a target triple.",
     )
     build_parser.add_argument(
         "--codec",
@@ -15935,9 +14736,9 @@ def main() -> int:
     )
     build_parser.add_argument(
         "--emit",
-        choices=["bin", "obj", "wasm", "luau"],
+        choices=["bin", "obj", "wasm"],
         default=None,
-        help="Select which artifact to emit (native: bin/obj, wasm: wasm, luau: luau).",
+        help="Select which artifact to emit (native: bin/obj, wasm: wasm).",
     )
     build_parser.add_argument(
         "--linked",
@@ -16045,15 +14846,6 @@ def main() -> int:
     build_parser.add_argument(
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
-    build_parser.add_argument(
-        "--optimize",
-        choices=["min", "medium", "max"],
-        default=None,
-        help=(
-            "Optimization level: min (fastest compile, least optimization), "
-            "medium (default), max (slowest compile, full optimization)."
-        ),
-    )
 
     extension_parser = subparsers.add_parser(
         "extension",
@@ -16139,7 +14931,7 @@ def main() -> int:
         "scan",
         help=(
             "Scan extension sources for unsupported Py* C-API usage "
-            "against the declared libmolt header contract."
+            "against include/molt/Python.h."
         ),
     )
     extension_scan_parser.add_argument(
@@ -16150,9 +14942,8 @@ def main() -> int:
         "--source",
         action="append",
         help=(
-            "Source path to scan (repeatable). Accepts files, directories "
-            "(recursive C/C++ scan), and source archives (.tar*, .zip, .whl). "
-            "If omitted, uses tool.molt.extension.sources from pyproject.toml."
+            "Source path to scan (repeatable). If omitted, uses "
+            "tool.molt.extension.sources from pyproject.toml."
         ),
     )
     extension_scan_parser.add_argument(
@@ -16928,15 +15719,7 @@ def main() -> int:
             trusted = _coerce_bool(build_cfg.get("trusted"), False)
         linked = args.linked
         if linked is None:
-            linked_cfg: Any = None
-            if "linked" in build_cfg:
-                linked_cfg = build_cfg.get("linked")
-            elif "wasm_linked" in build_cfg:
-                linked_cfg = build_cfg.get("wasm_linked")
-            elif "wasm-linked" in build_cfg:
-                linked_cfg = build_cfg.get("wasm-linked")
-            if linked_cfg is not None:
-                linked = _coerce_bool(linked_cfg, False)
+            linked = _coerce_bool(build_cfg.get("linked"), False)
         cache = (
             args.cache
             if args.cache is not None
@@ -16989,13 +15772,6 @@ def main() -> int:
             )
         if not args.file and not args.module:
             return _fail("Missing entry file or module.", args.json, command="build")
-        optimize_level = getattr(args, "optimize", None)
-        if optimize_level == "min":
-            os.environ["MOLT_MIDEND_PROFILE"] = "dev"
-            os.environ["MOLT_MIDEND_FORCED_TIER"] = "C"
-        elif optimize_level == "max":
-            os.environ["MOLT_MIDEND_PROFILE"] = "release"
-            os.environ["MOLT_MIDEND_FORCED_TIER"] = "A"
         return build(
             args.file,
             target,

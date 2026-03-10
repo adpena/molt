@@ -11,8 +11,6 @@
 - No dual truth: if a file is generated, humans do not hand-edit semantic status in that file.
 - Native and wasm compatibility must be tracked as first-class dimensions, not hidden in prose notes.
 - Version-gated behavior for 3.12/3.13/3.14 must be explicit and test-backed.
-- The architectural target is full CPython `>=3.12` parity for compiled Molt outputs, except for the explicit carve-outs in the dynamic execution policy contract.
-- Compiled binaries must remain self-contained and must not rely on a host CPython fallback lane.
 
 ## CPython Reference Inputs
 Canonical local CPython documentation mirror:
@@ -90,7 +88,6 @@ Hand-edited control files:
 - Language surface index: `docs/spec/areas/compat/surfaces/language/language_surface_matrix.md`
 - Stdlib surface index: `docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md`
 - C-API surface index: `docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md`
-- libmolt extension ABI contract: `docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md`
 - Dynamic execution/reflection policy contract: `docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md`
 - Execution plan: `docs/spec/areas/compat/plans/stdlib_lowering_plan.md`
 - Tkinter execution plan: `docs/spec/areas/compat/plans/tkinter_lowering_plan.md`
