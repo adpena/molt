@@ -28,6 +28,18 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
 - Deployment invariant: shipping binaries remain self-contained and never depend
   on a host CPython runtime or hidden host-CPython fallback.
 
+## Desktop GUI + Packaging Optimization Track (2026-03-10)
+- Compiled Tk/Molt desktop apps are now an active optimization harness, not a side lane.
+- Prioritize improvements that raise real-world GUI throughput and lower battery cost:
+  event-loop wakeups, callback registration/dispatch overhead, Tcl/Tk argument marshalling,
+  redraw churn, and process/IPC startup latency for local utility apps.
+- Prefer pushing reusable wins down into Rust runtime primitives or `moltlib` APIs so
+  shipping apps do not solve hot paths in Python space repeatedly.
+- Treat streamed or pub-sub local data delivery as the preferred UX/perf direction for
+  desktop utilities; budgeted polling remains an acceptable fallback but not the end state.
+- SIMD/NEON work is welcome when the hot path is measured, stable, and generalizable
+  beyond a single demo app.
+
 ## Symphony Harness Engineering Track (2026-03-05)
 - Implemented: added canonical harness architecture and scoring docs:
   `docs/HARNESS_ENGINEERING.md`, `docs/QUALITY_SCORE.md`, and
