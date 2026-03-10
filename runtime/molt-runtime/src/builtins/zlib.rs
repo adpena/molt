@@ -362,38 +362,22 @@ fn adler32_compute(data: &[u8], initial: u32) -> u32 {
         // Unrolled inner loop: process 16 bytes per iteration for better ILP
         while idx + 16 <= chunk_end {
             // Manually unrolled — helps auto-vectorization and hides latency
-            a += data[idx] as u32;
-            b += a;
-            a += data[idx + 1] as u32;
-            b += a;
-            a += data[idx + 2] as u32;
-            b += a;
-            a += data[idx + 3] as u32;
-            b += a;
-            a += data[idx + 4] as u32;
-            b += a;
-            a += data[idx + 5] as u32;
-            b += a;
-            a += data[idx + 6] as u32;
-            b += a;
-            a += data[idx + 7] as u32;
-            b += a;
-            a += data[idx + 8] as u32;
-            b += a;
-            a += data[idx + 9] as u32;
-            b += a;
-            a += data[idx + 10] as u32;
-            b += a;
-            a += data[idx + 11] as u32;
-            b += a;
-            a += data[idx + 12] as u32;
-            b += a;
-            a += data[idx + 13] as u32;
-            b += a;
-            a += data[idx + 14] as u32;
-            b += a;
-            a += data[idx + 15] as u32;
-            b += a;
+            a += data[idx] as u32; b += a;
+            a += data[idx + 1] as u32; b += a;
+            a += data[idx + 2] as u32; b += a;
+            a += data[idx + 3] as u32; b += a;
+            a += data[idx + 4] as u32; b += a;
+            a += data[idx + 5] as u32; b += a;
+            a += data[idx + 6] as u32; b += a;
+            a += data[idx + 7] as u32; b += a;
+            a += data[idx + 8] as u32; b += a;
+            a += data[idx + 9] as u32; b += a;
+            a += data[idx + 10] as u32; b += a;
+            a += data[idx + 11] as u32; b += a;
+            a += data[idx + 12] as u32; b += a;
+            a += data[idx + 13] as u32; b += a;
+            a += data[idx + 14] as u32; b += a;
+            a += data[idx + 15] as u32; b += a;
             idx += 16;
         }
 

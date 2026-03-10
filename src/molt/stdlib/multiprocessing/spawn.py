@@ -104,11 +104,9 @@ if _spawn_flag == "1" or _entry_override == "multiprocessing.spawn":
     )
     spawn_main()
 
-import sys as _mp_spawn_sys
-
 _apply_api_surface(
     "multiprocessing.spawn",
-    _mp_spawn_sys.modules[__name__].__dict__,
+    globals(),
     providers={
         "WINEXE": WINEXE,
         "WINSERVICE": WINSERVICE,

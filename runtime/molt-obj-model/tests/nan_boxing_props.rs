@@ -5,7 +5,7 @@
 
 use proptest::prelude::*;
 
-use molt_lang_obj_model::MoltObject;
+use molt_obj_model::MoltObject;
 
 /// The inline integer range is 47-bit signed: [-(2^46), 2^46 - 1].
 const INT_MIN_INLINE: i64 = -(1i64 << 46);

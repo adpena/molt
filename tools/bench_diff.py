@@ -385,9 +385,9 @@ def main() -> int:
         print("| --- | --- | ---: | ---: | --- |")
         ordered_violations = sorted(
             threshold_violations,
-            key=lambda item: (
-                abs(item.pct_delta) if item.pct_delta is not None else abs(item.delta)
-            ),
+            key=lambda item: abs(item.pct_delta)
+            if item.pct_delta is not None
+            else abs(item.delta),
             reverse=True,
         )
         for item in ordered_violations[: args.top]:

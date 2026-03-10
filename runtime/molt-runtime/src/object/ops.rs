@@ -417,125 +417,6 @@ pub extern "C" fn molt_list_from_range(start_bits: u64, stop_bits: u64, step_bit
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_list_repeat_range(
-    item_bits: u64,
-    start_bits: u64,
-    stop_bits: u64,
-    step_bits: u64,
-) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let start_type = class_name_for_error(type_of_bits(_py, start_bits));
-        let start_err = format!("'{start_type}' object cannot be interpreted as an integer");
-        let Some(start) = index_bigint_from_obj(_py, start_bits, &start_err) else {
-            return MoltObject::none().bits();
-        };
-        let stop_type = class_name_for_error(type_of_bits(_py, stop_bits));
-        let stop_err = format!("'{stop_type}' object cannot be interpreted as an integer");
-        let Some(stop) = index_bigint_from_obj(_py, stop_bits, &stop_err) else {
-            return MoltObject::none().bits();
-        };
-        let step_type = class_name_for_error(type_of_bits(_py, step_bits));
-        let step_err = format!("'{step_type}' object cannot be interpreted as an integer");
-        let Some(step) = index_bigint_from_obj(_py, step_bits, &step_err) else {
-            return MoltObject::none().bits();
-        };
-        if step.is_zero() {
-            return raise_exception::<_>(_py, "ValueError", "range() arg 3 must not be zero");
-        }
-        let len = range_len_bigint(&start, &stop, &step);
-        if len <= BigInt::from(0) {
-            let out_ptr = alloc_list(_py, &[]);
-            return if out_ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(out_ptr).bits()
-            };
-        }
-        let Some(count_i64) = len.to_i64() else {
-            return raise_exception::<_>(
-                _py,
-                "OverflowError",
-                "cannot fit 'int' into an index-sized integer",
-            );
-        };
-        let out_ptr = alloc_list(_py, &[item_bits]);
-        if out_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let out_bits = MoltObject::from_ptr(out_ptr).bits();
-        if unsafe { !list_repeat_in_place(_py, out_ptr, count_i64) } {
-            dec_ref_bits(_py, out_bits);
-            return MoltObject::none().bits();
-        }
-        out_bits
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_fill_range(
-    obj_bits: u64,
-    start_bits: u64,
-    stop_bits: u64,
-    fill_bits: u64,
-) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let obj = obj_from_bits(obj_bits);
-        let Some(ptr) = obj.as_ptr() else {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "bytearray.fill_range expects bytearray",
-            );
-        };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_BYTEARRAY {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "bytearray.fill_range expects bytearray",
-                );
-            }
-        }
-        let start_type = class_name_for_error(type_of_bits(_py, start_bits));
-        let start_err = format!("'{start_type}' object cannot be interpreted as an integer");
-        let Some(start) = index_i64_with_overflow(_py, start_bits, &start_err, None) else {
-            return MoltObject::none().bits();
-        };
-        let stop_type = class_name_for_error(type_of_bits(_py, stop_bits));
-        let stop_err = format!("'{stop_type}' object cannot be interpreted as an integer");
-        let Some(stop) = index_i64_with_overflow(_py, stop_bits, &stop_err, None) else {
-            return MoltObject::none().bits();
-        };
-        let Some(fill_byte) = bytes_item_to_u8(_py, fill_bits, BytesCtorKind::Bytearray) else {
-            return MoltObject::none().bits();
-        };
-
-        let len = unsafe { bytes_len(ptr) as i64 };
-        let elems = unsafe { bytearray_vec(ptr) };
-
-        // Fast path for canonical counted loops: contiguous in-bounds fill.
-        if start >= 0 && stop >= start && stop <= len {
-            elems[start as usize..stop as usize].fill(fill_byte);
-            return MoltObject::from_int(stop).bits();
-        }
-
-        let mut i = start;
-        while i < stop {
-            let mut idx = i;
-            if idx < 0 {
-                idx += len;
-            }
-            if idx < 0 || idx >= len {
-                return raise_exception::<_>(_py, "IndexError", "bytearray index out of range");
-            }
-            elems[idx as usize] = fill_byte;
-            i += 1;
-        }
-        MoltObject::from_int(i).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_range_count(range_bits: u64, val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let range_obj = obj_from_bits(range_bits);
@@ -10761,7 +10642,7 @@ pub unsafe extern "C" fn molt_set_argv(argc: i32, argv: *const *const u8) {
                         args.push(Vec::new());
                         continue;
                     }
-                    let bytes = CStr::from_ptr(ptr.cast::<libc::c_char>()).to_bytes();
+                    let bytes = CStr::from_ptr(ptr as *const i8).to_bytes();
                     let (decoded, _) = decode_bytes_text("utf-8", "surrogateescape", bytes)
                         .expect("argv decode must succeed for utf-8+surrogateescape");
                     args.push(decoded);
@@ -21520,8 +21401,8 @@ pub extern "C" fn molt_string_swapcase(hay_bits: u64) -> u64 {
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             // SIMD fast path: pure-ASCII strings use bulk XOR bit-5 swapcase
             if hay_bytes.is_ascii() {
-                let buf = hay_bytes.to_vec();
-                bytes_ascii_swapcase(&buf);
+                let mut buf = hay_bytes.to_vec();
+                bytes_ascii_swapcase(&mut buf);
                 let ptr = alloc_string(_py, &buf);
                 if ptr.is_null() {
                     return MoltObject::none().bits();
@@ -21564,8 +21445,8 @@ pub extern "C" fn molt_string_capitalize(hay_bits: u64) -> u64 {
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             // SIMD fast path: pure-ASCII capitalize uses bytes_ascii_capitalize
             if hay_bytes.is_ascii() {
-                let buf = hay_bytes.to_vec();
-                bytes_ascii_capitalize(&buf);
+                let mut buf = hay_bytes.to_vec();
+                bytes_ascii_capitalize(&mut buf);
                 let ptr = alloc_string(_py, &buf);
                 if ptr.is_null() {
                     return MoltObject::none().bits();
@@ -23728,8 +23609,9 @@ fn bytes_hex_string(bytes: &[u8], sep: Option<&str>, bytes_per_sep: i64) -> Stri
                     use std::arch::x86_64::*;
                     let mask_lo = _mm_set1_epi8(0x0F);
                     let hex_lut = _mm_setr_epi8(
-                        b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8, b'4' as i8, b'5' as i8,
-                        b'6' as i8, b'7' as i8, b'8' as i8, b'9' as i8, b'a' as i8, b'b' as i8,
+                        b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8,
+                        b'4' as i8, b'5' as i8, b'6' as i8, b'7' as i8,
+                        b'8' as i8, b'9' as i8, b'a' as i8, b'b' as i8,
                         b'c' as i8, b'd' as i8, b'e' as i8, b'f' as i8,
                     );
                     while i + 16 <= bytes.len() {
@@ -23743,10 +23625,7 @@ fn bytes_hex_string(bytes: &[u8], sep: Option<&str>, bytes_per_sep: i64) -> Stri
                         let len = raw.len();
                         raw.set_len(len + 32);
                         _mm_storeu_si128(raw.as_mut_ptr().add(len) as *mut __m128i, interleaved_lo);
-                        _mm_storeu_si128(
-                            raw.as_mut_ptr().add(len + 16) as *mut __m128i,
-                            interleaved_hi,
-                        );
+                        _mm_storeu_si128(raw.as_mut_ptr().add(len + 16) as *mut __m128i, interleaved_hi);
                         i += 16;
                     }
                 }
@@ -23766,42 +23645,8 @@ fn bytes_hex_string(bytes: &[u8], sep: Option<&str>, bytes_per_sep: i64) -> Stri
                         let hi_hex = i8x16_swizzle(hex_lut, hi_nibbles);
                         let lo_hex = i8x16_swizzle(hex_lut, lo_nibbles);
                         // Interleave hi and lo hex chars
-                        let interleaved_lo = i8x16_shuffle::<
-                            0,
-                            16,
-                            1,
-                            17,
-                            2,
-                            18,
-                            3,
-                            19,
-                            4,
-                            20,
-                            5,
-                            21,
-                            6,
-                            22,
-                            7,
-                            23,
-                        >(hi_hex, lo_hex);
-                        let interleaved_hi = i8x16_shuffle::<
-                            8,
-                            24,
-                            9,
-                            25,
-                            10,
-                            26,
-                            11,
-                            27,
-                            12,
-                            28,
-                            13,
-                            29,
-                            14,
-                            30,
-                            15,
-                            31,
-                        >(hi_hex, lo_hex);
+                        let interleaved_lo = i8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(hi_hex, lo_hex);
+                        let interleaved_hi = i8x16_shuffle::<8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31>(hi_hex, lo_hex);
                         let len = raw.len();
                         raw.set_len(len + 32);
                         v128_store(raw.as_mut_ptr().add(len) as *mut v128, interleaved_lo);
@@ -24224,7 +24069,7 @@ fn simd_is_all_ascii_printable(bytes: &[u8]) -> bool {
 
     while i < bytes.len() {
         let b = bytes[i];
-        if !(0x20..=0x7E).contains(&b) {
+        if b < 0x20 || b > 0x7E {
             return false;
         }
         i += 1;
@@ -24643,12 +24488,8 @@ fn bytes_ascii_islower(bytes: &[u8]) -> bool {
                 // Scalar tail
                 let mut has_lower = has_lower_simd;
                 for &b in &bytes[i..] {
-                    if b.is_ascii_uppercase() {
-                        return false;
-                    }
-                    if b.is_ascii_lowercase() {
-                        has_lower = true;
-                    }
+                    if b.is_ascii_uppercase() { return false; }
+                    if b.is_ascii_lowercase() { has_lower = true; }
                 }
                 return has_lower;
             }
@@ -24680,12 +24521,8 @@ fn bytes_ascii_islower(bytes: &[u8]) -> bool {
                     i += 16;
                 }
                 for &b in &bytes[i..] {
-                    if b.is_ascii_uppercase() {
-                        return false;
-                    }
-                    if b.is_ascii_lowercase() {
-                        has_lower_any = true;
-                    }
+                    if b.is_ascii_uppercase() { return false; }
+                    if b.is_ascii_lowercase() { has_lower_any = true; }
                 }
                 return has_lower_any;
             }
@@ -24732,12 +24569,8 @@ fn bytes_ascii_isupper(bytes: &[u8]) -> bool {
                 let has_upper_simd = vmaxvq_u8(has_upper_vec) != 0;
                 let mut has_upper = has_upper_simd;
                 for &b in &bytes[i..] {
-                    if b.is_ascii_lowercase() {
-                        return false;
-                    }
-                    if b.is_ascii_uppercase() {
-                        has_upper = true;
-                    }
+                    if b.is_ascii_lowercase() { return false; }
+                    if b.is_ascii_uppercase() { has_upper = true; }
                 }
                 return has_upper;
             }
@@ -24767,12 +24600,8 @@ fn bytes_ascii_isupper(bytes: &[u8]) -> bool {
                     i += 16;
                 }
                 for &b in &bytes[i..] {
-                    if b.is_ascii_lowercase() {
-                        return false;
-                    }
-                    if b.is_ascii_uppercase() {
-                        has_upper_any = true;
-                    }
+                    if b.is_ascii_lowercase() { return false; }
+                    if b.is_ascii_uppercase() { has_upper_any = true; }
                 }
                 return has_upper_any;
             }
@@ -25128,12 +24957,7 @@ pub extern "C" fn molt_bytes_isspace(hay_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_isspace(hay_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        bytes_like_ascii_predicate(
-            _py,
-            hay_bits,
-            TYPE_ID_BYTEARRAY,
-            simd_is_all_ascii_whitespace,
-        )
+        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, simd_is_all_ascii_whitespace)
     })
 }
 
@@ -34877,7 +34701,8 @@ pub extern "C" fn molt_str_contains(container_bits: u64, item_bits: u64) -> u64 
                 let hay_len = string_len(ptr);
                 let needle_len = string_len(item_ptr);
                 let hay_bytes = std::slice::from_raw_parts(string_bytes(ptr), hay_len);
-                let needle_bytes = std::slice::from_raw_parts(string_bytes(item_ptr), needle_len);
+                let needle_bytes =
+                    std::slice::from_raw_parts(string_bytes(item_ptr), needle_len);
                 if needle_bytes.is_empty() {
                     return MoltObject::from_bool(true).bits();
                 }
@@ -35962,8 +35787,8 @@ unsafe fn find_ascii_split_whitespace_neon(bytes: &[u8], start: usize) -> usize 
                 // Found whitespace in this chunk — scan for exact position
                 let mut buf = [0u8; 16];
                 vst1q_u8(buf.as_mut_ptr(), is_ws);
-                for (j, &slot) in buf.iter().enumerate() {
-                    if slot != 0 {
+                for j in 0..16 {
+                    if buf[j] != 0 {
                         return i + j;
                     }
                 }
@@ -39841,7 +39666,8 @@ pub extern "C" fn molt_heapq_heappop_max(list_bits: u64) -> u64 {
 pub extern "C" fn molt_heapq_nsmallest(n_bits: u64, iterable_bits: u64, key_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         // --- extract n ---
-        let n_raw = index_i64_from_obj(_py, n_bits, "nsmallest() argument 'n' must be an integer");
+        let n_raw =
+            index_i64_from_obj(_py, n_bits, "nsmallest() argument 'n' must be an integer");
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -40097,17 +39923,20 @@ pub extern "C" fn molt_heapq_nsmallest(n_bits: u64, iterable_bits: u64, key_bits
                                 }
                                 let rightpos = childpos + 1;
                                 if rightpos < plen2 {
-                                    let left_lt_right =
-                                        match heapq_lt(_py, pairs[childpos].0, pairs[rightpos].0) {
-                                            Some(v) => v,
-                                            None => {
-                                                dec_ref_bits(_py, src_bits);
-                                                for (pk, _) in pairs {
-                                                    dec_ref_bits(_py, pk);
-                                                }
-                                                return MoltObject::none().bits();
+                                    let left_lt_right = match heapq_lt(
+                                        _py,
+                                        pairs[childpos].0,
+                                        pairs[rightpos].0,
+                                    ) {
+                                        Some(v) => v,
+                                        None => {
+                                            dec_ref_bits(_py, src_bits);
+                                            for (pk, _) in pairs {
+                                                dec_ref_bits(_py, pk);
                                             }
-                                        };
+                                            return MoltObject::none().bits();
+                                        }
+                                    };
                                     if left_lt_right {
                                         childpos = rightpos;
                                     }
@@ -40269,7 +40098,8 @@ pub extern "C" fn molt_heapq_nsmallest(n_bits: u64, iterable_bits: u64, key_bits
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_heapq_nlargest(n_bits: u64, iterable_bits: u64, key_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let n_raw = index_i64_from_obj(_py, n_bits, "nlargest() argument 'n' must be an integer");
+        let n_raw =
+            index_i64_from_obj(_py, n_bits, "nlargest() argument 'n' must be an integer");
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -40341,7 +40171,8 @@ pub extern "C" fn molt_heapq_nlargest(n_bits: u64, iterable_bits: u64, key_bits:
                         }
                         return MoltObject::none().bits();
                     }
-                    let sorted_vals: Vec<u64> = indices.iter().map(|&i| *vals_ptr.add(i)).collect();
+                    let sorted_vals: Vec<u64> =
+                        indices.iter().map(|&i| *vals_ptr.add(i)).collect();
                     for kk in keys {
                         dec_ref_bits(_py, kk);
                     }
@@ -40471,17 +40302,20 @@ pub extern "C" fn molt_heapq_nlargest(n_bits: u64, iterable_bits: u64, key_bits:
                                 }
                                 let rightpos = childpos + 1;
                                 if rightpos < plen2 {
-                                    let right_lt_left =
-                                        match heapq_lt(_py, pairs[rightpos].0, pairs[childpos].0) {
-                                            Some(v) => v,
-                                            None => {
-                                                dec_ref_bits(_py, src_bits);
-                                                for (pk, _) in pairs {
-                                                    dec_ref_bits(_py, pk);
-                                                }
-                                                return MoltObject::none().bits();
+                                    let right_lt_left = match heapq_lt(
+                                        _py,
+                                        pairs[rightpos].0,
+                                        pairs[childpos].0,
+                                    ) {
+                                        Some(v) => v,
+                                        None => {
+                                            dec_ref_bits(_py, src_bits);
+                                            for (pk, _) in pairs {
+                                                dec_ref_bits(_py, pk);
                                             }
-                                        };
+                                            return MoltObject::none().bits();
+                                        }
+                                    };
                                     if right_lt_left {
                                         childpos = rightpos;
                                     }
@@ -40642,7 +40476,11 @@ pub extern "C" fn molt_heapq_nlargest(n_bits: u64, iterable_bits: u64, key_bits:
 // ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_heapq_merge(iterables_bits: u64, key_bits: u64, reverse_bits: u64) -> u64 {
+pub extern "C" fn molt_heapq_merge(
+    iterables_bits: u64,
+    key_bits: u64,
+    reverse_bits: u64,
+) -> u64 {
     crate::with_gil_entry!(_py, {
         let iter_obj = obj_from_bits(iterables_bits);
         let Some(iter_ptr) = iter_obj.as_ptr() else {
@@ -43066,11 +42904,6 @@ fn format_with_spec(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inc_ref_obj(bits: u64) {
-    // Fast path: skip GIL acquire for non-pointer values (int, bool, none).
-    // These are inline NaN-boxed and never touch the heap allocator.
-    if !obj_from_bits(bits).is_ptr() {
-        return;
-    }
     crate::with_gil_entry!(_py, {
         if let Some(ptr) = obj_from_bits(bits).as_ptr() {
             unsafe { molt_inc_ref(ptr) };
@@ -43080,10 +42913,6 @@ pub extern "C" fn molt_inc_ref_obj(bits: u64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dec_ref_obj(bits: u64) {
-    // Fast path: skip GIL acquire for non-pointer values (int, bool, none).
-    if !obj_from_bits(bits).is_ptr() {
-        return;
-    }
     crate::with_gil_entry!(_py, {
         if let Some(ptr) = obj_from_bits(bits).as_ptr() {
             unsafe { molt_dec_ref(ptr) };
@@ -43804,11 +43633,7 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                 // SIMD fast path: skip past identity-equal prefix
                 let first_diff = simd_find_first_mismatch(l_elems, r_elems);
                 for idx in first_diff..l_elems.len() {
-                    if !obj_eq(
-                        _py,
-                        obj_from_bits(l_elems[idx]),
-                        obj_from_bits(r_elems[idx]),
-                    ) {
+                    if !obj_eq(_py, obj_from_bits(l_elems[idx]), obj_from_bits(r_elems[idx])) {
                         return false;
                     }
                 }
@@ -43854,11 +43679,7 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                 // SIMD fast path: skip past identity-equal prefix
                 let first_diff = simd_find_first_mismatch(l_elems, r_elems);
                 for idx in first_diff..l_elems.len() {
-                    if !obj_eq(
-                        _py,
-                        obj_from_bits(l_elems[idx]),
-                        obj_from_bits(r_elems[idx]),
-                    ) {
+                    if !obj_eq(_py, obj_from_bits(l_elems[idx]), obj_from_bits(r_elems[idx])) {
                         return false;
                     }
                 }
@@ -44343,8 +44164,7 @@ unsafe fn simd_max_byte_wasm32(bytes: &[u8]) -> u32 {
             i += 16;
         }
         // Horizontal max: fold 128 bits down to single byte
-        let hi64 =
-            u8x16_shuffle::<8, 9, 10, 11, 12, 13, 14, 15, 0, 0, 0, 0, 0, 0, 0, 0>(vmax, vmax);
+        let hi64 = u8x16_shuffle::<8, 9, 10, 11, 12, 13, 14, 15, 0, 0, 0, 0, 0, 0, 0, 0>(vmax, vmax);
         vmax = u8x16_max(vmax, hi64);
         let hi32 = u8x16_shuffle::<4, 5, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>(vmax, vmax);
         vmax = u8x16_max(vmax, hi32);
@@ -45232,8 +45052,7 @@ unsafe fn simd_bytes_eq_wasm32(a: *const u8, b: *const u8, len: usize) -> bool {
             }
             i += 16;
         }
-        std::slice::from_raw_parts(a.add(i), len - i)
-            == std::slice::from_raw_parts(b.add(i), len - i)
+        std::slice::from_raw_parts(a.add(i), len - i) == std::slice::from_raw_parts(b.add(i), len - i)
     }
 }
 
@@ -45298,8 +45117,7 @@ unsafe fn simd_bytes_eq_neon(a: *const u8, b: *const u8, len: usize) -> bool {
             }
             i += 16;
         }
-        std::slice::from_raw_parts(a.add(i), len - i)
-            == std::slice::from_raw_parts(b.add(i), len - i)
+        std::slice::from_raw_parts(a.add(i), len - i) == std::slice::from_raw_parts(b.add(i), len - i)
     }
 }
 
@@ -45320,11 +45138,7 @@ unsafe fn string_bits_eq(a_bits: u64, b_bits: u64) -> Option<bool> {
         if a_len != b_len {
             return Some(false);
         }
-        Some(simd_bytes_eq(
-            string_bytes(a_ptr),
-            string_bytes(b_ptr),
-            a_len,
-        ))
+        Some(simd_bytes_eq(string_bytes(a_ptr), string_bytes(b_ptr), a_len))
     }
 }
 

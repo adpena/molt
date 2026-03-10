@@ -123,9 +123,9 @@ fn safe_repr_inner(
                 } else {
                     len
                 };
-                for &item_bits in src.iter().take(display_len) {
+                for i in 0..display_len {
                     let (s, r, rec) =
-                        safe_repr_inner(_py, item_bits, seen, depth + 1, max_depth, max_width);
+                        safe_repr_inner(_py, src[i], seen, depth + 1, max_depth, max_width);
                     if !r {
                         readable = false;
                     }
@@ -155,9 +155,9 @@ fn safe_repr_inner(
                 } else {
                     len
                 };
-                for &item_bits in src.iter().take(display_len) {
+                for i in 0..display_len {
                     let (s, r, rec) =
-                        safe_repr_inner(_py, item_bits, seen, depth + 1, max_depth, max_width);
+                        safe_repr_inner(_py, src[i], seen, depth + 1, max_depth, max_width);
                     if !r {
                         readable = false;
                     }
@@ -204,7 +204,8 @@ fn safe_repr_inner(
                     let kb = format_obj(_py, obj_from_bits(b.0));
                     ka.cmp(&kb)
                 });
-                for &(key_bits, val_bits) in pairs.iter().take(display_len) {
+                for i in 0..display_len {
+                    let (key_bits, val_bits) = pairs[i];
                     let (ks, kr, krec) =
                         safe_repr_inner(_py, key_bits, seen, depth + 1, max_depth, max_width);
                     let (vs, vr, vrec) =
@@ -288,7 +289,6 @@ fn safe_repr_inner(
 // ─── pformat engine ─────────────────────────────────────────────────────────
 
 /// Full pformat implementation matching CPython's pprint.pformat behavior.
-#[allow(clippy::too_many_arguments)]
 fn pformat_impl(
     _py: &PyToken<'_>,
     bits: u64,
@@ -315,7 +315,6 @@ fn pformat_impl(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn pformat_recursive(
     _py: &PyToken<'_>,
     bits: u64,
@@ -515,7 +514,6 @@ fn pformat_recursive(
     result
 }
 
-#[allow(clippy::too_many_arguments)]
 fn format_sequence_pformat(
     _py: &PyToken<'_>,
     elems: &[u64],
@@ -615,7 +613,7 @@ fn format_int_underscored(i: i64) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut result = String::with_capacity(s.len() + s.len() / 3);
     for (idx, ch) in chars.iter().enumerate() {
-        if idx > 0 && (chars.len() - idx).is_multiple_of(3) {
+        if idx > 0 && (chars.len() - idx) % 3 == 0 {
             result.push('_');
         }
         result.push(*ch);

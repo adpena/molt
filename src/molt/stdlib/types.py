@@ -87,20 +87,11 @@ __all__ = [
 
 
 def _bootstrap() -> None:
-    import sys
-
-    intrinsic = _require_intrinsic("molt_types_bootstrap", None)
+    intrinsic = _require_intrinsic("molt_types_bootstrap", globals())
     data = intrinsic()
     if not isinstance(data, dict):
         raise RuntimeError("types intrinsics unavailable")
-    # In compiled Molt binaries, globals() may not return the module's __dict__.
-    # Inject directly into the module object via sys.modules to ensure attributes
-    # are visible to importers (e.g. `from types import ModuleType`).
-    mod = sys.modules.get("types")
-    if mod is not None:
-        mod.__dict__.update(data)
-    else:
-        sys.modules[__name__].__dict__.update(data)
+    globals().update(data)
 
 
 _bootstrap()

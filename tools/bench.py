@@ -16,7 +16,6 @@ import time
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 SUPER_SAMPLES = 10
 
@@ -69,7 +68,6 @@ BENCHMARKS = [
     "tests/benchmarks/bench_memoryview_tobytes.py",
     "tests/benchmarks/bench_parse_msgpack.py",
     "tests/benchmarks/bench_json_roundtrip.py",
-    "tests/benchmarks/bench_procedural_gen.py",
 ]
 
 SMOKE_BENCHMARKS = [
@@ -126,112 +124,6 @@ class _RunResult:
     returncode: int
     stdout: str = ""
     stderr: str = ""
-
-
-class _BatchBuildClient:
-    def __init__(self, *, env: dict[str, str]) -> None:
-        self._env = env.copy()
-        self._proc: subprocess.Popen[str] | None = None
-        self._next_id = 1
-
-    def _ensure_started(self) -> None:
-        if self._proc is not None:
-            return
-        cmd = [
-            *_molt_build_cmd(),
-            "-m",
-            "molt.cli",
-            "internal-batch-build-server",
-            "--json",
-        ]
-        self._proc = subprocess.Popen(
-            cmd,
-            env=self._env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-        )
-
-    def _request(
-        self, *, op: str, params: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
-        self._ensure_started()
-        proc = self._proc
-        if proc is None or proc.stdin is None or proc.stdout is None:
-            raise RuntimeError("batch build server pipes are unavailable")
-        req_id = self._next_id
-        self._next_id += 1
-        payload = {"id": req_id, "op": op}
-        if params is not None:
-            payload["params"] = params
-        proc.stdin.write(json.dumps(payload, sort_keys=True) + "\n")
-        proc.stdin.flush()
-        line = proc.stdout.readline()
-        if not line:
-            raise RuntimeError("batch build server closed its response stream")
-        try:
-            response = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"invalid batch build response: {exc}") from exc
-        if response.get("id") != req_id:
-            raise RuntimeError(
-                f"batch build response id mismatch: expected {req_id}, got {response.get('id')}"
-            )
-        return response
-
-    def build(
-        self,
-        *,
-        params: dict[str, Any],
-        env_overrides: dict[str, str],
-    ) -> _RunResult:
-        req = dict(params)
-        req["env_overrides"] = env_overrides
-        response = self._request(op="build", params=req)
-        if not bool(response.get("ok", False)):
-            error = str(response.get("error", "")).strip()
-            stderr_text = _coerce_text(response.get("stderr"))
-            if error and stderr_text:
-                merged_stderr = f"{error}\n{stderr_text}"
-            elif error:
-                merged_stderr = error
-            else:
-                merged_stderr = stderr_text
-            return _RunResult(
-                returncode=int(response.get("returncode", 1) or 1),
-                stdout=_coerce_text(response.get("stdout")),
-                stderr=merged_stderr,
-            )
-        return _RunResult(
-            returncode=int(response.get("returncode", 0) or 0),
-            stdout=_coerce_text(response.get("stdout")),
-            stderr=_coerce_text(response.get("stderr")),
-        )
-
-    def ping(self) -> None:
-        response = self._request(op="ping")
-        if not bool(response.get("ok", False)) or not bool(response.get("pong", False)):
-            raise RuntimeError("batch build server ping failed")
-
-    def close(self) -> None:
-        proc = self._proc
-        if proc is None:
-            return
-        self._proc = proc
-        if proc.poll() is None:
-            try:
-                self._request(op="shutdown")
-            except Exception:
-                pass
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=2.0)
-        self._proc = None
 
 
 def _enable_line_buffering() -> None:
@@ -312,9 +204,6 @@ def _base_python_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("PYTHONHASHSEED", "0")
     env.setdefault("PYTHONUNBUFFERED", "1")
-    # Bench compile loops can start backend daemons under heavy contention.
-    # A larger startup window reduces false negatives while remaining overrideable.
-    env.setdefault("MOLT_BACKEND_DAEMON_START_TIMEOUT", "90")
     return _prepend_pythonpath(env, "src")
 
 
@@ -510,26 +399,6 @@ def _resolve_molt_output(payload: dict) -> Path | None:
     return None
 
 
-def _coerce_text(data: str | bytes | None) -> str:
-    if data is None:
-        return ""
-    if isinstance(data, bytes):
-        return data.decode(errors="replace")
-    return data
-
-
-def _summarize_process_output(
-    *, stderr: str | bytes | None, stdout: str | bytes | None, max_lines: int = 12
-) -> str:
-    text = _coerce_text(stderr).strip() or _coerce_text(stdout).strip()
-    if not text:
-        return "(no subprocess output)"
-    lines = text.splitlines()
-    if len(lines) > max_lines:
-        return "\n".join(lines[-max_lines:])
-    return text
-
-
 def _molt_build_cmd() -> list[str]:
     """Return the command prefix for invoking the Molt compiler.
 
@@ -541,85 +410,18 @@ def _molt_build_cmd() -> list[str]:
     return ["uv", "run", "--python", "3.12", "python3"]
 
 
-def _batch_params_from_extra_args(
-    extra_args: list[str] | None,
-) -> dict[str, Any] | None:
-    if not extra_args:
-        return {}
-    params: dict[str, Any] = {}
-    i = 0
-    while i < len(extra_args):
-        arg = extra_args[i]
-        if arg == "--type-hints":
-            if i + 1 >= len(extra_args):
-                return None
-            params["type_hints"] = extra_args[i + 1]
-            i += 2
-            continue
-        if arg == "--fallback":
-            if i + 1 >= len(extra_args):
-                return None
-            params["fallback"] = extra_args[i + 1]
-            i += 2
-            continue
-        if arg == "--trusted":
-            params["trusted"] = True
-            i += 1
-            continue
-        # Unknown build args should use subprocess mode to preserve behavior.
-        return None
-    return params
-
-
-def _parse_json_object_payload(text: str) -> dict[str, Any] | None:
-    stripped = text.strip()
-    if not stripped:
-        return {}
-    try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError:
-        parsed = None
-    if isinstance(parsed, dict):
-        return parsed
-    lines = [line.strip() for line in stripped.splitlines() if line.strip()]
-    for line in reversed(lines):
-        try:
-            parsed_line = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed_line, dict):
-            return parsed_line
-    return None
-
-
 def prepare_molt_binary(
-    script: str,
-    extra_args: list[str] | None = None,
-    env: dict[str, str] | None = None,
-    *,
-    build_profile: str = "dev",
-    build_timeout_s: float | None = None,
-    build_client: _BatchBuildClient | None = None,
+    script: str, extra_args: list[str] | None = None, env: dict[str, str] | None = None
 ) -> MoltBinary | None:
     env = (env or os.environ.copy()).copy()
     env["PYTHONPATH"] = "src"
     temp_dir = tempfile.TemporaryDirectory(prefix="molt-bench-")
     out_dir = Path(temp_dir.name)
-    batch_extra_params = (
-        _batch_params_from_extra_args(extra_args) if build_client is not None else None
-    )
-    use_batch_client = (
-        build_client is not None
-        and batch_extra_params is not None
-        and build_timeout_s is None
-    )
     args = [
         *_molt_build_cmd(),
         "-m",
         "molt.cli",
         "build",
-        "--profile",
-        build_profile,
         "--trusted",
         "--json",
         "--out-dir",
@@ -629,103 +431,26 @@ def prepare_molt_binary(
         args.extend(extra_args)
     args.append(script)
     start = time.perf_counter()
-    if use_batch_client:
-        params: dict[str, Any] = {
-            "file_path": script,
-            "profile": build_profile,
-            "trusted": True,
-            "json_output": True,
-            "out_dir": str(out_dir),
-        }
-        if batch_extra_params:
-            params.update(batch_extra_params)
-        try:
-            res = build_client.build(
-                params=params,
-                env_overrides={"PYTHONPATH": "src"},
-            )
-        except Exception as exc:
-            res = _RunResult(returncode=1, stderr=f"batch build client error: {exc}")
-    else:
-        if build_client is not None and batch_extra_params is None:
-            print(
-                (
-                    f"Disabling batch build server for {script}: unsupported build args "
-                    f"{extra_args!r}; falling back to subprocess mode."
-                ),
-                file=sys.stderr,
-            )
-        try:
-            res = subprocess.run(
-                args,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=build_timeout_s,
-            )
-        except subprocess.TimeoutExpired as exc:
-            temp_dir.cleanup()
-            timeout_value = (
-                build_timeout_s if build_timeout_s is not None else exc.timeout
-            )
-            print(
-                (
-                    f"Molt build timed out for {script} after {timeout_value:.1f}s "
-                    f"(profile={build_profile}). Increase --build-timeout-sec or "
-                    "use --build-profile dev for faster throughput runs."
-                ),
-                file=sys.stderr,
-            )
-            output_summary = _summarize_process_output(
-                stderr=exc.stderr, stdout=exc.output
-            )
-            if output_summary != "(no subprocess output)":
-                print(f"Build output tail:\n{output_summary}", file=sys.stderr)
-            print(
-                f"Build command: {' '.join(shlex.quote(part) for part in args)}",
-                file=sys.stderr,
-            )
-            return None
+    res = subprocess.run(
+        args,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
     build_s = time.perf_counter() - start
 
     if res.returncode != 0:
-        summary = _summarize_process_output(stderr=res.stderr, stdout=res.stdout)
-        print(
-            (
-                f"Molt build failed for {script} with exit code {res.returncode} "
-                f"(profile={build_profile})."
-            ),
-            file=sys.stderr,
-        )
-        print(f"Build output tail:\n{summary}", file=sys.stderr)
         temp_dir.cleanup()
         return None
 
-    payload = _parse_json_object_payload(res.stdout)
-    if payload is None:
-        summary = _summarize_process_output(stderr=res.stderr, stdout=res.stdout)
-        print(
-            (
-                f"Molt build produced invalid JSON for {script} "
-                f"(profile={build_profile})."
-            ),
-            file=sys.stderr,
-        )
-        print(f"Build output tail:\n{summary}", file=sys.stderr)
+    try:
+        payload = json.loads(res.stdout.strip() or "{}")
+    except json.JSONDecodeError:
         temp_dir.cleanup()
         return None
 
     output_path = _resolve_molt_output(payload)
     if output_path is None:
-        summary = _summarize_process_output(stderr=res.stderr, stdout=res.stdout)
-        print(
-            (
-                f"Molt build output path was not found for {script} "
-                f"(profile={build_profile})."
-            ),
-            file=sys.stderr,
-        )
-        print(f"Build output tail:\n{summary}", file=sys.stderr)
         temp_dir.cleanup()
         return None
 
@@ -969,9 +694,6 @@ def bench_results(
     super_run,
     runtime_timeout_s,
     *,
-    build_profile: str = "dev",
-    build_timeout_s: float | None = None,
-    use_batch_build_server: bool = True,
     tty: bool,
     nuitka_cmd: str | None,
     pyodide_cmd: str | None,
@@ -1017,285 +739,251 @@ def bench_results(
     nuitka_root = Path("bench/nuitka")
 
     data = {}
-    batch_client: _BatchBuildClient | None = None
-    if use_batch_build_server and build_timeout_s is not None:
-        print(
-            "Disabling batch build server: --build-timeout-sec requires subprocess timeout handling.",
-            file=sys.stderr,
-        )
-        use_batch_build_server = False
-    if use_batch_build_server:
-        try:
-            batch_client = _BatchBuildClient(env=base_env)
-            batch_client.ping()
-        except Exception as exc:
-            print(
-                f"Disabling batch build server: failed to start ({exc}).",
-                file=sys.stderr,
+    for script in benchmarks:
+        name = os.path.basename(script)
+        run_args = resolve_benchmark_run_args(script)
+        results = {}
+        runtime_ok = {}
+        stats = {}
+        for rt_name, cmd in runtimes.items():
+            samples_list, ok = collect_samples(
+                lambda: measure_runtime(
+                    cmd,
+                    script,
+                    env=base_env,
+                    run_args=run_args,
+                    timeout_s=runtime_timeout_s,
+                    label=f"{name} [{rt_name}]",
+                ),
+                samples,
+                warmup=warmup,
             )
-            batch_client = None
+            results[rt_name] = statistics.mean(samples_list) if ok else None
+            runtime_ok[rt_name] = ok
+            if super_run and ok:
+                stats[rt_name] = summarize_samples(samples_list)
 
-    try:
-        for script in benchmarks:
-            name = os.path.basename(script)
-            run_args = resolve_benchmark_run_args(script)
-            results = {}
-            runtime_ok = {}
-            stats = {}
-            for rt_name, cmd in runtimes.items():
-                samples_list, ok = collect_samples(
+        codon_time: float | None = None
+        codon_build: float | None = None
+        codon_size: float | None = None
+        codon_ok = False
+        if use_codon:
+            runner = _prepare_codon_runner(Path(script), codon_root, base_env, tty=tty)
+            if runner is not None:
+                codon_build = runner.build_s
+                codon_size = runner.size_kb
+                codon_samples, codon_ok = collect_samples(
                     lambda: measure_runtime(
-                        cmd,
-                        script,
-                        env=base_env,
+                        runner.cmd,
+                        runner.script,
+                        env=runner.env,
                         run_args=run_args,
                         timeout_s=runtime_timeout_s,
-                        label=f"{name} [{rt_name}]",
+                        label=f"{name} [codon]",
                     ),
                     samples,
                     warmup=warmup,
                 )
-                results[rt_name] = statistics.mean(samples_list) if ok else None
-                runtime_ok[rt_name] = ok
-                if super_run and ok:
-                    stats[rt_name] = summarize_samples(samples_list)
-
-            codon_time: float | None = None
-            codon_build: float | None = None
-            codon_size: float | None = None
-            codon_ok = False
-            if use_codon:
-                runner = _prepare_codon_runner(
-                    Path(script), codon_root, base_env, tty=tty
-                )
-                if runner is not None:
-                    codon_build = runner.build_s
-                    codon_size = runner.size_kb
-                    codon_samples, codon_ok = collect_samples(
-                        lambda: measure_runtime(
-                            runner.cmd,
-                            runner.script,
-                            env=runner.env,
-                            run_args=run_args,
-                            timeout_s=runtime_timeout_s,
-                            label=f"{name} [codon]",
-                        ),
-                        samples,
-                        warmup=warmup,
-                    )
-                    if codon_ok:
-                        codon_time = statistics.mean(codon_samples)
-                        if super_run:
-                            stats["codon"] = summarize_samples(codon_samples)
-                else:
-                    print(f"Skipping Codon for {name}.", file=sys.stderr)
-
-            nuitka_time: float | None = None
-            nuitka_build: float | None = None
-            nuitka_size: float | None = None
-            nuitka_ok = False
-            if use_nuitka:
-                runner = _prepare_nuitka_runner(
-                    Path(script),
-                    nuitka_root,
-                    base_env,
-                    tty=tty,
-                    nuitka_cmd=resolved_nuitka_cmd,
-                )
-                if runner is not None:
-                    nuitka_build = runner.build_s
-                    nuitka_size = runner.size_kb
-                    nuitka_samples, nuitka_ok = collect_samples(
-                        lambda: measure_runtime(
-                            runner.cmd,
-                            runner.script,
-                            env=runner.env,
-                            run_args=run_args,
-                            timeout_s=runtime_timeout_s,
-                            label=f"{name} [nuitka]",
-                        ),
-                        samples,
-                        warmup=warmup,
-                    )
-                    if nuitka_ok:
-                        nuitka_time = statistics.mean(nuitka_samples)
-                        if super_run:
-                            stats["nuitka"] = summarize_samples(nuitka_samples)
-                else:
-                    print(f"Skipping Nuitka for {name}.", file=sys.stderr)
-
-            pyodide_time: float | None = None
-            pyodide_build: float | None = None
-            pyodide_size: float | None = None
-            pyodide_ok = False
-            if use_pyodide:
-                runner = _prepare_pyodide_runner(
-                    Path(script), base_env, pyodide_cmd=resolved_pyodide_cmd
-                )
-                if runner is not None:
-                    pyodide_samples, pyodide_ok = collect_samples(
-                        lambda: measure_runtime(
-                            runner.cmd,
-                            runner.script,
-                            env=runner.env,
-                            run_args=run_args,
-                            timeout_s=runtime_timeout_s,
-                            label=f"{name} [pyodide]",
-                        ),
-                        samples,
-                        warmup=warmup,
-                    )
-                    if pyodide_ok:
-                        pyodide_time = statistics.mean(pyodide_samples)
-                        if super_run:
-                            stats["pyodide"] = summarize_samples(pyodide_samples)
-                else:
-                    print(f"Skipping Pyodide for {name}.", file=sys.stderr)
-
-            molt_time: float | None = None
-            molt_size: float | None = None
-            molt_build: float | None = None
-            molt_args = MOLT_ARGS_BY_BENCH.get(script, [])
-            molt_ok = False
-            molt_samples: list[float] = []
-            molt_runner = prepare_molt_binary(
-                script,
-                molt_args,
-                env=base_env,
-                build_profile=build_profile,
-                build_timeout_s=build_timeout_s,
-                build_client=batch_client,
-            )
-            if molt_runner is not None:
-                try:
-                    molt_samples, molt_ok = collect_samples(
-                        lambda: measure_molt_run(
-                            molt_runner.path,
-                            env=base_env,
-                            label=name,
-                            run_args=run_args,
-                            timeout_s=runtime_timeout_s,
-                        ),
-                        samples,
-                        warmup=warmup,
-                    )
-                    if molt_ok:
-                        molt_time = statistics.mean(molt_samples)
-                        if super_run:
-                            stats["molt"] = summarize_samples(molt_samples)
-                    molt_build = molt_runner.build_s
-                    molt_size = molt_runner.size_kb
-                finally:
-                    molt_runner.temp_dir.cleanup()
+                if codon_ok:
+                    codon_time = statistics.mean(codon_samples)
+                    if super_run:
+                        stats["codon"] = summarize_samples(codon_samples)
             else:
-                print(f"Molt build/run failed for {name}.", file=sys.stderr)
+                print(f"Skipping Codon for {name}.", file=sys.stderr)
 
-            cpython_time = (
-                results.get("cpython") if runtime_ok.get("cpython", False) else None
+        nuitka_time: float | None = None
+        nuitka_build: float | None = None
+        nuitka_size: float | None = None
+        nuitka_ok = False
+        if use_nuitka:
+            runner = _prepare_nuitka_runner(
+                Path(script),
+                nuitka_root,
+                base_env,
+                tty=tty,
+                nuitka_cmd=resolved_nuitka_cmd,
             )
-            pypy_time = results.get("pypy") if runtime_ok.get("pypy", False) else None
-            speedup = (
-                (cpython_time / molt_time)
-                if (cpython_time is not None and molt_ok and molt_time > 0)
-                else None
-            )
-            ratio = (
-                molt_time / cpython_time
-                if (molt_ok and cpython_time is not None and cpython_time > 0)
-                else None
-            )
-            pypy_ratio = (
-                (molt_time / pypy_time)
-                if (molt_ok and pypy_time is not None and pypy_time > 0)
-                else None
-            )
-            codon_ratio = (
-                (molt_time / codon_time)
-                if molt_ok and codon_ok and codon_time > 0
-                else None
-            )
-            nuitka_ratio = (
-                (molt_time / nuitka_time)
-                if molt_ok and nuitka_ok and nuitka_time is not None and nuitka_time > 0
-                else None
-            )
-            pyodide_ratio = (
-                (molt_time / pyodide_time)
-                if molt_ok
-                and pyodide_ok
-                and pyodide_time is not None
-                and pyodide_time > 0
-                else None
-            )
+            if runner is not None:
+                nuitka_build = runner.build_s
+                nuitka_size = runner.size_kb
+                nuitka_samples, nuitka_ok = collect_samples(
+                    lambda: measure_runtime(
+                        runner.cmd,
+                        runner.script,
+                        env=runner.env,
+                        run_args=run_args,
+                        timeout_s=runtime_timeout_s,
+                        label=f"{name} [nuitka]",
+                    ),
+                    samples,
+                    warmup=warmup,
+                )
+                if nuitka_ok:
+                    nuitka_time = statistics.mean(nuitka_samples)
+                    if super_run:
+                        stats["nuitka"] = summarize_samples(nuitka_samples)
+            else:
+                print(f"Skipping Nuitka for {name}.", file=sys.stderr)
 
-            def _cell(value: float | None, width: int = 10) -> str:
-                if value is None:
-                    return f"{'n/a':<{width}}"
-                return f"{value:<{width}.4f}"
-
-            def _ratio_cell(value: float | None, width: int = 10) -> str:
-                if value is None:
-                    return f"{'n/a':<{width}}"
-                return f"{value:<{width}.2f}x"
-
-            cpython_cell = _cell(cpython_time)
-            pypy_cell = _cell(pypy_time)
-            codon_build_cell = _cell(codon_build)
-            codon_run_cell = _cell(codon_time)
-            nuitka_build_cell = _cell(nuitka_build)
-            nuitka_run_cell = _cell(nuitka_time)
-            pyodide_run_cell = _cell(pyodide_time)
-            molt_build_cell = _cell(molt_build)
-            molt_run_cell = _cell(molt_time)
-            molt_size_cell = _cell(molt_size)
-            speedup_cell = _ratio_cell(speedup)
-            pypy_ratio_cell = _ratio_cell(pypy_ratio)
-            codon_ratio_cell = _ratio_cell(codon_ratio)
-            nuitka_ratio_cell = _ratio_cell(nuitka_ratio)
-            pyodide_ratio_cell = _ratio_cell(pyodide_ratio)
-
-            print(
-                f"{name:<30} | {cpython_cell} | {pypy_cell} | {codon_build_cell} | "
-                f"{codon_run_cell} | {nuitka_build_cell} | {nuitka_run_cell} | "
-                f"{pyodide_run_cell} | {molt_build_cell} | {molt_run_cell} | "
-                f"{molt_size_cell} | {speedup_cell} | {pypy_ratio_cell} | "
-                f"{codon_ratio_cell} | {nuitka_ratio_cell} | {pyodide_ratio_cell}"
+        pyodide_time: float | None = None
+        pyodide_build: float | None = None
+        pyodide_size: float | None = None
+        pyodide_ok = False
+        if use_pyodide:
+            runner = _prepare_pyodide_runner(
+                Path(script), base_env, pyodide_cmd=resolved_pyodide_cmd
             )
+            if runner is not None:
+                pyodide_samples, pyodide_ok = collect_samples(
+                    lambda: measure_runtime(
+                        runner.cmd,
+                        runner.script,
+                        env=runner.env,
+                        run_args=run_args,
+                        timeout_s=runtime_timeout_s,
+                        label=f"{name} [pyodide]",
+                    ),
+                    samples,
+                    warmup=warmup,
+                )
+                if pyodide_ok:
+                    pyodide_time = statistics.mean(pyodide_samples)
+                    if super_run:
+                        stats["pyodide"] = summarize_samples(pyodide_samples)
+            else:
+                print(f"Skipping Pyodide for {name}.", file=sys.stderr)
 
-            data[name] = {
-                "cpython_time_s": cpython_time,
-                "pypy_time_s": pypy_time,
-                "codon_time_s": codon_time,
-                "codon_build_s": codon_build,
-                "codon_size_kb": codon_size,
-                "nuitka_time_s": nuitka_time,
-                "nuitka_build_s": nuitka_build,
-                "nuitka_size_kb": nuitka_size,
-                "pyodide_time_s": pyodide_time,
-                "pyodide_build_s": pyodide_build,
-                "pyodide_size_kb": pyodide_size,
-                "molt_time_s": molt_time,
-                "molt_build_s": molt_build,
-                "molt_size_kb": molt_size,
-                "molt_speedup": speedup,
-                "molt_cpython_ratio": ratio,
-                "molt_pypy_ratio": pypy_ratio,
-                "molt_codon_ratio": codon_ratio,
-                "molt_nuitka_ratio": nuitka_ratio,
-                "molt_pyodide_ratio": pyodide_ratio,
-                "molt_ok": molt_ok,
-                "pypy_ok": runtime_ok.get("pypy", False),
-                "molt_args": molt_args,
-                "run_args": run_args,
-                "codon_ok": codon_ok,
-                "nuitka_ok": nuitka_ok,
-                "pyodide_ok": pyodide_ok,
-            }
-            if super_run:
-                data[name]["super_stats"] = stats
-    finally:
-        if batch_client is not None:
-            batch_client.close()
+        molt_time: float | None = None
+        molt_size: float | None = None
+        molt_build: float | None = None
+        molt_args = MOLT_ARGS_BY_BENCH.get(script, [])
+        molt_ok = False
+        molt_samples: list[float] = []
+        molt_runner = prepare_molt_binary(script, molt_args, env=base_env)
+        if molt_runner is not None:
+            try:
+                molt_samples, molt_ok = collect_samples(
+                    lambda: measure_molt_run(
+                        molt_runner.path,
+                        env=base_env,
+                        label=name,
+                        run_args=run_args,
+                        timeout_s=runtime_timeout_s,
+                    ),
+                    samples,
+                    warmup=warmup,
+                )
+                if molt_ok:
+                    molt_time = statistics.mean(molt_samples)
+                    if super_run:
+                        stats["molt"] = summarize_samples(molt_samples)
+                molt_build = molt_runner.build_s
+                molt_size = molt_runner.size_kb
+            finally:
+                molt_runner.temp_dir.cleanup()
+        else:
+            print(f"Molt build/run failed for {name}.", file=sys.stderr)
+
+        cpython_time = (
+            results.get("cpython") if runtime_ok.get("cpython", False) else None
+        )
+        pypy_time = results.get("pypy") if runtime_ok.get("pypy", False) else None
+        speedup = (
+            (cpython_time / molt_time)
+            if (cpython_time is not None and molt_ok and molt_time > 0)
+            else None
+        )
+        ratio = (
+            molt_time / cpython_time
+            if (molt_ok and cpython_time is not None and cpython_time > 0)
+            else None
+        )
+        pypy_ratio = (
+            (molt_time / pypy_time)
+            if (molt_ok and pypy_time is not None and pypy_time > 0)
+            else None
+        )
+        codon_ratio = (
+            (molt_time / codon_time)
+            if molt_ok and codon_ok and codon_time > 0
+            else None
+        )
+        nuitka_ratio = (
+            (molt_time / nuitka_time)
+            if molt_ok and nuitka_ok and nuitka_time is not None and nuitka_time > 0
+            else None
+        )
+        pyodide_ratio = (
+            (molt_time / pyodide_time)
+            if molt_ok and pyodide_ok and pyodide_time is not None and pyodide_time > 0
+            else None
+        )
+
+        def _cell(value: float | None, width: int = 10) -> str:
+            if value is None:
+                return f"{'n/a':<{width}}"
+            return f"{value:<{width}.4f}"
+
+        def _ratio_cell(value: float | None, width: int = 10) -> str:
+            if value is None:
+                return f"{'n/a':<{width}}"
+            return f"{value:<{width}.2f}x"
+
+        cpython_cell = _cell(cpython_time)
+        pypy_cell = _cell(pypy_time)
+        codon_build_cell = _cell(codon_build)
+        codon_run_cell = _cell(codon_time)
+        nuitka_build_cell = _cell(nuitka_build)
+        nuitka_run_cell = _cell(nuitka_time)
+        pyodide_run_cell = _cell(pyodide_time)
+        molt_build_cell = _cell(molt_build)
+        molt_run_cell = _cell(molt_time)
+        molt_size_cell = _cell(molt_size)
+        speedup_cell = _ratio_cell(speedup)
+        pypy_ratio_cell = _ratio_cell(pypy_ratio)
+        codon_ratio_cell = _ratio_cell(codon_ratio)
+        nuitka_ratio_cell = _ratio_cell(nuitka_ratio)
+        pyodide_ratio_cell = _ratio_cell(pyodide_ratio)
+
+        print(
+            f"{name:<30} | {cpython_cell} | {pypy_cell} | {codon_build_cell} | "
+            f"{codon_run_cell} | {nuitka_build_cell} | {nuitka_run_cell} | "
+            f"{pyodide_run_cell} | {molt_build_cell} | {molt_run_cell} | "
+            f"{molt_size_cell} | {speedup_cell} | {pypy_ratio_cell} | "
+            f"{codon_ratio_cell} | {nuitka_ratio_cell} | {pyodide_ratio_cell}"
+        )
+
+        data[name] = {
+            "cpython_time_s": cpython_time,
+            "pypy_time_s": pypy_time,
+            "codon_time_s": codon_time,
+            "codon_build_s": codon_build,
+            "codon_size_kb": codon_size,
+            "nuitka_time_s": nuitka_time,
+            "nuitka_build_s": nuitka_build,
+            "nuitka_size_kb": nuitka_size,
+            "pyodide_time_s": pyodide_time,
+            "pyodide_build_s": pyodide_build,
+            "pyodide_size_kb": pyodide_size,
+            "molt_time_s": molt_time,
+            "molt_build_s": molt_build,
+            "molt_size_kb": molt_size,
+            "molt_speedup": speedup,
+            "molt_cpython_ratio": ratio,
+            "molt_pypy_ratio": pypy_ratio,
+            "molt_codon_ratio": codon_ratio,
+            "molt_nuitka_ratio": nuitka_ratio,
+            "molt_pyodide_ratio": pyodide_ratio,
+            "molt_ok": molt_ok,
+            "pypy_ok": runtime_ok.get("pypy", False),
+            "molt_args": molt_args,
+            "run_args": run_args,
+            "codon_ok": codon_ok,
+            "nuitka_ok": nuitka_ok,
+            "pyodide_ok": pyodide_ok,
+        }
+        if super_run:
+            data[name]["super_stats"] = stats
 
     return data
 
@@ -1398,30 +1086,6 @@ def main():
         default=None,
         help="Optional per-run timeout in seconds for each benchmark process.",
     )
-    parser.add_argument(
-        "--build-profile",
-        choices=["dev", "release"],
-        default="dev",
-        help=(
-            "Molt build profile for benchmark compiles "
-            "(default: dev for throughput-focused runs)."
-        ),
-    )
-    parser.add_argument(
-        "--build-timeout-sec",
-        type=float,
-        default=None,
-        help="Optional timeout in seconds for each Molt build subprocess.",
-    )
-    parser.add_argument(
-        "--batch-build-server",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help=(
-            "Reuse a persistent `molt.cli` build worker across benchmark scripts "
-            "(default: enabled). Disable with --no-batch-build-server."
-        ),
-    )
     args = parser.parse_args()
 
     if args.super and args.smoke:
@@ -1430,8 +1094,6 @@ def main():
         parser.error("--super cannot be combined with --samples")
     if args.dynamic_builtin_only and args.smoke:
         parser.error("--dynamic-builtin-only cannot be combined with --smoke")
-    if args.build_timeout_sec is not None and args.build_timeout_sec <= 0:
-        parser.error("--build-timeout-sec must be > 0")
 
     if args.script:
         if args.smoke:
@@ -1480,9 +1142,6 @@ def main():
         use_pyodide,
         args.super,
         args.runtime_timeout_sec,
-        build_profile=args.build_profile,
-        build_timeout_s=args.build_timeout_sec,
-        use_batch_build_server=args.batch_build_server,
         tty=use_tty,
         nuitka_cmd=args.nuitka_cmd,
         pyodide_cmd=args.pyodide_cmd,
@@ -1501,9 +1160,6 @@ def main():
         "super_run": args.super,
         "samples": samples,
         "warmup": warmup,
-        "build_profile": args.build_profile,
-        "build_timeout_sec": args.build_timeout_sec,
-        "batch_build_server": args.batch_build_server,
         "system": {
             "platform": platform.platform(),
             "python": platform.python_version(),

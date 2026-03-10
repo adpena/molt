@@ -1,17 +1,17 @@
-"""Molt-specific user-facing libraries outside the CPython stdlib namespace."""
+"""Molt-specific library modules outside the CPython stdlib namespace."""
 
 from __future__ import annotations
 
 from typing import Any
 import importlib
 
-__all__ = ["asgi", "concurrency", "molt_db", "net"]
+__all__ = ["molt_db"]
 
 
 def __getattr__(name: str) -> Any:
-    if name not in __all__:
+    if name != "molt_db":
         raise AttributeError(name)
-    module = importlib.import_module(f"moltlib.{name}")
+    module = importlib.import_module("moltlib.molt_db")
     globals()[name] = module
     return module
 

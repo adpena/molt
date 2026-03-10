@@ -109,10 +109,4 @@ WINDOW_EVENTS = _tkimpl.WINDOW_EVENTS
 TK_AVAILABLE = _tk_available()
 HAS_GUI_CAPABILITY = _has_gui_capability()
 
-import sys as _tkc_sys
-
-_tkc_mod_dict = getattr(_tkc_sys.modules.get(__name__), "__dict__", None) or globals()
-__all__ = [
-    name for name in _tkc_mod_dict if name.isupper() and not name.startswith("_")
-]
-del _tkc_sys, _tkc_mod_dict
+__all__ = [name for name in globals() if name.isupper() and not name.startswith("_")]

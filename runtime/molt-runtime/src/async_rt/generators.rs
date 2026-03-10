@@ -29,37 +29,36 @@ use crate::{
     asyncio_stream_reader_readline_poll_fn_addr, asyncio_stream_send_all_poll_fn_addr,
     asyncio_timer_handle_poll_fn_addr, asyncio_wait_for_poll_fn_addr, asyncio_wait_poll_fn_addr,
     attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, await_waiter_clear,
-    await_waiter_clear_if_waiting_on, await_waiter_register, await_waiters, await_waiters_take,
-    call_callable0, call_callable1, call_callable2, call_callable3, call_poll_fn,
-    canonical_poll_fn_addr, class_name_for_error, clear_exception, clear_exception_state,
-    context_stack_store, context_stack_take, current_task_ptr, dec_ref_bits, exception_args_bits,
-    exception_clear_reason_set, exception_context_align_depth, exception_context_fallback_pop,
-    exception_context_fallback_push, exception_kind_bits, exception_pending, exception_stack_depth,
-    exception_stack_set_depth, exception_type_bits_from_name, fn_ptr_code_get,
-    generator_context_stack_store, generator_context_stack_take, generator_exception_stack_store,
-    generator_exception_stack_take, generator_raise_active, header_from_obj_ptr, inc_ref_bits,
-    instant_from_monotonic_secs, io_wait_poll_fn_addr, is_truthy, issubclass_bits,
-    maybe_ptr_from_bits, missing_bits, molt_anext, molt_bytes_from_obj, molt_call_bind,
-    molt_callargs_expand_star, molt_callargs_new, molt_exception_clear, molt_exception_kind,
-    molt_exception_last, molt_exception_set_last, molt_float_from_obj, molt_getitem_method,
-    molt_io_wait_new, molt_is_callable, molt_len, molt_raise, molt_set_add, molt_set_new,
-    molt_slice_new, molt_socket_reader_read, molt_socket_reader_readline, molt_str_from_obj,
-    molt_stream_reader_read, molt_stream_reader_readline, molt_stream_send_obj, obj_from_bits,
-    object_class_bits, object_mark_has_ptrs, object_type_id, pending_bits_i64,
-    process_poll_fn_addr, promise_poll_fn_addr, ptr_from_bits, raise_cancelled_with_message,
-    raise_exception, raise_os_error_errno, register_task_token, resolve_task_ptr, runtime_state,
-    seq_vec_ref, set_generator_raise, string_obj_to_owned, task_cancel_message_clear,
-    task_cancel_message_set, task_cancel_pending, task_exception_baseline_drop,
-    task_exception_depth_drop, task_exception_stack_drop, task_has_token, task_last_exceptions,
-    task_mark_done, task_set_cancel_pending, task_take_cancel_pending, task_waiting_on,
-    thread_poll_fn_addr, to_f64, to_i64, token_id_from_bits, tuple_from_iter_bits, type_name,
-    wake_task_ptr,
+    await_waiter_register, await_waiters, await_waiters_take, call_callable0, call_callable1,
+    call_callable2, call_callable3, call_poll_fn, class_name_for_error, clear_exception,
+    clear_exception_state, context_stack_store, context_stack_take, current_task_ptr, dec_ref_bits,
+    exception_args_bits, exception_clear_reason_set, exception_context_align_depth,
+    exception_context_fallback_pop, exception_context_fallback_push, exception_kind_bits,
+    exception_pending, exception_stack_depth, exception_stack_set_depth,
+    exception_type_bits_from_name, fn_ptr_code_get, generator_context_stack_store,
+    generator_context_stack_take, generator_exception_stack_store, generator_exception_stack_take,
+    generator_raise_active, header_from_obj_ptr, inc_ref_bits, instant_from_monotonic_secs,
+    io_wait_poll_fn_addr, is_truthy, issubclass_bits, maybe_ptr_from_bits, missing_bits,
+    molt_anext, molt_bytes_from_obj, molt_call_bind, molt_callargs_expand_star, molt_callargs_new,
+    molt_exception_clear, molt_exception_kind, molt_exception_last, molt_exception_set_last,
+    molt_float_from_obj, molt_getitem_method, molt_io_wait_new, molt_is_callable, molt_len,
+    molt_raise, molt_set_add, molt_set_new, molt_slice_new, molt_socket_reader_read,
+    molt_socket_reader_readline, molt_str_from_obj, molt_stream_reader_read,
+    molt_stream_reader_readline, molt_stream_send_obj, obj_from_bits, object_class_bits,
+    object_mark_has_ptrs, object_type_id, pending_bits_i64, process_poll_fn_addr,
+    promise_poll_fn_addr, ptr_from_bits, raise_cancelled_with_message, raise_exception,
+    raise_os_error_errno, register_task_token, resolve_task_ptr, runtime_state, seq_vec_ref,
+    set_generator_raise, string_obj_to_owned, task_cancel_message_clear, task_cancel_message_set,
+    task_cancel_pending, task_exception_baseline_drop, task_exception_depth_drop,
+    task_exception_stack_drop, task_has_token, task_last_exceptions, task_mark_done,
+    task_set_cancel_pending, task_take_cancel_pending, task_waiting_on, thread_poll_fn_addr,
+    to_f64, to_i64, token_id_from_bits, tuple_from_iter_bits, type_name, wake_task_ptr,
 };
 
 use crate::state::runtime_state::{AsyncGenLocalsEntry, GenLocalsEntry};
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::{process_task_state, thread_task_state};
+use crate::{is_block_on_task, process_task_state, thread_task_state};
 
 fn promise_trace_enabled() -> bool {
     static TRACE: OnceLock<bool> = OnceLock::new();
@@ -101,7 +100,7 @@ fn debug_current_task() -> bool {
 }
 
 const ASYNC_SLEEP_YIELD_SECS: f64 = 0.000_001;
-const ASYNC_SLEEP_NEXT_TICK_SENTINEL: f64 = -1.0;
+const ASYNC_SLEEP_YIELD_SENTINEL: f64 = -1.0;
 const ASYNCIO_WAIT_RETURN_ALL_COMPLETED: i64 = 0;
 const ASYNCIO_WAIT_RETURN_FIRST_COMPLETED: i64 = 1;
 const ASYNCIO_WAIT_RETURN_FIRST_EXCEPTION: i64 = 2;
@@ -1056,9 +1055,6 @@ pub extern "C" fn molt_coroutine_close_method(coro_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
         };
         cancel_future_task(_py, task_ptr, None);
-        runtime_state(_py)
-            .scheduler()
-            .clear_pending_continuation(task_ptr);
         task_mark_done(task_ptr);
         MoltObject::none().bits()
     })
@@ -2152,7 +2148,9 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                     // PEP 479 analog for async generators: StopAsyncIteration
                     // raised inside the body must be converted to RuntimeError.
                     if matches!(kind.as_deref(), Some("StopAsyncIteration")) {
-                        exception_clear_reason_set("asyncgen_poll_stop_async_iter_convert");
+                        exception_clear_reason_set(
+                            "asyncgen_poll_stop_async_iter_convert",
+                        );
                         molt_exception_clear();
                         dec_ref_bits(_py, exc_bits);
                         return raise_exception::<i64>(
@@ -2314,9 +2312,6 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                 && task_cancel_pending(ptr)
             {
                 task_take_cancel_pending(ptr);
-                runtime_state(_py)
-                    .scheduler()
-                    .clear_pending_continuation(ptr);
                 task_mark_done(ptr);
                 return raise_cancelled_with_message::<i64>(_py, ptr);
             }
@@ -2345,7 +2340,7 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                     }
                 }
             } else if !current_task.is_null() {
-                await_waiter_clear_if_waiting_on(_py, current_task, ptr);
+                await_waiter_clear(_py, current_task);
             }
             if !current_task.is_null() {
                 let current_cancelled = task_cancel_pending(current_task);
@@ -2355,9 +2350,6 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                 }
             }
             if res != pending_bits_i64() {
-                runtime_state(_py)
-                    .scheduler()
-                    .clear_pending_continuation(ptr);
                 task_mark_done(ptr);
             }
             if res != pending_bits_i64() && !current_task.is_null() && ptr != current_task {
@@ -2393,9 +2385,12 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                     }
                     crate::CURRENT_TASK.with(|cell| cell.set(prev_task));
                     if obj_from_bits(exc_bits).is_none() {
-                        let global_exc =
-                            crate::builtins::exceptions::exception_last_bits_noinc(_py);
-                        if let Some(exc_bits) = global_exc {
+                        let global_exc = {
+                            let guard = runtime_state(_py).last_exception.lock().unwrap();
+                            guard.map(|ptr| ptr.0)
+                        };
+                        if let Some(exc_ptr) = global_exc {
+                            let exc_bits = MoltObject::from_ptr(exc_ptr).bits();
                             inc_ref_bits(_py, exc_bits);
                             let raised = molt_raise(exc_bits);
                             dec_ref_bits(_py, exc_bits);
@@ -2533,13 +2528,12 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
     }
     let task_ptr = resolved_task;
     let header = unsafe { header_from_obj_ptr(future_ptr) };
-    let poll_fn_raw = unsafe { (*header).poll_fn };
-    let poll_fn = canonical_poll_fn_addr(poll_fn_raw);
+    let poll_fn = unsafe { (*header).poll_fn };
     if poll_fn != async_sleep_poll_fn_addr() && poll_fn != io_wait_poll_fn_addr() {
         if async_trace_enabled() || sleep_trace_enabled() {
             eprintln!(
-                "molt async trace: sleep_register_impl_fail poll_fn=0x{:x} canonical=0x{:x}",
-                poll_fn_raw, poll_fn
+                "molt async trace: sleep_register_impl_fail poll_fn=0x{:x}",
+                poll_fn
             );
         }
         return false;
@@ -2595,11 +2589,6 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
         }
         let task_header = unsafe { header_from_obj_ptr(task_ptr) };
         if unsafe { ((*task_header).flags & HEADER_FLAG_BLOCK_ON) != 0 } {
-            let deadline =
-                Instant::now() + Duration::from_secs_f64(ASYNC_SLEEP_YIELD_SECS.max(0.0));
-            runtime_state(_py)
-                .sleep_queue()
-                .register_blocking(_py, task_ptr, deadline);
             return true;
         }
         runtime_state(_py).scheduler().defer_task_ptr(task_ptr);
@@ -2613,17 +2602,35 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
             );
         }
         if poll_fn == async_sleep_poll_fn_addr() {
+            let deadline =
+                Instant::now() + Duration::from_secs_f64(ASYNC_SLEEP_YIELD_SECS.max(0.0));
             let task_header = unsafe { header_from_obj_ptr(task_ptr) };
             if unsafe { ((*task_header).flags & HEADER_FLAG_BLOCK_ON) != 0 } {
-                let deadline =
-                    Instant::now() + Duration::from_secs_f64(ASYNC_SLEEP_YIELD_SECS.max(0.0));
                 runtime_state(_py)
                     .sleep_queue()
                     .register_blocking(_py, task_ptr, deadline);
                 return true;
             }
-            runtime_state(_py).scheduler().defer_task_ptr(task_ptr);
-            return true;
+            #[cfg(target_arch = "wasm32")]
+            {
+                runtime_state(_py)
+                    .sleep_queue()
+                    .register_blocking(_py, task_ptr, deadline);
+                return true;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if is_block_on_task(task_ptr) {
+                    runtime_state(_py)
+                        .sleep_queue()
+                        .register_blocking(_py, task_ptr, deadline);
+                } else {
+                    runtime_state(_py)
+                        .sleep_queue()
+                        .register_scheduler(_py, task_ptr, deadline);
+                }
+                return true;
+            }
         }
         wake_task_ptr(_py, task_ptr);
         return true;
@@ -2637,17 +2644,35 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
             );
         }
         if poll_fn == async_sleep_poll_fn_addr() {
+            let deadline =
+                Instant::now() + Duration::from_secs_f64(ASYNC_SLEEP_YIELD_SECS.max(0.0));
             let task_header = unsafe { header_from_obj_ptr(task_ptr) };
             if unsafe { ((*task_header).flags & HEADER_FLAG_BLOCK_ON) != 0 } {
-                let deadline =
-                    Instant::now() + Duration::from_secs_f64(ASYNC_SLEEP_YIELD_SECS.max(0.0));
                 runtime_state(_py)
                     .sleep_queue()
                     .register_blocking(_py, task_ptr, deadline);
                 return true;
             }
-            runtime_state(_py).scheduler().defer_task_ptr(task_ptr);
-            return true;
+            #[cfg(target_arch = "wasm32")]
+            {
+                runtime_state(_py)
+                    .sleep_queue()
+                    .register_blocking(_py, task_ptr, deadline);
+                return true;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if is_block_on_task(task_ptr) {
+                    runtime_state(_py)
+                        .sleep_queue()
+                        .register_blocking(_py, task_ptr, deadline);
+                } else {
+                    runtime_state(_py)
+                        .sleep_queue()
+                        .register_scheduler(_py, task_ptr, deadline);
+                }
+                return true;
+            }
         }
         wake_task_ptr(_py, task_ptr);
         return true;
@@ -2659,19 +2684,35 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
             .register_blocking(_py, task_ptr, deadline);
         return true;
     }
-    runtime_state(_py)
-        .sleep_queue()
-        .register_scheduler(_py, task_ptr, deadline);
-    if async_trace_enabled() {
-        let delay = deadline.saturating_duration_since(Instant::now());
-        eprintln!(
-            "molt async trace: sleep_register_request task=0x{:x} deadline_secs={} delay_ms={}",
-            task_ptr as usize,
-            deadline_secs,
-            delay.as_secs_f64() * 1000.0
-        );
+    #[cfg(target_arch = "wasm32")]
+    {
+        runtime_state(_py)
+            .sleep_queue()
+            .register_blocking(_py, task_ptr, deadline);
+        true
     }
-    true
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if is_block_on_task(task_ptr) {
+            runtime_state(_py)
+                .sleep_queue()
+                .register_blocking(_py, task_ptr, deadline);
+        } else {
+            runtime_state(_py)
+                .sleep_queue()
+                .register_scheduler(_py, task_ptr, deadline);
+        }
+        if async_trace_enabled() {
+            let delay = deadline.saturating_duration_since(Instant::now());
+            eprintln!(
+                "molt async trace: sleep_register_request task=0x{:x} deadline_secs={} delay_ms={}",
+                task_ptr as usize,
+                deadline_secs,
+                delay.as_secs_f64() * 1000.0
+            );
+        }
+        true
+    }
 }
 
 /// # Safety
@@ -2915,95 +2956,99 @@ pub unsafe extern "C" fn molt_asyncio_ready_queue_drain(
 ) -> u64 {
     unsafe {
         crate::with_gil_entry!(_py, {
-            let acquire_bits = asyncio_call_method0(_py, ready_lock_bits, b"acquire");
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            let acquired = is_truthy(_py, obj_from_bits(acquire_bits));
-            if !obj_from_bits(acquire_bits).is_none() {
-                dec_ref_bits(_py, acquire_bits);
-            }
-            if !acquired {
-                return raise_exception::<u64>(
-                    _py,
-                    "RuntimeError",
-                    "ready queue lock acquire failed",
-                );
-            }
-
-            let len_bits = molt_len(ready_bits);
-            if exception_pending(_py) {
-                let release_bits = asyncio_call_method0(_py, ready_lock_bits, b"release");
-                if !obj_from_bits(release_bits).is_none() {
-                    dec_ref_bits(_py, release_bits);
+            let mut total_ran = 0i64;
+            loop {
+                let acquire_bits = asyncio_call_method0(_py, ready_lock_bits, b"acquire");
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
                 }
-                return MoltObject::none().bits();
-            }
-            let Some(ready_len) = to_i64(obj_from_bits(len_bits)) else {
+                let acquired = is_truthy(_py, obj_from_bits(acquire_bits));
+                if !obj_from_bits(acquire_bits).is_none() {
+                    dec_ref_bits(_py, acquire_bits);
+                }
+                if !acquired {
+                    return raise_exception::<u64>(
+                        _py,
+                        "RuntimeError",
+                        "ready queue lock acquire failed",
+                    );
+                }
+
+                let len_bits = molt_len(ready_bits);
+                if exception_pending(_py) {
+                    let release_bits = asyncio_call_method0(_py, ready_lock_bits, b"release");
+                    if !obj_from_bits(release_bits).is_none() {
+                        dec_ref_bits(_py, release_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+                let Some(ready_len) = to_i64(obj_from_bits(len_bits)) else {
+                    if !obj_from_bits(len_bits).is_none() {
+                        dec_ref_bits(_py, len_bits);
+                    }
+                    let release_bits = asyncio_call_method0(_py, ready_lock_bits, b"release");
+                    if exception_pending(_py) {
+                        if !obj_from_bits(release_bits).is_none() {
+                            dec_ref_bits(_py, release_bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
+                    if !obj_from_bits(release_bits).is_none() {
+                        dec_ref_bits(_py, release_bits);
+                    }
+                    return raise_exception::<u64>(_py, "TypeError", "ready queue must be sized");
+                };
                 if !obj_from_bits(len_bits).is_none() {
                     dec_ref_bits(_py, len_bits);
                 }
-                let release_bits = asyncio_call_method0(_py, ready_lock_bits, b"release");
-                if exception_pending(_py) {
+                if ready_len <= 0 {
+                    let release_bits = asyncio_call_method0(_py, ready_lock_bits, b"release");
+                    if exception_pending(_py) {
+                        if !obj_from_bits(release_bits).is_none() {
+                            dec_ref_bits(_py, release_bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
                     if !obj_from_bits(release_bits).is_none() {
                         dec_ref_bits(_py, release_bits);
                     }
-                    return MoltObject::none().bits();
+                    break;
                 }
-                if !obj_from_bits(release_bits).is_none() {
-                    dec_ref_bits(_py, release_bits);
-                }
-                return raise_exception::<u64>(_py, "TypeError", "ready queue must be sized");
-            };
-            if !obj_from_bits(len_bits).is_none() {
-                dec_ref_bits(_py, len_bits);
-            }
-            if ready_len <= 0 {
-                let release_bits = asyncio_call_method0(_py, ready_lock_bits, b"release");
-                if exception_pending(_py) {
-                    if !obj_from_bits(release_bits).is_none() {
-                        dec_ref_bits(_py, release_bits);
-                    }
-                    return MoltObject::none().bits();
-                }
-                if !obj_from_bits(release_bits).is_none() {
-                    dec_ref_bits(_py, release_bits);
-                }
-                return MoltObject::from_int(0).bits();
-            }
 
-            let Some(handle_tuple_bits) = tuple_from_iter_bits(_py, ready_bits) else {
+                let Some(handle_tuple_bits) = tuple_from_iter_bits(_py, ready_bits) else {
+                    let release_bits = asyncio_call_method0(_py, ready_lock_bits, b"release");
+                    if !obj_from_bits(release_bits).is_none() {
+                        dec_ref_bits(_py, release_bits);
+                    }
+                    return MoltObject::none().bits();
+                };
+                let clear_bits = asyncio_call_method0(_py, ready_bits, b"clear");
                 let release_bits = asyncio_call_method0(_py, ready_lock_bits, b"release");
-                if !obj_from_bits(release_bits).is_none() {
-                    dec_ref_bits(_py, release_bits);
+                if exception_pending(_py) {
+                    if !obj_from_bits(clear_bits).is_none() {
+                        dec_ref_bits(_py, clear_bits);
+                    }
+                    if !obj_from_bits(release_bits).is_none() {
+                        dec_ref_bits(_py, release_bits);
+                    }
+                    dec_ref_bits(_py, handle_tuple_bits);
+                    return MoltObject::none().bits();
                 }
-                return MoltObject::none().bits();
-            };
-            let clear_bits = asyncio_call_method0(_py, ready_bits, b"clear");
-            let release_bits = asyncio_call_method0(_py, ready_lock_bits, b"release");
-            if exception_pending(_py) {
                 if !obj_from_bits(clear_bits).is_none() {
                     dec_ref_bits(_py, clear_bits);
                 }
                 if !obj_from_bits(release_bits).is_none() {
                     dec_ref_bits(_py, release_bits);
                 }
-                dec_ref_bits(_py, handle_tuple_bits);
-                return MoltObject::none().bits();
-            }
-            if !obj_from_bits(clear_bits).is_none() {
-                dec_ref_bits(_py, clear_bits);
-            }
-            if !obj_from_bits(release_bits).is_none() {
-                dec_ref_bits(_py, release_bits);
-            }
 
-            let Some(batch_ran) = asyncio_ready_batch_run_tuple(_py, handle_tuple_bits) else {
+                let Some(batch_ran) = asyncio_ready_batch_run_tuple(_py, handle_tuple_bits) else {
+                    dec_ref_bits(_py, handle_tuple_bits);
+                    return MoltObject::none().bits();
+                };
                 dec_ref_bits(_py, handle_tuple_bits);
-                return MoltObject::none().bits();
-            };
-            dec_ref_bits(_py, handle_tuple_bits);
-            MoltObject::from_int(batch_ran).bits()
+                total_ran += batch_ran;
+            }
+            MoltObject::from_int(total_ran).bits()
         })
     }
 }
@@ -3763,8 +3808,8 @@ pub unsafe extern "C" fn molt_promise_poll(obj_bits: u64) -> i64 {
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(ptr);
-            let current = current_task_ptr();
             if async_trace_enabled() || promise_trace_enabled() {
+                let current = current_task_ptr();
                 eprintln!(
                     "molt async trace: promise_poll task=0x{:x} state={} current=0x{:x}",
                     ptr as usize,
@@ -3956,7 +4001,7 @@ pub unsafe extern "C" fn molt_async_sleep(obj_bits: u64) -> i64 {
                 let immediate = delay_secs <= 0.0;
                 if payload_len >= 1 {
                     let deadline = if immediate {
-                        ASYNC_SLEEP_NEXT_TICK_SENTINEL
+                        ASYNC_SLEEP_YIELD_SENTINEL
                     } else {
                         crate::monotonic_now_secs(_py) + delay_secs
                     };
@@ -7941,8 +7986,11 @@ pub unsafe extern "C" fn molt_sleep_register(task_ptr: *mut u8, future_ptr: *mut
                 return 0;
             }
             let sleep_target = resolve_sleep_target(_py, future_ptr);
-            let ok = sleep_register_impl(_py, task_ptr, sleep_target);
-            if ok { 1 } else { 0 }
+            if sleep_register_impl(_py, task_ptr, sleep_target) {
+                1
+            } else {
+                0
+            }
         })
     }
 }
@@ -7954,9 +8002,7 @@ mod tests {
 
     #[test]
     fn asyncgen_registry_removes_on_drop() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
         crate::with_gil_entry!(_py, {
             {
                 let mut guard = asyncgen_registry(_py).lock().unwrap();

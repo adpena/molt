@@ -38,7 +38,6 @@ import enum as _enum
 
 from _intrinsics import require_intrinsic as _intrinsic_require
 
-_mod_dict = getattr(_sys.modules.get(__name__), "__dict__", None) or globals()
 
 _VERSION_INFO = getattr(_sys, "version_info", (3, 12, 0, "final", 0))
 _IS_WINDOWS = _os.name == "nt"
@@ -851,11 +850,7 @@ class Future:
         return self.result()
 
     def __await__(self) -> Any:
-        promise = self._molt_promise
-        if promise is None:
-            raise RuntimeError("asyncio intrinsic not available: promise_new")
-
-        async def _molt_future_await_promise() -> Any:
+        async def _wrapped() -> Any:
             waiter = None
             if _EXPOSE_GRAPH:
                 waiter = _task_registry_current()
@@ -864,12 +859,12 @@ class Future:
             try:
                 if _DEBUG_ASYNCIO_PROMISE:
                     _debug_write("asyncio_promise_await")
-                return await promise
+                return await self._molt_promise
             finally:
                 if _EXPOSE_GRAPH and isinstance(waiter, Future):
                     future_discard_from_awaited_by(self, waiter)
 
-        return _molt_future_await_promise().__await__()
+        return _wrapped().__await__()
 
     def __repr__(self) -> str:
         if molt_asyncio_future_cancelled(self._fut_handle):
@@ -899,12 +894,46 @@ def future_discard_from_awaited_by(fut: Any, waiter: Any) -> None:
             fut._asyncio_awaited_by.discard(waiter)
 
 
-_DEBUG_GATHER = False
-_DEBUG_WAIT_FOR = False
-_DEBUG_TASKS = False
-_DEBUG_ASYNCIO_PROMISE = False
-_DEBUG_ASYNCIO_EXC = False
-_DEBUG_ASYNCIO_CONDITION = False
+def _debug_gather_enabled() -> bool:
+    return _os.getenv("MOLT_DEBUG_GATHER") == "1"
+
+
+_DEBUG_GATHER = _debug_gather_enabled()
+
+
+def _debug_wait_for_enabled() -> bool:
+    return _os.getenv("MOLT_DEBUG_WAIT_FOR") == "1"
+
+
+_DEBUG_WAIT_FOR = _debug_wait_for_enabled()
+
+
+def _debug_tasks_enabled() -> bool:
+    return _os.getenv("MOLT_DEBUG_TASKS") == "1"
+
+
+_DEBUG_TASKS = _debug_tasks_enabled()
+
+
+def _debug_asyncio_promise_enabled() -> bool:
+    return _os.getenv("MOLT_DEBUG_ASYNCIO_PROMISE") == "1"
+
+
+_DEBUG_ASYNCIO_PROMISE = _debug_asyncio_promise_enabled()
+
+
+def _debug_asyncio_exc_enabled() -> bool:
+    return _os.getenv("MOLT_DEBUG_ASYNCIO_EXC") == "1"
+
+
+_DEBUG_ASYNCIO_EXC = _debug_asyncio_exc_enabled()
+
+
+def _debug_asyncio_condition_enabled() -> bool:
+    return _os.getenv("MOLT_DEBUG_ASYNCIO_CONDITION") == "1"
+
+
+_DEBUG_ASYNCIO_CONDITION = _debug_asyncio_condition_enabled()
 
 _UNSET = object()
 _PROC_STDIO_INHERIT = 0
@@ -1526,6 +1555,7 @@ molt_asyncio_sock_sendto_new = _intrinsic_require(
 molt_generic_alias_new = _intrinsic_require("molt_generic_alias_new", globals())
 molt_thread_submit = _intrinsic_require("molt_thread_submit", globals())
 molt_asyncio_to_thread = _intrinsic_require("molt_asyncio_to_thread", globals())
+
 _molt_module_new = _intrinsic_require("molt_module_new", globals())
 _molt_function_set_builtin = _intrinsic_require("molt_function_set_builtin", globals())
 _molt_future_cancel_msg = _intrinsic_require("molt_future_cancel_msg", globals())
@@ -2110,7 +2140,31 @@ class Task(Future):
         return f"<Task {self._name} {state}>"
 
     def __await__(self) -> Any:
-        return Future.__await__(self)
+        if molt_asyncio_future_done(self._fut_handle):
+            return self._wait().__await__()
+        waiter = Future()
+
+        def _transfer(done: Future) -> None:
+            if waiter.done():
+                return
+            try:
+                if _asyncio_future_transfer(done, waiter):
+                    return
+                if hasattr(done, "cancelled") and done.cancelled():
+                    cancel_msg = getattr(done, "_cancel_message", None)
+                    waiter.cancel(cancel_msg)
+                    return
+                exc = done.exception()
+                if exc is not None:
+                    waiter.set_exception(exc)
+                    return
+                waiter.set_result(done.result())
+            except BaseException as exc:
+                if not waiter.done():
+                    waiter.set_exception(exc)
+
+        self.add_done_callback(lambda _fut: _transfer(_fut))
+        return waiter.__await__()
 
 
 class Event:
@@ -3167,10 +3221,6 @@ class TimerHandle(Handle):
 
     def cancel(self) -> None:
         super().cancel()
-        rust_timer_id = getattr(self, "_rust_timer_id", None)
-        if rust_timer_id is not None:
-            self._loop._cancel_rust_timer(rust_timer_id)  # type: ignore[attr-defined]
-            self._rust_timer_id = None
         _require_asyncio_intrinsic(
             molt_asyncio_timer_handle_cancel, "asyncio_timer_handle_cancel"
         )(
@@ -3445,9 +3495,7 @@ class _EventLoop(AbstractEventLoop):
                 pass
 
     def create_future(self) -> Future:
-        future = Future()
-        future._loop = self
-        return future
+        return Future()
 
     def create_task(
         self, coro: Any, *, name: str | None = None, context: Any | None = None
@@ -3598,8 +3646,6 @@ class _EventLoop(AbstractEventLoop):
     def set_exception_handler(
         self, handler: Callable[["EventLoop", dict[str, Any]], Any] | None
     ) -> None:
-        if handler is not None and not callable(handler):
-            raise TypeError(f"A callable object or None is expected, got {handler!r}")
         _require_asyncio_intrinsic(
             molt_event_loop_set_exception_handler, "event_loop_set_exception_handler"
         )(self._loop_handle, handler)
@@ -3614,20 +3660,8 @@ class _EventLoop(AbstractEventLoop):
     def call_exception_handler(self, context: dict[str, Any]) -> None:
         handler = self.get_exception_handler()
         if handler is not None:
-            try:
-                handler(self, context)
-                return
-            except (SystemExit, KeyboardInterrupt):
-                raise
-            except BaseException as exc:
-                context = {
-                    "message": "Unhandled error in exception handler",
-                    "exception": exc,
-                    "context": context,
-                }
-        self.default_exception_handler(context)
-
-    def default_exception_handler(self, context: dict[str, Any]) -> None:
+            handler(self, context)
+            return
         message = context.get("message", "Unhandled exception in event loop")
         exc = context.get("exception")
         if exc is None:
@@ -3648,8 +3682,6 @@ class _EventLoop(AbstractEventLoop):
         )
 
     def set_task_factory(self, factory: Callable[..., Task] | None) -> None:
-        if factory is not None and not callable(factory):
-            raise TypeError("task factory must be a callable or None")
         _require_asyncio_intrinsic(
             molt_event_loop_set_task_factory, "event_loop_set_task_factory"
         )(self._loop_handle, factory)
@@ -3689,8 +3721,6 @@ class _EventLoop(AbstractEventLoop):
     def close(self) -> None:
         if self.is_closed():
             return
-        if self.is_running():
-            raise RuntimeError("Cannot close a running event loop")
         _require_asyncio_intrinsic(molt_event_loop_close, "event_loop_close")(
             self._loop_handle
         )
@@ -3717,8 +3747,6 @@ class _EventLoop(AbstractEventLoop):
         return wrap_future(submitted, loop=self)
 
     def add_reader(self, fd: Any, callback: Any, *args: Any) -> None:
-        if self.is_closed():
-            raise RuntimeError("Event loop is closed")
         fileno = _fd_from_fileobj(fd)
         # Register with Rust event loop for I/O readiness notification.
         _require_asyncio_intrinsic(molt_event_loop_add_reader, "event_loop_add_reader")(
@@ -3729,8 +3757,6 @@ class _EventLoop(AbstractEventLoop):
         )(self, self._readers, fileno, callback, args, 1)
 
     def remove_reader(self, fd: Any) -> bool:
-        if self.is_closed():
-            return False
         fileno = _fd_from_fileobj(fd)
         _require_asyncio_intrinsic(
             molt_event_loop_remove_reader, "event_loop_remove_reader"
@@ -3742,8 +3768,6 @@ class _EventLoop(AbstractEventLoop):
         )
 
     def add_writer(self, fd: Any, callback: Any, *args: Any) -> None:
-        if self.is_closed():
-            raise RuntimeError("Event loop is closed")
         fileno = _fd_from_fileobj(fd)
         # Register with Rust event loop for I/O writability notification.
         _require_asyncio_intrinsic(molt_event_loop_add_writer, "event_loop_add_writer")(
@@ -3804,8 +3828,6 @@ class _EventLoop(AbstractEventLoop):
         return await fut
 
     def remove_writer(self, fd: Any) -> bool:
-        if self.is_closed():
-            return False
         fileno = _fd_from_fileobj(fd)
         _require_asyncio_intrinsic(
             molt_event_loop_remove_writer, "event_loop_remove_writer"
@@ -3909,13 +3931,8 @@ class _EventLoop(AbstractEventLoop):
                     finally:
                         _restore_token_id(prev_token_id)
                 else:
-                    promise = fut._molt_promise
-                    if promise is None:
-                        raise RuntimeError(
-                            "asyncio intrinsic not available: promise_new"
-                        )
-                    result = molt_block_on(promise)
-                    _debug_exc_state("run_until_complete_after_promise")
+                    result = molt_block_on(fut._wait())
+                    _debug_exc_state("run_until_complete_after_wait")
             else:
                 fut = Task(future, loop=self, _spawn_runner=False)
                 prev_token_id = _swap_current_token(fut._token)
@@ -3943,28 +3960,6 @@ class _EventLoop(AbstractEventLoop):
         return result
 
     def run_forever(self) -> None:
-        if self.is_closed():
-            raise RuntimeError("Event loop is closed")
-        if self.is_running():
-            raise RuntimeError("Event loop is already running")
-        if self._stopping:
-            prev = _get_running_loop()
-            _set_running_loop(self)
-            _require_asyncio_intrinsic(molt_event_loop_start, "event_loop_start")(
-                self._loop_handle
-            )
-            try:
-                if self._ready:
-                    self._ensure_ready_runner()
-                self._run_once()
-            finally:
-                _require_asyncio_intrinsic(molt_event_loop_stop, "event_loop_stop")(
-                    self._loop_handle
-                )
-                self._stopping = False
-                _set_running_loop(prev)
-            return
-
         async def _spin() -> None:
             while not self._stopping:
                 await sleep(0.0)
@@ -3980,8 +3975,10 @@ class _EventLoop(AbstractEventLoop):
         return None
 
     def set_default_executor(self, executor: Any) -> None:
-        if not isinstance(executor, _concurrent.futures.ThreadPoolExecutor):
-            raise TypeError("executor must be ThreadPoolExecutor instance")
+        if executor is not None:
+            submit = getattr(executor, "submit", None)
+            if submit is None or not callable(submit):
+                raise TypeError("executor must define submit()")
         self._default_executor = executor
 
     def add_signal_handler(
@@ -5063,22 +5060,12 @@ class Runner:
             result = loop.run_until_complete(task)
         except BaseException:
             _cancel_all_tasks(loop)
-            import sys as _aio_sys
-
-            _aio_mod_dict = (
-                getattr(_aio_sys.modules.get(__name__), "__dict__", None) or globals()
-            )
-            shutdown = _aio_mod_dict.get("molt_asyncgen_shutdown")
+            shutdown = globals().get("molt_asyncgen_shutdown")
             if shutdown is not None:
                 shutdown()
             raise
         _cancel_all_tasks(loop)
-        import sys as _aio_sys
-
-        _aio_mod_dict = (
-            getattr(_aio_sys.modules.get(__name__), "__dict__", None) or globals()
-        )
-        shutdown = _aio_mod_dict.get("molt_asyncgen_shutdown")
+        shutdown = globals().get("molt_asyncgen_shutdown")
         if shutdown is not None:
             shutdown()
         return result
@@ -5088,12 +5075,7 @@ class Runner:
             return
         if not self._loop.is_closed():
             _cancel_all_tasks(self._loop)
-            import sys as _aio_sys
-
-            _aio_mod_dict = (
-                getattr(_aio_sys.modules.get(__name__), "__dict__", None) or globals()
-            )
-            shutdown = _aio_mod_dict.get("molt_asyncgen_shutdown")
+            shutdown = globals().get("molt_asyncgen_shutdown")
             if shutdown is not None:
                 shutdown()
             self._loop.close()
@@ -5475,10 +5457,6 @@ def create_task(
 
 def ensure_future(awaitable: Any, *, loop: EventLoop | None = None) -> Future:
     if isinstance(awaitable, Future):
-        if loop is not None and awaitable.get_loop() is not loop:
-            raise ValueError(
-                "The future belongs to a different loop than the one specified as the loop argument"
-            )
         return awaitable
     if loop is None:
         try:
@@ -5524,7 +5502,6 @@ def wrap_future(fut: Any, *, loop: EventLoop | None = None) -> Future:
         except RuntimeError:
             loop = get_event_loop()
     proxy = Future()
-    proxy._loop = loop
 
     def _transfer(done_obj: Any) -> None:
         try:
@@ -6299,7 +6276,7 @@ def __getattr__(name: str) -> Any:
         mod = _make_queues_module()
     else:
         raise AttributeError(f"module 'asyncio' has no attribute '{name}'")
-    _mod_dict[name] = mod
+    globals()[name] = mod
     return mod
 
 
@@ -6549,6 +6526,7 @@ subprocess = _module(
         "subprocess": _subprocess,
     },
 )
+
 _futures_attrs: dict[str, Any] = {
     "Future": Future,
     "GenericAlias": _types.GenericAlias,
@@ -6961,8 +6939,8 @@ if _EXPOSE_GRAPH:
     )
 
 if not _EXPOSE_EVENT_LOOP:
-    if "EventLoop" in _mod_dict:
-        del _mod_dict["EventLoop"]
+    if "EventLoop" in globals():
+        del globals()["EventLoop"]
 
 if not _EXPOSE_GRAPH:
     for _name in (
@@ -6974,8 +6952,8 @@ if not _EXPOSE_GRAPH:
         "future_add_to_awaited_by",
         "future_discard_from_awaited_by",
     ):
-        if _name in _mod_dict:
-            del _mod_dict[_name]
+        if _name in globals():
+            del globals()[_name]
 
 _builtin_targets = [
     _get_running_loop,
@@ -7006,9 +6984,4 @@ for _name in (
     "dataclass",
     "typing",
 ):
-    import sys as _aio_cleanup_sys
-
-    _aio_cleanup_dict = (
-        getattr(_aio_cleanup_sys.modules.get(__name__), "__dict__", None) or globals()
-    )
-    _aio_cleanup_dict.pop(_name, None)
+    globals().pop(_name, None)

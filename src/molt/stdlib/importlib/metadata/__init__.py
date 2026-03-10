@@ -395,10 +395,7 @@ def _ensure_fs_read() -> None:
 
 
 def _metadata_module_file() -> str | None:
-    import sys as _ilm_sys
-
-    _ilm_dict = getattr(_ilm_sys.modules.get(__name__), "__dict__", None) or globals()
-    module_file = _ilm_dict.get("__file__")
+    module_file = globals().get("__file__")
     if isinstance(module_file, str) and module_file:
         return module_file
     return None

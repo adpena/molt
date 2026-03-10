@@ -18,13 +18,6 @@ __all__ = [
 
 _TEMP_DIR: str | None = None
 _TEMP_COUNTER = 0
-_ENOSYS = int(getattr(_os, "ENOSYS", 38))
-_EINVAL = int(getattr(_os, "EINVAL", 22))
-
-
-def _is_open_probe_unsupported(exc: OSError) -> bool:
-    errno_value = getattr(exc, "errno", None)
-    return errno_value in {_ENOSYS, _EINVAL}
 
 
 def _candidate_tempdir_list() -> list[str]:
@@ -83,28 +76,6 @@ def _dir_is_usable(dirname: str) -> bool:
     if hasattr(_os, "O_BINARY"):
         flags |= _os.O_BINARY
 
-    def _mkdir_probe() -> bool:
-        for seq in range(64):
-            probe_name = f".molt_tmp_probe_{_os.getpid()}_{seq}"
-            probe_path = _MOLT_PATH_JOIN(directory, probe_name)
-            try:
-                try:
-                    _os.mkdir(probe_path, 0o700)
-                except TypeError:
-                    _os.mkdir(probe_path)
-            except FileExistsError:
-                continue
-            except PermissionError:
-                return False
-            except OSError:
-                return False
-            try:
-                _os.rmdir(probe_path)
-            except OSError:
-                pass
-            return True
-        return False
-
     for seq in range(64):
         probe_name = f".molt_tmp_probe_{_os.getpid()}_{seq}"
         probe_path = _MOLT_PATH_JOIN(directory, probe_name)
@@ -120,22 +91,16 @@ def _dir_is_usable(dirname: str) -> bool:
                 except OSError:
                     pass
             return False
-        except OSError as exc:
-            if _is_open_probe_unsupported(exc):
-                return _mkdir_probe()
+        except OSError:
             return False
 
         try:
-            try:
-                _os.write(fd, b"molt")
-            except OSError as exc:
-                if not _is_open_probe_unsupported(exc):
-                    return False
+            _os.write(fd, b"molt")
         finally:
             _os.close(fd)
         try:
             _os.unlink(probe_path)
-        except (OSError, TypeError):
+        except OSError:
             pass
         return True
 

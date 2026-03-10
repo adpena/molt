@@ -20,7 +20,7 @@
       "Bash(cargo fmt:*)",
       "Bash(ruff check src/molt/stdlib/socket.py src/molt/stdlib/_socket.py && ruff format --check src/molt/stdlib/socket.py src/molt/stdlib/_socket.py 2>&1)",
       "Bash(ruff format:*)",
-      "Bash(imsg:*)"
+      "Bash(imsg send:*)"
     ]
   }
 }

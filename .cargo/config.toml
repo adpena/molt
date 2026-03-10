@@ -2,11 +2,6 @@
 # Portable baseline: no target-cpu=native by default.
 # For host-tuned builds, use .cargo/config-native.toml or set MOLT_NATIVE_CPU=1.
 
-[build]
-# Keep all build artifacts on the external volume to preserve local SSD space.
-# Override per-invocation with CARGO_TARGET_DIR if needed.
-target-dir = "/Volumes/APDataStore/Molt/cargo-target"
-
 [target.'cfg(not(target_arch = "wasm32"))']
 rustflags = []
 
@@ -17,12 +12,8 @@ linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 
 [target.aarch64-unknown-linux-gnu]
-linker = "aarch64-linux-gnu-gcc"
-rustflags = []
-
-[target.x86_64-unknown-linux-musl]
-linker = "x86_64-linux-musl-gcc"
-rustflags = []
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 
 # WASM targets use a fixed feature set — do NOT set target-cpu=native.
 # The wasm32-unknown-unknown and wasm32-wasi targets use Cranelift's

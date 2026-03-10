@@ -581,17 +581,11 @@ class HTTPSConnection(HTTPConnection):
 responses = _load_status_responses()
 
 
-import sys as _sys
-
-_mod_dict = getattr(_sys.modules.get(__name__), "__dict__", None) or globals()
-del _sys
-
-
 def _export_status_constant(name: str, code: int) -> None:
     member = getattr(_HTTPStatus, name, None)
     if member is None:
         member = _HTTPStatus(code)
-    _mod_dict[name] = member
+    globals()[name] = member
 
 
 for _name, _code in _HTTP_STATUS_CONSTANTS.items():

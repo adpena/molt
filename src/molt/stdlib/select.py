@@ -94,17 +94,11 @@ _KQ_EV_DELETE = _const("KQ_EV_DELETE", 0x0002)
 _EXPORTED_CONSTANTS: list[str] = []
 
 
-import sys as _sys
-
-_mod_dict = getattr(_sys.modules.get(__name__), "__dict__", None) or globals()
-del _sys
-
-
 def _export_constant(name: str) -> None:
     value = _SELECT_CONSTANTS.get(name)
     if value is None:
         return
-    _mod_dict[name] = int(value)
+    globals()[name] = int(value)
     _EXPORTED_CONSTANTS.append(name)
 
 

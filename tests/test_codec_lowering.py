@@ -1,4 +1,4 @@
-from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
+from molt.frontend import compile_to_tir
 
 
 def _op_kinds(ir: dict, func_name: str = "molt_main") -> list[str]:
@@ -274,67 +274,6 @@ def test_simple_range_listcomp_lowering():
     assert "list_from_range" in kinds
 
 
-def test_simple_range_constant_listcomp_lowering():
-    src = 'x = ["a" for _ in range(5)]'
-    ir = compile_to_tir(src)
-    kinds = _op_kinds(ir)
-    assert "list_repeat_range" in kinds
-
-
-def test_counted_while_name_bound_lowering():
-    src = """
-limit = 5
-i = 0
-total = 0
-while i < limit:
-    total += 1
-    i += 1
-"""
-    ir = compile_to_tir(src)
-    kinds = _op_kinds(ir)
-    assert "loop_index_start" in kinds
-    assert "loop_index_next" in kinds
-
-
-def test_counted_while_bytearray_fill_lowering():
-    src = """
-size = 8
-data = bytearray(size)
-i = 0
-while i < size:
-    data[i] = 97
-    i += 1
-"""
-    ir = compile_to_tir(src)
-    kinds = _op_kinds(ir)
-    assert "bytearray_fill_range" in kinds
-
-
-def test_counted_while_structural_carry_inference_without_trusted_hints():
-    src = """
-def f(n):
-    total = 0
-    i = 0
-    while i < n:
-        total = total + 1
-        i = i + 1
-    return total
-"""
-    ir = compile_to_tir(src, type_hint_policy="check")
-    func = next(entry for entry in ir["functions"] if entry["name"].endswith("____f"))
-    kinds = [op["kind"] for op in func["ops"]]
-    assert "loop_start" in kinds
-    assert "loop_carry_init" in kinds
-    assert "loop_break_if_false" in kinds
-    start_pos = kinds.index("loop_start")
-    carry_pos = kinds.index("loop_carry_init")
-    break_pos = kinds.index("loop_break_if_false")
-    assert start_pos < carry_pos < break_pos
-    assert "loop_carry_update" in kinds
-    if "loop_index_start" not in kinds:
-        assert kinds.count("loop_carry_init") >= 2
-
-
 def test_dict_increment_lowering():
     src = """
 counts = {}
@@ -525,72 +464,7 @@ e ^= b
     ):
         ops = _ops_by_kind(ir, kind)
         assert ops, f"expected at least one {kind} op"
-        assert all(
-            op.get("fast_int") is True or op.get("raw_int") is True for op in ops
-        )
-
-
-def test_type_hint_raw_int_boundary_keeps_unsupported_ops_boxed() -> None:
-    src = """
-a: int = 9
-b: int = 4
-sumv = a + b
-subv = a - b
-mulv = a * b
-modv = a % b
-ltv = a < b
-"""
-    ir = compile_to_tir(src, type_hint_policy="check")
-    add_ops = _ops_by_kind(ir, "add")
-    sub_ops = _ops_by_kind(ir, "sub")
-    mul_ops = _ops_by_kind(ir, "mul")
-    mod_ops = _ops_by_kind(ir, "mod")
-    lt_ops = _ops_by_kind(ir, "lt")
-
-    assert all(
-        op.get("fast_int") is True or op.get("raw_int") is True for op in add_ops
-    )
-    assert all(
-        op.get("fast_int") is True or op.get("raw_int") is True for op in mul_ops
-    )
-    assert all(
-        op.get("fast_int") is True or op.get("raw_int") is True for op in mod_ops
-    )
-    assert all(op.get("fast_int") is True or op.get("raw_int") is True for op in lt_ops)
-    assert all(op.get("raw_int") is not True for op in sub_ops)
-    assert all(op.get("fast_int") is True for op in sub_ops)
-
-
-def test_specialized_int_verifier_reports_invalid_annotations() -> None:
-    gen = SimpleTIRGenerator()
-    failures = gen._collect_specialized_int_failures(
-        [
-            MoltOp(
-                kind="CONST",
-                args=[7],
-                result=MoltValue("lhs", "int"),
-                metadata={"raw_int": True},
-            ),
-            MoltOp(
-                kind="CONST",
-                args=[3],
-                result=MoltValue("rhs", "int"),
-                metadata={"raw_int": True},
-            ),
-            MoltOp(
-                kind="SUB",
-                args=[MoltValue("lhs", "int"), MoltValue("rhs", "int")],
-                result=MoltValue("out", "int"),
-                metadata={"raw_int": True},
-            ),
-        ]
-    )
-
-    assert failures
-    assert any(
-        detail == "raw_int is not supported for this op kind"
-        for _, _, detail in failures
-    )
+        assert all(op.get("fast_int") is True for op in ops)
 
 
 def test_tuple_lowering():

@@ -11,10 +11,6 @@ def cast(_tp, value):  # type: ignore[override]
 
 
 # Ensure sys.modules exists early to avoid circular import failures.
-# NOTE: sys is special — during early bootstrap, sys.modules may not yet exist,
-# so we cannot use sys.modules[__name__].__dict__ here. The module-level globals()
-# is acceptable for this bootstrap-only path because sys is injected directly by
-# the runtime before any compiled-module scoping applies.
 _existing_modules = globals().get("modules")
 if _existing_modules is None:
     modules: dict[str, object] = {}
@@ -679,10 +675,7 @@ builtin_module_names = _MOLT_SYS_BUILTIN_MODULE_NAMES()
 
 
 def _bootstrap_module_file() -> str | None:
-    import sys as _bmf_sys
-
-    _bmf_dict = getattr(_bmf_sys.modules.get(__name__), "__dict__", None) or globals()
-    value = _bmf_dict.get("__file__")
+    value = globals().get("__file__")
     if isinstance(value, str):
         return value
     return None
@@ -835,10 +828,7 @@ def exc_info() -> tuple[object, object, object]:
 
 
 def _getframe(depth: int = 0) -> object | None:
-    try:
-        return _MOLT_GETFRAME(depth + 2)
-    except (AttributeError, ValueError):
-        return None
+    return _MOLT_GETFRAME(depth + 2)
 
 
 def getdefaultencoding() -> str:
@@ -1135,9 +1125,4 @@ for _name in (
     "abiflags_obj",
     "asyncgen_hooks",
 ):
-    import sys as _sys_cleanup
-
-    _sys_mod_dict = (
-        getattr(_sys_cleanup.modules.get(__name__), "__dict__", None) or globals()
-    )
-    _sys_mod_dict.pop(_name, None)
+    globals().pop(_name, None)

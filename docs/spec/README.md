@@ -46,10 +46,9 @@ Long-form topic docs live under `docs/spec/areas/`.
 - Language surface index: [docs/spec/areas/compat/surfaces/language/language_surface_matrix.md](docs/spec/areas/compat/surfaces/language/language_surface_matrix.md)
 - Stdlib surface index: [docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md)
 - C-API surface index: [docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md](docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md)
-- libmolt extension ABI contract: [docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md](docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md)
 - Stdlib lowering execution plan: [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md)
 - Tkinter lowering execution plan: [docs/spec/areas/compat/plans/tkinter_lowering_plan.md](docs/spec/areas/compat/plans/tkinter_lowering_plan.md)
-- C-API v0 bootstrap symbol list (including scalar/object-bytes/array constructors, type/module parity wrappers, runtime-owned module-state registries, expanded scan-driven CPython-compat shim coverage via `include/Python.h`, mapping/dict collection materialization and delete helpers, bytearray accessors, the bounded NumPy public header contract, and internal-source overlays for generated-config/header probes and real-source compile tracking): [docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md](docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md)
+- C-API v0 bootstrap symbol list (including scalar/object-bytes/array constructors, type/module parity wrappers, runtime-owned module-state registries, and expanded scan-driven CPython-compat shim coverage via `include/Python.h` for parse/call/memory/thread/type helpers, selected `PyType_Spec` slot lowering + `METH_STATIC` support, and `PyType_FromModuleAndSpec`/`PyType_GetModule*`): [docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md](docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md)
 - Tkinter runtime semantics differential probe (`tkinter.ttk:runtime_semantics`): [tests/differential/stdlib/tkinter_phase0_core_semantics.py](../../tests/differential/stdlib/tkinter_phase0_core_semantics.py)
 - 0016 Args/kwargs call binding contract: [docs/spec/areas/compat/contracts/call_argument_binding_contract.md](docs/spec/areas/compat/contracts/call_argument_binding_contract.md)
 - 0018 Package ABI contract: [docs/spec/areas/compat/contracts/package_abi_contract.md](docs/spec/areas/compat/contracts/package_abi_contract.md)
@@ -57,13 +56,7 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0211 Compatibility + fallback contract: [docs/spec/areas/compat/contracts/compatibility_fallback_contract.md](docs/spec/areas/compat/contracts/compatibility_fallback_contract.md)
 - 0216 Dynamic execution + reflection policy contract: [docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md](docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md)
 - 0213 Import system contract: [docs/spec/areas/compat/contracts/import_system_contract.md](docs/spec/areas/compat/contracts/import_system_contract.md)
-- 0217 libmolt extension ABI contract: [docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md](docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md)
 - 0215 Verified subset contract: [docs/spec/areas/compat/contracts/verified_subset_contract.md](docs/spec/areas/compat/contracts/verified_subset_contract.md)
-
-Compatibility posture summary:
-- target full CPython `>=3.12` parity for compiled outputs
-- preserve standalone binaries with no host CPython fallback
-- keep unrestricted `exec`, unrestricted `eval`, runtime monkeypatching, and unrestricted reflection/introspection as explicit carve-outs unless re-approved
 
 ## Security
 - 0010 Security: [docs/spec/areas/security/0010-security.md](docs/spec/areas/security/0010-security.md)
@@ -78,7 +71,6 @@ Compatibility posture summary:
 - 0014 Determinism And Security Enforcement Checklist: [docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md](docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md)
 - 0200 Profile Artifact: [docs/spec/areas/tooling/0200_PROFILE_ARTIFACT.md](docs/spec/areas/tooling/0200_PROFILE_ARTIFACT.md)
 - 0215 Molt Extension Build Pipeline (runtime metadata enforcement + native/cross-host CI matrix + verify/wasm policy checks): [docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md](docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md)
-- 0220 Transpiler Research Execution Plan: [docs/spec/areas/tooling/0220_TRANSPILER_RESEARCH_EXECUTION_PLAN.md](docs/spec/areas/tooling/0220_TRANSPILER_RESEARCH_EXECUTION_PLAN.md)
 - 0602 When To Write Extensions Or Binaries: [docs/spec/areas/tooling/0602_WHEN_TO_WRITE_EXTENSIONS_OR_BINARIES.md](docs/spec/areas/tooling/0602_WHEN_TO_WRITE_EXTENSIONS_OR_BINARIES.md)
 
 ## Testing
