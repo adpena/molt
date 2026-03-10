@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import io
 import json
 import os
 from pathlib import Path
@@ -61,8 +60,6 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
     core_paths = [
         path
         for name in (
-            "_intrinsics",
-            "_sitebuiltins",
             "builtins",
             "sys",
             "types",
@@ -152,8 +149,6 @@ def test_stdlib_graph_ignores_nested_imports_for_core_scan(tmp_path: Path) -> No
     entry = tmp_path / "main.py"
     entry.write_text("print(1)\n")
     graph = _discover_with_core_modules(entry)
-    assert "_intrinsics" in graph
-    assert "_sitebuiltins" in graph
     assert "builtins" in graph
     assert "sys" in graph
     assert "importlib" in graph
@@ -193,8 +188,6 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
     core_paths = [
         path
         for name in (
-            "_intrinsics",
-            "_sitebuiltins",
             "builtins",
             "sys",
             "types",
@@ -536,38 +529,6 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
             "midend": {
                 "promoted_functions": 2,
                 "promotion_source_summary": {"pgo_hot_functions": 2},
-                "pass_hotspots_top": [
-                    {
-                        "module": "pkg.mod",
-                        "function": "hot_fn",
-                        "pass": "sccp_edge_thread",
-                        "ms_total": 10.0,
-                        "ms_p95": 9.0,
-                    },
-                    {
-                        "module": "pkg.mod",
-                        "function": "hot_fn",
-                        "pass": "cse",
-                        "ms_total": 20.0,
-                        "ms_p95": 5.0,
-                    },
-                ],
-                "pass_hotspots_p95_top": [
-                    {
-                        "module": "pkg.mod",
-                        "function": "hot_fn",
-                        "pass": "cse",
-                        "ms_total": 20.0,
-                        "ms_p95": 5.0,
-                    },
-                    {
-                        "module": "pkg.mod",
-                        "function": "hot_fn",
-                        "pass": "sccp_edge_thread",
-                        "ms_total": 10.0,
-                        "ms_p95": 9.0,
-                    },
-                ],
                 "promotion_hotspots_top": [
                     {
                         "module": "pkg.mod",
@@ -592,13 +553,6 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
     assert "- midend.promoted_functions: 2" in stderr
     assert "- midend.promotion_source.pgo_hot_functions: 2" in stderr
     assert "midend.promotion_hotspot.1: pkg.mod::hot_fn B->A" in stderr
-    assert (
-        "midend.hotspot.1: pkg.mod::hot_fn:cse total_ms=20.000 p95_ms=5.000" in stderr
-    )
-    assert (
-        "midend.hotspot_p95.1: pkg.mod::hot_fn:sccp_edge_thread "
-        "p95_ms=9.000 total_ms=10.000" in stderr
-    )
 
 
 def test_module_name_from_path_outside_module_roots_uses_stem(tmp_path: Path) -> None:
@@ -698,9 +652,6 @@ def test_backend_daemon_config_digest_and_socket_path_include_config(
     tmp_path: Path,
 ) -> None:
     monkeypatch.delenv("MOLT_BACKEND_DAEMON_SOCKET", raising=False)
-    monkeypatch.setenv(
-        "MOLT_BACKEND_DAEMON_SOCKET_DIR", str(tmp_path / "daemon-sockets")
-    )
     digest_a = cli._backend_daemon_config_digest(tmp_path, "dev-fast")
     monkeypatch.setenv("MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2", "2")
     digest_b = cli._backend_daemon_config_digest(tmp_path, "dev-fast")
@@ -713,64 +664,6 @@ def test_backend_daemon_config_digest_and_socket_path_include_config(
         tmp_path, "dev-fast", config_digest=digest_b
     )
     assert socket_a != socket_b
-
-
-def test_backend_daemon_socket_dir_explicit_override_bypasses_default_probe(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    override_dir = tmp_path / "explicit-daemon-sockets"
-    monkeypatch.setenv("MOLT_BACKEND_DAEMON_SOCKET_DIR", str(override_dir))
-    monkeypatch.setenv("TMPDIR", "/Volumes/APDataStore/Molt/tmp")
-    probe_called = False
-
-    def _probe(_path: Path) -> bool:
-        nonlocal probe_called
-        probe_called = True
-        return False
-
-    monkeypatch.setattr(cli, "_backend_daemon_socket_dir_supports_unix", _probe)
-    selected = cli._backend_daemon_socket_dir(tmp_path)
-    assert selected == override_dir
-    assert selected.exists()
-    assert not probe_called
-
-
-def test_backend_daemon_socket_dir_default_falls_back_to_socket_capable_candidate(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.delenv("MOLT_BACKEND_DAEMON_SOCKET_DIR", raising=False)
-    monkeypatch.delenv("MOLT_BACKEND_DAEMON_SOCKET", raising=False)
-    monkeypatch.setenv("TMPDIR", "/Volumes/APDataStore/Molt/tmp")
-    unsupported_dir = tmp_path / "external-like"
-    supported_dir = tmp_path / "local-like"
-    monkeypatch.setattr(
-        cli,
-        "_backend_daemon_default_socket_dir_candidates",
-        lambda: [unsupported_dir, supported_dir],
-    )
-    monkeypatch.setattr(
-        cli,
-        "_backend_daemon_socket_dir_supports_unix",
-        lambda path: path == supported_dir,
-    )
-    selected = cli._backend_daemon_socket_dir(tmp_path)
-    assert selected == supported_dir
-    assert selected.exists()
-
-
-def test_backend_daemon_socket_path_explicit_socket_override_takes_precedence(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setenv("MOLT_BACKEND_DAEMON_SOCKET_DIR", str(tmp_path / "ignored-dir"))
-    monkeypatch.setenv("MOLT_BACKEND_DAEMON_SOCKET", "relative/custom.sock")
-    socket_path = cli._backend_daemon_socket_path(
-        tmp_path, "dev-fast", config_digest="digest"
-    )
-    assert socket_path == (tmp_path / "relative" / "custom.sock").absolute()
-    assert socket_path.parent.exists()
 
 
 def test_function_cache_key_tracks_top_level_ir_extras() -> None:
@@ -834,58 +727,12 @@ def test_compile_with_backend_daemon_surfaces_cache_telemetry(
         cache_key="module-cache",
         function_cache_key="function-cache",
         config_digest="digest123",
-        env_overrides=None,
         timeout=0.1,
     )
     assert result.ok is True
     assert result.cached is True
     assert result.cache_tier == "function"
     assert captured_payload.get("config_digest") == "digest123"
-
-
-def test_compile_with_backend_daemon_carries_luau_flag(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    backend_output = tmp_path / "output.luau"
-    captured_payload: dict[str, object] = {}
-
-    def _fake_request(
-        socket_path: Path,
-        payload: dict[str, object],
-        *,
-        timeout: float | None,
-    ) -> tuple[dict[str, object], None]:
-        del socket_path, timeout
-        captured_payload.update(payload)
-        backend_output.write_text("--!strict\n")
-        return (
-            {
-                "ok": True,
-                "jobs": [{"id": "job0", "ok": True, "cached": False}],
-                "health": {"pid": 7},
-            },
-            None,
-        )
-
-    monkeypatch.setattr(cli, "_backend_daemon_request", _fake_request)
-    result = cli._compile_with_backend_daemon(
-        Path("/tmp/fake.sock"),
-        ir={"functions": []},
-        backend_output=backend_output,
-        is_wasm=False,
-        is_luau=True,
-        target_triple=None,
-        cache_key=None,
-        function_cache_key=None,
-        config_digest=None,
-        env_overrides=None,
-        timeout=0.1,
-    )
-    assert result.ok is True
-    jobs = captured_payload.get("jobs")
-    assert isinstance(jobs, list)
-    assert jobs[0]["is_luau"] is True
 
 
 def test_cached_backend_artifact_validity_guard(tmp_path: Path) -> None:
@@ -969,40 +816,3 @@ def test_internal_batch_build_server_ping_shutdown_roundtrip() -> None:
     assert shutdown_response["shutdown"] is True
     proc.wait(timeout=5)
     assert proc.returncode == 0
-
-
-def test_internal_batch_build_server_build_forwards_json_output_flag(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    seen: dict[str, object] = {}
-
-    def _fake_build(**kwargs: object) -> int:
-        seen.update(kwargs)
-        print(json.dumps({"output": "/tmp/out"}))
-        return 0
-
-    request = {
-        "id": 7,
-        "op": "build",
-        "params": {
-            "file_path": "example.py",
-            "profile": "dev",
-            "trusted": True,
-            "json_output": True,
-        },
-    }
-    monkeypatch.setattr(cli, "build", _fake_build)
-    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(request) + "\n"))
-    output = io.StringIO()
-    monkeypatch.setattr(sys, "stdout", output)
-
-    rc = cli._internal_batch_build_server()
-
-    assert rc == 0
-    response = json.loads(output.getvalue().strip())
-    assert response["id"] == 7
-    assert response["ok"] is True
-    assert response["returncode"] == 0
-    stdout_payload = json.loads(response["stdout"].strip())
-    assert stdout_payload["output"] == "/tmp/out"
-    assert seen["json_output"] is True

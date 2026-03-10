@@ -332,23 +332,6 @@ def test_cli_parity_run_timing_json(tmp_path: Path) -> None:
     assert payload["data"]["timing"]["cpython_run_s"] >= 0
 
 
-def test_cli_run_mul_overflow_promotes_instead_of_wrapping(tmp_path: Path) -> None:
-    script = tmp_path / "mul_overflow.py"
-    script.write_text(
-        "a = 1 << 45\n"
-        "b = 4\n"
-        "c = a * b\n"
-        "print(type(c).__name__)\n"
-        "print(c)\n"
-        "print(c + 1)\n"
-    )
-    res = _run_cli(["run", "--json", str(script)])
-    assert res.returncode == 0
-    payload = json.loads(res.stdout)
-    assert payload["data"]["returncode"] == 0
-    assert payload["data"]["stdout"] == "int\n140737488355328\n140737488355329\n"
-
-
 @pytest.mark.parametrize(
     ("symbol", "invocation"),
     [("exec", "exec('value = 1')"), ("eval", "eval('1 + 1')")],

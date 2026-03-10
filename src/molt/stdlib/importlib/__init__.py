@@ -41,11 +41,8 @@ __all__ = [
     "metadata",
 ]
 
-import sys as _il_sys
-
-_il_mod_dict = getattr(_il_sys.modules.get(__name__), "__dict__", None) or globals()
-if "__path__" not in _il_mod_dict:
-    _pkg_file = _il_mod_dict.get("__file__")
+if "__path__" not in globals():
+    _pkg_file = globals().get("__file__")
     if isinstance(_pkg_file, str):
         __path__ = [_os.path.dirname(_pkg_file)]
 

@@ -403,20 +403,19 @@ impl FormatterState {
         let result = self.apply_format(record, &message, &asctime);
 
         let mut s = result;
-        if !record.exc_info.is_empty()
-            && record.exc_info != "None"
-            && record.exc_info != "False"
-            && let Some(ref exc_text) = record.exc_text
-            && !exc_text.is_empty()
-        {
-            s.push('\n');
-            s.push_str(exc_text);
+        if !record.exc_info.is_empty() && record.exc_info != "None" && record.exc_info != "False" {
+            if let Some(ref exc_text) = record.exc_text {
+                if !exc_text.is_empty() {
+                    s.push('\n');
+                    s.push_str(exc_text);
+                }
+            }
         }
-        if let Some(ref stack_info) = record.stack_info
-            && !stack_info.is_empty()
-        {
-            s.push('\n');
-            s.push_str(stack_info);
+        if let Some(ref stack_info) = record.stack_info {
+            if !stack_info.is_empty() {
+                s.push('\n');
+                s.push_str(stack_info);
+            }
         }
         s
     }
@@ -1009,8 +1008,8 @@ pub extern "C" fn molt_logging_handler_flush(handler_bits: u64) -> u64 {
             let Some(handler) = registry.get_mut(&h_id) else {
                 return raise_exception::<u64>(_py, "ValueError", "invalid Handler handle");
             };
-
-            handler.buffer.drain(..).collect()
+            let msgs = handler.buffer.drain(..).collect();
+            msgs
         };
         for msg in &messages {
             eprintln!("{msg}");
@@ -1048,11 +1047,7 @@ pub extern "C" fn molt_logging_handler_drop(handler_bits: u64) -> u64 {
 // ── StreamHandler intrinsics ─────────────────────────────────────────────────
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_stream_handler_new(
-    _class_bits: u64,
-    stream_bits: u64,
-    level_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_logging_stream_handler_new(stream_bits: u64, level_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let level = to_i64(obj_from_bits(level_bits)).unwrap_or(NOTSET);
         let stream_target = if obj_from_bits(stream_bits).is_none() {
@@ -1175,10 +1170,10 @@ impl LoggerState {
         if self.level != NOTSET {
             return self.level;
         }
-        if let Some(parent_id) = self.parent
-            && let Some(parent) = registry.get(&parent_id)
-        {
-            return parent.get_effective_level(registry);
+        if let Some(parent_id) = self.parent {
+            if let Some(parent) = registry.get(&parent_id) {
+                return parent.get_effective_level(registry);
+            }
         }
         NOTSET
     }
@@ -1546,10 +1541,10 @@ pub extern "C" fn molt_logging_basic_config(
         // (matching CPython behavior).
         {
             let registry = LOGGER_REGISTRY.lock().unwrap();
-            if let Some(logger) = registry.get(&root_id)
-                && !logger.handlers.is_empty()
-            {
-                return MoltObject::none().bits();
+            if let Some(logger) = registry.get(&root_id) {
+                if !logger.handlers.is_empty() {
+                    return MoltObject::none().bits();
+                }
             }
         }
 

@@ -48,25 +48,6 @@ Flags (implemented):
 - `--require-checksum`
 - `--json` / `--verbose`
 
-### 2.3 `molt extension scan`
-Purpose: scan extension source trees/archives for required `Py*` symbols and
-compare usage against the current `include/molt/Python.h` surface.
-
-Status: Implemented.
-
-Flags (implemented):
-- `--project <path>` (default: cwd)
-- `--source <path>` (repeatable: file, directory, or source archive `.tar*`/`.zip`/`.whl`)
-- `--fail-on-missing`
-- `--json` / `--verbose`
-
-Outputs:
-- Required/supported/missing symbol sets.
-- Per-symbol missing frequency and ranked `top_missing_symbols`.
-- `coverage_ratio` to quantify extension C-API surface fit.
-- Local helper symbol filtering (`#define Py*`, `static Py*`) with
-  `locally_defined_by_file` diagnostics to reduce false-positive gap reports.
-
 ---
 
 ## 3. ABI Tags (Proposed)

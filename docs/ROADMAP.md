@@ -168,6 +168,7 @@ Ten-item parity plan details live in `docs/spec/areas/compat/surfaces/stdlib/std
 - Implemented: logging core (`Logger`/`Handler`/`Formatter`/`LogRecord` + `basicConfig`) now has intrinsic-backed percent-style formatting (`molt_logging_percent_style_format`) with differential regression coverage (`tests/differential/stdlib/logging_percent_style_intrinsic.py`); `logging.config`/`logging.handlers` remain pending.
 - Implemented: `zipfile` CRC32 computation now lowers through runtime intrinsic `molt_zipfile_crc32`, which removed Python table-generation hot code and unblocked `zipimport_basic` native differential compilation.
 - Implemented: `pickle` now routes protocols `0..5` through intrinsic-backed core dumps/loads (`molt_pickle_dumps_core`, `molt_pickle_loads_core`), including protocol `2+` memo opcodes, LONG/EXT decoding, reducer/build paths, persistent hooks, protocol-5 `PickleBuffer` out-of-band lanes (`NEXT_BUFFER`/`READONLY_BUFFER` + `loads(..., buffers=...)`), reducer 6-tuple `state_setter` lowering, and VM `POP`/`POP_MARK` opcode handling; targeted pickle differential tranche is green (`10/10`, including `pickle_reduce_state_setter.py` and `pickle_main_function_global_resolution.py`).
+- TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P1, status:partial): capability-enabled runtime-heavy wasm tranche (`/Volumes/APDataStore/Molt/wasm_runtime_heavy_tranche_20260213c/summary.json`) is still blocked (`1/5` pass): `asyncio__asyncio_running_loop_intrinsic.py` event-loop-policy parity mismatch, `asyncio_task_basic.py` table-ref trap in linked wasm runtime, `zipimport_basic.py` zipimport module-lookup parity gap, and `smtplib_basic.py` thread-unavailable wasm limitation. Keep this as a blocker before promoting runtime-heavy cluster completion.
 - TODO(stdlib-compat, owner:frontend, milestone:SL1, priority:P2, status:planned): decorator whitelist + compile-time lowering for `@lru_cache`.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:missing): implement `make_dataclass` once dynamic class construction is allowed.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): support dataclass inheritance from non-dataclass bases without breaking layout guarantees.
@@ -315,7 +316,7 @@ Language feature TODOs tracked here for parity:
 ### Concurrency & I/O
 - [x] Async/Await Syntax Support
 - [x] Unified Task ABI for futures/generators across native + WASM backends
-- [x] Molt-native channel/spawn wrappers (`moltlib.concurrency.channel`, `moltlib.concurrency.spawn`) with no CPython fallback (`molt.concurrency` remains as a compatibility shim)
+- [x] Molt-native channel/spawn wrappers (`molt.channel`, `molt.spawn`) with no CPython fallback
 - [ ] Task-based Concurrency (No GIL) (TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): task-based concurrency).
 - [ ] Per-runtime GIL strategy + runtime instance ownership model (TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:planned): define per-runtime GIL strategy and runtime instance ownership model).
 - [ ] PyToken enforcement across runtime mutation entrypoints (TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): thread PyToken through runtime mutation entrypoints).

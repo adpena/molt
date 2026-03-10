@@ -120,13 +120,8 @@ def _load_exact_token_types(
 _PAYLOAD = _load_payload()
 _CONSTANTS, _CONSTANT_ORDER = _load_constants(_PAYLOAD)
 
-import sys as _sys
-
-_mod_dict = getattr(_sys.modules.get(__name__), "__dict__", None) or globals()
-del _sys
-
 for _constant_name in _CONSTANT_ORDER:
-    _mod_dict[_constant_name] = _expect_int(
+    globals()[_constant_name] = _expect_int(
         _CONSTANTS.get(_constant_name), f"constants.{_constant_name}"
     )
 

@@ -2,7 +2,6 @@
 
 use crate::{AsyncAcquireError, AsyncPool, AsyncPooled, CancelToken};
 use rustls::{ClientConfig, RootCertStore};
-use rustls_pki_types::{CertificateDer, pem::PemObject};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::str::FromStr;
@@ -313,7 +312,7 @@ fn build_tls_connector(config: &PgPoolConfig) -> Result<MakeRustlsConnect, Strin
     if let Some(path) = config.ssl_root_cert.as_ref() {
         let pem = std::fs::read(path).map_err(|err| err.to_string())?;
         let mut cursor = std::io::Cursor::new(pem);
-        let certs = CertificateDer::pem_reader_iter(&mut cursor)
+        let certs = rustls_pemfile::certs(&mut cursor)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|err| err.to_string())?;
         for cert in certs {

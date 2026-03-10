@@ -5,9 +5,9 @@ use crate::{
     TYPE_ID_DICT, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_bytearray, alloc_bytes, alloc_dict_with_pairs,
     alloc_function_obj, alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
     builtin_classes, call_callable0, call_callable1, class_bases_bits, class_bases_vec,
-    class_dict_bits, class_mro_vec, clear_exception, dec_ref_bits, dict_get_in_place, dict_order,
-    exception_pending, int_bits_from_i64, is_truthy, maybe_ptr_from_bits, obj_eq, obj_from_bits,
-    object_type_id, raise_exception, runtime_state, seq_vec_ref, type_of_bits,
+    class_dict_bits, class_mro_vec, dec_ref_bits, dict_get_in_place, dict_order, exception_pending,
+    int_bits_from_i64, is_truthy, maybe_ptr_from_bits, obj_eq, obj_from_bits, object_type_id,
+    raise_exception, runtime_state, seq_vec_ref, type_of_bits,
 };
 
 fn get_attr_default(
@@ -713,32 +713,32 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
         let mappingproxy = type_of_bits(_py, type_dict_bits);
         dec_ref_bits(_py, type_dict_bits);
 
-        // Try to discover FrameLocalsProxy type via sys._getframe().
-        // In compiled binaries the frame stack may be empty; fall back to dict type.
-        let framelocalsproxy = {
-            let frame_bits = crate::molt_getframe(int_bits_from_i64(_py, 0));
-            if exception_pending(_py) {
-                clear_exception(_py);
-            }
-            if !obj_from_bits(frame_bits).is_none() {
-                let frame_locals_bits =
-                    get_attr_default(_py, frame_bits, b"f_locals", MoltObject::none().bits());
-                dec_ref_bits(_py, frame_bits);
-                if exception_pending(_py) {
-                    clear_exception(_py);
-                }
-                if !obj_from_bits(frame_locals_bits).is_none() {
-                    let t = type_of_bits(_py, frame_locals_bits);
-                    dec_ref_bits(_py, frame_locals_bits);
-                    t
-                } else {
-                    builtins.dict
-                }
-            } else {
-                // No frame available (compiled code); use dict as proxy type.
-                builtins.dict
-            }
-        };
+        let frame_bits = crate::molt_getframe(int_bits_from_i64(_py, 0));
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        if obj_from_bits(frame_bits).is_none() {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "sys._getframe() is unavailable while lowering collections.abc",
+            );
+        }
+        let frame_locals_bits =
+            get_attr_default(_py, frame_bits, b"f_locals", MoltObject::none().bits());
+        dec_ref_bits(_py, frame_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        if obj_from_bits(frame_locals_bits).is_none() {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "frame locals are unavailable while lowering collections.abc",
+            );
+        }
+        let framelocalsproxy = type_of_bits(_py, frame_locals_bits);
+        dec_ref_bits(_py, frame_locals_bits);
 
         let entries: [(&[u8], u64); 20] = [
             (b"bytes_iterator", bytes_iterator),

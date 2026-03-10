@@ -101,10 +101,7 @@ for _name in (
     "WORD",
     "WPARAM",
 ):
-    import sys as _wt_sys
-
-    _wt_mod_dict = getattr(_wt_sys.modules.get(__name__), "__dict__", None) or globals()
-    _wt_mod_dict[_name] = _make_simple(_name)
+    globals()[_name] = _make_simple(_name)
 
 for _name in (
     "LPBOOL",
@@ -158,10 +155,7 @@ for _name in (
     "PWIN32_FIND_DATAW",
     "PWORD",
 ):
-    import sys as _wt_sys
-
-    _wt_mod_dict = getattr(_wt_sys.modules.get(__name__), "__dict__", None) or globals()
-    _wt_mod_dict[_name] = _make_pointer(_name)
+    globals()[_name] = _make_pointer(_name)
 
 for _name in (
     "FILETIME",
@@ -180,10 +174,7 @@ for _name in (
     "tagRECT",
     "tagSIZE",
 ):
-    import sys as _wt_sys
-
-    _wt_mod_dict = getattr(_wt_sys.modules.get(__name__), "__dict__", None) or globals()
-    _wt_mod_dict[_name] = _make_struct(_name)
+    globals()[_name] = _make_struct(_name)
 
 MAX_PATH = 260
 

@@ -835,9 +835,4 @@ for _name in (
     "threading",
     "time",
 ):
-    import sys as _cf_cleanup_sys
-
-    _cf_cleanup_dict = (
-        getattr(_cf_cleanup_sys.modules.get(__name__), "__dict__", None) or globals()
-    )
-    _cf_cleanup_dict.pop(_name, None)
+    globals().pop(_name, None)

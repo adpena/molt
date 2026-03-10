@@ -16,22 +16,24 @@ WASM_MAGIC = b"\x00asm"
 WASM_VERSION = b"\x01\x00\x00\x00"
 SYMTAB_SUBSECTION_ID = 8
 SYMBOL_KIND_FUNCTION = 0
-SYMBOL_KIND_DATA = 1
-SYMBOL_KIND_GLOBAL = 2
-SYMBOL_KIND_SECTION = 3
-SYMBOL_KIND_TAG = 4
-SYMBOL_KIND_TABLE = 5
 FLAG_BINDING_GLOBAL = 0x1
 FLAG_UNDEFINED = 0x10
 FLAG_EXPORTED = 0x20
 FLAG_EXPLICIT_NAME = 0x40
 FLAG_NO_STRIP = 0x80
-NON_SEMANTIC_CUSTOM_SECTION_NAMES = {
-    "name",
-    "producers",
-    "target_features",
+FLAG_TOKEN_BITS = {
+    "BINDING_LOCAL": 0x0,
+    "BINDING_GLOBAL": FLAG_BINDING_GLOBAL,
+    "BINDING_WEAK": 0x2,
+    "VISIBILITY_HIDDEN": 0x4,
+    "UNDEFINED": FLAG_UNDEFINED,
+    "EXPORTED": FLAG_EXPORTED,
+    "EXPLICIT_NAME": FLAG_EXPLICIT_NAME,
+    "NO_STRIP": FLAG_NO_STRIP,
 }
-NON_SEMANTIC_CUSTOM_SECTION_PREFIXES = (".debug_",)
+SYMBOL_DUMP_RE = re.compile(
+    r'Func\s+\{\s+flags:\s+SymbolFlags\(([^)]*)\),\s+index:\s+(\d+),\s+name:\s+Some\("([^"]+)"\)'
+)
 CALL_INDIRECT_RE = re.compile(r"molt_call_indirect(\d+)")
 # Rust wasm symbol names include a hash suffix like "17h<hex...>E". Capture the arity
 # digits that precede the 2-digit hash-length tag so 10+ arities don't get truncated.
@@ -65,24 +67,6 @@ def _read_wasm_bytes_with_retry(
             return data
         time.sleep(delay_sec)
     return data
-
-
-def _should_stage_link_output_locally(linked: Path) -> bool:
-    mode = os.environ.get("MOLT_WASM_LINK_OUTPUT_MODE", "auto").strip().lower()
-    if mode in {"0", "false", "no", "off", "direct", "target"}:
-        return False
-    if mode in {"1", "true", "yes", "on", "local"}:
-        return True
-    # Auto mode: writing large wasm-ld outputs directly to some external volumes
-    # can yield corrupted all-zero artifacts; stage on local tmp and copy verified
-    # bytes to the requested destination.
-    return linked.is_absolute() and str(linked).startswith("/Volumes/")
-
-
-def _local_staged_link_path(linked: Path) -> Path:
-    root = Path(os.environ.get("MOLT_WASM_LINK_LOCAL_TMPDIR", "/tmp")).expanduser()
-    root.mkdir(parents=True, exist_ok=True)
-    return root / f"molt-wasm-link-{os.getpid()}-{time.time_ns()}-{linked.name}"
 
 
 def _find_tool(names: list[str]) -> str | None:
@@ -200,88 +184,43 @@ def _build_linking_payload(version: int, subsections: list[tuple[int, bytes]]) -
     return bytes(output)
 
 
-def _iter_linking_function_symbols(
-    data: bytes,
-) -> list[tuple[int, int | None, str | None]]:
-    symbols: list[tuple[int, int | None, str | None]] = []
-    try:
-        sections = _parse_sections(data)
-    except ValueError:
-        return symbols
-    for section_id, payload in sections:
-        if section_id != 0:
+def _parse_symbol_flags(flags_text: str) -> int:
+    flags_text = flags_text.strip()
+    if not flags_text or flags_text == "0x0":
+        return 0
+    flags = 0
+    for token in (part.strip() for part in flags_text.split("|")):
+        if not token:
             continue
-        try:
-            name, custom_payload = _parse_custom_section(payload)
-        except ValueError:
+        bit = FLAG_TOKEN_BITS.get(token)
+        if bit is None:
+            print(f"Unknown symbol flag token: {token}", file=sys.stderr)
             continue
-        if name != "linking":
+        flags |= bit
+    return flags
+
+
+def _dump_symbols(path: Path, wasm_tools: str) -> list[tuple[int, int, str, str]]:
+    res = subprocess.run(
+        [wasm_tools, "dump", str(path)],
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode != 0:
+        err = res.stderr.strip() or res.stdout.strip()
+        if err:
+            print(err, file=sys.stderr)
+        return []
+    symbols: list[tuple[int, int, str, str]] = []
+    for line in res.stdout.splitlines():
+        match = SYMBOL_DUMP_RE.search(line)
+        if not match:
             continue
-        try:
-            _, subsections = _parse_linking_payload(custom_payload)
-        except ValueError:
-            continue
-        for sub_id, sub_payload in subsections:
-            if sub_id != SYMTAB_SUBSECTION_ID:
-                continue
-            try:
-                offset = 0
-                count, offset = _read_varuint(sub_payload, offset)
-                for _ in range(count):
-                    flags, offset = _read_varuint(sub_payload, offset)
-                    if offset >= len(sub_payload):
-                        raise ValueError("Unexpected EOF while reading symbol kind")
-                    kind = sub_payload[offset]
-                    offset += 1
-                    if kind == SYMBOL_KIND_FUNCTION:
-                        index: int | None = None
-                        symbol_name: str | None = None
-                        if not (flags & FLAG_UNDEFINED):
-                            index, offset = _read_varuint(sub_payload, offset)
-                        if (flags & FLAG_UNDEFINED) or (flags & FLAG_EXPLICIT_NAME):
-                            symbol_name, offset = _read_string(sub_payload, offset)
-                        symbols.append((flags, index, symbol_name))
-                        continue
-                    if kind == SYMBOL_KIND_DATA:
-                        if flags & FLAG_UNDEFINED:
-                            _, offset = _read_string(sub_payload, offset)
-                        else:
-                            _, offset = _read_varuint(sub_payload, offset)
-                            _, offset = _read_varuint(sub_payload, offset)
-                            _, offset = _read_varuint(sub_payload, offset)
-                            if flags & FLAG_EXPLICIT_NAME:
-                                _, offset = _read_string(sub_payload, offset)
-                        continue
-                    if kind in (SYMBOL_KIND_GLOBAL, SYMBOL_KIND_TAG, SYMBOL_KIND_TABLE):
-                        if not (flags & FLAG_UNDEFINED):
-                            _, offset = _read_varuint(sub_payload, offset)
-                        if (flags & FLAG_UNDEFINED) or (flags & FLAG_EXPLICIT_NAME):
-                            _, offset = _read_string(sub_payload, offset)
-                        continue
-                    if kind == SYMBOL_KIND_SECTION:
-                        _, offset = _read_varuint(sub_payload, offset)
-                        continue
-                    raise ValueError(f"Unknown linking symbol kind: {kind}")
-            except ValueError:
-                return []
+        flags_text, index_text, name = match.groups()
+        flags = _parse_symbol_flags(flags_text)
+        index = int(index_text)
+        symbols.append((flags, index, name, flags_text))
     return symbols
-
-
-def _extract_call_indirect_mangled_names(data: bytes) -> dict[str, str]:
-    # Avoid external symbol-dump subprocesses here; scanning bytes keeps this
-    # path deterministic and prevents unbounded `wasm-tools dump` hangs.
-    text = data.decode("latin1", errors="ignore")
-    names: dict[str, str] = {}
-    for match in re.finditer(r"molt_call_indirect\d+\d{2}h[0-9a-fA-F]+E", text):
-        mangled = match.group(0)
-        arity_match = CALL_INDIRECT_MANGLED_RE.search(mangled)
-        if not arity_match:
-            continue
-        base = f"molt_call_indirect{arity_match.group(1)}"
-        prev = names.get(base)
-        if prev is None or mangled < prev:
-            names[base] = mangled
-    return names
 
 
 def _collect_func_names(data: bytes) -> dict[int, str]:
@@ -377,45 +316,42 @@ def _append_table_ref_elements(data: bytes) -> bytes | None:
 
 
 def _find_call_indirect_mangled(runtime: Path) -> dict[str, str]:
-    data = runtime.read_bytes()
+    wasm_tools = _find_tool(["wasm-tools"])
+    if not wasm_tools:
+        print(
+            "wasm-tools not found; cannot extract call_indirect symbol name.",
+            file=sys.stderr,
+        )
+        return {}
     names: dict[str, str] = {}
-    for flags, _, symbol_name in _iter_linking_function_symbols(data):
-        if not (flags & FLAG_UNDEFINED) or not symbol_name:
+    for flags, _, name, _ in _dump_symbols(runtime, wasm_tools):
+        if not (flags & FLAG_UNDEFINED):
             continue
-        mangled_match = CALL_INDIRECT_MANGLED_RE.search(symbol_name)
-        if not mangled_match:
+        match = CALL_INDIRECT_RE.fullmatch(name)
+        if match:
+            idx = match.group(1)
+            names[f"molt_call_indirect{idx}"] = name
             continue
-        base = f"molt_call_indirect{mangled_match.group(1)}"
-        prev = names.get(base)
-        if prev is None or symbol_name < prev:
-            names[base] = symbol_name
-    if not names:
-        names = _extract_call_indirect_mangled_names(data)
+        mangled_match = CALL_INDIRECT_MANGLED_RE.search(name)
+        if mangled_match:
+            idx = mangled_match.group(1)
+            names[f"molt_call_indirect{idx}"] = name
     if not names:
         print("Unable to locate runtime call_indirect symbol names.", file=sys.stderr)
     return names
 
 
 def _find_output_call_indirect_symbol(output: Path) -> dict[str, tuple[int, int]]:
-    data = output.read_bytes()
+    wasm_tools = _find_tool(["wasm-tools"])
+    if not wasm_tools:
+        print(
+            "wasm-tools not found; cannot extract output symbol info.", file=sys.stderr
+        )
+        return {}
     symbols: dict[str, tuple[int, int]] = {}
-    for name, kind, index in _collect_export_entries(data):
-        if kind != 0:
-            continue
+    for flags, index, name, _ in _dump_symbols(output, wasm_tools):
         if CALL_INDIRECT_RE.fullmatch(name):
-            symbols[name] = (index, FLAG_BINDING_GLOBAL | FLAG_EXPORTED)
-    if symbols:
-        return symbols
-    for flags, index, symbol_name in _iter_linking_function_symbols(data):
-        if index is None or not symbol_name:
-            continue
-        if CALL_INDIRECT_RE.fullmatch(symbol_name):
-            symbols[symbol_name] = (index, flags)
-    if symbols:
-        return symbols
-    for index, name in _collect_func_names(data).items():
-        if CALL_INDIRECT_RE.fullmatch(name):
-            symbols[name] = (index, FLAG_BINDING_GLOBAL)
+            symbols[name] = (index, flags)
     if not symbols:
         print("Unable to locate output call_indirect symbols.", file=sys.stderr)
     return symbols
@@ -436,6 +372,9 @@ def _add_symtab_alias(
         new_subsections: list[tuple[int, bytes]] = []
         for sub_id, sub_payload in subsections:
             if sub_id != SYMTAB_SUBSECTION_ID:
+                new_subsections.append((sub_id, sub_payload))
+                continue
+            if _write_string(alias_name) in sub_payload:
                 new_subsections.append((sub_id, sub_payload))
                 continue
             count, offset = _read_varuint(sub_payload, 0)
@@ -464,16 +403,15 @@ def _inject_call_indirect_alias(
 ) -> Path:
     mangled = _find_call_indirect_mangled(runtime)
     symbol_info = _find_output_call_indirect_symbol(output)
-    if not symbol_info:
+    if not mangled or not symbol_info:
         return output
     data = output.read_bytes()
     updated = data
     modified = False
-
-    for name in sorted(mangled):
-        mangled_name = mangled[name]
+    for name, mangled_name in mangled.items():
         alias = symbol_info.get(name)
         if alias is None:
+            print(f"Unable to locate output {name} symbol.", file=sys.stderr)
             continue
         alias_index, alias_flags = alias
         next_data = _add_symtab_alias(updated, mangled_name, alias_index, alias_flags)
@@ -539,8 +477,8 @@ def _parse_import_desc(data: bytes, offset: int, kind: int) -> int:
     raise ValueError(f"Unknown import kind: {kind}")
 
 
-def _collect_export_entries(data: bytes) -> list[tuple[str, int, int]]:
-    entries: list[tuple[str, int, int]] = []
+def _collect_exports(data: bytes) -> set[str]:
+    exports: set[str] = set()
     for section_id, payload in _parse_sections(data):
         if section_id != 7:
             continue
@@ -550,15 +488,10 @@ def _collect_export_entries(data: bytes) -> list[tuple[str, int, int]]:
             name, offset = _read_string(payload, offset)
             if offset >= len(payload):
                 raise ValueError("Unexpected EOF while reading export")
-            kind = payload[offset]
             offset += 1
-            index, offset = _read_varuint(payload, offset)
-            entries.append((name, kind, index))
-    return entries
-
-
-def _collect_exports(data: bytes) -> set[str]:
-    return {name for name, _, _ in _collect_export_entries(data)}
+            _, offset = _read_varuint(payload, offset)
+            exports.add(name)
+    return exports
 
 
 def _has_table(data: bytes) -> bool:
@@ -653,32 +586,6 @@ def _collect_custom_names(data: bytes) -> list[str]:
             continue
         names.append(name)
     return names
-
-
-def _strip_nonsemantic_custom_sections(data: bytes) -> bytes | None:
-    sections = _parse_sections(data)
-    changed = False
-    new_sections: list[tuple[int, bytes]] = []
-    for section_id, payload in sections:
-        if section_id != 0:
-            new_sections.append((section_id, payload))
-            continue
-        try:
-            name, _ = _parse_custom_section(payload)
-        except ValueError:
-            # Keep malformed custom sections untouched so validation can surface
-            # parse issues instead of mutating unknown bytes.
-            new_sections.append((section_id, payload))
-            continue
-        if name in NON_SEMANTIC_CUSTOM_SECTION_NAMES or name.startswith(
-            NON_SEMANTIC_CUSTOM_SECTION_PREFIXES
-        ):
-            changed = True
-            continue
-        new_sections.append((section_id, payload))
-    if not changed:
-        return None
-    return _build_sections(new_sections)
 
 
 def _skip_init_expr(data: bytes, offset: int) -> int:
@@ -934,128 +841,6 @@ def _rewrite_output_imports(
     return wasm_path, temp_dir
 
 
-def _rewrite_runtime_call_indirect_imports(
-    runtime: Path,
-    mangled: dict[str, str],
-    temp_dir: tempfile.TemporaryDirectory,
-) -> Path:
-    if not mangled:
-        return runtime
-    data = runtime.read_bytes()
-    try:
-        sections = _parse_sections(data)
-    except ValueError:
-        return runtime
-    changed = False
-    new_sections: list[tuple[int, bytes]] = []
-    for section_id, payload in sections:
-        if section_id != 2:
-            new_sections.append((section_id, payload))
-            continue
-        offset = 0
-        count, offset = _read_varuint(payload, offset)
-        rebuilt = bytearray()
-        rebuilt.extend(_write_varuint(count))
-        for _ in range(count):
-            module, offset = _read_string(payload, offset)
-            name, offset = _read_string(payload, offset)
-            if offset >= len(payload):
-                raise ValueError("Unexpected EOF while reading import kind")
-            kind = payload[offset]
-            offset += 1
-            desc_start = offset
-            offset = _parse_import_desc(payload, offset, kind)
-            desc = payload[desc_start:offset]
-            new_name = name
-            if module == "env" and kind == 0:
-                match = CALL_INDIRECT_RE.fullmatch(name)
-                if match:
-                    base = f"molt_call_indirect{match.group(1)}"
-                    candidate = mangled.get(base)
-                    if candidate:
-                        new_name = candidate
-                        changed = True
-            rebuilt.extend(_write_string(module))
-            rebuilt.extend(_write_string(new_name))
-            rebuilt.append(kind)
-            rebuilt.extend(desc)
-        new_sections.append((section_id, bytes(rebuilt)))
-    if not changed:
-        return runtime
-    runtime_rewrite = Path(temp_dir.name) / "runtime_rewrite.wasm"
-    runtime_rewrite.write_bytes(_build_sections(new_sections))
-    return runtime_rewrite
-
-
-def _rewrite_call_indirect_names_in_symtab(
-    sub_payload: bytes,
-    mangled: dict[str, str],
-) -> tuple[bytes, bool]:
-    try:
-        offset = 0
-        count, offset = _read_varuint(sub_payload, offset)
-        rebuilt = bytearray()
-        rebuilt.extend(_write_varuint(count))
-        changed = False
-        for _ in range(count):
-            if offset >= len(sub_payload):
-                return sub_payload, False
-            kind = sub_payload[offset]
-            offset += 1
-            flags, offset = _read_varuint(sub_payload, offset)
-            rebuilt.append(kind)
-            rebuilt.extend(_write_varuint(flags))
-            if kind == SYMBOL_KIND_FUNCTION:
-                if flags & FLAG_UNDEFINED:
-                    symbol_name, offset = _read_string(sub_payload, offset)
-                    match = CALL_INDIRECT_RE.fullmatch(symbol_name)
-                    if match:
-                        base = f"molt_call_indirect{match.group(1)}"
-                        candidate = mangled.get(base)
-                        if candidate and candidate != symbol_name:
-                            symbol_name = candidate
-                            changed = True
-                    rebuilt.extend(_write_string(symbol_name))
-                else:
-                    index, offset = _read_varuint(sub_payload, offset)
-                    rebuilt.extend(_write_varuint(index))
-                    if flags & FLAG_EXPLICIT_NAME:
-                        symbol_name, offset = _read_string(sub_payload, offset)
-                        rebuilt.extend(_write_string(symbol_name))
-                continue
-            if kind == SYMBOL_KIND_DATA:
-                if flags & FLAG_UNDEFINED:
-                    symbol_name, offset = _read_string(sub_payload, offset)
-                    rebuilt.extend(_write_string(symbol_name))
-                else:
-                    index, offset = _read_varuint(sub_payload, offset)
-                    rebuilt.extend(_write_varuint(index))
-                    data_offset, offset = _read_varuint(sub_payload, offset)
-                    rebuilt.extend(_write_varuint(data_offset))
-                    size, offset = _read_varuint(sub_payload, offset)
-                    rebuilt.extend(_write_varuint(size))
-                    if flags & FLAG_EXPLICIT_NAME:
-                        symbol_name, offset = _read_string(sub_payload, offset)
-                        rebuilt.extend(_write_string(symbol_name))
-                continue
-            if kind in (SYMBOL_KIND_GLOBAL, SYMBOL_KIND_TAG, SYMBOL_KIND_TABLE):
-                if not (flags & FLAG_UNDEFINED):
-                    index, offset = _read_varuint(sub_payload, offset)
-                    rebuilt.extend(_write_varuint(index))
-                if (flags & FLAG_UNDEFINED) or (flags & FLAG_EXPLICIT_NAME):
-                    symbol_name, offset = _read_string(sub_payload, offset)
-                    rebuilt.extend(_write_string(symbol_name))
-                continue
-            if kind == SYMBOL_KIND_SECTION:
-                section_index, offset = _read_varuint(sub_payload, offset)
-                rebuilt.extend(_write_varuint(section_index))
-                continue
-            return sub_payload, False
-        return bytes(rebuilt), changed
-    except ValueError:
-        return sub_payload, False
-
-
 def _validate_linked(linked: Path) -> bool:
     data = linked.read_bytes()
     try:
@@ -1077,9 +862,10 @@ def _validate_linked(linked: Path) -> bool:
     if call_indirect:
         print(
             f"Linked wasm still imports {', '.join(sorted(call_indirect))}; "
-            "runner will provide call_indirect host forwards.",
+            "remove JS call_indirect stubs.",
             file=sys.stderr,
         )
+        return False
     table_imports = [
         (module, name)
         for module, name, kind, _ in imports
@@ -1158,40 +944,22 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
     if rewritten is None:
         return 1
     rewritten_path, temp_dir = rewritten
-    mangled = _find_call_indirect_mangled(runtime)
-    runtime_link_path = _rewrite_runtime_call_indirect_imports(
-        runtime, mangled, temp_dir
-    )
-    rewritten_path = _inject_call_indirect_alias(
-        rewritten_path, runtime_link_path, temp_dir
-    )
-    enable_gc_sections = os.environ.get(
-        "MOLT_WASM_LINK_GC_SECTIONS", "1"
-    ).strip().lower() not in {"0", "false", "no", "off"}
-    staged_linked = (
-        _local_staged_link_path(linked)
-        if _should_stage_link_output_locally(linked)
-        else linked
-    )
+    rewritten_path = _inject_call_indirect_alias(rewritten_path, runtime, temp_dir)
     cmd = [
         wasm_ld,
         "--no-entry",
+        "--no-gc-sections",
         "--allow-undefined",
         "--import-table",
         "--export=molt_main",
         "--export=molt_memory",
         "--export=molt_table",
         "--export-if-defined=molt_set_wasm_table_base",
-        "--export-if-defined=molt_get_wasm_table_base",
         "-o",
-        str(staged_linked),
+        str(linked),
         str(rewritten_path),
-        str(runtime_link_path),
+        str(runtime),
     ]
-    if enable_gc_sections:
-        cmd.insert(2, "--gc-sections")
-    else:
-        cmd.insert(2, "--no-gc-sections")
     res = subprocess.run(cmd, capture_output=True, text=True)
     try:
         if res.returncode != 0:
@@ -1199,20 +967,17 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
             if err:
                 print(err, file=sys.stderr)
             return res.returncode
-        if not staged_linked.exists():
+        if not linked.exists():
             print(
-                "wasm-ld exited successfully but produced no linked output: "
-                f"{staged_linked}",
+                f"wasm-ld exited successfully but produced no linked output: {linked}",
                 file=sys.stderr,
             )
             return 1
-        linked_bytes = _read_wasm_bytes_with_retry(
-            staged_linked, attempts=32, delay_sec=0.1
-        )
+        linked_bytes = _read_wasm_bytes_with_retry(linked)
         if not _is_wasm_binary(linked_bytes):
             print(
                 "wasm-ld produced non-wasm linked output "
-                f"({staged_linked}, size={len(linked_bytes)} bytes)",
+                f"({linked}, size={len(linked_bytes)} bytes)",
                 file=sys.stderr,
             )
             return 1
@@ -1224,7 +989,7 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
                 print(f"Failed to rewrite linked table min: {exc}", file=sys.stderr)
                 return 1
             if updated is not None:
-                staged_linked.write_bytes(updated)
+                linked.write_bytes(updated)
                 linked_bytes = updated
         output_memory_min = _memory_import_min(output.read_bytes())
         if output_memory_min is not None:
@@ -1234,10 +999,10 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
                 print(f"Failed to rewrite linked memory min: {exc}", file=sys.stderr)
                 return 1
             if updated is not None:
-                staged_linked.write_bytes(updated)
+                linked.write_bytes(updated)
                 linked_bytes = updated
         append_table_refs = os.environ.get(
-            "MOLT_WASM_LINK_APPEND_TABLE_REFS", "0"
+            "MOLT_WASM_LINK_APPEND_TABLE_REFS", "1"
         ).strip().lower() not in {"0", "false", "no", "off"}
         if append_table_refs:
             try:
@@ -1246,7 +1011,7 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
                 print(f"Failed to append table ref elements: {exc}", file=sys.stderr)
                 return 1
             if updated is not None:
-                staged_linked.write_bytes(updated)
+                linked.write_bytes(updated)
                 linked_bytes = updated
         try:
             updated = _ensure_table_export(linked_bytes)
@@ -1254,47 +1019,12 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
             print(f"Failed to ensure table export: {exc}", file=sys.stderr)
             return 1
         if updated is not None:
-            staged_linked.write_bytes(updated)
+            linked.write_bytes(updated)
             linked_bytes = updated
-        strip_custom = os.environ.get(
-            "MOLT_WASM_LINK_STRIP_CUSTOM", "1"
-        ).strip().lower() not in {
-            "0",
-            "false",
-            "no",
-            "off",
-        }
-        if strip_custom:
-            try:
-                updated = _strip_nonsemantic_custom_sections(linked_bytes)
-            except ValueError as exc:
-                print(
-                    f"Failed to strip linked wasm custom sections: {exc}",
-                    file=sys.stderr,
-                )
-                return 1
-            if updated is not None:
-                staged_linked.write_bytes(updated)
-                linked_bytes = updated
-        if not _validate_linked(staged_linked):
+        if not _validate_linked(linked):
             return 1
-        if staged_linked != linked:
-            linked.write_bytes(linked_bytes)
-            copied = _read_wasm_bytes_with_retry(linked, attempts=16, delay_sec=0.05)
-            if not _is_wasm_binary(copied):
-                print(
-                    "Linked wasm copy to destination is invalid "
-                    f"({linked}, size={len(copied)} bytes)",
-                    file=sys.stderr,
-                )
-                return 1
         return 0
     finally:
-        if staged_linked != linked:
-            try:
-                staged_linked.unlink(missing_ok=True)
-            except OSError:
-                pass
         temp_dir.cleanup()
 
 

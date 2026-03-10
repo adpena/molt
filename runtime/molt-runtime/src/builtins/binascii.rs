@@ -14,14 +14,8 @@ unsafe fn crc32_hw_aarch64(data: &[u8]) -> u32 {
         // Process 8 bytes at a time using CRC32 doubleword instruction
         while i + 8 <= data.len() {
             let chunk = u64::from_le_bytes([
-                data[i],
-                data[i + 1],
-                data[i + 2],
-                data[i + 3],
-                data[i + 4],
-                data[i + 5],
-                data[i + 6],
-                data[i + 7],
+                data[i], data[i + 1], data[i + 2], data[i + 3],
+                data[i + 4], data[i + 5], data[i + 6], data[i + 7],
             ]);
             crc = __crc32d(crc, chunk);
             i += 8;
@@ -362,9 +356,10 @@ fn simd_hex_encode(input: &[u8]) -> Vec<u8> {
             let mask_lo = _mm_set1_epi8(0x0F);
             // Build hex lookup: indices 0..15 map to '0'..'f'
             let hex_lut = _mm_setr_epi8(
-                b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8, b'4' as i8, b'5' as i8, b'6' as i8,
-                b'7' as i8, b'8' as i8, b'9' as i8, b'a' as i8, b'b' as i8, b'c' as i8, b'd' as i8,
-                b'e' as i8, b'f' as i8,
+                b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8,
+                b'4' as i8, b'5' as i8, b'6' as i8, b'7' as i8,
+                b'8' as i8, b'9' as i8, b'a' as i8, b'b' as i8,
+                b'c' as i8, b'd' as i8, b'e' as i8, b'f' as i8,
             );
             while i + 16 <= input.len() {
                 let chunk = _mm_loadu_si128(input.as_ptr().add(i) as *const __m128i);
@@ -378,10 +373,7 @@ fn simd_hex_encode(input: &[u8]) -> Vec<u8> {
                 let len = out.len();
                 out.set_len(len + 32);
                 _mm_storeu_si128(out.as_mut_ptr().add(len) as *mut __m128i, interleaved_lo);
-                _mm_storeu_si128(
-                    out.as_mut_ptr().add(len + 16) as *mut __m128i,
-                    interleaved_hi,
-                );
+                _mm_storeu_si128(out.as_mut_ptr().add(len + 16) as *mut __m128i, interleaved_hi);
                 i += 16;
             }
         }
@@ -392,9 +384,10 @@ fn simd_hex_encode(input: &[u8]) -> Vec<u8> {
         unsafe {
             use std::arch::wasm32::*;
             let hex_lut = i8x16(
-                b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8, b'4' as i8, b'5' as i8, b'6' as i8,
-                b'7' as i8, b'8' as i8, b'9' as i8, b'a' as i8, b'b' as i8, b'c' as i8, b'd' as i8,
-                b'e' as i8, b'f' as i8,
+                b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8,
+                b'4' as i8, b'5' as i8, b'6' as i8, b'7' as i8,
+                b'8' as i8, b'9' as i8, b'a' as i8, b'b' as i8,
+                b'c' as i8, b'd' as i8, b'e' as i8, b'f' as i8,
             );
             let mask_lo = u8x16_splat(0x0F);
             while i + 16 <= input.len() {
@@ -403,14 +396,8 @@ fn simd_hex_encode(input: &[u8]) -> Vec<u8> {
                 let lo_nibbles = v128_and(chunk, mask_lo);
                 let hi_hex = i8x16_swizzle(hex_lut, hi_nibbles);
                 let lo_hex = i8x16_swizzle(hex_lut, lo_nibbles);
-                let interleaved_lo =
-                    i8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(
-                        hi_hex, lo_hex,
-                    );
-                let interleaved_hi =
-                    i8x16_shuffle::<8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31>(
-                        hi_hex, lo_hex,
-                    );
+                let interleaved_lo = i8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(hi_hex, lo_hex);
+                let interleaved_hi = i8x16_shuffle::<8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31>(hi_hex, lo_hex);
                 let len = out.len();
                 out.set_len(len + 32);
                 v128_store(out.as_mut_ptr().add(len) as *mut v128, interleaved_lo);
@@ -481,7 +468,7 @@ fn simd_hex_decode(input: &[u8]) -> Option<Vec<u8>> {
                 let lo_block = _mm_loadu_si128(input.as_ptr().add(i) as *const __m128i);
                 let hi_block = _mm_loadu_si128(input.as_ptr().add(i + 16) as *const __m128i);
                 // Deinterleave: separate hi-nibble and lo-nibble chars
-                let mask = _mm_set_epi8(14, 12, 10, 8, 6, 4, 2, 0, 15, 13, 11, 9, 7, 5, 3, 1);
+                let mask = _mm_set_epi8(14,12,10,8,6,4,2,0, 15,13,11,9,7,5,3,1);
                 let lo_shuffled = _mm_shuffle_epi8(lo_block, mask);
                 let hi_shuffled = _mm_shuffle_epi8(hi_block, mask);
                 // hi_nibble_chars = bytes at even positions from both blocks
@@ -497,10 +484,10 @@ fn simd_hex_decode(input: &[u8]) -> Option<Vec<u8>> {
                 if _mm_movemask_epi8(any_bad) != 0 {
                     return None;
                 }
+                let result = _mm_or_si128(_mm_slli_epi16(hi_vals, 4), lo_vals);
                 // Mask off the high bits that leaked from slli_epi16
                 let nibble_mask = _mm_set1_epi8(0x0F);
-                let hi_shifted =
-                    _mm_and_si128(_mm_slli_epi16(hi_vals, 4), _mm_set1_epi8(0xF0u8 as i8));
+                let hi_shifted = _mm_and_si128(_mm_slli_epi16(hi_vals, 4), _mm_set1_epi8(0xF0u8 as i8));
                 let lo_masked = _mm_and_si128(lo_vals, nibble_mask);
                 let result = _mm_or_si128(hi_shifted, lo_masked);
                 let len = out.len();
@@ -519,14 +506,8 @@ fn simd_hex_decode(input: &[u8]) -> Option<Vec<u8>> {
                 let lo_block = v128_load(input.as_ptr().add(i) as *const v128);
                 let hi_block = v128_load(input.as_ptr().add(i + 16) as *const v128);
                 // Deinterleave: separate hi-nibble and lo-nibble chars
-                let hi_nibble_chars =
-                    i8x16_shuffle::<0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30>(
-                        lo_block, hi_block,
-                    );
-                let lo_nibble_chars =
-                    i8x16_shuffle::<1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31>(
-                        lo_block, hi_block,
-                    );
+                let hi_nibble_chars = i8x16_shuffle::<0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30>(lo_block, hi_block);
+                let lo_nibble_chars = i8x16_shuffle::<1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31>(lo_block, hi_block);
                 let hi_vals = hex_chars_to_nibbles_wasm32(hi_nibble_chars);
                 let lo_vals = hex_chars_to_nibbles_wasm32(lo_nibble_chars);
                 // Check for 0xFF sentinel
@@ -592,9 +573,7 @@ unsafe fn hex_chars_to_nibbles_wasm32(chars: std::arch::wasm32::v128) -> std::ar
 /// returning 0xFF for invalid characters.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn hex_chars_to_nibbles_neon(
-    chars: std::arch::aarch64::uint8x16_t,
-) -> std::arch::aarch64::uint8x16_t {
+unsafe fn hex_chars_to_nibbles_neon(chars: std::arch::aarch64::uint8x16_t) -> std::arch::aarch64::uint8x16_t {
     unsafe {
         use std::arch::aarch64::*;
         let zero = vdupq_n_u8(b'0');
@@ -628,9 +607,7 @@ unsafe fn hex_chars_to_nibbles_neon(
 /// returning 0xFF for invalid characters.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-unsafe fn hex_chars_to_nibbles_sse2(
-    chars: std::arch::x86_64::__m128i,
-) -> std::arch::x86_64::__m128i {
+unsafe fn hex_chars_to_nibbles_sse2(chars: std::arch::x86_64::__m128i) -> std::arch::x86_64::__m128i {
     unsafe {
         use std::arch::x86_64::*;
         let zero_char = _mm_set1_epi8(b'0' as i8);
@@ -777,7 +754,8 @@ fn qp_decode(input: &[u8]) -> Vec<u8> {
                     idx += 2;
                     continue;
                 }
-                if let (Some(a), Some(b)) = (hex_nibble(input[idx + 1]), hex_nibble(input[idx + 2]))
+                if let (Some(a), Some(b)) =
+                    (hex_nibble(input[idx + 1]), hex_nibble(input[idx + 2]))
                 {
                     out.push((a << 4) | b);
                     idx += 3;
@@ -846,6 +824,8 @@ fn qp_encode(input: &[u8]) -> Vec<u8> {
         if input.len() >= 16 && std::arch::is_x86_feature_detected!("sse2") {
             unsafe {
                 use std::arch::x86_64::*;
+                let space = _mm_set1_epi8(b' ' as i8);
+                let tilde = _mm_set1_epi8(b'~' as i8);
                 let eq_char = _mm_set1_epi8(b'=' as i8);
                 let nl = _mm_set1_epi8(b'\n' as i8);
                 let cr = _mm_set1_epi8(b'\r' as i8);
@@ -890,8 +870,7 @@ fn qp_encode(input: &[u8]) -> Vec<u8> {
                     let is_printable = v128_and(u8x16_ge(v, space), u8x16_le(v, tilde));
                     let is_not_eq = v128_not(u8x16_eq(v, eq_char));
                     let safe_print = v128_and(is_printable, is_not_eq);
-                    let passthrough =
-                        v128_or(safe_print, v128_or(u8x16_eq(v, nl), u8x16_eq(v, cr)));
+                    let passthrough = v128_or(safe_print, v128_or(u8x16_eq(v, nl), u8x16_eq(v, cr)));
                     if u8x16_bitmask(passthrough) == 0xFFFF {
                         let len = out.len();
                         out.set_len(len + 16);
@@ -1115,7 +1094,11 @@ pub extern "C" fn molt_binascii_crc_hqx(data_bits: u64, value_bits: u64) -> u64 
 /// `molt_uu_codec_encode(data, filename, mode)` — full UU-encoded message with
 /// begin/end framing.  Reuses the internal `uu_encode` per-line function.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_uu_codec_encode(data_bits: u64, filename_bits: u64, mode_bits: u64) -> u64 {
+pub extern "C" fn molt_uu_codec_encode(
+    data_bits: u64,
+    filename_bits: u64,
+    mode_bits: u64,
+) -> u64 {
     crate::with_gil_entry!(_py, {
         let raw = match bytes_like_arg(_py, data_bits, "uu_codec_encode") {
             Ok(v) => v,
@@ -1184,7 +1167,11 @@ pub extern "C" fn molt_uu_codec_decode(data_bits: u64) -> u64 {
         }
 
         if !found_begin {
-            return raise_exception::<_>(_py, "ValueError", "Missing \"begin\" line in input data");
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "Missing \"begin\" line in input data",
+            );
         }
 
         // Decode lines until "end" or EOF
@@ -1213,7 +1200,8 @@ pub extern "C" fn molt_uu_codec_decode(data_bits: u64) -> u64 {
                 Err(_) => {
                     // Workaround for broken uuencoders: use byte-count header
                     if !line.is_empty() {
-                        let nbytes = ((((line[0].wrapping_sub(32)) & 63) as usize) * 4 + 5) / 3;
+                        let nbytes =
+                            ((((line[0].wrapping_sub(32)) & 63) as usize) * 4 + 5) / 3;
                         let truncated = &line[..std::cmp::min(nbytes, line.len())];
                         if let Ok(decoded) = uu_decode(truncated) {
                             out.extend_from_slice(&decoded);

@@ -106,7 +106,7 @@ fn load_or_compile_module(
     debug_log(|| format!("read {label} wasm in {:?}", read_start.elapsed()));
     let compile_start = Instant::now();
     let module = Module::new(engine, wasm_bytes)
-        .map_err(|err| anyhow::anyhow!("compile {label} {wasm_path:?}: {err}"))?;
+        .with_context(|| format!("compile {label} {wasm_path:?}"))?;
     debug_log(|| format!("compiled {label} module in {:?}", compile_start.elapsed()));
     if precompiled_write_enabled()
         && let Some(precompiled) = resolve_precompiled_path(wasm_path, override_env)
@@ -164,11 +164,9 @@ fn build_engine() -> Result<Engine> {
     if matches!(env::var("MOLT_DETERMINISTIC").as_deref(), Ok("1")) {
         config.cranelift_nan_canonicalization(true);
         config.parallel_compilation(false);
-        debug_log(|| {
-            "deterministic mode: NaN canonicalization and serial compilation enabled".to_string()
-        });
+        debug_log(|| "deterministic mode: NaN canonicalization and serial compilation enabled".to_string());
     }
-    Ok(Engine::new(&config)?)
+    Engine::new(&config)
 }
 
 struct HostState {
@@ -352,7 +350,9 @@ fn indexed_untrack(
     {
         positions.insert(moved, pos);
     }
-    if index.is_empty() || *cursor >= index.len() {
+    if index.is_empty() {
+        *cursor = 0;
+    } else if *cursor >= index.len() {
         *cursor = 0;
     }
 }
@@ -885,9 +885,7 @@ fn make_call_indirect_func(
             .and_then(|map| map.get(&name).cloned())
             .flatten();
         let Some(func) = func else {
-            return Err(wasmtime::Error::msg(format!(
-                "{name} used before output instantiation"
-            )));
+            return Err(anyhow::anyhow!("{name} used before output instantiation"));
         };
         func.call(&mut caller, params, results)
     })
@@ -2536,7 +2534,7 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                     }
                     if !ancillary.is_empty() {
                         msg.msg_control = ancillary.as_mut_ptr() as *mut libc::c_void;
-                        msg.msg_controllen = ancillary.len() as _;
+                        msg.msg_controllen = ancillary.len() as libc::socklen_t;
                     }
                     unsafe { libc::sendmsg(fd, &msg as *const libc::msghdr, flags) }
                 }
@@ -2670,7 +2668,7 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                     msg.msg_iovlen = 1;
                     if !ancillary.is_empty() {
                         msg.msg_control = ancillary.as_mut_ptr() as *mut libc::c_void;
-                        msg.msg_controllen = ancillary.len() as _;
+                        msg.msg_controllen = ancillary.len() as libc::socklen_t;
                     }
                     let rc = unsafe { libc::recvmsg(fd, &mut msg as *mut libc::msghdr, flags) };
                     name_len = msg.msg_namelen;
@@ -2683,12 +2681,8 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                         );
                     }
                     if out_anc_len_ptr != 0 {
-                        let _ = write_u32(
-                            &mut caller,
-                            &memory,
-                            out_anc_len_ptr,
-                            msg.msg_controllen as u32,
-                        );
+                        let _ =
+                            write_u32(&mut caller, &memory, out_anc_len_ptr, msg.msg_controllen);
                     }
                     rc
                 }
@@ -4194,11 +4188,14 @@ fn define_process_host(linker: &mut Linker<HostState>, store: &mut Store<HostSta
                 let mut exit_code = None;
                 if let Some(entry) = state.process_manager.processes.get_mut(&handle) {
                     if entry.exit_code.is_none() {
-                        if let Ok(Some(status)) = entry.child.try_wait() {
-                            let code = exit_code_from_status(status);
-                            entry.exit_code = Some(code);
-                            exit_code = Some(code);
-                            stop_polling = true;
+                        match entry.child.try_wait() {
+                            Ok(Some(status)) => {
+                                let code = exit_code_from_status(status);
+                                entry.exit_code = Some(code);
+                                exit_code = Some(code);
+                                stop_polling = true;
+                            }
+                            Ok(None) | Err(_) => {}
                         }
                     } else {
                         stop_polling = true;
@@ -4506,7 +4503,7 @@ fn main() -> Result<()> {
         debug_log(|| "instantiating runtime".to_string());
         let runtime_instance = linker
             .instantiate(&mut store, &runtime_module)
-            .map_err(|err| anyhow::anyhow!("instantiate runtime: {err}"))?;
+            .context("instantiate runtime")?;
         debug_log(|| "runtime instantiated".to_string());
         for import in output_module.imports() {
             if import.module() != "molt_runtime" {
@@ -4522,7 +4519,7 @@ fn main() -> Result<()> {
         debug_log(|| "instantiating output module".to_string());
         let output_instance = linker
             .instantiate(&mut store, &output_module)
-            .map_err(|err| anyhow::anyhow!("instantiate output: {err}"))?;
+            .context("instantiate output")?;
         debug_log(|| "output module instantiated".to_string());
         register_call_indirect_exports(&mut store, &output_instance, &registry, &call_names)?;
         set_memory_from_exports(&mut store, &output_instance);
@@ -4537,7 +4534,7 @@ fn main() -> Result<()> {
         debug_log(|| "instantiating linked output".to_string());
         let output_instance = linker
             .instantiate(&mut store, &output_module)
-            .map_err(|err| anyhow::anyhow!("instantiate linked output: {err}"))?;
+            .context("instantiate linked output")?;
         debug_log(|| "linked output instantiated".to_string());
         register_call_indirect_exports(&mut store, &output_instance, &registry, &call_names)?;
         set_memory_from_exports(&mut store, &output_instance);

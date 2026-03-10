@@ -66,10 +66,7 @@ def resolve(cand: Optional[Anchor]) -> types.ModuleType:
     if isinstance(cand, str):
         return cast(types.ModuleType, _MOLT_IMPORTLIB_IMPORT_REQUIRED(cand))
     if cand is None:
-        try:
-            return resolve(_infer_caller().f_globals["__name__"])
-        except (AttributeError, ValueError, KeyError, StopIteration):
-            return resolve("__main__")
+        return resolve(_infer_caller().f_globals["__name__"])
     return cast(types.ModuleType, cand)
 
 

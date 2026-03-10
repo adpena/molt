@@ -426,10 +426,7 @@ class _NamespacePackage:
 
 
 def _resources_module_file() -> str | None:
-    import sys as _ilr_sys
-
-    _ilr_dict = getattr(_ilr_sys.modules.get(__name__), "__dict__", None) or globals()
-    module_file = _ilr_dict.get("__file__")
+    module_file = globals().get("__file__")
     if isinstance(module_file, str) and module_file:
         return module_file
     return None

@@ -39,9 +39,9 @@ pub(crate) use cancellation::{
 #[allow(unused_imports)]
 pub(crate) use scheduler::{
     AsyncHangProbe, CURRENT_TASK, MoltScheduler, MoltTask, SleepQueue, async_trace_enabled,
-    asyncgen_registry, await_waiter_clear, await_waiter_clear_if_waiting_on, await_waiter_register,
-    await_waiters, await_waiters_take, block_on_wait_spec, current_task_key, current_task_ptr,
-    fn_ptr_code_get, fn_ptr_code_set, instant_from_monotonic_secs, molt_asyncio_child_watcher_add,
+    asyncgen_registry, await_waiter_clear, await_waiter_register, await_waiters,
+    await_waiters_take, block_on_wait_spec, current_task_key, current_task_ptr, fn_ptr_code_get,
+    fn_ptr_code_set, instant_from_monotonic_secs, molt_asyncio_child_watcher_add,
     molt_asyncio_child_watcher_clear, molt_asyncio_child_watcher_pop,
     molt_asyncio_child_watcher_remove, molt_asyncio_enter_task, molt_asyncio_event_loop_get,
     molt_asyncio_event_loop_get_current, molt_asyncio_event_loop_policy_get,
@@ -62,9 +62,9 @@ pub(crate) use scheduler::{
     task_waiting_on_future, wake_task_ptr,
 };
 
-pub(crate) use scheduler::{process_task_drop, process_task_state};
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use scheduler::{sleep_worker, thread_task_drop, thread_task_state};
+pub(crate) use scheduler::{is_block_on_task, sleep_worker, thread_task_drop, thread_task_state};
+pub(crate) use scheduler::{process_task_drop, process_task_state};
 
 #[allow(unused_imports)]
 pub(crate) use generators::*;
@@ -80,7 +80,7 @@ pub(crate) use poll::{
     asyncio_socket_reader_read_poll_fn_addr, asyncio_socket_reader_readline_poll_fn_addr,
     asyncio_stream_reader_read_poll_fn_addr, asyncio_stream_reader_readline_poll_fn_addr,
     asyncio_stream_send_all_poll_fn_addr, asyncio_timer_handle_poll_fn_addr,
-    asyncio_wait_for_poll_fn_addr, asyncio_wait_poll_fn_addr, call_poll_fn, canonical_poll_fn_addr,
+    asyncio_wait_for_poll_fn_addr, asyncio_wait_poll_fn_addr, call_poll_fn,
     contextlib_async_exitstack_enter_context_poll_fn_addr,
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
     contextlib_asyncgen_exit_poll_fn_addr, io_wait_poll_fn_addr, poll_future_with_task_stack,

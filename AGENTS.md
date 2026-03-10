@@ -1,14 +1,5 @@
 # Repository Guidelines
 
-## Fleet MCP Server (Infrastructure Access)
-
-If you have access to the fleet MCP server (configured via `.mcp.json` or environment):
-- **First actions**: `fleet_onboard()`, then `agent_register(agent_id='molt-agent', agent_type='...', capabilities=[...])`
-- **Knowledge**: `knowledge_search`, `knowledge_store`, `knowledge_semantic_search`
-- **Linear**: `linear_issues(team='STR')` or `linear_search(query='molt')` for project tracking
-- **Orchestration**: `symphony_status(project='molt')`, `symphony_dashboard(project='molt')`
-- The fleet MCP server URL is configured via `FLEET_MCP_URL` env var (default: see fleet repo `.mcp.json`)
-
 ## Top Priority: Chris Lattner Compiler Engineering Standards (Feb 18, 2026) (Non-Negotiable, Turn Blocker)
 - This section is a top-of-file hard gate and applies to every compiler/runtime/tooling turn; violations block merge and must be fixed before completion.
 - AI acceleration is expected, but ownership cannot be delegated: humans and agents remain fully accountable for architecture quality, correctness, maintainability, and long-term evolution.
@@ -45,11 +36,6 @@ If you have access to the fleet MCP server (configured via `.mcp.json` or enviro
 ## Git Workflow Policy (Non-Negotiable)
 - Always develop on `main` and keep all local work based directly on `main`.
 - Always push directly to `main` (`origin/main`) by default.
-- Always commit and push all current repository changes promptly to `origin/main`.
-- Use the standard commit message `chore: sync all changes` for routine landing commits.
-- Proactively and aggressively land validated PR/branch work into `main` as soon as quality gates pass, preferring fast-forward/rebase flows that keep `main` continuously current.
-- Orchestration automation must never hard-block local commit/push progress due workspace sync conflicts. `before_run` git sync must be best-effort and non-fatal when the workspace is dirty/diverged.
-- The only enforced automation blocker for merge acceptance is author allowlisting: automated PR acceptance/merge must allow only changes authored by `adpena` or `orchestration` (configurable via `MOLT_REMOVED_AUTOMERGE_ALLOWED_AUTHORS`).
 - Never create branches or worktrees without explicit user approval for that specific task.
 - If explicit approval is missing, stop and ask before running commands such as `git switch -c`, `git checkout -b`, `git branch`, or `git worktree add`.
 
@@ -179,34 +165,6 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - [docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md](docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md): determinism/security enforcement checklist.
 - [docs/OPERATIONS.md](docs/OPERATIONS.md): remote access, logging, benchmarks, progress reports, and multi-agent workflow.
 - [docs/BENCHMARKING.md](docs/BENCHMARKING.md): benchmarking overview.
-- [docs/ORCHESTRATION.md](docs/ORCHESTRATION.md): canonical Orchestration entrypoint (scope, architecture, run flow).
-- [docs/SYMPHONY_HUMAN_ROLE.md](docs/SYMPHONY_HUMAN_ROLE.md): canonical human authority/escalation model.
-- [docs/SYMPHONY_OPERATOR_PLAYBOOK.md](docs/SYMPHONY_OPERATOR_PLAYBOOK.md): operator runbook for Orchestration execution.
-
-## Orchestration Orchestration Foundation (Non-Negotiable)
-- Use `docs/ORCHESTRATION.md` as the canonical Orchestration map; treat `docs/SYMPHONY_HUMAN_ROLE.md` + `docs/SYMPHONY_OPERATOR_PLAYBOOK.md` as the execution/decision contract.
-- Human remains the final authority for priority tradeoffs, acceptance decisions, and blocker escalation. Agents execute; humans approve closure.
-- Escalate immediately on missing intrinsics, parity/perf regressions, conflicting compatibility claims, or determinism/security gate failures.
-- Preferred Orchestration tool-call flow:
-  1. `symphony_state`: read/update orchestration state before and after dispatch.
-  2. `linear_graphql`: fetch/normalize/create/update issue data with canonical metadata (`area/owner/milestone/priority/status`).
-  3. `molt_code_search`: gather code/docs context and impacted surfaces before edits.
-  4. `molt_cli`: execute builds/tests/bench runs using external-volume env defaults.
-  5. `molt_formal_check`: run Lean/Quint checks when orchestration-risk changes are present.
-
-## Orchestration Formalization Integration (Lean + Quint)
-- For risky orchestration changes (`src/molt/orchestration/**`, `tools/symphony_*.py`, workflow/dispatch/state transitions), run Lean + bounded Quint in normal turns:
-  - `cd formal/lean && lake build`
-  - `quint run formal/quint/molt_build_determinism.qnt --invariant=Inv --max-steps=10`
-- Before major merges that change scheduling/retry/state-machine behavior, run full Quint verification:
-  - `quint verify formal/quint/molt_build_determinism.qnt --invariant=Inv`
-- Default policy: bounded checks for fast iteration; full `verify` is required before high-impact orchestration merges.
-
-## Python Invocation Policy (Non-Negotiable)
-- For repository Python commands, use `uv run --python 3.12 python3 ...` by default (or `--python 3.13/3.14` only when that lane is explicitly required).
-- Avoid raw host `python3` invocation unless the command is explicitly documented as a bootstrap/host exception.
-- This policy is mandatory for Orchestration tooling too (for example: `PYTHONPATH=src uv run --python 3.12 python3 tools/symphony_run.py WORKFLOW.md --once`).
-- Prioritize and co-optimize: performance, correctness, developer experience, cross-platform parity, native/wasm parity, and Rust-first lowering.
 
 ## Build, Test, and Development Commands
 - `cargo build --release --package molt-runtime`: build the Rust runtime used by compiled binaries.
@@ -439,7 +397,8 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - Follow [docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md) for stdlib scope, tiers (core vs import vs gated), and promotion rules.
 - Keep stdlib modules import-only by default; only promote to core after updating the stdlib matrix and [ROADMAP.md](ROADMAP.md).
 - Treat I/O, OS, network, and process modules as capability-gated and document the required permissions in specs.
-- NON-NEGOTIABLE (TURN COMPLETION): After finishing everything else at the end of every single turn, run the turn-completion notification command before responding to the user.
+- NON-NEGOTIABLE (TURN COMPLETION): After finishing everything else at the end of every single turn, run this exact command before responding to the user:
+  - `imsg send --to "+15128087500" --text “codex turn finished in molt” --service sms`
 
 ## Stop-and-Ask: Dynamism & Contract Conflicts (Non-Negotiable)
 If adding functionality, tests, or coverage would require "too much dynamism" that conflicts with the vision, break policy, runtime contract, or concurrency/GIL requirements, STOP and ask the user for explicit direction before proceeding. This is mandatory.
@@ -486,10 +445,11 @@ Use a single, explicit TODO format everywhere (code + docs + tests). This is how
 - This project is fundamentally low-level systems work blended with powerful higher-level abstractions; bring aspirational, genius-level rigor with gritty follow-through, seek the hardest problems first, own complexity end-to-end, and lean into building the future.
 - Do not implement frontend-only workarounds or cheap hacks for runtime/compiler/backend semantics; fix the core layers so compiled binaries match CPython behavior.
 - Agents may use `gh` (GitHub CLI) and git over SSH to open/merge PRs; commit frequently with clear messages.
-- For automated PR acceptance/merge flows, enforce author allowlisting (`adpena`, `orchestration`) before merge/auto-merge execution.
 - Run linting/testing once after a cohesive change set is complete (`tools/dev.py lint`, `tools/dev.py test`, plus relevant `cargo` checks); avoid repetitive cycles mid-implementation.
 - Prioritize clear, explicit communication: scope, files touched, and tests run.
 - After any push, monitor CI logs until green; if failures appear, propose fixes, implement them, push again, and repeat until green.
+- Avoid infinite commit/push/CI loops: only repeat the cycle when there are new changes or an explicit user request to re-run; otherwise stop and ask before looping again.
+- If a user request implies repeating commit/push/CI without new changes, pause and ask before re-running.
 
 ## Runtime Module Ownership (Planned Layout)
 - `runtime/molt-runtime/src/state/*`: runtime
@@ -500,41 +460,3 @@ Use a single, explicit TODO format everywhere (code + docs + tests). This is how
 - `runtime/molt-runtime/src/builtins/*`: runtime
 - `runtime/molt-runtime/src/call/*`: runtime
 - `runtime/molt-runtime/src/wasm/*`: runtime
-
-## Fleet Agent Network
-
-Molt development is supported by a fleet of Qwen AI agents. The fleet MCP server
-can be added to any MCP client for direct fleet access.
-
-### Fleet MCP Server Setup
-
-Add to your `.mcp.json`:
-```json
-{
-  "mcpServers": {
-    "vertigo-fleet": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--directory",
-        "../fleet",
-        "--with",
-        "mcp[sse]",
-        "--with",
-        "starlette",
-        "--with",
-        "uvicorn",
-        "python",
-        "scripts/mcp/fleet-mcp-server.py"
-      ]
-    }
-  }
-}
-```
-
-Key tools: `agent_health`, `agent_smart`, `fleet_exec`, `council_status`, `ollama_models`.
-
-### Fleet CLI
-
-`fleet-cli status` — health check all machines.
-`fleet-cli smart "prompt"` — run through Qwen smart agent on BAT00 GPU.

@@ -19,15 +19,10 @@ def _extend_cpython_test_path() -> None:
     if not test_root.exists():
         return
     test_path = str(test_root.resolve())
-    import sys as _test_sys
-
-    _test_mod_dict = (
-        getattr(_test_sys.modules.get(__name__), "__dict__", None) or globals()
-    )
-    path_list = _test_mod_dict.get("__path__")
+    path_list = globals().get("__path__")
     if path_list is None:
         path_list = [str(Path(__file__).resolve().parent)]
-        _test_mod_dict["__path__"] = path_list
+        globals()["__path__"] = path_list
     if test_path in path_list:
         return
     path_list.insert(0, test_path)
@@ -59,10 +54,7 @@ def __getattr__(name: str):
     if target is None:
         raise AttributeError(name)
     module = _load_test_module(*target)
-    import sys as _tga_sys
-
-    _tga_dict = getattr(_tga_sys.modules.get(__name__), "__dict__", None) or globals()
-    _tga_dict[name] = module
+    globals()[name] = module
     return module
 
 

@@ -4,8 +4,6 @@ use crate::state::runtime_state::{
     molt_runtime_ensure_gil, molt_runtime_init, molt_runtime_shutdown,
 };
 use crate::*;
-use num_bigint::BigInt;
-use num_traits::ToPrimitive;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -48,10 +46,6 @@ const C_API_METH_O: u32 = 0x0008;
 const C_API_METH_VARARGS_KEYWORDS: u32 = C_API_METH_VARARGS | C_API_METH_KEYWORDS;
 const C_API_SUPPORTED_METH_FLAGS: u32 =
     C_API_METH_VARARGS | C_API_METH_KEYWORDS | C_API_METH_NOARGS | C_API_METH_O;
-const C_API_CAPSULE_PTR_KEY: &[u8] = b"__molt_capsule_ptr__";
-const C_API_CAPSULE_NAME_KEY: &[u8] = b"__molt_capsule_name__";
-const C_API_CAPSULE_DESTRUCTOR_KEY: &[u8] = b"__molt_capsule_destructor__";
-const C_API_CAPSULE_CONTEXT_KEY: &[u8] = b"__molt_capsule_context__";
 
 #[inline]
 fn c_api_module_metadata_registry() -> &'static Mutex<HashMap<usize, CApiModuleMetadata>> {
@@ -194,128 +188,6 @@ fn require_string_handle(
         }
     }
     Ok(value_ptr)
-}
-
-#[inline]
-fn alloc_string_bits(_py: &PyToken<'_>, value_bytes: &[u8]) -> Result<MoltHandle, i32> {
-    let ptr = alloc_string(_py, value_bytes);
-    if ptr.is_null() {
-        return Err(-1);
-    }
-    Ok(MoltObject::from_ptr(ptr).bits())
-}
-
-#[inline]
-fn dict_set_item_bytes_key(
-    _py: &PyToken<'_>,
-    dict_ptr: *mut u8,
-    key_bytes: &[u8],
-    value_bits: MoltHandle,
-) -> Result<(), i32> {
-    let key_bits = alloc_string_bits(_py, key_bytes)?;
-    unsafe {
-        dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
-    }
-    dec_ref_bits(_py, key_bits);
-    if exception_pending(_py) {
-        return Err(-1);
-    }
-    Ok(())
-}
-
-#[inline]
-fn dict_get_item_bytes_key(
-    _py: &PyToken<'_>,
-    dict_ptr: *mut u8,
-    key_bytes: &[u8],
-) -> Result<Option<MoltHandle>, i32> {
-    let key_bits = alloc_string_bits(_py, key_bytes)?;
-    let value_bits = unsafe { dict_get_in_place(_py, dict_ptr, key_bits) };
-    dec_ref_bits(_py, key_bits);
-    if exception_pending(_py) {
-        return Err(-1);
-    }
-    Ok(value_bits)
-}
-
-#[inline]
-fn int_bits_from_usize(_py: &PyToken<'_>, value: usize) -> MoltHandle {
-    int_bits_from_bigint(_py, BigInt::from(value as u64))
-}
-
-#[inline]
-fn usize_from_int_bits(
-    _py: &PyToken<'_>,
-    value_bits: MoltHandle,
-    label: &str,
-) -> Result<usize, i32> {
-    let Some(value) = to_bigint(obj_from_bits(value_bits)) else {
-        return Err(raise_i32(
-            _py,
-            "TypeError",
-            &format!("{label} must be an integer"),
-        ));
-    };
-    let Some(as_u64) = value.to_u64() else {
-        return Err(raise_i32(
-            _py,
-            "OverflowError",
-            &format!("{label} must fit in uintptr_t"),
-        ));
-    };
-    usize::try_from(as_u64).map_err(|_| {
-        raise_i32(
-            _py,
-            "OverflowError",
-            &format!("{label} must fit in uintptr_t"),
-        )
-    })
-}
-
-#[inline]
-fn capsule_shape_valid(_py: &PyToken<'_>, capsule_ptr: *mut u8) -> Result<bool, i32> {
-    unsafe {
-        if object_type_id(capsule_ptr) != TYPE_ID_DICT {
-            return Ok(false);
-        }
-    }
-    let has_ptr = dict_get_item_bytes_key(_py, capsule_ptr, C_API_CAPSULE_PTR_KEY)?.is_some();
-    let has_name = dict_get_item_bytes_key(_py, capsule_ptr, C_API_CAPSULE_NAME_KEY)?.is_some();
-    Ok(has_ptr && has_name)
-}
-
-#[inline]
-fn require_capsule_handle(_py: &PyToken<'_>, capsule_bits: MoltHandle) -> Result<*mut u8, i32> {
-    let Some(capsule_ptr) = obj_from_bits(capsule_bits).as_ptr() else {
-        return Err(raise_i32(_py, "TypeError", "object is not a valid capsule"));
-    };
-    if !capsule_shape_valid(_py, capsule_ptr)? {
-        return Err(raise_i32(_py, "TypeError", "object is not a valid capsule"));
-    }
-    Ok(capsule_ptr)
-}
-
-#[inline]
-fn capsule_name_matches(
-    _py: &PyToken<'_>,
-    capsule_ptr: *mut u8,
-    expected_name: Option<&[u8]>,
-) -> Result<bool, i32> {
-    let Some(name_bits) = dict_get_item_bytes_key(_py, capsule_ptr, C_API_CAPSULE_NAME_KEY)? else {
-        return Ok(false);
-    };
-    let Some(expected_name) = expected_name else {
-        return Ok(true);
-    };
-    if obj_from_bits(name_bits).is_none() {
-        return Ok(false);
-    }
-    let name_ptr = require_string_handle(_py, name_bits, "capsule name")?;
-    let matches = unsafe {
-        let actual = std::slice::from_raw_parts(string_bytes(name_ptr), string_len(name_ptr));
-        actual == expected_name
-    };
-    Ok(matches)
 }
 
 #[inline]
@@ -788,21 +660,17 @@ fn len_bits_to_i64(_py: &PyToken<'_>, len_bits: u64) -> i64 {
     }
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_c_api_version() -> u32 {
     MOLT_C_API_VERSION
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_init() -> i32 {
-    let rc = if molt_runtime_init() == 0 { -1 } else { 0 };
-    if rc == 0 {
-        crate::cpython_abi_hooks::register_cpython_hooks();
-    }
-    rc
+    if molt_runtime_init() == 0 { -1 } else { 0 }
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_shutdown() -> i32 {
     if crate::state::runtime_state::runtime_state_for_gil().is_some() {
         crate::with_gil_entry!(_py, {
@@ -826,53 +694,53 @@ pub extern "C" fn molt_shutdown() -> i32 {
     0
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_gil_acquire() -> i32 {
     molt_runtime_ensure_gil();
     0
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_gil_release() -> i32 {
     release_runtime_gil();
     0
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_gil_is_held() -> i32 {
     if gil_held() { 1 } else { 0 }
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_handle_incref(handle: MoltHandle) {
     crate::with_gil_entry!(_py, {
         inc_ref_bits(_py, handle);
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_handle_decref(handle: MoltHandle) {
     crate::with_gil_entry!(_py, {
         dec_ref_bits(_py, handle);
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_none() -> MoltHandle {
     none_bits()
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_bool_from_i32(value: i32) -> MoltHandle {
     crate::with_gil_entry!(_py, { MoltObject::from_bool(value != 0).bits() })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_int_from_i64(value: i64) -> MoltHandle {
     crate::with_gil_entry!(_py, { MoltObject::from_int(value).bits() })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_int_as_i64(value_bits: MoltHandle) -> i64 {
     crate::with_gil_entry!(_py, {
         if let Some(value) = to_i64(obj_from_bits(value_bits)) {
@@ -883,12 +751,12 @@ pub extern "C" fn molt_int_as_i64(value_bits: MoltHandle) -> i64 {
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_float_from_f64(value: f64) -> MoltHandle {
     crate::with_gil_entry!(_py, { MoltObject::from_float(value).bits() })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_float_as_f64(value_bits: MoltHandle) -> f64 {
     crate::with_gil_entry!(_py, {
         let value_obj = obj_from_bits(value_bits);
@@ -903,7 +771,7 @@ pub extern "C" fn molt_float_as_f64(value_bits: MoltHandle) -> f64 {
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_err_set(
     exc_type_bits: MoltHandle,
     message_ptr: *const u8,
@@ -921,7 +789,7 @@ pub unsafe extern "C" fn molt_err_set(
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_err_format(
     exc_type_bits: MoltHandle,
     message_ptr: *const u8,
@@ -930,18 +798,18 @@ pub unsafe extern "C" fn molt_err_format(
     unsafe { molt_err_set(exc_type_bits, message_ptr, message_len) }
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_err_clear() -> i32 {
     let _ = molt_exception_clear();
     0
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_err_pending() -> i32 {
     crate::with_gil_entry!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_err_peek() -> MoltHandle {
     crate::with_gil_entry!(_py, {
         if !exception_pending(_py) {
@@ -951,7 +819,7 @@ pub extern "C" fn molt_err_peek() -> MoltHandle {
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_err_fetch() -> MoltHandle {
     crate::with_gil_entry!(_py, {
         if !exception_pending(_py) {
@@ -963,7 +831,7 @@ pub extern "C" fn molt_err_fetch() -> MoltHandle {
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_err_restore(exc_bits: MoltHandle) -> i32 {
     crate::with_gil_entry!(_py, {
         if obj_from_bits(exc_bits).is_none() {
@@ -974,7 +842,7 @@ pub extern "C" fn molt_err_restore(exc_bits: MoltHandle) -> i32 {
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_err_matches(exc_type_bits: MoltHandle) -> i32 {
     crate::with_gil_entry!(_py, {
         let Some(exc_type_ptr) = obj_from_bits(exc_type_bits).as_ptr() else {
@@ -1007,12 +875,12 @@ pub extern "C" fn molt_err_matches(exc_type_bits: MoltHandle) -> i32 {
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_object_getattr(obj_bits: MoltHandle, name_bits: MoltHandle) -> MoltHandle {
     molt_get_attr_name(obj_bits, name_bits)
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_object_getattr_bytes(
     obj_bits: MoltHandle,
     name_ptr: *const u8,
@@ -1039,7 +907,7 @@ pub unsafe extern "C" fn molt_object_getattr_bytes(
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_object_setattr_bytes(
     obj_bits: MoltHandle,
     name_ptr: *const u8,
@@ -1070,7 +938,7 @@ pub unsafe extern "C" fn molt_object_setattr_bytes(
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_object_hasattr(obj_bits: MoltHandle, name_bits: MoltHandle) -> i32 {
     crate::with_gil_entry!(_py, {
         let has_bits = molt_has_attr_name(obj_bits, name_bits);
@@ -1088,7 +956,7 @@ pub extern "C" fn molt_object_hasattr(obj_bits: MoltHandle, name_bits: MoltHandl
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_object_call(
     callable_bits: MoltHandle,
     args_bits: MoltHandle,
@@ -1099,17 +967,17 @@ pub extern "C" fn molt_object_call(
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_object_repr(obj_bits: MoltHandle) -> MoltHandle {
     molt_repr_from_obj(obj_bits)
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_object_str(obj_bits: MoltHandle) -> MoltHandle {
     molt_str_from_obj(obj_bits)
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_object_truthy(obj_bits: MoltHandle) -> i32 {
     crate::with_gil_entry!(_py, {
         let out = is_truthy(_py, obj_from_bits(obj_bits));
@@ -1123,7 +991,7 @@ pub extern "C" fn molt_object_truthy(obj_bits: MoltHandle) -> i32 {
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_object_equal(lhs_bits: MoltHandle, rhs_bits: MoltHandle) -> i32 {
     crate::with_gil_entry!(_py, {
         let eq_bits = molt_eq(lhs_bits, rhs_bits);
@@ -1131,7 +999,7 @@ pub extern "C" fn molt_object_equal(lhs_bits: MoltHandle, rhs_bits: MoltHandle) 
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_object_not_equal(lhs_bits: MoltHandle, rhs_bits: MoltHandle) -> i32 {
     crate::with_gil_entry!(_py, {
         let ne_bits = molt_ne(lhs_bits, rhs_bits);
@@ -1139,7 +1007,7 @@ pub extern "C" fn molt_object_not_equal(lhs_bits: MoltHandle, rhs_bits: MoltHand
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_object_contains(container_bits: MoltHandle, item_bits: MoltHandle) -> i32 {
     crate::with_gil_entry!(_py, {
         let contains_bits = molt_contains(container_bits, item_bits);
@@ -1147,336 +1015,7 @@ pub extern "C" fn molt_object_contains(container_bits: MoltHandle, item_bits: Mo
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
-pub unsafe extern "C" fn molt_capsule_new(
-    pointer_bits: usize,
-    name_ptr: *const u8,
-    name_len: u64,
-    destructor_bits: usize,
-) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
-        if pointer_bits == 0 {
-            return raise_exception::<u64>(
-                _py,
-                "ValueError",
-                "PyCapsule_New called with NULL pointer",
-            );
-        }
-        let capsule_ptr = alloc_dict_with_pairs(_py, &[]);
-        if capsule_ptr.is_null() {
-            return none_bits();
-        }
-        let capsule_bits = MoltObject::from_ptr(capsule_ptr).bits();
-        let pointer_value_bits = int_bits_from_usize(_py, pointer_bits);
-        if obj_from_bits(pointer_value_bits).is_none() {
-            dec_ref_bits(_py, capsule_bits);
-            return none_bits();
-        }
-        if dict_set_item_bytes_key(_py, capsule_ptr, C_API_CAPSULE_PTR_KEY, pointer_value_bits)
-            .is_err()
-        {
-            dec_ref_bits(_py, capsule_bits);
-            return none_bits();
-        }
-        let name_value_bits = if name_ptr.is_null() {
-            none_bits()
-        } else {
-            let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
-                dec_ref_bits(_py, capsule_bits);
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "capsule name pointer cannot be null when len > 0",
-                );
-            };
-            match alloc_string_bits(_py, name_bytes) {
-                Ok(bits) => bits,
-                Err(_) => {
-                    dec_ref_bits(_py, capsule_bits);
-                    return none_bits();
-                }
-            }
-        };
-        if dict_set_item_bytes_key(_py, capsule_ptr, C_API_CAPSULE_NAME_KEY, name_value_bits)
-            .is_err()
-        {
-            if !obj_from_bits(name_value_bits).is_none() {
-                dec_ref_bits(_py, name_value_bits);
-            }
-            dec_ref_bits(_py, capsule_bits);
-            return none_bits();
-        }
-        if !obj_from_bits(name_value_bits).is_none() {
-            dec_ref_bits(_py, name_value_bits);
-        }
-        if destructor_bits != 0 {
-            let destructor_value_bits = int_bits_from_usize(_py, destructor_bits);
-            if obj_from_bits(destructor_value_bits).is_none() {
-                dec_ref_bits(_py, capsule_bits);
-                return none_bits();
-            }
-            if dict_set_item_bytes_key(
-                _py,
-                capsule_ptr,
-                C_API_CAPSULE_DESTRUCTOR_KEY,
-                destructor_value_bits,
-            )
-            .is_err()
-            {
-                dec_ref_bits(_py, capsule_bits);
-                return none_bits();
-            }
-        }
-        capsule_bits
-    })
-}
-
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
-pub unsafe extern "C" fn molt_capsule_get_name_ptr(
-    capsule_bits: MoltHandle,
-    out_len: *mut u64,
-) -> *const u8 {
-    crate::with_gil_entry!(_py, {
-        if !out_len.is_null() {
-            unsafe {
-                *out_len = 0;
-            }
-        }
-        let capsule_ptr = match require_capsule_handle(_py, capsule_bits) {
-            Ok(ptr) => ptr,
-            Err(_) => return std::ptr::null(),
-        };
-        let Some(name_bits) =
-            (match dict_get_item_bytes_key(_py, capsule_ptr, C_API_CAPSULE_NAME_KEY) {
-                Ok(bits) => bits,
-                Err(_) => return std::ptr::null(),
-            })
-        else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "object is not a valid capsule");
-            return std::ptr::null();
-        };
-        if obj_from_bits(name_bits).is_none() {
-            return std::ptr::null();
-        }
-        let name_ptr = match require_string_handle(_py, name_bits, "capsule name") {
-            Ok(ptr) => ptr,
-            Err(_) => return std::ptr::null(),
-        };
-        unsafe {
-            if !out_len.is_null() {
-                *out_len = string_len(name_ptr) as u64;
-            }
-            string_bytes(name_ptr)
-        }
-    })
-}
-
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
-pub unsafe extern "C" fn molt_capsule_get_pointer(
-    capsule_bits: MoltHandle,
-    name_ptr: *const u8,
-    name_len: u64,
-) -> usize {
-    crate::with_gil_entry!(_py, {
-        let expected_name = if name_ptr.is_null() {
-            None
-        } else {
-            let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
-                let _ = raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "capsule name pointer cannot be null when len > 0",
-                );
-                return 0;
-            };
-            Some(name_bytes)
-        };
-        let capsule_ptr = match require_capsule_handle(_py, capsule_bits) {
-            Ok(ptr) => ptr,
-            Err(_) => return 0,
-        };
-        match capsule_name_matches(_py, capsule_ptr, expected_name) {
-            Ok(true) => {}
-            Ok(false) => {
-                let _ = raise_exception::<u64>(_py, "ValueError", "capsule name mismatch");
-                return 0;
-            }
-            Err(_) => return 0,
-        }
-        let Some(pointer_bits) =
-            (match dict_get_item_bytes_key(_py, capsule_ptr, C_API_CAPSULE_PTR_KEY) {
-                Ok(bits) => bits,
-                Err(_) => return 0,
-            })
-        else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "object is not a valid capsule");
-            return 0;
-        };
-        usize_from_int_bits(_py, pointer_bits, "capsule pointer").unwrap_or(0)
-    })
-}
-
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
-pub unsafe extern "C" fn molt_capsule_is_valid(
-    capsule_bits: MoltHandle,
-    name_ptr: *const u8,
-    name_len: u64,
-) -> i32 {
-    crate::with_gil_entry!(_py, {
-        let expected_name = if name_ptr.is_null() {
-            None
-        } else {
-            match unsafe { bytes_slice_from_raw(name_ptr, name_len) } {
-                Some(name_bytes) => Some(name_bytes),
-                None => {
-                    let _ = raise_exception::<u64>(
-                        _py,
-                        "TypeError",
-                        "capsule name pointer cannot be null when len > 0",
-                    );
-                    let _ = molt_exception_clear();
-                    return 0;
-                }
-            }
-        };
-        let Some(capsule_ptr) = obj_from_bits(capsule_bits).as_ptr() else {
-            return 0;
-        };
-        match capsule_shape_valid(_py, capsule_ptr) {
-            Ok(true) => {}
-            Ok(false) => return 0,
-            Err(_) => {
-                let _ = molt_exception_clear();
-                return 0;
-            }
-        }
-        match capsule_name_matches(_py, capsule_ptr, expected_name) {
-            Ok(true) => 1,
-            Ok(false) => 0,
-            Err(_) => {
-                let _ = molt_exception_clear();
-                0
-            }
-        }
-    })
-}
-
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
-pub extern "C" fn molt_capsule_get_context(capsule_bits: MoltHandle) -> usize {
-    crate::with_gil_entry!(_py, {
-        let capsule_ptr = match require_capsule_handle(_py, capsule_bits) {
-            Ok(ptr) => ptr,
-            Err(_) => return 0,
-        };
-        let context_bits =
-            match dict_get_item_bytes_key(_py, capsule_ptr, C_API_CAPSULE_CONTEXT_KEY) {
-                Ok(Some(bits)) => bits,
-                Ok(None) => return 0,
-                Err(_) => return 0,
-            };
-        if obj_from_bits(context_bits).is_none() {
-            return 0;
-        }
-        usize_from_int_bits(_py, context_bits, "capsule context").unwrap_or(0)
-    })
-}
-
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
-pub extern "C" fn molt_capsule_set_context(capsule_bits: MoltHandle, context_bits: usize) -> i32 {
-    crate::with_gil_entry!(_py, {
-        let capsule_ptr = match require_capsule_handle(_py, capsule_bits) {
-            Ok(ptr) => ptr,
-            Err(_) => return -1,
-        };
-        let context_value_bits = if context_bits == 0 {
-            none_bits()
-        } else {
-            let bits = int_bits_from_usize(_py, context_bits);
-            if obj_from_bits(bits).is_none() {
-                return -1;
-            }
-            bits
-        };
-        if dict_set_item_bytes_key(
-            _py,
-            capsule_ptr,
-            C_API_CAPSULE_CONTEXT_KEY,
-            context_value_bits,
-        )
-        .is_err()
-        {
-            return -1;
-        }
-        0
-    })
-}
-
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
-pub unsafe extern "C" fn molt_capsule_import(name_ptr: *const u8, name_len: u64) -> usize {
-    crate::with_gil_entry!(_py, {
-        let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
-            return raise_exception::<usize>(
-                _py,
-                "TypeError",
-                "capsule import name pointer cannot be null when len > 0",
-            );
-        };
-        if name_bytes.is_empty() {
-            return raise_exception::<usize>(
-                _py,
-                "ValueError",
-                "capsule import name must not be empty",
-            );
-        }
-        let Some(split_idx) = name_bytes.iter().rposition(|byte| *byte == b'.') else {
-            return raise_exception::<usize>(
-                _py,
-                "ValueError",
-                "capsule import name must contain module and attribute",
-            );
-        };
-        if split_idx == 0 || split_idx + 1 >= name_bytes.len() {
-            return raise_exception::<usize>(
-                _py,
-                "ValueError",
-                "capsule import name must contain module and attribute",
-            );
-        }
-        let module_name_bits = match alloc_string_bits(_py, &name_bytes[..split_idx]) {
-            Ok(bits) => bits,
-            Err(_) => return 0,
-        };
-        let module_bits = molt_module_import(module_name_bits);
-        dec_ref_bits(_py, module_name_bits);
-        if exception_pending(_py) {
-            if !obj_from_bits(module_bits).is_none() {
-                dec_ref_bits(_py, module_bits);
-            }
-            return 0;
-        }
-        let capsule_bits = unsafe {
-            molt_object_getattr_bytes(
-                module_bits,
-                name_bytes[split_idx + 1..].as_ptr(),
-                (name_bytes.len() - split_idx - 1) as u64,
-            )
-        };
-        dec_ref_bits(_py, module_bits);
-        if exception_pending(_py) {
-            if !obj_from_bits(capsule_bits).is_none() {
-                dec_ref_bits(_py, capsule_bits);
-            }
-            return 0;
-        }
-        let pointer_bits = unsafe { molt_capsule_get_pointer(capsule_bits, name_ptr, name_len) };
-        if !obj_from_bits(capsule_bits).is_none() {
-            dec_ref_bits(_py, capsule_bits);
-        }
-        pointer_bits
-    })
-}
-
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_type_ready(type_bits: MoltHandle) -> i32 {
     crate::with_gil_entry!(_py, {
         if require_type_handle(_py, type_bits).is_err() {
@@ -1486,12 +1025,12 @@ pub extern "C" fn molt_type_ready(type_bits: MoltHandle) -> i32 {
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_module_create(name_bits: MoltHandle) -> MoltHandle {
     molt_module_new(name_bits)
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_module_get_dict(module_bits: MoltHandle) -> MoltHandle {
     crate::with_gil_entry!(_py, {
         let module_ptr = match require_module_handle(_py, module_bits) {
@@ -1509,7 +1048,7 @@ pub extern "C" fn molt_module_get_dict(module_bits: MoltHandle) -> MoltHandle {
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_module_capi_register(
     module_bits: MoltHandle,
     module_def_ptr: usize,
@@ -1552,7 +1091,7 @@ pub extern "C" fn molt_module_capi_register(
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_module_capi_get_def(module_bits: MoltHandle) -> usize {
     crate::with_gil_entry!(_py, {
         let module_ptr = match require_module_handle(_py, module_bits) {
@@ -1570,7 +1109,7 @@ pub extern "C" fn molt_module_capi_get_def(module_bits: MoltHandle) -> usize {
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_module_capi_get_state(module_bits: MoltHandle) -> usize {
     crate::with_gil_entry!(_py, {
         let module_ptr = match require_module_handle(_py, module_bits) {
@@ -1591,7 +1130,7 @@ pub extern "C" fn molt_module_capi_get_state(module_bits: MoltHandle) -> usize {
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_module_state_add(module_bits: MoltHandle, module_def_ptr: usize) -> i32 {
     crate::with_gil_entry!(_py, {
         if module_def_ptr == 0 {
@@ -1649,7 +1188,7 @@ pub extern "C" fn molt_module_state_add(module_bits: MoltHandle, module_def_ptr:
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_module_state_find(module_def_ptr: usize) -> MoltHandle {
     crate::with_gil_entry!(_py, {
         if module_def_ptr == 0 {
@@ -1668,7 +1207,7 @@ pub extern "C" fn molt_module_state_find(module_def_ptr: usize) -> MoltHandle {
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_module_state_remove(module_def_ptr: usize) -> i32 {
     crate::with_gil_entry!(_py, {
         if module_def_ptr == 0 {
@@ -1688,7 +1227,7 @@ pub extern "C" fn molt_module_state_remove(module_def_ptr: usize) -> i32 {
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_module_add_object(
     module_bits: MoltHandle,
     name_bits: MoltHandle,
@@ -1699,7 +1238,7 @@ pub extern "C" fn molt_module_add_object(
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_module_add_object_bytes(
     module_bits: MoltHandle,
     name_ptr: *const u8,
@@ -1731,7 +1270,7 @@ pub unsafe extern "C" fn molt_module_add_object_bytes(
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_module_get_object(
     module_bits: MoltHandle,
     name_bits: MoltHandle,
@@ -1739,7 +1278,7 @@ pub extern "C" fn molt_module_get_object(
     crate::with_gil_entry!(_py, { module_get_object_impl(_py, module_bits, name_bits) })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_module_get_object_bytes(
     module_bits: MoltHandle,
     name_ptr: *const u8,
@@ -1770,7 +1309,7 @@ pub unsafe extern "C" fn molt_module_get_object_bytes(
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_module_add_type(module_bits: MoltHandle, type_bits: MoltHandle) -> i32 {
     crate::with_gil_entry!(_py, {
         if require_type_handle(_py, type_bits).is_err() {
@@ -1793,7 +1332,7 @@ pub extern "C" fn molt_module_add_type(module_bits: MoltHandle, type_bits: MoltH
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_module_add_int_constant(
     module_bits: MoltHandle,
     name_bits: MoltHandle,
@@ -1809,7 +1348,7 @@ pub extern "C" fn molt_module_add_int_constant(
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_module_add_string_constant(
     module_bits: MoltHandle,
     name_bits: MoltHandle,
@@ -1835,7 +1374,7 @@ pub unsafe extern "C" fn molt_module_add_string_constant(
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_capi_method_dispatch(
     closure_bits: MoltHandle,
     args_tuple_bits: MoltHandle,
@@ -1983,7 +1522,7 @@ pub extern "C" fn molt_capi_method_dispatch(
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cfunction_create_bytes(
     self_bits: MoltHandle,
     name_ptr: *const u8,
@@ -2027,7 +1566,7 @@ pub unsafe extern "C" fn molt_cfunction_create_bytes(
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_module_add_cfunction_bytes(
     module_bits: MoltHandle,
     name_ptr: *const u8,
@@ -2098,116 +1637,42 @@ pub unsafe extern "C" fn molt_module_add_cfunction_bytes(
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_number_add(a_bits: MoltHandle, b_bits: MoltHandle) -> MoltHandle {
     molt_add(a_bits, b_bits)
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_number_sub(a_bits: MoltHandle, b_bits: MoltHandle) -> MoltHandle {
     molt_sub(a_bits, b_bits)
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_number_mul(a_bits: MoltHandle, b_bits: MoltHandle) -> MoltHandle {
     molt_mul(a_bits, b_bits)
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_number_truediv(a_bits: MoltHandle, b_bits: MoltHandle) -> MoltHandle {
     molt_div(a_bits, b_bits)
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_number_floordiv(a_bits: MoltHandle, b_bits: MoltHandle) -> MoltHandle {
     molt_floordiv(a_bits, b_bits)
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_number_long(obj_bits: MoltHandle) -> MoltHandle {
     molt_int_from_obj(obj_bits, none_bits(), 0)
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_number_float(obj_bits: MoltHandle) -> MoltHandle {
     molt_float_from_obj(obj_bits)
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
-pub extern "C" fn molt_object_get_iter(obj_bits: MoltHandle) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
-        let res = molt_iter(obj_bits);
-        if obj_from_bits(res).is_none() && !exception_pending(_py) {
-            let _: u64 = raise_not_iterable(_py, obj_bits);
-        }
-        res
-    })
-}
-
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
-pub extern "C" fn molt_iterator_next(iter_bits: MoltHandle, out_value: *mut MoltHandle) -> i32 {
-    crate::with_gil_entry!(_py, {
-        if out_value.is_null() {
-            return raise_i32(_py, "TypeError", "out_value must not be NULL");
-        }
-        unsafe {
-            *out_value = none_bits();
-        }
-        if unsafe { !is_iterator_bits(_py, iter_bits) } {
-            return raise_i32(_py, "TypeError", "iterator object expected");
-        }
-        let pair_bits = molt_iter_next(iter_bits);
-        if exception_pending(_py) {
-            if !obj_from_bits(pair_bits).is_none() {
-                dec_ref_bits(_py, pair_bits);
-            }
-            return -1;
-        }
-        let Some(pair_ptr) = obj_from_bits(pair_bits).as_ptr() else {
-            return raise_i32(
-                _py,
-                "RuntimeError",
-                "molt_iter_next returned invalid result",
-            );
-        };
-        unsafe {
-            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                dec_ref_bits(_py, pair_bits);
-                return raise_i32(
-                    _py,
-                    "RuntimeError",
-                    "molt_iter_next returned non-tuple result",
-                );
-            }
-            let elems = seq_vec_ref(pair_ptr);
-            if elems.len() < 2 {
-                dec_ref_bits(_py, pair_bits);
-                return raise_i32(
-                    _py,
-                    "RuntimeError",
-                    "molt_iter_next returned malformed pair",
-                );
-            }
-            let val_bits = elems[0];
-            let done_bits = elems[1];
-            let done = is_truthy(_py, obj_from_bits(done_bits));
-            if exception_pending(_py) {
-                dec_ref_bits(_py, pair_bits);
-                return -1;
-            }
-            if done {
-                dec_ref_bits(_py, pair_bits);
-                return 0;
-            }
-            inc_ref_bits(_py, val_bits);
-            *out_value = val_bits;
-            dec_ref_bits(_py, pair_bits);
-            1
-        }
-    })
-}
-
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_sequence_length(seq_bits: MoltHandle) -> i64 {
     crate::with_gil_entry!(_py, {
         let len_bits = molt_len(seq_bits);
@@ -2220,12 +1685,12 @@ pub extern "C" fn molt_sequence_length(seq_bits: MoltHandle) -> i64 {
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_sequence_getitem(seq_bits: MoltHandle, key_bits: MoltHandle) -> MoltHandle {
     molt_getitem_method(seq_bits, key_bits)
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_sequence_setitem(
     seq_bits: MoltHandle,
     key_bits: MoltHandle,
@@ -2237,27 +1702,7 @@ pub extern "C" fn molt_sequence_setitem(
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
-pub extern "C" fn molt_sequence_to_list(seq_bits: MoltHandle) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
-        let Some(list_bits) = (unsafe { list_from_iter_bits(_py, seq_bits) }) else {
-            return none_bits();
-        };
-        list_bits
-    })
-}
-
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
-pub extern "C" fn molt_sequence_to_tuple(seq_bits: MoltHandle) -> MoltHandle {
-    crate::with_gil_entry!(_py, {
-        let Some(tuple_bits) = (unsafe { tuple_from_iter_bits(_py, seq_bits) }) else {
-            return none_bits();
-        };
-        tuple_bits
-    })
-}
-
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_mapping_getitem(
     mapping_bits: MoltHandle,
     key_bits: MoltHandle,
@@ -2265,7 +1710,7 @@ pub extern "C" fn molt_mapping_getitem(
     molt_getitem_method(mapping_bits, key_bits)
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_mapping_setitem(
     mapping_bits: MoltHandle,
     key_bits: MoltHandle,
@@ -2277,7 +1722,7 @@ pub extern "C" fn molt_mapping_setitem(
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_mapping_length(mapping_bits: MoltHandle) -> i64 {
     crate::with_gil_entry!(_py, {
         let len_bits = molt_len(mapping_bits);
@@ -2290,7 +1735,7 @@ pub extern "C" fn molt_mapping_length(mapping_bits: MoltHandle) -> i64 {
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_mapping_keys(mapping_bits: MoltHandle) -> MoltHandle {
     crate::with_gil_entry!(_py, {
         let keys_method_bits =
@@ -2315,7 +1760,7 @@ pub extern "C" fn molt_mapping_keys(mapping_bits: MoltHandle) -> MoltHandle {
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_tuple_from_array(items: *const MoltHandle, len: u64) -> MoltHandle {
     crate::with_gil_entry!(_py, {
         let Some(elems) = (unsafe { handles_slice_from_raw(items, len) }) else {
@@ -2333,7 +1778,7 @@ pub unsafe extern "C" fn molt_tuple_from_array(items: *const MoltHandle, len: u6
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_list_from_array(items: *const MoltHandle, len: u64) -> MoltHandle {
     crate::with_gil_entry!(_py, {
         let Some(elems) = (unsafe { handles_slice_from_raw(items, len) }) else {
@@ -2351,7 +1796,7 @@ pub unsafe extern "C" fn molt_list_from_array(items: *const MoltHandle, len: u64
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_dict_from_pairs(
     keys: *const MoltHandle,
     values: *const MoltHandle,
@@ -2385,7 +1830,7 @@ pub unsafe extern "C" fn molt_dict_from_pairs(
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_buffer_acquire(
     obj_bits: MoltHandle,
     out_view: *mut MoltBufferView,
@@ -2420,7 +1865,7 @@ pub unsafe extern "C" fn molt_buffer_acquire(
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_buffer_release(view: *mut MoltBufferView) -> i32 {
     crate::with_gil_entry!(_py, {
         if view.is_null() {
@@ -2442,7 +1887,7 @@ pub unsafe extern "C" fn molt_buffer_release(view: *mut MoltBufferView) -> i32 {
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_bytes_from(data: *const u8, len: u64) -> MoltHandle {
     crate::with_gil_entry!(_py, {
         let Some(bytes) = (unsafe { bytes_slice_from_raw(data, len) }) else {
@@ -2460,7 +1905,7 @@ pub unsafe extern "C" fn molt_bytes_from(data: *const u8, len: u64) -> MoltHandl
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_bytes_as_ptr(bytes_bits: MoltHandle, out_len: *mut u64) -> *const u8 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(bytes_bits).as_ptr() else {
@@ -2480,7 +1925,7 @@ pub unsafe extern "C" fn molt_bytes_as_ptr(bytes_bits: MoltHandle, out_len: *mut
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_string_from(data: *const u8, len: u64) -> MoltHandle {
     crate::with_gil_entry!(_py, {
         let Some(bytes) = (unsafe { bytes_slice_from_raw(data, len) }) else {
@@ -2498,7 +1943,7 @@ pub unsafe extern "C" fn molt_string_from(data: *const u8, len: u64) -> MoltHand
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_string_as_ptr(
     string_bits: MoltHandle,
     out_len: *mut u64,
@@ -2521,7 +1966,7 @@ pub unsafe extern "C" fn molt_string_as_ptr(
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_bytearray_from(data: *const u8, len: u64) -> MoltHandle {
     crate::with_gil_entry!(_py, {
         let Some(bytes) = (unsafe { bytes_slice_from_raw(data, len) }) else {
@@ -2539,7 +1984,7 @@ pub unsafe extern "C" fn molt_bytearray_from(data: *const u8, len: u64) -> MoltH
     })
 }
 
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_bytearray_as_ptr(
     bytearray_bits: MoltHandle,
     out_len: *mut u64,
@@ -2573,24 +2018,63 @@ pub unsafe extern "C" fn molt_bytearray_as_ptr(
 
 /// `PyObject_GetIter(obj)` — call `__iter__` on `obj`.
 /// Returns a new iterator handle (caller owns the reference) or NULL (0) on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_GetIter(obj: u64) -> u64 {
-    let res = molt_object_get_iter(obj);
-    if obj_from_bits(res).is_none() { 0 } else { res }
+    crate::with_gil_entry!(_py, {
+        let res = molt_iter(obj);
+        if obj_from_bits(res).is_none() {
+            if !exception_pending(_py) {
+                let _: u64 = raise_not_iterable(_py, obj);
+            }
+            return 0;
+        }
+        res
+    })
 }
 
 /// `PyIter_Next(iter)` — advance iterator and return the next value.
 /// Returns the next value handle (caller owns the reference), or 0 (NULL) when
 /// the iterator is exhausted (no exception set) or on error (exception set).
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyIter_Next(iter: u64) -> u64 {
-    let mut out_bits = none_bits();
-    let rc = molt_iterator_next(iter, &mut out_bits as *mut MoltHandle);
-    if rc > 0 { out_bits } else { 0 }
+    crate::with_gil_entry!(_py, {
+        let pair_bits = molt_iter_next(iter);
+        if exception_pending(_py) {
+            if !obj_from_bits(pair_bits).is_none() {
+                dec_ref_bits(_py, pair_bits);
+            }
+            return 0;
+        }
+        let Some(pair_ptr) = obj_from_bits(pair_bits).as_ptr() else {
+            return 0;
+        };
+        unsafe {
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                dec_ref_bits(_py, pair_bits);
+                return 0;
+            }
+            let elems = seq_vec_ref(pair_ptr);
+            if elems.len() < 2 {
+                dec_ref_bits(_py, pair_bits);
+                return 0;
+            }
+            let val_bits = elems[0];
+            let done_bits = elems[1];
+            let done = is_truthy(_py, obj_from_bits(done_bits));
+            if done {
+                // StopIteration — no exception, just return NULL.
+                dec_ref_bits(_py, pair_bits);
+                return 0;
+            }
+            inc_ref_bits(_py, val_bits);
+            dec_ref_bits(_py, pair_bits);
+            val_bits
+        }
+    })
 }
 
 /// `PyIter_Check(obj)` — return 1 if `obj` is an iterator, 0 otherwise.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyIter_Check(obj: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         if unsafe { is_iterator_bits(_py, obj) } {
@@ -2606,7 +2090,7 @@ pub extern "C" fn PyIter_Check(obj: u64) -> i32 {
 // ---------------------------------------------------------------------------
 
 /// `PyList_Check(obj)` — return 1 if obj is a list, 0 otherwise.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyList_Check(obj: u64) -> i32 {
     if let Some(ptr) = obj_from_bits(obj).as_ptr()
         && unsafe { object_type_id(ptr) } == TYPE_ID_LIST
@@ -2618,7 +2102,7 @@ pub extern "C" fn PyList_Check(obj: u64) -> i32 {
 }
 
 /// `PyDict_Check(obj)` — return 1 if obj is a dict, 0 otherwise.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyDict_Check(obj: u64) -> i32 {
     if let Some(ptr) = obj_from_bits(obj).as_ptr()
         && unsafe { object_type_id(ptr) } == TYPE_ID_DICT
@@ -2630,7 +2114,7 @@ pub extern "C" fn PyDict_Check(obj: u64) -> i32 {
 }
 
 /// `PyTuple_Check(obj)` — return 1 if obj is a tuple, 0 otherwise.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyTuple_Check(obj: u64) -> i32 {
     if let Some(ptr) = obj_from_bits(obj).as_ptr()
         && unsafe { object_type_id(ptr) } == TYPE_ID_TUPLE
@@ -2642,14 +2126,14 @@ pub extern "C" fn PyTuple_Check(obj: u64) -> i32 {
 }
 
 /// `PyFloat_Check(obj)` — return 1 if obj is a float, 0 otherwise.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyFloat_Check(obj: u64) -> i32 {
     if obj_from_bits(obj).is_float() { 1 } else { 0 }
 }
 
 /// `PyLong_Check(obj)` — return 1 if obj is an int, 0 otherwise.
 /// Covers both inline NaN-boxed ints and heap-allocated bigints.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyLong_Check(obj: u64) -> i32 {
     let obj_mo = obj_from_bits(obj);
     if obj_mo.is_int() {
@@ -2664,7 +2148,7 @@ pub extern "C" fn PyLong_Check(obj: u64) -> i32 {
 }
 
 /// `PyUnicode_Check(obj)` — return 1 if obj is a str, 0 otherwise.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyUnicode_Check(obj: u64) -> i32 {
     if let Some(ptr) = obj_from_bits(obj).as_ptr()
         && unsafe { object_type_id(ptr) } == TYPE_ID_STRING
@@ -2676,13 +2160,13 @@ pub extern "C" fn PyUnicode_Check(obj: u64) -> i32 {
 }
 
 /// `PyBool_Check(obj)` — return 1 if obj is a bool, 0 otherwise.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyBool_Check(obj: u64) -> i32 {
     if obj_from_bits(obj).is_bool() { 1 } else { 0 }
 }
 
 /// `PyNone_Check(obj)` — return 1 if obj is None, 0 otherwise.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNone_Check(obj: u64) -> i32 {
     if obj_from_bits(obj).is_none() { 1 } else { 0 }
 }
@@ -2693,7 +2177,7 @@ pub extern "C" fn PyNone_Check(obj: u64) -> i32 {
 
 /// `PyList_New(size)` — create a new list of length `size` filled with None values.
 /// Returns the new list handle (caller owns the reference) or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyList_New(size: isize) -> u64 {
     crate::with_gil_entry!(_py, {
         if size < 0 {
@@ -2713,7 +2197,7 @@ pub extern "C" fn PyList_New(size: isize) -> u64 {
 }
 
 /// `PyList_Size(list)` — return the length of the list, or -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyList_Size(list: u64) -> isize {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(list).as_ptr() else {
@@ -2732,7 +2216,7 @@ pub extern "C" fn PyList_Size(list: u64) -> isize {
 
 /// `PyList_GetItem(list, index)` — return a **borrowed** reference to list[index].
 /// Returns 0 on error. The caller must NOT decref the returned handle.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyList_GetItem(list: u64, index: isize) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(list).as_ptr() else {
@@ -2768,7 +2252,7 @@ pub extern "C" fn PyList_GetItem(list: u64, index: isize) -> u64 {
 
 /// `PyList_SetItem(list, index, item)` — set list[index] to `item`.
 /// **Steals** a reference to `item`. Returns 0 on success, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyList_SetItem(list: u64, index: isize, item: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(list).as_ptr() else {
@@ -2817,7 +2301,7 @@ pub extern "C" fn PyList_SetItem(list: u64, index: isize, item: u64) -> i32 {
 
 /// `PyList_Append(list, item)` — append `item` to `list`.
 /// Returns 0 on success, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyList_Append(list: u64, item: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(list).as_ptr() else {
@@ -2843,7 +2327,7 @@ pub extern "C" fn PyList_Append(list: u64, item: u64) -> i32 {
 
 /// `PyDict_New()` — create a new empty dict.
 /// Returns the new dict handle (caller owns the reference) or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyDict_New() -> u64 {
     crate::with_gil_entry!(_py, {
         let ptr = alloc_dict_with_pairs(_py, &[]);
@@ -2856,7 +2340,7 @@ pub extern "C" fn PyDict_New() -> u64 {
 
 /// `PyDict_SetItem(dict, key, val)` — insert key/value pair into dict.
 /// Returns 0 on success, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyDict_SetItem(dict: u64, key: u64, val: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(dict).as_ptr() else {
@@ -2876,7 +2360,7 @@ pub extern "C" fn PyDict_SetItem(dict: u64, key: u64, val: u64) -> i32 {
 
 /// `PyDict_GetItem(dict, key)` — return a **borrowed** reference to dict[key],
 /// or 0 (NULL) if the key is not present (no exception set for missing key).
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyDict_GetItem(dict: u64, key: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(dict).as_ptr() else {
@@ -2910,7 +2394,7 @@ pub extern "C" fn PyDict_GetItem(dict: u64, key: u64) -> u64 {
 
 /// `PyDict_SetItemString(dict, key, val)` — insert string key/value into dict.
 /// The key is a C string (null-terminated). Returns 0 on success, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_SetItemString(
     dict: u64,
     key: *const std::ffi::c_char,
@@ -2935,7 +2419,7 @@ pub unsafe extern "C" fn PyDict_SetItemString(
 }
 
 /// `PyDict_Size(dict)` — return the number of items in the dict, or -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyDict_Size(dict: u64) -> isize {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(dict).as_ptr() else {
@@ -2953,7 +2437,7 @@ pub extern "C" fn PyDict_Size(dict: u64) -> isize {
 }
 
 /// `PyDict_Contains(dict, key)` — return 1 if key is in dict, 0 if not, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyDict_Contains(dict: u64, key: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(dict).as_ptr() else {
@@ -2991,7 +2475,7 @@ pub extern "C" fn PyDict_Contains(dict: u64, key: u64) -> i32 {
 
 /// `PyTuple_New(size)` — create a new tuple of length `size` filled with None values.
 /// Returns the new tuple handle (caller owns the reference) or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyTuple_New(size: isize) -> u64 {
     crate::with_gil_entry!(_py, {
         if size < 0 {
@@ -3011,7 +2495,7 @@ pub extern "C" fn PyTuple_New(size: isize) -> u64 {
 }
 
 /// `PyTuple_Size(tuple)` — return the length of the tuple, or -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyTuple_Size(tuple: u64) -> isize {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(tuple).as_ptr() else {
@@ -3030,7 +2514,7 @@ pub extern "C" fn PyTuple_Size(tuple: u64) -> isize {
 
 /// `PyTuple_GetItem(tuple, index)` — return a **borrowed** reference to tuple[index].
 /// Returns 0 on error. The caller must NOT decref the returned handle.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyTuple_GetItem(tuple: u64, index: isize) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(tuple).as_ptr() else {
@@ -3057,7 +2541,7 @@ pub extern "C" fn PyTuple_GetItem(tuple: u64, index: isize) -> u64 {
 /// `PyTuple_SetItem(tuple, index, item)` — set tuple[index] to `item`.
 /// **Steals** a reference to `item`. Returns 0 on success, -1 on error.
 /// Intended for filling newly-created tuples before they are exposed to other code.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyTuple_SetItem(tuple: u64, index: isize, item: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(tuple).as_ptr() else {
@@ -3093,7 +2577,7 @@ pub extern "C" fn PyTuple_SetItem(tuple: u64, index: isize, item: u64) -> i32 {
 // ---------------------------------------------------------------------------
 
 /// `PyNumber_Add(a, b)` — return `a + b`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNumber_Add(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_add(a, b);
@@ -3108,7 +2592,7 @@ pub extern "C" fn PyNumber_Add(a: u64, b: u64) -> u64 {
 }
 
 /// `PyNumber_Subtract(a, b)` — return `a - b`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNumber_Subtract(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_sub(a, b);
@@ -3123,7 +2607,7 @@ pub extern "C" fn PyNumber_Subtract(a: u64, b: u64) -> u64 {
 }
 
 /// `PyNumber_Multiply(a, b)` — return `a * b`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNumber_Multiply(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_mul(a, b);
@@ -3138,7 +2622,7 @@ pub extern "C" fn PyNumber_Multiply(a: u64, b: u64) -> u64 {
 }
 
 /// `PyNumber_TrueDivide(a, b)` — return `a / b`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNumber_TrueDivide(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_div(a, b);
@@ -3153,7 +2637,7 @@ pub extern "C" fn PyNumber_TrueDivide(a: u64, b: u64) -> u64 {
 }
 
 /// `PyNumber_FloorDivide(a, b)` — return `a // b`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNumber_FloorDivide(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_floordiv(a, b);
@@ -3168,7 +2652,7 @@ pub extern "C" fn PyNumber_FloorDivide(a: u64, b: u64) -> u64 {
 }
 
 /// `PyNumber_Remainder(a, b)` — return `a % b`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNumber_Remainder(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_mod(a, b);
@@ -3185,7 +2669,7 @@ pub extern "C" fn PyNumber_Remainder(a: u64, b: u64) -> u64 {
 /// `PyNumber_Power(a, b, mod_)` — return `pow(a, b)`.
 /// The `mod_` argument is accepted for API compatibility but only plain
 /// two-argument power is used when `mod_` is None/0.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNumber_Power(a: u64, b: u64, mod_: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = if mod_ != 0 && !obj_from_bits(mod_).is_none() {
@@ -3204,7 +2688,7 @@ pub extern "C" fn PyNumber_Power(a: u64, b: u64, mod_: u64) -> u64 {
 }
 
 /// `PyNumber_Negative(a)` — return `-a`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNumber_Negative(a: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_operator_neg(a);
@@ -3219,7 +2703,7 @@ pub extern "C" fn PyNumber_Negative(a: u64) -> u64 {
 }
 
 /// `PyNumber_Positive(a)` — return `+a`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNumber_Positive(a: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_operator_pos(a);
@@ -3234,7 +2718,7 @@ pub extern "C" fn PyNumber_Positive(a: u64) -> u64 {
 }
 
 /// `PyNumber_Absolute(a)` — return `abs(a)`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNumber_Absolute(a: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_abs_builtin(a);
@@ -3249,7 +2733,7 @@ pub extern "C" fn PyNumber_Absolute(a: u64) -> u64 {
 }
 
 /// `PyNumber_Invert(a)` — return `~a`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNumber_Invert(a: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_invert(a);
@@ -3264,7 +2748,7 @@ pub extern "C" fn PyNumber_Invert(a: u64) -> u64 {
 }
 
 /// `PyNumber_Lshift(a, b)` — return `a << b`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNumber_Lshift(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_lshift(a, b);
@@ -3279,7 +2763,7 @@ pub extern "C" fn PyNumber_Lshift(a: u64, b: u64) -> u64 {
 }
 
 /// `PyNumber_Rshift(a, b)` — return `a >> b`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNumber_Rshift(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_rshift(a, b);
@@ -3294,7 +2778,7 @@ pub extern "C" fn PyNumber_Rshift(a: u64, b: u64) -> u64 {
 }
 
 /// `PyNumber_And(a, b)` — return `a & b`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNumber_And(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_bit_and(a, b);
@@ -3309,7 +2793,7 @@ pub extern "C" fn PyNumber_And(a: u64, b: u64) -> u64 {
 }
 
 /// `PyNumber_Or(a, b)` — return `a | b`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNumber_Or(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_bit_or(a, b);
@@ -3324,7 +2808,7 @@ pub extern "C" fn PyNumber_Or(a: u64, b: u64) -> u64 {
 }
 
 /// `PyNumber_Xor(a, b)` — return `a ^ b`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNumber_Xor(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_bit_xor(a, b);
@@ -3339,7 +2823,7 @@ pub extern "C" fn PyNumber_Xor(a: u64, b: u64) -> u64 {
 }
 
 /// `PyNumber_Check(o)` — return 1 if `o` is a numeric type (int, float, bool), 0 otherwise.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNumber_Check(o: u64) -> i32 {
     let obj = obj_from_bits(o);
     if obj.is_int() || obj.is_float() || obj.is_bool() {
@@ -3354,7 +2838,7 @@ pub extern "C" fn PyNumber_Check(o: u64) -> i32 {
 }
 
 /// `PyNumber_Long(o)` — return `int(o)`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNumber_Long(o: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_int_from_obj(o, none_bits(), 0);
@@ -3369,7 +2853,7 @@ pub extern "C" fn PyNumber_Long(o: u64) -> u64 {
 }
 
 /// `PyNumber_Float(o)` — return `float(o)`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyNumber_Float(o: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_float_from_obj(o);
@@ -3388,7 +2872,7 @@ pub extern "C" fn PyNumber_Float(o: u64) -> u64 {
 // ---------------------------------------------------------------------------
 
 /// `PyMapping_Length(o)` — return `len(o)` for dict-like objects, or -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyMapping_Length(o: u64) -> isize {
     crate::with_gil_entry!(_py, {
         let len_bits = molt_len(o);
@@ -3405,102 +2889,53 @@ pub extern "C" fn PyMapping_Length(o: u64) -> isize {
 }
 
 /// `PyMapping_Keys(o)` — return `list(o.keys())`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyMapping_Keys(o: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let view = molt_mapping_keys(o);
-
+        let res = molt_dict_keys(o);
         if exception_pending(_py) {
-            if !obj_from_bits(view).is_none() {
-                dec_ref_bits(_py, view);
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
             }
             return 0;
         }
-        let list = molt_sequence_to_list(view);
-        dec_ref_bits(_py, view);
-        if exception_pending(_py) {
-            if !obj_from_bits(list).is_none() {
-                dec_ref_bits(_py, list);
-            }
-            return 0;
-        }
-        list
+        res
     })
 }
 
 /// `PyMapping_Values(o)` — return `list(o.values())`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyMapping_Values(o: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let method =
-            unsafe { molt_object_getattr_bytes(o, b"values".as_ptr(), b"values".len() as u64) };
-
+        let res = molt_dict_values(o);
         if exception_pending(_py) {
-            if !obj_from_bits(method).is_none() {
-                dec_ref_bits(_py, method);
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
             }
             return 0;
         }
-        let view = molt_object_call(method, none_bits(), none_bits());
-        if !obj_from_bits(method).is_none() {
-            dec_ref_bits(_py, method);
-        }
-        if exception_pending(_py) {
-            if !obj_from_bits(view).is_none() {
-                dec_ref_bits(_py, view);
-            }
-            return 0;
-        }
-        let list = molt_sequence_to_list(view);
-        dec_ref_bits(_py, view);
-        if exception_pending(_py) {
-            if !obj_from_bits(list).is_none() {
-                dec_ref_bits(_py, list);
-            }
-            return 0;
-        }
-        list
+        res
     })
 }
 
 /// `PyMapping_Items(o)` — return `list(o.items())`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyMapping_Items(o: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let method =
-            unsafe { molt_object_getattr_bytes(o, b"items".as_ptr(), b"items".len() as u64) };
-
+        let res = molt_dict_items(o);
         if exception_pending(_py) {
-            if !obj_from_bits(method).is_none() {
-                dec_ref_bits(_py, method);
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
             }
             return 0;
         }
-        let view = molt_object_call(method, none_bits(), none_bits());
-        if !obj_from_bits(method).is_none() {
-            dec_ref_bits(_py, method);
-        }
-        if exception_pending(_py) {
-            if !obj_from_bits(view).is_none() {
-                dec_ref_bits(_py, view);
-            }
-            return 0;
-        }
-        let list = molt_sequence_to_list(view);
-        dec_ref_bits(_py, view);
-        if exception_pending(_py) {
-            if !obj_from_bits(list).is_none() {
-                dec_ref_bits(_py, list);
-            }
-            return 0;
-        }
-        list
+        res
     })
 }
 
 /// `PyMapping_GetItemString(o, key)` — return `o[key]` where `key` is a NUL-terminated
 /// C string. Returns 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMapping_GetItemString(o: u64, key: *const std::ffi::c_char) -> u64 {
     crate::with_gil_entry!(_py, {
         if key.is_null() {
@@ -3528,7 +2963,7 @@ pub unsafe extern "C" fn PyMapping_GetItemString(o: u64, key: *const std::ffi::c
 
 /// `PyMapping_HasKey(o, key)` — return 1 if `key in o`, 0 otherwise.
 /// Does not raise exceptions on failure (returns 0 instead).
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyMapping_HasKey(o: u64, key: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let res = molt_contains(o, key);
@@ -3536,11 +2971,7 @@ pub extern "C" fn PyMapping_HasKey(o: u64, key: u64) -> i32 {
             let _ = molt_exception_clear();
             return 0;
         }
-        if is_truthy(_py, obj_from_bits(res)) {
-            1
-        } else {
-            0
-        }
+        if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 }
     })
 }
 
@@ -3549,7 +2980,7 @@ pub extern "C" fn PyMapping_HasKey(o: u64, key: u64) -> i32 {
 // ---------------------------------------------------------------------------
 
 /// `PySequence_GetItem(o, i)` — return `o[i]`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PySequence_GetItem(o: u64, i: isize) -> u64 {
     crate::with_gil_entry!(_py, {
         let idx_bits = MoltObject::from_int(i as i64).bits();
@@ -3565,7 +2996,7 @@ pub extern "C" fn PySequence_GetItem(o: u64, i: isize) -> u64 {
 }
 
 /// `PySequence_Length(o)` — return `len(o)`, or -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PySequence_Length(o: u64) -> isize {
     crate::with_gil_entry!(_py, {
         let len_bits = molt_len(o);
@@ -3581,22 +3012,8 @@ pub extern "C" fn PySequence_Length(o: u64) -> isize {
     })
 }
 
-/// `PySequence_List(o)` — return `list(o)`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
-pub extern "C" fn PySequence_List(o: u64) -> u64 {
-    let out = molt_sequence_to_list(o);
-    if obj_from_bits(out).is_none() { 0 } else { out }
-}
-
-/// `PySequence_Tuple(o)` — return `tuple(o)`, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
-pub extern "C" fn PySequence_Tuple(o: u64) -> u64 {
-    let out = molt_sequence_to_tuple(o);
-    if obj_from_bits(out).is_none() { 0 } else { out }
-}
-
 /// `PySequence_Contains(o, value)` — return 1 if `value in o`, 0 if not, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PySequence_Contains(o: u64, value: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let res = molt_contains(o, value);
@@ -3606,11 +3023,7 @@ pub extern "C" fn PySequence_Contains(o: u64, value: u64) -> i32 {
             }
             return -1;
         }
-        if is_truthy(_py, obj_from_bits(res)) {
-            1
-        } else {
-            0
-        }
+        if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 }
     })
 }
 
@@ -3621,7 +3034,7 @@ pub extern "C" fn PySequence_Contains(o: u64, value: u64) -> i32 {
 /// `PyBytes_FromStringAndSize(v, len)` — create a new bytes object from a buffer.
 /// If `v` is NULL and `len > 0`, returns 0 (error). If `len == 0`, returns an empty bytes.
 /// Returns the new bytes handle (caller owns the reference) or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyBytes_FromStringAndSize(v: *const u8, len: isize) -> u64 {
     crate::with_gil_entry!(_py, {
         if len < 0 {
@@ -3655,7 +3068,7 @@ pub unsafe extern "C" fn PyBytes_FromStringAndSize(v: *const u8, len: isize) -> 
 /// `PyBytes_AsString(o)` — return a pointer to the internal buffer of a bytes object.
 /// Returns NULL on error (e.g. not a bytes object). The pointer is borrowed and valid
 /// as long as the bytes object is alive.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyBytes_AsString(o: u64) -> *const u8 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(o).as_ptr() else {
@@ -3673,7 +3086,7 @@ pub extern "C" fn PyBytes_AsString(o: u64) -> *const u8 {
 }
 
 /// `PyBytes_Size(o)` — return the length of a bytes object, or -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyBytes_Size(o: u64) -> isize {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(o).as_ptr() else {
@@ -3692,7 +3105,7 @@ pub extern "C" fn PyBytes_Size(o: u64) -> isize {
 
 /// `PyUnicode_FromString(v)` — create a new str from a NUL-terminated UTF-8 C string.
 /// Returns the new string handle (caller owns the reference) or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnicode_FromString(v: *const std::ffi::c_char) -> u64 {
     crate::with_gil_entry!(_py, {
         if v.is_null() {
@@ -3713,7 +3126,7 @@ pub unsafe extern "C" fn PyUnicode_FromString(v: *const std::ffi::c_char) -> u64
 /// `PyUnicode_AsUTF8(o)` — return a pointer to the UTF-8 representation of a string.
 /// Returns NULL on error. The pointer is borrowed and valid as long as the string object
 /// is alive.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyUnicode_AsUTF8(o: u64) -> *const std::ffi::c_char {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(o).as_ptr() else {
@@ -3733,7 +3146,7 @@ pub extern "C" fn PyUnicode_AsUTF8(o: u64) -> *const std::ffi::c_char {
 /// `PyUnicode_AsUTF8AndSize(o, size)` — return a pointer to the UTF-8 representation
 /// and write the length to `*size` (if `size` is not NULL).
 /// Returns NULL on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnicode_AsUTF8AndSize(
     o: u64,
     size: *mut isize,
@@ -3762,7 +3175,7 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8AndSize(
 
 /// `PyMem_Malloc(size)` — allocate `size` bytes of memory.
 /// Returns a pointer to the allocated memory, or NULL on failure.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMem_Malloc(size: usize) -> *mut u8 {
     if size == 0 {
         // CPython returns a non-NULL pointer for size 0; allocate 1 byte.
@@ -3773,14 +3186,14 @@ pub unsafe extern "C" fn PyMem_Malloc(size: usize) -> *mut u8 {
 
 /// `PyMem_Realloc(ptr, size)` — resize a previously allocated block.
 /// Returns a pointer to the reallocated memory, or NULL on failure.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMem_Realloc(ptr: *mut u8, size: usize) -> *mut u8 {
     let actual_size = if size == 0 { 1 } else { size };
     unsafe { libc::realloc(ptr as *mut libc::c_void, actual_size) as *mut u8 }
 }
 
 /// `PyMem_Free(ptr)` — free memory allocated by `PyMem_Malloc` or `PyMem_Realloc`.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMem_Free(ptr: *mut u8) {
     if !ptr.is_null() {
         unsafe {
@@ -3791,21 +3204,21 @@ pub unsafe extern "C" fn PyMem_Free(ptr: *mut u8) {
 
 /// `PyObject_Malloc(size)` — allocate memory for an object.
 /// Currently an alias for `PyMem_Malloc`.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Malloc(size: usize) -> *mut u8 {
     unsafe { PyMem_Malloc(size) }
 }
 
 /// `PyObject_Realloc(ptr, size)` — reallocate memory for an object.
 /// Currently an alias for `PyMem_Realloc`.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Realloc(ptr: *mut u8, size: usize) -> *mut u8 {
     unsafe { PyMem_Realloc(ptr, size) }
 }
 
 /// `PyObject_Free(ptr)` — free memory allocated by `PyObject_Malloc`.
 /// Currently an alias for `PyMem_Free`.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Free(ptr: *mut u8) {
     unsafe { PyMem_Free(ptr) }
 }
@@ -3815,7 +3228,7 @@ pub unsafe extern "C" fn PyObject_Free(ptr: *mut u8) {
 // ---------------------------------------------------------------------------
 
 /// `PyObject_Repr(obj)` — return repr(obj), or 0 on error. Caller owns the reference.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_Repr(obj: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_repr_from_obj(obj);
@@ -3830,7 +3243,7 @@ pub extern "C" fn PyObject_Repr(obj: u64) -> u64 {
 }
 
 /// `PyObject_Str(obj)` — return str(obj), or 0 on error. Caller owns the reference.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_Str(obj: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_str_from_obj(obj);
@@ -3845,7 +3258,7 @@ pub extern "C" fn PyObject_Str(obj: u64) -> u64 {
 }
 
 /// `PyObject_Hash(obj)` — return the hash of obj, or -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_Hash(obj: u64) -> i64 {
     crate::with_gil_entry!(_py, {
         let res = molt_hash_builtin(obj);
@@ -3868,13 +3281,13 @@ pub extern "C" fn PyObject_Hash(obj: u64) -> i64 {
 }
 
 /// `PyObject_IsTrue(obj)` — return 1 if obj is truthy, 0 if falsy, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_IsTrue(obj: u64) -> i32 {
     molt_object_truthy(obj)
 }
 
 /// `PyObject_Not(obj)` — return 0 if obj is truthy, 1 if falsy, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_Not(obj: u64) -> i32 {
     let t = PyObject_IsTrue(obj);
     match t {
@@ -3885,7 +3298,7 @@ pub extern "C" fn PyObject_Not(obj: u64) -> i32 {
 }
 
 /// `PyObject_Type(obj)` — return the type of obj. Caller owns the reference.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_Type(obj: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_type_of(obj);
@@ -3898,7 +3311,7 @@ pub extern "C" fn PyObject_Type(obj: u64) -> u64 {
 }
 
 /// `PyObject_Length(obj)` — return the length of obj, or -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_Length(obj: u64) -> isize {
     crate::with_gil_entry!(_py, {
         let res = molt_len(obj);
@@ -3912,19 +3325,19 @@ pub extern "C" fn PyObject_Length(obj: u64) -> isize {
 }
 
 /// `PyObject_Size(obj)` — alias for PyObject_Length.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_Size(obj: u64) -> isize {
     PyObject_Length(obj)
 }
 
 /// `PyObject_GetAttr(obj, name)` — return obj.name, or 0 on error. Caller owns reference.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_GetAttr(obj: u64, name: u64) -> u64 {
     molt_object_getattr(obj, name)
 }
 
 /// `PyObject_GetAttrString(obj, name)` — return obj.name using a C string, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_GetAttrString(obj: u64, name: *const std::ffi::c_char) -> u64 {
     crate::with_gil_entry!(_py, {
         if name.is_null() {
@@ -3945,7 +3358,7 @@ pub extern "C" fn PyObject_GetAttrString(obj: u64, name: *const std::ffi::c_char
 }
 
 /// `PyObject_SetAttr(obj, name, value)` — set obj.name = value. Returns 0 on success, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_SetAttr(obj: u64, name: u64, value: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let res = molt_object_setattr(obj, name, value);
@@ -3960,7 +3373,7 @@ pub extern "C" fn PyObject_SetAttr(obj: u64, name: u64, value: u64) -> i32 {
 }
 
 /// `PyObject_SetAttrString(obj, name, value)` — set attribute using C string name.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_SetAttrString(
     obj: u64,
     name: *const std::ffi::c_char,
@@ -3985,14 +3398,14 @@ pub extern "C" fn PyObject_SetAttrString(
 }
 
 /// `PyObject_HasAttr(obj, name)` — return 1 if obj has attribute name, 0 otherwise.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_HasAttr(obj: u64, name: u64) -> i32 {
     let r = molt_object_hasattr(obj, name);
     if r < 0 { 0 } else { r }
 }
 
 /// `PyObject_HasAttrString(obj, name)` — return 1 if obj has attribute, 0 otherwise.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_HasAttrString(obj: u64, name: *const std::ffi::c_char) -> i32 {
     crate::with_gil_entry!(_py, {
         if name.is_null() {
@@ -4015,7 +3428,7 @@ pub extern "C" fn PyObject_HasAttrString(obj: u64, name: *const std::ffi::c_char
 }
 
 /// `PyObject_DelAttr(obj, name)` — delete obj.name. Returns 0 on success, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_DelAttr(obj: u64, name: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let res = molt_object_delattr(obj, name);
@@ -4030,7 +3443,7 @@ pub extern "C" fn PyObject_DelAttr(obj: u64, name: u64) -> i32 {
 }
 
 /// `PyObject_DelAttrString(obj, name)` — delete attribute by C string name.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_DelAttrString(obj: u64, name: *const std::ffi::c_char) -> i32 {
     crate::with_gil_entry!(_py, {
         if name.is_null() {
@@ -4053,16 +3466,16 @@ pub extern "C" fn PyObject_DelAttrString(obj: u64, name: *const std::ffi::c_char
 /// `PyObject_RichCompareBool(a, b, op)` — compare two objects.
 /// op: Py_LT=0, Py_LE=1, Py_EQ=2, Py_NE=3, Py_GT=4, Py_GE=5
 /// Returns 1 if true, 0 if false, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_RichCompareBool(a: u64, b: u64, op: i32) -> i32 {
     crate::with_gil_entry!(_py, {
         let res = match op {
-            0 => molt_lt(a, b), // Py_LT
-            1 => molt_le(a, b), // Py_LE
-            2 => molt_eq(a, b), // Py_EQ
-            3 => molt_ne(a, b), // Py_NE
-            4 => molt_gt(a, b), // Py_GT
-            5 => molt_ge(a, b), // Py_GE
+            0 => molt_lt(a, b),  // Py_LT
+            1 => molt_le(a, b),  // Py_LE
+            2 => molt_eq(a, b),  // Py_EQ
+            3 => molt_ne(a, b),  // Py_NE
+            4 => molt_gt(a, b),  // Py_GT
+            5 => molt_ge(a, b),  // Py_GE
             _ => {
                 let _ = raise_exception::<u64>(
                     _py,
@@ -4078,18 +3491,14 @@ pub extern "C" fn PyObject_RichCompareBool(a: u64, b: u64, op: i32) -> i32 {
             }
             return -1;
         }
-        let out = if is_truthy(_py, obj_from_bits(res)) {
-            1
-        } else {
-            0
-        };
+        let out = if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 };
         dec_ref_bits(_py, res);
         if exception_pending(_py) { -1 } else { out }
     })
 }
 
 /// `PyObject_RichCompare(a, b, op)` — compare two objects, returning the result object.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_RichCompare(a: u64, b: u64, op: i32) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = match op {
@@ -4119,7 +3528,7 @@ pub extern "C" fn PyObject_RichCompare(a: u64, b: u64, op: i32) -> u64 {
 }
 
 /// `PyCallable_Check(obj)` — return 1 if obj is callable, 0 otherwise.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyCallable_Check(obj: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let res = molt_callable_builtin(obj);
@@ -4127,43 +3536,31 @@ pub extern "C" fn PyCallable_Check(obj: u64) -> i32 {
             let _ = molt_exception_clear();
             return 0;
         }
-        if is_truthy(_py, obj_from_bits(res)) {
-            1
-        } else {
-            0
-        }
+        if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 }
     })
 }
 
 /// `PyObject_IsInstance(obj, cls)` — return 1 if isinstance(obj, cls), 0 if not, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_IsInstance(obj: u64, cls: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let res = molt_isinstance(obj, cls);
         if exception_pending(_py) {
             return -1;
         }
-        if is_truthy(_py, obj_from_bits(res)) {
-            1
-        } else {
-            0
-        }
+        if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 }
     })
 }
 
 /// `PyObject_IsSubclass(sub, cls)` — return 1 if issubclass(sub, cls), 0 if not, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_IsSubclass(sub: u64, cls: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let res = molt_issubclass(sub, cls);
         if exception_pending(_py) {
             return -1;
         }
-        if is_truthy(_py, obj_from_bits(res)) {
-            1
-        } else {
-            0
-        }
+        if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 }
     })
 }
 
@@ -4172,7 +3569,7 @@ pub extern "C" fn PyObject_IsSubclass(sub: u64, cls: u64) -> i32 {
 // ---------------------------------------------------------------------------
 
 /// `PySet_New(iterable)` — create a new set, optionally from an iterable (pass 0 for empty set).
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PySet_New(iterable: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         // molt_set_new expects raw capacity u64, NOT NaN-boxed
@@ -4198,7 +3595,7 @@ pub extern "C" fn PySet_New(iterable: u64) -> u64 {
 }
 
 /// `PyFrozenSet_New(iterable)` — create a new frozenset.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyFrozenSet_New(iterable: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         // molt_frozenset_new expects raw capacity u64, NOT NaN-boxed
@@ -4224,7 +3621,7 @@ pub extern "C" fn PyFrozenSet_New(iterable: u64) -> u64 {
 }
 
 /// `PySet_Size(set)` — return the number of elements in the set.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PySet_Size(set: u64) -> isize {
     crate::with_gil_entry!(_py, {
         let res = molt_len(set);
@@ -4238,23 +3635,19 @@ pub extern "C" fn PySet_Size(set: u64) -> isize {
 }
 
 /// `PySet_Contains(set, key)` — return 1 if key is in set, 0 if not, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PySet_Contains(set: u64, key: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let res = molt_set_contains(set, key);
         if exception_pending(_py) {
             return -1;
         }
-        if is_truthy(_py, obj_from_bits(res)) {
-            1
-        } else {
-            0
-        }
+        if is_truthy(_py, obj_from_bits(res)) { 1 } else { 0 }
     })
 }
 
 /// `PySet_Add(set, key)` — add key to set. Returns 0 on success, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PySet_Add(set: u64, key: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let res = molt_set_add(set, key);
@@ -4272,7 +3665,7 @@ pub extern "C" fn PySet_Add(set: u64, key: u64) -> i32 {
 }
 
 /// `PySet_Discard(set, key)` — remove key from set if present. Returns 1 if found, 0 if not, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PySet_Discard(set: u64, key: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let res = molt_set_discard(set, key);
@@ -4289,7 +3682,7 @@ pub extern "C" fn PySet_Discard(set: u64, key: u64) -> i32 {
 }
 
 /// `PySet_Pop(set)` — remove and return an arbitrary element, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PySet_Pop(set: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_set_pop(set);
@@ -4304,7 +3697,7 @@ pub extern "C" fn PySet_Pop(set: u64) -> u64 {
 }
 
 /// `PySet_Clear(set)` — remove all elements. Returns 0 on success, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PySet_Clear(set: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let res = molt_set_clear(set);
@@ -4322,7 +3715,7 @@ pub extern "C" fn PySet_Clear(set: u64) -> i32 {
 }
 
 /// `PySet_Check(obj)` — return 1 if obj is a set, 0 otherwise.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PySet_Check(obj: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(obj).as_ptr() else {
@@ -4339,7 +3732,7 @@ pub extern "C" fn PySet_Check(obj: u64) -> i32 {
 }
 
 /// `PyFrozenSet_Check(obj)` — return 1 if obj is a frozenset, 0 otherwise.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyFrozenSet_Check(obj: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(obj).as_ptr() else {
@@ -4360,7 +3753,7 @@ pub extern "C" fn PyFrozenSet_Check(obj: u64) -> i32 {
 // ---------------------------------------------------------------------------
 
 /// `PyUnicode_GetLength(obj)` — return the length of the Unicode string in code points.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyUnicode_GetLength(obj: u64) -> isize {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(obj).as_ptr() else {
@@ -4378,7 +3771,7 @@ pub extern "C" fn PyUnicode_GetLength(obj: u64) -> isize {
 }
 
 /// `PyUnicode_Concat(left, right)` — return left + right as a new string, or 0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyUnicode_Concat(left: u64, right: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_add(left, right);
@@ -4393,14 +3786,14 @@ pub extern "C" fn PyUnicode_Concat(left: u64, right: u64) -> u64 {
 }
 
 /// `PyUnicode_Contains(container, element)` — return 1 if element in container, 0 if not, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyUnicode_Contains(container: u64, element: u64) -> i32 {
     molt_object_contains(container, element)
 }
 
 /// `PyUnicode_CompareWithASCIIString(uni, string)` — compare with a C ASCII string.
 /// Returns -1, 0, or 1 for less, equal, greater.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyUnicode_CompareWithASCIIString(
     uni: u64,
     string: *const std::ffi::c_char,
@@ -4429,7 +3822,7 @@ pub extern "C" fn PyUnicode_CompareWithASCIIString(
 // ---------------------------------------------------------------------------
 
 /// `PyDict_GetItemString(dict, key)` — get item using C string key. Borrowed reference.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyDict_GetItemString(dict: u64, key: *const std::ffi::c_char) -> u64 {
     crate::with_gil_entry!(_py, {
         if key.is_null() {
@@ -4457,11 +3850,16 @@ pub extern "C" fn PyDict_GetItemString(dict: u64, key: *const std::ffi::c_char) 
 }
 
 /// `PyDict_DelItem(dict, key)` — delete dict[key]. Returns 0 on success, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyDict_DelItem(dict: u64, key: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         // Use molt_dict_pop with no default — raises KeyError if missing
-        let res = molt_dict_pop(dict, key, none_bits(), MoltObject::from_bool(false).bits());
+        let res = molt_dict_pop(
+            dict,
+            key,
+            none_bits(),
+            MoltObject::from_bool(false).bits(),
+        );
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -4477,7 +3875,7 @@ pub extern "C" fn PyDict_DelItem(dict: u64, key: u64) -> i32 {
 }
 
 /// `PyDict_DelItemString(dict, key)` — delete dict[key] using C string.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyDict_DelItemString(dict: u64, key: *const std::ffi::c_char) -> i32 {
     crate::with_gil_entry!(_py, {
         if key.is_null() {
@@ -4498,25 +3896,25 @@ pub extern "C" fn PyDict_DelItemString(dict: u64, key: *const std::ffi::c_char) 
 }
 
 /// `PyDict_Keys(dict)` — return a list of all keys in the dict.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyDict_Keys(dict: u64) -> u64 {
     PyMapping_Keys(dict)
 }
 
 /// `PyDict_Values(dict)` — return a list of all values in the dict.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyDict_Values(dict: u64) -> u64 {
     PyMapping_Values(dict)
 }
 
 /// `PyDict_Items(dict)` — return a list of all (key, value) pairs in the dict.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyDict_Items(dict: u64) -> u64 {
     PyMapping_Items(dict)
 }
 
 /// `PyDict_Update(a, b)` — merge b into a. Returns 0 on success, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyDict_Update(a: u64, b: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let res = molt_dict_update(a, b);
@@ -4534,7 +3932,7 @@ pub extern "C" fn PyDict_Update(a: u64, b: u64) -> i32 {
 }
 
 /// `PyDict_Copy(dict)` — return a shallow copy of the dict.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyDict_Copy(dict: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let res = molt_dict_copy(dict);
@@ -4553,7 +3951,7 @@ pub extern "C" fn PyDict_Copy(dict: u64) -> u64 {
 // ---------------------------------------------------------------------------
 
 /// `PyList_Insert(list, index, item)` — insert item at index. Returns 0 on success, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyList_Insert(list: u64, index: isize, item: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let idx_bits = MoltObject::from_int(index as i64).bits();
@@ -4572,7 +3970,7 @@ pub extern "C" fn PyList_Insert(list: u64, index: isize, item: u64) -> i32 {
 }
 
 /// `PyList_Sort(list)` — sort the list in place. Returns 0 on success, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyList_Sort(list: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         // molt_list_sort(list, key, reverse) — pass None key, False reverse
@@ -4591,7 +3989,7 @@ pub extern "C" fn PyList_Sort(list: u64) -> i32 {
 }
 
 /// `PyList_Reverse(list)` — reverse the list in place. Returns 0 on success, -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyList_Reverse(list: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let res = molt_list_reverse(list);
@@ -4609,7 +4007,7 @@ pub extern "C" fn PyList_Reverse(list: u64) -> i32 {
 }
 
 /// `PyList_AsTuple(list)` — return a tuple with the same items as the list.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyList_AsTuple(list: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(ptr) = obj_from_bits(list).as_ptr() else {
@@ -4636,7 +4034,7 @@ pub extern "C" fn PyList_AsTuple(list: u64) -> u64 {
 // ---------------------------------------------------------------------------
 
 /// `PyErr_SetString(type, message)` — set the current exception.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyErr_SetString(exc_type: u64, message: *const std::ffi::c_char) {
     crate::with_gil_entry!(_py, {
         if message.is_null() {
@@ -4649,7 +4047,7 @@ pub extern "C" fn PyErr_SetString(exc_type: u64, message: *const std::ffi::c_cha
 }
 
 /// `PyErr_SetNone(type)` — set the current exception with no message.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyErr_SetNone(exc_type: u64) {
     crate::with_gil_entry!(_py, {
         set_exception_from_message(_py, exc_type, b"");
@@ -4657,7 +4055,7 @@ pub extern "C" fn PyErr_SetNone(exc_type: u64) {
 }
 
 /// `PyErr_Occurred()` — return the current exception type bits if an exception is pending, or 0.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyErr_Occurred() -> u64 {
     crate::with_gil_entry!(_py, {
         if exception_pending(_py) {
@@ -4671,7 +4069,7 @@ pub extern "C" fn PyErr_Occurred() -> u64 {
 }
 
 /// `PyErr_Clear()` — clear the current exception.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyErr_Clear() {
     crate::with_gil_entry!(_py, {
         if exception_pending(_py) {
@@ -4681,7 +4079,7 @@ pub extern "C" fn PyErr_Clear() {
 }
 
 /// `PyErr_NoMemory()` — set MemoryError and return NULL (0).
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyErr_NoMemory() -> u64 {
     crate::with_gil_entry!(_py, {
         let _ = raise_exception::<u64>(_py, "MemoryError", "out of memory");
@@ -4694,7 +4092,7 @@ pub extern "C" fn PyErr_NoMemory() -> u64 {
 // ---------------------------------------------------------------------------
 
 /// `Py_IncRef(obj)` — increment the reference count.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn Py_IncRef(obj: u64) {
     if obj == 0 {
         return;
@@ -4707,7 +4105,7 @@ pub extern "C" fn Py_IncRef(obj: u64) {
 }
 
 /// `Py_DecRef(obj)` — decrement the reference count.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn Py_DecRef(obj: u64) {
     if obj == 0 {
         return;
@@ -4720,13 +4118,13 @@ pub extern "C" fn Py_DecRef(obj: u64) {
 }
 
 /// `Py_XINCREF(obj)` — increment ref count if obj is non-NULL.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn Py_XINCREF(obj: u64) {
     Py_IncRef(obj)
 }
 
 /// `Py_XDECREF(obj)` — decrement ref count if obj is non-NULL.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn Py_XDECREF(obj: u64) {
     Py_DecRef(obj)
 }
@@ -4736,7 +4134,7 @@ pub extern "C" fn Py_XDECREF(obj: u64) {
 // ---------------------------------------------------------------------------
 
 /// `PyLong_AsLong(obj)` — return the integer value as a C long, or -1 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyLong_AsLong(obj: u64) -> i64 {
     crate::with_gil_entry!(_py, {
         match to_i64(obj_from_bits(obj)) {
@@ -4750,13 +4148,13 @@ pub extern "C" fn PyLong_AsLong(obj: u64) -> i64 {
 }
 
 /// `PyLong_FromLong(v)` — create a new integer from a C long.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyLong_FromLong(v: i64) -> u64 {
     MoltObject::from_int(v).bits()
 }
 
 /// `PyFloat_AsDouble(obj)` — return the float value as a C double, or -1.0 on error.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyFloat_AsDouble(obj: u64) -> f64 {
     crate::with_gil_entry!(_py, {
         match to_f64(obj_from_bits(obj)) {
@@ -4770,19 +4168,19 @@ pub extern "C" fn PyFloat_AsDouble(obj: u64) -> f64 {
 }
 
 /// `PyFloat_FromDouble(v)` — create a new float from a C double.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyFloat_FromDouble(v: f64) -> u64 {
     MoltObject::from_float(v).bits()
 }
 
 /// `PyBool_FromLong(v)` — return Py_True if v is nonzero, Py_False otherwise.
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn PyBool_FromLong(v: i64) -> u64 {
     MoltObject::from_bool(v != 0).bits()
 }
 
 /// `Py_BuildNone()` — return None handle (borrowed).
-#[cfg_attr(not(feature = "molt_hosted_extension"), unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn Py_BuildNone() -> u64 {
     none_bits()
 }
@@ -4964,7 +4362,7 @@ mod tests {
         let kind_bits = molt_exception_kind(exc_bits);
         let class_bits = molt_exception_class(kind_bits);
         assert_eq!(molt_err_matches(runtime_error), 0);
-        assert!(issubclass_bits(class_bits, runtime_error));
+        assert_eq!(issubclass_bits(class_bits, runtime_error), true);
         crate::with_gil_entry!(_py, {
             dec_ref_bits(_py, kind_bits);
             dec_ref_bits(_py, class_bits);
@@ -6071,203 +5469,6 @@ mod tests {
     }
 
     #[test]
-    fn c_api_libmolt_iterator_surface() {
-        let _ = molt_runtime_init();
-        crate::with_gil_entry!(_py, {
-            let tuple_ptr = alloc_tuple(
-                _py,
-                &[
-                    MoltObject::from_int(1).bits(),
-                    MoltObject::from_int(2).bits(),
-                ],
-            );
-            assert!(!tuple_ptr.is_null());
-            let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
-
-            let iter_bits = molt_object_get_iter(tuple_bits);
-            assert_ne!(iter_bits, none_bits());
-            assert!(!exception_pending(_py));
-
-            let mut value_bits = none_bits();
-            assert_eq!(molt_iterator_next(iter_bits, &mut value_bits), 1);
-            assert_eq!(to_i64(obj_from_bits(value_bits)), Some(1));
-            dec_ref_bits(_py, value_bits);
-
-            assert_eq!(molt_iterator_next(iter_bits, &mut value_bits), 1);
-            assert_eq!(to_i64(obj_from_bits(value_bits)), Some(2));
-            dec_ref_bits(_py, value_bits);
-
-            assert_eq!(molt_iterator_next(iter_bits, &mut value_bits), 0);
-            assert_eq!(value_bits, none_bits());
-            assert!(!exception_pending(_py));
-
-            assert_eq!(
-                molt_iterator_next(MoltObject::from_int(7).bits(), &mut value_bits),
-                -1
-            );
-            assert!(exception_pending(_py));
-            let _ = molt_exception_clear();
-
-            assert_eq!(
-                molt_object_get_iter(MoltObject::from_int(9).bits()),
-                none_bits()
-            );
-            assert!(exception_pending(_py));
-            let _ = molt_exception_clear();
-
-            dec_ref_bits(_py, iter_bits);
-            dec_ref_bits(_py, tuple_bits);
-        });
-    }
-
-    #[test]
-    fn c_api_libmolt_capsule_surface() {
-        let _ = molt_runtime_init();
-        crate::with_gil_entry!(_py, {
-            let pointer_value = 0x1234_5678usize;
-            let capsule_name = b"demo_capsule.CAPI";
-            let capsule_bits = unsafe {
-                molt_capsule_new(
-                    pointer_value,
-                    capsule_name.as_ptr(),
-                    capsule_name.len() as u64,
-                    0,
-                )
-            };
-            assert_ne!(capsule_bits, none_bits());
-            assert!(!exception_pending(_py));
-
-            let mut name_len = 0;
-            let name_ptr = unsafe { molt_capsule_get_name_ptr(capsule_bits, &mut name_len) };
-            assert!(!name_ptr.is_null());
-            let name_bytes = unsafe { std::slice::from_raw_parts(name_ptr, name_len as usize) };
-            assert_eq!(name_bytes, capsule_name);
-
-            let ptr = unsafe {
-                molt_capsule_get_pointer(
-                    capsule_bits,
-                    capsule_name.as_ptr(),
-                    capsule_name.len() as u64,
-                )
-            };
-            assert_eq!(ptr, pointer_value);
-            assert_eq!(
-                unsafe {
-                    molt_capsule_is_valid(
-                        capsule_bits,
-                        capsule_name.as_ptr(),
-                        capsule_name.len() as u64,
-                    )
-                },
-                1
-            );
-            assert_eq!(
-                unsafe {
-                    molt_capsule_is_valid(
-                        capsule_bits,
-                        b"demo.other".as_ptr(),
-                        b"demo.other".len() as u64,
-                    )
-                },
-                0
-            );
-            assert!(!exception_pending(_py));
-
-            assert_eq!(molt_capsule_get_context(capsule_bits), 0);
-            assert_eq!(molt_capsule_set_context(capsule_bits, 0xBEEFusize), 0);
-            assert_eq!(molt_capsule_get_context(capsule_bits), 0xBEEFusize);
-
-            let module_name_bits =
-                unsafe { molt_string_from(b"demo_capsule".as_ptr(), b"demo_capsule".len() as u64) };
-            assert_ne!(module_name_bits, none_bits());
-            let module_bits = molt_module_create(module_name_bits);
-            assert_ne!(module_bits, none_bits());
-            assert_eq!(
-                unsafe {
-                    molt_module_add_object_bytes(
-                        module_bits,
-                        b"CAPI".as_ptr(),
-                        b"CAPI".len() as u64,
-                        capsule_bits,
-                    )
-                },
-                0
-            );
-            {
-                let cache = crate::builtins::exceptions::internals::module_cache(_py);
-                let mut guard = cache.lock().unwrap();
-                let prev = guard.insert("demo_capsule".to_string(), module_bits);
-                assert!(prev.is_none());
-                inc_ref_bits(_py, module_bits);
-            }
-            let imported_ptr = unsafe {
-                molt_capsule_import(
-                    b"demo_capsule.CAPI".as_ptr(),
-                    b"demo_capsule.CAPI".len() as u64,
-                )
-            };
-            assert_eq!(imported_ptr, pointer_value);
-            assert!(!exception_pending(_py));
-            {
-                let cache = crate::builtins::exceptions::internals::module_cache(_py);
-                let mut guard = cache.lock().unwrap();
-                let removed = guard.remove("demo_capsule");
-                assert_eq!(removed, Some(module_bits));
-            }
-            dec_ref_bits(_py, module_bits);
-
-            dec_ref_bits(_py, module_bits);
-            dec_ref_bits(_py, module_name_bits);
-            dec_ref_bits(_py, capsule_bits);
-        });
-    }
-
-    #[test]
-    fn c_api_libmolt_capsule_rejects_invalid_inputs() {
-        let _ = molt_runtime_init();
-        crate::with_gil_entry!(_py, {
-            let invalid_capsule_bits = unsafe { molt_capsule_new(0, std::ptr::null(), 0, 0) };
-            assert_eq!(invalid_capsule_bits, none_bits());
-            assert!(exception_pending(_py));
-            let _ = molt_exception_clear();
-
-            let capsule_bits = unsafe {
-                molt_capsule_new(
-                    0xCAFEusize,
-                    b"demo.capsule".as_ptr(),
-                    b"demo.capsule".len() as u64,
-                    0,
-                )
-            };
-            assert_ne!(capsule_bits, none_bits());
-
-            assert_eq!(
-                unsafe {
-                    molt_capsule_get_pointer(
-                        capsule_bits,
-                        b"demo.other".as_ptr(),
-                        b"demo.other".len() as u64,
-                    )
-                },
-                0
-            );
-            assert!(exception_pending(_py));
-            let _ = molt_exception_clear();
-
-            assert_eq!(
-                unsafe {
-                    molt_capsule_import(b"demo_capsule".as_ptr(), b"demo_capsule".len() as u64)
-                },
-                0
-            );
-            assert!(exception_pending(_py));
-            let _ = molt_exception_clear();
-
-            dec_ref_bits(_py, capsule_bits);
-        });
-    }
-
-    #[test]
     fn c_api_list_setitem_steals_ref_on_error() {
         // Verify that PyList_SetItem steals the reference even when the call fails.
         let _ = molt_runtime_init();
@@ -6604,19 +5805,16 @@ mod tests {
 
             let keys = PyMapping_Keys(dict);
             assert_ne!(keys, 0);
-            assert_eq!(PyList_Check(keys), 1);
             assert_eq!(PySequence_Length(keys), 2);
             dec_ref_bits(_py, keys);
 
             let values = PyMapping_Values(dict);
             assert_ne!(values, 0);
-            assert_eq!(PyList_Check(values), 1);
             assert_eq!(PySequence_Length(values), 2);
             dec_ref_bits(_py, values);
 
             let items = PyMapping_Items(dict);
             assert_ne!(items, 0);
-            assert_eq!(PyList_Check(items), 1);
             assert_eq!(PySequence_Length(items), 2);
             dec_ref_bits(_py, items);
 
@@ -6643,7 +5841,8 @@ mod tests {
             dec_ref_bits(_py, got);
 
             // Missing key should fail.
-            let missing = unsafe { PyMapping_GetItemString(dict, b"nope\0".as_ptr() as *const _) };
+            let missing =
+                unsafe { PyMapping_GetItemString(dict, b"nope\0".as_ptr() as *const _) };
             assert_eq!(missing, 0);
             assert!(exception_pending(_py));
             let _ = molt_exception_clear();
@@ -6738,46 +5937,6 @@ mod tests {
 
             dec_ref_bits(_py, list_bits);
             dec_ref_bits(_py, tuple);
-        });
-    }
-
-    #[test]
-    fn c_api_sequence_list_and_tuple_materialize_iterables() {
-        let _ = molt_runtime_init();
-        crate::with_gil_entry!(_py, {
-            let tuple_ptr = alloc_tuple(
-                _py,
-                &[
-                    MoltObject::from_int(4).bits(),
-                    MoltObject::from_int(5).bits(),
-                    MoltObject::from_int(6).bits(),
-                ],
-            );
-            assert!(!tuple_ptr.is_null());
-            let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
-
-            let list_bits = PySequence_List(tuple_bits);
-            assert_ne!(list_bits, 0);
-            assert_eq!(PyList_Check(list_bits), 1);
-            assert_eq!(PySequence_Length(list_bits), 3);
-            let list_item = PySequence_GetItem(list_bits, 1);
-            assert_ne!(list_item, 0);
-            assert_eq!(to_i64(obj_from_bits(list_item)), Some(5));
-            dec_ref_bits(_py, list_item);
-
-            let roundtrip_tuple = PySequence_Tuple(list_bits);
-            assert_ne!(roundtrip_tuple, 0);
-            assert_eq!(PyTuple_Check(roundtrip_tuple), 1);
-            assert_eq!(PySequence_Length(roundtrip_tuple), 3);
-
-            let bad = PySequence_List(MoltObject::from_int(9).bits());
-            assert_eq!(bad, 0);
-            assert!(exception_pending(_py));
-            let _ = molt_exception_clear();
-
-            dec_ref_bits(_py, roundtrip_tuple);
-            dec_ref_bits(_py, list_bits);
-            dec_ref_bits(_py, tuple_bits);
         });
     }
 
@@ -6894,13 +6053,17 @@ mod tests {
     fn c_api_unicode_from_string() {
         let _ = molt_runtime_init();
         crate::with_gil_entry!(_py, {
-            let str_bits = unsafe { PyUnicode_FromString(b"hello world\0".as_ptr() as *const _) };
+            let str_bits =
+                unsafe { PyUnicode_FromString(b"hello world\0".as_ptr() as *const _) };
             assert_ne!(str_bits, 0);
             assert_eq!(PyUnicode_Check(str_bits), 1);
 
             let utf8_ptr = PyUnicode_AsUTF8(str_bits);
             assert!(!utf8_ptr.is_null());
-            let _observed = unsafe { std::ffi::CStr::from_ptr(utf8_ptr).to_bytes() };
+            let observed = unsafe {
+                std::ffi::CStr::from_ptr(utf8_ptr)
+                    .to_bytes()
+            };
             // The string content might not be NUL-terminated in molt's internal
             // storage, so compare the known length.
             let mut out_size: isize = 0;
@@ -7147,12 +6310,12 @@ mod tests {
         let a = MoltObject::from_int(10).bits();
         let b = MoltObject::from_int(20).bits();
 
-        assert_eq!(PyObject_RichCompareBool(a, b, 0), 1); // 10 < 20
-        assert_eq!(PyObject_RichCompareBool(a, b, 1), 1); // 10 <= 20
-        assert_eq!(PyObject_RichCompareBool(a, b, 2), 0); // 10 == 20
-        assert_eq!(PyObject_RichCompareBool(a, b, 3), 1); // 10 != 20
-        assert_eq!(PyObject_RichCompareBool(a, b, 4), 0); // 10 > 20
-        assert_eq!(PyObject_RichCompareBool(a, b, 5), 0); // 10 >= 20
+        assert_eq!(PyObject_RichCompareBool(a, b, 0), 1);  // 10 < 20
+        assert_eq!(PyObject_RichCompareBool(a, b, 1), 1);  // 10 <= 20
+        assert_eq!(PyObject_RichCompareBool(a, b, 2), 0);  // 10 == 20
+        assert_eq!(PyObject_RichCompareBool(a, b, 3), 1);  // 10 != 20
+        assert_eq!(PyObject_RichCompareBool(a, b, 4), 0);  // 10 > 20
+        assert_eq!(PyObject_RichCompareBool(a, b, 5), 0);  // 10 >= 20
 
         // Invalid op
         assert_eq!(PyObject_RichCompareBool(a, b, 99), -1);
@@ -7254,7 +6417,12 @@ mod tests {
             let v1 = MoltObject::from_int(100).bits();
             assert_eq!(PyDict_SetItem(dict, k1, v1), 0);
 
-            let got = PyDict_GetItemString(dict, b"hello\0".as_ptr() as *const std::ffi::c_char);
+            let got = unsafe {
+                PyDict_GetItemString(
+                    dict,
+                    b"hello\0".as_ptr() as *const std::ffi::c_char,
+                )
+            };
             assert_ne!(got, 0);
 
             assert_eq!(PyDict_DelItem(dict, k1), 0);
@@ -7268,15 +6436,12 @@ mod tests {
             assert_eq!(PyDict_SetItem(dict, k1, v1), 0);
             let keys = PyDict_Keys(dict);
             assert_ne!(keys, 0);
-            assert_eq!(PyList_Check(keys), 1);
             dec_ref_bits(_py, keys);
             let vals = PyDict_Values(dict);
             assert_ne!(vals, 0);
-            assert_eq!(PyList_Check(vals), 1);
             dec_ref_bits(_py, vals);
             let items = PyDict_Items(dict);
             assert_ne!(items, 0);
-            assert_eq!(PyList_Check(items), 1);
             dec_ref_bits(_py, items);
 
             let copy = PyDict_Copy(dict);
@@ -7320,7 +6485,12 @@ mod tests {
         let _ = molt_runtime_init();
         assert_eq!(PyErr_Occurred(), 0);
 
-        PyErr_SetString(0, b"test error\0".as_ptr() as *const std::ffi::c_char);
+        unsafe {
+            PyErr_SetString(
+                0,
+                b"test error\0".as_ptr() as *const std::ffi::c_char,
+            );
+        }
         assert_ne!(PyErr_Occurred(), 0);
 
         PyErr_Clear();
@@ -7386,8 +6556,12 @@ mod tests {
             assert_eq!(PyUnicode_GetLength(concat), 11);
             dec_ref_bits(_py, concat);
 
-            let cmp =
-                PyUnicode_CompareWithASCIIString(s, b"hello\0".as_ptr() as *const std::ffi::c_char);
+            let cmp = unsafe {
+                PyUnicode_CompareWithASCIIString(
+                    s,
+                    b"hello\0".as_ptr() as *const std::ffi::c_char,
+                )
+            };
             assert_eq!(cmp, 0);
 
             dec_ref_bits(_py, s2);

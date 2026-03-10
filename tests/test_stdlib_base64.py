@@ -2,65 +2,24 @@ from __future__ import annotations
 
 import base64 as py_base64
 import builtins
+import codecs
 
 import pytest
 
-_INTRINSICS = {
-    "molt_stdlib_probe": lambda: True,
-    "molt_capabilities_has": lambda _name=None: True,
-    "molt_base64_b64encode": py_base64.b64encode,
-    "molt_base64_b64decode": py_base64.b64decode,
-    "molt_base64_standard_b64encode": py_base64.standard_b64encode,
-    "molt_base64_standard_b64decode": py_base64.standard_b64decode,
-    "molt_base64_urlsafe_b64encode": py_base64.urlsafe_b64encode,
-    "molt_base64_urlsafe_b64decode": py_base64.urlsafe_b64decode,
-    "molt_base64_b32encode": py_base64.b32encode,
-    "molt_base64_b32decode": py_base64.b32decode,
-    "molt_base64_b32hexencode": py_base64.b32hexencode,
-    "molt_base64_b32hexdecode": py_base64.b32hexdecode,
-    "molt_base64_b16encode": py_base64.b16encode,
-    "molt_base64_b16decode": py_base64.b16decode,
-    "molt_base64_a85encode": lambda data,
-    foldspaces=False,
-    wrapcol=0,
-    pad=False,
-    adobe=False: (
-        py_base64.a85encode(
-            data,
-            foldspaces=foldspaces,
-            wrapcol=wrapcol,
-            pad=pad,
-            adobe=adobe,
-        )
-    ),
-    "molt_base64_a85decode": lambda data, foldspaces=False, adobe=False: (
-        py_base64.a85decode(
-            data,
-            foldspaces=foldspaces,
-            adobe=adobe,
-        )
-    ),
-    "molt_base64_b85encode": py_base64.b85encode,
-    "molt_base64_b85decode": py_base64.b85decode,
-    "molt_base64_encodebytes": py_base64.encodebytes,
-    "molt_base64_decodebytes": py_base64.decodebytes,
-}
-
-
-def _install_intrinsic_lookup() -> None:
-    setattr(builtins, "_molt_runtime", True)
-    setattr(builtins, "_molt_intrinsics_strict", True)
-
-    def _lookup(name: str):
-        value = _INTRINSICS.get(name)
-        if callable(value):
-            return value
-        return None
-
-    setattr(builtins, "_molt_intrinsic_lookup", _lookup)
-
-
-_install_intrinsic_lookup()
+registry = getattr(builtins, "_molt_intrinsics", None)
+if not isinstance(registry, dict):
+    registry = {}
+    setattr(builtins, "_molt_intrinsics", registry)
+registry.setdefault("molt_stdlib_probe", lambda: True)
+registry.setdefault("molt_capabilities_has", lambda _name=None: True)
+registry.setdefault(
+    "molt_codecs_encode",
+    lambda data, encoding, errors="strict": codecs.encode(data, encoding, errors),
+)
+registry.setdefault(
+    "molt_codecs_decode",
+    lambda data, encoding, errors="strict": codecs.decode(data, encoding, errors),
+)
 
 from molt.stdlib import base64 as molt_base64  # noqa: E402
 

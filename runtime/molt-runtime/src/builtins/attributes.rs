@@ -39,8 +39,6 @@ fn attr_site_name_cache() -> &'static Mutex<HashMap<u64, u64>> {
     ATTR_SITE_NAME_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-static ATTR_IC_VM_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
 pub(crate) fn clear_attr_site_name_cache(_py: &PyToken<'_>) {
     let mut cache = attr_site_name_cache().lock().unwrap();
     for (_site, bits) in cache.drain() {
@@ -48,133 +46,6 @@ pub(crate) fn clear_attr_site_name_cache(_py: &PyToken<'_>) {
             dec_ref_bits(_py, bits);
         }
     }
-    ATTR_IC_VM_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-}
-
-const ATTR_IC_KIND_NONE: u8 = 0;
-const ATTR_IC_KIND_INSTANCE_DICT: u8 = 1;
-
-#[derive(Clone, Copy)]
-struct AttrIcEntry {
-    vm_epoch: u64,
-    class_bits: u64,
-    version: u64,
-    kind: u8,
-    name_bits: u64,
-}
-
-const IC_TLS_SIZE: usize = 256;
-
-thread_local! {
-    static ATTR_IC_TLS: std::cell::RefCell<[(u64, AttrIcEntry); IC_TLS_SIZE]> =
-        const { std::cell::RefCell::new([(0u64, AttrIcEntry { vm_epoch: 0, class_bits: 0, version: 0, kind: 0, name_bits: 0 }); IC_TLS_SIZE]) };
-}
-
-#[inline]
-fn ic_tls_lookup(
-    _py: &PyToken<'_>,
-    site_id: u64,
-    class_bits: u64,
-    version: u64,
-) -> Option<AttrIcEntry> {
-    ATTR_IC_TLS.with(|cache| {
-        let cache = cache.borrow();
-        let idx = (site_id as usize) & (IC_TLS_SIZE - 1);
-        let (stored_id, entry) = cache[idx];
-        let current_epoch = ATTR_IC_VM_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
-        if stored_id == site_id
-            && entry.vm_epoch == current_epoch
-            && entry.class_bits == class_bits
-            && entry.version == version
-            && entry.kind != ATTR_IC_KIND_NONE
-        {
-            Some(entry)
-        } else {
-            None
-        }
-    })
-}
-
-#[inline]
-fn ic_tls_insert(_py: &PyToken<'_>, site_id: u64, mut entry: AttrIcEntry) {
-    let current_epoch = ATTR_IC_VM_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
-    entry.vm_epoch = current_epoch;
-    ATTR_IC_TLS.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        let idx = (site_id as usize) & (IC_TLS_SIZE - 1);
-        let old_entry = cache[idx].1;
-
-        if old_entry.vm_epoch == current_epoch
-            && old_entry.name_bits != 0
-            && old_entry.name_bits != entry.name_bits
-        {
-            crate::dec_ref_bits(_py, old_entry.name_bits);
-        }
-
-        if entry.name_bits != 0
-            && (old_entry.vm_epoch != current_epoch || old_entry.name_bits != entry.name_bits)
-        {
-            crate::inc_ref_bits(_py, entry.name_bits);
-        }
-
-        cache[idx] = (site_id, entry);
-    });
-}
-
-thread_local! {
-    static ATTR_STORE_IC_TLS: std::cell::RefCell<[(u64, AttrIcEntry); IC_TLS_SIZE]> =
-        const { std::cell::RefCell::new([(0u64, AttrIcEntry { vm_epoch: 0, class_bits: 0, version: 0, kind: 0, name_bits: 0 }); IC_TLS_SIZE]) };
-}
-
-#[inline]
-fn ic_store_tls_lookup(
-    _py: &PyToken<'_>,
-    site_id: u64,
-    class_bits: u64,
-    version: u64,
-) -> Option<AttrIcEntry> {
-    ATTR_STORE_IC_TLS.with(|cache| {
-        let cache = cache.borrow();
-        let idx = (site_id as usize) & (IC_TLS_SIZE - 1);
-        let (stored_id, entry) = cache[idx];
-        let current_epoch = ATTR_IC_VM_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
-        if stored_id == site_id
-            && entry.vm_epoch == current_epoch
-            && entry.class_bits == class_bits
-            && entry.version == version
-            && entry.kind != ATTR_IC_KIND_NONE
-        {
-            Some(entry)
-        } else {
-            None
-        }
-    })
-}
-
-#[inline]
-fn ic_store_tls_insert(_py: &PyToken<'_>, site_id: u64, mut entry: AttrIcEntry) {
-    let current_epoch = ATTR_IC_VM_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
-    entry.vm_epoch = current_epoch;
-    ATTR_STORE_IC_TLS.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        let idx = (site_id as usize) & (IC_TLS_SIZE - 1);
-        let old_entry = cache[idx].1;
-
-        if old_entry.vm_epoch == current_epoch
-            && old_entry.name_bits != 0
-            && old_entry.name_bits != entry.name_bits
-        {
-            crate::dec_ref_bits(_py, old_entry.name_bits);
-        }
-
-        if entry.name_bits != 0
-            && (old_entry.vm_epoch != current_epoch || old_entry.name_bits != entry.name_bits)
-        {
-            crate::inc_ref_bits(_py, entry.name_bits);
-        }
-
-        cache[idx] = (site_id, entry);
-    });
 }
 
 fn ic_site_from_bits(site_bits: u64) -> Option<u64> {
@@ -4773,73 +4644,12 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
             let Some(site_id) = ic_site_from_bits(site_bits) else {
                 return molt_get_attr_object(obj_bits, attr_name_ptr, attr_name_len_bits);
             };
-
-            let obj = obj_from_bits(obj_bits);
-            let mut class_bits = 0;
-            let mut version = 0;
-            let mut ptr_opt = None;
-
-            if let Some(ptr) = obj.as_ptr() {
-                ptr_opt = Some(ptr);
-                if object_type_id(ptr) == TYPE_ID_OBJECT {
-                    let cb = object_class_bits(ptr);
-                    if cb != 0
-                        && let Some(class_ptr) = obj_from_bits(cb).as_ptr()
-                        && object_type_id(class_ptr) == TYPE_ID_TYPE
-                    {
-                        class_bits = cb;
-                        version = class_layout_version_bits(class_ptr);
-                    }
-                }
-            }
-
-            if class_bits != 0
-                && let Some(entry) = ic_tls_lookup(_py, site_id, class_bits, version)
-                && entry.kind == ATTR_IC_KIND_INSTANCE_DICT
-            {
-                let dict_bits = instance_dict_bits(ptr_opt.unwrap());
-                if dict_bits != 0
-                    && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                    && object_type_id(dict_ptr) == TYPE_ID_DICT
-                    && let Some(val_bits) = dict_get_in_place(_py, dict_ptr, entry.name_bits)
-                {
-                    inc_ref_bits(_py, val_bits);
-                    profile_hit_unchecked(&ATTR_SITE_NAME_CACHE_HIT_COUNT);
-                    return val_bits as i64;
-                }
-            }
-
             let attr_name_len = usize_from_bits(attr_name_len_bits);
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
             let Some(name_bits) = attr_name_bits_for_site(_py, site_id, slice) else {
                 return MoltObject::none().bits() as i64;
             };
-
             let out = molt_get_attr_name(obj_bits, name_bits);
-
-            if out != MoltObject::none().bits() && class_bits != 0 && !exception_pending(_py) {
-                let ptr = ptr_opt.unwrap();
-                let dict_bits = instance_dict_bits(ptr);
-                if dict_bits != 0
-                    && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                    && object_type_id(dict_ptr) == TYPE_ID_DICT
-                    && let Some(val_bits) = dict_get_in_place(_py, dict_ptr, name_bits)
-                    && val_bits == out
-                {
-                    ic_tls_insert(
-                        _py,
-                        site_id,
-                        AttrIcEntry {
-                            vm_epoch: 0,
-                            class_bits,
-                            version,
-                            kind: ATTR_IC_KIND_INSTANCE_DICT,
-                            name_bits,
-                        },
-                    );
-                }
-            }
-
             dec_ref_bits(_py, name_bits);
             out as i64
         })
@@ -4907,115 +4717,6 @@ pub unsafe extern "C" fn molt_set_attr_object(
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
             let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
             attr_error(_py, type_name(_py, obj), attr_name)
-        })
-    }
-}
-
-/// # Safety
-/// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_set_attr_object_ic(
-    obj_bits: u64,
-    attr_name_ptr: *const u8,
-    attr_name_len_bits: u64,
-    val_bits: u64,
-    site_bits: u64,
-) -> i64 {
-    unsafe {
-        crate::with_gil_entry!(_py, {
-            let Some(site_id) = ic_site_from_bits(site_bits) else {
-                return molt_set_attr_object(obj_bits, attr_name_ptr, attr_name_len_bits, val_bits);
-            };
-
-            let obj = obj_from_bits(obj_bits);
-            let mut class_bits = 0;
-            let mut version = 0;
-            let mut ptr_opt = None;
-
-            if let Some(ptr) = obj.as_ptr() {
-                ptr_opt = Some(ptr);
-                if object_type_id(ptr) == TYPE_ID_OBJECT {
-                    let cb = object_class_bits(ptr);
-                    if cb != 0
-                        && let Some(class_ptr) = obj_from_bits(cb).as_ptr()
-                        && object_type_id(class_ptr) == TYPE_ID_TYPE
-                    {
-                        class_bits = cb;
-                        version = class_layout_version_bits(class_ptr);
-                    }
-                }
-            }
-
-            if class_bits != 0
-                && let Some(entry) = ic_store_tls_lookup(_py, site_id, class_bits, version)
-                && entry.kind == ATTR_IC_KIND_INSTANCE_DICT
-            {
-                let dict_bits = instance_dict_bits(ptr_opt.unwrap());
-                if dict_bits != 0
-                    && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                    && object_type_id(dict_ptr) == TYPE_ID_DICT
-                {
-                    dict_set_in_place(_py, dict_ptr, entry.name_bits, val_bits);
-                    profile_hit_unchecked(&ATTR_SITE_NAME_CACHE_HIT_COUNT);
-                    return MoltObject::none().bits() as i64;
-                }
-            }
-
-            let attr_name_len = usize_from_bits(attr_name_len_bits);
-            let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
-            let Some(name_bits) = attr_name_bits_for_site(_py, site_id, slice) else {
-                return MoltObject::none().bits() as i64;
-            };
-
-            let ptr = if let Some(p) = ptr_opt {
-                p
-            } else {
-                dec_ref_bits(_py, name_bits);
-                let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
-                return attr_error(_py, type_name(_py, obj), attr_name);
-            };
-
-            // Attempt generic set attr which covers properties/descriptors/dict insertions.
-            let out = molt_set_attr_generic(ptr, attr_name_ptr, attr_name_len_bits, val_bits);
-
-            if out == MoltObject::none().bits() as i64 && class_bits != 0 && !exception_pending(_py)
-            {
-                // If it successfully updated, verify it landed in the dict to cache it.
-                // Doing this post-hoc allows us to skip parsing the MRO for descriptors manually,
-                // as long as we confirm it's now a dict entry and the layout version hasn't changed.
-                let dict_bits = instance_dict_bits(ptr);
-                if dict_bits != 0
-                    && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                    && object_type_id(dict_ptr) == TYPE_ID_DICT
-                    && let Some(stored_val) = dict_get_in_place(_py, dict_ptr, name_bits)
-                    && stored_val == val_bits
-                {
-                    // Make sure no new properties were added during execution that bumped the version
-                    let current_version =
-                        if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-                            class_layout_version_bits(class_ptr)
-                        } else {
-                            0
-                        };
-
-                    if current_version == version {
-                        ic_store_tls_insert(
-                            _py,
-                            site_id,
-                            AttrIcEntry {
-                                vm_epoch: 0,
-                                class_bits,
-                                version,
-                                kind: ATTR_IC_KIND_INSTANCE_DICT,
-                                name_bits,
-                            },
-                        );
-                    }
-                }
-            }
-
-            dec_ref_bits(_py, name_bits);
-            out
         })
     }
 }

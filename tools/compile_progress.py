@@ -14,11 +14,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-try:
-    from . import compile_governor
-except ImportError:  # pragma: no cover - script execution path.
-    import compile_governor  # type: ignore[no-redef]
-
 
 DEFAULT_EXTERNAL_ROOT = Path("/Volumes/APDataStore/Molt")
 
@@ -223,10 +218,6 @@ def _base_env(
     env["MOLT_DIFF_ROOT"] = str(diff_root)
     env["MOLT_DIFF_TMPDIR"] = str(diff_tmp)
     env["TMPDIR"] = str(diff_tmp)
-    env.setdefault(
-        "MOLT_COMPILE_GUARD_DIR",
-        str(target_root / ".molt_state" / "compile_guard"),
-    )
     env.setdefault("UV_CACHE_DIR", str(external_root / "uv-cache"))
     env["MOLT_USE_SCCACHE"] = sccache_mode
     env["CARGO_INCREMENTAL"] = cargo_incremental
@@ -394,66 +385,58 @@ def _run_case(
         stderr = ""
         returncode = 124
         try:
-            with compile_governor.compile_slot(
+            proc = subprocess.Popen(
+                wrapped_cmd,
+                cwd=repo_root,
                 env=env,
-                label=f"compile_progress:{case.name}:{label}",
-            ):
-                proc = subprocess.Popen(
-                    wrapped_cmd,
-                    cwd=repo_root,
-                    env=env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    start_new_session=(os.name != "nt"),
-                )
-                deadline = started + timeout_sec
-                next_heartbeat = started + heartbeat_sec
-                while proc.poll() is None:
-                    now = time.perf_counter()
-                    if now >= deadline:
-                        timed_out = True
-                        _terminate_process_group(proc)
-                        killed = _kill_run_scoped_processes(
-                            target_marker,
-                            include_daemon=False,
-                        )
-                        if killed:
-                            stderr = (
-                                stderr
-                                + "\n[kill-timeout] pids="
-                                + ",".join(str(pid) for pid in killed)
-                            )
-                        break
-                    if now >= next_heartbeat:
-                        print(
-                            (
-                                f"[compile-progress] heartbeat case={case.name} "
-                                f"label={label} elapsed={now - started:.1f}s"
-                            ),
-                            flush=True,
-                        )
-                        next_heartbeat = now + heartbeat_sec
-                    sleep_sec = min(
-                        1.0,
-                        max(0.01, deadline - now),
-                        max(0.01, next_heartbeat - now),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=(os.name != "nt"),
+            )
+            deadline = started + timeout_sec
+            next_heartbeat = started + heartbeat_sec
+            while proc.poll() is None:
+                now = time.perf_counter()
+                if now >= deadline:
+                    timed_out = True
+                    _terminate_process_group(proc)
+                    killed = _kill_run_scoped_processes(
+                        target_marker,
+                        include_daemon=False,
                     )
-                    time.sleep(sleep_sec)
-                if timed_out:
-                    try:
-                        flushed_stdout, flushed_stderr = proc.communicate(timeout=2.0)
-                        stdout = stdout + (flushed_stdout or "")
-                        stderr = stderr + (flushed_stderr or "")
-                    except subprocess.TimeoutExpired:
-                        pass
-                else:
-                    stdout, stderr = proc.communicate()
-                    returncode = proc.returncode
-        except RuntimeError as exc:
-            stderr = str(exc)
-            returncode = 124
-            timed_out = True
+                    if killed:
+                        stderr = (
+                            stderr
+                            + "\n[kill-timeout] pids="
+                            + ",".join(str(pid) for pid in killed)
+                        )
+                    break
+                if now >= next_heartbeat:
+                    print(
+                        (
+                            f"[compile-progress] heartbeat case={case.name} "
+                            f"label={label} elapsed={now - started:.1f}s"
+                        ),
+                        flush=True,
+                    )
+                    next_heartbeat = now + heartbeat_sec
+                sleep_sec = min(
+                    1.0,
+                    max(0.01, deadline - now),
+                    max(0.01, next_heartbeat - now),
+                )
+                time.sleep(sleep_sec)
+            if timed_out:
+                try:
+                    flushed_stdout, flushed_stderr = proc.communicate(timeout=2.0)
+                    stdout = stdout + (flushed_stdout or "")
+                    stderr = stderr + (flushed_stderr or "")
+                except subprocess.TimeoutExpired:
+                    pass
+            else:
+                stdout, stderr = proc.communicate()
+                returncode = proc.returncode
         except OSError as exc:
             stderr = str(exc)
             returncode = 1

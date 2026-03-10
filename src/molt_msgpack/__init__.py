@@ -23,7 +23,7 @@ except RuntimeError:
 
 def _require_msgpack_module() -> Any:
     try:
-        import msgpack
+        import msgpack  # type: ignore[import-not-found]
     except Exception as exc:  # pragma: no cover - environment dependent
         raise RuntimeError("msgpack is required for parse_msgpack fallback") from exc
     return msgpack
@@ -31,7 +31,7 @@ def _require_msgpack_module() -> Any:
 
 def _require_cbor_module() -> Any:
     try:
-        import cbor2
+        import cbor2  # type: ignore[import-not-found]
     except Exception as exc:  # pragma: no cover - environment dependent
         raise RuntimeError("cbor2 is required for parse_cbor fallback") from exc
     return cbor2

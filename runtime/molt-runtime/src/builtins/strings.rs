@@ -1053,18 +1053,16 @@ fn find_next_ascii_whitespace(hay: &[u8], start: usize) -> Option<usize> {
                 while i + 16 <= hay.len() {
                     let v = vld1q_u8(hay.as_ptr().add(i));
                     let is_ws = vorrq_u8(
-                        vorrq_u8(
-                            vorrq_u8(vceqq_u8(v, ws_space), vceqq_u8(v, ws_tab)),
-                            vorrq_u8(vceqq_u8(v, ws_nl), vceqq_u8(v, ws_cr)),
-                        ),
+                        vorrq_u8(vorrq_u8(vceqq_u8(v, ws_space), vceqq_u8(v, ws_tab)),
+                                 vorrq_u8(vceqq_u8(v, ws_nl), vceqq_u8(v, ws_cr))),
                         vorrq_u8(vceqq_u8(v, ws_vt), vceqq_u8(v, ws_ff)),
                     );
                     if vmaxvq_u8(is_ws) != 0 {
                         // At least one whitespace byte in this chunk — find exact position
                         let mut ws_bytes = [0u8; 16];
                         vst1q_u8(ws_bytes.as_mut_ptr(), is_ws);
-                        for (j, &ws) in ws_bytes.iter().enumerate() {
-                            if ws != 0 {
+                        for j in 0..16 {
+                            if ws_bytes[j] != 0 {
                                 return Some(i + j);
                             }
                         }
@@ -1133,7 +1131,12 @@ fn find_next_ascii_whitespace(hay: &[u8], start: usize) -> Option<usize> {
         }
     }
     // Scalar tail
-    (i..hay.len()).find(|&j| hay[j].is_ascii_whitespace())
+    for j in i..hay.len() {
+        if hay[j].is_ascii_whitespace() {
+            return Some(j);
+        }
+    }
+    None
 }
 
 /// Skip past ASCII whitespace bytes starting from `start`.
@@ -1155,10 +1158,8 @@ fn skip_ascii_whitespace(hay: &[u8], start: usize) -> usize {
                 while i + 16 <= hay.len() {
                     let v = vld1q_u8(hay.as_ptr().add(i));
                     let is_ws = vorrq_u8(
-                        vorrq_u8(
-                            vorrq_u8(vceqq_u8(v, ws_space), vceqq_u8(v, ws_tab)),
-                            vorrq_u8(vceqq_u8(v, ws_nl), vceqq_u8(v, ws_cr)),
-                        ),
+                        vorrq_u8(vorrq_u8(vceqq_u8(v, ws_space), vceqq_u8(v, ws_tab)),
+                                 vorrq_u8(vceqq_u8(v, ws_nl), vceqq_u8(v, ws_cr))),
                         vorrq_u8(vceqq_u8(v, ws_vt), vceqq_u8(v, ws_ff)),
                     );
                     if vminvq_u8(is_ws) == 0xFF {
@@ -1169,8 +1170,8 @@ fn skip_ascii_whitespace(hay: &[u8], start: usize) -> usize {
                     // Mixed — find first non-whitespace
                     let mut ws_bytes = [0u8; 16];
                     vst1q_u8(ws_bytes.as_mut_ptr(), is_ws);
-                    for (j, &ws) in ws_bytes.iter().enumerate() {
-                        if ws == 0 {
+                    for j in 0..16 {
+                        if ws_bytes[j] == 0 {
                             return i + j;
                         }
                     }
