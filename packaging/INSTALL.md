@@ -1,7 +1,9 @@
 # Molt install (binary release)
 
 This bundle includes the Molt CLI and (optionally) the `molt-worker` helper.
-It bootstraps a local Python venv on first run and installs Molt into it.
+The Molt toolchain may bootstrap local build dependencies on the development machine,
+but binaries produced by `molt build` are expected to run on target machines without any
+host Python installation or hidden CPython fallback.
 
 ## Requirements
 
