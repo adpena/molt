@@ -29,7 +29,7 @@ WASM targets:
   `WASI_SDK_PATH` if auto-detection is unavailable on your system.
 
 ## Platform Pitfalls
-- **macOS SDK/versioning**: Xcode CLT must be installed; if linking fails, confirm `xcrun --show-sdk-version` works and set `MACOSX_DEPLOYMENT_TARGET` for cross-linking.
+- **macOS SDK/versioning**: Xcode CLT must be installed. Native builds default to a stable minimum deployment target (`11.0` on Apple Silicon, `10.13` on x86_64) instead of the active SDK version; set `MACOSX_DEPLOYMENT_TARGET` only when you intentionally need a different minimum for cross-linking or newer APIs.
 - **macOS arm64 + Python 3.14**: uv-managed 3.14 can hang; install system `python3.14` and use `--no-managed-python` when needed (see `docs/spec/STATUS.md`).
 - **Windows toolchain conflicts**: avoid mixing MSVC and clang in the same build; keep one toolchain active.
 - **Windows path lengths**: keep repo/build paths short; avoid deeply nested output folders.

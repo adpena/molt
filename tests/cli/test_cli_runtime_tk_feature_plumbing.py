@@ -63,6 +63,26 @@ def test_is_valid_static_archive_checks_ar_magic(tmp_path: Path) -> None:
     assert not cli._is_valid_static_archive(invalid)
 
 
+def test_cargo_target_root_uses_workspace_config_target_dir(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    (tmp_path / ".cargo").mkdir()
+    configured_target_dir = tmp_path / "external-target"
+    (tmp_path / ".cargo" / "config.toml").write_text(
+        f"[build]\ntarget-dir = {str(configured_target_dir)!r}\n"
+    )
+    assert cli._cargo_target_root(tmp_path) == configured_target_dir
+
+
+def test_cargo_target_root_env_override_wins_over_workspace_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    (tmp_path / ".cargo").mkdir()
+    (tmp_path / ".cargo" / "config.toml").write_text("[build]\ntarget-dir = 'cfg-target'\n")
+    env_target_dir = tmp_path / "env-target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(env_target_dir))
+    assert cli._cargo_target_root(tmp_path) == env_target_dir
+
+
 def test_ensure_runtime_lib_passes_tk_feature_to_native_build(
     tmp_path: Path, monkeypatch
 ) -> None:

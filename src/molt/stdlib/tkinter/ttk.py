@@ -753,6 +753,19 @@ class LabeledScale(Frame):
 class Scrollbar(Widget):
     _widget_command = "ttk::scrollbar"
 
+    def get(self):
+        _require_gui_capability()
+        result = self.tk.call(self._w, "get")
+        return tuple(self.tk.getdouble(part) for part in self.tk.splitlist(result))
+
+    def set(self, first, last=None):
+        _require_gui_capability()
+        if last is None:
+            if not isinstance(first, (tuple, list)) or len(first) != 2:
+                raise TypeError("set() requires first and last fractions")
+            first, last = first
+        return self.tk.call(self._w, "set", first, last)
+
 
 class Separator(Widget):
     _widget_command = "ttk::separator"

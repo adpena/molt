@@ -10,7 +10,7 @@ pub extern "C" fn molt_sqlite3_connect(path_bits: u64) -> u64 {
         let Some(path_str) = string_obj_to_owned(path_obj) else {
             return raise_exception::<u64>(_py, "TypeError", "database path must be a string");
         };
-        
+
         let path = Path::new(&path_str);
         match SqliteConn::open(path, SqliteOpenMode::ReadWrite) {
             Ok(conn) => {
@@ -19,9 +19,11 @@ pub extern "C" fn molt_sqlite3_connect(path_bits: u64) -> u64 {
                 let handle = register_ptr(ptr);
                 MoltObject::from_int(handle as i64).bits()
             }
-            Err(e) => {
-                raise_exception::<u64>(_py, "RuntimeError", &format!("sqlite3 connect failed: {}", e))
-            }
+            Err(e) => raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                &format!("sqlite3 connect failed: {}", e),
+            ),
         }
     })
 }
@@ -33,9 +35,9 @@ pub extern "C" fn molt_sqlite3_close(handle_bits: u64) -> u64 {
             Some(h) => h as u64,
             None => return raise_exception::<u64>(_py, "TypeError", "invalid handle"),
         };
-        
+
         if let Some(ptr) = release_ptr(handle as *mut u8) {
-             let _ = unsafe { Box::from_raw(ptr as *mut SqliteConn) };
+            let _ = unsafe { Box::from_raw(ptr as *mut SqliteConn) };
         }
         MoltObject::none().bits()
     })
@@ -48,7 +50,7 @@ pub extern "C" fn molt_sqlite3_execute(handle_bits: u64, sql_bits: u64) -> u64 {
             Some(h) => h as u64,
             None => return raise_exception::<u64>(_py, "TypeError", "invalid handle"),
         };
-        
+
         let sql_obj = obj_from_bits(sql_bits);
         let Some(sql_str) = string_obj_to_owned(sql_obj) else {
             return raise_exception::<u64>(_py, "TypeError", "sql must be a string");
@@ -56,23 +58,37 @@ pub extern "C" fn molt_sqlite3_execute(handle_bits: u64, sql_bits: u64) -> u64 {
 
         let ptr = match resolve_ptr(handle) {
             Some(p) => p as *mut SqliteConn,
-            None => return raise_exception::<u64>(_py, "RuntimeError", "invalid connection handle"),
+            None => {
+                return raise_exception::<u64>(_py, "RuntimeError", "invalid connection handle");
+            }
         };
-        
+
         let conn = unsafe { &*ptr };
         let mut stmt = match conn.connection().prepare(&sql_str) {
             Ok(s) => s,
-            Err(e) => return raise_exception::<u64>(_py, "RuntimeError", &format!("sqlite3 prepare failed: {}", e)),
+            Err(e) => {
+                return raise_exception::<u64>(
+                    _py,
+                    "RuntimeError",
+                    &format!("sqlite3 prepare failed: {}", e),
+                );
+            }
         };
-        
+
         let column_count = stmt.column_count();
         let mut rows_list = Vec::new();
-        
+
         let mut rows = match stmt.query([]) {
             Ok(r) => r,
-            Err(e) => return raise_exception::<u64>(_py, "RuntimeError", &format!("sqlite3 query failed: {}", e)),
+            Err(e) => {
+                return raise_exception::<u64>(
+                    _py,
+                    "RuntimeError",
+                    &format!("sqlite3 query failed: {}", e),
+                );
+            }
         };
-        
+
         while let Ok(Some(row)) = rows.next() {
             let mut row_list = Vec::with_capacity(column_count);
             for i in 0..column_count {
@@ -94,12 +110,16 @@ pub extern "C" fn molt_sqlite3_execute(handle_bits: u64, sql_bits: u64) -> u64 {
             }
             let row_tuple_ptr = alloc_tuple(_py, &row_list);
             rows_list.push(MoltObject::from_ptr(row_tuple_ptr).bits());
-            for b in row_list { dec_ref_bits(_py, b); }
+            for b in row_list {
+                dec_ref_bits(_py, b);
+            }
         }
-        
+
         let final_list_ptr = alloc_list(_py, &rows_list);
-        for b in rows_list { dec_ref_bits(_py, b); }
-        
+        for b in rows_list {
+            dec_ref_bits(_py, b);
+        }
+
         MoltObject::from_ptr(final_list_ptr).bits()
     })
 }

@@ -14,7 +14,6 @@ use std::time::Duration;
 use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},
     path::PathBuf,
-    ptr,
     thread::{self, ThreadId},
 };
 
@@ -32,30 +31,89 @@ type TclInitFn = unsafe extern "C" fn(*mut c_void) -> c_int;
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 type TclEvalExFn = unsafe extern "C" fn(*mut c_void, *const c_char, c_int, c_int) -> c_int;
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
-type TclGetStringResultFn = unsafe extern "C" fn(*mut c_void) -> *const c_char;
+type TclGetObjResultFn = unsafe extern "C" fn(*mut c_void) -> *mut c_void;
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+type TclGetStringFn = unsafe extern "C" fn(*mut c_void) -> *const c_char;
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 type TclDoOneEventFn = unsafe extern "C" fn(c_int) -> c_int;
-#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
-type TclSplitListFn =
-    unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_int, *mut *mut *const c_char) -> c_int;
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 type TclMergeFn = unsafe extern "C" fn(c_int, *const *const c_char) -> *mut c_char;
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 type TclFreeFn = unsafe extern "C" fn(*mut c_char);
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
-#[derive(Clone, Copy)]
 struct TclApi {
     find_executable: TclFindExecutableFn,
     create_interp: TclCreateInterpFn,
     delete_interp: TclDeleteInterpFn,
     init: TclInitFn,
     eval_ex: TclEvalExFn,
-    get_string_result: TclGetStringResultFn,
+    get_obj_result: TclGetObjResultFn,
+    get_string: TclGetStringFn,
     do_one_event: TclDoOneEventFn,
-    split_list: TclSplitListFn,
     merge: TclMergeFn,
     free: TclFreeFn,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+struct TclRuntime {
+    api: TclApi,
+    library_path: PathBuf,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+fn bundled_tcl_library_names() -> &'static [&'static str] {
+    if cfg!(target_os = "macos") {
+        &["libtcl9.0.dylib", "libtcl8.7.dylib", "libtcl8.6.dylib"]
+    } else if cfg!(target_os = "windows") {
+        &[
+            "tcl90t.dll",
+            "tcl90.dll",
+            "tcl87t.dll",
+            "tcl87.dll",
+            "tcl86t.dll",
+            "tcl86.dll",
+        ]
+    } else {
+        &[
+            "libtcl9.0.so",
+            "libtcl8.7.so.0",
+            "libtcl8.7.so",
+            "libtcl8.6.so.0",
+            "libtcl8.6.so",
+        ]
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+fn bundled_tcl_library_relative_roots() -> &'static [&'static [&'static str]] {
+    if cfg!(target_os = "macos") {
+        &[&["tcl-tk", "lib"], &["..", "Resources", "tcl-tk", "lib"]]
+    } else if cfg!(target_os = "windows") {
+        &[&["tcl-tk", "lib"], &["tcl-tk", "bin"]]
+    } else {
+        &[&["tcl-tk", "lib"]]
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+fn current_exe_tcl_library_candidates() -> Vec<PathBuf> {
+    let Ok(exe) = std::env::current_exe() else {
+        return Vec::new();
+    };
+    let Some(exe_dir) = exe.parent() else {
+        return Vec::new();
+    };
+    let mut candidates = Vec::new();
+    for relative_root in bundled_tcl_library_relative_roots() {
+        let base = relative_root
+            .iter()
+            .fold(exe_dir.to_path_buf(), |path, segment| path.join(segment));
+        for name in bundled_tcl_library_names() {
+            candidates.push(base.join(name));
+        }
+    }
+    candidates
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
@@ -66,11 +124,17 @@ fn tcl_library_candidates() -> Vec<PathBuf> {
             candidates.push(PathBuf::from(path));
         }
     }
+    candidates.extend(current_exe_tcl_library_candidates());
     let mut preferred_names: Vec<&'static str> = Vec::new();
     if cfg!(target_os = "macos") {
-        preferred_names.extend(["libtcl8.7.dylib", "libtcl8.6.dylib", "libtcl.dylib"]);
+        preferred_names.extend([
+            "libtcl9.0.dylib",
+            "libtcl8.7.dylib",
+            "libtcl8.6.dylib",
+            "libtcl.dylib",
+        ]);
         candidates.push(PathBuf::from(
-            "/System/Library/Frameworks/Tcl.framework/Tcl",
+            "/opt/homebrew/opt/tcl-tk/lib/libtcl9.0.dylib",
         ));
         candidates.push(PathBuf::from(
             "/opt/homebrew/opt/tcl-tk/lib/libtcl8.7.dylib",
@@ -80,6 +144,7 @@ fn tcl_library_candidates() -> Vec<PathBuf> {
         ));
         candidates.push(PathBuf::from("/usr/local/opt/tcl-tk/lib/libtcl8.7.dylib"));
         candidates.push(PathBuf::from("/usr/local/opt/tcl-tk/lib/libtcl8.6.dylib"));
+        candidates.push(PathBuf::from("/opt/local/lib/libtcl9.0.dylib"));
         candidates.push(PathBuf::from("/opt/local/lib/libtcl8.7.dylib"));
         candidates.push(PathBuf::from("/opt/local/lib/libtcl8.6.dylib"));
         candidates.push(PathBuf::from(
@@ -87,6 +152,9 @@ fn tcl_library_candidates() -> Vec<PathBuf> {
         ));
         candidates.push(PathBuf::from(
             "/Library/Frameworks/Python.framework/Versions/3.12/lib/libtcl8.6.dylib",
+        ));
+        candidates.push(PathBuf::from(
+            "/System/Library/Frameworks/Tcl.framework/Tcl",
         ));
     } else if cfg!(target_os = "windows") {
         preferred_names.extend(["tcl87t.dll", "tcl86t.dll", "tcl87.dll", "tcl86.dll"]);
@@ -121,6 +189,94 @@ fn tcl_library_candidates() -> Vec<PathBuf> {
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+fn existing_dir_with_file(base: &std::path::Path, dirs: &[&str], file: &str) -> Option<PathBuf> {
+    for dir in dirs {
+        let candidate = base.join(dir);
+        if candidate.join(file).exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+fn runtime_script_search_roots(library_path: &std::path::Path) -> Vec<PathBuf> {
+    let Some(lib_dir) = library_path.parent() else {
+        return Vec::new();
+    };
+    let mut roots = vec![lib_dir.to_path_buf()];
+    if lib_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
+    {
+        if let Some(parent) = lib_dir.parent() {
+            roots.push(parent.join("lib"));
+        }
+    }
+    roots
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+fn tcl_script_dir_for_library(library_path: &std::path::Path) -> Option<PathBuf> {
+    for root in runtime_script_search_roots(library_path) {
+        if let Some(path) = existing_dir_with_file(
+            &root,
+            &["tcl9.0", "tcl9", "tcl8.7", "tcl8.6", "tcl8.5"],
+            "init.tcl",
+        ) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+fn tk_script_dir_for_library(library_path: &std::path::Path) -> Option<PathBuf> {
+    for root in runtime_script_search_roots(library_path) {
+        if let Some(path) =
+            existing_dir_with_file(&root, &["tk9.0", "tk8.7", "tk8.6", "tk8.5"], "pkgIndex.tcl")
+        {
+            return Some(path);
+        }
+    }
+    None
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+fn configure_tcl_runtime_env(library_path: &std::path::Path) {
+    if std::env::var_os("TCL_LIBRARY").is_none() {
+        if let Some(path) = tcl_script_dir_for_library(library_path) {
+            // Tcl_Init consults process env before any interpreter commands are available.
+            unsafe { std::env::set_var("TCL_LIBRARY", path) };
+        }
+    }
+    if std::env::var_os("TK_LIBRARY").is_none() {
+        if let Some(path) = tk_script_dir_for_library(library_path) {
+            // Tk package lookup inherits the same runtime-scoped env selection.
+            unsafe { std::env::set_var("TK_LIBRARY", path) };
+        }
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+fn configure_tcl_auto_path(
+    interp: &TclInterpreter,
+    library_path: &std::path::Path,
+) -> Result<(), String> {
+    let Some(lib_dir) = library_path.parent() else {
+        return Ok(());
+    };
+    interp
+        .eval((
+            "lappend",
+            "auto_path",
+            lib_dir.to_string_lossy().into_owned(),
+        ))
+        .map(|_| ())
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 fn tcl_find_executable_arg() -> CString {
     let mut candidate_bytes: Vec<Vec<u8>> = Vec::new();
     if let Ok(path) = std::env::current_exe() {
@@ -139,51 +295,60 @@ fn tcl_find_executable_arg() -> CString {
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
-fn load_tcl_api() -> Result<&'static TclApi, String> {
-    static API: OnceLock<Result<TclApi, String>> = OnceLock::new();
-    API.get_or_init(|| {
-        let mut last_error = String::from("no Tcl library candidate succeeded");
-        for path in tcl_library_candidates() {
-            let lib = match unsafe { Library::new(&path) } {
-                Ok(lib) => lib,
-                Err(err) => {
-                    last_error = format!("failed to load {}: {err}", path.display());
-                    continue;
+fn load_tcl_runtime() -> Result<&'static TclRuntime, String> {
+    static RUNTIME: OnceLock<Result<TclRuntime, String>> = OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            let mut last_error = String::from("no Tcl library candidate succeeded");
+            for path in tcl_library_candidates() {
+                let lib = match unsafe { Library::new(&path) } {
+                    Ok(lib) => lib,
+                    Err(err) => {
+                        last_error = format!("failed to load {}: {err}", path.display());
+                        continue;
+                    }
+                };
+                let leaked: &'static Library = Box::leak(Box::new(lib));
+                unsafe {
+                    let load = |symbol: &[u8]| -> Result<*const (), String> {
+                        leaked
+                            .get::<*const ()>(symbol)
+                            .map(|sym| *sym)
+                            .map_err(|err| {
+                                format!(
+                                    "failed to load symbol {} from {}: {err}",
+                                    String::from_utf8_lossy(symbol),
+                                    path.display()
+                                )
+                            })
+                    };
+                    let runtime = TclRuntime {
+                        api: TclApi {
+                            find_executable: std::mem::transmute(load(b"Tcl_FindExecutable\0")?),
+                            create_interp: std::mem::transmute(load(b"Tcl_CreateInterp\0")?),
+                            delete_interp: std::mem::transmute(load(b"Tcl_DeleteInterp\0")?),
+                            init: std::mem::transmute(load(b"Tcl_Init\0")?),
+                            eval_ex: std::mem::transmute(load(b"Tcl_EvalEx\0")?),
+                            get_obj_result: std::mem::transmute(load(b"Tcl_GetObjResult\0")?),
+                            get_string: std::mem::transmute(load(b"Tcl_GetString\0")?),
+                            do_one_event: std::mem::transmute(load(b"Tcl_DoOneEvent\0")?),
+                            merge: std::mem::transmute(load(b"Tcl_Merge\0")?),
+                            free: std::mem::transmute(load(b"Tcl_Free\0")?),
+                        },
+                        library_path: path.clone(),
+                    };
+                    return Ok(runtime);
                 }
-            };
-            let leaked: &'static Library = Box::leak(Box::new(lib));
-            unsafe {
-                let load = |symbol: &[u8]| -> Result<*const (), String> {
-                    leaked
-                        .get::<*const ()>(symbol)
-                        .map(|sym| *sym)
-                        .map_err(|err| {
-                            format!(
-                                "failed to load symbol {} from {}: {err}",
-                                String::from_utf8_lossy(symbol),
-                                path.display()
-                            )
-                        })
-                };
-                let api = TclApi {
-                    find_executable: std::mem::transmute(load(b"Tcl_FindExecutable\0")?),
-                    create_interp: std::mem::transmute(load(b"Tcl_CreateInterp\0")?),
-                    delete_interp: std::mem::transmute(load(b"Tcl_DeleteInterp\0")?),
-                    init: std::mem::transmute(load(b"Tcl_Init\0")?),
-                    eval_ex: std::mem::transmute(load(b"Tcl_EvalEx\0")?),
-                    get_string_result: std::mem::transmute(load(b"Tcl_GetStringResult\0")?),
-                    do_one_event: std::mem::transmute(load(b"Tcl_DoOneEvent\0")?),
-                    split_list: std::mem::transmute(load(b"Tcl_SplitList\0")?),
-                    merge: std::mem::transmute(load(b"Tcl_Merge\0")?),
-                    free: std::mem::transmute(load(b"Tcl_Free\0")?),
-                };
-                return Ok(api);
             }
-        }
-        Err(last_error)
-    })
-    .as_ref()
-    .map_err(Clone::clone)
+            Err(last_error)
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+fn load_tcl_api() -> Result<&'static TclApi, String> {
+    Ok(&load_tcl_runtime()?.api)
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
@@ -244,7 +409,7 @@ impl TclObj {
                 }
                 let interp = interp_addr as *mut c_void;
                 let api = load_tcl_api()?;
-                let parts = tcl_split_list(api, interp, text)?;
+                let parts = tcl_list_elements(api, interp, text)?;
                 Ok(parts
                     .into_iter()
                     .map(|part| TclObj::scalar_from_interp(part, interp_addr))
@@ -331,7 +496,11 @@ impl_into_tcl_command_tuple!(A => a, B => b, C => c, D => d);
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 fn tcl_result_string(api: &TclApi, interp: *mut c_void) -> String {
-    let ptr = unsafe { (api.get_string_result)(interp) };
+    let obj = unsafe { (api.get_obj_result)(interp) };
+    if obj.is_null() {
+        return String::new();
+    }
+    let ptr = unsafe { (api.get_string)(obj) };
     if ptr.is_null() {
         return String::new();
     }
@@ -341,35 +510,41 @@ fn tcl_result_string(api: &TclApi, interp: *mut c_void) -> String {
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
-fn tcl_split_list(api: &TclApi, interp: *mut c_void, list: &str) -> Result<Vec<String>, String> {
-    let list_c = CString::new(list.as_bytes())
-        .map_err(|_| "Tcl list string contains interior NUL byte".to_string())?;
-    let mut argc: c_int = 0;
-    let mut argv: *mut *const c_char = ptr::null_mut();
-    let rc = unsafe { (api.split_list)(interp, list_c.as_ptr(), &mut argc, &mut argv) };
+fn tcl_eval_parts(api: &TclApi, interp: *mut c_void, parts: &[String]) -> Result<String, String> {
+    let script = tcl_merge_args(api, parts)?;
+    let rc = unsafe {
+        (api.eval_ex)(
+            interp,
+            script.as_ptr() as *const c_char,
+            script.len() as c_int,
+            0,
+        )
+    };
     if rc != TCL_OK {
         let message = tcl_result_string(api, interp);
         return Err(if message.is_empty() {
-            "failed to split Tcl list".to_string()
+            "Tcl_EvalEx failed".to_string()
         } else {
             message
         });
     }
-    let mut out = Vec::with_capacity(argc.max(0) as usize);
-    if !argv.is_null() {
-        for idx in 0..argc {
-            let entry_ptr = unsafe { *argv.add(idx as usize) };
-            if entry_ptr.is_null() {
-                out.push(String::new());
-                continue;
-            }
-            out.push(
-                unsafe { CStr::from_ptr(entry_ptr) }
-                    .to_string_lossy()
-                    .into_owned(),
-            );
-        }
-        unsafe { (api.free)(argv.cast::<c_char>()) };
+    Ok(tcl_result_string(api, interp))
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+fn tcl_list_elements(api: &TclApi, interp: *mut c_void, list: &str) -> Result<Vec<String>, String> {
+    let list_owned = list.to_string();
+    let length_text = tcl_eval_parts(api, interp, &[String::from("llength"), list_owned.clone()])?;
+    let length = length_text
+        .parse::<usize>()
+        .map_err(|_| format!("failed to parse Tcl list length from \"{length_text}\""))?;
+    let mut out = Vec::with_capacity(length);
+    for index in 0..length {
+        out.push(tcl_eval_parts(
+            api,
+            interp,
+            &[String::from("lindex"), list_owned.clone(), index.to_string()],
+        )?);
     }
     Ok(out)
 }
@@ -405,7 +580,9 @@ impl TclInterpreter {
     fn new() -> Result<Self, String> {
         static FIND_EXECUTABLE_ONCE: OnceLock<()> = OnceLock::new();
         static FIND_EXECUTABLE_ARG: OnceLock<CString> = OnceLock::new();
-        let api = load_tcl_api()?;
+        let runtime = load_tcl_runtime()?;
+        let api = &runtime.api;
+        configure_tcl_runtime_env(&runtime.library_path);
         let executable_arg = FIND_EXECUTABLE_ARG.get_or_init(tcl_find_executable_arg);
         FIND_EXECUTABLE_ONCE.get_or_init(|| unsafe {
             (api.find_executable)(executable_arg.as_ptr());
@@ -424,11 +601,13 @@ impl TclInterpreter {
                 err
             });
         }
-        Ok(Self {
+        let interp = Self {
             interp_addr: interp_ptr as usize,
             owner_thread: thread::current().id(),
             api,
-        })
+        };
+        configure_tcl_auto_path(&interp, &runtime.library_path)?;
+        Ok(interp)
     }
 
     fn interp_ptr(&self) -> *mut c_void {
@@ -525,16 +704,10 @@ const TK_BACKEND_IMPLEMENTED: bool = true;
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 fn tk_runtime_available() -> bool {
-    static AVAILABLE: OnceLock<bool> = OnceLock::new();
-    *AVAILABLE.get_or_init(|| {
-        std::panic::catch_unwind(|| {
-            let Ok(interp) = TclInterpreter::new() else {
-                return false;
-            };
-            interp.eval(("package", "require", "Tk")).is_ok()
-        })
-        .unwrap_or(false)
-    })
+    // Keep availability probes lightweight. Eager `package require Tk` during
+    // stdlib import can trigger full Cocoa/Tk initialization before the app is
+    // ready to create a real root window on macOS.
+    tcl_runtime_available()
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
@@ -943,7 +1116,7 @@ fn tk_gate_state(py: &PyToken<'_>, op: TkOperation) -> TkGateState {
     let backend_unimplemented = !wasm_unsupported
         && match op {
             TkOperation::AvailabilityProbe => !TK_BACKEND_IMPLEMENTED || !tk_runtime_available(),
-            TkOperation::AppNew => !TK_BACKEND_IMPLEMENTED || !tcl_runtime_available(),
+            TkOperation::AppNew => !TK_BACKEND_IMPLEMENTED,
             _ => false,
         };
     let missing_gui_window =
@@ -1088,14 +1261,6 @@ fn require_tk_app_new(py: &PyToken<'_>, _use_tk: bool) -> Result<(), u64> {
         || has_platform_preflight_blockers(&state)
     {
         return Err(raise_tk_gate_error(py, TkOperation::AppNew, &state));
-    }
-    #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
-    if _use_tk && !tk_runtime_available() {
-        let unavailable = TkGateState {
-            backend_unimplemented: true,
-            ..TkGateState::default()
-        };
-        return Err(raise_tk_gate_error(py, TkOperation::AppNew, &unavailable));
     }
     Ok(())
 }
@@ -2764,6 +2929,13 @@ fn tcl_obj_from_bits(py: &PyToken<'_>, bits: u64) -> TclObj {
     if obj.is_none() {
         return TclObj::from("");
     }
+    if let Some(items) = decode_value_list(obj) {
+        return TclObj::new_list(
+            items
+                .into_iter()
+                .map(|item_bits| tcl_obj_from_bits(py, item_bits)),
+        );
+    }
     if let Some(i) = to_i64(obj) {
         return TclObj::from(i);
     }
@@ -2959,7 +3131,7 @@ fn dispatch_named_callback_from_strings(
         return Ok(true);
     }
 
-    let (callback_bits, oneshot) = {
+    let (callback_bits, oneshot, removed_callback_bits) = {
         let mut registry = tk_registry().lock().unwrap();
         let app = app_mut_from_registry(py, &mut registry, handle)?;
         let Some(bits) = app.callbacks.get(&command_name).copied() else {
@@ -2967,8 +3139,10 @@ fn dispatch_named_callback_from_strings(
         };
         inc_ref_bits(py, bits);
         let oneshot = app.one_shot_callbacks.remove(&command_name);
+        let mut removed_bits = None;
         if oneshot {
-            if let Some(old_bits) = app.callbacks.remove(&command_name) {
+            removed_bits = app.callbacks.remove(&command_name);
+            if let Some(old_bits) = removed_bits {
                 debug_assert_eq!(old_bits, bits);
             }
             let oneshot_tokens = tokens_for_after_command(app, &command_name);
@@ -2976,9 +3150,8 @@ fn dispatch_named_callback_from_strings(
                 unregister_after_command_token(app, token);
             }
             remove_after_events_for_tokens(app, &oneshot_tokens);
-            unregister_tcl_callback_proc(app, &command_name);
         }
-        (bits, oneshot)
+        (bits, oneshot, removed_bits)
     };
 
     let mut arg_bits = Vec::new();
@@ -2996,7 +3169,18 @@ fn dispatch_named_callback_from_strings(
     }
 
     let out_bits = invoke_callback(py, callback_bits, &arg_bits);
+    if oneshot {
+        let mut registry = tk_registry().lock().unwrap();
+        if let Some(app) = registry.apps.get_mut(&handle) {
+            // Defer Tcl proc removal until the callback has returned to avoid
+            // tearing down the command while its timer dispatch is still unwinding.
+            unregister_tcl_callback_proc(app, &command_name);
+        }
+    }
     dec_ref_bits(py, callback_bits);
+    if let Some(bits) = removed_callback_bits {
+        dec_ref_bits(py, bits);
+    }
     for allocated in arg_bits {
         dec_ref_bits(py, allocated);
     }
@@ -13856,7 +14040,7 @@ pub extern "C" fn molt_tk_mainloop(app_bits: u64) -> u64 {
                 continue;
             }
             clear_last_error(handle);
-            return MoltObject::none().bits();
+            std::thread::sleep(Duration::from_millis(10));
         }
     })
 }
@@ -16414,6 +16598,104 @@ mod tests {
     fn tcl_find_executable_arg_prefers_non_empty_path() {
         let arg = tcl_find_executable_arg();
         assert!(!arg.as_bytes().is_empty());
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+    #[test]
+    fn tcl_script_dir_detection_prefers_adjacent_runtime_dirs() {
+        let root =
+            std::env::temp_dir().join(format!("molt-tcl-runtime-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("lib/tcl9.0")).expect("create tcl dir");
+        std::fs::create_dir_all(root.join("lib/tk9.0")).expect("create tk dir");
+        std::fs::write(root.join("lib/tcl9.0/init.tcl"), "").expect("write init.tcl");
+        std::fs::write(root.join("lib/tk9.0/pkgIndex.tcl"), "").expect("write pkgIndex.tcl");
+        let lib = root.join("lib").join(bundled_tcl_library_names()[0]);
+        assert_eq!(
+            tcl_script_dir_for_library(&lib),
+            Some(root.join("lib/tcl9.0"))
+        );
+        assert_eq!(
+            tk_script_dir_for_library(&lib),
+            Some(root.join("lib/tk9.0"))
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+    #[test]
+    fn tcl_script_dir_detection_supports_bundled_bin_layouts() {
+        let root = std::env::temp_dir().join(format!(
+            "molt-tcl-runtime-bin-layout-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("bin")).expect("create bin dir");
+        std::fs::create_dir_all(root.join("lib/tcl9.0")).expect("create tcl dir");
+        std::fs::create_dir_all(root.join("lib/tk9.0")).expect("create tk dir");
+        std::fs::write(root.join("lib/tcl9.0/init.tcl"), "").expect("write init.tcl");
+        std::fs::write(root.join("lib/tk9.0/pkgIndex.tcl"), "").expect("write pkgIndex.tcl");
+        let lib = root.join("bin").join(bundled_tcl_library_names()[0]);
+        assert_eq!(
+            tcl_script_dir_for_library(&lib),
+            Some(root.join("lib/tcl9.0"))
+        );
+        assert_eq!(
+            tk_script_dir_for_library(&lib),
+            Some(root.join("lib/tk9.0"))
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+    #[test]
+    fn current_exe_candidate_search_includes_bundled_runtime_locations() {
+        let candidates = current_exe_tcl_library_candidates();
+        let joined = candidates
+            .into_iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if cfg!(target_os = "macos") {
+            assert!(joined.contains("tcl-tk/lib/libtcl9.0.dylib"));
+            assert!(joined.contains("Resources/tcl-tk/lib/libtcl9.0.dylib"));
+        } else if cfg!(target_os = "windows") {
+            assert!(joined.contains("tcl-tk/lib/tcl90t.dll"));
+            assert!(joined.contains("tcl-tk/bin/tcl90t.dll"));
+        } else {
+            assert!(joined.contains("tcl-tk/lib/libtcl9.0.so"));
+        }
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+    #[test]
+    fn tcl_obj_from_bits_preserves_sequence_structure_for_native_tk_calls() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry!(_py, {
+            let family_ptr = crate::alloc_string(&_py, b"Avenir Next");
+            assert!(!family_ptr.is_null());
+            let family_bits = MoltObject::from_ptr(family_ptr).bits();
+            let size_bits = MoltObject::from_int(26).bits();
+            let weight_ptr = crate::alloc_string(&_py, b"bold");
+            assert!(!weight_ptr.is_null());
+            let weight_bits = MoltObject::from_ptr(weight_ptr).bits();
+            let font_ptr = crate::alloc_list(&_py, &[family_bits, size_bits, weight_bits]);
+            assert!(!font_ptr.is_null());
+            let font_bits = MoltObject::from_ptr(font_ptr).bits();
+
+            let font_obj = tcl_obj_from_bits(&_py, font_bits);
+            let items = font_obj
+                .get_elements()
+                .expect("tuple/list should lower to a Tcl list")
+                .map(|item| item.to_string())
+                .collect::<Vec<_>>();
+
+            assert_eq!(items, vec!["Avenir Next", "26", "bold"]);
+
+            dec_ref_bits(&_py, font_bits);
+            dec_ref_bits(&_py, weight_bits);
+            dec_ref_bits(&_py, family_bits);
+        });
     }
 
     #[test]

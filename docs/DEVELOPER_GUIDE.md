@@ -34,7 +34,7 @@ For the canonical vision and scope, read [docs/spec/areas/core/0000-vision.md](d
 - **WASM**: linked builds require `wasm-ld` + `wasm-tools` across platforms.
 
 ## Platform Pitfalls
-- **macOS SDK versioning**: if linking fails, ensure Xcode CLT is installed and `xcrun --show-sdk-version` works; set `MACOSX_DEPLOYMENT_TARGET` when cross-linking.
+- **macOS SDK versioning**: ensure Xcode CLT is installed. Native builds default to a stable minimum deployment target (`11.0` on Apple Silicon, `10.13` on x86_64) instead of the active SDK version; set `MACOSX_DEPLOYMENT_TARGET` when you intentionally need a different minimum for cross-linking or newer APIs.
 - **arm64 Python 3.14**: uv-managed 3.14 can hang on macOS arm64; install a system `python3.14` and use `--no-managed-python` (see [docs/spec/STATUS.md](docs/spec/STATUS.md)).
 - **Windows toolchain conflicts**: prefer a single active toolchain (MSVC or clang); ensure `clang`, `cmake`, and `ninja` are on PATH.
 - **Windows path lengths**: keep repo paths short and avoid deeply nested build output paths when possible.
@@ -50,6 +50,7 @@ For the canonical vision and scope, read [docs/spec/areas/core/0000-vision.md](d
 - **dyld incident handling**: diff retries force `MOLT_BACKEND_DAEMON=0`; set `MOLT_DIFF_QUARANTINE_ON_DYLD=1` only if you explicitly want cold target/state quarantine.
 - **no-cache safety lane**: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache`; default is platform-safe auto (`1` on macOS, `0` elsewhere), and dyld guard/retry also enables it for the active run.
 - **Shared diff Cargo target**: set `MOLT_DIFF_CARGO_TARGET_DIR` to reuse one shared Cargo artifact root across diff workers; `tools/throughput_env.sh --apply` sets this to `CARGO_TARGET_DIR` by default.
+- **Cargo target discovery**: when `CARGO_TARGET_DIR` is unset, Molt resolves the workspace `build.target-dir` from `.cargo/config.toml` before falling back to `target/`, so `molt build` and `molt doctor` stay aligned with the repo default.
 - **Diff run lock**: the harness now uses `<CARGO_TARGET_DIR>/.molt_state/diff_run.lock` to serialize overlapping full diff runs across agents. Tune waiting via `MOLT_DIFF_RUN_LOCK_WAIT_SEC` (default 900) and `MOLT_DIFF_RUN_LOCK_POLL_SEC`.
 
 ## Fast Build Playbook

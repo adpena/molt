@@ -965,6 +965,26 @@ tk_after_token = root.after(9, lambda: tk_after_events.append("root-fired"))
 checks["tkinter_after_callback_invoked"] = (
     tk_after_token == "after#9" and tk_after_events == ["root-fired"]
 )
+reported_exceptions = []
+root.report_callback_exception = (
+    lambda exc, val, _tb: reported_exceptions.append((exc.__name__, str(val)))
+)
+tk_after_error_token = root.after(
+    3, lambda: (_ for _ in ()).throw(RuntimeError("after-boom"))
+)
+checks["tkinter_after_reports_callback_exception"] = (
+    tk_after_error_token == "after#3"
+    and reported_exceptions == [("RuntimeError", "after-boom")]
+)
+reported_exceptions.clear()
+tkinter.CallWrapper(
+    lambda: (_ for _ in ()).throw(RuntimeError("callwrapper-boom")),
+    None,
+    root,
+)()
+checks["tkinter_callwrapper_reports_callback_exception"] = (
+    reported_exceptions == [("RuntimeError", "callwrapper-boom")]
+)
 
 widget_call_start = len(root._tk_app._handle["calls"])
 button = tkinter.Button(root, text="button-probe")
@@ -1999,6 +2019,11 @@ scale = ttk.Scale(root)
 scale.configure({"from": 1, "to": 9})
 scale.configure(from_=2)
 
+scrollbar = ttk.Scrollbar(root)
+checks["ttk_scrollbar_set"] = callable(getattr(scrollbar, "set", None))
+if checks["ttk_scrollbar_set"]:
+    scrollbar.set(0.0, 1.0)
+
 option_var = tkinter.StringVar(root, value="alpha")
 option = ttk.OptionMenu(root, option_var, "alpha", "beta")
 had_option_var = hasattr(option, "_variable")
@@ -2030,6 +2055,7 @@ checks["scale_configure"] = (
     and _saw_prefix(scale._w, "configure", "-from_", 2)
     and len(range_changed_events) == 2
 )
+checks["ttk_scrollbar_routing"] = _saw_prefix(scrollbar._w, "set", 0.0, 1.0)
 
 root.destroy()
 
@@ -2214,6 +2240,8 @@ def test_ttk_phase0_wrapper_parity_surface_and_methods() -> None:
         "panedwindow_forget",
         "scale_configure",
         "setup_master",
+        "ttk_scrollbar_routing",
+        "ttk_scrollbar_set",
         "tclobjs_to_py",
         "tkinter_symbol",
     }
