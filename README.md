@@ -1,7 +1,7 @@
 # Molt
 
-A research-grade project to compile a **verified per-application subset of Python** into **small, fast native binaries** (and optionally WASM),
-with strict reproducibility, rigorous testing, and staged compatibility.
+A research-grade project to compile **Python with a CPython `>=3.12` parity target** into **small, fast native binaries** (and optionally WASM),
+with strict reproducibility, rigorous testing, and staged compatibility evidence.
 
 > Molt = Python shedding its skin into native code.
 
@@ -10,8 +10,14 @@ Canonical status lives in [docs/spec/STATUS.md](docs/spec/STATUS.md) (README and
 ## Strategic Targets
 - Performance: parity with or superiority to Codon on tracked benchmarks.
 - Coverage/interoperability: approach Nuitka-level CPython surface coverage and
-  interoperability for Molt-supported semantics, while honoring Molt vision
-  constraints (determinism, capability gates, and no hidden host fallback).
+  interoperability while targeting full CPython `>=3.12` parity everywhere Molt can
+  support it without violating the project break policy.
+- Explicit carve-outs: unrestricted `exec`, unrestricted `eval`, runtime
+  monkeypatching, and unrestricted reflection/introspection remain intentionally
+  outside the active compiled-binary parity target unless explicitly re-approved.
+- Deployment contract: compiled Molt binaries are fully self-contained, run
+  without any host Python installation, and must not use a hidden host-CPython
+  fallback lane.
 
 ## Documentation Quick Links
 - Docs index (canonical navigation): [docs/INDEX.md](docs/INDEX.md)
@@ -57,6 +63,9 @@ Canonical status lives in [docs/spec/STATUS.md](docs/spec/STATUS.md) (README and
 - **AOT Compilation**: Uses Cranelift to generate high-performance machine code.
 - **Differential Testing**: Verified against CPython 3.12+.
 - **No Host Python Runtime**: Compiled Molt binaries are fully self-contained and do not rely on a local Python installation; stdlib behavior must lower into Rust intrinsics (Python wrappers are only thin intrinsic forwarders).
+- **Parity target clarity**: Molt is trying to reach full CPython `>=3.12` parity
+  for compiled outputs except for unrestricted `exec`, unrestricted `eval`,
+  runtime monkeypatching, and unrestricted reflection/introspection.
 - **Generic aliases (PEP 585)**: builtin `list`/`dict`/`tuple`/`set`/`frozenset`/`type` support `__origin__`/`__args__`.
 - **Dict union (PEP 584)**: `dict | dict` and `dict |= dict` parity.
 - **Union types (PEP 604)**: `X | Y` unions with `types.UnionType` (`types.Union` on 3.14).
@@ -84,7 +93,7 @@ Canonical status lives in [docs/spec/STATUS.md](docs/spec/STATUS.md) (README and
 - **Dataclasses**: compile-time lowering for frozen/eq/repr/slots; no `default_factory`, `kw_only`, or `order`; runtime `dataclasses` module provides metadata only.
 - **Exceptions**: `try/except/else/finally` + `raise`/reraise support; still partial vs full BaseException semantics (see [docs/spec/areas/compat/surfaces/language/type_coverage_matrix.md](docs/spec/areas/compat/surfaces/language/type_coverage_matrix.md)).
 - **Imports**: static module graph only; relative imports resolved within known packages; no dynamic import hooks or full package resolution.
-- **Dynamic execution policy**: compiled binaries intentionally do not target unrestricted `eval`/`exec`, runtime monkeypatching, or unrestricted reflection/introspection; see [docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md](docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md) for future gating requirements.
+- **Dynamic execution policy**: compiled binaries intentionally do not target unrestricted `eval`/`exec`, runtime monkeypatching, or unrestricted reflection/introspection; this is an explicit carve-out from the otherwise parity-seeking roadmap. See [docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md](docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md) for future gating requirements.
 - **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pickle` (protocol 0 only), `pprint`, `string`, `typing`, `sys`, `os`, `gc`, `random`, `statistics` (core function surface lowered through Rust intrinsics), `test` (regrtest helpers only), `asyncio`, `threading`, `heapq`, `functools`, `itertools`, `zipfile`, `zipimport`, `collections`, `socket` (error classes only), `select` (error alias only); import-only stubs for `collections.abc`, `_collections_abc`, `_abc`, `_py_abc`, `_asyncio`, `_bz2`, `_weakref`, `_weakrefset`, `importlib`, `importlib.util` (dynamic import hooks pending). Intrinsic-backed `bisect`/`_bisect` core (`bisect_left`/`bisect_right`/`insort_left`/`insort_right`) is available with CPython-style aliases.
 - **Process-based concurrency**: spawn-based `multiprocessing` (Process/Pool/Queue/Pipe/SharedValue/SharedArray) behind capabilities; `fork`/`forkserver` map to spawn semantics; `subprocess`/`concurrent.futures` pending.
 - **Reflection**: `type`, `isinstance`, `issubclass`, and `object` are supported with C3 MRO + multiple inheritance; no metaclasses or dynamic `type()` construction.

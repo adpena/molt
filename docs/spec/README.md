@@ -60,6 +60,11 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0217 libmolt extension ABI contract: [docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md](docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md)
 - 0215 Verified subset contract: [docs/spec/areas/compat/contracts/verified_subset_contract.md](docs/spec/areas/compat/contracts/verified_subset_contract.md)
 
+Compatibility posture summary:
+- target full CPython `>=3.12` parity for compiled outputs
+- preserve standalone binaries with no host CPython fallback
+- keep unrestricted `exec`, unrestricted `eval`, runtime monkeypatching, and unrestricted reflection/introspection as explicit carve-outs unless re-approved
+
 ## Security
 - 0010 Security: [docs/spec/areas/security/0010-security.md](docs/spec/areas/security/0010-security.md)
 - 0020 Runtime Safety Invariants: [docs/spec/areas/security/0020_RUNTIME_SAFETY_INVARIANTS.md](docs/spec/areas/security/0020_RUNTIME_SAFETY_INVARIANTS.md)

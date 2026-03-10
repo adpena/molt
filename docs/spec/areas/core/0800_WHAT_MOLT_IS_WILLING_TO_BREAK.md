@@ -18,6 +18,7 @@ These breaks are not accidents. They are the source of Molt’s power.
 ## 1. Molt breaks maximal Python dynamism
 Molt does not promise to support:
 - arbitrary monkeypatching at runtime
+- unrestricted `eval`/`exec` execution in compiled binaries
 - mutation of global state after startup
 - reflection-heavy patterns that prevent static reasoning
 
@@ -25,6 +26,11 @@ This enables:
 - ahead-of-time compilation
 - safe concurrency
 - predictable performance
+
+This document is not a rejection of broad CPython compatibility as a goal.
+It is a commitment to breaking the parts of Python dynamism that would turn
+Molt back into an interpreter-shaped runtime, tank standalone-binary
+performance, or force hidden host-Python fallback.
 
 ---
 
@@ -70,4 +76,4 @@ This enables:
 ---
 
 ## Identity statement
-**Molt is Python with explicit contracts, built for long-lived services and pipelines.**
+**Molt is Python with explicit contracts, built for long-lived services and pipelines, and willing to break maximal dynamism to preserve AOT performance and self-contained deployment.**

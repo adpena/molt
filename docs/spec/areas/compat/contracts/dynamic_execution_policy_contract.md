@@ -7,7 +7,9 @@
 ---
 
 ## 1. Current Policy (Default, Active)
-For compiled Molt binaries, the following are intentionally unsupported as active roadmap targets:
+Molt's default architectural direction is full CPython `>=3.12` parity for
+compiled, standalone binaries, except for the carve-outs below. For compiled
+Molt binaries, the following are intentionally unsupported as active roadmap targets:
 - unrestricted `eval`/`exec` execution paths
 - runtime monkeypatching as a general semantic compatibility goal
 - unrestricted reflection/introspection lanes that block static reasoning
