@@ -373,20 +373,12 @@ Subcommands:
   - `--require-checksum`
   - `--json`, `--verbose`
 - `molt extension scan` scans extension C sources for required `Py*` symbols and
-  checks them against the currently shipped `include/molt/Python.h` surface. It
-  accepts source files, source directories (recursive C/C++ header scan), and
-  source archives (`.tar*`, `.zip`, `.whl`).
+  checks them against the currently shipped `include/molt/Python.h` surface.
   Key flags:
   - `--project <path>` (default: cwd)
-  - `--source <path>` (repeatable override for source discovery: file/dir/archive)
+  - `--source <path>` (repeatable override for source discovery)
   - `--fail-on-missing`
   - `--json`, `--verbose`
-  - Local file-defined helper symbols (`#define Py*`, `static Py*`) are filtered
-    from missing-surface reports to reduce false positives.
-  - JSON output includes ranked missing-symbol frequency
-    (`missing_symbol_frequency` and `top_missing_symbols`) and
-    `coverage_ratio` for C-API gap prioritization, plus
-    `locally_defined_by_file` for filtered local helper symbols.
 
 Runtime behavior:
 - Extension import/load boundaries now require extension metadata checks (ABI

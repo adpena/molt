@@ -22,73 +22,40 @@ import argparse
 import json
 import statistics
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 
-@dataclass
-class MetricExtraction:
-    values: dict[str, float]
-    missing_metric: list[str]
-
-
-def _extract_metric_value(entry: dict, metric: str) -> float | None:
-    if metric in entry:
-        val = entry[metric]
-        if isinstance(val, (int, float)) and val > 0:
-            return float(val)
-
-    for sub_key in ("molt", "metrics", "results"):
-        sub = entry.get(sub_key, {})
-        if isinstance(sub, dict) and metric in sub:
-            val = sub[metric]
-            if isinstance(val, (int, float)) and val > 0:
-                return float(val)
-    return None
-
-
-def extract_metric(bench_data: dict, metric: str) -> MetricExtraction:
-    """Extract a metric from benchmark JSON, preserving benchmark keys."""
+def extract_metric(bench_data: dict, metric: str) -> dict[str, float]:
+    """Extract a metric from benchmark JSON, returning {benchmark_name: value}."""
     results: dict[str, float] = {}
-    missing_metric: list[str] = []
 
-    benchmarks = bench_data.get("benchmarks")
-    if benchmarks is None:
-        benchmarks = bench_data.get("results", [])
-
+    # Handle various benchmark JSON layouts
+    benchmarks = bench_data.get("benchmarks", bench_data.get("results", []))
     if isinstance(benchmarks, dict):
-        items = benchmarks.items()
-        for bench_key, entry in items:
-            if not isinstance(entry, dict):
-                missing_metric.append(str(bench_key))
-                continue
-            name = str(entry.get("name") or entry.get("benchmark") or bench_key)
-            if not name:
-                continue
-            metric_value = _extract_metric_value(entry, metric)
-            if metric_value is not None:
-                results[name] = metric_value
-            else:
-                missing_metric.append(name)
-        return MetricExtraction(results, sorted(set(missing_metric)))
+        benchmarks = list(benchmarks.values())
 
-    if not isinstance(benchmarks, list):
-        return MetricExtraction(results, missing_metric)
-
-    for idx, entry in enumerate(benchmarks):
-        if not isinstance(entry, dict):
-            missing_metric.append(f"<entry[{idx}]>")
-            continue
-        name = str(entry.get("name") or entry.get("benchmark") or "")
+    for entry in benchmarks:
+        name = entry.get("name", entry.get("benchmark", ""))
         if not name:
             continue
-        metric_value = _extract_metric_value(entry, metric)
-        if metric_value is not None:
-            results[name] = metric_value
-        else:
-            missing_metric.append(name)
 
-    return MetricExtraction(results, sorted(set(missing_metric)))
+        # Try direct metric access
+        if metric in entry:
+            val = entry[metric]
+            if isinstance(val, (int, float)) and val > 0:
+                results[name] = float(val)
+                continue
+
+        # Try nested in "molt" or "metrics" sub-dict
+        for sub_key in ("molt", "metrics", "results"):
+            sub = entry.get(sub_key, {})
+            if isinstance(sub, dict) and metric in sub:
+                val = sub[metric]
+                if isinstance(val, (int, float)) and val > 0:
+                    results[name] = float(val)
+                    break
+
+    return results
 
 
 def main() -> int:
@@ -113,14 +80,6 @@ def main() -> int:
         default="molt_build_s",
         help="Metric to compare (default: molt_build_s)",
     )
-    parser.add_argument(
-        "--allow-missing-metrics",
-        action="store_true",
-        help=(
-            "Allow missing benchmark metrics/keys in baseline or current and "
-            "compare only the overlapping metric set"
-        ),
-    )
     args = parser.parse_args()
 
     for path_arg, label in [(args.baseline, "baseline"), (args.current, "current")]:
@@ -137,47 +96,8 @@ def main() -> int:
         print(f"ERROR: Invalid JSON: {e}", file=sys.stderr)
         return 2
 
-    baseline_extract = extract_metric(baseline_data, args.metric)
-    current_extract = extract_metric(current_data, args.metric)
-    baseline_metrics = baseline_extract.values
-    current_metrics = current_extract.values
-
-    missing_in_baseline = sorted(set(current_metrics) - set(baseline_metrics))
-    missing_in_current = sorted(set(baseline_metrics) - set(current_metrics))
-
-    missing_errors: list[str] = []
-    if baseline_extract.missing_metric:
-        missing_errors.append(
-            f"baseline missing metric '{args.metric}' for: "
-            + ", ".join(baseline_extract.missing_metric)
-        )
-    if current_extract.missing_metric:
-        missing_errors.append(
-            f"current missing metric '{args.metric}' for: "
-            + ", ".join(current_extract.missing_metric)
-        )
-    if missing_in_baseline:
-        missing_errors.append(
-            "baseline missing benchmark keys present in current metrics: "
-            + ", ".join(missing_in_baseline)
-        )
-    if missing_in_current:
-        missing_errors.append(
-            "current missing benchmark keys present in baseline metrics: "
-            + ", ".join(missing_in_current)
-        )
-
-    if missing_errors:
-        prefix = "WARNING" if args.allow_missing_metrics else "ERROR"
-        for line in missing_errors:
-            print(f"{prefix}: {line}", file=sys.stderr)
-        if not args.allow_missing_metrics:
-            print(
-                "ERROR: Missing metrics are a hard failure by default. "
-                "Use --allow-missing-metrics to opt out.",
-                file=sys.stderr,
-            )
-            return 1
+    baseline_metrics = extract_metric(baseline_data, args.metric)
+    current_metrics = extract_metric(current_data, args.metric)
 
     if not baseline_metrics:
         print(

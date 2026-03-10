@@ -8,7 +8,6 @@
 //!   critical sections small and avoid taking them while holding the GIL for long paths.
 //! - Avoid blocking host I/O while holding the GIL; release or schedule work instead.
 #![cfg_attr(target_arch = "wasm32", allow(unused))]
-#![allow(unsafe_op_in_unsafe_fn)]
 
 macro_rules! fn_addr {
     ($func:path) => {
@@ -34,39 +33,12 @@ pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
     molt_obj_model::MoltObject::none().bits()
 }
 
-#[cfg(feature = "molt_hosted_extension")]
-#[cfg_attr(test, allow(dead_code))]
-fn hosted_extension_isolate_unavailable(symbol: &str) -> u64 {
-    crate::concurrency::with_gil(|py| {
-        crate::builtins::exceptions::raise_exception::<u64>(
-            &py,
-            "RuntimeError",
-            &format!(
-                "hosted libmolt extension invoked {symbol} without compiler-emitted isolate entrypoints"
-            ),
-        )
-    })
-}
-
-#[cfg(all(not(test), feature = "molt_hosted_extension"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_isolate_bootstrap() -> u64 {
-    hosted_extension_isolate_unavailable("molt_isolate_bootstrap")
-}
-
-#[cfg(all(not(test), feature = "molt_hosted_extension"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
-    hosted_extension_isolate_unavailable("molt_isolate_import")
-}
-
 mod async_rt;
 mod builtins;
 mod c_api;
 mod call;
 mod concurrency;
 mod constants;
-mod cpython_abi_hooks;
 mod gui;
 mod intrinsics;
 #[cfg(target_arch = "wasm32")]
@@ -110,6 +82,8 @@ pub use crate::async_rt::event_loop::*;
 pub use crate::async_rt::generators::*;
 pub(crate) use crate::async_rt::io_poller::IoPoller;
 pub use crate::async_rt::io_poller::*;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use crate::async_rt::is_block_on_task;
 pub use crate::async_rt::process::*;
 pub(crate) use crate::async_rt::scheduler::BLOCK_ON_TASK;
 pub(crate) use crate::async_rt::sockets::io_wait_release_socket;
@@ -274,10 +248,7 @@ pub use crate::builtins::select::*;
 pub use crate::builtins::shutil::*;
 pub use crate::builtins::signal_ext::*;
 pub use crate::builtins::sitebuiltins::*;
-pub use crate::builtins::sqlite3::*;
 pub use crate::builtins::ssl::*;
-pub use crate::builtins::string_ext::*;
-pub use crate::builtins::stringprep::*;
 pub(crate) use crate::builtins::strings::{
     bytes_count_impl, bytes_find_impl, bytes_rfind_impl, bytes_strip_range, replace_bytes_impl,
     replace_bytes_impl_limit, replace_string_impl, rsplit_bytes_to_list_maxsplit,
@@ -286,6 +257,8 @@ pub(crate) use crate::builtins::strings::{
     split_bytes_whitespace_to_list_maxsplit, split_string_bytes_to_list_maxsplit,
     split_string_whitespace_to_list_maxsplit, splitlines_bytes_to_list, splitlines_string_to_list,
 };
+pub use crate::builtins::string_ext::*;
+pub use crate::builtins::stringprep::*;
 pub use crate::builtins::structs::*;
 pub use crate::builtins::subprocess_ext::*;
 pub use crate::builtins::sys_ext::*;
@@ -321,7 +294,6 @@ pub(crate) use crate::call::lookup_call_attr;
 pub(crate) use crate::constants::*;
 pub use crate::gui::tk::*;
 pub use crate::intrinsics::capabilities::*;
-pub use crate::intrinsics::molt_intrinsic_lookup;
 pub(crate) use crate::object::accessors::{
     object_field_get_ptr_raw, object_field_set_ptr_raw, resolve_obj_ptr,
 };

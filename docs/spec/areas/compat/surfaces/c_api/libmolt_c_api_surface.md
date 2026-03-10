@@ -28,15 +28,6 @@ performance-first C-extension compatibility without embedding CPython.
   Molt object layouts directly.
 - All handles are `u64`-compatible values (opaque to the extension).
 - A versioned C header defines `MOLT_C_API_VERSION` and symbol availability.
-- Header-tiering is normative per
-  `docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md`:
-  - stable ABI: `include/molt/molt.h`
-  - CPython source-compat facade: `include/Python.h`,
-    `include/molt/Python.h`, and the small legacy forwarding headers
-  - ecosystem overlays: bounded compatibility headers such as `include/numpy/*`
-    and the top-level NumPy bridge headers
-- `MOLT_C_API_VERSION` versions the stable ABI tier only; source-compat overlay
-  growth does not imply CPython ABI compatibility.
 - Symbol availability is tracked in `docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md`.
 - Current bootstrap implementation:
   - Runtime symbols: `runtime/molt-runtime/src/c_api.rs`
@@ -66,16 +57,8 @@ performance-first C-extension compatibility without embedding CPython.
 - `molt_object_getattr`, `molt_object_setattr`, `molt_object_hasattr`
 - `molt_object_getattr_bytes`, `molt_object_setattr_bytes`
 - `molt_object_call`
-- `molt_object_get_iter`, `molt_iterator_next`
 - `molt_object_repr`, `molt_object_str`, `molt_object_truthy`
 - `molt_object_equal`, `molt_object_not_equal`, `molt_object_contains`
-
-### 4.4a Capsules
-- `molt_capsule_new`
-- `molt_capsule_get_name_ptr`, `molt_capsule_get_pointer`
-- `molt_capsule_is_valid`
-- `molt_capsule_get_context`, `molt_capsule_set_context`
-- `molt_capsule_import`
 
 ### 4.5 Numerics
 - `molt_number_add`, `molt_number_sub`, `molt_number_mul`
@@ -84,7 +67,6 @@ performance-first C-extension compatibility without embedding CPython.
 
 ### 4.6 Sequences + Mappings
 - `molt_sequence_length`, `molt_sequence_getitem`, `molt_sequence_setitem`
-- `molt_sequence_to_list`, `molt_sequence_to_tuple`
 - `molt_mapping_getitem`, `molt_mapping_setitem`, `molt_mapping_length`, `molt_mapping_keys`
 - `molt_tuple_from_array`, `molt_list_from_array`, `molt_dict_from_pairs`
 
@@ -118,22 +100,14 @@ performance-first C-extension compatibility without embedding CPython.
   `PyModule_FromDefAndSpec(2)`, `PyModule_ExecDef`, `PyState_*`
 - `PyErr_*` core helpers (`Occurred`, `SetString`, `SetObject`, `Clear`,
   `Fetch`, `Restore`, `Matches`, `Format`, `NoMemory`, warning stubs)
-- `PyCapsule_New`, `PyCapsule_GetName`, `PyCapsule_GetPointer`,
-  `PyCapsule_IsValid`, `PyCapsule_GetContext`, `PyCapsule_SetContext`,
-  `PyCapsule_Import`
-- `PyObject_GetIter`, `PyIter_Next`, `PySequence_*`, list-materializing
-  `PyMapping_Keys`/`PyMapping_Values`/`PyMapping_Items`,
-  always-succeeds `PyMapping_HasKey*`, and high-use `PyDict_*`
-  collection/delete wrappers on top of `libmolt`
+- `PySequence_*` / `PyMapping_*` wrappers on top of `libmolt`
 - reference/type/memory helper macros and shims used by extension sources
   (`Py_TYPE`, `Py_SETREF`, `Py_CLEAR`, `PyTuple_GET_*`, `PyList_GET_*`,
   `PyMem_*`, `PyObject_GetBuffer`/`PyBuffer_Release`)
 - convenience call/build helpers (`PyObject_CallFunctionObjArgs`,
   `PyObject_CallFunction`, `PyObject_CallMethod`, `Py_BuildValue`)
 - module/threading shims (`PyThreadState_Get`, `PyGILState_Ensure`,
-  `PyGILState_Release`, `PyImport_ImportModule`, `PySys_GetObject`,
-  `PyCapsule_Import`)
-- selected Unicode helpers (`PyUnicode_InternFromString`)
+  `PyGILState_Release`, `PyImport_ImportModule`, `PyCapsule_Import`)
 - `PyArg_ParseTuple` / `PyArg_ParseTupleAndKeywords` format coverage for
   `O,O!,b,B,h,H,i,I,l,k,L,K,n,c,d,f,p,s,s#,z,z#,y#` with `|` optional + `$`
   keyword-only markers and kwlist-driven keyword lookup in the keywords path
@@ -142,31 +116,12 @@ performance-first C-extension compatibility without embedding CPython.
   `va_list` parity is implemented)
 - `PyType_Spec` slot lowering includes selected call/numeric/sequence/getset
   lanes and type-method flag handling for `METH_CLASS` + `METH_STATIC`
-- NumPy source-compat include lane (`#include <numpy/arrayobject.h>` /
-  `#include <numpy/ndarrayobject.h>`) with type/shape/flag macros, typenum
-  predicates, dtype/type-object exports, `PyDataType_*` and `PyDataMem_*`
-  helpers, `import_array*` capsule wiring, the upstream-shipped public contract
-  headers (`arrayobject.h`, `dtype_api.h`, `npy_2_compat.h`, `npy_cpu.h`,
-  `npy_math.h`, `numpyconfig.h`, `utils.h`), upstream-derived overlay headers
-  (`_public_dtype_api_table.h`, `halffloat.h`, `npy_2_complexcompat.h`,
-  `npy_3kcompat.h`, `npy_endian.h`, `npy_no_deprecated_api.h`, `npy_os.h`,
-  `random/bitgen.h`, `random/distributions.h`), top-level `arrayobject.h`,
-  `pymem.h`, `frameobject.h`, generated-config bridge headers
-  (`_numpyconfig.h`, `config.h`, `npy_cpu_dispatch_config.h`,
-  `numpy/npy_cpu.h`), arrayscalar/object source shapes, utility/visibility
-  helpers (`NPY_UNUSED`, `NPY_VISIBILITY_HIDDEN`, `NPY_NO_EXPORT`, `NPY_TLS`),
-  `NpyAuxData` lifecycle macros, legacy `PyUFunc_Loop1d` / `PyUFuncObject`
-  source shapes, and fail-fast stubs for unsupported heavy ndarray/ufunc APIs.
-  Internal generated/source-only bridges such as `templ_common.h` exist to
-  keep real NumPy core syntax-only probes moving, but private/generated NumPy
-  build artifacts such as `arraytypes.h` and dispatch-generated internal
-  headers remain outside the public `libmolt` compatibility contract.
+- NumPy source-compat include lane (`#include <numpy/arrayobject.h>`) with
+  initial type/shape macros, typenum predicates, `import_array*` capsule wiring,
+  and fail-fast stubs for unsupported heavy APIs
 - Datetime source-compat include lane (`#include <datetime.h>`) with
   `PyDateTimeAPI`, `PyDateTime_IMPORT`, and basic date/datetime/timedelta
   checker shims
-- Legacy CPython member-definition include lane (`#include <structmember.h>`)
-  with `Py_T_*` / `Py_READONLY` constants, deprecated alias macros, and
-  fail-fast `PyMember_GetOne` / `PyMember_SetOne` shims
 
 ---
 
@@ -180,20 +135,14 @@ performance-first C-extension compatibility without embedding CPython.
 ## 6. Packaging and Build Flow
 ### 6.1 Headers and Tooling
 - Provide `molt-config --cflags --libs` for build integration.
-- Stable ABI headers live under `include/molt/`; the current canonical ABI
-  header is `include/molt/molt.h`.
-- CPython-compat include paths are compatibility facades, not ABI promises:
-  `#include <Python.h>` is implemented by `include/Python.h` forwarding to
-  `include/molt/Python.h`.
-- NumPy compatibility headers under `include/numpy/` and the small top-level
-  forwarding/config bridge headers are bounded source-compat overlays.
-- Current public overlay coverage explicitly includes NumPy dtype/half/compat,
-  endian/os, and `numpy/random/*` header families plus the small
-  `templ_common.h` bridge used by generated-source probes.
-- `molt extension build` and `molt extension scan` use the declared libmolt
-  header contract instead of treating every header under `include/` as equally
-  stable.
-- libmolt does not ship NumPy's private/generated build graph.
+- Ship headers under `include/molt/` with stable symbol naming.
+- Current shipped bootstrap header: `include/molt/molt.h`.
+- CPython-compat include path is also available via `#include <Python.h>`,
+  implemented by `include/Python.h` forwarding to `include/molt/Python.h`.
+- Initial NumPy compatibility headers ship under `include/numpy/` and are
+  intentionally partial while we close remaining NumPy C-API gaps.
+- Initial datetime compatibility header ships as `include/datetime.h` with a
+  partial `PyDateTime` C-API bootstrap.
 
 ### 6.2 Wheel Tags (proposed)
 - Wheels for `libmolt` are tagged distinctly from CPython wheels.
@@ -202,7 +151,6 @@ performance-first C-extension compatibility without embedding CPython.
 ### 6.3 Extension Metadata (proposed)
 Extensions should declare:
 - `molt_c_api_version`
-- `header_contract`
 - `capabilities`
 - `determinism` requirements
 - `abi` target triple
@@ -211,13 +159,9 @@ Extensions should declare:
 
 ## 7. Testing and Validation
 - Per-symbol conformance tests.
-- Compile-focused `clang -fsyntax-only` regression probes for the declared
-  public overlay headers and representative NumPy/pandas source files.
 - Differential tests comparing extension outputs to CPython for supported APIs.
 - Fuzz tests for buffer and bytes interfaces.
 - Benchmarks for hot-path extension calls.
-- Real native-load/import execution remains the next required proof point for
-  the `libmolt` extension story; header coverage alone is not sufficient.
 
 ---
 

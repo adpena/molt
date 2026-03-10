@@ -2,7 +2,7 @@
 
 import asyncio
 
-from moltlib.concurrency import CancellationToken, cancelled, set_current_token
+from molt import CancellationToken, cancelled, set_current_token
 
 
 async def main() -> None:

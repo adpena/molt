@@ -119,10 +119,7 @@ def _path_snapshot() -> tuple[str, ...]:
 
 
 def _importlib_module_file() -> str | None:
-    import sys as _ilu_sys
-
-    _ilu_dict = getattr(_ilu_sys.modules.get(__name__), "__dict__", None) or globals()
-    module_file = _ilu_dict.get("__file__")
+    module_file = globals().get("__file__")
     if isinstance(module_file, str) and module_file:
         return module_file
     return None

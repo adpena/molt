@@ -12,8 +12,7 @@
 - **Actionable guidance:** Every fallback warning includes the performance impact and a Molt-native alternative.
 - **Hard errors when required:** If policy forbids fallback, compilation fails with a detailed error.
 - **No implicit CPython fallback:** `molt run` / `molt build` never fall back to CPython.
-- **No host CPython in binaries:** compiled artifacts are self-contained, run in environments with no Python installation at all, and treat any CPython bridge/fallback lane as unavailable in production builds.
-- **Parity target first:** Molt targets full CPython `>=3.12` parity for compiled outputs wherever that can be delivered without violating the explicit dynamic-execution carve-outs.
+- **No CPython in binaries:** compiled artifacts are self-contained; the bridge is tooling-only and treated as unavailable for production builds.
 - **Dynamic policy alignment:** unrestricted `eval`/`exec`, runtime monkeypatching, and unrestricted reflection stay deferred unless explicitly re-approved under [dynamic_execution_policy_contract.md](dynamic_execution_policy_contract.md).
 
 ---

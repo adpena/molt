@@ -1447,9 +1447,4 @@ for _name in (
     "KeysView",
     "ValuesView",
 ):
-    import sys as _os_cleanup_sys
-
-    _os_cleanup_dict = (
-        getattr(_os_cleanup_sys.modules.get(__name__), "__dict__", None) or globals()
-    )
-    _os_cleanup_dict.pop(_name, None)
+    globals().pop(_name, None)

@@ -83,14 +83,9 @@ fn json_encode_basestring_impl(value: &str, ensure_ascii: bool) -> String {
                     // Safe: > 0x1F && < 0x7F && != '"' && != '\\'
                     let gt_lo = _mm_cmpgt_epi8(chunk, lo_bound);
                     let lt_hi = _mm_cmpgt_epi8(hi_bound, chunk);
-                    let not_quote =
-                        _mm_andnot_si128(_mm_cmpeq_epi8(chunk, quote), _mm_set1_epi8(-1));
-                    let not_bs =
-                        _mm_andnot_si128(_mm_cmpeq_epi8(chunk, backslash), _mm_set1_epi8(-1));
-                    let safe = _mm_and_si128(
-                        _mm_and_si128(gt_lo, lt_hi),
-                        _mm_and_si128(not_quote, not_bs),
-                    );
+                    let not_quote = _mm_andnot_si128(_mm_cmpeq_epi8(chunk, quote), _mm_set1_epi8(-1));
+                    let not_bs = _mm_andnot_si128(_mm_cmpeq_epi8(chunk, backslash), _mm_set1_epi8(-1));
+                    let safe = _mm_and_si128(_mm_and_si128(gt_lo, lt_hi), _mm_and_si128(not_quote, not_bs));
                     if _mm_movemask_epi8(safe) == 0xFFFF {
                         out.push_str(std::str::from_utf8_unchecked(&bytes[i..i + 16]));
                         i += 16;
@@ -189,14 +184,9 @@ fn json_encode_basestring_impl(value: &str, ensure_ascii: bool) -> String {
                     let chunk = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
                     let gt_lo = _mm_cmpgt_epi8(chunk, lo_bound);
                     let lt_hi = _mm_cmpgt_epi8(hi_bound, chunk);
-                    let not_quote =
-                        _mm_andnot_si128(_mm_cmpeq_epi8(chunk, quote), _mm_set1_epi8(-1));
-                    let not_bs =
-                        _mm_andnot_si128(_mm_cmpeq_epi8(chunk, backslash), _mm_set1_epi8(-1));
-                    let safe = _mm_and_si128(
-                        _mm_and_si128(gt_lo, lt_hi),
-                        _mm_and_si128(not_quote, not_bs),
-                    );
+                    let not_quote = _mm_andnot_si128(_mm_cmpeq_epi8(chunk, quote), _mm_set1_epi8(-1));
+                    let not_bs = _mm_andnot_si128(_mm_cmpeq_epi8(chunk, backslash), _mm_set1_epi8(-1));
+                    let safe = _mm_and_si128(_mm_and_si128(gt_lo, lt_hi), _mm_and_si128(not_quote, not_bs));
                     if _mm_movemask_epi8(safe) == 0xFFFF {
                         out.push_str(std::str::from_utf8_unchecked(&bytes[i..i + 16]));
                         i += 16;
@@ -244,7 +234,7 @@ fn json_encode_basestring_impl(value: &str, ensure_ascii: bool) -> String {
                 '\r' => out.push_str("\\r"),
                 '\t' => out.push_str("\\t"),
                 _ => {
-                    if !(0x20..=0x7E).contains(&code) {
+                    if code < 0x20 || code > 0x7E {
                         json_escape_codepoint(code, &mut out);
                     } else {
                         out.push(ch);
@@ -335,14 +325,9 @@ fn json_scanstring_decode(
                     let chunk = _mm_loadu_si128(bytes.as_ptr().add(bi) as *const __m128i);
                     let gt_lo = _mm_cmpgt_epi8(chunk, lo_bound);
                     let lt_hi = _mm_cmpgt_epi8(hi_bound, chunk);
-                    let not_quote =
-                        _mm_andnot_si128(_mm_cmpeq_epi8(chunk, quote), _mm_set1_epi8(-1));
-                    let not_bs =
-                        _mm_andnot_si128(_mm_cmpeq_epi8(chunk, backslash), _mm_set1_epi8(-1));
-                    let safe = _mm_and_si128(
-                        _mm_and_si128(gt_lo, lt_hi),
-                        _mm_and_si128(not_quote, not_bs),
-                    );
+                    let not_quote = _mm_andnot_si128(_mm_cmpeq_epi8(chunk, quote), _mm_set1_epi8(-1));
+                    let not_bs = _mm_andnot_si128(_mm_cmpeq_epi8(chunk, backslash), _mm_set1_epi8(-1));
+                    let safe = _mm_and_si128(_mm_and_si128(gt_lo, lt_hi), _mm_and_si128(not_quote, not_bs));
                     if _mm_movemask_epi8(safe) == 0xFFFF {
                         out.push_str(std::str::from_utf8_unchecked(&bytes[bi..bi + 16]));
                         bi += 16;
@@ -783,21 +768,20 @@ fn msgpack_key_to_object(_py: &PyToken<'_>, value: rmpv::Value) -> Result<MoltOb
 
 fn cbor_value_to_object(
     _py: &PyToken<'_>,
-    value: ciborium::Value,
+    value: serde_cbor::Value,
     arena: &mut TempArena,
 ) -> Result<MoltObject, i32> {
     match value {
-        ciborium::Value::Null => Ok(MoltObject::none()),
-        ciborium::Value::Bool(b) => Ok(MoltObject::from_bool(b)),
-        ciborium::Value::Integer(i) => {
-            let i_val: i128 = i.into();
-            if i_val < i64::MIN as i128 || i_val > i64::MAX as i128 {
+        serde_cbor::Value::Null => Ok(MoltObject::none()),
+        serde_cbor::Value::Bool(b) => Ok(MoltObject::from_bool(b)),
+        serde_cbor::Value::Integer(i) => {
+            if i < i64::MIN as i128 || i > i64::MAX as i128 {
                 return Err(2);
             }
-            Ok(MoltObject::from_int(i_val as i64))
+            Ok(MoltObject::from_int(i as i64))
         }
-        ciborium::Value::Float(f) => Ok(MoltObject::from_float(f)),
-        ciborium::Value::Text(s) => {
+        serde_cbor::Value::Float(f) => Ok(MoltObject::from_float(f)),
+        serde_cbor::Value::Text(s) => {
             let ptr = alloc_string(_py, s.as_bytes());
             if ptr.is_null() {
                 Err(2)
@@ -805,7 +789,7 @@ fn cbor_value_to_object(
                 Ok(MoltObject::from_ptr(ptr))
             }
         }
-        ciborium::Value::Bytes(b) => {
+        serde_cbor::Value::Bytes(b) => {
             let ptr = alloc_bytes(_py, &b);
             if ptr.is_null() {
                 Err(2)
@@ -813,7 +797,7 @@ fn cbor_value_to_object(
                 Ok(MoltObject::from_ptr(ptr))
             }
         }
-        ciborium::Value::Array(items) => {
+        serde_cbor::Value::Array(items) => {
             if items.len() > MAX_SMALL_LIST {
                 return Err(2);
             }
@@ -843,7 +827,7 @@ fn cbor_value_to_object(
                 Ok(MoltObject::from_ptr(ptr))
             }
         }
-        ciborium::Value::Map(items) => {
+        serde_cbor::Value::Map(items) => {
             if items.len() > MAX_SMALL_LIST {
                 return Err(2);
             }
@@ -879,19 +863,19 @@ fn cbor_value_to_object(
     }
 }
 
-fn cbor_key_to_object(_py: &PyToken<'_>, value: ciborium::Value) -> Result<MoltObject, i32> {
+fn cbor_key_to_object(_py: &PyToken<'_>, value: serde_cbor::Value) -> Result<MoltObject, i32> {
     match value {
-        ciborium::Value::Null => Ok(MoltObject::none()),
-        ciborium::Value::Bool(b) => Ok(MoltObject::from_bool(b)),
-        ciborium::Value::Integer(i) => {
-            let i_val: i128 = i.into();
+        serde_cbor::Value::Null => Ok(MoltObject::none()),
+        serde_cbor::Value::Bool(b) => Ok(MoltObject::from_bool(b)),
+        serde_cbor::Value::Integer(i) => {
+            let i_val = i;
             if i_val < i64::MIN as i128 || i_val > i64::MAX as i128 {
                 Err(2)
             } else {
                 Ok(MoltObject::from_int(i_val as i64))
             }
         }
-        ciborium::Value::Text(s) => {
+        serde_cbor::Value::Text(s) => {
             let ptr = alloc_string(_py, s.as_bytes());
             if ptr.is_null() {
                 Err(2)
@@ -899,7 +883,7 @@ fn cbor_key_to_object(_py: &PyToken<'_>, value: ciborium::Value) -> Result<MoltO
                 Ok(MoltObject::from_ptr(ptr))
             }
         }
-        ciborium::Value::Bytes(b) => {
+        serde_cbor::Value::Bytes(b) => {
             let ptr = alloc_bytes(_py, &b);
             if ptr.is_null() {
                 Err(2)
@@ -909,15 +893,6 @@ fn cbor_key_to_object(_py: &PyToken<'_>, value: ciborium::Value) -> Result<MoltO
         }
         _ => Err(2),
     }
-}
-
-fn parse_cbor_value(slice: &[u8]) -> Result<ciborium::Value, ()> {
-    let mut cursor = Cursor::new(slice);
-    let value: ciborium::Value = ciborium::from_reader(&mut cursor).map_err(|_| ())?;
-    if cursor.position() as usize != slice.len() {
-        return Err(());
-    }
-    Ok(value)
 }
 
 unsafe fn parse_json_scalar(
@@ -1015,7 +990,7 @@ pub unsafe extern "C" fn molt_cbor_parse_scalar(
                 return 2;
             }
             let slice = std::slice::from_raw_parts(ptr, len);
-            let v: ciborium::Value = match parse_cbor_value(slice) {
+            let v: serde_cbor::Value = match serde_cbor::from_slice(slice) {
                 Ok(val) => val,
                 Err(_) => return 1,
             };
@@ -1116,7 +1091,7 @@ pub extern "C" fn molt_cbor_parse_scalar_obj(obj_bits: u64) -> u64 {
             let len = bytes_len(ptr);
             let data = bytes_data(ptr);
             let slice = std::slice::from_raw_parts(data, len);
-            let v: ciborium::Value = match parse_cbor_value(slice) {
+            let v: serde_cbor::Value = match serde_cbor::from_slice(slice) {
                 Ok(val) => val,
                 Err(_) => {
                     return raise_exception::<u64>(_py, "ValueError", "invalid cbor payload");
@@ -1535,10 +1510,10 @@ fn object_to_json_with_options(
             }
             out.push(']');
 
-            if options.check_circular
-                && let Some(popped) = stack.pop()
-            {
-                stack_set.remove(&popped);
+            if options.check_circular {
+                if let Some(popped) = stack.pop() {
+                    stack_set.remove(&popped);
+                }
             }
             Ok(())
         }
@@ -1600,10 +1575,10 @@ fn object_to_json_with_options(
             }
             out.push('}');
 
-            if options.check_circular
-                && let Some(popped) = stack.pop()
-            {
-                stack_set.remove(&popped);
+            if options.check_circular {
+                if let Some(popped) = stack.pop() {
+                    stack_set.remove(&popped);
+                }
             }
             Ok(())
         }
@@ -2194,7 +2169,11 @@ pub extern "C" fn molt_json_dumps(
             } else {
                 ", ".to_string()
             },
-            key_separator: ": ".to_string(),
+            key_separator: if indent_text.is_some() {
+                ": ".to_string()
+            } else {
+                ": ".to_string()
+            },
             default_fn: None,
         };
         let mut out = String::with_capacity(128);

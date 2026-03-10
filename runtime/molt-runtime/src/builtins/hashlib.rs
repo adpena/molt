@@ -3,12 +3,12 @@ use crate::builtins::numbers::index_bigint_from_obj;
 use crate::*;
 use blake2b_simd::{Params as Blake2bParams, State as Blake2bState};
 use blake2s_simd::{Params as Blake2sParams, State as Blake2sState};
+use digest::{Digest, ExtendableOutput, Update, XofReader};
 use md4::Md4;
 use md5::Md5;
 use num_traits::ToPrimitive;
 use ripemd::Ripemd160;
 use sha1::Sha1;
-use sha2::digest::{Digest, ExtendableOutput, Update, XofReader};
 use sha2::{Sha224, Sha256, Sha384, Sha512, Sha512_224, Sha512_256};
 use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512, Shake128, Shake256};
 

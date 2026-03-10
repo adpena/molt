@@ -56,10 +56,6 @@ struct DataSegmentRef {
 struct CompileFuncContext<'a> {
     func_map: &'a HashMap<String, u32>,
     func_indices: &'a HashMap<String, u32>,
-    // Public/object arity used by table/trampoline resolution.
-    func_arities: &'a HashMap<String, usize>,
-    // Raw wasm signature arity used by direct `call` emission.
-    func_sig_arities: &'a HashMap<String, usize>,
     trampoline_map: &'a HashMap<String, u32>,
     table_base: u32,
     import_ids: &'a BTreeMap<String, u32>,
@@ -85,30 +81,6 @@ impl TypeSectionExt for TypeSection {
     {
         self.ty().function(params, results);
     }
-}
-
-fn resolve_symbol_or_unique_numeric_suffix<T: Copy>(
-    map: &HashMap<String, T>,
-    name: &str,
-) -> Option<T> {
-    if let Some(value) = map.get(name).copied() {
-        return Some(value);
-    }
-    let prefix = format!("{name}_");
-    let mut resolved: Option<T> = None;
-    for (key, value) in map {
-        let Some(suffix) = key.strip_prefix(&prefix) else {
-            continue;
-        };
-        if suffix.is_empty() || !suffix.as_bytes().iter().all(u8::is_ascii_digit) {
-            continue;
-        }
-        if resolved.is_some() {
-            return None;
-        }
-        resolved = Some(*value);
-    }
-    resolved
 }
 
 fn box_int(val: i64) -> i64 {
@@ -181,126 +153,10 @@ fn emit_inline_int_range_check(func: &mut Function, val_local: u32) {
     func.instruction(&Instruction::I32And);
 }
 
-fn emit_inline_mul_range_check(
-    func: &mut Function,
-    lhs_local: u32,
-    rhs_local: u32,
-    prod_local: u32,
-) {
-    // Inline ints are 46-bit signed values, so `i64.div_s` is safe here:
-    // the problematic `i64::MIN / -1` case cannot be produced by inline inputs.
-    func.instruction(&Instruction::LocalGet(rhs_local));
-    func.instruction(&Instruction::I64Eqz);
-    func.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
-    func.instruction(&Instruction::I32Const(1));
-    func.instruction(&Instruction::Else);
-    func.instruction(&Instruction::LocalGet(prod_local));
-    func.instruction(&Instruction::LocalGet(rhs_local));
-    func.instruction(&Instruction::I64DivS);
-    func.instruction(&Instruction::LocalGet(lhs_local));
-    func.instruction(&Instruction::I64Eq);
-    func.instruction(&Instruction::End);
-    emit_inline_int_range_check(func, prod_local);
-    func.instruction(&Instruction::I32And);
-}
-
 fn emit_box_bool_from_i32(func: &mut Function) {
     func.instruction(&Instruction::I64ExtendI32U);
     func.instruction(&Instruction::I64Const((QNAN | TAG_BOOL) as i64));
     func.instruction(&Instruction::I64Or);
-}
-
-/// Emit inline is_truthy check. Produces an i32 (0 or 1) on the WASM stack.
-/// If `type_hint` is provided, uses a type-specialized fast path.
-/// The value to test must already be on the stack as i64.
-fn emit_is_truthy_inline(
-    func: &mut Function,
-    reloc_enabled: bool,
-    import_ids: &BTreeMap<String, u32>,
-    type_hint: Option<&str>,
-) {
-    match type_hint {
-        Some("bool") => {
-            // Bool: bit 0 is the truth value
-            func.instruction(&Instruction::I64Const(1));
-            func.instruction(&Instruction::I64And);
-            func.instruction(&Instruction::I32WrapI64);
-        }
-        Some("int") => {
-            // Int: unbox and check != 0
-            func.instruction(&Instruction::I64Const(INT_MASK as i64));
-            func.instruction(&Instruction::I64And);
-            func.instruction(&Instruction::I64Const(0));
-            func.instruction(&Instruction::I64Ne);
-        }
-        Some("NoneType") => {
-            // None is always falsy
-            func.instruction(&Instruction::Drop);
-            func.instruction(&Instruction::I32Const(0));
-        }
-        _ => {
-            // General inline dispatch: check tag, branch by type
-            // Stack has: [val: i64]
-            // We need val in a local to test multiple times.
-            // Use a block structure: try float first, then tag-dispatch.
-            //
-            // For the general case, fall back to the runtime import to handle
-            // heap objects (str, list, dict, etc.) correctly.
-            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
-            func.instruction(&Instruction::I64Const(0));
-            func.instruction(&Instruction::I64Ne);
-        }
-    }
-}
-
-/// Emit inline f64 binary operation with fast_float.
-/// Expects lhs_local and rhs_local to contain NaN-boxed floats (i64).
-/// Produces the result as i64 on the stack.
-fn emit_float_binop_inline(func: &mut Function, lhs: u32, rhs: u32, f64_op: Instruction<'static>) {
-    func.instruction(&Instruction::LocalGet(lhs));
-    func.instruction(&Instruction::F64ReinterpretI64);
-    func.instruction(&Instruction::LocalGet(rhs));
-    func.instruction(&Instruction::F64ReinterpretI64);
-    func.instruction(&f64_op);
-    func.instruction(&Instruction::I64ReinterpretF64);
-}
-
-/// Emit inline f64 comparison with fast_float.
-/// Expects lhs_local and rhs_local to contain NaN-boxed floats (i64).
-/// Produces a NaN-boxed bool (i64) on the stack.
-fn emit_float_cmp_inline(func: &mut Function, lhs: u32, rhs: u32, f64_cmp: Instruction<'static>) {
-    func.instruction(&Instruction::LocalGet(lhs));
-    func.instruction(&Instruction::F64ReinterpretI64);
-    func.instruction(&Instruction::LocalGet(rhs));
-    func.instruction(&Instruction::F64ReinterpretI64);
-    func.instruction(&f64_cmp);
-    emit_box_bool_from_i32(func);
-}
-
-fn op_may_raise_for_exception_poll(kind: &str) -> bool {
-    !matches!(
-        kind,
-        // Pure immediate/local-control operations cannot introduce a fresh pending exception.
-        "const"
-            | "const_bool"
-            | "const_float"
-            | "const_none"
-            | "box"
-            | "unbox"
-            | "cast"
-            | "widen"
-            | "identity_alias"
-            | "loop_index_next"
-            | "label"
-            | "state_label"
-            | "jump"
-            | "loop_break"
-            | "loop_continue"
-            | "loop_start"
-            | "loop_end"
-            | "try_start"
-            | "try_end"
-    )
 }
 
 fn is_stateful_dispatch_terminator(kind: &str) -> bool {
@@ -704,11 +560,6 @@ impl WasmBackend {
             crate::elide_dead_struct_allocs(func_ir);
         }
         crate::inline_functions(&mut ir);
-        if cfg!(debug_assertions) {
-            if let Err(err) = crate::validate_simple_ir(&ir) {
-                panic!("WasmBackend::compile received invalid simple IR: {err}");
-            }
-        }
         // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
         let mut func_trampoline_spec: BTreeMap<String, (usize, bool)> = BTreeMap::new();
         let mut task_kinds: BTreeMap<String, TrampolineKind> = BTreeMap::new();
@@ -975,32 +826,6 @@ impl WasmBackend {
         // Type 30: (i64, i64, i64) -> () (payload init with closure)
         self.types
             .function(std::iter::repeat_n(ValType::I64, 3), std::iter::empty());
-        // Type 31: (i64, i32, i64, i64, i64) -> i64 (set_attr_object_ic)
-        self.types.function(
-            [
-                ValType::I64,
-                ValType::I32,
-                ValType::I64,
-                ValType::I64,
-                ValType::I64,
-            ],
-            std::iter::once(ValType::I64),
-        );
-        // Type 32: (i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64
-        self.types.function(
-            std::iter::repeat_n(ValType::I64, 9),
-            std::iter::once(ValType::I64),
-        );
-        // Type 33: (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64
-        self.types.function(
-            std::iter::repeat_n(ValType::I64, 10),
-            std::iter::once(ValType::I64),
-        );
-        // Type 34: (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64
-        self.types.function(
-            std::iter::repeat_n(ValType::I64, 11),
-            std::iter::once(ValType::I64),
-        );
 
         let mut import_idx = 0;
         let mut add_import = |name: &str, ty: u32, ids: &mut BTreeMap<String, u32>| {
@@ -1249,7 +1074,7 @@ impl WasmBackend {
         add_import("get_attr_special", 18, &mut self.import_ids);
         add_import("set_attr_generic", 24, &mut self.import_ids);
         add_import("set_attr_ptr", 24, &mut self.import_ids);
-        add_import("set_attr_object_ic", 31, &mut self.import_ids);
+        add_import("set_attr_object", 25, &mut self.import_ids);
         add_import("del_attr_generic", 23, &mut self.import_ids);
         add_import("del_attr_ptr", 23, &mut self.import_ids);
         add_import("del_attr_object", 18, &mut self.import_ids);
@@ -1383,32 +1208,12 @@ impl WasmBackend {
         add_import("callargs_expand_kwstar", 3, &mut self.import_ids);
         add_import("call_bind", 3, &mut self.import_ids);
         add_import("call_bind_ic", 5, &mut self.import_ids);
-        add_import("call_bind_pos0_ic", 3, &mut self.import_ids);
-        add_import("call_bind_pos1_ic", 5, &mut self.import_ids);
-        add_import("call_bind_pos2_ic", 7, &mut self.import_ids);
-        add_import("call_bind_pos3_ic", 12, &mut self.import_ids);
-        add_import("call_bind_pos4_ic", 9, &mut self.import_ids);
-        add_import("call_bind_pos5_ic", 10, &mut self.import_ids);
-        add_import("call_bind_pos6_ic", 28, &mut self.import_ids);
-        add_import("call_bind_pos7_ic", 32, &mut self.import_ids);
-        add_import("call_bind_pos8_ic", 33, &mut self.import_ids);
         add_import("call_indirect_ic", 5, &mut self.import_ids);
         add_import("invoke_ffi_ic", 7, &mut self.import_ids);
-        add_import("invoke_ffi_pos0_ic", 5, &mut self.import_ids);
-        add_import("invoke_ffi_pos1_ic", 7, &mut self.import_ids);
-        add_import("invoke_ffi_pos2_ic", 12, &mut self.import_ids);
-        add_import("invoke_ffi_pos3_ic", 9, &mut self.import_ids);
-        add_import("invoke_ffi_pos4_ic", 10, &mut self.import_ids);
-        add_import("invoke_ffi_pos5_ic", 28, &mut self.import_ids);
-        add_import("invoke_ffi_pos6_ic", 32, &mut self.import_ids);
-        add_import("invoke_ffi_pos7_ic", 33, &mut self.import_ids);
-        add_import("invoke_ffi_pos8_ic", 34, &mut self.import_ids);
         add_import("slice", 5, &mut self.import_ids);
         add_import("slice_new", 5, &mut self.import_ids);
         add_import("range_new", 5, &mut self.import_ids);
         add_import("list_from_range", 5, &mut self.import_ids);
-        add_import("list_repeat_range", 7, &mut self.import_ids);
-        add_import("bytearray_fill_range", 7, &mut self.import_ids);
         add_import("list_builder_new", 2, &mut self.import_ids);
         add_import("list_builder_append", 6, &mut self.import_ids);
         add_import("list_builder_finish", 2, &mut self.import_ids);
@@ -1619,7 +1424,7 @@ impl WasmBackend {
         add_import("exceptiongroup_match", 3, &mut self.import_ids);
         add_import("exceptiongroup_combine", 2, &mut self.import_ids);
         add_import("exception_clear", 0, &mut self.import_ids);
-        add_import("exception_pending_fast", 0, &mut self.import_ids);
+        add_import("exception_pending", 0, &mut self.import_ids);
         add_import("exception_kind", 2, &mut self.import_ids);
         add_import("exception_class", 2, &mut self.import_ids);
         add_import("exception_message", 2, &mut self.import_ids);
@@ -1691,8 +1496,8 @@ impl WasmBackend {
         }
 
         let mut user_type_map: HashMap<usize, u32> = HashMap::new();
-        // Keep type indices aligned to the actual number of signatures emitted above.
-        let mut next_type_idx = self.types.len();
+        // Types 0-30 are defined above; start new signatures after them.
+        let mut next_type_idx = 31u32;
         for func_ir in &ir.functions {
             if func_ir.name.ends_with("_poll") {
                 continue;
@@ -2283,26 +2088,18 @@ impl WasmBackend {
         ];
         let mut func_to_table_idx = HashMap::new();
         let mut func_to_index = HashMap::new();
-        let mut func_arities: HashMap<String, usize> = HashMap::new();
-        let mut func_sig_arities: HashMap<String, usize> = HashMap::new();
         func_to_index.insert(
             "molt_runtime_init".to_string(),
             self.import_ids["runtime_init"],
         );
-        func_arities.insert("molt_runtime_init".to_string(), 0);
-        func_sig_arities.insert("molt_runtime_init".to_string(), 0);
         func_to_index.insert(
             "molt_runtime_shutdown".to_string(),
             self.import_ids["runtime_shutdown"],
         );
-        func_arities.insert("molt_runtime_shutdown".to_string(), 0);
-        func_sig_arities.insert("molt_runtime_shutdown".to_string(), 0);
         func_to_index.insert(
             "molt_sys_set_version_info".to_string(),
             self.import_ids["sys_set_version_info"],
         );
-        func_arities.insert("molt_sys_set_version_info".to_string(), 6);
-        func_sig_arities.insert("molt_sys_set_version_info".to_string(), 6);
         func_to_table_idx.insert("molt_async_sleep".to_string(), 1);
         func_to_table_idx.insert("molt_anext_default_poll".to_string(), 2);
         func_to_table_idx.insert("molt_asyncgen_poll".to_string(), 3);
@@ -2338,49 +2135,10 @@ impl WasmBackend {
             "molt_contextlib_async_exitstack_enter_context_poll".to_string(),
             32,
         );
-        for poll_name in [
-            "molt_async_sleep",
-            "molt_anext_default_poll",
-            "molt_asyncgen_poll",
-            "molt_promise_poll",
-            "molt_io_wait",
-            "molt_thread_poll",
-            "molt_process_poll",
-            "molt_ws_wait",
-            "molt_asyncio_wait_for_poll",
-            "molt_asyncio_wait_poll",
-            "molt_asyncio_gather_poll",
-            "molt_asyncio_socket_reader_read_poll",
-            "molt_asyncio_socket_reader_readline_poll",
-            "molt_asyncio_stream_reader_read_poll",
-            "molt_asyncio_stream_reader_readline_poll",
-            "molt_asyncio_stream_send_all_poll",
-            "molt_asyncio_sock_recv_poll",
-            "molt_asyncio_sock_connect_poll",
-            "molt_asyncio_sock_accept_poll",
-            "molt_asyncio_sock_recv_into_poll",
-            "molt_asyncio_sock_sendall_poll",
-            "molt_asyncio_sock_recvfrom_poll",
-            "molt_asyncio_sock_recvfrom_into_poll",
-            "molt_asyncio_sock_sendto_poll",
-            "molt_asyncio_timer_handle_poll",
-            "molt_asyncio_fd_watcher_poll",
-            "molt_asyncio_server_accept_loop_poll",
-            "molt_asyncio_ready_runner_poll",
-            "molt_contextlib_asyncgen_enter_poll",
-            "molt_contextlib_asyncgen_exit_poll",
-            "molt_contextlib_async_exitstack_exit_poll",
-            "molt_contextlib_async_exitstack_enter_context_poll",
-        ] {
-            func_arities.insert(poll_name.to_string(), 1);
-            func_sig_arities.insert(poll_name.to_string(), 1);
-        }
 
-        for (offset, (runtime_name, import_name, arity)) in builtin_table_funcs.iter().enumerate() {
+        for (offset, (runtime_name, import_name, _)) in builtin_table_funcs.iter().enumerate() {
             let idx = (offset as u32) + poll_table_prefix;
             let runtime_key = (*runtime_name).to_string();
-            func_arities.insert(runtime_key.clone(), *arity);
-            func_sig_arities.insert(runtime_key.clone(), *arity);
             func_to_table_idx.insert(runtime_key.clone(), idx);
             if let Some(wrapper_idx) = builtin_wrapper_indices.get(&runtime_key) {
                 func_to_index.insert(runtime_key, *wrapper_idx);
@@ -2407,12 +2165,6 @@ impl WasmBackend {
             let idx = (i as u32) + poll_table_prefix + builtin_table_funcs.len() as u32;
             func_to_table_idx.insert(func_ir.name.clone(), idx);
             func_to_index.insert(func_ir.name.clone(), user_func_start + i as u32);
-            let public_arity = default_trampoline_spec
-                .get(&func_ir.name)
-                .map(|(arity, _)| *arity)
-                .unwrap_or(func_ir.params.len());
-            func_arities.insert(func_ir.name.clone(), public_arity);
-            func_sig_arities.insert(func_ir.name.clone(), func_ir.params.len());
             table_indices.push(user_func_start + i as u32);
         }
         let mut func_to_trampoline_idx = HashMap::new();
@@ -2438,8 +2190,6 @@ impl WasmBackend {
         let compile_ctx = CompileFuncContext {
             func_map: &func_to_table_idx,
             func_indices: &func_to_index,
-            func_arities: &func_arities,
-            func_sig_arities: &func_sig_arities,
             trampoline_map: &func_to_trampoline_idx,
             import_ids: &import_ids,
             reloc_enabled,
@@ -2575,16 +2325,6 @@ impl WasmBackend {
             });
             element_section = Some(section);
         }
-
-        // Export the compile-time wasm table base as an explicit ABI surface so
-        // runners can configure runtime poll slot normalization deterministically
-        // without decoding function bodies heuristically.
-        let table_base_getter_index = self.compile_wasm_table_base_getter(table_base);
-        self.exports.export(
-            "molt_get_wasm_table_base",
-            ExportKind::Func,
-            table_base_getter_index,
-        );
 
         let page_size: u64 = 64 * 1024;
         let required_pages = (self.data_offset as u64).div_ceil(page_size);
@@ -2913,18 +2653,6 @@ impl WasmBackend {
         func_index
     }
 
-    fn compile_wasm_table_base_getter(&mut self, table_base: u32) -> u32 {
-        let func_index = self.func_count;
-        // Type 0: () -> i64
-        self.funcs.function(0);
-        self.func_count += 1;
-        let mut func = Function::new_with_locals_types(Vec::new());
-        func.instruction(&Instruction::I64Const(table_base as i64));
-        func.instruction(&Instruction::End);
-        self.codes.function(&func);
-        func_index
-    }
-
     fn compile_molt_main_wrapper(
         &mut self,
         reloc_enabled: bool,
@@ -2955,137 +2683,9 @@ impl WasmBackend {
         self.func_count += 1;
         let func_map = ctx.func_map;
         let func_indices = ctx.func_indices;
-        let func_arities = ctx.func_arities;
-        let func_sig_arities = ctx.func_sig_arities;
         let trampoline_map = ctx.trampoline_map;
         let table_base = ctx.table_base;
         let import_ids = ctx.import_ids;
-        let resolve_func_idx = |name: &str, expected_arity: usize| -> u32 {
-            if let Some(idx) = func_indices.get(name).copied()
-                && func_sig_arities.get(name).copied() == Some(expected_arity)
-            {
-                return idx;
-            }
-            if let Some(idx) = import_ids.get(name).copied()
-                && (!func_sig_arities.contains_key(name)
-                    || func_sig_arities.get(name).copied() == Some(expected_arity))
-            {
-                return idx;
-            }
-            let prefix = format!("{name}_");
-            let mut match_idx: Option<u32> = None;
-            for (candidate, idx) in func_indices {
-                let Some(suffix) = candidate.strip_prefix(&prefix) else {
-                    continue;
-                };
-                if suffix.is_empty() || !suffix.as_bytes().iter().all(u8::is_ascii_digit) {
-                    continue;
-                }
-                if func_sig_arities.get(candidate).copied() != Some(expected_arity) {
-                    continue;
-                }
-                if match_idx.is_some() {
-                    panic!("call target ambiguous for {name} with arity {expected_arity}");
-                }
-                match_idx = Some(*idx);
-            }
-            match_idx.unwrap_or_else(|| panic!("call target not found: {name}"))
-        };
-        let resolve_table_slot = |name: &str| -> u32 {
-            resolve_symbol_or_unique_numeric_suffix(func_map, name)
-                .unwrap_or_else(|| panic!("table slot missing for function: {name}"))
-        };
-        let resolve_table_slot_with_arity = |name: &str, expected_arity: usize| -> u32 {
-            if let Some(slot) = func_map.get(name).copied()
-                && func_arities.get(name).copied() == Some(expected_arity)
-            {
-                return slot;
-            }
-            let prefix = format!("{name}_");
-            let mut match_slot: Option<u32> = None;
-            for (candidate, slot) in func_map {
-                let Some(suffix) = candidate.strip_prefix(&prefix) else {
-                    continue;
-                };
-                if suffix.is_empty() || !suffix.as_bytes().iter().all(u8::is_ascii_digit) {
-                    continue;
-                }
-                if func_arities.get(candidate).copied() != Some(expected_arity) {
-                    continue;
-                }
-                if match_slot.is_some() {
-                    panic!("table slot ambiguous for {name} with arity {expected_arity}");
-                }
-                match_slot = Some(*slot);
-            }
-            match_slot.unwrap_or_else(|| {
-                panic!("table slot missing for {name} with arity {expected_arity}")
-            })
-        };
-        let resolve_table_slot_with_shape = |name: &str,
-                                             expected_arity: usize,
-                                             expected_sig_arity: usize|
-         -> u32 {
-            if let Some(slot) = func_map.get(name).copied()
-                && func_arities.get(name).copied() == Some(expected_arity)
-                && func_sig_arities.get(name).copied() == Some(expected_sig_arity)
-            {
-                return slot;
-            }
-            let prefix = format!("{name}_");
-            let mut match_slot: Option<u32> = None;
-            for (candidate, slot) in func_map {
-                let Some(suffix) = candidate.strip_prefix(&prefix) else {
-                    continue;
-                };
-                if suffix.is_empty() || !suffix.as_bytes().iter().all(u8::is_ascii_digit) {
-                    continue;
-                }
-                if func_arities.get(candidate).copied() != Some(expected_arity)
-                    || func_sig_arities.get(candidate).copied() != Some(expected_sig_arity)
-                {
-                    continue;
-                }
-                if match_slot.is_some() {
-                    panic!(
-                        "table slot ambiguous for {name} with arity {expected_arity} sig {expected_sig_arity}"
-                    );
-                }
-                match_slot = Some(*slot);
-            }
-            match_slot.unwrap_or_else(|| {
-                    panic!(
-                        "table slot missing for {name} with arity {expected_arity} sig {expected_sig_arity}"
-                    )
-                })
-        };
-        let resolve_trampoline_slot_with_arity = |name: &str, expected_arity: usize| -> u32 {
-            if let Some(slot) = trampoline_map.get(name).copied()
-                && func_arities.get(name).copied() == Some(expected_arity)
-            {
-                return slot;
-            }
-            let prefix = format!("{name}_");
-            let mut match_slot: Option<u32> = None;
-            for (candidate, slot) in trampoline_map {
-                let Some(suffix) = candidate.strip_prefix(&prefix) else {
-                    continue;
-                };
-                if suffix.is_empty() || !suffix.as_bytes().iter().all(u8::is_ascii_digit) {
-                    continue;
-                }
-                if func_arities.get(candidate).copied() != Some(expected_arity) {
-                    continue;
-                }
-                if match_slot.is_some() {
-                    panic!("trampoline slot ambiguous for {name} with arity {expected_arity}");
-                }
-                match_slot = Some(*slot);
-            }
-            match_slot.unwrap_or_else(|| {
-                panic!("trampoline slot missing for {name} with arity {expected_arity}")
-            })
-        };
         let mut locals = HashMap::new();
         let mut local_count = 0;
         let mut local_types = Vec::new();
@@ -3328,12 +2928,8 @@ impl WasmBackend {
                             label_stack: &mut Vec<i64>,
                             label_depths: &mut HashMap<i64, usize>,
                             base_idx: usize| {
-            let mut exception_poll_needed = false;
             for (rel_idx, op) in ops.iter().enumerate() {
                 let op_idx = base_idx + rel_idx;
-                if op.kind != "check_exception" {
-                    exception_poll_needed |= op_may_raise_for_exception_poll(op.kind.as_str());
-                }
                 match op.kind.as_str() {
                     "const" => {
                         let val = op.value.unwrap();
@@ -3481,8 +3077,6 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["add"]);
                             func.instruction(&Instruction::End);
-                        } else if op.fast_float.unwrap_or(false) {
-                            emit_float_binop_inline(func, lhs, rhs, Instruction::F64Add);
                         } else {
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -3513,8 +3107,6 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["inplace_add"]);
                             func.instruction(&Instruction::End);
-                        } else if op.fast_float.unwrap_or(false) {
-                            emit_float_binop_inline(func, lhs, rhs, Instruction::F64Add);
                         } else {
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -3821,8 +3413,6 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["sub"]);
                             func.instruction(&Instruction::End);
-                        } else if op.fast_float.unwrap_or(false) {
-                            emit_float_binop_inline(func, lhs, rhs, Instruction::F64Sub);
                         } else {
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -3845,7 +3435,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Mul);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
-                            emit_inline_mul_range_check(func, tmp_lhs, tmp_rhs, tmp_raw);
+                            emit_inline_int_range_check(func, tmp_raw);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
                             emit_box_int_from_local(func, tmp_raw);
                             func.instruction(&Instruction::Else);
@@ -3853,8 +3443,6 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["mul"]);
                             func.instruction(&Instruction::End);
-                        } else if op.fast_float.unwrap_or(false) {
-                            emit_float_binop_inline(func, lhs, rhs, Instruction::F64Mul);
                         } else {
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -3885,8 +3473,6 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["inplace_sub"]);
                             func.instruction(&Instruction::End);
-                        } else if op.fast_float.unwrap_or(false) {
-                            emit_float_binop_inline(func, lhs, rhs, Instruction::F64Sub);
                         } else {
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -3909,7 +3495,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Mul);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
-                            emit_inline_mul_range_check(func, tmp_lhs, tmp_rhs, tmp_raw);
+                            emit_inline_int_range_check(func, tmp_raw);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
                             emit_box_int_from_local(func, tmp_raw);
                             func.instruction(&Instruction::Else);
@@ -3917,8 +3503,6 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["inplace_mul"]);
                             func.instruction(&Instruction::End);
-                        } else if op.fast_float.unwrap_or(false) {
-                            emit_float_binop_inline(func, lhs, rhs, Instruction::F64Mul);
                         } else {
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -4020,29 +3604,10 @@ impl WasmBackend {
                     "invert" => {
                         let args = op.args.as_ref().unwrap();
                         let val = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(val));
+                        emit_call(func, reloc_enabled, import_ids["invert"]);
                         let res = locals[op.out.as_ref().unwrap()];
-                        if op.fast_int.unwrap_or(false) {
-                            // Int invert: unbox → XOR(-1) → range check → rebox
-                            let tmp = locals["__molt_tmp0"];
-                            emit_unbox_int_local(func, val, tmp);
-                            func.instruction(&Instruction::LocalGet(tmp));
-                            func.instruction(&Instruction::I64Const(-1));
-                            func.instruction(&Instruction::I64Xor);
-                            func.instruction(&Instruction::LocalSet(tmp));
-                            emit_inline_int_range_check(func, tmp);
-                            func.instruction(&Instruction::If(BlockType::Empty));
-                            emit_box_int_from_local(func, tmp);
-                            func.instruction(&Instruction::LocalSet(res));
-                            func.instruction(&Instruction::Else);
-                            func.instruction(&Instruction::LocalGet(val));
-                            emit_call(func, reloc_enabled, import_ids["invert"]);
-                            func.instruction(&Instruction::LocalSet(res));
-                            func.instruction(&Instruction::End);
-                        } else {
-                            func.instruction(&Instruction::LocalGet(val));
-                            emit_call(func, reloc_enabled, import_ids["invert"]);
-                            func.instruction(&Instruction::LocalSet(res));
-                        }
+                        func.instruction(&Instruction::LocalSet(res));
                     }
                     "inplace_bit_or" => {
                         let args = op.args.as_ref().unwrap();
@@ -4255,8 +3820,6 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["div"]);
                             func.instruction(&Instruction::End);
-                        } else if op.fast_float.unwrap_or(false) {
-                            emit_float_binop_inline(func, lhs, rhs, Instruction::F64Div);
                         } else {
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -4436,8 +3999,6 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64LtS);
                             emit_box_bool_from_i32(func);
-                        } else if op.fast_float.unwrap_or(false) {
-                            emit_float_cmp_inline(func, lhs, rhs, Instruction::F64Lt);
                         } else {
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -4459,8 +4020,6 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64LeS);
                             emit_box_bool_from_i32(func);
-                        } else if op.fast_float.unwrap_or(false) {
-                            emit_float_cmp_inline(func, lhs, rhs, Instruction::F64Le);
                         } else {
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -4482,8 +4041,6 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64GtS);
                             emit_box_bool_from_i32(func);
-                        } else if op.fast_float.unwrap_or(false) {
-                            emit_float_cmp_inline(func, lhs, rhs, Instruction::F64Gt);
                         } else {
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -4505,8 +4062,6 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64GeS);
                             emit_box_bool_from_i32(func);
-                        } else if op.fast_float.unwrap_or(false) {
-                            emit_float_cmp_inline(func, lhs, rhs, Instruction::F64Ge);
                         } else {
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -4528,8 +4083,6 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Eq);
                             emit_box_bool_from_i32(func);
-                        } else if op.fast_float.unwrap_or(false) {
-                            emit_float_cmp_inline(func, lhs, rhs, Instruction::F64Eq);
                         } else {
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -4551,8 +4104,6 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Ne);
                             emit_box_bool_from_i32(func);
-                        } else if op.fast_float.unwrap_or(false) {
-                            emit_float_cmp_inline(func, lhs, rhs, Instruction::F64Ne);
                         } else {
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -4572,85 +4123,39 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(res));
                     }
                     "is" => {
-                        // Inline: `is` is pure bit equality — no import needed
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
                         func.instruction(&Instruction::LocalGet(lhs));
                         func.instruction(&Instruction::LocalGet(rhs));
-                        func.instruction(&Instruction::I64Eq);
-                        emit_box_bool_from_i32(func);
+                        emit_call(func, reloc_enabled, import_ids["is"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
                     "not" => {
                         let args = op.args.as_ref().unwrap();
                         let val = locals[&args[0]];
-                        let hint = op.type_hint.as_deref();
-                        if hint == Some("bool") {
-                            // Bool not: XOR bit 0 to flip True↔False
-                            func.instruction(&Instruction::LocalGet(val));
-                            func.instruction(&Instruction::I64Const(1));
-                            func.instruction(&Instruction::I64Xor);
-                        } else {
-                            // General: inline truthiness → negate → box bool
-                            func.instruction(&Instruction::LocalGet(val));
-                            emit_is_truthy_inline(func, reloc_enabled, import_ids, hint);
-                            func.instruction(&Instruction::I32Eqz);
-                            emit_box_bool_from_i32(func);
-                        }
+                        func.instruction(&Instruction::LocalGet(val));
+                        emit_call(func, reloc_enabled, import_ids["not"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
                     "abs" => {
                         let args = op.args.as_ref().unwrap();
                         let val = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(val));
+                        emit_call(func, reloc_enabled, import_ids["abs_builtin"]);
                         let res = locals[op.out.as_ref().unwrap()];
-                        if op.fast_float.unwrap_or(false) {
-                            // Float abs: reinterpret → f64.abs → reinterpret back
-                            func.instruction(&Instruction::LocalGet(val));
-                            func.instruction(&Instruction::F64ReinterpretI64);
-                            func.instruction(&Instruction::F64Abs);
-                            func.instruction(&Instruction::I64ReinterpretF64);
-                            func.instruction(&Instruction::LocalSet(res));
-                        } else if op.fast_int.unwrap_or(false) {
-                            // Int abs: unbox → if < 0 negate → range check → rebox
-                            let tmp = locals["__molt_tmp0"];
-                            emit_unbox_int_local(func, val, tmp);
-                            // if val < 0: val = 0 - val
-                            func.instruction(&Instruction::LocalGet(tmp));
-                            func.instruction(&Instruction::I64Const(0));
-                            func.instruction(&Instruction::I64LtS);
-                            func.instruction(&Instruction::If(BlockType::Empty));
-                            func.instruction(&Instruction::I64Const(0));
-                            func.instruction(&Instruction::LocalGet(tmp));
-                            func.instruction(&Instruction::I64Sub);
-                            func.instruction(&Instruction::LocalSet(tmp));
-                            func.instruction(&Instruction::End);
-                            // Range check
-                            emit_inline_int_range_check(func, tmp);
-                            func.instruction(&Instruction::If(BlockType::Empty));
-                            emit_box_int_from_local(func, tmp);
-                            func.instruction(&Instruction::LocalSet(res));
-                            func.instruction(&Instruction::Else);
-                            // Overflow: fallback to runtime
-                            func.instruction(&Instruction::LocalGet(val));
-                            emit_call(func, reloc_enabled, import_ids["abs_builtin"]);
-                            func.instruction(&Instruction::LocalSet(res));
-                            func.instruction(&Instruction::End);
-                        } else {
-                            func.instruction(&Instruction::LocalGet(val));
-                            emit_call(func, reloc_enabled, import_ids["abs_builtin"]);
-                            func.instruction(&Instruction::LocalSet(res));
-                        }
+                        func.instruction(&Instruction::LocalSet(res));
                     }
                     "and" => {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        let hint = op.type_hint.as_deref();
                         func.instruction(&Instruction::LocalGet(lhs));
-                        emit_is_truthy_inline(func, reloc_enabled, import_ids, hint);
+                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                        func.instruction(&Instruction::I64Const(0));
+                        func.instruction(&Instruction::I64Ne);
                         func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
                         func.instruction(&Instruction::LocalGet(rhs));
                         func.instruction(&Instruction::Else);
@@ -4663,9 +4168,10 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        let hint = op.type_hint.as_deref();
                         func.instruction(&Instruction::LocalGet(lhs));
-                        emit_is_truthy_inline(func, reloc_enabled, import_ids, hint);
+                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                        func.instruction(&Instruction::I64Const(0));
+                        func.instruction(&Instruction::I64Ne);
                         func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
                         func.instruction(&Instruction::LocalGet(lhs));
                         func.instruction(&Instruction::Else);
@@ -4972,34 +4478,6 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(stop));
                         func.instruction(&Instruction::LocalGet(step));
                         emit_call(func, reloc_enabled, import_ids["list_from_range"]);
-                        func.instruction(&Instruction::LocalSet(out));
-                    }
-                    "list_repeat_range" => {
-                        let args = op.args.as_ref().unwrap();
-                        let out = locals[op.out.as_ref().unwrap()];
-                        let item = locals[&args[0]];
-                        let start = locals[&args[1]];
-                        let stop = locals[&args[2]];
-                        let step = locals[&args[3]];
-                        func.instruction(&Instruction::LocalGet(item));
-                        func.instruction(&Instruction::LocalGet(start));
-                        func.instruction(&Instruction::LocalGet(stop));
-                        func.instruction(&Instruction::LocalGet(step));
-                        emit_call(func, reloc_enabled, import_ids["list_repeat_range"]);
-                        func.instruction(&Instruction::LocalSet(out));
-                    }
-                    "bytearray_fill_range" => {
-                        let args = op.args.as_ref().unwrap();
-                        let out = locals[op.out.as_ref().unwrap()];
-                        let target = locals[&args[0]];
-                        let start = locals[&args[1]];
-                        let stop = locals[&args[2]];
-                        let fill = locals[&args[3]];
-                        func.instruction(&Instruction::LocalGet(target));
-                        func.instruction(&Instruction::LocalGet(start));
-                        func.instruction(&Instruction::LocalGet(stop));
-                        func.instruction(&Instruction::LocalGet(fill));
-                        emit_call(func, reloc_enabled, import_ids["bytearray_fill_range"]);
                         func.instruction(&Instruction::LocalSet(out));
                     }
                     "tuple_new" => {
@@ -6720,12 +6198,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         func.instruction(&Instruction::LocalGet(val));
-
-                        let site_bits =
-                            crate::stable_ic_site_id(func_ir.name.as_str(), op_idx, "setattr");
-                        func.instruction(&Instruction::I64Const(site_bits));
-
-                        emit_call(func, reloc_enabled, import_ids["set_attr_object_ic"]);
+                        emit_call(func, reloc_enabled, import_ids["set_attr_object"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -7426,10 +6899,7 @@ impl WasmBackend {
                     }
                     "call_async" => {
                         let payload_len = op.args.as_ref().map(|args| args.len()).unwrap_or(0);
-                        // call_async targets task poll entrypoints; the callable table
-                        // signature is always `poll(self)` regardless of payload width.
-                        let table_slot =
-                            resolve_table_slot_with_arity(op.s_value.as_ref().unwrap(), 1);
+                        let table_slot = func_map[op.s_value.as_ref().unwrap()];
                         let table_idx = table_base + table_slot;
                         emit_table_index_i64(func, reloc_enabled, table_idx);
                         func.instruction(&Instruction::I64Const((payload_len * 8) as i64));
@@ -7459,7 +6929,9 @@ impl WasmBackend {
                         let target_name = op.s_value.as_ref().unwrap();
                         let args_names = op.args.as_ref().unwrap();
                         let out = locals[op.out.as_ref().unwrap()];
-                        let func_idx = resolve_func_idx(target_name, args_names.len());
+                        let func_idx = *func_indices
+                            .get(target_name)
+                            .expect("call target not found");
                         let bootstrap_call = func_idx == import_ids["runtime_init"];
                         if bootstrap_call {
                             for arg_name in args_names {
@@ -7496,7 +6968,9 @@ impl WasmBackend {
                         let target_name = op.s_value.as_ref().unwrap();
                         let args_names = op.args.as_ref().unwrap();
                         let out = locals[op.out.as_ref().unwrap()];
-                        let func_idx = resolve_func_idx(target_name, args_names.len());
+                        let func_idx = *func_indices
+                            .get(target_name)
+                            .expect("call_internal target not found");
                         for arg_name in args_names {
                             let arg = locals[arg_name];
                             func.instruction(&Instruction::LocalGet(arg));
@@ -7580,61 +7054,16 @@ impl WasmBackend {
                         let callargs_tmp = locals["__molt_tmp0"];
                         let tmp_ptr = locals["__molt_tmp1"];
                         let arity = args_names.len().saturating_sub(1);
-                        if func_sig_arities.get(target_name).copied() != Some(arity) {
-                            // Guarded direct-call fast path is only valid for exact-arity
-                            // targets; fall back to call_bind_ic when arities diverge.
-                            let site_bits = box_int(stable_ic_site_id(
-                                func_ir.name.as_str(),
-                                op_idx,
-                                "call_guarded_arity_mismatch",
-                            ));
-                            if arity <= 8 {
-                                func.instruction(&Instruction::I64Const(site_bits));
-                                func.instruction(&Instruction::LocalGet(callee_bits));
-                                for arg_name in &args_names[1..] {
-                                    let arg = locals[arg_name];
-                                    func.instruction(&Instruction::LocalGet(arg));
-                                }
-                                let import_name = match arity {
-                                    0 => "call_bind_pos0_ic",
-                                    1 => "call_bind_pos1_ic",
-                                    2 => "call_bind_pos2_ic",
-                                    3 => "call_bind_pos3_ic",
-                                    4 => "call_bind_pos4_ic",
-                                    5 => "call_bind_pos5_ic",
-                                    6 => "call_bind_pos6_ic",
-                                    7 => "call_bind_pos7_ic",
-                                    8 => "call_bind_pos8_ic",
-                                    _ => unreachable!("call_guarded fast-call arity must be <= 8"),
-                                };
-                                emit_call(func, reloc_enabled, import_ids[import_name]);
-                            } else {
-                                func.instruction(&Instruction::I64Const(arity as i64));
-                                func.instruction(&Instruction::I64Const(0));
-                                emit_call(func, reloc_enabled, import_ids["callargs_new"]);
-                                func.instruction(&Instruction::LocalSet(callargs_tmp));
-                                for arg_name in &args_names[1..] {
-                                    let arg = locals[arg_name];
-                                    func.instruction(&Instruction::LocalGet(callargs_tmp));
-                                    func.instruction(&Instruction::LocalGet(arg));
-                                    emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
-                                    func.instruction(&Instruction::Drop);
-                                }
-                                func.instruction(&Instruction::I64Const(site_bits));
-                                func.instruction(&Instruction::LocalGet(callee_bits));
-                                func.instruction(&Instruction::LocalGet(callargs_tmp));
-                                emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
-                            }
-                            func.instruction(&Instruction::LocalSet(out));
-                            continue;
-                        }
-                        let func_idx = resolve_func_idx(target_name, arity);
-                        let table_slot = resolve_table_slot_with_arity(target_name, arity);
+                        let func_idx = *func_indices
+                            .get(target_name)
+                            .expect("call_guarded target not found");
+                        let table_slot = func_map[target_name];
                         let table_idx = table_base + table_slot;
                         func.instruction(&Instruction::LocalGet(callee_bits));
                         emit_call(func, reloc_enabled, import_ids["is_function_obj"]);
-                        // is_function_obj returns a bool — use inline bool truthiness
-                        emit_is_truthy_inline(func, reloc_enabled, import_ids, Some("bool"));
+                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                        func.instruction(&Instruction::I64Const(0));
+                        func.instruction(&Instruction::I64Ne);
                         func.instruction(&Instruction::If(BlockType::Empty));
 
                         // callee is a function object: resolve and compare against expected target
@@ -7680,105 +7109,60 @@ impl WasmBackend {
 
                         // slow path: function object does not match expected target
                         func.instruction(&Instruction::Else);
+                        func.instruction(&Instruction::I64Const(arity as i64));
+                        func.instruction(&Instruction::I64Const(0));
+                        emit_call(func, reloc_enabled, import_ids["callargs_new"]);
+                        func.instruction(&Instruction::LocalSet(callargs_tmp));
+                        for arg_name in &args_names[1..] {
+                            let arg = locals[arg_name];
+                            func.instruction(&Instruction::LocalGet(callargs_tmp));
+                            func.instruction(&Instruction::LocalGet(arg));
+                            emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
+                            func.instruction(&Instruction::Drop);
+                        }
                         let site_bits = box_int(stable_ic_site_id(
                             func_ir.name.as_str(),
                             op_idx,
                             "call_guarded_slow_match_miss",
                         ));
-                        if arity <= 8 {
-                            func.instruction(&Instruction::I64Const(site_bits));
-                            func.instruction(&Instruction::LocalGet(callee_bits));
-                            for arg_name in &args_names[1..] {
-                                let arg = locals[arg_name];
-                                func.instruction(&Instruction::LocalGet(arg));
-                            }
-                            let import_name = match arity {
-                                0 => "call_bind_pos0_ic",
-                                1 => "call_bind_pos1_ic",
-                                2 => "call_bind_pos2_ic",
-                                3 => "call_bind_pos3_ic",
-                                4 => "call_bind_pos4_ic",
-                                5 => "call_bind_pos5_ic",
-                                6 => "call_bind_pos6_ic",
-                                7 => "call_bind_pos7_ic",
-                                8 => "call_bind_pos8_ic",
-                                _ => unreachable!("call_guarded fast-call arity must be <= 8"),
-                            };
-                            emit_call(func, reloc_enabled, import_ids[import_name]);
-                        } else {
-                            func.instruction(&Instruction::I64Const(arity as i64));
-                            func.instruction(&Instruction::I64Const(0));
-                            emit_call(func, reloc_enabled, import_ids["callargs_new"]);
-                            func.instruction(&Instruction::LocalSet(callargs_tmp));
-                            for arg_name in &args_names[1..] {
-                                let arg = locals[arg_name];
-                                func.instruction(&Instruction::LocalGet(callargs_tmp));
-                                func.instruction(&Instruction::LocalGet(arg));
-                                emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
-                                func.instruction(&Instruction::Drop);
-                            }
-                            func.instruction(&Instruction::I64Const(site_bits));
-                            func.instruction(&Instruction::LocalGet(callee_bits));
-                            func.instruction(&Instruction::LocalGet(callargs_tmp));
-                            emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
-                        }
+                        func.instruction(&Instruction::I64Const(site_bits));
+                        func.instruction(&Instruction::LocalGet(callee_bits));
+                        func.instruction(&Instruction::LocalGet(callargs_tmp));
+                        emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
                         func.instruction(&Instruction::LocalSet(out));
                         func.instruction(&Instruction::End);
 
                         // not a function object: fallback to call_bind
                         func.instruction(&Instruction::Else);
+                        func.instruction(&Instruction::I64Const(arity as i64));
+                        func.instruction(&Instruction::I64Const(0));
+                        emit_call(func, reloc_enabled, import_ids["callargs_new"]);
+                        func.instruction(&Instruction::LocalSet(callargs_tmp));
+                        for arg_name in &args_names[1..] {
+                            let arg = locals[arg_name];
+                            func.instruction(&Instruction::LocalGet(callargs_tmp));
+                            func.instruction(&Instruction::LocalGet(arg));
+                            emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
+                            func.instruction(&Instruction::Drop);
+                        }
                         let site_bits = box_int(stable_ic_site_id(
                             func_ir.name.as_str(),
                             op_idx,
                             "call_guarded_nonfunc",
                         ));
-                        if arity <= 8 {
-                            func.instruction(&Instruction::I64Const(site_bits));
-                            func.instruction(&Instruction::LocalGet(callee_bits));
-                            for arg_name in &args_names[1..] {
-                                let arg = locals[arg_name];
-                                func.instruction(&Instruction::LocalGet(arg));
-                            }
-                            let import_name = match arity {
-                                0 => "call_bind_pos0_ic",
-                                1 => "call_bind_pos1_ic",
-                                2 => "call_bind_pos2_ic",
-                                3 => "call_bind_pos3_ic",
-                                4 => "call_bind_pos4_ic",
-                                5 => "call_bind_pos5_ic",
-                                6 => "call_bind_pos6_ic",
-                                7 => "call_bind_pos7_ic",
-                                8 => "call_bind_pos8_ic",
-                                _ => unreachable!("call_guarded fast-call arity must be <= 8"),
-                            };
-                            emit_call(func, reloc_enabled, import_ids[import_name]);
-                        } else {
-                            func.instruction(&Instruction::I64Const(arity as i64));
-                            func.instruction(&Instruction::I64Const(0));
-                            emit_call(func, reloc_enabled, import_ids["callargs_new"]);
-                            func.instruction(&Instruction::LocalSet(callargs_tmp));
-                            for arg_name in &args_names[1..] {
-                                let arg = locals[arg_name];
-                                func.instruction(&Instruction::LocalGet(callargs_tmp));
-                                func.instruction(&Instruction::LocalGet(arg));
-                                emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
-                                func.instruction(&Instruction::Drop);
-                            }
-                            func.instruction(&Instruction::I64Const(site_bits));
-                            func.instruction(&Instruction::LocalGet(callee_bits));
-                            func.instruction(&Instruction::LocalGet(callargs_tmp));
-                            emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
-                        }
+                        func.instruction(&Instruction::I64Const(site_bits));
+                        func.instruction(&Instruction::LocalGet(callee_bits));
+                        func.instruction(&Instruction::LocalGet(callargs_tmp));
+                        emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
                         func.instruction(&Instruction::LocalSet(out));
                         func.instruction(&Instruction::End);
                     }
                     "func_new" => {
                         let func_name = op.s_value.as_ref().unwrap();
                         let arity = op.value.unwrap_or(0);
-                        let table_slot = resolve_table_slot_with_arity(func_name, arity as usize);
+                        let table_slot = func_map[func_name];
                         let table_idx = table_base + table_slot;
-                        let tramp_slot =
-                            resolve_trampoline_slot_with_arity(func_name, arity as usize);
+                        let tramp_slot = trampoline_map[func_name];
                         let tramp_idx = table_base + tramp_slot;
                         emit_table_index_i64(func, reloc_enabled, table_idx);
                         emit_table_index_i64(func, reloc_enabled, tramp_idx);
@@ -7796,10 +7180,9 @@ impl WasmBackend {
                             .and_then(|args| args.first())
                             .expect("func_new_closure expects closure arg");
                         let closure_bits = locals[closure_name];
-                        let table_slot = resolve_table_slot_with_arity(func_name, arity as usize);
+                        let table_slot = func_map[func_name];
                         let table_idx = table_base + table_slot;
-                        let tramp_slot =
-                            resolve_trampoline_slot_with_arity(func_name, arity as usize);
+                        let tramp_slot = trampoline_map[func_name];
                         let tramp_idx = table_base + tramp_slot;
                         emit_table_index_i64(func, reloc_enabled, table_idx);
                         emit_table_index_i64(func, reloc_enabled, tramp_idx);
@@ -7844,7 +7227,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let code_bits = locals[&args[0]];
                         let func_name = op.s_value.as_ref().unwrap();
-                        let table_slot = resolve_table_slot(func_name);
+                        let table_slot = func_map[func_name];
                         let table_idx = table_base + table_slot;
                         emit_table_index_i64(func, reloc_enabled, table_idx);
                         func.instruction(&Instruction::LocalGet(code_bits));
@@ -7856,7 +7239,7 @@ impl WasmBackend {
                         let names_bits = locals[&args[0]];
                         let offsets_bits = locals[&args[1]];
                         let func_name = op.s_value.as_ref().unwrap();
-                        let table_slot = resolve_table_slot(func_name);
+                        let table_slot = func_map[func_name];
                         let table_idx = table_base + table_slot;
                         emit_table_index_i64(func, reloc_enabled, table_idx);
                         func.instruction(&Instruction::LocalGet(names_bits));
@@ -7869,7 +7252,7 @@ impl WasmBackend {
                         let names_bits = locals[&args[0]];
                         let offsets_bits = locals[&args[1]];
                         let func_name = op.s_value.as_ref().unwrap();
-                        let table_slot = resolve_table_slot(func_name);
+                        let table_slot = func_map[func_name];
                         let table_idx = table_base + table_slot;
                         emit_table_index_i64(func, reloc_enabled, table_idx);
                         func.instruction(&Instruction::LocalGet(names_bits));
@@ -7899,14 +7282,9 @@ impl WasmBackend {
                     "builtin_func" => {
                         let func_name = op.s_value.as_ref().unwrap();
                         let arity = op.value.unwrap_or(0);
-                        let table_slot = resolve_table_slot_with_shape(
-                            func_name,
-                            arity as usize,
-                            arity as usize,
-                        );
+                        let table_slot = func_map[func_name];
                         let table_idx = table_base + table_slot;
-                        let tramp_slot =
-                            resolve_trampoline_slot_with_arity(func_name, arity as usize);
+                        let tramp_slot = trampoline_map[func_name];
                         let tramp_idx = table_base + tramp_slot;
                         emit_table_index_i64(func, reloc_enabled, table_idx);
                         emit_table_index_i64(func, reloc_enabled, tramp_idx);
@@ -7944,7 +7322,19 @@ impl WasmBackend {
                         let args_names = op.args.as_ref().unwrap();
                         let func_bits = locals[&args_names[0]];
                         let out = locals[op.out.as_ref().unwrap()];
+                        let callargs_tmp = locals["__molt_tmp0"];
                         let arity = args_names.len().saturating_sub(1);
+                        func.instruction(&Instruction::I64Const(arity as i64));
+                        func.instruction(&Instruction::I64Const(0));
+                        emit_call(func, reloc_enabled, import_ids["callargs_new"]);
+                        func.instruction(&Instruction::LocalSet(callargs_tmp));
+                        for arg_name in &args_names[1..] {
+                            let arg = locals[arg_name];
+                            func.instruction(&Instruction::LocalGet(callargs_tmp));
+                            func.instruction(&Instruction::LocalGet(arg));
+                            emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
+                            func.instruction(&Instruction::Drop);
+                        }
                         let invoke_bridge_lane =
                             op.kind == "invoke_ffi" && op.s_value.as_deref() == Some("bridge");
                         let call_site_label = if op.kind == "invoke_ffi" {
@@ -7961,71 +7351,15 @@ impl WasmBackend {
                             op_idx,
                             call_site_label,
                         ));
-                        if arity <= 8 {
-                            func.instruction(&Instruction::I64Const(site_bits));
-                            func.instruction(&Instruction::LocalGet(func_bits));
-                            for arg_name in &args_names[1..] {
-                                let arg = locals[arg_name];
-                                func.instruction(&Instruction::LocalGet(arg));
-                            }
-                            if op.kind == "invoke_ffi" {
-                                let require_bridge_cap = if invoke_bridge_lane { 1 } else { 0 };
-                                func.instruction(&Instruction::I64Const(box_bool(
-                                    require_bridge_cap,
-                                )));
-                                let import_name = match arity {
-                                    0 => "invoke_ffi_pos0_ic",
-                                    1 => "invoke_ffi_pos1_ic",
-                                    2 => "invoke_ffi_pos2_ic",
-                                    3 => "invoke_ffi_pos3_ic",
-                                    4 => "invoke_ffi_pos4_ic",
-                                    5 => "invoke_ffi_pos5_ic",
-                                    6 => "invoke_ffi_pos6_ic",
-                                    7 => "invoke_ffi_pos7_ic",
-                                    8 => "invoke_ffi_pos8_ic",
-                                    _ => unreachable!("invoke_ffi fast-call arity must be <= 8"),
-                                };
-                                emit_call(func, reloc_enabled, import_ids[import_name]);
-                            } else {
-                                let import_name = match arity {
-                                    0 => "call_bind_pos0_ic",
-                                    1 => "call_bind_pos1_ic",
-                                    2 => "call_bind_pos2_ic",
-                                    3 => "call_bind_pos3_ic",
-                                    4 => "call_bind_pos4_ic",
-                                    5 => "call_bind_pos5_ic",
-                                    6 => "call_bind_pos6_ic",
-                                    7 => "call_bind_pos7_ic",
-                                    8 => "call_bind_pos8_ic",
-                                    _ => unreachable!("call_func fast-call arity must be <= 8"),
-                                };
-                                emit_call(func, reloc_enabled, import_ids[import_name]);
-                            }
+                        func.instruction(&Instruction::I64Const(site_bits));
+                        func.instruction(&Instruction::LocalGet(func_bits));
+                        func.instruction(&Instruction::LocalGet(callargs_tmp));
+                        if op.kind == "invoke_ffi" {
+                            let require_bridge_cap = if invoke_bridge_lane { 1 } else { 0 };
+                            func.instruction(&Instruction::I64Const(box_bool(require_bridge_cap)));
+                            emit_call(func, reloc_enabled, import_ids["invoke_ffi_ic"]);
                         } else {
-                            let callargs_tmp = locals["__molt_tmp0"];
-                            func.instruction(&Instruction::I64Const(arity as i64));
-                            func.instruction(&Instruction::I64Const(0));
-                            emit_call(func, reloc_enabled, import_ids["callargs_new"]);
-                            func.instruction(&Instruction::LocalSet(callargs_tmp));
-                            for arg_name in &args_names[1..] {
-                                let arg = locals[arg_name];
-                                func.instruction(&Instruction::LocalGet(callargs_tmp));
-                                func.instruction(&Instruction::LocalGet(arg));
-                                emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
-                                func.instruction(&Instruction::Drop);
-                            }
-                            func.instruction(&Instruction::I64Const(site_bits));
-                            func.instruction(&Instruction::LocalGet(func_bits));
-                            func.instruction(&Instruction::LocalGet(callargs_tmp));
-                            if op.kind == "invoke_ffi" {
-                                let require_bridge_cap = if invoke_bridge_lane { 1 } else { 0 };
-                                func.instruction(&Instruction::I64Const(box_bool(
-                                    require_bridge_cap,
-                                )));
-                                emit_call(func, reloc_enabled, import_ids["invoke_ffi_ic"]);
-                            } else {
-                                emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
-                            }
+                            emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
                         }
                         func.instruction(&Instruction::LocalSet(out));
                     }
@@ -8058,50 +7392,28 @@ impl WasmBackend {
                         let args_names = op.args.as_ref().unwrap();
                         let method_bits = locals[&args_names[0]];
                         let out = locals[op.out.as_ref().unwrap()];
+                        let callargs_tmp = locals["__molt_tmp0"];
                         let arity = args_names.len().saturating_sub(1);
+                        func.instruction(&Instruction::I64Const(arity as i64));
+                        func.instruction(&Instruction::I64Const(0));
+                        emit_call(func, reloc_enabled, import_ids["callargs_new"]);
+                        func.instruction(&Instruction::LocalSet(callargs_tmp));
+                        for arg_name in &args_names[1..] {
+                            let arg = locals[arg_name];
+                            func.instruction(&Instruction::LocalGet(callargs_tmp));
+                            func.instruction(&Instruction::LocalGet(arg));
+                            emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
+                            func.instruction(&Instruction::Drop);
+                        }
                         let site_bits = box_int(stable_ic_site_id(
                             func_ir.name.as_str(),
                             op_idx,
                             "call_method",
                         ));
-                        if arity <= 8 {
-                            func.instruction(&Instruction::I64Const(site_bits));
-                            func.instruction(&Instruction::LocalGet(method_bits));
-                            for arg_name in &args_names[1..] {
-                                let arg = locals[arg_name];
-                                func.instruction(&Instruction::LocalGet(arg));
-                            }
-                            let import_name = match arity {
-                                0 => "call_bind_pos0_ic",
-                                1 => "call_bind_pos1_ic",
-                                2 => "call_bind_pos2_ic",
-                                3 => "call_bind_pos3_ic",
-                                4 => "call_bind_pos4_ic",
-                                5 => "call_bind_pos5_ic",
-                                6 => "call_bind_pos6_ic",
-                                7 => "call_bind_pos7_ic",
-                                8 => "call_bind_pos8_ic",
-                                _ => unreachable!("call_method fast-call arity must be <= 8"),
-                            };
-                            emit_call(func, reloc_enabled, import_ids[import_name]);
-                        } else {
-                            let callargs_tmp = locals["__molt_tmp0"];
-                            func.instruction(&Instruction::I64Const(arity as i64));
-                            func.instruction(&Instruction::I64Const(0));
-                            emit_call(func, reloc_enabled, import_ids["callargs_new"]);
-                            func.instruction(&Instruction::LocalSet(callargs_tmp));
-                            for arg_name in &args_names[1..] {
-                                let arg = locals[arg_name];
-                                func.instruction(&Instruction::LocalGet(callargs_tmp));
-                                func.instruction(&Instruction::LocalGet(arg));
-                                emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
-                                func.instruction(&Instruction::Drop);
-                            }
-                            func.instruction(&Instruction::I64Const(site_bits));
-                            func.instruction(&Instruction::LocalGet(method_bits));
-                            func.instruction(&Instruction::LocalGet(callargs_tmp));
-                            emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
-                        }
+                        func.instruction(&Instruction::I64Const(site_bits));
+                        func.instruction(&Instruction::LocalGet(method_bits));
+                        func.instruction(&Instruction::LocalGet(callargs_tmp));
+                        emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
                         func.instruction(&Instruction::LocalSet(out));
                     }
                     "chan_new" => {
@@ -8231,7 +7543,7 @@ impl WasmBackend {
                             "coroutine" => (TASK_KIND_COROUTINE, 0),
                             _ => panic!("unknown task kind: {task_kind}"),
                         };
-                        let table_slot = resolve_table_slot(op.s_value.as_ref().unwrap());
+                        let table_slot = func_map[op.s_value.as_ref().unwrap()];
                         let table_idx = table_base + table_slot;
                         emit_table_index_i64(func, reloc_enabled, table_idx);
                         func.instruction(&Instruction::I64Const(total));
@@ -8661,9 +7973,10 @@ impl WasmBackend {
                     "if" => {
                         let args = op.args.as_ref().unwrap();
                         let cond = locals[&args[0]];
-                        let hint = op.type_hint.as_deref();
                         func.instruction(&Instruction::LocalGet(cond));
-                        emit_is_truthy_inline(func, reloc_enabled, import_ids, hint);
+                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                        func.instruction(&Instruction::I64Const(0));
+                        func.instruction(&Instruction::I64Ne);
                         func.instruction(&Instruction::If(BlockType::Empty));
                         control_stack.push(ControlKind::If);
                     }
@@ -8712,18 +8025,19 @@ impl WasmBackend {
                     "loop_break_if_true" => {
                         let args = op.args.as_ref().unwrap();
                         let cond = locals[&args[0]];
-                        let hint = op.type_hint.as_deref();
                         func.instruction(&Instruction::LocalGet(cond));
-                        emit_is_truthy_inline(func, reloc_enabled, import_ids, hint);
+                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                        func.instruction(&Instruction::I64Const(0));
+                        func.instruction(&Instruction::I64Ne);
                         func.instruction(&Instruction::BrIf(1));
                     }
                     "loop_break_if_false" => {
                         let args = op.args.as_ref().unwrap();
                         let cond = locals[&args[0]];
-                        let hint = op.type_hint.as_deref();
                         func.instruction(&Instruction::LocalGet(cond));
-                        emit_is_truthy_inline(func, reloc_enabled, import_ids, hint);
-                        func.instruction(&Instruction::I32Eqz);
+                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                        func.instruction(&Instruction::I64Const(0));
+                        func.instruction(&Instruction::I64Eq);
                         func.instruction(&Instruction::BrIf(1));
                     }
                     "loop_break" => {
@@ -8750,18 +8064,11 @@ impl WasmBackend {
                     }
                     "check_exception" => {
                         if let Some(&try_index) = try_stack.last() {
-                            if exception_poll_needed {
-                                emit_call(
-                                    func,
-                                    reloc_enabled,
-                                    import_ids["exception_pending_fast"],
-                                );
-                                func.instruction(&Instruction::I64Const(0));
-                                func.instruction(&Instruction::I64Ne);
-                                let depth = control_stack.len().saturating_sub(1 + try_index);
-                                func.instruction(&Instruction::BrIf(depth as u32));
-                            }
-                            exception_poll_needed = false;
+                            emit_call(func, reloc_enabled, import_ids["exception_pending"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Ne);
+                            let depth = control_stack.len().saturating_sub(1 + try_index);
+                            func.instruction(&Instruction::BrIf(depth as u32));
                         }
                     }
                     _ => {}
@@ -9181,9 +8488,10 @@ impl WasmBackend {
                             };
                             let true_block = idx + 1;
                             let false_block = false_target;
-                            let hint = op.type_hint.as_deref();
                             func.instruction(&Instruction::LocalGet(cond));
-                            emit_is_truthy_inline(func, reloc_enabled, import_ids, hint);
+                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Empty));
                             func.instruction(&Instruction::I64Const(true_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -9257,9 +8565,10 @@ impl WasmBackend {
                             };
                             let end_block = end_idx + 1;
                             let next_block = idx + 1;
-                            let hint = op.type_hint.as_deref();
                             func.instruction(&Instruction::LocalGet(cond));
-                            emit_is_truthy_inline(func, reloc_enabled, import_ids, hint);
+                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Empty));
                             func.instruction(&Instruction::I64Const(end_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -9288,10 +8597,10 @@ impl WasmBackend {
                             };
                             let end_block = end_idx + 1;
                             let next_block = idx + 1;
-                            let hint = op.type_hint.as_deref();
                             func.instruction(&Instruction::LocalGet(cond));
-                            emit_is_truthy_inline(func, reloc_enabled, import_ids, hint);
-                            func.instruction(&Instruction::I32Eqz);
+                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Eq);
                             func.instruction(&Instruction::If(BlockType::Empty));
                             func.instruction(&Instruction::I64Const(end_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -9404,7 +8713,7 @@ impl WasmBackend {
                             };
                             let target_block = target_idx;
                             let next_block = idx + 1;
-                            emit_call(func, reloc_enabled, import_ids["exception_pending_fast"]);
+                            emit_call(func, reloc_enabled, import_ids["exception_pending"]);
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Empty));
@@ -9585,9 +8894,10 @@ impl WasmBackend {
                             };
                             let true_block = idx + 1;
                             let false_block = false_target;
-                            let hint = op.type_hint.as_deref();
                             func.instruction(&Instruction::LocalGet(cond));
-                            emit_is_truthy_inline(func, reloc_enabled, import_ids, hint);
+                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Empty));
                             func.instruction(&Instruction::I64Const(true_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -9661,9 +8971,10 @@ impl WasmBackend {
                             };
                             let end_block = end_idx + 1;
                             let next_block = idx + 1;
-                            let hint = op.type_hint.as_deref();
                             func.instruction(&Instruction::LocalGet(cond));
-                            emit_is_truthy_inline(func, reloc_enabled, import_ids, hint);
+                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Empty));
                             func.instruction(&Instruction::I64Const(end_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -9692,10 +9003,10 @@ impl WasmBackend {
                             };
                             let end_block = end_idx + 1;
                             let next_block = idx + 1;
-                            let hint = op.type_hint.as_deref();
                             func.instruction(&Instruction::LocalGet(cond));
-                            emit_is_truthy_inline(func, reloc_enabled, import_ids, hint);
-                            func.instruction(&Instruction::I32Eqz);
+                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Eq);
                             func.instruction(&Instruction::If(BlockType::Empty));
                             func.instruction(&Instruction::I64Const(end_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -9819,7 +9130,7 @@ impl WasmBackend {
                             };
                             let target_block = target_idx;
                             let next_block = idx + 1;
-                            emit_call(func, reloc_enabled, import_ids["exception_pending_fast"]);
+                            emit_call(func, reloc_enabled, import_ids["exception_pending"]);
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Empty));

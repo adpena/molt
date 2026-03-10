@@ -226,10 +226,7 @@ fn b64_decode(input: &[u8], alphabet: &[u8; 64], validate: bool) -> Result<Vec<u
                         let is_plus = vceqq_u8(v, plus);
                         let is_slash = vceqq_u8(v, slash);
                         let is_eq = vceqq_u8(v, eq);
-                        let valid = vorrq_u8(
-                            vorrq_u8(vorrq_u8(is_upper, is_lower), vorrq_u8(is_digit, is_plus)),
-                            vorrq_u8(is_slash, is_eq),
-                        );
+                        let valid = vorrq_u8(vorrq_u8(vorrq_u8(is_upper, is_lower), vorrq_u8(is_digit, is_plus)), vorrq_u8(is_slash, is_eq));
 
                         // Check if all bytes are valid (fast path: copy entire chunk)
                         if vminvq_u8(valid) == 0xFF {
@@ -305,10 +302,7 @@ fn b64_decode(input: &[u8], alphabet: &[u8; 64], validate: bool) -> Result<Vec<u
                         let is_plus = u8x16_eq(v, plus);
                         let is_slash = u8x16_eq(v, slash);
                         let is_eq = u8x16_eq(v, eq);
-                        let valid = v128_or(
-                            v128_or(v128_or(is_upper, is_lower), v128_or(is_digit, is_plus)),
-                            v128_or(is_slash, is_eq),
-                        );
+                        let valid = v128_or(v128_or(v128_or(is_upper, is_lower), v128_or(is_digit, is_plus)), v128_or(is_slash, is_eq));
                         let mask = u8x16_bitmask(valid);
                         if mask == 0xFFFF {
                             let len = filtered_out.len();
@@ -348,7 +342,9 @@ fn b64_decode(input: &[u8], alphabet: &[u8; 64], validate: bool) -> Result<Vec<u
         if validate {
             return Err("Incorrect padding");
         }
-        data.extend(std::iter::repeat_n(b'=', 4 - remainder));
+        for _ in 0..(4 - remainder) {
+            data.push(b'=');
+        }
     }
 
     let mut out = Vec::with_capacity(data.len() / 4 * 3);
@@ -406,7 +402,7 @@ fn b32_encode(input: &[u8], alphabet: &[u8; 32]) -> Vec<u8> {
     let leftover = input.len() % 5;
     let mut padded = input.to_vec();
     if leftover != 0 {
-        padded.extend(std::iter::repeat_n(0u8, 5 - leftover));
+        padded.extend(std::iter::repeat(0u8).take(5 - leftover));
     }
     let mut out = Vec::with_capacity(padded.len().div_ceil(5) * 8);
     for chunk in padded.chunks(5) {
@@ -478,7 +474,7 @@ fn b32_decode(
         data.make_ascii_uppercase();
     }
 
-    if !data.len().is_multiple_of(8) {
+    if data.len() % 8 != 0 {
         return Err("Incorrect padding");
     }
 
@@ -568,8 +564,9 @@ fn b16_encode(input: &[u8]) -> Vec<u8> {
                 use std::arch::x86_64::*;
                 let mask_lo = _mm_set1_epi8(0x0F);
                 let hex_lut = _mm_setr_epi8(
-                    b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8, b'4' as i8, b'5' as i8,
-                    b'6' as i8, b'7' as i8, b'8' as i8, b'9' as i8, b'A' as i8, b'B' as i8,
+                    b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8,
+                    b'4' as i8, b'5' as i8, b'6' as i8, b'7' as i8,
+                    b'8' as i8, b'9' as i8, b'A' as i8, b'B' as i8,
                     b'C' as i8, b'D' as i8, b'E' as i8, b'F' as i8,
                 );
                 while i + 16 <= input.len() {
@@ -583,10 +580,7 @@ fn b16_encode(input: &[u8]) -> Vec<u8> {
                     let len = out.len();
                     out.set_len(len + 32);
                     _mm_storeu_si128(out.as_mut_ptr().add(len) as *mut __m128i, interleaved_lo);
-                    _mm_storeu_si128(
-                        out.as_mut_ptr().add(len + 16) as *mut __m128i,
-                        interleaved_hi,
-                    );
+                    _mm_storeu_si128(out.as_mut_ptr().add(len + 16) as *mut __m128i, interleaved_hi);
                     i += 16;
                 }
             }
@@ -599,8 +593,9 @@ fn b16_encode(input: &[u8]) -> Vec<u8> {
             unsafe {
                 use std::arch::wasm32::*;
                 let hex_lut = i8x16(
-                    b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8, b'4' as i8, b'5' as i8,
-                    b'6' as i8, b'7' as i8, b'8' as i8, b'9' as i8, b'A' as i8, b'B' as i8,
+                    b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8,
+                    b'4' as i8, b'5' as i8, b'6' as i8, b'7' as i8,
+                    b'8' as i8, b'9' as i8, b'A' as i8, b'B' as i8,
                     b'C' as i8, b'D' as i8, b'E' as i8, b'F' as i8,
                 );
                 let mask_lo = u8x16_splat(0x0F);
@@ -610,28 +605,8 @@ fn b16_encode(input: &[u8]) -> Vec<u8> {
                     let lo_nibbles = v128_and(chunk, mask_lo);
                     let hi_hex = i8x16_swizzle(hex_lut, hi_nibbles);
                     let lo_hex = i8x16_swizzle(hex_lut, lo_nibbles);
-                    let interleaved_lo =
-                        i8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(
-                            hi_hex, lo_hex,
-                        );
-                    let interleaved_hi = i8x16_shuffle::<
-                        8,
-                        24,
-                        9,
-                        25,
-                        10,
-                        26,
-                        11,
-                        27,
-                        12,
-                        28,
-                        13,
-                        29,
-                        14,
-                        30,
-                        15,
-                        31,
-                    >(hi_hex, lo_hex);
+                    let interleaved_lo = i8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(hi_hex, lo_hex);
+                    let interleaved_hi = i8x16_shuffle::<8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31>(hi_hex, lo_hex);
                     let len = out.len();
                     out.set_len(len + 32);
                     v128_store(out.as_mut_ptr().add(len) as *mut v128, interleaved_lo);
@@ -666,7 +641,7 @@ fn b16_decode(input: &[u8], casefold: bool) -> Result<Vec<u8>, &'static str> {
         input.to_vec()
     };
 
-    if !data.len().is_multiple_of(2) {
+    if data.len() % 2 != 0 {
         return Err("Odd-length string");
     }
 
@@ -710,7 +685,9 @@ fn a85_encode(input: &[u8], foldspaces: bool, wrapcol: usize, pad: bool, adobe: 
 
     let padding = (4 - (input.len() % 4)) % 4;
     let mut padded = input.to_vec();
-    padded.extend(std::iter::repeat_n(0, padding));
+    for _ in 0..padding {
+        padded.push(0);
+    }
 
     let mut encoded = Vec::with_capacity(padded.len() * 5 / 4 + 16);
     for chunk in padded.chunks(4) {
@@ -839,7 +816,9 @@ fn a85_decode(input: &[u8], foldspaces: bool, adobe: bool) -> Result<Vec<u8>, St
     // Handle remaining partial group
     if !curr.is_empty() {
         let padding = 5 - curr.len();
-        curr.extend(std::iter::repeat_n(b'u', padding)); // 117 = max value char
+        for _ in 0..padding {
+            curr.push(b'u'); // 117 = max value char
+        }
         let mut acc: u64 = 0;
         for &digit in &curr {
             acc = acc * 85 + (digit as u64 - 33);
@@ -871,7 +850,9 @@ fn b85_encode(input: &[u8], pad: bool) -> Vec<u8> {
 
     let padding = (4 - (input.len() % 4)) % 4;
     let mut padded = input.to_vec();
-    padded.extend(std::iter::repeat_n(0, padding));
+    for _ in 0..padding {
+        padded.push(0);
+    }
 
     let mut out = Vec::with_capacity(padded.len() * 5 / 4 + 1);
     for chunk in padded.chunks(4) {
@@ -898,7 +879,9 @@ fn b85_decode(input: &[u8]) -> Result<Vec<u8>, String> {
     let table = b85_decode_table();
     let padding = (5 - (input.len() % 5)) % 5;
     let mut data = input.to_vec();
-    data.extend(std::iter::repeat_n(b'~', padding)); // '~' maps to value 84 (max)
+    for _ in 0..padding {
+        data.push(b'~'); // '~' maps to value 84 (max)
+    }
 
     let mut out = Vec::with_capacity(data.len() * 4 / 5 + 4);
     for (chunk_idx, chunk) in data.chunks(5).enumerate() {
@@ -947,11 +930,11 @@ pub extern "C" fn molt_base64_b64encode(data_bits: u64, altchars_bits: u64) -> u
                 );
             }
             // Replace + and / with custom chars
-            for slot in &mut alphabet {
-                if *slot == b'+' {
-                    *slot = alt[0];
-                } else if *slot == b'/' {
-                    *slot = alt[1];
+            for i in 0..64 {
+                if alphabet[i] == b'+' {
+                    alphabet[i] = alt[0];
+                } else if alphabet[i] == b'/' {
+                    alphabet[i] = alt[1];
                 }
             }
         }

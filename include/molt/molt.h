@@ -1,8 +1,6 @@
 #ifndef MOLT_C_API_MOLT_H
 #define MOLT_C_API_MOLT_H
 
-/* Stable libmolt extension ABI: versioned by MOLT_C_API_VERSION. */
-
 #include <stddef.h>
 #include <stdint.h>
 
@@ -65,23 +63,10 @@ MoltHandle molt_object_call(MoltHandle callable_bits, MoltHandle args_bits,
                             MoltHandle kwargs_bits);
 MoltHandle molt_object_repr(MoltHandle obj_bits);
 MoltHandle molt_object_str(MoltHandle obj_bits);
-MoltHandle molt_object_get_iter(MoltHandle obj_bits);
-int32_t molt_iterator_next(MoltHandle iter_bits, MoltHandle *out_value);
 int32_t molt_object_truthy(MoltHandle obj_bits);
 int32_t molt_object_equal(MoltHandle lhs_bits, MoltHandle rhs_bits);
 int32_t molt_object_not_equal(MoltHandle lhs_bits, MoltHandle rhs_bits);
 int32_t molt_object_contains(MoltHandle container_bits, MoltHandle item_bits);
-MoltHandle molt_capsule_new(uintptr_t pointer_bits, const uint8_t *name_ptr,
-                            uint64_t name_len, uintptr_t destructor_bits);
-const uint8_t *molt_capsule_get_name_ptr(MoltHandle capsule_bits,
-                                         uint64_t *out_len);
-uintptr_t molt_capsule_get_pointer(MoltHandle capsule_bits,
-                                   const uint8_t *name_ptr, uint64_t name_len);
-int32_t molt_capsule_is_valid(MoltHandle capsule_bits, const uint8_t *name_ptr,
-                              uint64_t name_len);
-uintptr_t molt_capsule_get_context(MoltHandle capsule_bits);
-int32_t molt_capsule_set_context(MoltHandle capsule_bits, uintptr_t context_bits);
-uintptr_t molt_capsule_import(const uint8_t *name_ptr, uint64_t name_len);
 int32_t molt_type_ready(MoltHandle type_bits);
 
 MoltHandle molt_module_create(MoltHandle name_bits);
@@ -137,8 +122,6 @@ int64_t molt_sequence_length(MoltHandle seq_bits);
 MoltHandle molt_sequence_getitem(MoltHandle seq_bits, MoltHandle key_bits);
 int32_t molt_sequence_setitem(MoltHandle seq_bits, MoltHandle key_bits,
                               MoltHandle val_bits);
-MoltHandle molt_sequence_to_list(MoltHandle seq_bits);
-MoltHandle molt_sequence_to_tuple(MoltHandle seq_bits);
 
 MoltHandle molt_mapping_getitem(MoltHandle mapping_bits, MoltHandle key_bits);
 int32_t molt_mapping_setitem(MoltHandle mapping_bits, MoltHandle key_bits,

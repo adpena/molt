@@ -126,13 +126,8 @@ class _Feature:
         return "_Feature" + repr((self.optional, self.mandatory, self.compiler_flag))
 
 
-import sys as _sys
-
-_mod_dict = getattr(_sys.modules.get(__name__), "__dict__", None) or globals()
-del _sys
-
 for _name, _optional, _mandatory, _compiler_flag in _feature_rows:
-    _mod_dict[str(_name)] = _Feature(_optional, _mandatory, int(_compiler_flag))
+    globals()[str(_name)] = _Feature(_optional, _mandatory, int(_compiler_flag))
 
 del _feature_flags
 del _feature_rows

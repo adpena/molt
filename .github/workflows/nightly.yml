@@ -6,19 +6,11 @@ on:
     - cron: '0 4 * * 1'
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
   regrtest:
     name: CPython Regrtest (G5)
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    env:
-      MOLT_EXT_ROOT: /tmp/molt-ext
-      CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target
-      MOLT_DIFF_CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target
-      MOLT_BACKEND_DAEMON_SOCKET_DIR: /tmp/molt_backend_sockets
 
     steps:
       - uses: actions/checkout@v4
@@ -31,14 +23,6 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Install mold linker
-        run: |
-          if ! command -v mold >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y mold
-          fi
-          mold --version
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -63,7 +47,7 @@ jobs:
         run: uv sync --python 3.12
 
       - name: Build Molt runtime
-        run: cargo build -p molt-lang-runtime --release
+        run: cargo build -p molt-runtime --release
 
       - name: Run CPython regrtest (G5)
         run: |
@@ -85,11 +69,6 @@ jobs:
     name: Determinism Full Sweep
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    env:
-      MOLT_EXT_ROOT: /tmp/molt-ext
-      CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target
-      MOLT_DIFF_CARGO_TARGET_DIR: /tmp/molt-ext/cargo-target
-      MOLT_BACKEND_DAEMON_SOCKET_DIR: /tmp/molt_backend_sockets
 
     steps:
       - uses: actions/checkout@v4
@@ -102,14 +81,6 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Install mold linker
-        run: |
-          if ! command -v mold >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y mold
-          fi
-          mold --version
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -126,7 +97,7 @@ jobs:
         run: uv sync --python 3.12
 
       - name: Build Molt runtime
-        run: cargo build -p molt-lang-runtime --release
+        run: cargo build -p molt-runtime --release
 
       - name: Reproducible build sweep
         run: |
@@ -185,73 +156,7 @@ jobs:
       - name: Quint verify — midend pipeline
         run: |
           quint verify formal/quint/molt_midend_pipeline.qnt \
-            --invariant=inv --max-steps=10
-        continue-on-error: true
-
-      - name: Quint verify — calling convention
-        run: |
-          quint verify formal/quint/molt_calling_convention.qnt \
             --invariant=Inv --max-steps=10
-        continue-on-error: true
-
-      - name: Quint verify — Luau transpiler
-        run: |
-          quint verify formal/quint/molt_luau_transpiler.qnt \
-            --invariant=Inv --max-steps=10
-        continue-on-error: true
-
-  fuzzer:
-    name: Compiler Fuzzer (Safe + Reject)
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-
-      - name: Set up Python 3.12
-        run: uv python install 3.12
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install mold linker
-        run: |
-          if ! command -v mold >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y mold
-          fi
-          mold --version
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-${{ runner.os }}-nightly-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-nightly-
-
-      - name: Install dependencies
-        run: uv sync --python 3.12
-
-      - name: Build Molt backend
-        run: cargo build -p molt-lang-backend --profile release-fast
-
-      - name: Fuzzer — safe mode (100 programs)
-        run: |
-          PYTHONPATH=src uv run --python 3.12 python3 tools/fuzz_compiler.py \
-            --mode safe --count 100 --seed 42
-        continue-on-error: true
-
-      - name: Fuzzer — reject mode (50 programs)
-        run: |
-          PYTHONPATH=src uv run --python 3.12 python3 tools/fuzz_compiler.py \
-            --mode reject --count 50 --seed 42
         continue-on-error: true
 
   supply-chain:

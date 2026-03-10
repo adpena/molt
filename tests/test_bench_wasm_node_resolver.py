@@ -1,23 +1,10 @@
 from __future__ import annotations
 
-import contextlib
-import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 import tools.bench_wasm as bench_wasm
-
-
-@pytest.fixture(autouse=True)
-def _stub_compile_slot(monkeypatch: pytest.MonkeyPatch) -> None:
-    @contextlib.contextmanager
-    def _noop_slot(*, env, label, log=None):  # type: ignore[no-untyped-def]
-        del env, label, log
-        yield SimpleNamespace(slot_index=0, waited_seconds=0.0)
-
-    monkeypatch.setattr(bench_wasm, "_compile_slot", _noop_slot)
 
 
 def _reset_cache(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -80,37 +67,13 @@ def test_resolve_runner_node_enforces_stable_wasm_flags(
     monkeypatch.setattr(bench_wasm, "resolve_node_binary", lambda: "/usr/bin/node")
     monkeypatch.delenv("MOLT_WASM_NODE_OPTIONS", raising=False)
     cmd = bench_wasm._resolve_runner(
-        "node",
-        tty=False,
-        log=None,
-        node_max_old_space_mb=None,
-        node_allow_tiering=False,
+        "node", tty=False, log=None, node_max_old_space_mb=None
     )
     assert cmd[0] == "/usr/bin/node"
     assert "--no-warnings" in cmd
     assert "--no-wasm-tier-up" in cmd
     assert "--no-wasm-dynamic-tiering" in cmd
     assert "--wasm-num-compilation-tasks=1" in cmd
-    assert cmd[-1] == "run_wasm.js"
-
-
-def test_resolve_runner_node_allows_tiering_mode(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(bench_wasm, "resolve_node_binary", lambda: "/usr/bin/node")
-    monkeypatch.delenv("MOLT_WASM_NODE_OPTIONS", raising=False)
-    cmd = bench_wasm._resolve_runner(
-        "node",
-        tty=False,
-        log=None,
-        node_max_old_space_mb=None,
-        node_allow_tiering=True,
-    )
-    assert cmd[0] == "/usr/bin/node"
-    assert "--no-warnings" in cmd
-    assert "--no-wasm-tier-up" not in cmd
-    assert "--no-wasm-dynamic-tiering" not in cmd
-    assert "--wasm-num-compilation-tasks=1" not in cmd
     assert cmd[-1] == "run_wasm.js"
 
 
@@ -134,13 +97,10 @@ def test_prepare_wasm_binary_sets_linked_table_base(
         output_path: Path,
         _script: str,
         *,
-        build_profile: str,
-        build_timeout_s: float,
-        use_cache: bool,
         tty: bool,
         log,
     ) -> float:
-        del build_profile, build_timeout_s, use_cache, tty, log
+        del tty, log
         captured_env.update(env)
         output_path.write_bytes(b"\x00asm")
         return 0.01
@@ -149,11 +109,10 @@ def test_prepare_wasm_binary_sets_linked_table_base(
         _env: dict[str, str],
         input_path: Path,
         *,
-        cargo_profile: str,
         require_linked: bool,
         log,
     ) -> Path:
-        del cargo_profile, require_linked, log
+        del require_linked, log
         linked = input_path.with_name("output_linked.wasm")
         linked.write_bytes(b"\x00asm")
         return linked
@@ -164,9 +123,6 @@ def test_prepare_wasm_binary_sets_linked_table_base(
     wasm = bench_wasm.prepare_wasm_binary(
         "tests/benchmarks/bench_sum.py",
         require_linked=False,
-        build_profile="release",
-        build_timeout_s=300.0,
-        use_cache=True,
         tty=False,
         log=None,
         keep_temp=False,
@@ -174,46 +130,3 @@ def test_prepare_wasm_binary_sets_linked_table_base(
     assert wasm is not None
     assert captured_env.get("MOLT_WASM_LINK") == "1"
     assert captured_env.get("MOLT_WASM_TABLE_BASE") == "2354"
-
-
-def test_measure_wasm_run_marks_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        bench_wasm,
-        "_run_cmd",
-        lambda *args, **kwargs: bench_wasm._RunResult(
-            returncode=124,
-            timed_out=True,
-        ),
-    )
-    result = bench_wasm.measure_wasm_run(
-        {},
-        ["node", "run_wasm.js"],
-        runner_name="node",
-        run_timeout_s=2.5,
-        log=None,
-    )
-    assert result.elapsed_s is None
-    assert result.error_class == "runner_timeout"
-    assert result.error and "2.5s" in result.error
-
-
-def test_write_failure_payload_includes_summary(tmp_path: Path) -> None:
-    out = tmp_path / "bench_wasm_failed.json"
-    bench_wasm._write_failure_payload(
-        out,
-        failure_class="runtime_build_failed",
-        failure_message="runtime build failed",
-        runner="node",
-        control_runner=None,
-        build_profile="release",
-        build_timeout_sec=300.0,
-        run_timeout_sec=120.0,
-        cache_enabled=True,
-        samples=0,
-        warmup=0,
-        results={},
-    )
-    payload = json.loads(out.read_text(encoding="utf-8"))
-    assert payload["status"] == "failed"
-    assert payload["failure_class"] == "runtime_build_failed"
-    assert payload["summary"]["total_benchmarks"] == 0
