@@ -15,6 +15,9 @@
         "python",
         "scripts/mcp/fleet-mcp-server.py"
       ]
+    },
+    "vertigo-fleet-mini": {
+      "url": "http://Alejandros-Mac-mini.local:8863/sse"
     }
   }
 }
