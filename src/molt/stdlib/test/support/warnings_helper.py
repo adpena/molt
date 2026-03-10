@@ -156,12 +156,9 @@ def _filterwarnings(filters, quiet: bool = False):
         except Exception:
             frame = None
     if frame is not None:
-        try:
-            registry = frame.f_globals.get("__warningregistry__")
-            if registry:
-                registry.clear()
-        except (AttributeError, ValueError):
-            pass
+        registry = frame.f_globals.get("__warningregistry__")
+        if registry:
+            registry.clear()
     wmod = sys.modules["warnings"]
     with wmod.catch_warnings(record=True) as w:
         wmod.simplefilter("always")

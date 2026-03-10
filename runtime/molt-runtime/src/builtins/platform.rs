@@ -5,12 +5,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use digest::Digest;
 use getrandom::fill as getrandom_fill;
 use md5::Md5;
 use serde_json::Value as JsonValue;
 use sha1::Sha1;
 use sha2::Sha256;
-use sha2::digest::Digest;
 
 use crate::builtins::io::{
     path_basename_text, path_dirname_text, path_join_text, path_normpath_text,
@@ -1166,58 +1166,61 @@ fn importlib_find_in_path(
         let mut namespace_paths: Vec<String> = Vec::new();
         let mut namespace_seen: HashSet<String> = HashSet::new();
         for base in &current_paths {
-            if let Some((zip_archive, zip_prefix)) = split_zip_archive_path(base)
-                && zip_archive_index_cached(&mut zip_index_cache, &zip_archive).is_some()
-            {
-                let pkg_rel = zip_entry_join(&zip_prefix, part);
-                let init_entry = format!("{pkg_rel}/__init__.py");
-                if zip_archive_entry_exists_cached(&mut zip_index_cache, &zip_archive, &init_entry)
-                {
-                    if is_last {
-                        return Some(ImportlibPathResolution {
-                            origin: Some(format!("{zip_archive}/{init_entry}")),
-                            is_package: true,
-                            submodule_search_locations: Some(vec![format!(
-                                "{zip_archive}/{pkg_rel}"
-                            )]),
-                            cached: None,
-                            has_location: true,
-                            loader_kind: "zip_source".to_string(),
-                            zip_archive: Some(zip_archive),
-                            zip_inner_path: Some(init_entry),
-                        });
-                    }
-                    next_paths = vec![format!("{zip_archive}/{pkg_rel}")];
-                    found_pkg = true;
-                    break;
-                }
-                if zip_archive_has_prefix_cached(&mut zip_index_cache, &zip_archive, &pkg_rel) {
-                    append_unique_path_hashed(
-                        &mut namespace_paths,
-                        &mut namespace_seen,
-                        &format!("{zip_archive}/{pkg_rel}"),
-                    );
-                }
-                if is_last {
-                    let mod_entry = zip_entry_join(&zip_prefix, &format!("{part}.py"));
+            if let Some((zip_archive, zip_prefix)) = split_zip_archive_path(base) {
+                if zip_archive_index_cached(&mut zip_index_cache, &zip_archive).is_some() {
+                    let pkg_rel = zip_entry_join(&zip_prefix, part);
+                    let init_entry = format!("{pkg_rel}/__init__.py");
                     if zip_archive_entry_exists_cached(
                         &mut zip_index_cache,
                         &zip_archive,
-                        &mod_entry,
+                        &init_entry,
                     ) {
-                        return Some(ImportlibPathResolution {
-                            origin: Some(format!("{zip_archive}/{mod_entry}")),
-                            is_package: false,
-                            submodule_search_locations: None,
-                            cached: None,
-                            has_location: true,
-                            loader_kind: "zip_source".to_string(),
-                            zip_archive: Some(zip_archive),
-                            zip_inner_path: Some(mod_entry),
-                        });
+                        if is_last {
+                            return Some(ImportlibPathResolution {
+                                origin: Some(format!("{zip_archive}/{init_entry}")),
+                                is_package: true,
+                                submodule_search_locations: Some(vec![format!(
+                                    "{zip_archive}/{pkg_rel}"
+                                )]),
+                                cached: None,
+                                has_location: true,
+                                loader_kind: "zip_source".to_string(),
+                                zip_archive: Some(zip_archive),
+                                zip_inner_path: Some(init_entry),
+                            });
+                        }
+                        next_paths = vec![format!("{zip_archive}/{pkg_rel}")];
+                        found_pkg = true;
+                        break;
                     }
+                    if zip_archive_has_prefix_cached(&mut zip_index_cache, &zip_archive, &pkg_rel) {
+                        append_unique_path_hashed(
+                            &mut namespace_paths,
+                            &mut namespace_seen,
+                            &format!("{zip_archive}/{pkg_rel}"),
+                        );
+                    }
+                    if is_last {
+                        let mod_entry = zip_entry_join(&zip_prefix, &format!("{part}.py"));
+                        if zip_archive_entry_exists_cached(
+                            &mut zip_index_cache,
+                            &zip_archive,
+                            &mod_entry,
+                        ) {
+                            return Some(ImportlibPathResolution {
+                                origin: Some(format!("{zip_archive}/{mod_entry}")),
+                                is_package: false,
+                                submodule_search_locations: None,
+                                cached: None,
+                                has_location: true,
+                                loader_kind: "zip_source".to_string(),
+                                zip_archive: Some(zip_archive),
+                                zip_inner_path: Some(mod_entry),
+                            });
+                        }
+                    }
+                    continue;
                 }
-                continue;
             }
             let root = if base.is_empty() {
                 ".".to_string()
@@ -1414,21 +1417,21 @@ fn importlib_namespace_paths(
         return matches;
     }
     for base in resolved {
-        if let Some((archive_path, zip_prefix)) = split_zip_archive_path(&base)
-            && zip_archive_index_cached(&mut zip_index_cache, &archive_path).is_some()
-        {
-            let mut rel = zip_prefix;
-            for part in &parts {
-                rel = zip_entry_join(&rel, part);
+        if let Some((archive_path, zip_prefix)) = split_zip_archive_path(&base) {
+            if zip_archive_index_cached(&mut zip_index_cache, &archive_path).is_some() {
+                let mut rel = zip_prefix;
+                for part in &parts {
+                    rel = zip_entry_join(&rel, part);
+                }
+                if zip_archive_has_prefix_cached(&mut zip_index_cache, &archive_path, &rel) {
+                    append_unique_path_hashed(
+                        &mut matches,
+                        &mut matches_seen,
+                        &format!("{archive_path}/{rel}"),
+                    );
+                }
+                continue;
             }
-            if zip_archive_has_prefix_cached(&mut zip_index_cache, &archive_path, &rel) {
-                append_unique_path_hashed(
-                    &mut matches,
-                    &mut matches_seen,
-                    &format!("{archive_path}/{rel}"),
-                );
-            }
-            continue;
         }
         let mut path = if base.is_empty() {
             ".".to_string()
@@ -3095,7 +3098,8 @@ fn importlib_load_extension_manifest_for_path(
                     _py,
                     "ImportError",
                     &format!(
-                        "invalid extension metadata in {archive_path}/extension_manifest.json: {err}"
+                        "invalid extension metadata in {}: {err}",
+                        format!("{archive_path}/extension_manifest.json")
                     ),
                 ));
             }
@@ -5805,34 +5809,6 @@ fn importlib_module_should_retry_empty(
     module_name: &str,
     module_bits: u64,
 ) -> Result<bool, u64> {
-    // Some bootstrap-sensitive modules can become non-empty partial shells
-    // (for example they expose __all__) while still missing required runtime
-    // symbols. Treat these as retryable so we re-enter spec loading.
-    if module_name == "types" {
-        // This helper runs across explicit `molt_runtime_shutdown()` cycles in
-        // tests and bootstrap paths, so avoid process-global interned-name
-        // caches whose bits outlive a runtime generation.
-        let module_type_name_bits = {
-            let ptr = alloc_string(_py, b"ModuleType");
-            if ptr.is_null() {
-                0
-            } else {
-                MoltObject::from_ptr(ptr).bits()
-            }
-        };
-        let has_module_type = if let Some(dict_ptr) = importlib_module_dict_ptr(module_bits) {
-            importlib_dict_get_string_key_bits(_py, dict_ptr, module_type_name_bits)?.is_some()
-        } else {
-            false
-        };
-        if module_type_name_bits != 0 {
-            dec_ref_bits(_py, module_type_name_bits);
-        }
-        if !has_module_type {
-            return Ok(true);
-        }
-    }
-
     if !IMPORTLIB_EMPTY_MODULE_RETRY_PREFIXES
         .iter()
         .any(|prefix| module_name.starts_with(prefix))
@@ -15554,78 +15530,6 @@ mod tests {
         });
         let bytes = serde_json::to_vec(&manifest).expect("encode extension manifest");
         std::fs::write(manifest_path, bytes).expect("write extension manifest");
-    }
-
-    #[test]
-    fn importlib_module_retry_for_types_when_required_attr_missing() {
-        with_trusted_runtime(|| {
-            crate::with_gil_entry!(_py, {
-                let name_bits = alloc_test_string_bits(_py, "types");
-                let module_bits = crate::builtins::modules::molt_module_new(name_bits);
-                dec_ref_bits(_py, name_bits);
-                assert!(
-                    !obj_from_bits(module_bits).is_none(),
-                    "failed to allocate test module"
-                );
-                assert!(
-                    !exception_pending(_py),
-                    "unexpected exception creating test module: {:?}",
-                    pending_exception_kind_and_message(_py)
-                );
-                let dict_ptr = importlib_module_dict_ptr(module_bits).expect("module dict");
-                let all_name_bits = alloc_test_string_bits(_py, "__all__");
-                let public_bits = alloc_test_string_bits(_py, "placeholder");
-                let all_ptr = alloc_list(_py, &[public_bits]);
-                assert!(!all_ptr.is_null(), "alloc __all__ list");
-                let all_bits = MoltObject::from_ptr(all_ptr).bits();
-                unsafe {
-                    dict_set_in_place(_py, dict_ptr, all_name_bits, all_bits);
-                }
-                dec_ref_bits(_py, all_name_bits);
-                dec_ref_bits(_py, public_bits);
-                dec_ref_bits(_py, all_bits);
-
-                let retry = importlib_module_should_retry_empty(_py, "types", module_bits)
-                    .expect("retry decision");
-                assert!(retry, "types module missing ModuleType must trigger retry");
-                dec_ref_bits(_py, module_bits);
-            });
-        });
-    }
-
-    #[test]
-    fn importlib_module_retry_for_types_disabled_when_required_attr_present() {
-        with_trusted_runtime(|| {
-            crate::with_gil_entry!(_py, {
-                let name_bits = alloc_test_string_bits(_py, "types");
-                let module_bits = crate::builtins::modules::molt_module_new(name_bits);
-                dec_ref_bits(_py, name_bits);
-                assert!(
-                    !obj_from_bits(module_bits).is_none(),
-                    "failed to allocate test module"
-                );
-                assert!(
-                    !exception_pending(_py),
-                    "unexpected exception creating test module: {:?}",
-                    pending_exception_kind_and_message(_py)
-                );
-                let module_type_bits = builtin_classes(_py).module;
-                let module_type_name_bits = alloc_test_string_bits(_py, "ModuleType");
-                let dict_ptr = importlib_module_dict_ptr(module_bits).expect("module dict");
-                unsafe {
-                    dict_set_in_place(_py, dict_ptr, module_type_name_bits, module_type_bits);
-                }
-                dec_ref_bits(_py, module_type_name_bits);
-
-                let retry = importlib_module_should_retry_empty(_py, "types", module_bits)
-                    .expect("retry decision");
-                assert!(
-                    !retry,
-                    "types module with ModuleType should not trigger retry"
-                );
-                dec_ref_bits(_py, module_bits);
-            });
-        });
     }
 
     #[test]

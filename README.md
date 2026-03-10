@@ -1,7 +1,7 @@
 # Molt
 
-A research-grade project to compile **Python with a CPython `>=3.12` parity target** into **small, fast native binaries** (and optionally WASM),
-with strict reproducibility, rigorous testing, and staged compatibility evidence.
+A research-grade project to compile a **verified per-application subset of Python** into **small, fast native binaries** (and optionally WASM),
+with strict reproducibility, rigorous testing, and staged compatibility.
 
 > Molt = Python shedding its skin into native code.
 
@@ -10,29 +10,17 @@ Canonical status lives in [docs/spec/STATUS.md](docs/spec/STATUS.md) (README and
 ## Strategic Targets
 - Performance: parity with or superiority to Codon on tracked benchmarks.
 - Coverage/interoperability: approach Nuitka-level CPython surface coverage and
-  interoperability while targeting full CPython `>=3.12` parity everywhere Molt can
-  support it without violating the project break policy.
-- Explicit carve-outs: unrestricted `exec`, unrestricted `eval`, runtime
-  monkeypatching, and unrestricted reflection/introspection remain intentionally
-  outside the active compiled-binary parity target unless explicitly re-approved.
-- Deployment contract: compiled Molt binaries are fully self-contained, run
-  without any host Python installation, and must not use a hidden host-CPython
-  fallback lane.
+  interoperability for Molt-supported semantics, while honoring Molt vision
+  constraints (determinism, capability gates, and no hidden host fallback).
 
 ## Documentation Quick Links
 - Docs index (canonical navigation): [docs/INDEX.md](docs/INDEX.md)
 - Spec index (full spec map): [docs/spec/README.md](docs/spec/README.md)
 - Differential suite organization + run ledger: [tests/differential/INDEX.md](tests/differential/INDEX.md)
 - Examples guide: [examples/README.md](examples/README.md)
-- Browser WASM demo guide: [examples/README.md#browser-wasm-demo](examples/README.md#browser-wasm-demo)
 - Demo guide: [demo/README.md](demo/README.md)
-- Symphony orchestration guide: [docs/SYMPHONY.md](docs/SYMPHONY.md)
-- Symphony canonical alignment: [docs/SYMPHONY_CANONICAL_ALIGNMENT.md](docs/SYMPHONY_CANONICAL_ALIGNMENT.md)
-- Symphony human/operator docs: [docs/SYMPHONY_HUMAN_ROLE.md](docs/SYMPHONY_HUMAN_ROLE.md), [docs/SYMPHONY_OPERATOR_PLAYBOOK.md](docs/SYMPHONY_OPERATOR_PLAYBOOK.md)
-- Linear workspace bootstrap guide: [docs/LINEAR_WORKSPACE_BOOTSTRAP.md](docs/LINEAR_WORKSPACE_BOOTSTRAP.md)
 - Bench guides: [bench/README.md](bench/README.md), [bench/friends/README.md](bench/friends/README.md)
 - Packaging guides: [packaging/README.md](packaging/README.md), [packaging/templates/linux/README.md](packaging/templates/linux/README.md)
-- Cargo front-door crate: [runtime/molt-python/README.md](runtime/molt-python/README.md)
 
 ## Optimization Program Kickoff
 
@@ -42,12 +30,11 @@ Canonical status lives in [docs/spec/STATUS.md](docs/spec/STATUS.md) (README and
 - Latest observability artifact snapshot: [bench/results/optimization_progress/2026-02-11_week1_observability/summary.md](bench/results/optimization_progress/2026-02-11_week1_observability/summary.md).
 - Baseline lock summary: [bench/results/optimization_progress/2026-02-11_week0_baseline_lock/baseline_lock_summary.md](bench/results/optimization_progress/2026-02-11_week0_baseline_lock/baseline_lock_summary.md).
 - Current compile-throughput recovery status: stdlib mid-end functions now default to Tier C unless explicitly promoted; budget degrade checkpoints are stage-level with pre-pass evaluation; frontend layer-parallel diagnostics include stdlib-aware effective min-cost policy details.
-- Desktop GUI proving ground: compiled Tk/Molt apps are a first-class optimization harness, so event-loop throughput, widget marshalling, callback overhead, and standalone packaging quality should be treated as performance work rather than product-only polish. Prefer Rust and `moltlib` intrinsics, plus SIMD/NEON hot paths where measurements justify them.
 - Stdlib integrity gate status: `tools/check_stdlib_intrinsics.py` now enforces fallback-pattern bans across all stdlib modules by default (opt-down flag: `--fallback-intrinsic-backed-only`).
 - Stdlib coverage gate status: top-level + submodule CPython union coverage (3.12/3.13/3.14) is enforced by `tools/check_stdlib_intrinsics.py` against `tools/stdlib_module_union.py` (missing names, package-kind mismatches, and duplicate mappings are hard failures).
 - Stdlib ratchet gate status: `tools/check_stdlib_intrinsics.py` enforces intrinsic-partial budget via `tools/stdlib_intrinsics_ratchet.json`.
 - Stdlib lowering audit snapshot: `intrinsic-backed=177`, `intrinsic-partial=696`, `probe-only=0`, `python-only=0`; bootstrap/critical strict-import gates are still active blockers during ongoing lowering burn-down.
-- Namespace layering: `molt` is compiler/runtime core, `builtins` plus `molt.stdlib.*` carry CPython-compatible builtins/stdlib surfaces, and Molt-specific user APIs live under `moltlib` (`moltlib.molt_db`, `moltlib.concurrency`, `moltlib.net`, `moltlib.asgi`). Compatibility shims remain in `molt.molt_db`, `molt.net`, `molt.concurrency`, and `molt.asgi`, but the root `molt` package does not re-export those helper symbols.
+- Stdlib namespace hygiene: non-CPython top-level extras are constrained to `_intrinsics` and `test`; Molt-specific DB helpers now live in `moltlib.molt_db` (with `molt.molt_db` compatibility shim).
 - Stdlib union maintenance guide: [docs/spec/areas/compat/surfaces/stdlib/stdlib_union_baseline.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_union_baseline.md).
 - Stdlib execution plan: [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md).
 
@@ -59,14 +46,11 @@ Canonical status lives in [docs/spec/STATUS.md](docs/spec/STATUS.md) (README and
 - **Async iteration**: Supports `__aiter__`/`__anext__`, `aiter`/`anext`, and `async for` (sync-iter fallback enabled for now).
 - **Async context managers**: `async with` lowering for `__aenter__`/`__aexit__`.
 - **Async defaults**: `anext(..., default)` awaitable creation outside `await`.
-- **Cancellation tokens**: request-scoped defaults with task overrides; cooperative checks via `moltlib.concurrency.cancelled()` (or the `molt.concurrency` compatibility shim).
+- **Cancellation tokens**: request-scoped defaults with task overrides; cooperative checks via `molt.cancelled()`.
 - **Molt Packages**: First-class support for Rust-backed packages, with production wire formats (MsgPack/CBOR) and Arrow IPC for tabular data; JSON is a compatibility/debug format.
 - **AOT Compilation**: Uses Cranelift to generate high-performance machine code.
 - **Differential Testing**: Verified against CPython 3.12+.
 - **No Host Python Runtime**: Compiled Molt binaries are fully self-contained and do not rely on a local Python installation; stdlib behavior must lower into Rust intrinsics (Python wrappers are only thin intrinsic forwarders).
-- **Parity target clarity**: Molt is trying to reach full CPython `>=3.12` parity
-  for compiled outputs except for unrestricted `exec`, unrestricted `eval`,
-  runtime monkeypatching, and unrestricted reflection/introspection.
 - **Generic aliases (PEP 585)**: builtin `list`/`dict`/`tuple`/`set`/`frozenset`/`type` support `__origin__`/`__args__`.
 - **Dict union (PEP 584)**: `dict | dict` and `dict |= dict` parity.
 - **Union types (PEP 604)**: `X | Y` unions with `types.UnionType` (`types.Union` on 3.14).
@@ -94,7 +78,7 @@ Canonical status lives in [docs/spec/STATUS.md](docs/spec/STATUS.md) (README and
 - **Dataclasses**: compile-time lowering for frozen/eq/repr/slots; no `default_factory`, `kw_only`, or `order`; runtime `dataclasses` module provides metadata only.
 - **Exceptions**: `try/except/else/finally` + `raise`/reraise support; still partial vs full BaseException semantics (see [docs/spec/areas/compat/surfaces/language/type_coverage_matrix.md](docs/spec/areas/compat/surfaces/language/type_coverage_matrix.md)).
 - **Imports**: static module graph only; relative imports resolved within known packages; no dynamic import hooks or full package resolution.
-- **Dynamic execution policy**: compiled binaries intentionally do not target unrestricted `eval`/`exec`, runtime monkeypatching, or unrestricted reflection/introspection; this is an explicit carve-out from the otherwise parity-seeking roadmap. See [docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md](docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md) for future gating requirements.
+- **Dynamic execution policy**: compiled binaries intentionally do not target unrestricted `eval`/`exec`, runtime monkeypatching, or unrestricted reflection/introspection; see [docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md](docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md) for future gating requirements.
 - **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pickle` (protocol 0 only), `pprint`, `string`, `typing`, `sys`, `os`, `gc`, `random`, `statistics` (core function surface lowered through Rust intrinsics), `test` (regrtest helpers only), `asyncio`, `threading`, `heapq`, `functools`, `itertools`, `zipfile`, `zipimport`, `collections`, `socket` (error classes only), `select` (error alias only); import-only stubs for `collections.abc`, `_collections_abc`, `_abc`, `_py_abc`, `_asyncio`, `_bz2`, `_weakref`, `_weakrefset`, `importlib`, `importlib.util` (dynamic import hooks pending). Intrinsic-backed `bisect`/`_bisect` core (`bisect_left`/`bisect_right`/`insort_left`/`insort_right`) is available with CPython-style aliases.
 - **Process-based concurrency**: spawn-based `multiprocessing` (Process/Pool/Queue/Pipe/SharedValue/SharedArray) behind capabilities; `fork`/`forkserver` map to spawn semantics; `subprocess`/`concurrent.futures` pending.
 - **Reflection**: `type`, `isinstance`, `issubclass`, and `object` are supported with C3 MRO + multiple inheritance; no metaclasses or dynamic `type()` construction.
@@ -129,7 +113,7 @@ brew install molt-worker
 ```
 
 ## Platform Pitfalls
-- **macOS SDK/versioning**: Xcode CLT must be installed. Native builds now default to a stable minimum deployment target (`11.0` on Apple Silicon, `10.13` on x86_64) instead of the active SDK version; set `MACOSX_DEPLOYMENT_TARGET` only when you intentionally need a different minimum for cross-linking or newer APIs.
+- **macOS SDK/versioning**: Xcode CLT must be installed; if linking fails, confirm `xcrun --show-sdk-version` works and set `MACOSX_DEPLOYMENT_TARGET` for cross-linking.
 - **macOS arm64 + Python 3.14**: uv-managed 3.14 can hang; install system `python3.14` and use `--no-managed-python` when needed (see `docs/spec/STATUS.md`).
 - **Windows toolchain conflicts**: avoid mixing MSVC and clang in the same build; keep one toolchain active.
 - **Windows path lengths**: keep repo/build paths short; avoid deeply nested output folders.
@@ -297,11 +281,9 @@ export MOLT_WORKER_CMD="molt-worker --stdio --exports demo/molt_worker_app/molt_
 - Release iteration lane: use `MOLT_RELEASE_CARGO_PROFILE=release-fast` for faster release-profile compile iterations, and benchmark it with `tools/compile_progress.py --cases release_fast_cold release_fast_warm release_fast_nocache_warm`.
 - Build-cache determinism: CLI runs enforce `PYTHONHASHSEED=0` by default so repeated builds share cache keys; override via `MOLT_HASH_SEED=<value>` (`MOLT_HASH_SEED=random` disables this).
 - Rust compile cache: when `sccache` is installed, the CLI auto-enables it (`MOLT_USE_SCCACHE=auto`; set `MOLT_USE_SCCACHE=0` to disable). If a wrapper-level `sccache` error is detected, the CLI retries the Cargo build once without `RUSTC_WRAPPER`.
-- Cargo target root: CLI builds and `molt doctor` honor `CARGO_TARGET_DIR` first, then fall back to the workspace `build.target-dir` from `.cargo/config.toml` before using the default `target/`.
 - Native backend daemon: native backend compiles run through a persistent daemon by default (`MOLT_BACKEND_DAEMON=1`) to amortize Cranelift startup; tune with `MOLT_BACKEND_DAEMON_START_TIMEOUT` and `MOLT_BACKEND_DAEMON_CACHE_MB`.
 - Cranelift backend tuning knobs: release builds default to minimum 16-byte function alignment (`log2_min_function_alignment=4`) and debug/dev builds default to `regalloc_algorithm=single_pass`; override with `MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2`, `MOLT_BACKEND_REGALLOC_ALGORITHM`, and `MOLT_BACKEND_LIBCALL_CALL_CONV`.
 - Multi-agent throughput tooling: bootstrap with `tools/throughput_env.sh --apply`, benchmark with `tools/throughput_matrix.py`, run compile KPI snapshots with `tools/compile_progress.py`, and enforce cache retention with `tools/molt_cache_prune.py`.
-- Symphony orchestration: run `PYTHONPATH=src python3 tools/symphony_bootstrap.py --project-slug <slug> --install-launchd` once, then `PYTHONPATH=src python3 tools/symphony_run.py WORKFLOW.md --port 8089` (runtime env in `ops/linear/runtime/symphony.env`). launchd now keeps a small local control-plane log root at `~/Library/Logs/Molt/symphony-launchd`, waits for the canonical external volume instead of crash-looping, uses `/api/v1/health` for liveness repair, and uses `/api/v1/activity` for lightweight busy/idle restart decisions.
 - Shared diff target: keep `MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR` (set automatically by throughput bootstrap) so diff workers reuse the same Cargo artifacts instead of triggering duplicate rebuilds.
 - Diff run lock: full diff runs coordinate via `<CARGO_TARGET_DIR>/.molt_state/diff_run.lock`; tune queue wait with `MOLT_DIFF_RUN_LOCK_WAIT_SEC` and `MOLT_DIFF_RUN_LOCK_POLL_SEC`.
 - `molt build --output <path|dir>`: directory outputs use the default filename; `--out-dir` only affects final outputs (intermediates remain under `$MOLT_HOME/build/<entry>`).
@@ -332,21 +314,21 @@ export MOLT_WORKER_CMD="molt-worker --stdio --exports demo/molt_worker_app/molt_
 
 ## ASGI shim (CPython)
 
-Wrap a `moltlib.net` handler into an ASGI app for local integration testing:
+Wrap a `molt.net` handler into an ASGI app for local integration testing:
 
 ```python
-from moltlib.asgi import asgi_adapter
-from moltlib.net import Request, Response
+from molt.asgi import asgi_adapter
+from molt.net import Request, Response
 
 
 def handler(request: Request) -> Response:
-    return Response(body="ok")
+    return Response.text("ok")
 
 
 app = asgi_adapter(handler)
 ```
 
-The adapter is capability-gated and calls `capabilities.require("net")` per request. `molt.asgi` and `molt.net` remain available as compatibility shims for existing imports.
+The adapter is capability-gated and calls `capabilities.require("net")` per request.
 
 ## Documentation & Architecture
 
@@ -379,9 +361,7 @@ See `docs/spec/areas/` for detailed architectural decisions.
 - WASM build (linked): `uv run --python 3.12 python3 -m molt.cli build --target wasm --linked examples/hello.py` (emits `output.wasm` + `output_linked.wasm`; linked requires `wasm-ld` + `wasm-tools`).
 - WASM build (custom linked output): `uv run --python 3.12 python3 -m molt.cli build --target wasm --linked --linked-output dist/app_linked.wasm examples/hello.py`.
 - WASM build (require linked): `uv run --python 3.12 python3 -m molt.cli build --target wasm --require-linked examples/hello.py` (linked output is primary; unlinked artifact removed).
-- Luau build (preview): `uv run --python 3.12 python3 -m molt.cli build --target luau examples/hello.py` (emits `output.luau`; this is a bounded preview backend that fails fast if lowered output still contains unsupported comment/stub markers).
 - WASM run (Node/WASI): `node run_wasm.js /path/to/output.wasm` (requires linked output; build with `--linked` or `--require-linked`).
-- WASM run (browser host): build `examples/hello.py` with `--target wasm --linked`, serve `wasm/` over HTTP, and open `wasm/browser_host.html` (the host prefers `output_linked.wasm` and falls back to `output.wasm` + `molt_runtime.wasm` when needed).
 - WASM bench: `uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json` (requires `wasm-ld` + `wasm-tools`; linked output is required by default), then compare against the native CPython baselines in `bench/results/bench.json`.
 
 ## Performance & Comparisons

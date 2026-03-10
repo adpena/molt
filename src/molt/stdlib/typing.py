@@ -501,9 +501,7 @@ def _require_importlib_util_module() -> object:
 
 
 def _load_collections_abc() -> ModuleType:
-    import sys as _typing_abc_sys
-
-    cached = _typing_abc_sys.modules[__name__].__dict__.get("_ABC_CACHE")
+    cached = globals().get("_ABC_CACHE")
     if isinstance(cached, ModuleType):
         return cached
     import _collections_abc as abc_mod_raw
@@ -522,12 +520,7 @@ def _load_collections_abc() -> ModuleType:
             ]
     if missing:
         raise RuntimeError(f"typing missing _collections_abc.{missing[0]}")
-    import sys as _typing_sys
-
-    _typing_mod_dict = (
-        getattr(_typing_sys.modules.get(__name__), "__dict__", None) or globals()
-    )
-    _typing_mod_dict["_ABC_CACHE"] = abc_mod
+    globals()["_ABC_CACHE"] = abc_mod
     return abc_mod
 
 
@@ -982,10 +975,7 @@ def NewType(name: str, tp: object):
 
     _new.__name__ = name
     _new.__qualname__ = name
-    try:
-        _new.__module__ = _sys._getframe(1).f_globals.get("__name__", "__main__")
-    except (AttributeError, ValueError):
-        _new.__module__ = "__main__"
+    _new.__module__ = _sys._getframe(1).f_globals.get("__name__", "__main__")
     setattr(_new, "__supertype__", tp)
     return _new
 

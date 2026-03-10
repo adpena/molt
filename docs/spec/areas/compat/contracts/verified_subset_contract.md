@@ -7,19 +7,16 @@
 ---
 
 ## 1. Definition
-The verified subset is the ratcheted, test-backed portion of Molt's broader
-CPython `>=3.12` parity target. It is the set of language/runtime/stdlib
-behaviors for which Molt currently guarantees CPython 3.12+ equivalence under
-deterministic inputs. Equivalence means identical stdout/stderr/exit codes and
-matching exception types/messages for covered behaviors. Version-specific
-divergences across 3.12/3.13/3.14 must be documented in specs and tests.
+The verified subset is the set of language/runtime/stdlib behaviors for which
+Molt guarantees CPython 3.12+ equivalence under deterministic inputs. Equivalence
+means identical stdout/stderr/exit codes and matching exception types/messages
+for covered behaviors. Version-specific divergences across 3.12/3.13/3.14 must
+be documented in specs and tests.
 
 ## 2. Scope
 - Applies to Tier 0 builds with fallback policy `error`.
 - Excludes any feature that requires bridge fallback, dynamic imports, or
   capability-gated I/O unless explicitly listed in the manifest.
-- Excludes the intentional compiled-binary carve-outs: unrestricted `exec`,
-  unrestricted `eval`, runtime monkeypatching, and unrestricted reflection.
 - The canonical capability status remains in `docs/spec/STATUS.md`.
 
 ## 3. Guarantees
@@ -64,6 +61,5 @@ true:
 ```
 
 ## 9. Non-Goals
-- Replacing the broader project target of full CPython `>=3.12` parity with a
-  permanently narrowed "subset-only" identity.
+- Proving full Python equivalence across all stdlib modules.
 - Guaranteeing behavior for dynamic metaprogramming outside the manifest.

@@ -1,7 +1,6 @@
 # Documentation Index
 
 Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
-Molt's architectural direction is **full CPython `>=3.12` parity for compiled outputs**, while keeping compiled binaries self-contained and excluding unrestricted `exec`, unrestricted `eval`, runtime monkeypatching, and unrestricted reflection/introspection unless explicitly re-approved.
 
 ## Start Here
 - [AGENTS.md](AGENTS.md)
@@ -20,15 +19,6 @@ Molt's architectural direction is **full CPython `>=3.12` parity for compiled ou
 ## Workspace Guides
 - Examples: [examples/README.md](../examples/README.md)
 - Demo app and offload workflow: [demo/README.md](../demo/README.md)
-- Symphony orchestration setup: [docs/SYMPHONY.md](docs/SYMPHONY.md)
-- Symphony canonical alignment ledger: [docs/SYMPHONY_CANONICAL_ALIGNMENT.md](docs/SYMPHONY_CANONICAL_ALIGNMENT.md)
-- Harness engineering alignment: [docs/HARNESS_ENGINEERING.md](docs/HARNESS_ENGINEERING.md)
-- Symphony claw-loop research map: [docs/SYMPHONY_CLAW_LOOP_RESEARCH.md](docs/SYMPHONY_CLAW_LOOP_RESEARCH.md)
-- Symphony quality score rubric: [docs/QUALITY_SCORE.md](docs/QUALITY_SCORE.md)
-- Execution plan template: [docs/exec-plans/TEMPLATE.md](docs/exec-plans/TEMPLATE.md)
-- Symphony human role: [docs/SYMPHONY_HUMAN_ROLE.md](docs/SYMPHONY_HUMAN_ROLE.md)
-- Symphony operator playbook: [docs/SYMPHONY_OPERATOR_PLAYBOOK.md](docs/SYMPHONY_OPERATOR_PLAYBOOK.md)
-- Linear workspace bootstrap: [docs/LINEAR_WORKSPACE_BOOTSTRAP.md](docs/LINEAR_WORKSPACE_BOOTSTRAP.md)
 - Benchmark harnesses: [bench/README.md](../bench/README.md), [bench/friends/README.md](../bench/friends/README.md)
 - Packaging/release guides: [packaging/README.md](../packaging/README.md), [packaging/templates/linux/README.md](../packaging/templates/linux/README.md)
 
@@ -54,7 +44,6 @@ Molt's architectural direction is **full CPython `>=3.12` parity for compiled ou
 - 0019 Bytecode Lowering Matrix: [docs/spec/areas/compiler/0019_BYTECODE_LOWERING_MATRIX.md](docs/spec/areas/compiler/0019_BYTECODE_LOWERING_MATRIX.md)
 - 0190 Lowering Rules: [docs/spec/areas/compiler/0190_LOWERING_RULES.md](docs/spec/areas/compiler/0190_LOWERING_RULES.md)
 - 0192 Idioms And Semantic Patterns: [docs/spec/areas/compiler/0192_IDIOMS_AND_SEMANTIC_PATTERNS.md](docs/spec/areas/compiler/0192_IDIOMS_AND_SEMANTIC_PATTERNS.md)
-- 0220 Transpiler Research Execution Plan: [docs/spec/areas/tooling/0220_TRANSPILER_RESEARCH_EXECUTION_PLAN.md](docs/spec/areas/tooling/0220_TRANSPILER_RESEARCH_EXECUTION_PLAN.md)
 
 ## Compatibility and Stdlib
 - Compatibility architecture index: [docs/spec/areas/compat/README.md](docs/spec/areas/compat/README.md)
@@ -62,8 +51,7 @@ Molt's architectural direction is **full CPython `>=3.12` parity for compiled ou
 - Stdlib surface index: [docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md)
 - Stdlib surface matrix: [docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md)
 - C-API surface index: [docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md](docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md)
-- libmolt extension ABI contract: [docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md](docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md)
-- C-API v0 bootstrap symbol list (including scalar/object-bytes/array constructors, type/module parity wrappers, runtime-owned module-state registries, expanded scan-driven CPython-compat shim coverage via `include/Python.h`, mapping/dict collection materialization and delete helpers, bytearray accessors, the bounded NumPy public header contract, and internal-source overlays for generated-config/header probes and real-source compile tracking): [docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md](docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md)
+- C-API v0 bootstrap symbol list (including scalar/object-bytes/array constructors, type/module parity wrappers, runtime-owned module-state registries, and expanded scan-driven CPython-compat shim coverage via `include/Python.h` for parse/call/memory/thread/type helpers, selected `PyType_Spec` slot lowering + `METH_STATIC` support, and `PyType_FromModuleAndSpec`/`PyType_GetModule*`): [docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md](docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md)
 - Stdlib lowering execution plan: [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md)
 - Tkinter lowering execution plan: [docs/spec/areas/compat/plans/tkinter_lowering_plan.md](docs/spec/areas/compat/plans/tkinter_lowering_plan.md)
 - Tkinter runtime semantics differential probe (`tkinter.ttk:runtime_semantics`): [tests/differential/stdlib/tkinter_phase0_core_semantics.py](../tests/differential/stdlib/tkinter_phase0_core_semantics.py)
@@ -86,7 +74,6 @@ Molt's architectural direction is **full CPython `>=3.12` parity for compiled ou
 - 0014 Determinism And Security Enforcement Checklist: [docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md](docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md)
 - 0211 Compatibility And Fallback Contract: [docs/spec/areas/compat/contracts/compatibility_fallback_contract.md](docs/spec/areas/compat/contracts/compatibility_fallback_contract.md)
 - 0216 Dynamic Execution And Reflection Policy Contract: [docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md](docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md)
-- 0217 libmolt Extension ABI Contract: [docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md](docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md)
 - 0215 Verified Subset Contract: [docs/spec/areas/compat/contracts/verified_subset_contract.md](docs/spec/areas/compat/contracts/verified_subset_contract.md)
 
 ## Web, DB, and WASM

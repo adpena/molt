@@ -2,17 +2,35 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any
+import builtins as _builtins
 
-import _intrinsics as _loader
+TYPE_CHECKING = False
+
+if TYPE_CHECKING:
+    from typing import Any, Mapping
+else:
+    Any = object()  # type: ignore[assignment]
+    Mapping = object()  # type: ignore[assignment]
+
+_REGISTRY_NAME = "_molt_intrinsics"
+_RUNTIME_FLAG = "_molt_runtime"
+_STRICT_FLAG = "_molt_intrinsics_strict"
 
 
 def runtime_active() -> bool:
-    probe = getattr(_loader, "runtime_active", None)
-    if callable(probe):
-        return bool(probe())
-    return False
+    return bool(
+        getattr(_builtins, _RUNTIME_FLAG, False)
+        or getattr(_builtins, _STRICT_FLAG, False)
+    )
+
+
+def _registry() -> dict[str, Any] | None:
+    if not runtime_active():
+        return None
+    reg = getattr(_builtins, _REGISTRY_NAME, None)
+    if isinstance(reg, dict):
+        return reg
+    return None
 
 
 def register(_name: str, _value: Any) -> None:
@@ -20,8 +38,25 @@ def register(_name: str, _value: Any) -> None:
 
 
 def load(name: str, namespace: Mapping[str, Any] | None = None) -> Any | None:
-    return _loader.load_intrinsic(name, namespace)
+    if not runtime_active():
+        return None
+    if namespace is not None:
+        value = namespace.get(name)
+        if value is not None:
+            return value
+    reg = _registry()
+    if reg is None:
+        return None
+    value = reg.get(name)
+    if value is not None:
+        return value
+    return None
 
 
 def require(name: str, namespace: Mapping[str, Any] | None = None) -> Any:
-    return _loader.require_intrinsic(name, namespace)
+    value = load(name, namespace)
+    if value is None:
+        if not runtime_active():
+            raise RuntimeError("Molt runtime intrinsics unavailable (runtime inactive)")
+        raise RuntimeError(f"intrinsic unavailable: {name}")
+    return value

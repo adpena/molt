@@ -1,12 +1,21 @@
+"""Purpose: differential coverage for email.message basics."""
+
+from email import message_from_bytes, policy
 from email.message import EmailMessage
 
-msg = EmailMessage()
-msg['Subject'] = 'Test Subject'
-msg['From'] = 'sender@example.com'
-msg['To'] = 'recipient@example.com'
-msg.set_content('Hello, this is a test email.')
-print(msg['Subject'])
-print(msg['From'])
-print(msg['To'])
-print(msg.get_content_type())
-print(msg.get_body().get_content())
+
+def main():
+    msg = EmailMessage()
+    msg["Subject"] = "Hi"
+    msg["From"] = "a@example.com"
+    msg["To"] = "b@example.com"
+    msg.set_content("Body")
+
+    raw = msg.as_bytes()
+    parsed = message_from_bytes(raw, policy=policy.default)
+    print("subject", parsed["Subject"])
+    print("body", parsed.get_body().get_content().strip())
+
+
+if __name__ == "__main__":
+    main()

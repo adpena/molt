@@ -69,18 +69,13 @@ CAPI = _PyCapsuleStub()
 
 # CPython `_socket` exports a large set of integer constants. Keep this shim
 # thin by mirroring whatever the intrinsic-backed `socket` module exposes.
-import sys as _sys
-
-_mod_dict = getattr(_sys.modules.get(__name__), "__dict__", None) or globals()
-del _sys
-
 for _name, _val in list(_socket_mod.__dict__.items()):
     if _name.startswith("_"):
         continue
     if isinstance(_val, bool):
         continue
     if isinstance(_val, int):
-        _mod_dict[_name] = int(_val)
+        globals()[_name] = int(_val)
 
 
 def _gethostbyname_ex(hostname: str):
@@ -162,15 +157,12 @@ _CALLABLES = {
 }
 
 for _name, _fn in _CALLABLES.items():
-    _mod_dict[_name] = _as_builtin_function(_name, _fn)
+    globals()[_name] = _as_builtin_function(_name, _fn)
 
 
-import sys as _all_sys
-
-_all_mod_dict = _all_sys.modules[__name__].__dict__
 __all__ = sorted(
     name
-    for name in _all_mod_dict
+    for name in globals()
     if not name.startswith("_")
     and name
     not in {

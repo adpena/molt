@@ -341,14 +341,9 @@ def format_list(extracted_list: list[Any]) -> list[str]:
 
 def extract_stack(f: Any | None = None, limit: int | None = None) -> StackSummary:
     if f is None:
-        try:
-            f = _MOLT_GETFRAME(1)
-        except (AttributeError, ValueError):
-            f = None
+        f = _MOLT_GETFRAME(1)
         if f is None:
-            # Frame stack unavailable (common in AOT-compiled code);
-            # return an empty stack instead of crashing.
-            return StackSummary([])
+            raise RuntimeError("sys._getframe is unavailable")
     return StackSummary.extract(f, limit)
 
 
@@ -394,14 +389,9 @@ def print_stack(
     f: Any | None = None, limit: int | None = None, file: Any | None = None
 ) -> None:
     if f is None:
-        try:
-            f = _MOLT_GETFRAME(1)
-        except (AttributeError, ValueError):
-            f = None
+        f = _MOLT_GETFRAME(1)
         if f is None:
-            # Frame stack unavailable (common in AOT-compiled code);
-            # print nothing instead of crashing.
-            return
+            raise RuntimeError("sys._getframe is unavailable")
     out = "".join(format_stack(f, limit))
     if file is not None and hasattr(file, "write"):
         file.write(out)

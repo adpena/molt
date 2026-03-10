@@ -93,13 +93,11 @@ impl SslContextState {
 // ── SSLSocket state ──────────────────────────────────────────────────────
 
 #[cfg(not(target_arch = "wasm32"))]
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+use rustls::pki_types::ServerName;
 #[cfg(not(target_arch = "wasm32"))]
 use rustls::{
     ClientConfig, ClientConnection, RootCertStore, ServerConfig, ServerConnection, StreamOwned,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use rustls_pki_types::pem::PemObject;
 
 #[cfg(not(target_arch = "wasm32"))]
 enum SslSocketInner {
@@ -552,7 +550,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
                     }
                 };
                 let mut reader = std::io::BufReader::new(file);
-                match CertificateDer::pem_reader_iter(&mut reader).collect::<Result<Vec<_>, _>>() {
+                match rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>() {
                     Ok(v) => v,
                     Err(e) => {
                         return raise_exception::<u64>(
@@ -575,9 +573,9 @@ pub extern "C" fn molt_ssl_wrap_socket(
                     }
                 };
                 let mut reader = std::io::BufReader::new(file);
-                match PrivateKeyDer::from_pem_reader(&mut reader) {
-                    Ok(k) => k,
-                    Err(rustls_pki_types::pem::Error::NoItemsFound) => {
+                match rustls_pemfile::private_key(&mut reader) {
+                    Ok(Some(k)) => k,
+                    Ok(None) => {
                         return raise_exception::<u64>(
                             _py,
                             "ssl.SSLError",
@@ -626,24 +624,10 @@ pub extern "C" fn molt_ssl_wrap_socket(
             }
         } else {
             // Client-side TLS
+            use webpki_roots::TLS_SERVER_ROOTS;
             let mut root_store = RootCertStore::empty();
-            let native_certs = rustls_native_certs::load_native_certs();
-            if native_certs.certs.is_empty() && !native_certs.errors.is_empty() {
-                let joined = native_certs
-                    .errors
-                    .iter()
-                    .map(std::string::ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                return raise_exception::<u64>(
-                    _py,
-                    "ssl.SSLError",
-                    &format!("failed to load native certs: {joined}"),
-                );
-            }
-            for cert in native_certs.certs {
-                let _ = root_store.add(cert);
-            }
+            // Load system roots from webpki-roots
+            root_store.extend(TLS_SERVER_ROOTS.iter().cloned());
             // Load custom CA if provided
             if let Some(ref cafile) = ctx_state.cafile {
                 let file = match std::fs::File::open(cafile) {
@@ -657,36 +641,13 @@ pub extern "C" fn molt_ssl_wrap_socket(
                     }
                 };
                 let mut reader = std::io::BufReader::new(file);
-                let certs = match CertificateDer::pem_reader_iter(&mut reader)
-                    .collect::<Result<Vec<_>, _>>()
-                {
-                    Ok(v) => v,
-                    Err(e) => {
-                        return raise_exception::<u64>(
-                            _py,
-                            "ssl.SSLError",
-                            &format!("cannot parse cafile: {e}"),
-                        );
-                    }
-                };
-                for cert in certs {
+                for cert in rustls_pemfile::certs(&mut reader).flatten() {
                     let _ = root_store.add(cert);
                 }
             }
             if let Some(ref cadata) = ctx_state.cadata {
-                let certs = match CertificateDer::pem_slice_iter(cadata.as_slice())
-                    .collect::<Result<Vec<_>, _>>()
-                {
-                    Ok(v) => v,
-                    Err(e) => {
-                        return raise_exception::<u64>(
-                            _py,
-                            "ssl.SSLError",
-                            &format!("cannot parse cadata: {e}"),
-                        );
-                    }
-                };
-                for cert in certs {
+                let mut cursor = std::io::Cursor::new(cadata.as_slice());
+                for cert in rustls_pemfile::certs(&mut cursor).flatten() {
                     let _ = root_store.add(cert);
                 }
             }
@@ -695,6 +656,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
                 .with_no_client_auth();
             // Apply cert chain if set (mTLS / client cert auth)
             if let (Some(certfile), Some(keyfile)) = (&ctx_state.certfile, &ctx_state.keyfile) {
+                use rustls::pki_types::CertificateDer;
                 let file = match std::fs::File::open(certfile) {
                     Ok(f) => f,
                     Err(e) => {
@@ -707,9 +669,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
                 };
                 let mut reader = std::io::BufReader::new(file);
                 let certs: Vec<CertificateDer<'static>> =
-                    CertificateDer::pem_reader_iter(&mut reader)
-                        .filter_map(Result::ok)
-                        .collect();
+                    rustls_pemfile::certs(&mut reader).flatten().collect();
                 let kf = match std::fs::File::open(keyfile) {
                     Ok(f) => f,
                     Err(e) => {
@@ -721,7 +681,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
                     }
                 };
                 let mut key_reader = std::io::BufReader::new(kf);
-                if let Ok(key) = PrivateKeyDer::from_pem_reader(&mut key_reader) {
+                if let Ok(Some(key)) = rustls_pemfile::private_key(&mut key_reader) {
                     let _ = config.dangerous(); // suppress unused warning pattern
                     // Rebuild with client auth
                     let _config_with_auth = ClientConfig::builder()

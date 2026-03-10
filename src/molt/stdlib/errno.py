@@ -26,14 +26,5 @@ def _load_errno_constants():
 _errno_payload = _load_errno_constants()
 constants = _errno_payload[0]
 errorcode = _errno_payload[1]
-import sys as _sys
-
-_mod = _sys.modules.get(__name__)
-if _mod is not None:
-    _mod.__dict__.update(constants)
-else:
-    import sys as _sys2
-
-    _sys2.modules[__name__].__dict__.update(constants)
-del _sys, _mod
+globals().update(constants)
 __all__ = sorted(constants.keys()) + ["errorcode"]

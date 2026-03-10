@@ -177,7 +177,6 @@ STRICT_IMPORT_FALLBACK_EXCEPTIONS = {
 }
 INTRINSIC_RUNTIME_FALLBACK_EXEMPT_PREFIXES = ("test", "test.")
 INTRINSIC_PASS_FALLBACK_STRICT_MODULES: tuple[str, ...] = ("json",)
-INTRINSIC_PARTIAL_PACKAGE_HOTSPOT_LIMIT = 10
 
 
 @dataclass(frozen=True)
@@ -799,13 +798,13 @@ def _scan_file(path: Path) -> tuple[list[str], tuple[str, ...], str, bool]:
 
     if not is_registry_file and "_molt_intrinsics" in code_text:
         errors.append(
-            "Direct access to _molt_intrinsics is forbidden; use _intrinsics.py loader APIs."
+            "Direct access to _molt_intrinsics is forbidden; use stdlib/_intrinsics.py."
         )
 
     has_intrinsics_import = bool(INTRINSICS_IMPORT_RE.search(text))
     if FORBIDDEN_MOLT_INTRINSICS_RE.search(text):
         errors.append(
-            "Importing molt.intrinsics in stdlib is forbidden; use _intrinsics.py loader APIs."
+            "Importing molt.intrinsics in stdlib is forbidden; use stdlib/_intrinsics.py."
         )
 
     if not is_registry_file:
@@ -973,30 +972,6 @@ def _parse_module_list(raw: str) -> tuple[str, ...]:
     if not out:
         raise ValueError("module list cannot be empty")
     return tuple(dict.fromkeys(out))
-
-
-def _intrinsic_partial_package_hotspots(
-    *,
-    intrinsic_partial_modules: tuple[str, ...],
-    top_level_package_names: set[str],
-    limit: int = INTRINSIC_PARTIAL_PACKAGE_HOTSPOT_LIMIT,
-) -> tuple[tuple[str, int, tuple[str, ...]], ...]:
-    if limit <= 0:
-        return tuple()
-    package_to_modules: dict[str, list[str]] = {}
-    for module_name in intrinsic_partial_modules:
-        package_name = module_name.split(".", 1)[0]
-        if package_name not in top_level_package_names:
-            continue
-        package_to_modules.setdefault(package_name, []).append(module_name)
-    ranked = sorted(
-        (
-            (package_name, len(modules), tuple(sorted(modules)))
-            for package_name, modules in package_to_modules.items()
-        ),
-        key=lambda item: (-item[1], item[0]),
-    )
-    return tuple(ranked[:limit])
 
 
 def main() -> int:
@@ -1293,10 +1268,6 @@ def main() -> int:
         sorted(
             audit.module for audit in audits if audit.status == STATUS_INTRINSIC_PARTIAL
         )
-    )
-    intrinsic_partial_package_hotspots = _intrinsic_partial_package_hotspots(
-        intrinsic_partial_modules=intrinsic_partial_modules,
-        top_level_package_names=set(top_level_packages),
     )
     python_only_modules_sorted = tuple(
         sorted(audit.module for audit in audits if audit.status == STATUS_PYTHON_ONLY)
@@ -1627,11 +1598,6 @@ def main() -> int:
             "submodule_collisions": list(submodule_collisions),
             "probe_only_modules": list(probe_only_modules),
             "intrinsic_partial_modules": list(intrinsic_partial_modules),
-            "intrinsic_partial_package_hotspot_limit": INTRINSIC_PARTIAL_PACKAGE_HOTSPOT_LIMIT,
-            "intrinsic_partial_package_hotspots": [
-                {"package": package, "count": count, "modules": list(modules)}
-                for package, count, modules in intrinsic_partial_package_hotspots
-            ],
             "intrinsic_partial_budget": intrinsic_partial_budget,
             "fully_covered_modules": sorted(fully_covered_modules),
             "full_coverage_required_intrinsics": {
@@ -1646,13 +1612,6 @@ def main() -> int:
         args.json_out.write_text(
             json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-
-    if intrinsic_partial_package_hotspots:
-        hotspot_summary = ", ".join(
-            f"{package} ({count})"
-            for package, count, _modules in intrinsic_partial_package_hotspots
-        )
-        print(f"intrinsic-partial package hotspots: {hotspot_summary}")
 
     print("stdlib intrinsics lint: ok")
     return 0

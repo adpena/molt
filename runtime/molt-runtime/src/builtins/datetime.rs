@@ -2418,7 +2418,11 @@ pub extern "C" fn molt_date_fromisocalendar(
         }
         let max_week = iso_weeks_in_year(iso_year as i32) as i64;
         if iso_week < 1 || iso_week > max_week {
-            return raise_exception::<u64>(_py, "ValueError", &format!("Invalid week: {iso_week}"));
+            return raise_exception::<u64>(
+                _py,
+                "ValueError",
+                &format!("Invalid week: {iso_week}"),
+            );
         }
         // January 4 is always in ISO week 1
         let jan4_ordinal = ymd_to_ordinal(iso_year as i32, 1, 4);
@@ -2469,7 +2473,8 @@ pub extern "C" fn molt_timedelta_truediv_scalar(
         if divisor == 0.0 {
             return raise_exception::<u64>(_py, "ZeroDivisionError", "division by zero");
         }
-        let total_us = (days as f64) * 86_400_000_000.0 + (secs as f64) * 1_000_000.0 + (us as f64);
+        let total_us =
+            (days as f64) * 86_400_000_000.0 + (secs as f64) * 1_000_000.0 + (us as f64);
         let result_us = (total_us / divisor).round() as i64;
         let (rd, rs, ru) = normalize_timedelta_us(result_us);
         timedelta_tuple(_py, rd, rs, ru)

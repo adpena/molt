@@ -92,11 +92,10 @@ Notes:
 
 Tooling enforces capability/effect allowlists during `molt package` and `molt verify`.
 
-## Target Parity: Native / WASM / Luau
+## Native vs WASM Parity
 
 - **Native**: Capabilities are enforced by the `molt-runtime` via standard OS call wrappers.
 - **WASM**: Capabilities are enforced by the Host Interface (WIT). If a capability is missing, the host will trap or return an error to the guest.
-- **Luau**: Transpiled Luau source runs in Roblox Studio or standalone Lune. Capabilities are not enforced at the language level — the Roblox sandbox provides its own security model. The Luau backend emits pure computation; I/O is bridged through Roblox APIs or Lune built-ins.
 
 ## Security & Verified Binaries
 
