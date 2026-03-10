@@ -1,6 +1,7 @@
 # Documentation Index
 
 Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
+Molt's architectural direction is **full CPython `>=3.12` parity for compiled outputs**, while keeping compiled binaries self-contained and excluding unrestricted `exec`, unrestricted `eval`, runtime monkeypatching, and unrestricted reflection/introspection unless explicitly re-approved.
 
 ## Start Here
 - [AGENTS.md](AGENTS.md)

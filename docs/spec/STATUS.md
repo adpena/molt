@@ -12,6 +12,14 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Coverage/interoperability: approach Nuitka-level CPython surface coverage and
   ecosystem interoperability, while preserving Molt vision constraints
   (determinism, explicit capabilities, and no implicit host-Python fallback).
+- Compatibility direction: target full CPython `>=3.12` language/runtime/stdlib/C-API
+  parity for compiled Molt outputs wherever that does not violate Molt's explicit
+  break policy.
+- Explicit carve-outs: unrestricted `exec`, unrestricted `eval`, runtime
+  monkeypatching, and unrestricted reflection/introspection remain intentionally
+  outside the active compiled-binary parity target unless explicitly re-approved.
+- Deployment contract: compiled Molt binaries are standalone artifacts that must
+  run without any host Python installation and must not use host CPython fallback.
 
 ## Symphony Harness Engineering (2026-03-05)
 - Implemented: canonical harness architecture docs are now explicit and linked:

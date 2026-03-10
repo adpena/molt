@@ -22,6 +22,11 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
 - Performance target: parity with or superiority to Codon on tracked benches.
 - Compatibility target: near-Nuitka CPython coverage + interoperability for
   Molt-supported semantics, without violating Molt break-policy constraints.
+- Directional target: full CPython `>=3.12` parity for compiled Molt outputs,
+  except for unrestricted `exec`, unrestricted `eval`, runtime monkeypatching,
+  and unrestricted reflection/introspection.
+- Deployment invariant: shipping binaries remain self-contained and never depend
+  on a host CPython runtime or hidden host-CPython fallback.
 
 ## Symphony Harness Engineering Track (2026-03-05)
 - Implemented: added canonical harness architecture and scoring docs:
