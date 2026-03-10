@@ -1009,8 +1009,8 @@ fn io_worker(poller: Arc<IoPoller>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        BlockingWaiter, BlockingWaiterList, IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE,
-        PtrSlot, WaiterList, blocking_waiter_id, delivered_ready_mask,
+        BlockingWaiter, BlockingWaiterList, IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, PtrSlot,
+        WaiterList, blocking_waiter_id, delivered_ready_mask,
     };
     use std::sync::{Arc, Condvar, Mutex};
 

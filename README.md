@@ -119,7 +119,7 @@ brew install molt-worker
 ```
 
 ## Platform Pitfalls
-- **macOS SDK/versioning**: Xcode CLT must be installed; if linking fails, confirm `xcrun --show-sdk-version` works and set `MACOSX_DEPLOYMENT_TARGET` for cross-linking.
+- **macOS SDK/versioning**: Xcode CLT must be installed. Native builds now default to a stable minimum deployment target (`11.0` on Apple Silicon, `10.13` on x86_64) instead of the active SDK version; set `MACOSX_DEPLOYMENT_TARGET` only when you intentionally need a different minimum for cross-linking or newer APIs.
 - **macOS arm64 + Python 3.14**: uv-managed 3.14 can hang; install system `python3.14` and use `--no-managed-python` when needed (see `docs/spec/STATUS.md`).
 - **Windows toolchain conflicts**: avoid mixing MSVC and clang in the same build; keep one toolchain active.
 - **Windows path lengths**: keep repo/build paths short; avoid deeply nested output folders.
@@ -287,6 +287,7 @@ export MOLT_WORKER_CMD="molt-worker --stdio --exports demo/molt_worker_app/molt_
 - Release iteration lane: use `MOLT_RELEASE_CARGO_PROFILE=release-fast` for faster release-profile compile iterations, and benchmark it with `tools/compile_progress.py --cases release_fast_cold release_fast_warm release_fast_nocache_warm`.
 - Build-cache determinism: CLI runs enforce `PYTHONHASHSEED=0` by default so repeated builds share cache keys; override via `MOLT_HASH_SEED=<value>` (`MOLT_HASH_SEED=random` disables this).
 - Rust compile cache: when `sccache` is installed, the CLI auto-enables it (`MOLT_USE_SCCACHE=auto`; set `MOLT_USE_SCCACHE=0` to disable). If a wrapper-level `sccache` error is detected, the CLI retries the Cargo build once without `RUSTC_WRAPPER`.
+- Cargo target root: CLI builds and `molt doctor` honor `CARGO_TARGET_DIR` first, then fall back to the workspace `build.target-dir` from `.cargo/config.toml` before using the default `target/`.
 - Native backend daemon: native backend compiles run through a persistent daemon by default (`MOLT_BACKEND_DAEMON=1`) to amortize Cranelift startup; tune with `MOLT_BACKEND_DAEMON_START_TIMEOUT` and `MOLT_BACKEND_DAEMON_CACHE_MB`.
 - Cranelift backend tuning knobs: release builds default to minimum 16-byte function alignment (`log2_min_function_alignment=4`) and debug/dev builds default to `regalloc_algorithm=single_pass`; override with `MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2`, `MOLT_BACKEND_REGALLOC_ALGORITHM`, and `MOLT_BACKEND_LIBCALL_CALL_CONV`.
 - Multi-agent throughput tooling: bootstrap with `tools/throughput_env.sh --apply`, benchmark with `tools/throughput_matrix.py`, run compile KPI snapshots with `tools/compile_progress.py`, and enforce cache retention with `tools/molt_cache_prune.py`.

@@ -919,7 +919,7 @@ def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -
     monkeypatch.setattr(cli, "_ensure_runtime_lib", fake_ensure_runtime_lib)
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
     monkeypatch.setattr(cli, "_detect_macos_arch", lambda _obj: None)
-    monkeypatch.setattr(cli, "_detect_macos_deployment_target", lambda: None)
+    monkeypatch.setattr(cli, "_detect_macos_deployment_target", lambda _arch=None: None)
 
     out_dir = project_root / "dist"
     rc = cli.extension_build(
@@ -1077,7 +1077,7 @@ def test_extension_build_native_darwin_link_matches_runtime_binary_flags(
     monkeypatch.setattr(cli.sys, "platform", "darwin")
     monkeypatch.setattr(cli.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(cli, "_detect_macos_arch", lambda _obj: "arm64")
-    monkeypatch.setattr(cli, "_detect_macos_deployment_target", lambda: "15.0")
+    monkeypatch.setattr(cli, "_detect_macos_deployment_target", lambda _arch=None: "15.0")
     monkeypatch.setenv("CC", "clang -arch x86_64")
 
     out_dir = project_root / "dist"
@@ -1166,7 +1166,7 @@ def test_extension_numpy_build_audit_publish_dry_run_matrix(
     monkeypatch.setattr(cli, "_ensure_runtime_lib", fake_ensure_runtime_lib)
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
     monkeypatch.setattr(cli, "_detect_macos_arch", lambda _obj: None)
-    monkeypatch.setattr(cli, "_detect_macos_deployment_target", lambda: None)
+    monkeypatch.setattr(cli, "_detect_macos_deployment_target", lambda _arch=None: None)
 
     if target is not None:
         monkeypatch.setattr(

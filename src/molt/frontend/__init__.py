@@ -16327,9 +16327,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     return self._emit_dataclasses_field_call(allowlist_key, node)
                 if func_id == "open" and allowlist_key == "builtins":
                     return self._emit_open_call(node)
+                is_known_module = (
+                    allowlist_key in self.known_modules
+                    or (
+                        normalized is not None and normalized in self.known_modules
+                    )
+                )
                 enforce_allowlist = (
                     allowlist_key in MOLT_DIRECT_CALLS
                     or allowlist_key in self.stdlib_allowlist
+                    or is_known_module
                 )
                 if (
                     allowlist_key in MOLT_DIRECT_CALLS
@@ -16381,9 +16388,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         MoltOp(kind="CALL", args=[target_name] + args, result=res)
                     )
                     return res
+                if is_known_module:
+                    if not needs_bind and self._can_lower_direct_module_call(
+                        allowlist_key, func_id
+                    ):
+                        args = self._emit_direct_call_args(allowlist_key, func_id, node)
+                        if args is not None:
+                            res = MoltValue(self.next_var(), type_hint="Any")
+                            target_name = self._direct_call_target_name(
+                                allowlist_key, func_id
+                            )
+                            self.emit(
+                                MoltOp(
+                                    kind="CALL",
+                                    args=[target_name] + args,
+                                    result=res,
+                                )
+                            )
+                            return res
                 if allowlist_key in self.stdlib_allowlist or self._is_internal_module(
                     module_name
-                ):
+                ) or is_known_module:
                     callee = self.visit(node.func)
                     if callee is None:
                         raise NotImplementedError("Unsupported call target")
@@ -19617,6 +19642,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         and func_id in MOLT_DIRECT_CALLS[imported_from]
                     ):
                         target_module = imported_from
+                    elif (
+                        normalized is not None and normalized in self.known_modules
+                    ):
+                        target_module = normalized
+                    elif imported_from in self.known_modules:
+                        target_module = imported_from
                 if target_module is not None:
                     if needs_bind or not self._can_lower_direct_module_call(
                         target_module, func_id
@@ -19662,6 +19693,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if imported_from is not None and (
                 imported_from in self.stdlib_allowlist
                 or (normalized is not None and normalized in self.stdlib_allowlist)
+                or imported_from in self.known_modules
+                or (normalized is not None and normalized in self.known_modules)
                 or self._is_internal_module(imported_from)
             ):
                 callee = self.visit(node.func)
