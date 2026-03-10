@@ -4080,12 +4080,14 @@ def _runtime_fingerprint(
     target_triple: str | None,
     rustflags: str,
     runtime_features: tuple[str, ...] = (),
+    macos_deployment_target: str | None = None,
 ) -> dict[str, str | None] | None:
     hasher = hashlib.sha256()
     feature_list = tuple(_dedupe_preserve_order(sorted(runtime_features)))
     meta = f"profile:{cargo_profile}\ntarget:{target_triple or 'native'}\n"
     meta += f"rustflags:{rustflags}\n"
     meta += f"features:{','.join(feature_list)}\n"
+    meta += f"macos_deployment_target:{macos_deployment_target or ''}\n"
     hasher.update(meta.encode("utf-8"))
     rustc_info = _rustc_version()
     try:
@@ -5820,10 +5822,12 @@ def _backend_fingerprint(
     *,
     cargo_profile: str,
     rustflags: str,
+    macos_deployment_target: str | None = None,
 ) -> dict[str, str | None] | None:
     hasher = hashlib.sha256()
     meta = f"profile:{cargo_profile}\n"
     meta += f"rustflags:{rustflags}\n"
+    meta += f"macos_deployment_target:{macos_deployment_target or ''}\n"
     hasher.update(meta.encode("utf-8"))
     rustc_info = _rustc_version()
     try:
@@ -5848,10 +5852,12 @@ def _ensure_backend_binary(
     project_root: Path,
 ) -> bool:
     rustflags = os.environ.get("RUSTFLAGS", "")
+    macos_deployment_target = _macos_deployment_target_for_target(None)
     fingerprint = _backend_fingerprint(
         project_root,
         cargo_profile=cargo_profile,
         rustflags=rustflags,
+        macos_deployment_target=macos_deployment_target,
     )
     fingerprint_path = _backend_fingerprint_path(
         project_root, backend_bin, cargo_profile
@@ -5876,6 +5882,7 @@ def _ensure_backend_binary(
             cargo_profile,
         ]
         build_env = os.environ.copy()
+        _apply_macos_deployment_target_env(build_env, None)
         _maybe_enable_sccache(build_env)
         try:
             build = _run_cargo_with_sccache_retry(
@@ -5924,12 +5931,14 @@ def _ensure_runtime_lib(
 ) -> bool:
     rustflags = os.environ.get("RUSTFLAGS", "")
     runtime_features = _runtime_cargo_features(target_triple)
+    macos_deployment_target = _macos_deployment_target_for_target(target_triple)
     fingerprint = _runtime_fingerprint(
         project_root,
         cargo_profile=cargo_profile,
         target_triple=target_triple,
         rustflags=rustflags,
         runtime_features=runtime_features,
+        macos_deployment_target=macos_deployment_target,
     )
     fingerprint_path = _runtime_fingerprint_path(
         project_root, runtime_lib, cargo_profile, target_triple
@@ -5960,6 +5969,7 @@ def _ensure_runtime_lib(
         if target_triple:
             cmd.extend(["--target", target_triple])
         build_env = os.environ.copy()
+        _apply_macos_deployment_target_env(build_env, target_triple)
         _maybe_enable_sccache(build_env)
         try:
             build = _run_cargo_with_sccache_retry(
@@ -6788,6 +6798,33 @@ def _resolve_env_path(var: str, default: Path) -> Path:
     return path
 
 
+def _cargo_target_root_from_config(project_root: Path) -> Path | None:
+    current = project_root.resolve()
+    config_names = ("config.toml", "config")
+    for root in (current, *current.parents):
+        cargo_dir = root / ".cargo"
+        for config_name in config_names:
+            config_path = cargo_dir / config_name
+            if not config_path.is_file():
+                continue
+            try:
+                data = tomllib.loads(config_path.read_text())
+            except (OSError, tomllib.TOMLDecodeError):
+                continue
+            build_table = data.get("build")
+            if not isinstance(build_table, dict):
+                continue
+            raw_target_dir = build_table.get("target-dir")
+            if not isinstance(raw_target_dir, str) or not raw_target_dir.strip():
+                continue
+            target_dir = Path(raw_target_dir).expanduser()
+            if not target_dir.is_absolute():
+                # Cargo config paths under .cargo/config.toml are workspace-relative.
+                target_dir = (cargo_dir.parent / target_dir).resolve()
+            return target_dir
+    return None
+
+
 def _safe_output_base(name: str) -> str:
     cleaned = _OUTPUT_BASE_SAFE_RE.sub("_", name)
     return cleaned or "molt"
@@ -6824,7 +6861,13 @@ def _default_molt_cache() -> Path:
 
 
 def _cargo_target_root(project_root: Path) -> Path:
-    return _resolve_env_path("CARGO_TARGET_DIR", project_root / "target")
+    env_target_root = os.environ.get("CARGO_TARGET_DIR")
+    if env_target_root:
+        return _resolve_env_path("CARGO_TARGET_DIR", project_root / "target")
+    configured_target_root = _cargo_target_root_from_config(project_root)
+    if configured_target_root is not None:
+        return configured_target_root
+    return project_root / "target"
 
 
 def _build_state_root(project_root: Path) -> Path:
@@ -7143,7 +7186,17 @@ def _darwin_binary_imports_validation_error(binary_path: Path) -> str | None:
         part.strip() for part in (proc.stdout, proc.stderr) if part and part.strip()
     )
     needle = combined.lower()
-    if "unknown imports_format" in needle or "unknown imports format" in needle:
+    dyld_corruption_markers = (
+        "unknown imports_format",
+        "unknown imports format",
+        "rebase opcodes terminated early",
+        "bind opcodes terminated early",
+        "lazy bind opcodes terminated early",
+        "weak bind opcodes terminated early",
+        "malformed trie",
+        "malformed fixups",
+    )
+    if any(marker in needle for marker in dyld_corruption_markers):
         return combined or "dyld_info reported unknown imports format."
     return None
 
@@ -7622,26 +7675,70 @@ def _detect_macos_arch(obj_path: Path) -> str | None:
     return archs[0] if archs else None
 
 
-def _detect_macos_deployment_target() -> str | None:
+def _default_macos_deployment_target(arch: str | None) -> str:
+    normalized = (arch or platform.machine()).lower()
+    if normalized in {"arm64", "aarch64"}:
+        return "11.0"
+    if normalized in {"x86_64", "amd64"}:
+        return "10.13"
+    return "11.0"
+
+
+def _detect_macos_deployment_target(arch: str | None = None) -> str | None:
     env_target = os.environ.get("MOLT_MACOSX_DEPLOYMENT_TARGET")
     if env_target:
         return env_target
     env_target = os.environ.get("MACOSX_DEPLOYMENT_TARGET")
     if env_target:
         return env_target
-    try:
-        result = subprocess.run(
-            ["xcrun", "--show-sdk-version"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
+    return _default_macos_deployment_target(arch)
+
+
+def _target_is_darwin(target_triple: str | None) -> bool:
+    if target_triple is None:
+        return sys.platform == "darwin"
+    lowered = target_triple.lower()
+    return "apple" in lowered or "darwin" in lowered or "macos" in lowered
+
+
+def _target_arch_for_macos_deployment(target_triple: str | None) -> str | None:
+    if target_triple is None:
+        return platform.machine()
+    if not _target_is_darwin(target_triple):
         return None
-    if result.returncode != 0:
+    return target_triple.split("-", 1)[0]
+
+
+def _macos_deployment_target_for_target(target_triple: str | None) -> str | None:
+    if not _target_is_darwin(target_triple):
         return None
-    version = result.stdout.strip()
-    return version or None
+    return _detect_macos_deployment_target(
+        _target_arch_for_macos_deployment(target_triple)
+    )
+
+
+def _append_env_flag(
+    env: MutableMapping[str, str], key: str, flag: str
+) -> None:
+    current = env.get(key, "")
+    tokens = shlex.split(current) if current else []
+    if flag not in tokens:
+        tokens.append(flag)
+    env[key] = " ".join(tokens).strip()
+
+
+def _apply_macos_deployment_target_env(
+    env: MutableMapping[str, str], target_triple: str | None
+) -> str | None:
+    deployment_target = _macos_deployment_target_for_target(target_triple)
+    if not deployment_target:
+        return None
+    env.setdefault("MACOSX_DEPLOYMENT_TARGET", deployment_target)
+    min_flag = f"-mmacosx-version-min={deployment_target}"
+    _append_env_flag(env, "CFLAGS", min_flag)
+    _append_env_flag(env, "CXXFLAGS", min_flag)
+    _append_rustflags(env, f"-C link-arg={min_flag}")
+    return deployment_target
 
 
 def _link_args_has_framework(args: list[str], framework: str) -> bool:
@@ -7696,7 +7793,7 @@ def _apply_host_darwin_link_flags(
         or platform.machine()
     )
     args.extend(["-arch", arch])
-    deployment_target = _detect_macos_deployment_target()
+    deployment_target = _detect_macos_deployment_target(arch)
     if deployment_target:
         args.append(f"-mmacosx-version-min={deployment_target}")
     return args
@@ -8588,17 +8685,26 @@ def build(
             func["ops"] = remapped_ops
 
     enable_phi = not is_wasm
-    module_chunk_max_ops = 0
-    if is_wasm:
-        module_chunk_max_ops = 2000
-        env_chunk_ops = os.environ.get("MOLT_WASM_MODULE_CHUNK_OPS")
-        if env_chunk_ops:
-            try:
-                module_chunk_max_ops = max(0, int(env_chunk_ops))
-            except ValueError:
-                warnings.append(
-                    "Invalid MOLT_WASM_MODULE_CHUNK_OPS; using default of 2000."
-                )
+    default_module_chunk_max_ops = 2000 if is_wasm else 0
+    module_chunk_max_ops = default_module_chunk_max_ops
+    env_chunk_name = "MOLT_MODULE_CHUNK_OPS"
+    env_chunk_ops = os.environ.get(env_chunk_name, "").strip()
+    if not env_chunk_ops and is_wasm:
+        env_chunk_name = "MOLT_WASM_MODULE_CHUNK_OPS"
+        env_chunk_ops = os.environ.get(env_chunk_name, "").strip()
+    if env_chunk_ops:
+        try:
+            module_chunk_max_ops = max(0, int(env_chunk_ops))
+        except ValueError:
+            default_label = (
+                str(default_module_chunk_max_ops)
+                if default_module_chunk_max_ops > 0
+                else "disabled"
+            )
+            warnings.append(
+                f"Invalid {env_chunk_name}; using default of {default_label}."
+            )
+    module_chunking_enabled = module_chunk_max_ops > 0
     if target_triple:
         _ensure_rustup_target(target_triple, warnings)
     known_classes: dict[str, Any] = {}
@@ -8717,7 +8823,7 @@ def build(
             known_classes=known_classes,
             stdlib_allowlist=stdlib_allowlist,
             known_func_defaults=known_func_defaults,
-            module_chunking=is_wasm and module_chunk_max_ops > 0,
+            module_chunking=module_chunking_enabled,
             module_chunk_max_ops=module_chunk_max_ops,
             optimization_profile=profile,
             pgo_hot_functions=pgo_hot_function_names,
@@ -8919,7 +9025,7 @@ def build(
                                 "known_classes": known_classes_snapshot,
                                 "stdlib_allowlist": sorted(stdlib_allowlist),
                                 "known_func_defaults": known_func_defaults,
-                                "module_chunking": is_wasm and module_chunk_max_ops > 0,
+                                "module_chunking": module_chunking_enabled,
                                 "module_chunk_max_ops": module_chunk_max_ops,
                                 "optimization_profile": profile,
                                 "pgo_hot_functions": sorted(pgo_hot_function_names),
@@ -9338,7 +9444,7 @@ def build(
             known_classes=known_classes,
             stdlib_allowlist=stdlib_allowlist,
             known_func_defaults=known_func_defaults,
-            module_chunking=is_wasm and module_chunk_max_ops > 0,
+            module_chunking=module_chunking_enabled,
             module_chunk_max_ops=module_chunk_max_ops,
             optimization_profile=profile,
             pgo_hot_functions=pgo_hot_function_names,
@@ -11973,7 +12079,10 @@ def doctor(
         record("backend-daemon", True, "unsupported on non-posix hosts")
 
     cargo_target_dir = _resolved_env_dir("CARGO_TARGET_DIR")
+    configured_cargo_target_dir = None
     if cargo_target_dir is None:
+        configured_cargo_target_dir = _cargo_target_root_from_config(root)
+    if cargo_target_dir is None and configured_cargo_target_dir is None:
         record(
             "cargo-target-dir",
             False,
@@ -11984,8 +12093,14 @@ def doctor(
                 "export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR",
             ],
         )
-    else:
+    elif cargo_target_dir is not None:
         record("cargo-target-dir", True, str(cargo_target_dir))
+    else:
+        record(
+            "cargo-target-dir",
+            True,
+            f"{configured_cargo_target_dir} (.cargo/config.toml)",
+        )
 
     molt_cache_dir = _resolved_env_dir("MOLT_CACHE")
     if molt_cache_dir is None:

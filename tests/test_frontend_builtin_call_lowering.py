@@ -224,6 +224,63 @@ def test_moltlib_concurrency_attr_call_uses_direct_symbol_when_known() -> None:
     )
 
 
+def test_known_project_module_attr_call_uses_direct_symbol_when_known() -> None:
+    gen = SimpleTIRGenerator(
+        known_modules={"__main__", "ui_rendering"},
+        known_func_defaults={
+            "ui_rendering": {
+                "render_cards": {"params": 1, "kwonly": 0, "defaults": []}
+            }
+        },
+    )
+    gen.visit(ast.parse("import ui_rendering\nui_rendering.render_cards(1)\n"))
+    ir = gen.to_json()
+    main_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
+    )
+    assert any(
+        op.get("kind") == "call" and op.get("s_value") == "ui_rendering__render_cards"
+        for op in main_ops
+    )
+
+
+def test_known_project_from_import_call_uses_direct_symbol_when_known() -> None:
+    gen = SimpleTIRGenerator(
+        known_modules={"__main__", "ui_rendering"},
+        known_func_defaults={
+            "ui_rendering": {
+                "render_cards": {"params": 1, "kwonly": 0, "defaults": []}
+            }
+        },
+    )
+    gen.visit(ast.parse("from ui_rendering import render_cards\nrender_cards(1)\n"))
+    ir = gen.to_json()
+    main_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
+    )
+    const_str: dict[str, str] = {
+        op["out"]: op["s_value"]
+        for op in main_ops
+        if op.get("kind") == "const_str"
+        and isinstance(op.get("out"), str)
+        and isinstance(op.get("s_value"), str)
+    }
+    imported_vars = {
+        op["out"]
+        for op in main_ops
+        if op.get("kind") == "module_get_attr"
+        and len(op.get("args") or []) == 2
+        and const_str.get(op["args"][1]) == "render_cards"
+    }
+    assert imported_vars
+    assert any(
+        op.get("kind") == "call_func"
+        and len(op.get("args") or []) >= 1
+        and op["args"][0] in imported_vars
+        for op in main_ops
+    )
+
+
 def test_module_chunking_resets_module_cache_temporaries_per_chunk() -> None:
     source = """
 import math

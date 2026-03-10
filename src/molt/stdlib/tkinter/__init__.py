@@ -63,6 +63,27 @@ _SUBST_FORMAT = (
     "%D",
 )
 _SUBST_FORMAT_STR = " ".join(_SUBST_FORMAT)
+_EVENT_PAYLOAD_FIELDS = (
+    "serial",
+    "num",
+    "focus",
+    "height",
+    "keycode",
+    "state",
+    "time",
+    "width",
+    "x",
+    "y",
+    "char",
+    "send_event",
+    "keysym",
+    "keysym_num",
+    "widget",
+    "type",
+    "x_root",
+    "y_root",
+    "delta",
+)
 _MAGIC_RE = re.compile(r"([\\{}])")
 _SPACE_RE = re.compile(r"([\s])", re.ASCII)
 
@@ -349,8 +370,17 @@ def _event_from_subst_args(widget, event_args):
     if result is None:
         return None
     event = Event()
-    for key, value in result.items():
-        setattr(event, key, value)
+    if isinstance(result, dict):
+        for key in _EVENT_PAYLOAD_FIELDS:
+            if key in result:
+                setattr(event, key, result[key])
+    elif isinstance(result, (list, tuple)):
+        if len(result) != len(_EVENT_PAYLOAD_FIELDS):
+            return None
+        for index in range(len(_EVENT_PAYLOAD_FIELDS)):
+            setattr(event, _EVENT_PAYLOAD_FIELDS[index], result[index])
+    else:
+        return None
     # Resolve widget reference: if the event's widget path matches
     # this widget, use the widget object instead of the path string.
     evt_widget = getattr(event, "widget", None)
@@ -569,8 +599,8 @@ class Misc:
             def wrapped():
                 return callback(*args)
 
-            return _TK_AFTER(self._tk_app, delay, wrapped)
-        return _TK_AFTER(self._tk_app, delay, callback)
+            return _TK_AFTER(self._tk_app, delay, CallWrapper(wrapped, None, self))
+        return _TK_AFTER(self._tk_app, delay, CallWrapper(callback, None, self))
 
     def after_idle(self, callback, *args):
         _require_gui_window_capability()
@@ -581,8 +611,8 @@ class Misc:
             def wrapped():
                 return callback(*args)
 
-            return _tkimpl.after_idle(self._tk_app, wrapped)
-        return _tkimpl.after_idle(self._tk_app, callback)
+            return _tkimpl.after_idle(self._tk_app, CallWrapper(wrapped, None, self))
+        return _tkimpl.after_idle(self._tk_app, CallWrapper(callback, None, self))
 
     def after_cancel(self, identifier):
         _require_gui_window_capability()
@@ -1369,7 +1399,7 @@ class Misc:
 
     def _register(self, func, subst=None, needcleanup=1):
         del needcleanup
-        callback = CallWrapper(func, subst, self) if subst else func
+        callback = CallWrapper(func, subst, self)
         return self._register_command("register", callback)
 
     def image_names(self):
@@ -1401,9 +1431,16 @@ class CallWrapper:
         self.widget = widget
 
     def __call__(self, *args):
-        if self.subst:
-            args = self.subst(*args)
-        return self.func(*args)
+        try:
+            if self.subst:
+                args = self.subst(*args)
+            return self.func(*args)
+        except SystemExit:
+            raise
+        except Exception:
+            exc, val, tb = sys.exc_info()
+            self.widget._root().report_callback_exception(exc, val, tb)
+            return None
 
 
 class XView:
