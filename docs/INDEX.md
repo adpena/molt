@@ -12,8 +12,11 @@ Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
 
 ## Navigation Hubs
 - Project quickstart + top-level status: [README.md](../README.md)
+- Operator support snapshot: [SUPPORTED.md](../SUPPORTED.md)
 - Canonical documentation index: [docs/INDEX.md](INDEX.md)
 - Full spec index (all spec areas): [docs/spec/README.md](spec/README.md)
+- Compatibility corpus manifest: [docs/COMPATIBILITY_CORPUS_MANIFEST.md](COMPATIBILITY_CORPUS_MANIFEST.md)
+- Standalone binary proof workflow: [docs/proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md](proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md)
 - Differential test organization and run ledger: [tests/differential/INDEX.md](../tests/differential/INDEX.md)
 
 ## Workspace Guides
