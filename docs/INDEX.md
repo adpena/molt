@@ -84,6 +84,9 @@ Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
 - 0700 Molt DB Layer Vision: [docs/spec/areas/db/0700_MOLT_DB_LAYER_VISION.md](docs/spec/areas/db/0700_MOLT_DB_LAYER_VISION.md)
 - 0400 WASM Portable ABI: [docs/spec/areas/wasm/0400_WASM_PORTABLE_ABI.md](docs/spec/areas/wasm/0400_WASM_PORTABLE_ABI.md)
 - 0401 WASM Targets And Constraints: [docs/spec/areas/wasm/0401_WASM_TARGETS_AND_CONSTRAINTS.md](docs/spec/areas/wasm/0401_WASM_TARGETS_AND_CONSTRAINTS.md)
+- 0968 Molt Edge/Workers VFS And Host Capabilities: [docs/spec/areas/wasm/0968_MOLT_EDGE_WORKERS_VFS_AND_HOST_CAPABILITIES.md](docs/spec/areas/wasm/0968_MOLT_EDGE_WORKERS_VFS_AND_HOST_CAPABILITIES.md)
+- 0294 Molt Edge And Workers Runtime Proposal: [docs/spec/areas/process/0294_MOLT_EDGE_WORKERS_RUNTIME_PROPOSAL.md](docs/spec/areas/process/0294_MOLT_EDGE_WORKERS_RUNTIME_PROPOSAL.md)
+- 0295 MEP-0001 Molt Edge/Workers Tier: [docs/spec/areas/process/0295_MOLT_ENHANCEMENT_PROPOSAL_0001_EDGE_WORKERS_TIER.md](docs/spec/areas/process/0295_MOLT_ENHANCEMENT_PROPOSAL_0001_EDGE_WORKERS_TIER.md)
 
 ## Full spec index
 - [docs/spec/README.md](docs/spec/README.md)
