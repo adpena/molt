@@ -710,6 +710,13 @@ Sign-off criteria:
 - Top priority: wasm parity for DB connectors before expanding DB adapters or query-builder ergonomics.
 - Implemented: wasm DB client shims + parity test (`molt_db` async helper) consume response streams and surface bytes/Arrow IPC; Node/WASI host adapter forwards `db_query`/`db_exec` to `molt-worker` via `run_wasm.js`.
 
+## Edge And Workers
+- Proposed: `Molt Edge` as a first-class Edge/Workers tier with a minimal VFS, snapshot-oriented deployment, and Cloudflare-first host profile. Canonical docs: `0294_MOLT_EDGE_WORKERS_RUNTIME_PROPOSAL.md`, `0295_MOLT_ENHANCEMENT_PROPOSAL_0001_EDGE_WORKERS_TIER.md`, and `0968_MOLT_EDGE_WORKERS_VFS_AND_HOST_CAPABILITIES.md`.
+- Rationale: replace Pyodide-style Worker deployments with a smaller, compiled, capability-first runtime rather than copying Emscripten's whole compatibility model.
+- Required runtime work: `/bundle`, `/tmp`, stdio pseudo-devices, explicit storage capability surfaces, and `molt.snapshot` generation/restore.
+- Required platform work: Cloudflare Worker host adapter that maps Worker-native VFS and Web APIs onto Molt capability contracts; browser and WASI hosts stay aligned to the same mount/capability model.
+- Required validation: cold-start before/after snapshot benchmarks, size tracking, and parity suites for package/resource reads, temp files, capability denials, and Worker-host integration flows.
+
 ## Parity Cluster Plan (Next)
 - 1) Async runtime core: Task/Future APIs, scheduler, contextvars, and cancellation injection into awaits/I/O. Key files: `runtime/molt-runtime/src/lib.rs`, `src/molt/stdlib/asyncio/__init__.py`, `src/molt/stdlib/contextvars.py`, [docs/spec/STATUS.md](docs/spec/STATUS.md). Outcome: asyncio loop/task parity for core patterns. Validation: new unit + differential tests; `tools/dev.py test`.
 - 2) Capability-gated async I/O: sockets/SSL/selectors/time primitives with cancellation propagation. Key files: [docs/spec/areas/web/0900_HTTP_SERVER_RUNTIME.md](docs/spec/areas/web/0900_HTTP_SERVER_RUNTIME.md), [docs/spec/areas/runtime/0505_IO_ASYNC_AND_CONNECTORS.md](docs/spec/areas/runtime/0505_IO_ASYNC_AND_CONNECTORS.md), `runtime/molt-runtime/src/lib.rs`. Outcome: async I/O primitives usable by DB/HTTP stacks. Validation: I/O unit tests + fuzzed parser tests + wasm/native parity checks.
