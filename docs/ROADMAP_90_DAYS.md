@@ -8,6 +8,7 @@ Document role:
 - This document is the rolling 90-day execution slice and must stay aligned with both.
 
 ## Execution Tracker (2026-02-24)
+- [x] Operator artifact tranche: added a concise support contract (`SUPPORTED.md`), compatibility proof-corpus manifest (`docs/COMPATIBILITY_CORPUS_MANIFEST.md`), and standalone binary proof workflow (`docs/proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md`) so the project can make practical CPython-3.12+, no-host-Python, libmolt-first claims without forcing operators to mine deep specs.
 - [x] Month 1: define determinism/security enforcement checklists.
   - Delivered: [docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md](docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md).
 - [x] Month 1: define minimum must-pass test matrix for Tier 0/1 + diff parity.

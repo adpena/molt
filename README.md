@@ -15,7 +15,10 @@ Canonical status lives in [docs/spec/STATUS.md](docs/spec/STATUS.md) (README and
 
 ## Documentation Quick Links
 - Docs index (canonical navigation): [docs/INDEX.md](docs/INDEX.md)
+- Operator support snapshot: [SUPPORTED.md](SUPPORTED.md)
 - Spec index (full spec map): [docs/spec/README.md](docs/spec/README.md)
+- Compatibility corpus manifest: [docs/COMPATIBILITY_CORPUS_MANIFEST.md](docs/COMPATIBILITY_CORPUS_MANIFEST.md)
+- Standalone binary proof workflow: [docs/proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md](docs/proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md)
 - Differential suite organization + run ledger: [tests/differential/INDEX.md](tests/differential/INDEX.md)
 - Examples guide: [examples/README.md](examples/README.md)
 - Demo guide: [demo/README.md](demo/README.md)
