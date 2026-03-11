@@ -98,6 +98,7 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0965 Cloudflare Workers Lessons For Molt: [docs/spec/areas/wasm/0965_CLOUDFLARE_WORKERS_LESSONS_FOR_MOLT.md](docs/spec/areas/wasm/0965_CLOUDFLARE_WORKERS_LESSONS_FOR_MOLT.md)
 - 0966 External Inspirations Codon Py2WASM Trio Go OpenMP: [docs/spec/areas/wasm/0966_EXTERNAL_INSPIRATIONS_CODON_PY2WASM_TRIO_GO_OPENMP.md](docs/spec/areas/wasm/0966_EXTERNAL_INSPIRATIONS_CODON_PY2WASM_TRIO_GO_OPENMP.md)
 - 0967 Portable Plugin Manifest + Schema Resolution: [docs/spec/areas/wasm/0967_PORTABLE_PLUGIN_MANIFEST.md](docs/spec/areas/wasm/0967_PORTABLE_PLUGIN_MANIFEST.md)
+- 0968 Molt Edge/Workers VFS And Host Capabilities: [docs/spec/areas/wasm/0968_MOLT_EDGE_WORKERS_VFS_AND_HOST_CAPABILITIES.md](docs/spec/areas/wasm/0968_MOLT_EDGE_WORKERS_VFS_AND_HOST_CAPABILITIES.md)
 
 ## Web
 - 0600 Streaming And WebSockets: [docs/spec/areas/web/0600_STREAMING_AND_WEBSOCKETS.md](docs/spec/areas/web/0600_STREAMING_AND_WEBSOCKETS.md)
@@ -142,6 +143,8 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0291 Introspective Rapid Iteration: [docs/spec/areas/process/0291_INTROSPECTIVE_RAPID_ITERATION.md](docs/spec/areas/process/0291_INTROSPECTIVE_RAPID_ITERATION.md)
 - 0292 Molt Addendum Runtime First Web DB Pipelines: [docs/spec/areas/process/0292_MOLT_ADDENDUM_RUNTIME_FIRST_WEB_DB_PIPELINES.md](docs/spec/areas/process/0292_MOLT_ADDENDUM_RUNTIME_FIRST_WEB_DB_PIPELINES.md)
 - 0293 Molt Addendum UV Rust Tooling: [docs/spec/areas/process/0293_MOLT_ADDENDUM_UV_RUST_TOOLING.md](docs/spec/areas/process/0293_MOLT_ADDENDUM_UV_RUST_TOOLING.md)
+- 0294 Molt Edge And Workers Runtime Proposal: [docs/spec/areas/process/0294_MOLT_EDGE_WORKERS_RUNTIME_PROPOSAL.md](docs/spec/areas/process/0294_MOLT_EDGE_WORKERS_RUNTIME_PROPOSAL.md)
+- 0295 MEP-0001 Molt Edge/Workers Tier: [docs/spec/areas/process/0295_MOLT_ENHANCEMENT_PROPOSAL_0001_EDGE_WORKERS_TIER.md](docs/spec/areas/process/0295_MOLT_ENHANCEMENT_PROPOSAL_0001_EDGE_WORKERS_TIER.md)
 
 ## Ecosystem
 - 0970 Faq Why Not Numba PyPy Cython: [docs/spec/areas/ecosystem/0970_FAQ_WHY_NOT_NUMBA_PYPY_CYTHON.md](docs/spec/areas/ecosystem/0970_FAQ_WHY_NOT_NUMBA_PYPY_CYTHON.md)
