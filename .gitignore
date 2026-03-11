@@ -58,6 +58,7 @@ packaging/out/
 !/GEMINI.md
 !/OPTIMIZATIONS_PLAN.md
 !/ROADMAP.md
+!/SUPPORTED.md
 !/WORKFLOW.md
 !/docs/**/*.md
 !/packaging/**/*.md
