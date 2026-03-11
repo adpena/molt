@@ -1201,9 +1201,14 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(perf, owner:tooling, milestone:TL2, priority:P1, status:partial): finish friend-owned suite adapters (Codon/PyPy/Nuitka/Pyodide), pin immutable suite refs/commands, and enable nightly friend scorecard publication.
 
 ## Known Gaps
+- Documented: `Molt Edge` is now proposed as an explicit Edge/Workers tier with a
+  minimal VFS, snapshot-oriented deployment, and Cloudflare-first host profile;
+  canonical guidance now lives in 0294, 0295, and 0968.
 - Browser host harness is available under `wasm/browser_host.html` with
   DB host support, WebSocket-backed stream sockets, and websocket host intrinsics; production browser host I/O is still pending for storage + broader parity coverage.
   (TODO(wasm-host, owner:runtime, milestone:RT3, priority:P2, status:partial): add browser host I/O bindings + capability plumbing for storage and parity tests.)
+- TODO(wasm-host, owner:runtime, milestone:RT3, priority:P1, status:planned): implement the Edge/Workers minimal VFS contract (`/bundle`, `/tmp`, stdio devices, optional `/state`) and parity tests across browser, WASI, and Cloudflare Worker hosts.
+- TODO(wasm-host, owner:runtime, milestone:RT3, priority:P1, status:planned): define and implement `molt.snapshot` generation/restore for edge deployments, including deterministic init rules, capability manifest capture, and cold-start benchmark reporting.
 - Cross-target native builds (non-host triples/architectures) are not yet wired into
   the CLI/build pipeline.
   (TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): wire cross-target builds into CLI.)
