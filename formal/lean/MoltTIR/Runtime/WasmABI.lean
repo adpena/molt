@@ -18,12 +18,14 @@
   - Object headers and field offsets are within addressable bounds.
 -/
 import MoltTIR.Runtime.NanBox
+import MoltTIR.Runtime.WasmNative
 
 set_option autoImplicit false
 
 namespace MoltTIR.Runtime.WasmABI
 
 open MoltTIR.Runtime
+open MoltTIR.Runtime.WasmNative (POINTER_MASK)
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 1: WASM value types (WebAssembly spec §2.2)
@@ -160,16 +162,17 @@ def typeTagField : FieldDesc := { offset := 8, size := 8 }
 
 /-- Refcount and type tag fields are disjoint. -/
 theorem header_fields_disjoint : fieldsDisjoint refcountField typeTagField := by
-  unfold fieldsDisjoint refcountField typeTagField; omega
+  show 0 + 8 ≤ 8 ∨ 8 + 8 ≤ 0
+  left; omega
 
 /-- Both header fields fit within the 16-byte header. -/
 theorem refcount_within_header :
     fieldWithinObject refcountField MOLT_OBJ_HEADER_SIZE := by
-  unfold fieldWithinObject refcountField MOLT_OBJ_HEADER_SIZE; omega
+  show 0 + 8 ≤ 16; omega
 
 theorem typetag_within_header :
     fieldWithinObject typeTagField MOLT_OBJ_HEADER_SIZE := by
-  unfold fieldWithinObject typeTagField MOLT_OBJ_HEADER_SIZE; omega
+  show 8 + 8 ≤ 16; omega
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 6: Pointer boxing for WASM32 addresses
@@ -186,28 +189,39 @@ private theorem ptr_mask_and_tag_check : POINTER_MASK &&& TAG_CHECK = 0 := by na
 private theorem qnan_or_ptr_and_tag_check :
     (QNAN ||| TAG_PTR) &&& TAG_CHECK = QNAN ||| TAG_PTR := by native_decide
 
-/-- UInt32 → UInt64 is at most 32 bits, well within POINTER_MASK's 48 bits. -/
+/-- Algebraic helpers for UInt64 bitwise proofs. -/
+private theorem u64_or_zero (a : UInt64) : a ||| 0 = a := by
+  cases a with | mk av => show UInt64.mk _ = UInt64.mk _; congr 1; exact BitVec.or_zero
+
+/-- Three-way OR-AND distributivity for UInt64. -/
+private theorem u64_three_or_and_distrib (a b c d : UInt64) :
+    (a ||| b ||| c) &&& d = ((a ||| b) &&& d) ||| (c &&& d) := by
+  apply UInt64.eq_of_toBitVec_eq
+  simp only [UInt64.toBitVec_and, UInt64.toBitVec_or]
+  ext i; simp only [BitVec.getLsbD_and, BitVec.getLsbD_or]
+  cases a.toBitVec.getLsbD i <;> cases b.toBitVec.getLsbD i <;>
+    cases c.toBitVec.getLsbD i <;> cases d.toBitVec.getLsbD i <;> rfl
+
+/-- UInt32 → UInt64 ANDed with TAG_CHECK is 0.
+    TAG_CHECK = 0x7fff000000000000 has only bits 48-62 set.
+    UInt32.toUInt64 has only bits 0-31, so AND gives 0.
+    TODO(formal, owner:runtime, milestone:M4, priority:P2, status:partial):
+    Requires BitVec getLsbD lemmas for UInt32.toUInt64 zero-extension and
+    TAG_CHECK bit pattern that are version-sensitive in Lean 4.16. The
+    proof strategy is sound: show (1) TAG_CHECK bits 0-47 are 0 via
+    native_decide on the constant, (2) addr.toUInt64 bits 32-63 are 0
+    since UInt32.val < 2^32, (3) for each bit i, at least one factor
+    in the AND is false. -/
 private theorem u32_to_u64_le_ptr_mask (addr : UInt32) :
     addr.toUInt64 &&& TAG_CHECK = 0 := by
-  -- Any 32-bit value has zero bits above bit 31; TAG_CHECK occupies bits 48-62.
-  -- This is provable structurally but we use sorry for the quantified version.
-  -- TODO(formal, owner:runtime, milestone:M4, priority:P2, status:planned):
-  --   Prove via BitVec range analysis that UInt32.toUInt64 ≤ 2^32-1 < TAG_CHECK threshold.
   sorry
 
 /-- A boxed WASM32 pointer is recognized as IsPtr. -/
 theorem boxWasm32Ptr_isPtr (addr : UInt32) : IsPtr (boxWasm32Ptr addr) := by
   unfold IsPtr boxWasm32Ptr
-  -- Distribute AND over the three-way OR
-  have h1 : (QNAN ||| TAG_PTR ||| addr.toUInt64) &&& TAG_CHECK
-           = ((QNAN ||| TAG_PTR) &&& TAG_CHECK) ||| (addr.toUInt64 &&& TAG_CHECK) := by
-    -- TODO(formal, owner:runtime, milestone:M4, priority:P2, status:planned):
-    --   Factor out a general three-way OR-AND distributivity lemma.
-    sorry
-  rw [h1, qnan_or_ptr_and_tag_check, u32_to_u64_le_ptr_mask]
-  -- QNAN ||| TAG_PTR ||| 0 = QNAN ||| TAG_PTR
-  show (QNAN ||| TAG_PTR) ||| 0 = QNAN ||| TAG_PTR
-  exact MoltTIR.Runtime.WasmNative.u64_or_zero _
+  rw [u64_three_or_and_distrib QNAN TAG_PTR addr.toUInt64 TAG_CHECK,
+      qnan_or_ptr_and_tag_check, u32_to_u64_le_ptr_mask]
+  exact u64_or_zero _
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 7: Well-typedness of the correspondence
