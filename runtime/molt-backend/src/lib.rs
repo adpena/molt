@@ -265,11 +265,6 @@ pub struct FunctionIR {
     pub name: String,
     pub params: Vec<String>,
     pub ops: Vec<OpIR>,
-    /// Optional per-parameter type hints from Python annotations.
-    /// When present, each entry corresponds positionally to `params` and
-    /// contains a normalised type tag such as "int", "float", "str", "bool",
-    /// or "Any".  Used by the Luau backend to emit typed parameter
-    /// annotations for JIT specialisation.
     #[serde(default)]
     pub param_types: Option<Vec<String>>,
 }
