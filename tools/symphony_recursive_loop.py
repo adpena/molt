@@ -14,6 +14,7 @@ from molt.symphony.dlq import DeadLetterQueue, dead_letter_fingerprint
 from molt.symphony.loop_hooks import HookDecision, LoopHookRunner
 from molt.symphony.paths import (
     default_molt_ext_root,
+    resolve_symphony_env_file,
     symphony_dlq_events_file,
     resolve_molt_ext_root,
     symphony_perf_reports_dir,
@@ -28,7 +29,7 @@ from molt.symphony.tool_promotion import ToolPromotionStore
 
 DEFAULT_EXT_ROOT = str(default_molt_ext_root())
 DEFAULT_TEAM = "Moltlang"
-DEFAULT_ENV_FILE = Path("ops/linear/runtime/symphony.env")
+DEFAULT_ENV_FILE = resolve_symphony_env_file()
 
 
 @dataclass(slots=True)

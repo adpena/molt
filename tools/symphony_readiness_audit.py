@@ -24,6 +24,7 @@ from molt.symphony.dlq import DeadLetterQueue  # noqa: E402
 from molt.symphony.paths import (  # noqa: E402
     is_within,
     resolve_molt_ext_root,
+    resolve_symphony_env_file,
     resolve_symphony_parent_root,
     resolve_symphony_store_root,
     symphony_api_token_file,
@@ -3158,7 +3159,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--team", default="Moltlang")
     parser.add_argument("--repo-root", default=".")
-    parser.add_argument("--env-file", default="ops/linear/runtime/symphony.env")
+    parser.add_argument("--env-file", default=str(resolve_symphony_env_file()))
     parser.add_argument("--index", default="ops/linear/manifests/index.json")
     parser.add_argument(
         "--ext-root",
