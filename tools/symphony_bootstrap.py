@@ -357,13 +357,70 @@ def _sync_env_defaults(
 ) -> dict[str, Any]:
     current = _parse_env_file(env_file)
     merged = dict(current)
+    project_key = str(merged.get("MOLT_SYMPHONY_PROJECT_KEY") or "molt").strip() or "molt"
+    desired_parent_root = ext_root.parent / "symphony"
+    desired_store_root = desired_parent_root / project_key
+    desired_state_root = desired_store_root / "state"
+    desired_log_root = desired_store_root / "logs"
+    desired_path_updates = {
+        "MOLT_EXT_ROOT": str(ext_root),
+        "MOLT_SYMPHONY_PARENT_ROOT": str(desired_parent_root),
+        "MOLT_SYMPHONY_PROJECT_KEY": project_key,
+        "MOLT_SYMPHONY_STORE_ROOT": str(desired_store_root),
+        "CARGO_TARGET_DIR": str(ext_root / "cargo-target"),
+        "MOLT_DIFF_CARGO_TARGET_DIR": str(ext_root / "cargo-target"),
+        "MOLT_CACHE": str(ext_root / "molt_cache"),
+        "MOLT_DIFF_ROOT": str(ext_root / "diff"),
+        "MOLT_DIFF_TMPDIR": str(ext_root / "tmp"),
+        "MOLT_APALACHE_WORK_DIR": str(ext_root / "tmp" / "apalache"),
+        "UV_CACHE_DIR": str(ext_root / "uv-cache"),
+        "TMPDIR": str(ext_root / "tmp"),
+        "MOLT_SYMPHONY_LOG_ROOT": str(desired_log_root),
+        "MOLT_SYMPHONY_STATE_ROOT": str(desired_state_root),
+        "MOLT_SYMPHONY_ARTIFACT_ROOT": str(desired_store_root / "artifacts"),
+        "MOLT_SYMPHONY_WORKSPACE_ROOT": str(desired_store_root / "sessions" / "workspaces"),
+        "MOLT_SYMPHONY_DURABLE_ROOT": str(desired_state_root / "durable_memory"),
+        "MOLT_SYMPHONY_DLQ_EVENTS_FILE": str(desired_state_root / "dlq" / "events.jsonl"),
+        "MOLT_SYMPHONY_TASTE_MEMORY_EVENTS_FILE": str(desired_state_root / "taste_memory" / "events.jsonl"),
+        "MOLT_SYMPHONY_TASTE_MEMORY_DISTILLATIONS_DIR": str(
+            desired_state_root / "taste_memory" / "distillations"
+        ),
+        "MOLT_SYMPHONY_TOOL_PROMOTION_EVENTS_FILE": str(
+            desired_state_root / "tool_promotion" / "events.jsonl"
+        ),
+        "MOLT_SYMPHONY_TOOL_PROMOTION_DISTILLATIONS_DIR": str(
+            desired_state_root / "tool_promotion" / "distillations"
+        ),
+        "MOLT_SYMPHONY_API_TOKEN_FILE": str(
+            desired_state_root / "secrets" / "dashboard_api_token"
+        ),
+        "MOLT_SYMPHONY_SECURITY_EVENTS_FILE": str(
+            desired_log_root / "security" / "events.jsonl"
+        ),
+    }
+
+    def _legacy_backup_path(value: str | None) -> bool:
+        normalized = str(value or "").strip()
+        return normalized == "/mnt/backup" or normalized.startswith("/mnt/backup/")
+
+    if any(
+        _legacy_backup_path(current.get(key))
+        for key in (
+            "MOLT_EXT_ROOT",
+            "MOLT_SYMPHONY_PARENT_ROOT",
+            "MOLT_SYMPHONY_STORE_ROOT",
+            "MOLT_SYMPHONY_STATE_ROOT",
+            "MOLT_SYMPHONY_DURABLE_ROOT",
+        )
+    ):
+        merged.update(desired_path_updates)
 
     merged.setdefault("MOLT_EXT_ROOT", str(ext_root))
     merged.setdefault(
         "MOLT_SYMPHONY_PARENT_ROOT",
         str(resolve_symphony_parent_root(merged)),
     )
-    merged.setdefault("MOLT_SYMPHONY_PROJECT_KEY", "molt")
+    merged.setdefault("MOLT_SYMPHONY_PROJECT_KEY", project_key)
     merged.setdefault(
         "MOLT_SYMPHONY_STORE_ROOT",
         str(resolve_symphony_store_root(merged)),

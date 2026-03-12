@@ -172,6 +172,51 @@ def test_sync_env_defaults_upgrades_legacy_quint_fallback(
     assert loaded["MOLT_QUINT_NODE_FALLBACK"] == "/opt/node22/bin/node"
 
 
+def test_sync_env_defaults_migrates_legacy_backup_storage_roots(
+    monkeypatch, tmp_path: Path
+) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    ext_root = tmp_path / "agent-state" / "Molt"
+    ext_root.mkdir(parents=True)
+    env_file = tmp_path / "symphony.env"
+    env_file.write_text(
+        (
+            "MOLT_EXT_ROOT=/mnt/backup/Molt\n"
+            "MOLT_SYMPHONY_PARENT_ROOT=/mnt/backup/symphony\n"
+            "MOLT_SYMPHONY_STORE_ROOT=/mnt/backup/symphony/molt\n"
+            "MOLT_SYMPHONY_STATE_ROOT=/mnt/backup/symphony/molt/state\n"
+            "MOLT_SYMPHONY_DURABLE_ROOT=/mnt/backup/symphony/molt/state/durable_memory\n"
+            "CARGO_TARGET_DIR=/mnt/backup/Molt/cargo-target\n"
+            "MOLT_CACHE=/mnt/backup/Molt/molt_cache\n"
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        symphony_bootstrap,
+        "_git_origin",
+        lambda _: "git@github.com:org/molt.git",
+    )
+
+    symphony_bootstrap._sync_env_defaults(
+        repo_root=repo_root,
+        ext_root=ext_root,
+        env_file=env_file,
+        project_slug="molt-project",
+        source_repo_url=None,
+    )
+    loaded = symphony_bootstrap._parse_env_file(env_file)
+    assert loaded["MOLT_EXT_ROOT"] == str(ext_root)
+    assert loaded["MOLT_SYMPHONY_PARENT_ROOT"] == str(ext_root.parent / "symphony")
+    assert loaded["MOLT_SYMPHONY_STORE_ROOT"] == str(ext_root.parent / "symphony" / "molt")
+    assert loaded["MOLT_SYMPHONY_DURABLE_ROOT"] == str(
+        ext_root.parent / "symphony" / "molt" / "state" / "durable_memory"
+    )
+    assert loaded["CARGO_TARGET_DIR"] == str(ext_root / "cargo-target")
+    assert loaded["MOLT_CACHE"] == str(ext_root / "molt_cache")
+
+
 def test_formal_toolchain_report_detects_fallback_viability(
     monkeypatch, tmp_path: Path
 ) -> None:
