@@ -46,6 +46,9 @@ addopts = [
     "--ignore=tests/compliance",
 ]
 norecursedirs = ["third_party", ".git", ".venv", "dist", "build", "logs"]
+markers = [
+    "molt_compile: tests that require a working Molt compiler (use --run-molt)",
+]
 
 [tool.molt.deps]
 tier_a = ["attrs", "click", "pydantic", "requests", "rich", "ty"]
@@ -71,6 +74,7 @@ dev = [
     "coverage>=7.13.1",
     "pip-audit>=2.10.0",
     "py-spy>=0.4.1",
+    "hypothesis>=6.100.0",
 ]
 demo = [
     "django>=5.0",
