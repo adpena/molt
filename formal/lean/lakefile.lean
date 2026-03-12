@@ -19,3 +19,9 @@ lean_lib MoltTIR where
              `MoltTIR.Passes.DCE, `MoltTIR.Passes.DCECorrect,
              `MoltTIR.Passes.Lattice, `MoltTIR.Passes.SCCP, `MoltTIR.Passes.SCCPCorrect,
              `MoltTIR.Tests.Smoke]
+
+lean_lib MoltPython where
+  srcDir := "."
+  roots := #[`MoltPython.Syntax, `MoltPython.Values, `MoltPython.Env,
+             `MoltPython.Semantics.EvalExpr, `MoltPython.Semantics.Determinism,
+             `MoltPython.Properties.TypeSafety]
