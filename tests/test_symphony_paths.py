@@ -35,6 +35,15 @@ def test_explicit_store_root_overrides_parent_and_key(tmp_path: Path) -> None:
     assert paths.symphony_durable_root(env) == explicit_store / "state" / "durable_memory"
 
 
+def test_fleet_storage_mount_path_becomes_default_ext_root(tmp_path: Path) -> None:
+    mount_root = tmp_path / "agent-state"
+    env = {"FLEET_STORAGE_MOUNT_PATH": str(mount_root)}
+
+    assert paths.resolve_molt_ext_root(env) == mount_root / "Molt"
+    assert paths.resolve_symphony_parent_root(env) == mount_root / "symphony"
+    assert paths.resolve_symphony_store_root(env) == mount_root / "symphony" / "molt"
+
+
 def test_is_within_detects_cross_project_escape(tmp_path: Path) -> None:
     parent = tmp_path / "symphony"
     assert paths.is_within(parent / "molt" / "logs", parent) is True

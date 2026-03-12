@@ -18,6 +18,13 @@ def _normalize_path(path: Path) -> Path:
     return path.expanduser().resolve()
 
 
+def _fleet_storage_mount_root(env: Mapping[str, str] | None = None) -> Path | None:
+    configured = _env_get(env, "FLEET_STORAGE_MOUNT_PATH")
+    if not configured:
+        return None
+    return _normalize_path(Path(configured))
+
+
 def _platform_ext_root_candidates() -> tuple[Path, ...]:
     if os.name == "nt":
         return (
@@ -28,6 +35,7 @@ def _platform_ext_root_candidates() -> tuple[Path, ...]:
     if sys.platform == "darwin":
         return (Path("/Volumes/APDataStore/Molt"), Path("/Volumes/Molt"))
     return (
+        Path("/mnt/agent-state/Molt"),
         Path("/mnt/APDataStore/Molt"),
         Path("/media/APDataStore/Molt"),
         Path("/Volumes/APDataStore/Molt"),
@@ -50,6 +58,9 @@ def resolve_molt_ext_root(env: Mapping[str, str] | None = None) -> Path:
     configured = _env_get(env, "MOLT_EXT_ROOT")
     if configured:
         return _normalize_path(Path(configured))
+    fleet_mount_root = _fleet_storage_mount_root(env)
+    if fleet_mount_root is not None:
+        return _normalize_path(fleet_mount_root / "Molt")
     return default_molt_ext_root()
 
 
