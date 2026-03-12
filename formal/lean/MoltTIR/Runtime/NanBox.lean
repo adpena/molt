@@ -220,7 +220,7 @@ private theorem qnan_or_int_and_tag_check :
 /-- The tag-check property holds for any raw payload masked by INT_MASK.
     Proof: distribute AND over OR, then the payload term vanishes because
     INT_MASK &&& TAG_CHECK = 0, and the tag term is fixed by concrete computation. -/
-private theorem fromInt_isInt_aux (raw : UInt64) :
+theorem fromInt_isInt_aux (raw : UInt64) :
     (QNAN ||| TAG_INT ||| (raw &&& INT_MASK)) &&& TAG_CHECK = QNAN ||| TAG_INT := by
   rw [uint64_and_or_distrib_right, qnan_or_int_and_tag_check]
   rw [uint64_and_assoc, int_mask_and_tag_check, uint64_and_zero, uint64_or_zero]
