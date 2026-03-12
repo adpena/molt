@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from molt.symphony.paths import (
+    resolve_symphony_env_file,
     resolve_molt_ext_root,
     symphony_api_token_file,
     symphony_artifact_root,
@@ -28,7 +29,7 @@ try:
 except ImportError:  # pragma: no cover - script execution path.
     import compile_governor  # type: ignore[no-redef]
 
-DEFAULT_ENV_FILE = Path("ops/linear/runtime/symphony.env")
+DEFAULT_ENV_FILE = resolve_symphony_env_file()
 
 
 def _default_quint_node_fallback() -> str:
