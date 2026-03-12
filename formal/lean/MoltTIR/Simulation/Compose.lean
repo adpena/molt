@@ -78,11 +78,16 @@ theorem funcSimulation_to_behavioral {g : Func → Func}
     BehavioralEquivalence (g f) f := by
   intro fuel
   simp only [runFunc]
-  -- We need to show that g preserves entry block lookup and params.
-  -- Since all our transforms use the blockList-map pattern and preserve
-  -- entry/params, this follows from the simulation property.
-  -- However, the general statement requires additional structure on g.
-  -- For the specific transforms we care about, we prove this directly.
+  -- The simulation gives us: execFunc (g f) fuel ρ lbl = execFunc f fuel ρ lbl
+  -- But we need to also know that g preserves f.entry and block lookup at entry.
+  -- The general FuncSimulation does not carry this info, so this theorem
+  -- cannot be proven without additional structure on g.
+  -- However, sim.simulation gives execFunc equality for all ρ/lbl, including
+  -- the entry. The gap is that runFunc checks (g f).blocks (g f).entry vs
+  -- f.blocks f.entry, which requires knowing g preserves entry and block lookup.
+  -- Since FuncSimulation.simulation only speaks about execFunc (not blocks/entry),
+  -- this gap is fundamental to the current FuncSimulation definition.
+  -- We mark this as sorry until FuncSimulation is extended.
   sorry
   -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
   -- Requires FuncSimulation to carry proof that g preserves f.entry
