@@ -25,9 +25,6 @@ lean_lib MoltTIR where
              `MoltTIR.Passes.JoinCanon, `MoltTIR.Passes.JoinCanonCorrect,
              `MoltTIR.Passes.EdgeThread, `MoltTIR.Passes.EdgeThreadCorrect,
              `MoltTIR.Passes.Pipeline,
-             `MoltTIR.Simulation.Diagram,
-             `MoltTIR.Simulation.PassSimulation,
-             `MoltTIR.Simulation.Compose,
              `MoltTIR.Backend.LuauSyntax, `MoltTIR.Backend.LuauEmit,
              `MoltTIR.Backend.LuauSemantics, `MoltTIR.Backend.LuauEnvCorr,
              `MoltTIR.Backend.LuauCorrect,
@@ -35,3 +32,14 @@ lean_lib MoltTIR where
              `MoltTIR.Runtime.WasmNative,
              `MoltTIR.Runtime.WasmABI, `MoltTIR.Runtime.WasmNativeCorrect,
              `MoltTIR.Tests.Smoke]
+
+lean_lib MoltPython where
+  srcDir := "."
+  roots := #[`MoltPython.Syntax, `MoltPython.Values, `MoltPython.Env,
+             `MoltPython.Semantics.EvalExpr, `MoltPython.Semantics.Determinism,
+             `MoltPython.Properties.TypeSafety]
+
+lean_lib MoltLowering where
+  srcDir := "."
+  roots := #[`MoltLowering.ASTtoTIR, `MoltLowering.Properties,
+             `MoltLowering.Correct]
