@@ -10029,16 +10029,25 @@ int main(int argc, char** argv) {
     link_cmd.extend(
         [str(stub_path), str(output_obj), str(runtime_lib), "-o", str(output_binary)]
     )
+    # Dead code elimination: strip unreferenced functions/data from the final binary.
+    # The Cranelift backend emits per-function sections so the linker can discard
+    # unused runtime functions individually.
     if target_triple:
         if "apple" in target_triple or "darwin" in target_triple:
+            link_cmd.append("-Wl,-dead_strip")
             link_cmd.append("-lc++")
         elif "linux" in target_triple:
+            link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
+            link_cmd.append("-Wl,--gc-sections")
             link_cmd.append("-lstdc++")
             link_cmd.append("-lm")
     else:
         if sys.platform == "darwin":
+            link_cmd.append("-Wl,-dead_strip")
             link_cmd.append("-lc++")
         elif sys.platform.startswith("linux"):
+            link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
+            link_cmd.append("-Wl,--gc-sections")
             link_cmd.append("-lstdc++")
             link_cmd.append("-lm")
 
