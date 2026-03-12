@@ -18,10 +18,7 @@ lean_lib MoltTIR where
              `MoltTIR.Passes.ConstFold, `MoltTIR.Passes.ConstFoldCorrect,
              `MoltTIR.Passes.DCE, `MoltTIR.Passes.DCECorrect,
              `MoltTIR.Passes.Lattice, `MoltTIR.Passes.SCCP, `MoltTIR.Passes.SCCPCorrect,
+             `MoltTIR.Backend.LuauSyntax, `MoltTIR.Backend.LuauEmit,
+             `MoltTIR.Backend.LuauSemantics, `MoltTIR.Backend.LuauEnvCorr,
+             `MoltTIR.Backend.LuauCorrect,
              `MoltTIR.Tests.Smoke]
-
-lean_lib MoltPython where
-  srcDir := "."
-  roots := #[`MoltPython.Syntax, `MoltPython.Values, `MoltPython.Env,
-             `MoltPython.Semantics.EvalExpr, `MoltPython.Semantics.Determinism,
-             `MoltPython.Properties.TypeSafety]
