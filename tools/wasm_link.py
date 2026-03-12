@@ -948,7 +948,7 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
     cmd = [
         wasm_ld,
         "--no-entry",
-        "--no-gc-sections",
+        "--gc-sections",
         "--allow-undefined",
         "--import-table",
         "--export=molt_main",
