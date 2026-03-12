@@ -5,15 +5,13 @@
 [target.'cfg(not(target_arch = "wasm32"))']
 rustflags = []
 
-# Use mold linker on Linux for faster native link times.
-# mold does not support macOS (Mach-O) or WASM targets.
+# Keep the shared repo baseline portable. Fast Linux linkers should be opted into
+# locally instead of hard-coding a clang+mold requirement into every Cargo build.
 [target.x86_64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+rustflags = []
 
 [target.aarch64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+rustflags = []
 
 # WASM targets use a fixed feature set — do NOT set target-cpu=native.
 # The wasm32-unknown-unknown and wasm32-wasi targets use Cranelift's
