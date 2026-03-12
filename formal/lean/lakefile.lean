@@ -39,6 +39,9 @@ lean_lib MoltTIR where
              `MoltTIR.Runtime.NanBox, `MoltTIR.Runtime.Refcount,
              `MoltTIR.Runtime.WasmNative,
              `MoltTIR.Runtime.WasmABI, `MoltTIR.Runtime.WasmNativeCorrect,
+             `MoltTIR.Determinism.CompileDeterminism,
+             `MoltTIR.Determinism.CrossPlatform,
+             `MoltTIR.Determinism.BuildReproducibility,
              `MoltTIR.Tests.Smoke]
 
 lean_lib MoltPython where
