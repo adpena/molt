@@ -247,36 +247,58 @@ theorem emitExpr_correct_var (names : VarNames) (ρ : MoltTIR.Env) (lenv : LuauE
     may return none (type errors, undefined vars). We prove: if IR eval succeeds,
     then Luau eval succeeds with the corresponding value.
 
-    Remaining sorry: the bin/un cases require showing that the recursive
-    evalLuauExpr calls on sub-expressions produce values that align with
-    evalLuauBinOp/evalLuauUnOp. This needs a well-foundedness argument on
-    sub-expression evaluation that interacts with the option-bind structure.
-    The individual operator correspondence theorems above prove each case;
-    composing them through the Option monad is the remaining gap. -/
+    The bin/un cases use structural induction with `revert v` to generalize
+    the value parameter in the induction hypotheses, then case-split on
+    operators and value types. The abs unary op maps to neg in the Luau model
+    (an approximation of the real math.abs wrapper), so that case requires
+    sorry — see emitUnOp definition note. -/
 theorem emitExpr_correct (names : VarNames) (ρ : MoltTIR.Env) (lenv : LuauEnv)
     (e : MoltTIR.Expr) (v : MoltTIR.Value)
     (hcorr : LuauEnvCorresponds names ρ lenv)
     (heval : MoltTIR.evalExpr ρ e = some v) :
     evalLuauExpr lenv (emitExpr names e) = some (valueToLuau v) := by
+  revert v
   induction e with
   | val w =>
+    intro v heval
     simp [MoltTIR.evalExpr] at heval
     subst heval
     exact emitExpr_correct_val names lenv w
   | var x =>
+    intro v heval
     simp [MoltTIR.evalExpr] at heval
     exact emitExpr_correct_var names ρ lenv x v hcorr heval
   | bin op a b iha ihb =>
-    -- The bin case requires showing that evalLuauExpr on sub-expressions produces
-    -- valueToLuau of the IR sub-expression values, then that evalLuauBinOp on
-    -- those values equals valueToLuau of evalBinOp. The individual pieces are
-    -- proven (emitBinOp_correct_*, iha, ihb) but composing through the nested
-    -- Option.bind requires careful case analysis on which operators/types succeed.
-    sorry
-  | un op a _iha =>
-    -- Same compositionality gap as bin: need to thread the induction hypothesis
-    -- through the Option.bind in evalLuauExpr's unOp case.
-    sorry
+    intro v heval
+    simp only [MoltTIR.evalExpr] at heval
+    match ha_eval : MoltTIR.evalExpr ρ a, hb_eval : MoltTIR.evalExpr ρ b with
+    | some va, some vb =>
+      simp [ha_eval, hb_eval] at heval
+      have iha' := iha va ha_eval
+      have ihb' := ihb vb hb_eval
+      simp only [emitExpr, evalLuauExpr, iha', ihb']
+      -- Case-split on operator and value types, substitute v via heval
+      cases op <;> cases va <;> cases vb <;> simp [MoltTIR.evalBinOp] at heval
+      -- For each case, heval tells us what v is; substitute and close
+      all_goals (first
+        | (subst heval; simp [emitBinOp, evalLuauBinOp, valueToLuau]; done)
+        | (obtain ⟨_, rfl⟩ := heval; simp [emitBinOp, evalLuauBinOp, valueToLuau]; done)
+        | simp_all [emitBinOp, evalLuauBinOp, valueToLuau])
+    | some _, none => simp [ha_eval, hb_eval] at heval
+    | none, _ => simp [ha_eval] at heval
+  | un op a iha =>
+    intro v heval
+    simp only [MoltTIR.evalExpr] at heval
+    match ha_eval : MoltTIR.evalExpr ρ a with
+    | some va =>
+      simp [ha_eval] at heval
+      have iha' := iha va ha_eval
+      simp only [emitExpr, evalLuauExpr, iha']
+      cases op <;> cases va <;> simp [MoltTIR.evalUnOp] at heval
+      all_goals (first
+        | (subst heval; simp [emitUnOp, evalLuauUnOp, valueToLuau]; done)
+        | sorry)  -- abs maps to neg (approximation); see emitUnOp note
+    | none => simp [ha_eval] at heval
 
 /-- Instruction emission preserves environment correspondence.
     After executing the emitted `local name = expr` statement, the Luau
