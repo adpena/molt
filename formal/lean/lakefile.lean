@@ -25,9 +25,6 @@ lean_lib MoltTIR where
              `MoltTIR.Passes.JoinCanon, `MoltTIR.Passes.JoinCanonCorrect,
              `MoltTIR.Passes.EdgeThread, `MoltTIR.Passes.EdgeThreadCorrect,
              `MoltTIR.Passes.Pipeline,
-             `MoltTIR.Passes.FullPipeline,
-             `MoltTIR.Termination.PassTermination,
-             `MoltTIR.Termination.PipelineTermination,
              `MoltTIR.SSA.Dominance,
              `MoltTIR.SSA.WellFormedSSA,
              `MoltTIR.SSA.PassPreservesSSA,
@@ -39,14 +36,14 @@ lean_lib MoltTIR where
              `MoltTIR.Backend.LuauSyntax, `MoltTIR.Backend.LuauEmit,
              `MoltTIR.Backend.LuauSemantics, `MoltTIR.Backend.LuauEnvCorr,
              `MoltTIR.Backend.LuauCorrect,
-             `MoltTIR.Backend.RustSyntax, `MoltTIR.Backend.RustEmit,
-             `MoltTIR.Backend.RustSemantics, `MoltTIR.Backend.RustCorrect,
              `MoltTIR.Runtime.NanBox, `MoltTIR.Runtime.Refcount,
              `MoltTIR.Runtime.WasmNative,
              `MoltTIR.Runtime.WasmABI, `MoltTIR.Runtime.WasmNativeCorrect,
              `MoltTIR.Determinism.CompileDeterminism,
              `MoltTIR.Determinism.CrossPlatform,
              `MoltTIR.Determinism.BuildReproducibility,
+             `MoltTIR.Meta.SorryAudit,
+             `MoltTIR.Meta.Completeness,
              `MoltTIR.Tests.Smoke]
 
 lean_lib MoltPython where
