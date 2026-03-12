@@ -62,7 +62,6 @@ structure CompiledArtifact where
   ir : Func
   /-- Content-addressed digest of the artifact. -/
   digest : Nat
-  deriving Repr
 
 /-- The compilation function: source program + config → artifact.
     In the real compiler this is `molt.cli.build()`.
@@ -116,19 +115,19 @@ theorem compile_total (src : PyModule) (config : CompilerConfig) :
 def DeterministicMap (α β : Type) [DecidableEq α] [Ord α] := List (α × β)
 
 /-- Lookup in a deterministic map is a pure function of the key. -/
-def detMapLookup [DecidableEq α] [Ord α] (m : DeterministicMap α β) (k : α) : Option β :=
+def detMapLookup {α β : Type} [DecidableEq α] [Ord α] (m : DeterministicMap α β) (k : α) : Option β :=
   match m.find? (fun p => p.1 == k) with
   | some (_, v) => some v
   | none => none
 
 /-- Deterministic map lookup is deterministic (trivially, it's a function). -/
-theorem detMapLookup_deterministic [DecidableEq α] [Ord α]
+theorem detMapLookup_deterministic {α β : Type} [DecidableEq α] [Ord α]
     (m : DeterministicMap α β) (k : α) :
     detMapLookup m k = detMapLookup m k := rfl
 
 /-- Sorted iteration over a deterministic map is deterministic.
     Two traversals of the same map visit elements in the same order. -/
-theorem detMap_iter_deterministic [DecidableEq α] [Ord α]
+theorem detMap_iter_deterministic {α β γ : Type} [DecidableEq α] [Ord α]
     (m : DeterministicMap α β) (f : α → β → γ) :
     m.map (fun p => f p.1 p.2) = m.map (fun p => f p.1 p.2) := rfl
 
@@ -191,7 +190,7 @@ theorem compile_time_independent (src : PyModule) (config : CompilerConfig)
 -- Section 6: Thread scheduling — single-threaded or confluent
 -- ══════════════════════════════════════════════════════════════════
 
-/-- Compilation scheduling model: modules are compiled in topological
+/-  Compilation scheduling model: modules are compiled in topological
     layers. Within each layer, modules are independent (no data deps),
     so the order of compilation within a layer does not affect the
     output — the compilation is confluent.
@@ -234,7 +233,7 @@ theorem Nat.add_comm_fold (a b : Nat) : a + b = b + a := Nat.add_comm a b
 -- Section 7: Floating-point determinism
 -- ══════════════════════════════════════════════════════════════════
 
-/-- Molt's approach to floating-point determinism:
+/-  Molt's approach to floating-point determinism:
     1. All FP operations use IEEE 754 semantics (hardware-provided).
     2. NaN payloads are canonicalized: Molt uses a single canonical
        quiet NaN (matching the NaN-boxing quiet NaN: 0x7FF8000000000000).
@@ -272,10 +271,6 @@ theorem canonicalizeNaN_idempotent (bits : UInt64) :
   unfold canonicalizeNaN
   simp only
   split <;> simp_all [CANONICAL_QNAN]
-  · -- bits was NaN, canonicalized to CANONICAL_QNAN
-    -- Now canonicalize CANONICAL_QNAN: exponent=0x7FF, mantissa=0
-    -- So the else branch fires (mantissa is 0), returning CANONICAL_QNAN unchanged
-    native_decide
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 8: PYTHONHASHSEED pinning

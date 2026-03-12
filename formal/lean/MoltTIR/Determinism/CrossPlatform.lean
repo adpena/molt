@@ -188,7 +188,7 @@ theorem non_nan_float_platform_independent :
       (exponent ≠ 0x7FF ∨ mantissa = 0) →
       -- Then the value is bitwise identical across platforms
       v = v := by
-  intro v; intro _; rfl
+  intros; rfl
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 7: IR-level cross-platform determinism

@@ -44,7 +44,6 @@ structure BuildArtifact where
   digest : Nat
   /-- The IR at the final stage before codegen. -/
   finalIR : Func
-  deriving Repr
 
 /-- Two artifacts are identical if and only if their digests match.
     This is the content-addressed identity principle. -/
@@ -208,7 +207,6 @@ structure Module where
   id : Nat
   source : Func
   deps : List Nat
-  deriving Repr
 
 /-- Compile a single module. Pure function of the module source
     and its (already-compiled) dependencies. -/
@@ -287,7 +285,6 @@ structure BuildConfig where
   targetIsWasm : Bool
   /-- Source modules in topological order. -/
   modules : List Module
-  deriving Repr
 
 /-- Run the full build: compile all modules, link. -/
 def fullBuild (config : BuildConfig) : List BuildArtifact :=
