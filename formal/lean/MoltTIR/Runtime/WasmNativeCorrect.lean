@@ -122,7 +122,7 @@ theorem intAdd_preserves_tag (a b : UInt64) (ha : IsInt a) (hb : IsInt b) :
     ∃ r, intAdd a b = some r ∧ IsInt r := by
   unfold intAdd
   simp [ha, hb]
-  exact ⟨_, rfl, fromInt_isInt_aux _⟩
+  exact fromInt_isInt_aux _
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 2: NaN-boxing encode/decode is target-independent

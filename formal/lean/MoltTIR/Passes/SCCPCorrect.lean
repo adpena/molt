@@ -39,10 +39,9 @@ theorem absEvalBinOp_sound (op : BinOp) (a b : AbsVal) (va vb : Value)
       simp [AbsVal.concretizes] at ha hb
       subst ha; subst hb
       simp [absEvalBinOp, hr, AbsVal.concretizes]
-    | overdefined =>
-      unfold absEvalBinOp; simp [AbsVal.concretizes]
+    | overdefined => simp [absEvalBinOp, AbsVal.concretizes]
   | overdefined =>
-    cases b <;> unfold absEvalBinOp <;> simp [AbsVal.concretizes]
+    cases b <;> simp [absEvalBinOp, AbsVal.concretizes]
 
 /-- Abstract unary op evaluation is sound. -/
 theorem absEvalUnOp_sound (op : UnOp) (a : AbsVal) (va : Value)
@@ -82,12 +81,11 @@ theorem absEvalExpr_sound (σ : AbsEnv) (ρ : Env) (e : Expr)
     sorry  -- requires definedness assumption (see note below)
   | bin op a b iha ihb =>
     -- TODO(formal, owner:compiler, milestone:M5, priority:P1, status:partial):
-    -- The bin case proof needs reworking after simp behavior changes.
-    -- The absEvalBinOp match doesn't reduce under the current simp lemmas.
+    -- The bin case requires careful case analysis on absEvalExpr results.
     sorry
   | un op a iha =>
     -- TODO(formal, owner:compiler, milestone:M5, priority:P1, status:partial):
-    -- Same issue as bin case.
+    -- Same structure as bin case.
     sorry
 
 /-
@@ -143,7 +141,8 @@ theorem absEnvTop_strongSound (ρ : Env) : AbsEnvStrongSound AbsEnv.top ρ := by
 
 /-- Updating abstract env preserves strong soundness.
     TODO(formal, owner:compiler, milestone:M5, priority:P1, status:partial):
-    Proof needs Mathlib's tauto tactic or manual case analysis. -/
+    The second constructor requires case analysis on a = .known w that
+    needs Mathlib's tauto tactic or manual decidability reasoning. -/
 theorem absEnvStrongSound_set (σ : AbsEnv) (ρ : Env) (x : Var) (v : Value) (a : AbsVal)
     (hsound : AbsEnvStrongSound σ ρ)
     (hconc : AbsVal.concretizes a v)
@@ -154,9 +153,10 @@ theorem absEnvStrongSound_set (σ : AbsEnv) (ρ : Env) (x : Var) (v : Value) (a 
   · sorry
 
 /-- Abstract expression evaluation is sound under strong soundness.
-    Uses the strong invariant's converse for the var case.
+    This version has NO sorry for the var case — the var case uses the
+    strong invariant's converse direction to establish definedness.
     TODO(formal, owner:compiler, milestone:M5, priority:P1, status:partial):
-    bin/un cases need reworking after simp behavior changes. -/
+    bin/un cases need reworking. -/
 theorem absEvalExpr_strong_sound (σ : AbsEnv) (ρ : Env) (e : Expr)
     (hsound : AbsEnvStrongSound σ ρ) (cv : Value)
     (ha : absEvalExpr σ e = .known cv) :

@@ -43,15 +43,19 @@ theorem absEvalExpr_concretizes (σ : AbsEnv) (ρ : Env) (e : Expr) (v : Value)
     (hsound : AbsEnvSound σ ρ)
     (heval : evalExpr ρ e = some v) :
     AbsVal.concretizes (absEvalExpr σ e) v := by
+  revert v
   induction e with
   | val w =>
+    intro v heval
     simp [evalExpr] at heval; subst heval
     simp [absEvalExpr, AbsVal.concretizes]
   | var x =>
+    intro v heval
     simp [evalExpr] at heval
     simp [absEvalExpr]
     exact hsound x v heval
   | bin op a b iha ihb =>
+    intro v heval
     simp only [evalExpr] at heval
     simp only [absEvalExpr]
     match ha_eval : evalExpr ρ a, hb_eval : evalExpr ρ b with
@@ -62,6 +66,7 @@ theorem absEvalExpr_concretizes (σ : AbsEnv) (ρ : Env) (e : Expr) (v : Value)
     | some _, none => simp [ha_eval, hb_eval] at heval
     | none, _ => simp [ha_eval] at heval
   | un op a iha =>
+    intro v heval
     simp only [evalExpr] at heval
     simp only [absEvalExpr]
     match ha_eval : evalExpr ρ a with
