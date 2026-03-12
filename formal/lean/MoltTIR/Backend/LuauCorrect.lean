@@ -11,9 +11,12 @@
   5. Unpacked builtin calls correctly access tuple elements.
 
   Complex semantic equivalence proofs (requiring a full Luau evaluation model)
-  are marked with `sorry` and TODO comments for future development.
+  are now partially filled in using LuauSemantics.lean and LuauEnvCorr.lean.
 -/
 import MoltTIR.Backend.LuauEmit
+import MoltTIR.Backend.LuauEnvCorr
+
+set_option autoImplicit false
 
 namespace MoltTIR.Backend
 
@@ -157,30 +160,151 @@ theorem emitBinOp_mul : emitBinOp .mul = .mul := by rfl
 theorem emitBinOp_eq  : emitBinOp .eq  = .eq  := by rfl
 
 -- ======================================================================
--- Section 7: Semantic correctness stubs (require Luau evaluation model)
+-- Section 7: Semantic correctness (Luau evaluation model)
 -- ======================================================================
 
--- The following theorems require defining a Luau expression evaluator
--- (evalLuauExpr) and an environment correspondence relation. They are
--- stated as comments to document the intended proof obligations.
+/-- Arithmetic binary operator correspondence: for the core arithmetic operators
+    (add, sub, mul, mod), evaluating the emitted Luau operator on integer values
+    produces the same result as evaluating the IR operator, modulo the value
+    correspondence.
 
--- TODO: prove — requires LuauSemantics.lean with evalLuauExpr definition
--- theorem emitExpr_correct (names : VarNames) (rho : MoltTIR.Env) (e : MoltTIR.Expr)
---     (henv : LuauEnvCorresponds names rho luauEnv)
---     (hwf : WellFormedExpr rho e) :
---     evalLuauExpr luauEnv (emitExpr names e) = evalExpr rho e
+    This is the key semantic bridge: Luau number arithmetic on integers is
+    identical to Python integer arithmetic (within the safe-integer range).
 
--- TODO: prove — requires LuauSemantics.lean with statement execution
--- theorem emitInstr_preserves_env (names : VarNames) (rho : MoltTIR.Env)
---     (i : MoltTIR.Instr) (luauEnv : LuauEnv)
---     (henv : LuauEnvCorresponds names rho luauEnv) :
---     LuauEnvCorresponds names
---       (rho.set i.dst v)
---       (execLuauStmts luauEnv (emitInstr names i))
+    Note: div and pow are excluded — Luau `/` is float division (not Python's
+    `//` floor division), and pow has different edge cases. The emitBinOp mapping
+    handles floordiv → idiv, but the Luau idiv (`//`) semantics are not yet
+    modeled in evalLuauBinOp. -/
+theorem emitBinOp_correct_add (a b : Int) :
+    evalLuauBinOp (emitBinOp .add) (.number a) (.number b) =
+      (MoltTIR.evalBinOp .add (.int a) (.int b)).map valueToLuau := by
+  rfl
 
--- TODO: prove — requires LuauSemantics.lean with operator evaluation
--- theorem emitBinOp_correct (op : MoltTIR.BinOp) (a b : Int)
---     (hArith : op ∈ [.add, .sub, .mul, .div, .mod]) :
---     evalLuauBinOp (emitBinOp op) a b = evalBinOp op (.int a) (.int b)
+theorem emitBinOp_correct_sub (a b : Int) :
+    evalLuauBinOp (emitBinOp .sub) (.number a) (.number b) =
+      (MoltTIR.evalBinOp .sub (.int a) (.int b)).map valueToLuau := by
+  rfl
+
+theorem emitBinOp_correct_mul (a b : Int) :
+    evalLuauBinOp (emitBinOp .mul) (.number a) (.number b) =
+      (MoltTIR.evalBinOp .mul (.int a) (.int b)).map valueToLuau := by
+  rfl
+
+theorem emitBinOp_correct_mod (a b : Int) :
+    evalLuauBinOp (emitBinOp .mod) (.number a) (.number b) =
+      (MoltTIR.evalBinOp .mod (.int a) (.int b)).map valueToLuau := by
+  simp [emitBinOp, evalLuauBinOp, MoltTIR.evalBinOp, valueToLuau]
+  split <;> rfl
+
+/-- Comparison operator correspondence for eq. -/
+theorem emitBinOp_correct_eq (a b : Int) :
+    evalLuauBinOp (emitBinOp .eq) (.number a) (.number b) =
+      (MoltTIR.evalBinOp .eq (.int a) (.int b)).map valueToLuau := by
+  rfl
+
+/-- Comparison operator correspondence for lt. -/
+theorem emitBinOp_correct_lt (a b : Int) :
+    evalLuauBinOp (emitBinOp .lt) (.number a) (.number b) =
+      (MoltTIR.evalBinOp .lt (.int a) (.int b)).map valueToLuau := by
+  rfl
+
+/-- Unary operator correspondence for neg. -/
+theorem emitUnOp_correct_neg (a : Int) :
+    evalLuauUnOp (emitUnOp .neg) (.number a) =
+      (MoltTIR.evalUnOp .neg (.int a)).map valueToLuau := by
+  rfl
+
+/-- Unary operator correspondence for not. -/
+theorem emitUnOp_correct_not (b : Bool) :
+    evalLuauUnOp (emitUnOp .not) (.boolean b) =
+      (MoltTIR.evalUnOp .not (.bool b)).map valueToLuau := by
+  rfl
+
+/-- Expression emission correctness for value literals:
+    emitting a value literal and evaluating it in any Luau environment
+    produces the corresponding Luau value. -/
+theorem emitExpr_correct_val (names : VarNames) (lenv : LuauEnv) (v : MoltTIR.Value) :
+    evalLuauExpr lenv (emitExpr names (.val v)) = some (valueToLuau v) := by
+  cases v <;> rfl
+
+/-- Expression emission correctness for variable references:
+    if the environments correspond, then evaluating the emitted variable reference
+    in the Luau environment yields the corresponding value. -/
+theorem emitExpr_correct_var (names : VarNames) (ρ : MoltTIR.Env) (lenv : LuauEnv)
+    (x : MoltTIR.Var) (v : MoltTIR.Value)
+    (hcorr : LuauEnvCorresponds names ρ lenv)
+    (hbound : ρ x = some v) :
+    evalLuauExpr lenv (emitExpr names (.var x)) = some (valueToLuau v) := by
+  simp [emitExpr, evalLuauExpr]
+  exact evalLuauExpr_var_corr names ρ lenv x v hcorr hbound
+
+/-- Full expression emission correctness: structural induction on Expr.
+    For each IR expression e, if all variables in e are bound in ρ and the
+    environments correspond, then evaluating the emitted Luau expression
+    produces the same result (under value correspondence) as the IR evaluator.
+
+    The Option-valued formulation handles the case where IR evaluation itself
+    may return none (type errors, undefined vars). We prove: if IR eval succeeds,
+    then Luau eval succeeds with the corresponding value.
+
+    Remaining sorry: the bin/un cases require showing that the recursive
+    evalLuauExpr calls on sub-expressions produce values that align with
+    evalLuauBinOp/evalLuauUnOp. This needs a well-foundedness argument on
+    sub-expression evaluation that interacts with the option-bind structure.
+    The individual operator correspondence theorems above prove each case;
+    composing them through the Option monad is the remaining gap. -/
+theorem emitExpr_correct (names : VarNames) (ρ : MoltTIR.Env) (lenv : LuauEnv)
+    (e : MoltTIR.Expr) (v : MoltTIR.Value)
+    (hcorr : LuauEnvCorresponds names ρ lenv)
+    (heval : MoltTIR.evalExpr ρ e = some v) :
+    evalLuauExpr lenv (emitExpr names e) = some (valueToLuau v) := by
+  induction e with
+  | val w =>
+    simp [MoltTIR.evalExpr] at heval
+    subst heval
+    exact emitExpr_correct_val names lenv w
+  | var x =>
+    simp [MoltTIR.evalExpr] at heval
+    exact emitExpr_correct_var names ρ lenv x v hcorr heval
+  | bin op a b iha ihb =>
+    -- The bin case requires showing that evalLuauExpr on sub-expressions produces
+    -- valueToLuau of the IR sub-expression values, then that evalLuauBinOp on
+    -- those values equals valueToLuau of evalBinOp. The individual pieces are
+    -- proven (emitBinOp_correct_*, iha, ihb) but composing through the nested
+    -- Option.bind requires careful case analysis on which operators/types succeed.
+    sorry
+  | un op a _iha =>
+    -- Same compositionality gap as bin: need to thread the induction hypothesis
+    -- through the Option.bind in evalLuauExpr's unOp case.
+    sorry
+
+/-- Instruction emission preserves environment correspondence.
+    After executing the emitted `local name = expr` statement, the Luau
+    environment corresponds to the IR environment extended with the new binding.
+
+    Preconditions:
+    - The IR expression evaluates successfully (producing value v)
+    - The naming context is injective on the extended domain
+    - The Luau evaluation of the emitted expression succeeds (follows from
+      emitExpr_correct when the expression is well-formed) -/
+theorem emitInstr_preserves_env (names : VarNames) (ρ : MoltTIR.Env)
+    (i : MoltTIR.Instr) (lenv : LuauEnv) (v : MoltTIR.Value)
+    (hcorr : LuauEnvCorresponds names ρ lenv)
+    (_heval : MoltTIR.evalExpr ρ i.rhs = some v)
+    (hluau_eval : evalLuauExpr lenv (emitExpr names i.rhs) = some (valueToLuau v))
+    (hfresh : ρ i.dst = none)
+    (hinj : ∀ (y : MoltTIR.Var), ρ y ≠ none → names y ≠ names i.dst) :
+    ∃ lenv', execLuauStmts lenv (emitInstr names i) = some lenv' ∧
+      LuauEnvCorresponds names (ρ.set i.dst v) lenv' := by
+  refine ⟨lenv.set (names i.dst) (valueToLuau v), ?_, envCorr_set names ρ lenv i.dst v hcorr hfresh hinj⟩
+  simp [emitInstr, execLuauStmts, execLuauStmt, hluau_eval]
+
+/-- Semantic index adjustment: evaluating `adjustIndex (intLit n)` in any Luau
+    environment produces n+1 (the 1-based index). This completes the structural
+    index_adjust_correct with a semantic evaluation proof. -/
+theorem index_adjust_semantic (env : LuauEnv) (n : Nat) :
+    evalLuauExpr env (adjustIndex (.intLit (Int.ofNat n))) =
+      some (.number (Int.ofNat n + 1)) := by
+  rfl
 
 end MoltTIR.Backend
