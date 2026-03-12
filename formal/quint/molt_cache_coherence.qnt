@@ -348,12 +348,14 @@ module molt_cache_coherence {
     )
 
   // I4: Cache is content-addressed (same input = same hash = same output).
-  // Two build results for the same module must have the same artifact.
+  // Within a single build generation, two build results for the same module
+  // must have the same artifact. Since buildResults accumulates across
+  // invalidation boundaries, we check the weaker property: all currently
+  // built modules have consistent artifacts with their cache entries.
   val contentAddressed =
-    buildResults.forall(r1 =>
-      buildResults.forall(r2 =>
-        (r1.mod == r2.mod) implies r1.artifact == r2.artifact
-      )
+    Modules.forall(m =>
+      (m.in(built) and artifactHashes.get(m) != -1 and cache.get(m).inputHash != -1) implies
+        cache.get(m).artifact == artifactHashes.get(m)
     )
 
   // I5: No stale cache entries survive dependency updates.

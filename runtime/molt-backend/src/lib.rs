@@ -10,6 +10,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::OnceLock;
 
+pub mod luau;
+pub mod rust;
 pub mod wasm;
 
 #[cfg(feature = "egraphs")]
@@ -263,9 +265,16 @@ pub struct FunctionIR {
     pub name: String,
     pub params: Vec<String>,
     pub ops: Vec<OpIR>,
+    /// Optional per-parameter type hints from Python annotations.
+    /// When present, each entry corresponds positionally to `params` and
+    /// contains a normalised type tag such as "int", "float", "str", "bool",
+    /// or "Any".  Used by the Luau backend to emit typed parameter
+    /// annotations for JIT specialisation.
+    #[serde(default)]
+    pub param_types: Option<Vec<String>>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct OpIR {
     pub kind: String,
     pub value: Option<i64>,
@@ -278,9 +287,17 @@ pub struct OpIR {
     #[serde(default)]
     pub fast_int: Option<bool>,
     #[serde(default)]
+    pub fast_float: Option<bool>,
+    #[serde(default)]
+    pub raw_int: Option<bool>,
+    #[serde(default)]
+    pub stack_eligible: Option<bool>,
+    #[serde(default)]
     pub task_kind: Option<String>,
     #[serde(default)]
     pub container_type: Option<String>,
+    #[serde(default)]
+    pub type_hint: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -644,6 +661,7 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
             name: func.name.clone(),
             params: func.params.clone(),
             ops: func.ops.clone(),
+            param_types: func.param_types.clone(),
         };
         // Check with possibly overridden limit
         if func_copy.ops.len() <= limit && is_inlineable(&func_copy, &defined_functions) {
@@ -729,8 +747,12 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
                                 args: Some(vec![renamed]),
                                 out: Some(call_out.clone()),
                                 fast_int: None,
+                                fast_float: None,
+                                raw_int: None,
+                                stack_eligible: None,
                                 task_kind: None,
                                 container_type: None,
+                                type_hint: None,
                             });
                         }
                     }

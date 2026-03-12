@@ -369,17 +369,37 @@ impl LuauBackend {
         let ops = strip_dead_after_return(&ops);
         let ops = lower_iter_to_for(&ops);
 
-        let params = func
+        // Build typed parameter list.  When `param_types` carries per-param
+        // type hints from the frontend we emit Luau type annotations so the
+        // native JIT can skip runtime type guards.
+        let typed_params: Vec<String> = func
             .params
             .iter()
-            .map(|p| sanitize_ident(p))
-            .collect::<Vec<_>>()
-            .join(", ");
+            .enumerate()
+            .map(|(i, p)| {
+                let ident = sanitize_ident(p);
+                let luau_ty = func
+                    .param_types
+                    .as_ref()
+                    .and_then(|pts| pts.get(i))
+                    .map(|t| python_type_to_luau(t))
+                    .unwrap_or("any");
+                format!("{ident}: {luau_ty}")
+            })
+            .collect();
+        let params = typed_params.join(", ");
 
         let name = sanitize_ident(&func.name);
         if self.uses_forward_decls {
+            // Forward-declared assignment form — @native is not supported on
+            // bare `name = function(` in Luau, so we skip the attribute here.
             let _ = writeln!(self.output, "{name} = function({params})");
         } else {
+            // Emit @native attribute to enable Luau's native codegen.  This is
+            // zero-cost when the JIT is off and enables specialisation when it
+            // is on.  Type-annotated parameters further allow the JIT to skip
+            // runtime type guards.
+            self.output.push_str("@native\n");
             let _ = writeln!(self.output, "local function {name}({params})");
         }
         self.push_indent();
@@ -3049,6 +3069,23 @@ pub fn review_luau_perf(source: &str) -> Vec<(usize, &'static str, String)> {
     issues
 }
 
+/// Map a Python/Molt type hint string to a Luau type annotation.
+///
+/// Returns a `&'static str` for the common primitive cases and falls back
+/// to `"any"` for anything the Luau type system cannot express directly.
+fn python_type_to_luau(hint: &str) -> &'static str {
+    match hint {
+        "int" | "Int" => "number",
+        "float" | "Float" => "number",
+        "str" | "Str" | "string" => "string",
+        "bool" | "Bool" | "boolean" => "boolean",
+        "None" | "NoneType" => "nil",
+        "list" | "List" => "{any}",
+        "dict" | "Dict" => "{[any]: any}",
+        _ => "any",
+    }
+}
+
 /// Sanitize a Molt IR identifier for Luau.
 /// Replaces `.` and `-` with `_`, and prefixes Luau keywords with `_m_`.
 fn sanitize_ident(name: &str) -> String {
@@ -5114,39 +5151,10 @@ fn optimize_luau_perf(source: &mut String) {
             }
         }
 
-        // Pass 6: Add @native to function definitions (non-helper user functions).
-        // Only annotate `local function molt_*` (transpiled user functions), not helpers.
-        if trimmed.starts_with("local function molt_")
-            && !trimmed.starts_with("local function molt_range")
-            && !trimmed.starts_with("local function molt_len")
-            && !trimmed.starts_with("local function molt_int")
-            && !trimmed.starts_with("local function molt_float")
-            && !trimmed.starts_with("local function molt_str")
-            && !trimmed.starts_with("local function molt_bool")
-            && !trimmed.starts_with("local function molt_repr")
-            && !trimmed.starts_with("local function molt_mod")
-            && !trimmed.starts_with("local function molt_enumerate")
-            && !trimmed.starts_with("local function molt_zip")
-            && !trimmed.starts_with("local function molt_sorted")
-            && !trimmed.starts_with("local function molt_reversed")
-            && !trimmed.starts_with("local function molt_sum")
-            && !trimmed.starts_with("local function molt_any")
-            && !trimmed.starts_with("local function molt_all")
-            && !trimmed.starts_with("local function molt_map")
-            && !trimmed.starts_with("local function molt_filter")
-            && !trimmed.starts_with("local function molt_dict_")
-            && !trimmed.starts_with("local function molt_json_")
-            && !trimmed.starts_with("local function molt_string")
-            && !trimmed.starts_with("local function molt_print")
-            && !trimmed.starts_with("local function molt_pow")
-            && !trimmed.starts_with("local function molt_floor_div")
-        {
-            let indent = &line[..line.len() - trimmed.len()];
-            result.push_str(&format!("{indent}@native\n"));
-            perf_count += 1;
-        }
-        // Note: `@native` only works with `local function` declarations in Luau.
-        // Forward-declared assignments like `molt_name = function(` cannot use @native.
+        // Note: @native is now emitted directly in emit_function_body() for all
+        // user-defined functions (local function form).  The old Pass 6 text-level
+        // injection is no longer needed and has been removed to avoid duplicate
+        // annotations.
 
         result.push_str(&optimized);
         result.push('\n');
@@ -5244,6 +5252,7 @@ mod tests {
             functions: vec![FunctionIR {
                 name: "molt_main".to_string(),
                 params: vec![],
+                param_types: None,
                 ops: vec![
                     OpIR {
                         kind: "const".to_string(),
@@ -5296,6 +5305,7 @@ mod tests {
             functions: vec![FunctionIR {
                 name: "test_func".to_string(),
                 params: vec!["p0".to_string()],
+                param_types: None,
                 ops: vec![
                     OpIR {
                         kind: "const_float".to_string(),
@@ -5388,7 +5398,7 @@ mod tests {
         };
         let mut backend = LuauBackend::new();
         let output = backend.compile(&ir);
-        assert!(output.contains("local function test_func(p0)"));
+        assert!(output.contains("local function test_func(p0: any)"));
         // v0 (3.14) is single-use, inlined into the add expression.
         // add emits a type-aware string/number ternary.
         assert!(
@@ -5409,6 +5419,7 @@ mod tests {
             functions: vec![FunctionIR {
                 name: "flow_test".to_string(),
                 params: vec![],
+                param_types: None,
                 ops: vec![
                     OpIR {
                         kind: "label".to_string(),
@@ -5577,6 +5588,7 @@ mod tests {
             functions: vec![FunctionIR {
                 name: "flow_test".to_string(),
                 params: vec![],
+                param_types: None,
                 ops: vec![
                     OpIR {
                         kind: "label".to_string(),
