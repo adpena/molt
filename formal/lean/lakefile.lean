@@ -28,4 +28,7 @@ lean_lib MoltTIR where
              `MoltTIR.Backend.LuauSyntax, `MoltTIR.Backend.LuauEmit,
              `MoltTIR.Backend.LuauSemantics, `MoltTIR.Backend.LuauEnvCorr,
              `MoltTIR.Backend.LuauCorrect,
+             `MoltTIR.Runtime.NanBox, `MoltTIR.Runtime.Refcount,
+             `MoltTIR.Runtime.WasmNative,
+             `MoltTIR.Runtime.WasmABI, `MoltTIR.Runtime.WasmNativeCorrect,
              `MoltTIR.Tests.Smoke]
