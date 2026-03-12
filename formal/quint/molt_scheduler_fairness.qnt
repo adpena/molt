@@ -521,6 +521,12 @@ module molt_scheduler_fairness {
         tasks.get(tid).waitingOn != -1 and
         tasks.get(tid).waitingOn != -2 and
         not(tasks.get(tid).waitingOn.in(activeTasks))
+      ) or
+      // Allow the case where tasks are waiting on I/O
+      // (progress via ioResume action).
+      activeTasks.exists(tid =>
+        tasks.get(tid).state == Waiting and
+        tasks.get(tid).waitingOn == -2
       )
     ),
     // No task waits on itself.
