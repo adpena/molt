@@ -20,6 +20,10 @@ pub struct LuauBackend {
     /// Variables that have been pre-declared at function scope and should use
     /// assignment (`var = val`) instead of `local var = val` in emit_op.
     hoisted_vars: HashSet<String>,
+    /// Variables produced by `tuple_new` / `tuple_from_list` ops.  When one of
+    /// these is returned we emit `return table.unpack(v)` so the caller
+    /// receives multiple values instead of a single table.
+    tuple_vars: HashSet<String>,
 }
 
 impl LuauBackend {
@@ -29,6 +33,7 @@ impl LuauBackend {
             indent: 0,
             uses_forward_decls: false,
             hoisted_vars: HashSet::new(),
+            tuple_vars: HashSet::new(),
         }
     }
 
@@ -384,6 +389,7 @@ impl LuauBackend {
 
         // Reset per-function state.
         self.hoisted_vars.clear();
+        self.tuple_vars.clear();
 
         // Pre-declare loop index variables so they persist across iterations.
         let mut loop_idx_vars = Vec::new();
@@ -662,6 +668,7 @@ impl LuauBackend {
         }
 
         self.hoisted_vars.clear();
+        self.tuple_vars.clear();
     }
 
     fn emit_op(&mut self, op: &OpIR) {
@@ -1008,31 +1015,35 @@ impl LuauBackend {
             // Control flow: labels and jumps
             // ================================================================
             "label" | "state_label" => {
-                // Standalone Luau CLI doesn't support goto; Roblox Studio does.
-                // Emit as comments for compatibility with both targets.
+                // Emit real Luau labels — Roblox Studio supports goto/labels.
                 if let Some(id) = op.value {
-                    self.emit_line(&format!("-- ::label_{id}::"));
+                    self.emit_line(&format!("::label_{id}::"));
                 } else if let Some(ref s) = op.s_value {
                     let label = sanitize_label(s);
-                    self.emit_line(&format!("-- ::{label}::"));
+                    self.emit_line(&format!("::{label}::"));
                 }
             }
             "jump" | "goto" => {
                 if let Some(id) = op.value {
-                    self.emit_line(&format!("-- goto label_{id}"));
+                    self.emit_line(&format!("goto label_{id}"));
                 } else if let Some(ref target) = op.s_value {
                     let target = sanitize_label(target);
-                    self.emit_line(&format!("-- goto {target}"));
+                    self.emit_line(&format!("goto {target}"));
                 }
             }
             "br_if" => {
-                // Luau has no goto. Convert conditional branches to
-                // if/then/end blocks. For exception handler jumps,
-                // emit the error() call directly.
+                // Emit real conditional goto for Roblox Studio compatibility.
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(cond) = args.first() {
                     let cond = sanitize_ident(cond);
-                    self.emit_line(&format!("-- br_if {cond}"));
+                    if let Some(id) = op.value {
+                        self.emit_line(&format!("if {cond} then goto label_{id} end"));
+                    } else if let Some(ref target) = op.s_value {
+                        let target = sanitize_label(target);
+                        self.emit_line(&format!("if {cond} then goto {target} end"));
+                    } else {
+                        self.emit_line(&format!("-- br_if {cond}"));
+                    }
                 }
             }
             "branch" => {
@@ -1044,7 +1055,14 @@ impl LuauBackend {
                 } else {
                     "true".to_string()
                 };
-                self.emit_line(&format!("-- branch {cond}"));
+                if let Some(id) = op.value {
+                    self.emit_line(&format!("if {cond} then goto label_{id} end"));
+                } else if let Some(ref target) = op.s_value {
+                    let target = sanitize_label(target);
+                    self.emit_line(&format!("if {cond} then goto {target} end"));
+                } else {
+                    self.emit_line(&format!("-- branch {cond}"));
+                }
             }
             "branch_false" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
@@ -1055,7 +1073,14 @@ impl LuauBackend {
                 } else {
                     "false".to_string()
                 };
-                self.emit_line(&format!("-- branch_false {cond}"));
+                if let Some(id) = op.value {
+                    self.emit_line(&format!("if not {cond} then goto label_{id} end"));
+                } else if let Some(ref target) = op.s_value {
+                    let target = sanitize_label(target);
+                    self.emit_line(&format!("if not {cond} then goto {target} end"));
+                } else {
+                    self.emit_line(&format!("-- branch_false {cond}"));
+                }
             }
 
             // ================================================================
@@ -1304,13 +1329,27 @@ impl LuauBackend {
             // ================================================================
             "ret" | "return" | "return_value" => {
                 if let Some(ref args) = op.args {
-                    if let Some(val) = args.first() {
-                        self.emit_line(&format!("return {}", sanitize_ident(val)));
+                    if args.len() == 1 {
+                        let val = sanitize_ident(&args[0]);
+                        if self.tuple_vars.contains(&args[0]) {
+                            self.emit_line(&format!("return table.unpack({val})"));
+                        } else {
+                            self.emit_line(&format!("return {val}"));
+                        }
+                    } else if args.len() > 1 {
+                        let vals: Vec<String> =
+                            args.iter().map(|a| sanitize_ident(a)).collect();
+                        self.emit_line(&format!("return {}", vals.join(", ")));
                     } else {
                         self.emit_line("return");
                     }
                 } else if let Some(ref var) = op.var {
-                    self.emit_line(&format!("return {}", sanitize_ident(var)));
+                    let val = sanitize_ident(var);
+                    if self.tuple_vars.contains(var) {
+                        self.emit_line(&format!("return table.unpack({val})"));
+                    } else {
+                        self.emit_line(&format!("return {val}"));
+                    }
                 } else {
                     self.emit_line("return");
                 }
@@ -1336,6 +1375,10 @@ impl LuauBackend {
             }
             "tuple_new" | "tuple_from_list" => {
                 let out = self.out_var(op);
+                // Track this variable so return sites can unpack it.
+                if let Some(ref out_name) = op.out {
+                    self.tuple_vars.insert(out_name.clone());
+                }
                 let items = op
                     .args
                     .as_deref()
@@ -2124,7 +2167,7 @@ impl LuauBackend {
                         if let Some(name_var) = args.first() {
                             let nv = sanitize_ident(name_var);
                             self.emit_line(&format!(
-                                "local {out} = molt_module_cache[{nv}] or {{}}"
+                                "local {out} = (molt_module_cache[{nv}] or {{}})"
                             ));
                         } else {
                             self.emit_line(&format!("local {out} = {{}}"));
@@ -2154,7 +2197,7 @@ impl LuauBackend {
                         // Look up in module cache to resolve `import math` etc.
                         let name_var = sanitize_ident(&args[1]);
                         self.emit_line(&format!(
-                            "local {out} = molt_module_cache[{name_var}] or nil"
+                            "local {out} = (molt_module_cache[{name_var}] or nil)"
                         ));
                     } else {
                         // module_get_attr: args[0] = module table, args[1] = attr name var.
@@ -2891,10 +2934,10 @@ fn collect_luau_preview_blockers(source: &str) -> Vec<String> {
         .lines()
         .filter_map(|line| {
             let trimmed = line.trim();
-            // Only flag patterns that indicate truly broken control flow
-            // (goto/branch without structured replacement).  Nil-stub
-            // comments like `-- [exception_last]` are harmless Luau and
-            // label comments like `-- ::label_0::` are inert.
+            // Only flag patterns that indicate truly broken control flow.
+            // goto/branch ops now emit real Luau labels and gotos for
+            // Roblox Studio compatibility.  Nil-stub comments like
+            // `-- [exception_last]` are harmless Luau.
             let is_blocker = trimmed.contains("-- [unsupported op:");
             if is_blocker {
                 Some(trimmed.to_string())
