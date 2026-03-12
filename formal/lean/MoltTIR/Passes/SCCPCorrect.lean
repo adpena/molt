@@ -126,10 +126,90 @@ theorem absEvalExpr_sound (σ : AbsEnv) (ρ : Env) (e : Expr)
   Approach (a) is the CompCert style. The real SCCP implementation uses (b).
   For this milestone, the sorry is precisely documented and all surrounding
   infrastructure is proven.
+
+  Below we provide `AbsEnvStrongSound` (approach (a)) and a sorry-free
+  `absEvalExpr_strong_sound` for callers that can establish the stronger invariant.
 -/
 
+/-- Strong abstract environment soundness (CompCert style).
+    Adds the converse: if σ x = known v, then ρ x is defined with value v. -/
+def AbsEnvStrongSound (σ : AbsEnv) (ρ : Env) : Prop :=
+  (∀ x v, ρ x = some v → AbsVal.concretizes (σ x) v) ∧
+  (∀ x v, σ x = .known v → ρ x = some v)
+
+/-- Strong soundness implies weak soundness. -/
+theorem absEnvStrongSound_implies_sound (σ : AbsEnv) (ρ : Env)
+    (h : AbsEnvStrongSound σ ρ) : AbsEnvSound σ ρ := h.1
+
+/-- The top (all-unknown) abstract environment is strongly sound. -/
+theorem absEnvTop_strongSound (ρ : Env) : AbsEnvStrongSound AbsEnv.top ρ := by
+  constructor
+  · intro x v _; simp [AbsEnv.top, AbsVal.concretizes]
+  · intro x v h; simp [AbsEnv.top] at h
+
+/-- Updating abstract env preserves strong soundness. -/
+theorem absEnvStrongSound_set (σ : AbsEnv) (ρ : Env) (x : Var) (v : Value) (a : AbsVal)
+    (hsound : AbsEnvStrongSound σ ρ)
+    (hconc : AbsVal.concretizes a v)
+    (hdef : a = .known v ∨ a ≠ .known v → ∀ w, a = .known w → w = v) :
+    AbsEnvStrongSound (σ.set x a) (ρ.set x v) := by
+  constructor
+  · exact absEnvSound_set σ ρ x v a hsound.1 hconc
+  · intro y w hy
+    simp [AbsEnv.set, Env.set] at *
+    split at hy
+    · next heq =>
+      have := hdef (by tauto) w hy
+      subst this; rfl
+    · exact hsound.2 y w hy
+
+/-- Abstract expression evaluation is sound under strong soundness.
+    This version has NO sorry — the var case uses the strong invariant's
+    converse direction to establish definedness. -/
+theorem absEvalExpr_strong_sound (σ : AbsEnv) (ρ : Env) (e : Expr)
+    (hsound : AbsEnvStrongSound σ ρ) (cv : Value)
+    (ha : absEvalExpr σ e = .known cv) :
+    evalExpr ρ e = some cv := by
+  induction e with
+  | val v =>
+    simp [absEvalExpr] at ha
+    simp [evalExpr, ha]
+  | var x =>
+    simp [absEvalExpr] at ha
+    exact hsound.2 x cv ha
+  | bin op a b iha ihb =>
+    simp only [absEvalExpr] at ha
+    match ha_e : absEvalExpr σ a, hb_e : absEvalExpr σ b with
+    | .known va, .known vb =>
+      simp [absEvalBinOp] at ha
+      match hr : evalBinOp op va vb with
+      | some vr =>
+        simp [hr] at ha
+        have iha' := iha ha_e
+        have ihb' := ihb hb_e
+        simp [evalExpr, iha', ihb', hr, ha]
+      | none => simp [hr] at ha
+    | .unknown, _ => simp [absEvalBinOp] at ha
+    | _, .unknown => cases absEvalExpr σ a <;> simp [absEvalBinOp] at ha
+    | .overdefined, _ => simp [absEvalBinOp] at ha
+    | .known _, .overdefined => simp [absEvalBinOp] at ha
+  | un op a iha =>
+    simp only [absEvalExpr] at ha
+    match ha_e : absEvalExpr σ a with
+    | .known va =>
+      simp [absEvalUnOp] at ha
+      match hr : evalUnOp op va with
+      | some vr =>
+        simp [hr] at ha
+        have iha' := iha ha_e
+        simp [evalExpr, iha', hr, ha]
+      | none => simp [hr] at ha
+    | .unknown => simp [absEvalUnOp] at ha
+    | .overdefined => simp [absEvalUnOp] at ha
+
 /-- SCCP-transformed expressions preserve semantics when the abstract
-    value is known (main pass correctness, modulo definedness). -/
+    value is known (main pass correctness, modulo definedness).
+    Uses weak soundness + absEvalExpr_sound (inherits its sorry). -/
 theorem sccpExpr_correct (σ : AbsEnv) (ρ : Env) (e : Expr)
     (hsound : AbsEnvSound σ ρ) :
     evalExpr ρ (sccpExpr σ e) = evalExpr ρ e := by
@@ -138,6 +218,19 @@ theorem sccpExpr_correct (σ : AbsEnv) (ρ : Env) (e : Expr)
   | .known v =>
     simp only [evalExpr]
     exact (absEvalExpr_sound σ ρ e hsound v h).symm
+  | .unknown => rfl
+  | .overdefined => rfl
+
+/-- SCCP-transformed expressions preserve semantics (sorry-free version).
+    Uses strong soundness. -/
+theorem sccpExpr_correct_strong (σ : AbsEnv) (ρ : Env) (e : Expr)
+    (hsound : AbsEnvStrongSound σ ρ) :
+    evalExpr ρ (sccpExpr σ e) = evalExpr ρ e := by
+  simp only [sccpExpr]
+  match h : absEvalExpr σ e with
+  | .known v =>
+    simp only [evalExpr]
+    exact (absEvalExpr_strong_sound σ ρ e hsound v h).symm
   | .unknown => rfl
   | .overdefined => rfl
 

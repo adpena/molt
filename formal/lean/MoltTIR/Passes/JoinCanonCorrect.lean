@@ -53,28 +53,6 @@ theorem canonicalizeJump_args (jmap : JoinMap) (target : Label) (args : List Exp
   · rfl   -- lookup found canonical
   · rfl   -- no canonical entry
 
-/-- If canonicalizeJump rewrites the label, the original and canonical
-    blocks have the same params (under a sound join map). -/
-theorem canonicalizeJump_sound (jmap : JoinMap) (f : Func)
-    (target : Label) (args : List Expr)
-    (hsound : JoinMapSound jmap f) :
-    let (target', _) := canonicalizeJump jmap target args
-    ∀ origBlk canonBlk,
-      f.blocks target = some origBlk →
-      f.blocks target' = some canonBlk →
-      origBlk.params = canonBlk.params := by
-  simp [canonicalizeJump]
-  split
-  · -- lookup found canonical
-    case h_1 canonical hlookup =>
-      intro origBlk canonBlk hOrig hCanon
-      -- Need to show canonical is in the jmap
-      have hmem := joinLookup_mem jmap target args canonical hlookup
-      exact hsound { target := target, args := args } canonical hmem origBlk canonBlk hOrig hCanon
-  · -- no canonical entry: target' = target, so params trivially agree
-    intro origBlk canonBlk hOrig hCanon
-    simp_all
-
 -- ══════════════════════════════════════════════════════════════════
 -- Section 3: Join lookup membership
 -- ══════════════════════════════════════════════════════════════════
@@ -91,12 +69,37 @@ theorem joinLookup_mem (jmap : JoinMap) (target : Label) (args : List Expr)
     split at h
     · case isTrue heq =>
       simp at h
-      have : entry.1 == { target := target, args := args : JoinSig } = true := heq
-      simp [BEq.beq, DecidableEq] at this
-      simp_all
+      have heq' : entry.1 = { target := target, args := args : JoinSig } :=
+        beq_iff_eq.mp heq
+      rw [← heq', ← h]
       exact List.mem_cons_self _ _
     · case isFalse _ =>
       exact List.mem_cons_of_mem _ (ih h)
+
+-- ══════════════════════════════════════════════════════════════════
+-- Section 4: canonicalizeJump soundness (uses joinLookup_mem)
+-- ══════════════════════════════════════════════════════════════════
+
+/-- If canonicalizeJump rewrites the label, the original and canonical
+    blocks have the same params (under a sound join map). -/
+theorem canonicalizeJump_sound (jmap : JoinMap) (f : Func)
+    (target : Label) (args : List Expr)
+    (hsound : JoinMapSound jmap f) :
+    let (target', _) := canonicalizeJump jmap target args
+    ∀ origBlk canonBlk,
+      f.blocks target = some origBlk →
+      f.blocks target' = some canonBlk →
+      origBlk.params = canonBlk.params := by
+  simp [canonicalizeJump]
+  split
+  · -- lookup found canonical
+    case h_1 canonical hlookup =>
+      intro origBlk canonBlk hOrig hCanon
+      have hmem := joinLookup_mem jmap target args canonical hlookup
+      exact hsound { target := target, args := args } canonical hmem origBlk canonBlk hOrig hCanon
+  · -- no canonical entry: target' = target, so params trivially agree
+    intro origBlk canonBlk hOrig hCanon
+    simp_all
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 4: Terminator-level correctness
@@ -108,15 +111,28 @@ theorem joinCanonTerminator_ret (jmap : JoinMap) (e : Expr) :
 
 /-- Join canonicalization preserves terminator variable references.
     Since canonicalizeJump only changes labels (not expressions),
-    all variable references in the terminator are preserved.
-
-    TODO(formal, owner:compiler, milestone:M5, priority:P2, status:partial):
-    Define termExprs and prove expression membership preservation
-    across label canonicalization. The core insight is that
-    canonicalizeJump never modifies expressions (canonicalizeJump_args). -/
+    all variable references in the terminator are preserved. -/
 theorem joinCanonTerminator_preserves_vars (jmap : JoinMap) (t : Terminator) :
     termVars (joinCanonTerminator jmap t) = termVars t := by
-  sorry
+  cases t with
+  | ret e => rfl
+  | jmp target args =>
+    simp only [joinCanonTerminator, termVars]
+    have h := canonicalizeJump_args jmap target args
+    generalize canonicalizeJump jmap target args = p at h
+    obtain ⟨target', args'⟩ := p
+    simp at h
+    simp [h]
+  | br cond tl ta el ea =>
+    simp only [joinCanonTerminator, termVars]
+    have h1 := canonicalizeJump_args jmap tl ta
+    have h2 := canonicalizeJump_args jmap el ea
+    generalize canonicalizeJump jmap tl ta = p1 at h1
+    generalize canonicalizeJump jmap el ea = p2 at h2
+    obtain ⟨tl', ta'⟩ := p1
+    obtain ⟨el', ea'⟩ := p2
+    simp at h1 h2
+    simp [h1, h2]
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 5: Expression evaluation preservation
