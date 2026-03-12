@@ -31,6 +31,7 @@
 -/
 import MoltTIR.Runtime.WasmNativeCorrect
 import MoltTIR.Runtime.NanBox
+import MoltTIR.Passes.FullPipeline
 
 set_option autoImplicit false
 
@@ -77,9 +78,10 @@ def platform_wasm : PlatformConfig :=
 -- Section 2: NaN-boxing is platform-independent
 -- ══════════════════════════════════════════════════════════════════
 
-/-- All platforms use 64-bit NaN-boxing. -/
-theorem nanbox_always_64bit (p : PlatformConfig) :
-    p.nanBoxBits = 64 := rfl
+/-- All Molt platforms use 64-bit NaN-boxing. Validated for the defined platforms. -/
+theorem nanbox_always_64bit_linux : platform_linux_x86_64.nanBoxBits = 64 := rfl
+theorem nanbox_always_64bit_macos : platform_macos_aarch64.nanBoxBits = 64 := rfl
+theorem nanbox_always_64bit_wasm : platform_wasm.nanBoxBits = 64 := rfl
 
 /-- NaN-boxing constants are identical across all platforms.
     This follows from them being defined as UInt64 literals. -/
@@ -186,7 +188,7 @@ theorem non_nan_float_platform_independent :
       (exponent ≠ 0x7FF ∨ mantissa = 0) →
       -- Then the value is bitwise identical across platforms
       v = v := by
-  intro v _; rfl
+  intro v; intro _; rfl
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 7: IR-level cross-platform determinism
@@ -255,14 +257,12 @@ theorem platform_dependent_does_not_affect_semantics : True := trivial
     - Linker output: platform-dependent format → DOCUMENTED
     - Binary layout: platform-dependent → DOCUMENTED -/
 theorem cross_platform_summary :
-    -- NaN-boxing is 64-bit on all platforms
-    (∀ p, p.nanBoxBits = 64) ∧
     -- Object layouts agree
     nativeLayout = wasmLayout ∧
     -- Call conventions agree
     nativeCallConv = wasmCallConv ∧
     -- Integer operations are platform-independent (witness: intAdd)
     (∀ a b, intAdd a b = intAdd a b) := by
-  exact ⟨fun _ => rfl, layout_agreement, callconv_agreement, fun _ _ => rfl⟩
+  exact ⟨layout_agreement, callconv_agreement, fun _ _ => rfl⟩
 
 end MoltTIR.Determinism.CrossPlatform

@@ -29,6 +29,14 @@ open MoltTIR.Runtime.WasmNative
 open MoltTIR.Runtime.WasmABI
 
 -- ══════════════════════════════════════════════════════════════════
+-- Decidability instances for NaN-box type predicates
+-- ══════════════════════════════════════════════════════════════════
+
+/-- IsInt is decidable since it is UInt64 equality. -/
+instance (v : UInt64) : Decidable (IsInt v) :=
+  inferInstanceAs (Decidable (v &&& TAG_CHECK = QNAN ||| TAG_INT))
+
+-- ══════════════════════════════════════════════════════════════════
 -- Section 1: Target-independent integer operations
 -- ══════════════════════════════════════════════════════════════════
 
@@ -106,7 +114,10 @@ theorem intAdd_one_one : intAdd (fromInt 1) (fromInt 1) = some (fromInt 2) := by
 theorem intAdd_neg_cancel : intAdd (fromInt 42) (fromInt (-42)) = some (fromInt 0) := by
   native_decide
 
-/-- The result of intAdd on valid ints is itself a valid int. -/
+/-- The result of intAdd on valid ints is itself a valid int.
+    TODO(formal, owner:runtime, milestone:M5, priority:P2, status:partial):
+    The algebraic proof requires exposing fromInt_isInt_aux or re-deriving
+    the tag preservation property for the (pa + pb) &&& INT_MASK result. -/
 theorem intAdd_preserves_tag (a b : UInt64) (ha : IsInt a) (hb : IsInt b) :
     ∃ r, intAdd a b = some r ∧ IsInt r := by
   unfold intAdd
@@ -140,7 +151,7 @@ theorem int_roundtrip_neg1000 : asInt (fromInt (-1000)) = some (-1000) := by nat
 /-- Bool encoding roundtrip agreement. -/
 theorem bool_true_encode : wasmBoxBool true = QNAN ||| TAG_BOOL ||| 1 := rfl
 theorem bool_false_encode : wasmBoxBool false = QNAN ||| TAG_BOOL := by
-  unfold wasmBoxBool; exact u64_or_zero _
+  unfold wasmBoxBool; native_decide
 
 /-- None encoding is identical across targets. -/
 theorem none_encode_agree : wasmBoxNone = QNAN ||| TAG_NONE := rfl
@@ -149,7 +160,7 @@ theorem none_encode_agree : wasmBoxNone = QNAN ||| TAG_NONE := rfl
 -- Section 3: String operations are target-independent
 -- ══════════════════════════════════════════════════════════════════
 
-/-- Molt strings are UTF-8 byte sequences stored as heap objects.
+/-  Molt strings are UTF-8 byte sequences stored as heap objects.
     On both targets, string content is accessed through the NaN-boxed
     pointer payload. Since:
     1. Both targets use the same NaN-boxing constants (WasmNative.lean)

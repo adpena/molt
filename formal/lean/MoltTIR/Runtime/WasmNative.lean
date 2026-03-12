@@ -144,7 +144,7 @@ private theorem u64_and_or_distrib (a b c : UInt64) :
   ext i; simp only [BitVec.getLsbD_and, BitVec.getLsbD_or]
   cases a.toBitVec.getLsbD i <;> cases b.toBitVec.getLsbD i <;> cases c.toBitVec.getLsbD i <;> rfl
 
-private theorem u64_or_zero (a : UInt64) : a ||| 0 = a := by
+theorem u64_or_zero (a : UInt64) : a ||| 0 = a := by
   cases a with | mk av => show UInt64.mk _ = UInt64.mk _; congr 1; exact BitVec.or_zero
 
 private theorem u64_and_zero (a : UInt64) : a &&& 0 = 0 := by
