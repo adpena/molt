@@ -680,6 +680,86 @@ jobs:
             ${{ env.EXT_PROJECT_DIR }}/runtime_import_smoke.log
             ${{ env.EXT_PROJECT_DIR }}/wasm_unsupported.json
 
+  # ── Unified verification gate (Tier 1: every push, Tier 2: PRs) ───
+  verification-gate-t1:
+    name: Verification gate (Tier 1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+      - name: Install dependencies
+        run: uv sync --frozen --python 3.12
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-gate-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-gate-
+      - name: Run Tier 1 gate
+        run: uv run --python 3.12 python3 tools/ci_gate.py --tier 1 --fail-fast --verbose
+      - name: Upload gate results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-tier1
+          path: ci_gate_results.json
+          if-no-files-found: ignore
+
+  verification-gate-t2:
+    name: Verification gate (Tier 2)
+    if: github.event_name == 'pull_request'
+    needs: [verification-gate-t1]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+      - name: Install dependencies
+        run: uv sync --frozen --python 3.12
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+      - name: Install clang
+        run: |
+          if ! command -v clang >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y clang
+          fi
+      - name: Install Quint
+        run: npm install -g @informalsystems/quint
+      - name: Build runtime
+        run: cargo build -p molt-runtime --release
+      - name: Run Tier 2 gate
+        run: uv run --python 3.12 python3 tools/ci_gate.py --tier 2 --verbose
+      - name: Upload gate results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-tier2
+          path: ci_gate_results.json
+          if-no-files-found: ignore
+
   test-rust:
     runs-on: ubuntu-latest
     steps:
