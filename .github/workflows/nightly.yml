@@ -159,6 +159,102 @@ jobs:
             --invariant=Inv --max-steps=10
         continue-on-error: true
 
+  verification-gate-t3:
+    name: Verification gate (Tier 3 - heavy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install elan (Lean 4 toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Install Quint
+        run: npm install -g @informalsystems/quint
+
+      - name: Cache Lean lake
+        uses: actions/cache@v4
+        with:
+          path: |
+            formal/lean/.lake
+            formal/lean/lake-packages
+          key: lean-${{ runner.os }}-${{ hashFiles('formal/lean/lean-toolchain', 'formal/lean/lakefile.lean') }}
+          restore-keys: |
+            lean-${{ runner.os }}-
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-nightly-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-nightly-
+
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-nightly-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-nightly-
+
+      - name: Install clang
+        run: |
+          if ! command -v clang >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y clang
+          fi
+
+      - name: Install dependencies
+        run: uv sync --python 3.12
+
+      - name: Build Molt runtime
+        run: cargo build -p molt-runtime --release
+
+      - name: Run Tier 3 gate
+        run: uv run --python 3.12 python3 tools/ci_gate.py --tier 3 --verbose --json > ci_gate_tier3.json
+        continue-on-error: true
+
+      - name: Report Tier 3 results
+        if: always()
+        run: |
+          if [ -f ci_gate_tier3.json ]; then
+            uv run --python 3.12 python3 -c "
+          import json, sys
+          data = json.load(open('ci_gate_tier3.json'))
+          s = data['summary']
+          print(f\"Tier 3 gate: {s['passed']} passed, {s['failed']} failed, {s['errored']} errored, {s['skipped']} skipped ({s['total_time_s']:.1f}s)\")
+          for c in data['checks']:
+              if c['status'] in ('fail', 'error'):
+                  print(f\"  FAIL: {c['name']} (tier {c['tier']}, rc={c['returncode']})\")
+          sys.exit(0 if s['success'] else 1)
+          "
+          fi
+        continue-on-error: true
+
+      - name: Upload Tier 3 gate results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-tier3
+          path: ci_gate_tier3.json
+          if-no-files-found: ignore
+
   supply-chain:
     name: Supply Chain Audit
     runs-on: ubuntu-latest
