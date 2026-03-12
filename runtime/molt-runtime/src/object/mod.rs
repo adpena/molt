@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use molt_obj_model::MoltObject;
@@ -13,9 +13,12 @@ pub(crate) mod builders;
 pub(crate) mod layout;
 pub(crate) mod memoryview;
 pub(crate) mod ops;
+pub(crate) mod refcount;
 pub(crate) mod type_ids;
 pub(crate) mod utf8_cache;
 pub(crate) mod weakref;
+
+use refcount::MoltRefCount;
 
 #[allow(unused_imports)]
 pub(crate) use type_ids::*;
@@ -197,7 +200,7 @@ fn debug_alloc_object_type() -> Option<u32> {
 #[repr(C)]
 pub struct MoltHeader {
     pub type_id: u32,
-    pub ref_count: AtomicU32,
+    pub ref_count: MoltRefCount,
     pub poll_fn: u64, // Function pointer for polling
     pub state: i64,   // State machine state
     pub size: usize,  // Total size of allocation
@@ -1011,7 +1014,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 header.ref_count.store(1, AtomicOrdering::Release);
                 return;
             }
-            std::sync::atomic::fence(AtomicOrdering::Acquire);
+            MoltRefCount::acquire_fence();
             if debug_dec_ref_zero() {
                 eprintln!(
                     "molt dec_ref_zero ptr=0x{:x} type_id={}",

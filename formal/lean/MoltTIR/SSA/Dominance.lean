@@ -77,7 +77,48 @@ theorem CFGPath.prefix_to_member {f : Func} {src dst d : Label}
     (hpath : CFGPath f src dst path) (hd : d ∈ path) :
     ∃ prefix_path, CFGPath f src d prefix_path ∧
       ∀ x ∈ prefix_path, x ∈ path := by
-  sorry
+  induction hpath with
+  | single =>
+    simp at hd; subst hd
+    exact ⟨[d], .single d, fun _ hx => hx⟩
+  | @cons _ l₁ l₂ dst' rest hedge htail ih =>
+    cases hd with
+    | head _ =>
+      -- d is the head of (l₁ :: l₂ :: rest), so d = l₁
+      -- Use src directly: src = l₁ from the cons pattern
+      exact ⟨[src], .single src, fun _ hx => by
+        simp at hx; subst hx; exact List.Mem.head _⟩
+    | tail _ hd' =>
+      -- d is in (l₂ :: rest), so by ih there's a prefix from l₂ to d
+      obtain ⟨prefix_path, hprefix, hsubset⟩ := ih hd'
+      -- prefix_path is a CFGPath from l₂ to d, so it starts with l₂
+      -- We need to construct a path from l₁ to d via l₁ → l₂ → ... → d
+      -- The cons constructor requires htail : CFGPath f l₂ d (l₂ :: rest')
+      -- We know hprefix : CFGPath f l₂ d prefix_path
+      -- By CFGPath.head_eq, prefix_path starts with l₂
+      -- We need to show prefix_path has the form l₂ :: rest'
+      cases hprefix with
+      | single =>
+        -- prefix_path = [l₂], d = l₂
+        exact ⟨[l₁, l₂], .cons l₁ l₂ l₂ [] hedge (.single l₂),
+          fun x hx => by
+            simp at hx
+            cases hx with
+            | inl h => subst h; exact List.Mem.head _
+            | inr h => subst h; exact List.Mem.tail _ (List.Mem.head _)⟩
+      | @cons _ _ l₃ _ rest' hedge' htail' =>
+        -- prefix_path = l₂ :: l₃ :: rest', with CFGPath f l₂ d (l₂ :: l₃ :: rest')
+        have hprefix' : CFGPath f l₂ d (l₂ :: l₃ :: rest') :=
+          .cons l₂ l₃ d rest' hedge' htail'
+        exact ⟨l₁ :: l₂ :: l₃ :: rest', .cons l₁ l₂ d (l₃ :: rest') hedge hprefix',
+          fun x hx => by
+            cases hx with
+            | head _ => exact List.Mem.head _
+            | tail _ hx' =>
+              exact List.Mem.tail _ (hsubset x (by
+                cases hx' with
+                | head _ => exact List.Mem.head _
+                | tail _ hx'' => exact List.Mem.tail _ hx''))⟩
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 2: Dominance (path-based, classical)
@@ -116,6 +157,14 @@ theorem Dom.refl (f : Func) (l : Label) : Dom f l l := by
 -- Section 4: Dominance is transitive
 -- ══════════════════════════════════════════════════════════════════
 
+/-- A CFGPath implies reachability. -/
+theorem cfgPath_implies_reachable {f : Func} {src dst : Label} {path : List Label}
+    (hpath : CFGPath f src dst path) : Reachable f src dst := by
+  induction hpath with
+  | single l => exact .refl l
+  | cons l₁ l₂ dst' _ hedge _ ih =>
+    exact .step l₁ l₂ dst' hedge ih
+
 /-- Dominance is transitive: if d₂ dominates d₁ and d₁ dominates l,
     then d₂ dominates l.
 
@@ -131,8 +180,8 @@ theorem Dom.trans {f : Func} {d₁ d₂ l : Label}
     CFGPath.prefix_to_member hpath hd₁_mem
   -- d₂ dominates d₁, and prefix_path is a path from entry to d₁
   -- so d₂ ∈ prefix_path
-  have hd₁_reach : Reachable f f.entry d₁ := by
-    sorry  -- d₁ reachable since it's in a path from entry
+  have hd₁_reach : Reachable f f.entry d₁ :=
+    cfgPath_implies_reachable hprefix
   have hd₂_in_prefix := h₂ hd₁_reach prefix_path hprefix
   -- prefix_path ⊆ path, so d₂ ∈ path
   exact hsubset d₂ hd₂_in_prefix

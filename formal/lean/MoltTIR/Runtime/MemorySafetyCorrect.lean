@@ -77,10 +77,6 @@ theorem alloc_preserves_heap_invariant
                   = getMeta h addr hold_live := by
       unfold getMeta alloc
       simp [heq]
-      -- TODO(formal, owner:runtime, milestone:M4, priority:P1, status:partial):
-      --   Complete structural equality of getMeta across alloc for addr ≠ a.
-      --   Requires showing Option.get commutes with the if-then-else in alloc.
-      sorry
     rw [hmeta_eq] at hp
     have hold_p : IsLive h p := hinv addr hold_live hold_live p hp
     unfold IsLive at hold_p ⊢
@@ -125,9 +121,6 @@ theorem dealloc_preserves_heap_invariant
                 = getMeta h addr haddr_old := by
     unfold getMeta dealloc
     simp [hne]
-    -- TODO(formal, owner:runtime, milestone:M4, priority:P1, status:partial):
-    --   Complete structural equality of getMeta across dealloc for addr ≠ a.
-    sorry
   rw [hmeta_eq] at hp
   -- p was live in old heap
   have hp_old : IsLive h p := hinv addr haddr_old haddr_old p hp

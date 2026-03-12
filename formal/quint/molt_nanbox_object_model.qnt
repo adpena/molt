@@ -78,15 +78,15 @@ module molt_nanbox_object_model {
 
   // Encode an integer as a NaN-boxed value.
   pure def encodeInt(i: int): NanBoxed =
-    { tag: TAG_INT, inlineVal: i, heapRef: MAX_OBJS }
+    { tag: TAG_INT, inlineVal: i, heapRef: -1 }
 
   // Encode a boolean as a NaN-boxed value.
   pure def encodeBool(b: bool): NanBoxed =
-    { tag: TAG_BOOL, inlineVal: if (b) 1 else 0, heapRef: MAX_OBJS }
+    { tag: TAG_BOOL, inlineVal: if (b) 1 else 0, heapRef: -1 }
 
   // Encode None.
   pure def encodeNone: NanBoxed =
-    { tag: TAG_NONE, inlineVal: 0, heapRef: MAX_OBJS }
+    { tag: TAG_NONE, inlineVal: 0, heapRef: -1 }
 
   // Encode a pointer to a heap object.
   pure def encodePtr(oid: ObjId): NanBoxed =
@@ -94,7 +94,7 @@ module molt_nanbox_object_model {
 
   // Encode pending (used during async operations).
   pure def encodePending: NanBoxed =
-    { tag: TAG_PENDING, inlineVal: 0, heapRef: MAX_OBJS }
+    { tag: TAG_PENDING, inlineVal: 0, heapRef: -1 }
 
   // Decode: extract the semantic value from a NaN-boxed representation.
   // Returns (tag, payload) where payload is inlineVal for inline types
@@ -296,7 +296,7 @@ module molt_nanbox_object_model {
   // Their heapRef is always -1.
   val inlineNoHeapAlloc =
     values.forall(v =>
-      isInlineTag(v.tag) implies v.heapRef == MAX_OBJS
+      isInlineTag(v.tag) implies v.heapRef == -1
     )
 
   // I4: Pointer values always reference valid (alive) heap objects.
@@ -331,7 +331,7 @@ module molt_nanbox_object_model {
   // I7: Pending and none values carry no heap references.
   val pendingNoneNoHeap =
     values.forall(v =>
-      (v.tag == TAG_PENDING or v.tag == TAG_NONE) implies v.heapRef == MAX_OBJS
+      (v.tag == TAG_PENDING or v.tag == TAG_NONE) implies v.heapRef == -1
     )
 
   // I8: Object IDs are allocated sequentially — no gaps.
