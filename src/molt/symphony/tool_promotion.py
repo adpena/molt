@@ -195,7 +195,7 @@ class ToolPromotionStore:
             "ready_candidates": ready_candidates[:20],
         }
         self.distillations_dir.mkdir(parents=True, exist_ok=True)
-        stamp = payload["generated_at"].replace(":", "").replace("-", "")
+        stamp = str(payload["generated_at"]).replace(":", "").replace("-", "")
         out = self.distillations_dir / f"tool_promotion_{stamp}.json"
         payload["path"] = str(out)
         payload["manifest_batch"] = self.generate_manifests(
