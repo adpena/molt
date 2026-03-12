@@ -25,6 +25,9 @@ lean_lib MoltTIR where
              `MoltTIR.Passes.JoinCanon, `MoltTIR.Passes.JoinCanonCorrect,
              `MoltTIR.Passes.EdgeThread, `MoltTIR.Passes.EdgeThreadCorrect,
              `MoltTIR.Passes.Pipeline,
+             `MoltTIR.Passes.FullPipeline,
+             `MoltTIR.Termination.PassTermination,
+             `MoltTIR.Termination.PipelineTermination,
              `MoltTIR.SSA.Dominance,
              `MoltTIR.SSA.WellFormedSSA,
              `MoltTIR.SSA.PassPreservesSSA,
@@ -42,8 +45,9 @@ lean_lib MoltTIR where
              `MoltTIR.Determinism.CompileDeterminism,
              `MoltTIR.Determinism.CrossPlatform,
              `MoltTIR.Determinism.BuildReproducibility,
-             `MoltTIR.TypeSystem.TypeSoundness,
-             `MoltTIR.TypeSystem.TypeInference,
+             `MoltTIR.Optimization.RefcountElision,
+             `MoltTIR.Optimization.EscapeAnalysis,
+             `MoltTIR.Optimization.Specialization,
              `MoltTIR.Tests.Smoke]
 
 lean_lib MoltPython where
