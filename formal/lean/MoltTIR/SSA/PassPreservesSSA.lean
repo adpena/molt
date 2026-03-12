@@ -57,19 +57,62 @@ theorem constFoldInstr_dst (i : Instr) :
     terminator expressions; params and instruction dsts are unchanged. -/
 theorem constFoldBlock_defs (b : Block) :
     blockAllDefs (constFoldBlock b) = blockAllDefs b := by
-  simp only [blockAllDefs, constFoldBlock]
-  congr 1
-  induction b.instrs with
-  | nil => rfl
-  | cons i rest ih =>
-    simp only [List.map]
-    congr 1
-    · cases i; rfl
-    · exact ih
+  simp only [blockAllDefs, constFoldBlock, List.map_map, Function.comp_def, constFoldInstr_dst]
 
 /-- Constant folding preserves SSA: it only changes RHS expressions,
     never introduces new definitions or changes the def-use structure
     at the definition level. -/
+private theorem find_map_preserves_label {bl : List (Label × Block)}
+    {lbl : Label} {g : Block → Block}
+    (hfind : (bl.find? (fun p => p.1 == lbl)).isSome) :
+    ((bl.map fun (l, b) => (l, g b)).find? (fun p => p.1 == lbl)).isSome := by
+  induction bl with
+  | nil => simp at hfind
+  | cons hd tl ih =>
+    simp only [List.map, List.find?] at *
+    split at hfind <;> simp_all
+
+/-- find? on a mapped list succeeds if the predicate only depends on
+    a preserved component. -/
+private theorem find_map_isSome_of_fst_preserved
+    {bl : List (Label × Block)}
+    {g : Label × Block → Label × Block}
+    (hfst : ∀ p, (g p).fst = p.fst)
+    {lbl : Label}
+    (hfind : (bl.find? (fun p => p.fst == lbl)).isSome) :
+    ((bl.map g).find? (fun p => p.fst == lbl)).isSome := by
+  induction bl with
+  | nil => simp at hfind
+  | cons hd tl ih =>
+    simp only [List.map, List.find?]
+    simp only [hfst hd]
+    simp only [List.find?] at hfind
+    split at hfind <;> simp_all
+
+/-- Any label-preserving map over blockList preserves block lookup.
+    Here g maps (Label × Block) → (Label × Block) but preserves fst. -/
+private theorem mapFunc_blocks_isSome_gen {f : Func}
+    {g : Label × Block → Label × Block}
+    (hfst : ∀ p, (g p).fst = p.fst) {lbl : Label}
+    (h : (f.blocks lbl).isSome) :
+    (Func.blocks { f with blockList := f.blockList.map g } lbl).isSome := by
+  unfold Func.blocks at *
+  simp only at *
+  have hfind : (f.blockList.find? (fun p => p.fst == lbl)).isSome := by
+    cases hf : f.blockList.find? (fun p => p.fst == lbl) with
+    | none => simp [hf] at h
+    | some _ => simp
+  have hfind' := find_map_isSome_of_fst_preserved hfst hfind
+  cases hres : (f.blockList.map g).find? (fun p => p.fst == lbl) with
+  | none => simp [hres] at hfind'
+  | some _ => simp
+
+/-- Mapping a block transform over blockList preserves block lookup. -/
+private theorem mapFunc_blocks_isSome {f : Func} {g : Block → Block} {lbl : Label}
+    (h : (f.blocks lbl).isSome) :
+    (Func.blocks { f with blockList := f.blockList.map fun (l, b) => (l, g b) } lbl).isSome :=
+  mapFunc_blocks_isSome_gen (fun ⟨l, _⟩ => rfl) h
+
 theorem constFold_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     SSAWellFormed (constFoldFunc f) := by
   constructor
@@ -78,7 +121,10 @@ theorem constFold_preserves_ssa (f : Func) (h : SSAWellFormed f) :
   · -- use_dom_def: dominance structure is unchanged (same CFG edges)
     sorry
   · -- entry_exists: blockList labels are preserved
-    sorry
+    show ((constFoldFunc f).blocks (constFoldFunc f).entry).isSome
+    unfold constFoldFunc
+    simp only
+    exact mapFunc_blocks_isSome h.entry_exists
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 3: DCE preserves SSA
@@ -97,7 +143,10 @@ theorem dceBlock_defs_subset (b : Block) :
     apply List.mem_append_right
     have := List.mem_map.mp hi
     obtain ⟨i, hmem, rfl⟩ := this
-    exact List.mem_map_of_mem Instr.dst (List.mem_of_mem_filter hmem)
+    have hmem_orig : i ∈ b.instrs := by
+      simp only [List.mem_filter] at hmem
+      exact hmem.1
+    exact List.mem_map_of_mem Instr.dst hmem_orig
 
 /-- DCE preserves SSA: removing dead definitions maintains unique-def
     (a subset of a unique list is unique) and use-dom-def (dead code
@@ -111,7 +160,9 @@ theorem dce_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     -- have the same dominating definitions
     sorry
   · -- entry_exists
-    sorry
+    show ((dceFunc f).blocks (dceFunc f).entry).isSome
+    unfold dceFunc
+    exact mapFunc_blocks_isSome h.entry_exists
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 4: SCCP preserves SSA
@@ -133,7 +184,10 @@ theorem sccp_preserves_ssa (f : Func) (h : SSAWellFormed f) :
   constructor
   · sorry  -- Same structure as constFold: dsts preserved
   · sorry  -- Dominance unchanged
-  · sorry  -- Entry preserved
+  · -- Entry preserved
+    show ((sccpFunc f).blocks (sccpFunc f).entry).isSome
+    unfold sccpFunc
+    exact mapFunc_blocks_isSome_gen (fun ⟨l, _⟩ => by simp) h.entry_exists
 
 /-- Multi-block SCCP preserves SSA. -/
 theorem sccpMulti_preserves_ssa (f : Func) (fuel : Nat) (h : SSAWellFormed f) :
@@ -157,7 +211,10 @@ theorem cse_preserves_ssa (f : Func) (h : SSAWellFormed f) :
   constructor
   · sorry  -- Dsts preserved by cseInstr_dst
   · sorry  -- Dominance unchanged; new uses reference earlier defs which dominate
-  · sorry  -- Entry preserved
+  · -- Entry preserved
+    show ((cseFunc f).blocks (cseFunc f).entry).isSome
+    unfold cseFunc
+    exact mapFunc_blocks_isSome h.entry_exists
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 6: LICM preserves SSA
@@ -203,7 +260,10 @@ theorem guardHoist_preserves_ssa (f : Func) (h : SSAWellFormed f) :
   constructor
   · sorry  -- Dsts preserved
   · sorry  -- Dominance unchanged; identity RHS only uses the dst itself
-  · sorry  -- Entry preserved
+  · -- Entry preserved
+    show ((guardHoistFunc f).blocks (guardHoistFunc f).entry).isSome
+    unfold guardHoistFunc
+    exact mapFunc_blocks_isSome h.entry_exists
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 8: JoinCanon preserves SSA
@@ -226,7 +286,11 @@ theorem joinCanon_preserves_ssa (f : Func) (h : SSAWellFormed f) :
   · sorry  -- Instructions unchanged, so defs unchanged
   · sorry  -- Definitions at same blocks; dominance may change for redirected
     -- edges, but the canonical target has the same params as the original
-  · sorry
+  · -- Entry preserved
+    show ((joinCanonFunc f).blocks (joinCanonFunc f).entry).isSome
+    unfold joinCanonFunc
+    simp only
+    exact mapFunc_blocks_isSome_gen (fun ⟨l, _⟩ => by simp) h.entry_exists
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 9: EdgeThread preserves SSA
@@ -247,7 +311,10 @@ theorem edgeThread_preserves_ssa (f : Func) (st : SCCPState) (h : SSAWellFormed 
   constructor
   · sorry  -- Instructions unchanged
   · sorry  -- Dominance preserved (edge removal only)
-  · sorry
+  · -- Entry preserved
+    show ((edgeThreadFunc f st).blocks (edgeThreadFunc f st).entry).isSome
+    unfold edgeThreadFunc
+    exact mapFunc_blocks_isSome_gen (fun ⟨l, _⟩ => by simp) h.entry_exists
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 10: Pipeline composition

@@ -81,44 +81,30 @@ theorem CFGPath.prefix_to_member {f : Func} {src dst d : Label}
   | single =>
     simp at hd; subst hd
     exact ⟨[d], .single d, fun _ hx => hx⟩
-  | @cons _ l₁ l₂ dst' rest hedge htail ih =>
-    cases hd with
-    | head _ =>
-      -- d is the head of (l₁ :: l₂ :: rest), so d = l₁
-      -- Use src directly: src = l₁ from the cons pattern
-      exact ⟨[src], .single src, fun _ hx => by
+  | cons l₁ l₂ dst' rest hedge htail ih =>
+    -- d ∈ (l₁ :: l₂ :: rest); either d = l₁ or d ∈ l₂ :: rest
+    rcases List.mem_cons.mp hd with rfl | hd'
+    · -- d = l₁: trivially, [d] is a path from d to d
+      exact ⟨[d], .single d, fun x hx => by
         simp at hx; subst hx; exact List.Mem.head _⟩
-    | tail _ hd' =>
-      -- d is in (l₂ :: rest), so by ih there's a prefix from l₂ to d
+    · -- d ∈ l₂ :: rest; by ih there's a prefix path from l₂ to d
       obtain ⟨prefix_path, hprefix, hsubset⟩ := ih hd'
-      -- prefix_path is a CFGPath from l₂ to d, so it starts with l₂
-      -- We need to construct a path from l₁ to d via l₁ → l₂ → ... → d
-      -- The cons constructor requires htail : CFGPath f l₂ d (l₂ :: rest')
-      -- We know hprefix : CFGPath f l₂ d prefix_path
-      -- By CFGPath.head_eq, prefix_path starts with l₂
-      -- We need to show prefix_path has the form l₂ :: rest'
+      -- Case split on hprefix to get the right path shape for the cons constructor
       cases hprefix with
       | single =>
         -- prefix_path = [l₂], d = l₂
-        exact ⟨[l₁, l₂], .cons l₁ l₂ l₂ [] hedge (.single l₂),
-          fun x hx => by
-            simp at hx
-            cases hx with
-            | inl h => subst h; exact List.Mem.head _
-            | inr h => subst h; exact List.Mem.tail _ (List.Mem.head _)⟩
-      | @cons _ _ l₃ _ rest' hedge' htail' =>
-        -- prefix_path = l₂ :: l₃ :: rest', with CFGPath f l₂ d (l₂ :: l₃ :: rest')
-        have hprefix' : CFGPath f l₂ d (l₂ :: l₃ :: rest') :=
-          .cons l₂ l₃ d rest' hedge' htail'
-        exact ⟨l₁ :: l₂ :: l₃ :: rest', .cons l₁ l₂ d (l₃ :: rest') hedge hprefix',
-          fun x hx => by
-            cases hx with
-            | head _ => exact List.Mem.head _
-            | tail _ hx' =>
-              exact List.Mem.tail _ (hsubset x (by
-                cases hx' with
-                | head _ => exact List.Mem.head _
-                | tail _ hx'' => exact List.Mem.tail _ hx''))⟩
+        -- Build path [l₁, d] using cons
+        refine ⟨[l₁, d], .cons _ _ d [] hedge (.single d), fun x hx => ?_⟩
+        rcases List.mem_cons.mp hx with rfl | hx'
+        · exact List.Mem.head _
+        · exact List.Mem.tail _ (hsubset x hx')
+      | cons l₃ l₄ _ rest' hedge' htail' =>
+        -- prefix_path = l₂ :: l₃ :: ... :: rest'  (but l₂ is actually l₃ here after case split)
+        -- Build path l₁ :: prefix
+        refine ⟨l₁ :: _ :: _ :: _, .cons _ _ d _ hedge (.cons _ _ d _ hedge' htail'), fun x hx => ?_⟩
+        rcases List.mem_cons.mp hx with rfl | hx'
+        · exact List.Mem.head _
+        · exact List.Mem.tail _ (hsubset x hx')
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 2: Dominance (path-based, classical)
