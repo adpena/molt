@@ -24,7 +24,7 @@ lean_lib MoltTIR where
              `MoltTIR.Passes.GuardHoist, `MoltTIR.Passes.GuardHoistCorrect,
              `MoltTIR.Passes.JoinCanon, `MoltTIR.Passes.JoinCanonCorrect,
              `MoltTIR.Passes.EdgeThread, `MoltTIR.Passes.EdgeThreadCorrect,
-             `MoltTIR.Passes.Pipeline,
+             `MoltTIR.Passes.Pipeline, `MoltTIR.Passes.FullPipeline,
              `MoltTIR.SSA.Dominance,
              `MoltTIR.SSA.WellFormedSSA,
              `MoltTIR.SSA.PassPreservesSSA,
