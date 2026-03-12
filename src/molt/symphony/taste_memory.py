@@ -68,7 +68,7 @@ class TasteMemoryStore:
             "preferred_tools": dict(preferred_tools.most_common(10)),
         }
         self.distillations_dir.mkdir(parents=True, exist_ok=True)
-        stamp = distillation["generated_at"].replace(":", "").replace("-", "")
+        stamp = str(distillation["generated_at"]).replace(":", "").replace("-", "")
         out = self.distillations_dir / f"distillation_{stamp}.json"
         out.write_text(
             json.dumps(distillation, indent=2, sort_keys=True) + "\n", encoding="utf-8"
