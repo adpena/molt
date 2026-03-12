@@ -21,9 +21,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from molt.symphony.paths import resolve_molt_ext_root, symphony_perf_reports_dir
+from molt.symphony.paths import (
+    resolve_molt_ext_root,
+    resolve_symphony_env_file,
+    symphony_perf_reports_dir,
+)
 
-DEFAULT_ENV_FILE = Path("ops/linear/runtime/symphony.env")
+DEFAULT_ENV_FILE = resolve_symphony_env_file()
 
 
 @dataclass(slots=True)

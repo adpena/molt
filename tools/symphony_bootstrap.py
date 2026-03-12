@@ -13,6 +13,7 @@ from typing import Any
 
 from molt.symphony.paths import (
     default_molt_ext_root,
+    resolve_symphony_env_file,
     resolve_symphony_parent_root,
     resolve_symphony_store_root,
     symphony_api_token_file,
@@ -31,7 +32,7 @@ from molt.symphony.paths import (
 
 
 DEFAULT_EXT_ROOT = default_molt_ext_root()
-DEFAULT_ENV_FILE = Path("ops/linear/runtime/symphony.env")
+DEFAULT_ENV_FILE = resolve_symphony_env_file()
 LINEAR_MCP_NAME = "linear"
 LINEAR_MCP_URL = "https://mcp.linear.app/mcp"
 BOOTSTRAP_PROFILES = ("core", "dev", "full")

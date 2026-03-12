@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Mapping
 
 DEFAULT_SYMPHONY_PROJECT_KEY = "molt"
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _env_get(env: Mapping[str, str] | None, key: str) -> str:
@@ -16,6 +17,17 @@ def _env_get(env: Mapping[str, str] | None, key: str) -> str:
 
 def _normalize_path(path: Path) -> Path:
     return path.expanduser().resolve()
+
+
+def symphony_repo_root() -> Path:
+    return _REPO_ROOT
+
+
+def _resolve_env_path_candidate(path_value: str, *, repo_root: Path) -> Path:
+    candidate = Path(path_value).expanduser()
+    if not candidate.is_absolute():
+        candidate = repo_root / candidate
+    return _normalize_path(candidate)
 
 
 def _fleet_storage_mount_root(env: Mapping[str, str] | None = None) -> Path | None:
@@ -52,6 +64,32 @@ def _autodetect_existing_root(candidates: tuple[Path, ...]) -> Path:
 
 def default_molt_ext_root() -> Path:
     return _autodetect_existing_root(_platform_ext_root_candidates())
+
+
+def default_symphony_env_file(repo_root: Path | None = None) -> Path:
+    root = _normalize_path(repo_root or symphony_repo_root())
+    return root / "ops" / "linear" / "runtime" / "molt-symphony.env"
+
+
+def legacy_symphony_env_file(repo_root: Path | None = None) -> Path:
+    root = _normalize_path(repo_root or symphony_repo_root())
+    return root / "ops" / "linear" / "runtime" / "symphony.env"
+
+
+def resolve_symphony_env_file(
+    repo_root: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> Path:
+    root = _normalize_path(repo_root or symphony_repo_root())
+    explicit = _env_get(env, "FLEET_MOLT_SYMPHONY_ENV_FILE") or _env_get(
+        env, "MOLT_SYMPHONY_ENV_FILE"
+    )
+    if explicit:
+        return _resolve_env_path_candidate(explicit, repo_root=root)
+    canonical = default_symphony_env_file(root)
+    if canonical.exists():
+        return canonical
+    return legacy_symphony_env_file(root)
 
 
 def resolve_molt_ext_root(env: Mapping[str, str] | None = None) -> Path:
