@@ -132,13 +132,15 @@ module molt_exception_handling {
   // =========================================================================
 
   // Push a new call frame onto the stack.
-  action pushFrame = all {
+  action pushFrame = {
+    val pf_fid = nextFrameId
+    val pf_frame: Frame = { id: pf_fid, state: Normal, inForLoop: false }
+    all {
     nextFrameId < MAX_FRAMES,
     callStack.length() > 0,
-    val fid = nextFrameId
-    val frame: Frame = { id: fid, state: Normal, inForLoop: false }
-    callStack' = List(fid).concat(callStack),
-    frames' = frames.set(fid, frame),
+    currentException == -1,  // Cannot call new functions while unwinding
+    callStack' = List(pf_fid).concat(callStack),
+    frames' = frames.set(pf_fid, pf_frame),
     nextFrameId' = nextFrameId + 1,
     handlerChain' = handlerChain,
     handlers' = handlers,
@@ -150,7 +152,7 @@ module molt_exception_handling {
     exitCalled' = exitCalled,
     handledExceptions' = handledExceptions,
     absorbedStopIter' = absorbedStopIter,
-  }
+  }}
 
   // Install a handler on the current frame.
   action installHandler = {
@@ -162,21 +164,21 @@ module molt_exception_handling {
       Set(TypeError, ValueError),
       Set(StopIteration)
     ).oneOf()
+    val ih_hid = nextHandlerId
+    val ih_topFrame = stackTop(callStack)
+    val ih_h: Handler = {
+      id: ih_hid,
+      htype: htype,
+      frameId: ih_topFrame,
+      catches: if (htype == ExceptHandler) catches else Set(),
+      executed: false,
+      exitCalled: false,
+    }
     all {
       nextHandlerId < MAX_HANDLERS,
       callStack.length() > 0,
-      val hid = nextHandlerId
-      val topFrame = stackTop(callStack)
-      val h: Handler = {
-        id: hid,
-        htype: htype,
-        frameId: topFrame,
-        catches: if (htype == ExceptHandler) catches else Set(),
-        executed: false,
-        exitCalled: false,
-      }
-      handlerChain' = List(hid).concat(handlerChain),
-      handlers' = handlers.set(hid, h),
+      handlerChain' = List(ih_hid).concat(handlerChain),
+      handlers' = handlers.set(ih_hid, ih_h),
       nextHandlerId' = nextHandlerId + 1,
       callStack' = callStack,
       frames' = frames,
@@ -195,18 +197,18 @@ module molt_exception_handling {
   action raiseException = {
     nondet kind = Set(TypeError, ValueError, IndexError, KeyError,
                       StopIteration, RuntimeError, Custom).oneOf()
+    val re_eid = nextExceptionId
+    val re_exc: ExceptionObj = { id: re_eid, kind: kind, cause: -1, context: -1 }
+    val re_topFrame = stackTop(callStack)
     all {
       nextExceptionId < MAX_EXCEPTIONS,
       callStack.length() > 0,
       currentException == -1,   // no double-raise without handling
-      val eid = nextExceptionId
-      val exc: ExceptionObj = { id: eid, kind: kind, cause: -1, context: -1 }
-      val topFrame = stackTop(callStack)
-      exceptions' = exceptions.set(eid, exc),
+      exceptions' = exceptions.set(re_eid, re_exc),
       nextExceptionId' = nextExceptionId + 1,
-      currentException' = eid,
+      currentException' = re_eid,
       // Mark the top frame as unwinding.
-      frames' = frames.set(topFrame, { ...frames.get(topFrame), state: Unwinding }),
+      frames' = frames.set(re_topFrame, { ...frames.get(re_topFrame), state: Unwinding }),
       callStack' = callStack,
       nextFrameId' = nextFrameId,
       handlerChain' = handlerChain,
@@ -220,19 +222,20 @@ module molt_exception_handling {
   }
 
   // Handle exception: find matching handler on the chain and dispatch.
-  action handleException = all {
+  action handleException = {
+    val he_hid = stackTop(handlerChain)
+    val he_h = handlers.get(he_hid)
+    val he_exc = exceptions.get(currentException)
+    val he_topFrame = stackTop(callStack)
+    all {
     currentException != -1,
     handlerChain.length() > 0,
-    val hid = stackTop(handlerChain)
-    val h = handlers.get(hid)
-    val exc = exceptions.get(currentException)
     // The handler is an ExceptHandler that matches.
-    handlerMatchesException(h, exc),
-    val topFrame = stackTop(callStack)
-    handlers' = handlers.set(hid, { ...h, executed: true }),
+    handlerMatchesException(he_h, he_exc),
+    handlers' = handlers.set(he_hid, { ...he_h, executed: true }),
     handlerChain' = stackPop(handlerChain),
     currentException' = -1,   // exception is now handled
-    frames' = frames.set(topFrame, { ...frames.get(topFrame), state: Handling }),
+    frames' = frames.set(he_topFrame, { ...frames.get(he_topFrame), state: Handling }),
     handledExceptions' = handledExceptions.union(Set(currentException)),
     callStack' = callStack,
     nextFrameId' = nextFrameId,
@@ -242,19 +245,20 @@ module molt_exception_handling {
     finallyExecuted' = finallyExecuted,
     exitCalled' = exitCalled,
     absorbedStopIter' = absorbedStopIter,
-  }
+  }}
 
   // Execute a finally block during unwinding — always runs regardless of exception.
-  action finallyExecute = all {
+  action finallyExecute = {
+    val fe_hid = stackTop(handlerChain)
+    val fe_h = handlers.get(fe_hid)
+    all {
     handlerChain.length() > 0,
-    val hid = stackTop(handlerChain)
-    val h = handlers.get(hid)
-    h.htype == FinallyHandler,
-    not(h.executed),
+    fe_h.htype == FinallyHandler,
+    not(fe_h.executed),
     // Finally runs whether or not there is an active exception.
-    handlers' = handlers.set(hid, { ...h, executed: true }),
+    handlers' = handlers.set(fe_hid, { ...fe_h, executed: true }),
     handlerChain' = stackPop(handlerChain),
-    finallyExecuted' = finallyExecuted.union(Set(hid)),
+    finallyExecuted' = finallyExecuted.union(Set(fe_hid)),
     // Exception state is preserved through finally — not cleared.
     currentException' = currentException,
     callStack' = callStack,
@@ -266,20 +270,20 @@ module molt_exception_handling {
     exitCalled' = exitCalled,
     handledExceptions' = handledExceptions,
     absorbedStopIter' = absorbedStopIter,
-  }
+  }}
 
   // Context manager __exit__: called during unwinding for WithHandler.
   action contextManagerExit = {
     nondet suppresses = Set(true, false).oneOf()
+    val cm_hid = stackTop(handlerChain)
+    val cm_h = handlers.get(cm_hid)
     all {
       handlerChain.length() > 0,
-      val hid = stackTop(handlerChain)
-      val h = handlers.get(hid)
-      h.htype == WithHandler,
-      not(h.exitCalled),
-      handlers' = handlers.set(hid, { ...h, exitCalled: true, executed: true }),
+      cm_h.htype == WithHandler,
+      not(cm_h.exitCalled),
+      handlers' = handlers.set(cm_hid, { ...cm_h, exitCalled: true, executed: true }),
       handlerChain' = stackPop(handlerChain),
-      exitCalled' = exitCalled.union(Set(hid)),
+      exitCalled' = exitCalled.union(Set(cm_hid)),
       // If __exit__ returns truthy, exception is suppressed.
       currentException' = if (suppresses and currentException != -1) -1
                           else currentException,
@@ -299,7 +303,9 @@ module molt_exception_handling {
 
   // Reraise: propagate unhandled exception up the call stack.
   // Pops the current frame; the exception continues unwinding in the caller.
-  action reraise = all {
+  action reraise = {
+    val rr_callerFrame = if (callStack.length() > 1) callStack[1] else -1
+    all {
     currentException != -1,
     callStack.length() > 1,
     // No matching handler on the current frame — skip non-matching except handlers,
@@ -307,9 +313,8 @@ module molt_exception_handling {
     // (Simplified: if handlerChain is empty or top handler belongs to a different frame.)
     handlerChain.length() == 0 or
       handlers.get(stackTop(handlerChain)).frameId != stackTop(callStack),
-    val callerFrame = callStack[1]
     callStack' = stackPop(callStack),
-    frames' = frames.set(callerFrame, { ...frames.get(callerFrame), state: Unwinding }),
+    frames' = frames.set(rr_callerFrame, { ...frames.get(rr_callerFrame), state: Unwinding }),
     currentException' = currentException,
     nextFrameId' = nextFrameId,
     handlerChain' = handlerChain,
@@ -321,17 +326,18 @@ module molt_exception_handling {
     exitCalled' = exitCalled,
     handledExceptions' = handledExceptions,
     absorbedStopIter' = absorbedStopIter,
-  }
+  }}
 
   // StopIteration absorption: for-loops catch StopIteration automatically.
-  action absorbStopIteration = all {
+  action absorbStopIteration = {
+    val as_topFrame = stackTop(callStack)
+    all {
     currentException != -1,
     callStack.length() > 0,
-    val topFrame = stackTop(callStack)
-    frames.get(topFrame).inForLoop,
+    frames.get(as_topFrame).inForLoop,
     exceptions.get(currentException).kind == StopIteration,
     currentException' = -1,
-    frames' = frames.set(topFrame, { ...frames.get(topFrame), state: Normal }),
+    frames' = frames.set(as_topFrame, { ...frames.get(as_topFrame), state: Normal }),
     absorbedStopIter' = absorbedStopIter.union(Set(currentException)),
     handledExceptions' = handledExceptions.union(Set(currentException)),
     callStack' = callStack,
@@ -343,14 +349,15 @@ module molt_exception_handling {
     nextExceptionId' = nextExceptionId,
     finallyExecuted' = finallyExecuted,
     exitCalled' = exitCalled,
-  }
+  }}
 
   // Enter a for-loop context on the current frame.
-  action enterForLoop = all {
+  action enterForLoop = {
+    val ef_topFrame = stackTop(callStack)
+    all {
     callStack.length() > 0,
-    val topFrame = stackTop(callStack)
-    not(frames.get(topFrame).inForLoop),
-    frames' = frames.set(topFrame, { ...frames.get(topFrame), inForLoop: true }),
+    not(frames.get(ef_topFrame).inForLoop),
+    frames' = frames.set(ef_topFrame, { ...frames.get(ef_topFrame), inForLoop: true }),
     callStack' = callStack,
     nextFrameId' = nextFrameId,
     handlerChain' = handlerChain,
@@ -363,25 +370,26 @@ module molt_exception_handling {
     exitCalled' = exitCalled,
     handledExceptions' = handledExceptions,
     absorbedStopIter' = absorbedStopIter,
-  }
+  }}
 
   // Raise with chaining: `raise X from Y` sets __cause__.
-  action raiseWithChaining = all {
+  action raiseWithChaining = {
+    val rc_eid = nextExceptionId
+    val rc_contextId = currentException
+    val rc_exc: ExceptionObj = {
+      id: rc_eid, kind: RuntimeError,
+      cause: rc_contextId,    // explicit __cause__
+      context: rc_contextId   // implicit __context__
+    }
+    val rc_topFrame = stackTop(callStack)
+    all {
     nextExceptionId < MAX_EXCEPTIONS,
     callStack.length() > 0,
     currentException != -1,  // there is a context exception
-    val eid = nextExceptionId
-    val contextId = currentException
-    val exc: ExceptionObj = {
-      id: eid, kind: RuntimeError,
-      cause: contextId,    // explicit __cause__
-      context: contextId   // implicit __context__
-    }
-    val topFrame = stackTop(callStack)
-    exceptions' = exceptions.set(eid, exc),
+    exceptions' = exceptions.set(rc_eid, rc_exc),
     nextExceptionId' = nextExceptionId + 1,
-    currentException' = eid,
-    frames' = frames.set(topFrame, { ...frames.get(topFrame), state: Unwinding }),
+    currentException' = rc_eid,
+    frames' = frames.set(rc_topFrame, { ...frames.get(rc_topFrame), state: Unwinding }),
     callStack' = callStack,
     nextFrameId' = nextFrameId,
     handlerChain' = handlerChain,
@@ -391,15 +399,16 @@ module molt_exception_handling {
     exitCalled' = exitCalled,
     handledExceptions' = handledExceptions,
     absorbedStopIter' = absorbedStopIter,
-  }
+  }}
 
   // Normal return from handler: restore frame to Normal.
-  action handlerComplete = all {
+  action handlerComplete = {
+    val hcTopFrame = stackTop(callStack)
+    all {
     callStack.length() > 0,
     currentException == -1,
-    val topFrame = stackTop(callStack)
-    frames.get(topFrame).state == Handling,
-    frames' = frames.set(topFrame, { ...frames.get(topFrame), state: Normal }),
+    frames.get(hcTopFrame).state == Handling,
+    frames' = frames.set(hcTopFrame, { ...frames.get(hcTopFrame), state: Normal }),
     callStack' = callStack,
     nextFrameId' = nextFrameId,
     handlerChain' = handlerChain,
@@ -412,7 +421,7 @@ module molt_exception_handling {
     exitCalled' = exitCalled,
     handledExceptions' = handledExceptions,
     absorbedStopIter' = absorbedStopIter,
-  }
+  }}
 
   action stutter = all {
     callStack' = callStack,
@@ -462,8 +471,7 @@ module molt_exception_handling {
   // If any frame is in Handling state, currentException must be -1.
   val exception_cleared_after_handling =
     callStack.length() > 0 implies (
-      val topFrame = stackTop(callStack)
-      frames.get(topFrame).state == Handling implies currentException == -1
+      frames.get(stackTop(callStack)).state == Handling implies currentException == -1
     )
 
   // I3: Unhandled exceptions propagate to caller.
@@ -471,9 +479,8 @@ module molt_exception_handling {
   // the frame must be in Unwinding state.
   val unhandled_propagates =
     (currentException != -1 and callStack.length() > 0) implies (
-      val topFrame = stackTop(callStack)
-      frames.get(topFrame).state == Unwinding or
-      frames.get(topFrame).state == Handling
+      frames.get(stackTop(callStack)).state == Unwinding or
+      frames.get(stackTop(callStack)).state == Handling
     )
 
   // I4: Context managers' __exit__ always called when processed.

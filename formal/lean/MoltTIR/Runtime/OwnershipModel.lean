@@ -220,13 +220,15 @@ theorem ownership_plus_refcount_implies_safety
   unfold HeapInvariant
   intro a hlive hlive' p hp
   have hclaimed := hptr_claims a hlive' p hp
-  -- p has at least one claim, so there exists a claim targeting p
-  -- A claim targeting p means p must be live (by NoOrphanClaims)
-  -- TODO(formal, owner:runtime, milestone:M4, priority:P1, status:partial):
-  --   Bridge from claimCount ≥ 1 to ∃ claim ∈ os.claims targeting p,
-  --   then apply NoOrphanClaims to conclude IsLive h p.
-  --   This requires a lemma: claimCount os p ≥ 1 → ∃ c ∈ os.claims, c.target = p.
-  sorry
+  -- claimCount ≥ 1 means the filter is non-empty, so there exists a claim targeting p
+  unfold claimCount at hclaimed
+  have hne : (List.filter (fun c => c.target == p) os.claims).length ≥ 1 := hclaimed
+  have hnonempty : (List.filter (fun c => c.target == p) os.claims) ≠ [] := by
+    intro hempty
+    simp [hempty] at hne
+  obtain ⟨c, hc_mem⟩ := List.exists_mem_of_ne_nil _ hnonempty
+  have hc_in_claims : c ∈ os.claims := List.mem_of_mem_filter hc_mem
+  exact hno_orphans c hc_in_claims
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 6: CallArgs ownership protocol (connects to Refcount.lean)

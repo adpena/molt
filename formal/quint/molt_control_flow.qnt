@@ -111,94 +111,97 @@ module molt_control_flow {
   // =========================================================================
 
   // Enter an if-branch block.
-  action ifBranch = all {
-    nextBlockId < MAX_BLOCKS,
-    blockStack.length() > 0,
-    val bid = nextBlockId
-    val parent = stackTop(blockStack)
-    val b: Block = {
-      id: bid, kind: IfBranch, parentId: parent,
+  action ifBranch = {
+    val ib_bid = nextBlockId
+    val ib_parent = stackTop(blockStack)
+    val ib_b: Block = {
+      id: ib_bid, kind: IfBranch, parentId: ib_parent,
       loopDepth: currentLoopDepth(loopStack),
       tryDepth: currentTryDepth(tryStack),
-      hasFinallyAbove: blocks.get(parent).hasFinallyAbove,
+      hasFinallyAbove: blocks.get(ib_parent).hasFinallyAbove,
       completed: false, exitKind: NormalExit
     }
-    blocks' = blocks.set(bid, b),
+    all {
+    nextBlockId < MAX_BLOCKS,
+    blockStack.length() > 0,
+    blocks' = blocks.set(ib_bid, ib_b),
     nextBlockId' = nextBlockId + 1,
-    blockStack' = List(bid).concat(blockStack),
+    blockStack' = List(ib_bid).concat(blockStack),
     loopStack' = loopStack,
     tryStack' = tryStack,
     obligations' = obligations,
     loopExitedNormally' = loopExitedNormally,
     elseExecuted' = elseExecuted,
-  }
+  }}
 
   // Enter a for-loop body.
-  action forLoop = all {
-    nextBlockId < MAX_BLOCKS,
-    blockStack.length() > 0,
-    val bid = nextBlockId
-    val parent = stackTop(blockStack)
-    val b: Block = {
-      id: bid, kind: ForBody, parentId: parent,
+  action forLoop = {
+    val fl_bid = nextBlockId
+    val fl_parent = stackTop(blockStack)
+    val fl_b: Block = {
+      id: fl_bid, kind: ForBody, parentId: fl_parent,
       loopDepth: currentLoopDepth(loopStack) + 1,
       tryDepth: currentTryDepth(tryStack),
-      hasFinallyAbove: blocks.get(parent).hasFinallyAbove,
+      hasFinallyAbove: blocks.get(fl_parent).hasFinallyAbove,
       completed: false, exitKind: NormalExit
     }
-    blocks' = blocks.set(bid, b),
+    all {
+    nextBlockId < MAX_BLOCKS,
+    blockStack.length() > 0,
+    blocks' = blocks.set(fl_bid, fl_b),
     nextBlockId' = nextBlockId + 1,
-    blockStack' = List(bid).concat(blockStack),
-    loopStack' = List(bid).concat(loopStack),
+    blockStack' = List(fl_bid).concat(blockStack),
+    loopStack' = List(fl_bid).concat(loopStack),
     tryStack' = tryStack,
     obligations' = obligations,
     loopExitedNormally' = loopExitedNormally,
     elseExecuted' = elseExecuted,
-  }
+  }}
 
   // Enter a while-loop body.
-  action whileLoop = all {
-    nextBlockId < MAX_BLOCKS,
-    blockStack.length() > 0,
-    val bid = nextBlockId
-    val parent = stackTop(blockStack)
-    val b: Block = {
-      id: bid, kind: WhileBody, parentId: parent,
+  action whileLoop = {
+    val wl_bid = nextBlockId
+    val wl_parent = stackTop(blockStack)
+    val wl_b: Block = {
+      id: wl_bid, kind: WhileBody, parentId: wl_parent,
       loopDepth: currentLoopDepth(loopStack) + 1,
       tryDepth: currentTryDepth(tryStack),
-      hasFinallyAbove: blocks.get(parent).hasFinallyAbove,
+      hasFinallyAbove: blocks.get(wl_parent).hasFinallyAbove,
       completed: false, exitKind: NormalExit
     }
-    blocks' = blocks.set(bid, b),
+    all {
+    nextBlockId < MAX_BLOCKS,
+    blockStack.length() > 0,
+    blocks' = blocks.set(wl_bid, wl_b),
     nextBlockId' = nextBlockId + 1,
-    blockStack' = List(bid).concat(blockStack),
-    loopStack' = List(bid).concat(loopStack),
+    blockStack' = List(wl_bid).concat(blockStack),
+    loopStack' = List(wl_bid).concat(loopStack),
     tryStack' = tryStack,
     obligations' = obligations,
     loopExitedNormally' = loopExitedNormally,
     elseExecuted' = elseExecuted,
-  }
+  }}
 
   // Enter a try body and push a try scope.
   action tryExcept = {
     nondet hasFinally = Set(true, false).oneOf()
+    val te_bid = nextBlockId
+    val te_parent = stackTop(blockStack)
+    val te_b: Block = {
+      id: te_bid, kind: TryBody, parentId: te_parent,
+      loopDepth: currentLoopDepth(loopStack),
+      tryDepth: currentTryDepth(tryStack) + 1,
+      hasFinallyAbove: blocks.get(te_parent).hasFinallyAbove or hasFinally,
+      completed: false, exitKind: NormalExit
+    }
     all {
       nextBlockId < MAX_BLOCKS,
       blockStack.length() > 0,
-      val bid = nextBlockId
-      val parent = stackTop(blockStack)
-      val b: Block = {
-        id: bid, kind: TryBody, parentId: parent,
-        loopDepth: currentLoopDepth(loopStack),
-        tryDepth: currentTryDepth(tryStack) + 1,
-        hasFinallyAbove: blocks.get(parent).hasFinallyAbove or hasFinally,
-        completed: false, exitKind: NormalExit
-      }
-      blocks' = blocks.set(bid, b),
+      blocks' = blocks.set(te_bid, te_b),
       nextBlockId' = nextBlockId + 1,
-      blockStack' = List(bid).concat(blockStack),
+      blockStack' = List(te_bid).concat(blockStack),
       loopStack' = loopStack,
-      tryStack' = List(bid).concat(tryStack),
+      tryStack' = List(te_bid).concat(tryStack),
       obligations' = obligations,
       loopExitedNormally' = loopExitedNormally,
       elseExecuted' = elseExecuted,
@@ -206,58 +209,60 @@ module molt_control_flow {
   }
 
   // Complete the current block normally.
-  action completeBlock = all {
+  action completeBlock = {
+    val cb_bid = stackTop(blockStack)
+    val cb_b = blocks.get(cb_bid)
+    all {
     blockStack.length() > 1,  // don't pop the module block
-    val bid = stackTop(blockStack)
-    val b = blocks.get(bid)
-    not(b.completed),
-    blocks' = blocks.set(bid, { ...b, completed: true, exitKind: NormalExit }),
+    not(cb_b.completed),
+    blocks' = blocks.set(cb_bid, { ...cb_b, completed: true, exitKind: NormalExit }),
     blockStack' = stackPop(blockStack),
     // If it was a loop, pop from loopStack and mark normal exit.
-    loopStack' = if (b.kind == ForBody or b.kind == WhileBody) stackPop(loopStack)
+    loopStack' = if (cb_b.kind == ForBody or cb_b.kind == WhileBody) stackPop(loopStack)
                  else loopStack,
-    tryStack' = if (b.kind == TryBody) stackPop(tryStack) else tryStack,
-    loopExitedNormally' = if (b.kind == ForBody or b.kind == WhileBody)
-                            loopExitedNormally.union(Set(bid))
+    tryStack' = if (cb_b.kind == TryBody) stackPop(tryStack) else tryStack,
+    loopExitedNormally' = if (cb_b.kind == ForBody or cb_b.kind == WhileBody)
+                            loopExitedNormally.union(Set(cb_bid))
                           else loopExitedNormally,
     nextBlockId' = nextBlockId,
     obligations' = obligations,
     elseExecuted' = elseExecuted,
-  }
+  }}
 
   // Break from a loop — only valid inside a loop.
-  action breakFromLoop = all {
-    blockStack.length() > 1,
-    loopStack.length() > 0,
-    val bid = stackTop(blockStack)
-    val b = blocks.get(bid)
-    not(b.completed),
-    b.loopDepth > 0,
-    // If there is a finally between us and the loop, create an obligation.
-    val newObligations = if (b.hasFinallyAbove and tryStack.length() > 0)
+  action breakFromLoop = {
+    val br_bid = stackTop(blockStack)
+    val br_b = blocks.get(br_bid)
+    val br_newObligations = if (br_b.hasFinallyAbove and tryStack.length() > 0)
       obligations.union(Set({
-        blockId: bid, finallyBlockId: stackTop(tryStack), fulfilled: false
+        blockId: br_bid, finallyBlockId: stackTop(tryStack), fulfilled: false
       }))
     else obligations
-    blocks' = blocks.set(bid, { ...b, completed: true, exitKind: BreakExit }),
+    all {
+    blockStack.length() > 1,
+    loopStack.length() > 0,
+    not(br_b.completed),
+    br_b.loopDepth > 0,
+    blocks' = blocks.set(br_bid, { ...br_b, completed: true, exitKind: BreakExit }),
     blockStack' = stackPop(blockStack),
     loopStack' = loopStack,  // loop still on stack until its block completes
     tryStack' = tryStack,
-    obligations' = newObligations,
+    obligations' = br_newObligations,
     nextBlockId' = nextBlockId,
     loopExitedNormally' = loopExitedNormally,
     elseExecuted' = elseExecuted,
-  }
+  }}
 
   // Continue in a loop — only valid inside a loop.
-  action continueInLoop = all {
+  action continueInLoop = {
+    val ci_bid = stackTop(blockStack)
+    val ci_b = blocks.get(ci_bid)
+    all {
     blockStack.length() > 1,
     loopStack.length() > 0,
-    val bid = stackTop(blockStack)
-    val b = blocks.get(bid)
-    not(b.completed),
-    b.loopDepth > 0,
-    blocks' = blocks.set(bid, { ...b, completed: true, exitKind: ContinueExit }),
+    not(ci_b.completed),
+    ci_b.loopDepth > 0,
+    blocks' = blocks.set(ci_bid, { ...ci_b, completed: true, exitKind: ContinueExit }),
     blockStack' = stackPop(blockStack),
     loopStack' = loopStack,
     tryStack' = tryStack,
@@ -265,29 +270,30 @@ module molt_control_flow {
     nextBlockId' = nextBlockId,
     loopExitedNormally' = loopExitedNormally,
     elseExecuted' = elseExecuted,
-  }
+  }}
 
   // Return from inside a try — must execute finally first.
-  action returnFromTry = all {
-    blockStack.length() > 1,
-    val bid = stackTop(blockStack)
-    val b = blocks.get(bid)
-    not(b.completed),
-    b.tryDepth > 0,
-    val newObligations = if (b.hasFinallyAbove and tryStack.length() > 0)
+  action returnFromTry = {
+    val rt_bid = stackTop(blockStack)
+    val rt_b = blocks.get(rt_bid)
+    val rt_newObligations = if (rt_b.hasFinallyAbove and tryStack.length() > 0)
       obligations.union(Set({
-        blockId: bid, finallyBlockId: stackTop(tryStack), fulfilled: false
+        blockId: rt_bid, finallyBlockId: stackTop(tryStack), fulfilled: false
       }))
     else obligations
-    blocks' = blocks.set(bid, { ...b, completed: true, exitKind: ReturnExit }),
+    all {
+    blockStack.length() > 1,
+    not(rt_b.completed),
+    rt_b.tryDepth > 0,
+    blocks' = blocks.set(rt_bid, { ...rt_b, completed: true, exitKind: ReturnExit }),
     blockStack' = stackPop(blockStack),
     loopStack' = loopStack,
     tryStack' = tryStack,
-    obligations' = newObligations,
+    obligations' = rt_newObligations,
     nextBlockId' = nextBlockId,
     loopExitedNormally' = loopExitedNormally,
     elseExecuted' = elseExecuted,
-  }
+  }}
 
   // Fulfill a finally obligation — marks the finally as having executed.
   action fulfillFinally = {
@@ -306,30 +312,30 @@ module molt_control_flow {
   }
 
   // Execute for-else block (only valid after normal loop completion).
-  action forElse = all {
-    nextBlockId < MAX_BLOCKS,
-    blockStack.length() > 0,
-    // The most recently completed block on this level was a for-loop
-    // that exited normally.
-    val parent = stackTop(blockStack)
-    // Find a for-loop that exited normally under this parent.
-    loopExitedNormally.size() > 0,
-    val bid = nextBlockId
-    val b: Block = {
-      id: bid, kind: ElseAfterLoop, parentId: parent,
+  action forElse = {
+    val feBid = nextBlockId
+    val feParent = stackTop(blockStack)
+    val feBlock: Block = {
+      id: feBid, kind: ElseAfterLoop, parentId: feParent,
       loopDepth: currentLoopDepth(loopStack),
       tryDepth: currentTryDepth(tryStack),
-      hasFinallyAbove: blocks.get(parent).hasFinallyAbove,
+      hasFinallyAbove: blocks.get(feParent).hasFinallyAbove,
       completed: false, exitKind: NormalExit
     }
-    blocks' = blocks.set(bid, b),
-    nextBlockId' = nextBlockId + 1,
-    blockStack' = List(bid).concat(blockStack),
-    elseExecuted' = elseExecuted.union(Set(bid)),
-    loopStack' = loopStack,
-    tryStack' = tryStack,
-    obligations' = obligations,
-    loopExitedNormally' = loopExitedNormally,
+    all {
+      nextBlockId < MAX_BLOCKS,
+      blockStack.length() > 0,
+      // Find a for-loop that exited normally under this parent.
+      loopExitedNormally.size() > 0,
+      blocks' = blocks.set(feBid, feBlock),
+      nextBlockId' = nextBlockId + 1,
+      blockStack' = List(feBid).concat(blockStack),
+      elseExecuted' = elseExecuted.union(Set(feBid)),
+      loopStack' = loopStack,
+      tryStack' = tryStack,
+      obligations' = obligations,
+      loopExitedNormally' = loopExitedNormally,
+    }
   }
 
   action stutter = all {
