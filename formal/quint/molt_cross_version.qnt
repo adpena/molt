@@ -178,16 +178,16 @@ module molt_cross_version {
   action createUnit = {
     nondet ver = oneOf(VERSIONS)
     nondet features = oneOf(FeatureIds.powerset())
+    val newUnit: CompilationUnit = {
+      unitId: nextUnitId,
+      targetVersion: ver,
+      usedFeatures: features,
+    }
     all {
       nextUnitId < MAX_UNITS,
-      val unit: CompilationUnit = {
-        unitId: nextUnitId,
-        targetVersion: ver,
-        usedFeatures: features,
-      }
       // Only create well-formed units (Molt's frontend rejects invalid combos)
-      unitWellFormed(unit),
-      units' = units.union(Set(unit)),
+      unitWellFormed(newUnit),
+      units' = units.union(Set(newUnit)),
       nextUnitId' = nextUnitId + 1,
       results' = results,
       gates' = gates,

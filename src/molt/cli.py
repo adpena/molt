@@ -7728,6 +7728,7 @@ def build(
                     _record_module_reason(module_reasons, name, "namespace_stub")
     namespace_module_names = set(namespace_modules)
     is_wasm = target == "wasm"
+    is_rust_transpile = target == "rust"
     if trusted and is_wasm:
         return _fail(
             "Trusted mode is not supported for wasm targets",
@@ -7747,11 +7748,12 @@ def build(
             command="build",
         )
     if linked and not is_wasm:
-        return _fail(
-            "Linked output is only supported for wasm targets",
-            json_output,
-            command="build",
-        )
+        if not is_rust_transpile:
+            return _fail(
+                "Linked output is only supported for wasm targets",
+                json_output,
+                command="build",
+            )
     if require_linked and not linked:
         linked = True
     # Default to linked mode for WASM targets (10-20% faster runtime, single
@@ -7760,9 +7762,12 @@ def build(
         wasm_linked_env = os.environ.get("MOLT_WASM_LINKED", "1").strip().lower()
         if wasm_linked_env not in {"0", "false", "no", "off"}:
             linked = True
-    target_triple = None if target in {"native", "wasm"} else target
-    emit_mode = emit or ("wasm" if is_wasm else "bin")
-    if emit_mode not in {"bin", "obj", "wasm"}:
+    target_triple = None if target in {"native", "wasm", "rust"} else target
+    if is_rust_transpile:
+        emit_mode = "bin"  # placeholder — not used for transpiler targets
+    else:
+        emit_mode = emit or ("wasm" if is_wasm else "bin")
+    if not is_rust_transpile and emit_mode not in {"bin", "obj", "wasm"}:
         return _fail(
             f"Invalid emit mode: {emit_mode}",
             json_output,
@@ -7774,7 +7779,7 @@ def build(
             json_output,
             command="build",
         )
-    if not is_wasm and emit_mode == "wasm":
+    if not is_wasm and not is_rust_transpile and emit_mode == "wasm":
         return _fail(
             "emit=wasm requires --target wasm",
             json_output,
@@ -7782,7 +7787,15 @@ def build(
         )
     output_binary: Path | None = None
     linked_output_path: Path | None = None
-    if is_wasm:
+    if is_rust_transpile:
+        output_rs = _resolve_output_path(
+            output,
+            output_root / f"{output_base}.rs",
+            out_dir=out_dir_path,
+            project_root=project_root,
+        )
+        output_artifact = output_rs
+    elif is_wasm:
         output_wasm = _resolve_output_path(
             output,
             output_root / "output.wasm",
@@ -9172,7 +9185,9 @@ def build(
     runtime_reloc_wasm: Path | None = None
     runtime_wasm_ready = False
     runtime_reloc_wasm_ready = False
-    if is_wasm:
+    if is_rust_transpile:
+        pass  # Transpiler targets do not need a runtime library.
+    elif is_wasm:
         runtime_wasm = _wasm_runtime_root(molt_root) / "molt_runtime.wasm"
         runtime_reloc_wasm = _wasm_runtime_root(molt_root) / "molt_runtime_reloc.wasm"
     elif emit_mode == "bin":

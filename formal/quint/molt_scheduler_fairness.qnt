@@ -506,11 +506,23 @@ module molt_scheduler_fairness {
   // (not all Waiting). Since taskDeps is a DAG, this is structural —
   // but we verify it holds at runtime.
   val deadlockFreedom = and {
-    // At least one active task is not Waiting (progress is possible).
-    activeTasks.size() > 0 implies
+    // At least one active task is not Waiting, or some are waiting on
+    // tasks not yet submitted (which means progress is possible via submit).
+    // A true deadlock would require all active tasks to be Waiting on
+    // other active tasks in a cycle, which is impossible with a DAG.
+    activeTasks.size() > 0 implies (
       activeTasks.exists(tid =>
         tasks.get(tid).state != Waiting or tasks.get(tid).state == Completed
-      ),
+      ) or
+      // Allow the case where tasks are waiting on unsubmitted dependencies
+      // (progress via future submit actions).
+      activeTasks.exists(tid =>
+        tasks.get(tid).state == Waiting and
+        tasks.get(tid).waitingOn != -1 and
+        tasks.get(tid).waitingOn != -2 and
+        not(tasks.get(tid).waitingOn.in(activeTasks))
+      )
+    ),
     // No task waits on itself.
     activeTasks.forall(tid =>
       tasks.get(tid).waitingOn != tid

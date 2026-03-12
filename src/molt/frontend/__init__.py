@@ -17,6 +17,7 @@ from typing import (
     Iterable,
     Literal,
     NoReturn,
+    Required,
     Sequence,
     TypedDict,
     cast,
@@ -867,9 +868,10 @@ class ClassInfo(TypedDict, total=False):
     custom_metaclass: bool
 
 
-class FuncInfo(TypedDict):
-    params: list[str]
-    ops: list[MoltOp]
+class FuncInfo(TypedDict, total=False):
+    params: Required[list[str]]
+    ops: Required[list[MoltOp]]
+    param_types: list[str]
 
 
 class CanonicalizationState(TypedDict):
@@ -24595,6 +24597,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 type_facts_name=func_name,
                 needs_return_slot=has_return,
             )
+            self.funcs_map[poll_func_name]["param_types"] = ["Any"]  # generator self
             self.global_decls = self._collect_global_decls(node.body)
             self.nonlocal_decls = self._collect_nonlocal_decls(node.body)
             assigned = self._collect_assigned_names(node.body)
@@ -24862,6 +24865,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             type_facts_name=func_name,
             needs_return_slot=has_return,
         )
+        # Record per-parameter type hints for backend type annotation emission
+        # (e.g. Luau @native JIT specialisation).
+        _param_types: list[str] = []
+        for arg in arg_nodes:
+            ann_hint = (
+                self._annotation_to_hint(arg.annotation)
+                if arg.annotation is not None
+                else None
+            )
+            _param_types.append(ann_hint if ann_hint is not None else "Any")
+        if has_closure:
+            _param_types = ["Any"] + _param_types  # closure param
+        self.funcs_map[func_symbol]["param_types"] = _param_types
         self.current_method_first_param = params[0] if params else None
         if has_closure:
             self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
@@ -35187,13 +35203,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         funcs_json: list[dict[str, Any]] = []
         # DETERMINISM: sort to ensure stable output regardless of dict insertion order
         for name, data in sorted(self.funcs_map.items()):
-            funcs_json.append(
-                {
-                    "name": name,
-                    "params": data["params"],
-                    "ops": self.map_ops_to_json(data["ops"], function_name=name),
-                }
-            )
+            entry: dict[str, Any] = {
+                "name": name,
+                "params": data["params"],
+                "ops": self.map_ops_to_json(data["ops"], function_name=name),
+            }
+            if "param_types" in data:
+                entry["param_types"] = data["param_types"]
+            funcs_json.append(entry)
         max_code_id = -1
         for func in funcs_json:
             for op in func["ops"]:
