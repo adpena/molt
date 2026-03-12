@@ -57,7 +57,15 @@ theorem constFoldInstr_dst (i : Instr) :
     terminator expressions; params and instruction dsts are unchanged. -/
 theorem constFoldBlock_defs (b : Block) :
     blockAllDefs (constFoldBlock b) = blockAllDefs b := by
-  sorry
+  simp only [blockAllDefs, constFoldBlock]
+  congr 1
+  induction b.instrs with
+  | nil => rfl
+  | cons i rest ih =>
+    simp only [List.map]
+    congr 1
+    · cases i; rfl
+    · exact ih
 
 /-- Constant folding preserves SSA: it only changes RHS expressions,
     never introduces new definitions or changes the def-use structure
@@ -80,7 +88,16 @@ theorem constFold_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     Every definition in the DCE'd block was in the original. -/
 theorem dceBlock_defs_subset (b : Block) :
     ∀ v ∈ blockAllDefs (dceBlock b), v ∈ blockAllDefs b := by
-  sorry
+  intro v hv
+  simp only [blockAllDefs, dceBlock, dceInstrs] at hv ⊢
+  cases List.mem_append.mp hv with
+  | inl hp =>
+    exact List.mem_append_left _ hp
+  | inr hi =>
+    apply List.mem_append_right
+    have := List.mem_map.mp hi
+    obtain ⟨i, hmem, rfl⟩ := this
+    exact List.mem_map_of_mem Instr.dst (List.mem_of_mem_filter hmem)
 
 /-- DCE preserves SSA: removing dead definitions maintains unique-def
     (a subset of a unique list is unique) and use-dom-def (dead code

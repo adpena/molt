@@ -1,3 +1,4 @@
+use molt_backend::rust::RustBackend;
 use molt_backend::wasm::WasmBackend;
 use molt_backend::{SimpleBackend, SimpleIR};
 use serde::{Deserialize, Serialize};
@@ -637,6 +638,7 @@ fn main() -> io::Result<()> {
         return run_daemon(socket_path);
     }
     let is_wasm = args.contains(&"--target".to_string()) && args.contains(&"wasm".to_string());
+    let is_rust = args.contains(&"--target".to_string()) && args.contains(&"rust".to_string());
     let target_triple = args
         .iter()
         .position(|arg| arg == "--target-triple")
@@ -662,10 +664,22 @@ fn main() -> io::Result<()> {
         }
     };
 
-    let output_file = output_path.unwrap_or(if is_wasm { "output.wasm" } else { "output.o" });
+    let default_output = if is_rust {
+        "output.rs"
+    } else if is_wasm {
+        "output.wasm"
+    } else {
+        "output.o"
+    };
+    let output_file = output_path.unwrap_or(default_output);
     let mut file = File::create(output_file)?;
 
-    if is_wasm {
+    if is_rust {
+        let mut backend = RustBackend::new();
+        let source = backend.compile(&ir);
+        file.write_all(source.as_bytes())?;
+        println!("Successfully transpiled to {output_file}");
+    } else if is_wasm {
         let backend = WasmBackend::new();
         let wasm_bytes = backend.compile(ir);
         file.write_all(&wasm_bytes)?;

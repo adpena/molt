@@ -64,7 +64,27 @@ theorem fullPipelineFunc_deterministic (f : Func) :
     fixed point. -/
 theorem constFoldExpr_idempotent (e : Expr) :
     constFoldExpr (constFoldExpr e) = constFoldExpr e := by
-  sorry
+  induction e with
+  | val _ => rfl
+  | var _ => rfl
+  | bin op a b iha ihb =>
+    simp only [constFoldExpr]
+    split
+    · rename_i va vb heqa heqb
+      split
+      · rfl
+      · rename_i heval
+        simp only [constFoldExpr, heqa, heqb, heval]
+    · simp only [constFoldExpr, iha, ihb]
+  | un op a iha =>
+    simp only [constFoldExpr]
+    split
+    · rename_i va heq
+      split
+      · rfl
+      · rename_i heval
+        simp only [constFoldExpr, heq, heval]
+    · simp only [constFoldExpr, iha]
 
 /-- SCCP is idempotent: if an expression is already in SCCP normal form
     (all known-constant sub-expressions replaced with .val), re-running
@@ -79,7 +99,11 @@ theorem constFoldExpr_idempotent (e : Expr) :
     that sccpExpr(.val v) = .val v. -/
 theorem sccpExpr_idempotent (σ : AbsEnv) (e : Expr) :
     sccpExpr σ (sccpExpr σ e) = sccpExpr σ e := by
-  sorry
+  simp only [sccpExpr]
+  match h : absEvalExpr σ e with
+  | .known v => simp [absEvalExpr]
+  | .unknown => simp [h]
+  | .overdefined => simp [h]
 
 /-- The full pipeline is semantically idempotent: running it twice preserves
     the same semantics as running it once. This is weaker than syntactic

@@ -138,6 +138,9 @@ module molt_midend_pipeline {
     validHistory
   }
 
+  // Alias for standard invariant naming convention.
+  val Inv: bool = inv
+
   // -- Temporal property: the pipeline eventually terminates --
   // (Either reaches fixed point or exhausts MAX_ROUNDS)
   temporal reachesTermination = eventually(ir.atFixedPoint or ir.round >= MAX_ROUNDS)
