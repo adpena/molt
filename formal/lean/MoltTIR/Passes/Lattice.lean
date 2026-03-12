@@ -63,16 +63,38 @@ theorem join_comm (a b : AbsVal) : join a b = join b a := by
 theorem join_idem (a : AbsVal) : join a a = a := by
   cases a <;> simp [join]
 
-/-- Helper: join of three known values. -/
-private theorem join_assoc_known (v1 v2 v3 : Value) :
-    join (join (.known v1) (.known v2)) (.known v3) =
-    join (.known v1) (join (.known v2) (.known v3)) := by
-  simp only [join]
-  by_cases h12 : v1 = v2 <;> by_cases h23 : v2 = v3 <;> simp_all [join]
+/-- join with overdefined on the left always gives overdefined. -/
+@[simp] theorem join_overdefined_left (b : AbsVal) : join .overdefined b = .overdefined := by
+  cases b <;> rfl
+
+/-- join with overdefined on the right always gives overdefined. -/
+@[simp] theorem join_overdefined_right (a : AbsVal) : join a .overdefined = .overdefined := by
+  cases a <;> rfl
+
+/-- join with unknown on the left is identity. -/
+@[simp] theorem join_unknown_left (b : AbsVal) : join .unknown b = b := by
+  cases b <;> simp [join]
+
+/-- join with unknown on the right is identity. -/
+@[simp] theorem join_unknown_right (a : AbsVal) : join a .unknown = a := by
+  cases a <;> simp [join]
 
 /-- Join is associative. -/
 theorem join_assoc (a b c : AbsVal) : join (join a b) c = join a (join b c) := by
-  cases a <;> cases b <;> cases c <;> first | rfl | simp [join] | exact join_assoc_known ..
+  cases a with
+  | unknown => simp
+  | overdefined => simp
+  | known v1 =>
+    cases b with
+    | unknown => simp
+    | overdefined => simp
+    | known v2 =>
+      cases c with
+      | unknown => simp
+      | overdefined => simp
+      | known v3 =>
+        simp only [join]
+        by_cases h12 : v1 = v2 <;> by_cases h23 : v2 = v3 <;> simp_all [join]
 
 /-- ≤ is reflexive. -/
 theorem le_refl (a : AbsVal) : a ≤ a := by

@@ -30,7 +30,48 @@ theorem absEnvJoin_sound (σ₁ σ₂ : AbsEnv) (ρ : Env)
   exact AbsVal.join_concretizes (σ₁ x) (σ₂ x) v (h1 x v hv) (h2 x v hv)
 
 -- ══════════════════════════════════════════════════════════════════
--- Section 2: Abstract transfer soundness
+-- Section 2: Abstract evaluation concretizes (weak soundness)
+-- ══════════════════════════════════════════════════════════════════
+
+/-- Abstract evaluation concretizes: if the IR evaluator produces v, then
+    absEvalExpr under a sound environment concretizes v.
+    Unlike absEvalExpr_sound (which goes from abstract → concrete), this
+    goes from concrete → abstract: given that evalExpr ρ e = some v and
+    σ soundly approximates ρ, we show concretizes (absEvalExpr σ e) v.
+    This direction does NOT require the definedness assumption. -/
+theorem absEvalExpr_concretizes (σ : AbsEnv) (ρ : Env) (e : Expr) (v : Value)
+    (hsound : AbsEnvSound σ ρ)
+    (heval : evalExpr ρ e = some v) :
+    AbsVal.concretizes (absEvalExpr σ e) v := by
+  induction e with
+  | val w =>
+    simp [evalExpr] at heval; subst heval
+    simp [absEvalExpr, AbsVal.concretizes]
+  | var x =>
+    simp [evalExpr] at heval
+    simp [absEvalExpr]
+    exact hsound x v heval
+  | bin op a b iha ihb =>
+    simp only [evalExpr] at heval
+    simp only [absEvalExpr]
+    match ha_eval : evalExpr ρ a, hb_eval : evalExpr ρ b with
+    | some va, some vb =>
+      simp [ha_eval, hb_eval] at heval
+      exact absEvalBinOp_sound op (absEvalExpr σ a) (absEvalExpr σ b)
+        va vb (iha va ha_eval) (ihb vb hb_eval) v heval
+    | some _, none => simp [ha_eval, hb_eval] at heval
+    | none, _ => simp [ha_eval] at heval
+  | un op a iha =>
+    simp only [evalExpr] at heval
+    simp only [absEvalExpr]
+    match ha_eval : evalExpr ρ a with
+    | some va =>
+      simp [ha_eval] at heval
+      exact absEvalUnOp_sound op (absEvalExpr σ a) va (iha va ha_eval) v heval
+    | none => simp [ha_eval] at heval
+
+-- ══════════════════════════════════════════════════════════════════
+-- Section 3: Abstract transfer soundness
 -- ══════════════════════════════════════════════════════════════════
 
 /-- Executing one instruction abstractly preserves soundness.
@@ -41,13 +82,8 @@ theorem absExecInstr_sound (σ : AbsEnv) (ρ : Env) (i : Instr) (v : Value)
     (heval : evalExpr ρ i.rhs = some v) :
     AbsEnvSound (absExecInstr σ i) (ρ.set i.dst v) := by
   unfold absExecInstr
-  apply absEnvSound_set σ ρ i.dst v (absEvalExpr σ i.rhs) hsound
-  -- Need: concretizes (absEvalExpr σ i.rhs) v
-  -- This follows from the abstract evaluation soundness
-  -- by induction on i.rhs with the given hsound and heval
-  -- For the general case, we need the abstract evaluation to be sound
-  -- which requires the definedness assumption (same gap as single-block SCCP)
-  sorry  -- Same definedness gap as in SCCPCorrect.lean:absEvalExpr_sound
+  exact absEnvSound_set σ ρ i.dst v (absEvalExpr σ i.rhs) hsound
+    (absEvalExpr_concretizes σ ρ i.rhs v hsound heval)
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 3: Monotonicity of abstract operations
@@ -154,13 +190,12 @@ theorem sccpWorklist_terminates (f : Func) (fuel : Nat)
   3. The worklist terminates (lattice height bounded).
   4. At the fixed point, every reachable block has a sound abstract input.
 
-  Step 2 requires the absExecInstr_sound theorem, which inherits the same
-  definedness gap from single-block SCCP (the `sorry` in absEvalExpr_sound
-  for the var case).
-
-  This gap is fundamental to the current formalization approach and is
-  documented in SCCPCorrect.lean. All other infrastructure (monotonicity,
-  join soundness, lattice bounds) is fully proven.
+  absExecInstr_sound is now fully proven via absEvalExpr_concretizes, which
+  establishes that abstract evaluation concretizes the concrete value using
+  the weak (AbsEnvSound) invariant. The definedness gap in the single-block
+  SCCP (absEvalExpr_sound → absEvalExpr_strong_sound) has been closed by
+  introducing AbsEnvStrongSound. All infrastructure (monotonicity, join
+  soundness, lattice bounds, transfer soundness) is fully proven.
 -/
 
 end MoltTIR
