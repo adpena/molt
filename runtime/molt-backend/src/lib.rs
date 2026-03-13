@@ -37,6 +37,12 @@ const FUNC_DEFAULT_DICT_POP: i64 = 2;
 const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
 const HEADER_SIZE_BYTES: i32 = 40;
 const HEADER_STATE_OFFSET: i32 = -(HEADER_SIZE_BYTES - 16);
+/// Byte offset from data pointer to `MoltHeader.ref_count` (u32 at header offset 4).
+const HEADER_REFCOUNT_OFFSET: i32 = -(HEADER_SIZE_BYTES - 4);
+/// Byte offset from data pointer to `MoltHeader.flags` (u64 at header offset 32).
+const HEADER_FLAGS_OFFSET: i32 = -(HEADER_SIZE_BYTES - 32);
+/// Matches `HEADER_FLAG_IMMORTAL` in `runtime/molt-runtime/src/object/mod.rs`.
+const HEADER_FLAG_IMMORTAL: u64 = 1 << 15;
 
 fn find_zero_pred_blocks(func: &Function) -> Vec<Block> {
     let mut preds: HashMap<Block, usize> = HashMap::new();
@@ -238,11 +244,136 @@ fn box_ptr_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     builder.ins().bor(tag, masked)
 }
 
+#[allow(dead_code)]
 fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: FuncRef) {
     // Keep ref-adjust control flow linear. Hidden branch blocks here can invalidate
     // block-local tracked-value carry if callers do not explicitly propagate tracking.
     // The runtime ref helpers already no-op for non-pointer boxed values.
     let _ = builder.ins().call(obj_ref_fn, &[val]);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: Inline inc_ref_obj as Cranelift IR
+//
+// Eliminates function-call overhead for the hottest runtime operation (~73
+// calls per compiled function). The inlined sequence:
+//
+//   1. Check if `val` is a heap pointer (NaN-boxed TAG_PTR).
+//   2. Extract the raw data pointer from the NaN-box.
+//   3. Load the flags field from MoltHeader; skip if IMMORTAL.
+//   4. Load the 32-bit refcount, add 1, store back.
+//
+// Gated by MOLT_INLINE_RC=1 env var so we can A/B test vs call-based RC.
+// dec_ref is left as a function call (needs the free/destructor path).
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if inline RC codegen is enabled via `MOLT_INLINE_RC=1`.
+fn inline_rc_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("MOLT_INLINE_RC").as_deref() == Ok("1")
+    })
+}
+
+/// Emit an inlined `inc_ref_obj` as Cranelift IR instead of a function call.
+///
+/// The emitted IR is equivalent to:
+/// ```text
+/// if (val & (QNAN | TAG_MASK)) == (QNAN | TAG_PTR):
+///     ptr = sign_extend(val & POINTER_MASK)
+///     flags = *(ptr - 8) as u64
+///     if (flags & HEADER_FLAG_IMMORTAL) == 0:
+///         rc = *(ptr - 36) as u32
+///         *(ptr - 36) = rc + 1
+/// ```
+fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value) {
+    let current_block = builder.current_block().expect("no current block");
+
+    // --- Block layout: current → check_immortal → do_inc → merge ---
+    let check_immortal_block = builder.create_block();
+    let do_inc_block = builder.create_block();
+    let merge_block = builder.create_block();
+
+    // 1. Check if val is a heap pointer: (val & (QNAN | TAG_MASK)) == (QNAN | TAG_PTR)
+    let tag_check_mask = builder
+        .ins()
+        .iconst(types::I64, (QNAN | TAG_MASK) as i64);
+    let tag_bits = builder.ins().band(val, tag_check_mask);
+    let ptr_tag = builder.ins().iconst(types::I64, (QNAN | TAG_PTR) as i64);
+    let is_ptr = builder.ins().icmp(IntCC::Equal, tag_bits, ptr_tag);
+    builder
+        .ins()
+        .brif(is_ptr, check_immortal_block, &[], merge_block, &[]);
+
+    // 2. Extract raw data pointer and check immortal flag
+    builder.switch_to_block(check_immortal_block);
+    let raw_ptr = unbox_ptr_value(builder, val);
+
+    // Load flags (u64 at ptr + HEADER_FLAGS_OFFSET)
+    let flags = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), raw_ptr, HEADER_FLAGS_OFFSET);
+    let immortal_mask = builder
+        .ins()
+        .iconst(types::I64, HEADER_FLAG_IMMORTAL as i64);
+    let immortal_bits = builder.ins().band(flags, immortal_mask);
+    let zero = builder.ins().iconst(types::I64, 0);
+    let is_mortal = builder.ins().icmp(IntCC::Equal, immortal_bits, zero);
+    builder
+        .ins()
+        .brif(is_mortal, do_inc_block, &[], merge_block, &[]);
+
+    // 3. Increment refcount: load u32, add 1, store back
+    builder.switch_to_block(do_inc_block);
+    let rc = builder
+        .ins()
+        .load(types::I32, MemFlags::trusted(), raw_ptr, HEADER_REFCOUNT_OFFSET);
+    let one_i32 = builder.ins().iconst(types::I32, 1);
+    let new_rc = builder.ins().iadd(rc, one_i32);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), new_rc, raw_ptr, HEADER_REFCOUNT_OFFSET);
+    builder.ins().jump(merge_block, &[]);
+
+    // 4. Merge — continue in the merge block
+    builder.switch_to_block(merge_block);
+    // Seal the blocks we created (they have known predecessors now)
+    builder.seal_block(check_immortal_block);
+    builder.seal_block(do_inc_block);
+    builder.seal_block(merge_block);
+
+    // Note: caller must NOT seal current_block before calling this function
+    // if it hasn't been sealed yet. The merge_block becomes the new "current"
+    // block for subsequent instruction emission.
+    let _ = current_block; // suppress unused warning
+}
+
+/// Emit an inc_ref_obj — either inlined or as a function call depending on
+/// the `MOLT_INLINE_RC` flag.
+fn emit_inc_ref_obj(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    call_ref: FuncRef,
+) {
+    if inline_rc_enabled() {
+        emit_inline_inc_ref_obj(builder, val);
+    } else {
+        builder.ins().call(call_ref, &[val]);
+    }
+}
+
+/// Emit a ref-adjust (inc_ref_obj) — either inlined or as a function call
+/// depending on the `MOLT_INLINE_RC` flag.
+fn emit_maybe_ref_adjust_v2(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    call_ref: FuncRef,
+) {
+    if inline_rc_enabled() {
+        emit_inline_inc_ref_obj(builder, val);
+    } else {
+        let _ = builder.ins().call(call_ref, &[val]);
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
@@ -8133,7 +8264,7 @@ impl SimpleBackend {
                         // Suspension returns an owned value to the caller; explicitly
                         // retain it here so downstream cleanup/control-flow lowering cannot
                         // invalidate yielded data before next()/send()/throw() unwraps it.
-                        builder.ins().call(local_inc_ref_obj, &[*pair]);
+                        emit_inc_ref_obj(&mut builder, *pair, local_inc_ref_obj);
                         jump_block(&mut builder, master_return_block, &[*pair]);
                     } else {
                         jump_block(&mut builder, master_return_block, &[]);
@@ -8623,7 +8754,7 @@ impl SimpleBackend {
                                     obj_ptr,
                                     (idx * 8) as i32,
                                 );
-                                builder.ins().call(local_inc_ref_obj, &[*val]);
+                                emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj);
                             }
                         }
                         let out_name = op.out.unwrap();
@@ -9111,7 +9242,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*func_bits]);
                     let res = builder.inst_results(call)[0];
-                    emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
+                    emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj);
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bound_method_new" => {
@@ -9381,7 +9512,7 @@ impl SimpleBackend {
                         .expect("inc_ref/borrow requires one source arg");
                     let src = *var_get(&mut builder, &vars, src_name)
                         .expect("inc_ref/borrow source not found");
-                    builder.ins().call(local_inc_ref_obj, &[src]);
+                    emit_inc_ref_obj(&mut builder, src, local_inc_ref_obj);
                     if let Some(out_name) = op.out.as_ref()
                         && out_name != "none"
                     {
@@ -12897,7 +13028,7 @@ impl SimpleBackend {
                             builder
                                 .ins()
                                 .store(MemFlags::trusted(), *arg_val, obj_ptr, offset);
-                            emit_maybe_ref_adjust(&mut builder, *arg_val, local_inc_ref_obj);
+                            emit_maybe_ref_adjust_v2(&mut builder, *arg_val, local_inc_ref_obj);
                         }
                     }
                     if matches!(task_kind, "future" | "coroutine") {
@@ -13016,7 +13147,7 @@ impl SimpleBackend {
                     let res = builder
                         .ins()
                         .load(types::I64, MemFlags::trusted(), obj_ptr, offset);
-                    emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
+                    emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj);
                     let out_name = op.out.unwrap();
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
@@ -13069,7 +13200,7 @@ impl SimpleBackend {
                     let res = builder
                         .ins()
                         .load(types::I64, MemFlags::trusted(), obj_ptr, offset);
-                    emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
+                    emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj);
                     let out_name = op.out.unwrap();
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
@@ -13328,7 +13459,7 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     // Attribute lookup may return borrowed values from object/class internals.
                     // Normalize to an owned reference so last-use decref remains safe.
-                    emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
+                    emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj);
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "get_attr_generic_obj" => {
@@ -13378,7 +13509,7 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     // `molt_get_attr_object_ic` delegates to `molt_get_attr_name`, which can
                     // hand back borrowed values on fast paths. Own the result here.
-                    emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
+                    emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj);
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "get_attr_special_obj" => {
@@ -13418,7 +13549,7 @@ impl SimpleBackend {
                         .call(local_callee, &[*obj, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
                     // Keep attribute result ownership consistent across all get-attr ops.
-                    emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
+                    emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj);
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "get_attr_name" => {
@@ -13441,7 +13572,7 @@ impl SimpleBackend {
                     // Attribute lookup returns a borrowed reference from object internals/dicts in
                     // some fast paths. Convert it to an owned reference so lifetime tracking can
                     // safely decref at last use without corrupting dict-owned values.
-                    emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
+                    emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj);
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "get_attr_name_default" => {
@@ -13465,7 +13596,7 @@ impl SimpleBackend {
                     let call = builder.ins().call(local_callee, &[*obj, *name, *default]);
                     let res = builder.inst_results(call)[0];
                     // See `get_attr_name` above: ensure the returned value is owned.
-                    emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
+                    emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj);
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "has_attr_name" => {
