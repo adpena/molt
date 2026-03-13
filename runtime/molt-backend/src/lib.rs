@@ -7789,6 +7789,12 @@ impl SimpleBackend {
                     let lhs_val = builder.inst_results(lhs_call)[0];
                     let cond = builder.ins().icmp_imm(IntCC::NotEqual, lhs_val, 0);
                     let res = builder.ins().select(cond, *rhs, *lhs);
+                    // The `select` result aliases one of the inputs (same NaN-boxed
+                    // bits).  The tracking system will eventually dec_ref the input
+                    // name independently of the output name, so we must inc_ref the
+                    // result to prevent a use-after-free when the input's refcount
+                    // reaches zero before the output is consumed.
+                    emit_inc_ref_obj(&mut builder, res, local_inc_ref_obj);
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "or" => {
@@ -7807,6 +7813,8 @@ impl SimpleBackend {
                     let lhs_val = builder.inst_results(lhs_call)[0];
                     let cond = builder.ins().icmp_imm(IntCC::NotEqual, lhs_val, 0);
                     let res = builder.ins().select(cond, *lhs, *rhs);
+                    // Same aliasing hazard as `and` — see comment above.
+                    emit_inc_ref_obj(&mut builder, res, local_inc_ref_obj);
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "contains" => {
