@@ -235,6 +235,15 @@ structure FuncSimulation (g : Func → Func) where
       a corresponding transition. -/
   simulation : ∀ (f : Func) (fuel : Nat) (ρ : Env) (lbl : Label),
     execFunc (g f) fuel ρ lbl = execFunc f fuel ρ lbl
+  /-- The transform preserves the entry label. -/
+  entry_preserved : ∀ (f : Func), (g f).entry = f.entry
+  /-- If the entry block exists, the transform preserves its existence and params. -/
+  entry_block_some : ∀ (f : Func) (blk : Block),
+    f.blocks f.entry = some blk →
+    ∃ blk', (g f).blocks f.entry = some blk' ∧ blk'.params = blk.params
+  /-- If the entry block is missing, it remains missing in the transform. -/
+  entry_block_none : ∀ (f : Func),
+    f.blocks f.entry = none → (g f).blocks f.entry = none
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 10: From FuncSimulation to BehavioralEquivalence
@@ -248,14 +257,15 @@ theorem FuncSimulation.toBehavioralEquiv {g : Func → Func}
     BehavioralEquivalence (g f) f := by
   intro fuel
   simp only [runFunc]
-  -- The entry block lookup must agree between g f and f
-  -- This requires knowing that g preserves the entry label and block structure.
-  -- The full proof depends on the specific transform g.
-  -- For transforms that preserve blockList structure (constFold, sccp, dce, cse),
-  -- the entry label is unchanged and block lookup is preserved.
-  sorry
-  -- TODO(formal, owner:compiler, milestone:M3, priority:P2, status:partial):
-  -- Close this gap by requiring FuncSimulation to carry proof that
-  -- g preserves f.entry and the entry block's params.
+  rw [sim.entry_preserved f]
+  match hblk : f.blocks f.entry with
+  | none =>
+    simp [sim.entry_block_none f hblk]
+  | some blk =>
+    obtain ⟨blk', hblk', hparams⟩ := sim.entry_block_some f blk hblk
+    simp only [hblk', hparams]
+    split
+    · exact sim.simulation f fuel Env.empty f.entry
+    · rfl
 
 end MoltTIR

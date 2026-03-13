@@ -301,9 +301,17 @@ structure DeterministicPassSimulation (g : MoltTIR.Func -> MoltTIR.Func) where
 
 /-- A DeterministicPassSimulation is exactly a FuncSimulation. -/
 def DeterministicPassSimulation.toFuncSimulation {g : MoltTIR.Func -> MoltTIR.Func}
-    (sim : DeterministicPassSimulation g) : FuncSimulation g where
+    (sim : DeterministicPassSimulation g)
+    (hentry : ∀ f, (g f).entry = f.entry)
+    (hblk_some : ∀ f blk, f.blocks f.entry = some blk →
+      ∃ blk', (g f).blocks f.entry = some blk' ∧ blk'.params = blk.params)
+    (hblk_none : ∀ f, f.blocks f.entry = none → (g f).blocks f.entry = none) :
+    FuncSimulation g where
   match_env := fun _f ρ lbl ρ' lbl' => ρ = ρ' ∧ lbl = lbl'
   simulation := sim.preserves_exec
+  entry_preserved := hentry
+  entry_block_some := hblk_some
+  entry_block_none := hblk_none
 
 /-- Compose two deterministic pass simulations. Since each pass preserves
     execFunc exactly, their composition trivially preserves execFunc.
