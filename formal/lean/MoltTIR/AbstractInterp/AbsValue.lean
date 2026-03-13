@@ -318,34 +318,22 @@ theorem sccp_terminates (f : AbsVal → AbsVal) (hf : BoundedLattice.Monotone f)
 /-- Concretization is monotone for the *conservative* direction:
     if a ≤ b and a concretizes v, then b concretizes v.
 
-    Note: This holds because the SCCP lattice has the property that
-    going up in the lattice (toward overdefined) only *widens* the
-    set of concretized values. The subtle case is unknown → known v:
-    unknown optimistically concretizes everything, and known v concretizes
-    only v. But if unknown ≤ known v (which is true), then moving from
-    unknown to known v narrows the represented set — this is sound because
-    the abstract interpreter only promotes unknown to known v when it has
-    *evidence* that v is the value.
+    The precondition `a ≠ .unknown` is necessary because the concretizes
+    relation uses optimistic semantics where `unknown` concretizes everything
+    (`True`), but `known vb` requires `v = vb`. Moving from unknown to known
+    *narrows* the represented set, breaking naive monotonicity. In practice
+    this is harmless: the SCCP interpreter only promotes unknown → known when
+    evidence establishes the value, and call sites starting from unknown can
+    use `AbsVal.unknown_concretizes` directly without this theorem.
 
-    For full generality we document the sorry in the unknown→known case:
-    the concretizes relation in Passes.Lattice uses an optimistic semantics
-    where unknown = True, so monotonicity in the standard sense requires
-    restricting to the case where a is not unknown, or strengthening the
-    soundness statement (as done in absEvalExpr_sound). -/
+    See also `absEvalExpr_strong_sound` in SCCPCorrect.lean which avoids
+    this issue via a stronger soundness invariant. -/
 theorem concretizes_monotone (a b : AbsVal) (v : Value)
+    (hne : a ≠ .unknown)
     (hle : absval_le a b) (hconc : AbsVal.concretizes a v) :
     AbsVal.concretizes b v := by
   cases a with
-  | unknown =>
-    cases b with
-    | unknown => trivial
-    | known _ =>
-      -- unknown concretizes everything (True), but known vb requires v = vb.
-      -- This case is vacuously unreachable in correct SCCP usage because
-      -- unknown → known only happens when evidence establishes the value.
-      -- We document the gap with sorry, matching SCCPCorrect.lean's approach.
-      sorry
-    | overdefined => trivial
+  | unknown => exact absurd rfl hne
   | known va =>
     cases b with
     | unknown => simp [absval_le, AbsVal.join] at hle

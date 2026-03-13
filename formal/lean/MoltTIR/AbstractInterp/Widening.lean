@@ -73,17 +73,12 @@ theorem widenedIter_stable_is_postfp (w : WideningOp α) (f : α → α) (n : Na
     a post-fixed point x (f(x) ≤ x), then lfp(f) ≤ x. -/
 theorem postfp_above_lfp (f : α → α) (hf : BoundedLattice.Monotone f)
     (x : α) (hpost : BoundedLattice.le (f x) x)
-    (n : Nat) (hstab : BoundedLattice.iterBot f n = BoundedLattice.iterBot f (n + 1)) :
-    BoundedLattice.le (BoundedLattice.iterBot f n) x := by
-  induction n with
-  | zero => exact BoundedLattice.bot_le x
-  | succ k ih =>
-    show BoundedLattice.le (f (BoundedLattice.iterBot f k)) x
-    -- By the induction hypothesis (with a weaker stability assumption),
-    -- iterBot f k ≤ x, so f(iterBot f k) ≤ f(x) ≤ x.
-    -- The IH requires stability at step k, which we don't have in general.
-    -- However, we can prove the stronger claim by simple induction on the chain.
-    sorry -- requires chain monotonicity argument; analogous to kleene_lfp_least
+    (n : Nat) (_hstab : BoundedLattice.iterBot f n = BoundedLattice.iterBot f (n + 1)) :
+    BoundedLattice.le (BoundedLattice.iterBot f n) x :=
+  -- This follows directly from Tarski's theorem: any post-fixed point (f(x) ≤ x)
+  -- is above every element of the Kleene chain, by simple induction on n.
+  -- The stability hypothesis is not needed; the result is a corollary of iterBot_le_prefp.
+  BoundedLattice.iterBot_le_prefp f hf x hpost n
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 4: Narrowing operator (dual of widening)

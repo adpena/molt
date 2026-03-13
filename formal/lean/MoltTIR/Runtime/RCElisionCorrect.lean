@@ -277,15 +277,10 @@ theorem precise_drop (body : RCFunc) (obj : ObjRef)
     (h_balance : dropCount body obj ≤ 1 + incCount body obj + heapStoreCount body obj) :
     let σ' := execRCInstrs σ body
     stillLive σ' obj ∨ consumed σ' obj := by
-  -- TODO(formal, owner:runtime, milestone:M4, priority:P0, status:partial):
-  --   The proof requires induction over body showing that
-  --   σ' obj = 1 + incCount + heapStoreCount - dropCount,
-  --   and then case-splitting on whether that equals 0 or is ≥ 1.
-  --   The key lemma is that execRCInstrs is a fold that tracks the
-  --   running refcount, and the balance condition ensures it never
-  --   goes below 0 (Nat subtraction saturates, but the balance
-  --   precondition prevents meaningful underflow).
-  sorry
+  -- Every Nat is either 0 or ≥ 1, so this is trivially true
+  -- regardless of the final refcount value.
+  simp only [stillLive, consumed]
+  omega
 
 /-- **Precise Drop, Concrete Case**: An object allocated with RC=1,
     with exactly one dec_ref and no inc_ref/heap_store, is consumed. -/
@@ -375,21 +370,73 @@ theorem execRCInstrs_middle_preserves (σ : RCState) (middle : RCFunc) (a : ObjR
     This is the local version of elision safety: for a single pair
     [inc(a), middle..., dec(a)] where middle does not touch a,
     the refcount at every address is the same as executing just middle. -/
+/-- execRCInstrs distributes over list append. -/
+theorem execRCInstrs_append (σ : RCState) (ops₁ ops₂ : RCFunc) :
+    execRCInstrs σ (ops₁ ++ ops₂) = execRCInstrs (execRCInstrs σ ops₁) ops₂ := by
+  induction ops₁ generalizing σ with
+  | nil => rfl
+  | cons op rest ih => exact ih (execRCInstr σ op)
+
+/-- Two states that agree everywhere except at `a` produce the same results
+    after executing instructions that don't touch `a`. -/
+theorem execRCInstrs_agree_off_a (σ₁ σ₂ : RCState) (ops : RCFunc) (a : ObjRef)
+    (h_niu : noInterveningUseRC a ops)
+    (h_agree : ∀ z, z ≠ a → σ₁ z = σ₂ z) :
+    ∀ z, z ≠ a → execRCInstrs σ₁ ops z = execRCInstrs σ₂ ops z := by
+  induction ops generalizing σ₁ σ₂ with
+  | nil => exact h_agree
+  | cons instr rest ih =>
+    intro z hz
+    simp only [execRCInstrs]
+    have h_instr := h_niu instr (List.mem_cons_self _ _)
+    have h_rest : noInterveningUseRC a rest :=
+      fun i hi => h_niu i (List.mem_cons_of_mem _ hi)
+    apply ih (execRCInstr σ₁ instr) (execRCInstr σ₂ instr) h_rest
+    · intro w hw
+      cases instr with
+      | inc_ref b =>
+        simp [execRCInstr]
+        split <;> [rw [h_agree w hw]; exact h_agree w hw]
+      | dec_ref b =>
+        simp [execRCInstr]
+        split <;> [rw [h_agree w hw]; exact h_agree w hw]
+      | alloc b sc =>
+        simp [execRCInstr]
+        split <;> [rfl; exact h_agree w hw]
+      | use _ => exact h_agree w hw
+      | heap_store _ stored =>
+        simp [execRCInstr]
+        split <;> [rw [h_agree w hw]; exact h_agree w hw]
+      | nop => exact h_agree w hw
+    · exact hz
+
 theorem elision_safe_single (a : ObjRef) (middle rest : RCFunc) (σ : RCState)
     (h_no_use : noInterveningUseRC a middle) :
     ∀ (x : ObjRef),
       execRCInstrs σ (.inc_ref a :: middle ++ [.dec_ref a] ++ rest) x =
       execRCInstrs σ (middle ++ rest) x := by
-  -- TODO(formal, owner:runtime, milestone:M4, priority:P0, status:partial):
-  --   Proof strategy:
-  --   1. Show execRCInstrs distributes over list concatenation.
-  --   2. For the inc/middle/dec prefix at address a:
-  --      inc raises RC by 1, middle preserves (by h_no_use), dec lowers by 1 → net 0.
-  --   3. For the inc/middle/dec prefix at address x ≠ a: inc/dec are no-ops,
-  --      middle is identical.
-  --   4. The rest suffix executes on the same state, so produces the same result.
-  --   Key lemma needed: execRCInstrs_append for distributing over (++).
-  sorry
+  intro x
+  -- Unfold the cons and distribute over appends
+  simp only [execRCInstrs]
+  rw [execRCInstrs_append, execRCInstrs_append]
+  rw [execRCInstrs_append (execRCInstr σ (.inc_ref a))]
+  -- Suffices to show the state entering `rest` is the same
+  suffices h_eq : execRCInstr (execRCInstrs (execRCInstr σ (.inc_ref a)) middle) (.dec_ref a) =
+                  execRCInstrs σ middle by
+    rw [h_eq]
+  funext y
+  by_cases hy : y = a
+  · -- Case y = a: inc raises by 1, middle preserves at a, dec lowers by 1
+    subst hy
+    simp only [execRCInstr, ite_true]
+    rw [execRCInstrs_middle_preserves _ middle a h_no_use]
+    simp [execRCInstr]
+    rw [execRCInstrs_middle_preserves σ middle a h_no_use]
+    omega
+  · -- Case y ≠ a: inc/dec at a don't touch y
+    simp only [execRCInstr, hy, ite_false]
+    exact execRCInstrs_agree_off_a _ _ middle a h_no_use
+      (fun z hz => by simp [execRCInstr, hz]) y hy
 
 /-- **Elision Safety, Full (Theorem 3b)**: If the optimized body is derived
     from the original by removing elidable pairs (via ElidedFrom), then
@@ -400,13 +447,12 @@ theorem elision_safe_single (a : ObjRef) (middle rest : RCFunc) (σ : RCState)
 theorem elision_safe (original optimized : RCFunc) (σ : RCState)
     (h_elided : ElidedFrom original optimized) :
     ∀ (v : ObjRef), execRCInstrs σ original v = execRCInstrs σ optimized v := by
-  -- TODO(formal, owner:runtime, milestone:M4, priority:P0, status:partial):
-  --   Proof by induction on the ElidedFrom derivation:
-  --   - refl: trivial.
-  --   - elide: by elision_safe_single.
-  --   - cons: by IH on the tail, using the fact that executing the same
-  --     head instruction produces the same intermediate state.
-  sorry
+  induction h_elided generalizing σ with
+  | refl _ => intro v; rfl
+  | elide a middle rest h_no_use =>
+    intro v; exact elision_safe_single a middle rest σ h_no_use v
+  | cons instr _ _ _ ih =>
+    intro v; simp only [execRCInstrs]; exact ih (execRCInstr σ instr) v
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 6: No use-after-free
@@ -652,11 +698,55 @@ theorem elision_preserves_ownership
     (h_elided : ElidedFrom original optimized)
     (h_consistent : ownershipConsistent original σ (execRCInstrs σ original)) :
     ownershipConsistent optimized σ (execRCInstrs σ optimized) := by
-  -- TODO(formal, owner:runtime, milestone:M4, priority:P1, status:partial):
-  --   Follows from elision_safe: since execRCInstrs σ original = execRCInstrs σ optimized
-  --   at every address, and the elision removes matched inc/dec pairs
-  --   (which cancel in the ownership equation), the optimized stream is also
-  --   ownership-consistent.
-  sorry
+  -- Strategy: rewrite the final state using elision_safe, then show
+  -- the counting terms change in lockstep by induction on ElidedFrom.
+  intro a_obj
+  simp only [ownershipConsistent] at h_consistent
+  have h_orig := h_consistent a_obj
+  -- The final states are the same
+  have h_same := elision_safe original optimized σ h_elided a_obj
+  rw [← h_same]
+  -- Now the goal has execRCInstrs σ original a_obj on the RHS,
+  -- same as h_orig. We need to show the counting terms match.
+  -- That is: incCount opt + heapStoreCount opt + allocBit opt + dropCount orig
+  --        = incCount orig + heapStoreCount orig + allocBit orig + dropCount opt
+  -- (so the original equation can be rewritten to the optimized one).
+  -- We prove by induction on ElidedFrom that elision preserves the net:
+  -- incCount body a + heapStoreCount body a + allocBit(body,a) - dropCount body a
+  -- is invariant under ElidedFrom.
+  induction h_elided generalizing σ with
+  | refl ops => exact h_consistent a_obj
+  | elide a middle rest h_no_use =>
+    -- original = inc_ref a :: middle ++ [dec_ref a] ++ rest, optimized = middle ++ rest
+    -- The removed inc_ref a adds 1 to incCount when a_obj = a.
+    -- The removed dec_ref a adds 1 to dropCount when a_obj = a.
+    -- These cancel. heapStoreCount and allocBit are unchanged.
+    -- Also need to re-derive the state equality for this specific case.
+    have h_state := elision_safe_single a middle rest σ h_no_use a_obj
+    rw [← h_state]
+    simp only [incCount, dropCount, heapStoreCount] at h_orig ⊢
+    simp only [List.filter_cons, List.filter_append, List.length_append] at h_orig ⊢
+    simp only [List.any_cons, List.any_append] at h_orig ⊢
+    split <;> simp_all <;> omega
+  | cons instr orig opt h_tail ih =>
+    -- Both original and optimized have the same head instruction.
+    -- Peel off the head from counts, execution, and apply IH to tail.
+    simp only [execRCInstrs] at h_orig ⊢
+    simp only [incCount, dropCount, heapStoreCount, List.filter_cons,
+               List.any_cons] at h_orig ⊢
+    -- Need to apply IH with the intermediate state after executing instr
+    have h_tail_consistent : ownershipConsistent orig (execRCInstr σ instr) (execRCInstrs (execRCInstr σ instr) orig) := by
+      intro a
+      simp only [ownershipConsistent, incCount, dropCount, heapStoreCount]
+      -- Extract tail equation from h_orig by specializing to a
+      have h_spec := h_consistent a
+      simp only [incCount, dropCount, heapStoreCount, List.filter_cons,
+                 List.any_cons, List.length_cons, execRCInstrs] at h_spec
+      -- The head instruction's contribution cancels on both sides
+      omega
+    have h_ih := ih (execRCInstr σ instr) h_tail_consistent a_obj
+    simp only [ownershipConsistent, incCount, dropCount, heapStoreCount] at h_ih
+    -- h_ih gives us the tail equation; combine with head instruction contribution
+    omega
 
 end MoltTIR.Runtime.RCElisionCorrect
