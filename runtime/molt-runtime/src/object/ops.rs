@@ -2796,7 +2796,7 @@ pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
                 return raise_exception::<_>(
                     _py,
                     "ZeroDivisionError",
-                    "integer division or modulo by zero",
+                    "integer modulo by zero",
                 );
             }
             let mut rem = li % ri;
@@ -2810,7 +2810,7 @@ pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
                 return raise_exception::<_>(
                     _py,
                     "ZeroDivisionError",
-                    "integer division or modulo by zero",
+                    "integer modulo by zero",
                 );
             }
             let res = l_big.mod_floor(&r_big);

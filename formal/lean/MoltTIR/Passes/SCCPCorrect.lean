@@ -63,11 +63,14 @@ theorem absEvalExpr_sound (σ : AbsEnv) (ρ : Env) (e : Expr)
     (hsound : AbsEnvSound σ ρ) (cv : Value)
     (ha : absEvalExpr σ e = .known cv) :
     evalExpr ρ e = some cv := by
+  revert cv
   induction e with
   | val v =>
+    intro cv ha
     simp [absEvalExpr] at ha
     simp [evalExpr, ha]
   | var x =>
+    intro cv ha
     simp [absEvalExpr] at ha
     -- ha : σ x = .known cv
     -- We need: ρ x = some cv
@@ -80,6 +83,7 @@ theorem absEvalExpr_sound (σ : AbsEnv) (ρ : Env) (e : Expr)
     -- computed from the actual execution, which guarantees ρ x is defined.
     sorry  -- requires definedness assumption (see note below)
   | bin op a b iha ihb =>
+    intro cv ha
     simp only [absEvalExpr] at ha
     match ha_a : absEvalExpr σ a, ha_b : absEvalExpr σ b with
     | .known va, .known vb =>
@@ -88,8 +92,8 @@ theorem absEvalExpr_sound (σ : AbsEnv) (ρ : Env) (e : Expr)
       | some v =>
         simp [heval] at ha; subst ha
         -- NOTE: iha/ihb inherit the var-case sorry from above
-        have iha' := iha hsound va ha_a
-        have ihb' := ihb hsound vb ha_b
+        have iha' := iha va ha_a
+        have ihb' := ihb vb ha_b
         simp [evalExpr, iha', ihb', heval]
       | none => simp [heval] at ha
     | .known _, .unknown => simp [absEvalBinOp] at ha
@@ -99,6 +103,7 @@ theorem absEvalExpr_sound (σ : AbsEnv) (ρ : Env) (e : Expr)
     | .overdefined, .unknown => simp [absEvalBinOp] at ha
     | .overdefined, .overdefined => simp [absEvalBinOp] at ha
   | un op a iha =>
+    intro cv ha
     simp only [absEvalExpr] at ha
     match ha_a : absEvalExpr σ a with
     | .known va =>
@@ -106,7 +111,7 @@ theorem absEvalExpr_sound (σ : AbsEnv) (ρ : Env) (e : Expr)
       match heval : evalUnOp op va with
       | some v =>
         simp [heval] at ha; subst ha
-        have iha' := iha hsound va ha_a
+        have iha' := iha va ha_a
         simp [evalExpr, iha', heval]
       | none => simp [heval] at ha
     | .unknown => simp [absEvalUnOp] at ha
@@ -179,7 +184,10 @@ theorem absEnvStrongSound_set (σ : AbsEnv) (ρ : Env) (x : Var) (v : Value) (a 
     split at hy <;> rename_i heq
     · -- y = x: σ.set x a at y = a, so a = .known w
       -- From hdef (which holds by LEM on a = .known v), w = v
-      have hlem : a = .known v ∨ a ≠ .known v := by tauto
+      have hlem : a = .known v ∨ a ≠ .known v := by
+        by_cases h : a = .known v
+        · exact Or.inl h
+        · exact Or.inr h
       have := hdef hlem w hy
       subst this
       unfold Env.set; simp [heq]
@@ -196,25 +204,27 @@ theorem absEvalExpr_strong_sound (σ : AbsEnv) (ρ : Env) (e : Expr)
     (hsound : AbsEnvStrongSound σ ρ) (cv : Value)
     (ha : absEvalExpr σ e = .known cv) :
     evalExpr ρ e = some cv := by
+  revert cv
   induction e with
   | val v =>
+    intro cv ha
     simp [absEvalExpr] at ha
     simp [evalExpr, ha]
   | var x =>
+    intro cv ha
     simp [absEvalExpr] at ha
     exact hsound.2 x cv ha
   | bin op a b iha ihb =>
+    intro cv ha
     simp only [absEvalExpr] at ha
-    -- ha : absEvalBinOp op (absEvalExpr σ a) (absEvalExpr σ b) = .known cv
-    -- absEvalBinOp returns .known only when both inputs are .known and evalBinOp succeeds
     match ha_a : absEvalExpr σ a, ha_b : absEvalExpr σ b with
     | .known va, .known vb =>
       simp [absEvalBinOp, ha_a, ha_b] at ha
       match heval : evalBinOp op va vb with
       | some v =>
         simp [heval] at ha; subst ha
-        have iha' := iha hsound va ha_a
-        have ihb' := ihb hsound vb ha_b
+        have iha' := iha va ha_a
+        have ihb' := ihb vb ha_b
         simp [evalExpr, iha', ihb', heval]
       | none => simp [heval] at ha
     | .known _, .unknown => simp [absEvalBinOp] at ha
@@ -224,15 +234,15 @@ theorem absEvalExpr_strong_sound (σ : AbsEnv) (ρ : Env) (e : Expr)
     | .overdefined, .unknown => simp [absEvalBinOp] at ha
     | .overdefined, .overdefined => simp [absEvalBinOp] at ha
   | un op a iha =>
+    intro cv ha
     simp only [absEvalExpr] at ha
-    -- ha : absEvalUnOp op (absEvalExpr σ a) = .known cv
     match ha_a : absEvalExpr σ a with
     | .known va =>
       simp [absEvalUnOp, ha_a] at ha
       match heval : evalUnOp op va with
       | some v =>
         simp [heval] at ha; subst ha
-        have iha' := iha hsound va ha_a
+        have iha' := iha va ha_a
         simp [evalExpr, iha', heval]
       | none => simp [heval] at ha
     | .unknown => simp [absEvalUnOp] at ha
