@@ -36,7 +36,9 @@ lean_lib MoltTIR where
              `MoltTIR.Backend.LuauSyntax, `MoltTIR.Backend.LuauEmit,
              `MoltTIR.Backend.LuauSemantics, `MoltTIR.Backend.LuauEnvCorr,
              `MoltTIR.Backend.LuauCorrect,
-             `MoltTIR.Runtime.NanBox, `MoltTIR.Runtime.Refcount,
+             `MoltTIR.Runtime.NanBox, `MoltTIR.Runtime.NanBoxCorrect,
+             `MoltTIR.Runtime.Refcount,
+             `MoltTIR.Runtime.RCElisionCorrect,
              `MoltTIR.Runtime.WasmNative,
              `MoltTIR.Runtime.WasmABI, `MoltTIR.Runtime.WasmNativeCorrect,
              `MoltTIR.Determinism.CompileDeterminism,
@@ -44,6 +46,13 @@ lean_lib MoltTIR where
              `MoltTIR.Determinism.BuildReproducibility,
              `MoltTIR.Meta.SorryAudit,
              `MoltTIR.Meta.Completeness,
+             `MoltTIR.Simulation.Diagram,
+             `MoltTIR.Simulation.PassSimulation,
+             `MoltTIR.Simulation.Compose,
+             `MoltTIR.Simulation.Adequacy,
+             `MoltTIR.Simulation.FullChain,
+             `MoltTIR.Compilation.ForwardSimulation,
+             `MoltTIR.Compilation.CompilationCorrectness,
              `MoltTIR.Tests.Smoke]
 
 lean_lib MoltPython where
