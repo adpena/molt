@@ -145,6 +145,35 @@ theorem use_preserves_alloc (s : AllocState) (a b : Addr) :
     execScopeOp s (.use b) a = s a := by
   simp [execScopeOp]
 
+/-- A heap-allocated object survives any sequence of ops that does not
+    contain a freeHeap for that address. Heap objects are immune to scope
+    exits (only stack objects are freed on scope exit). -/
+theorem heap_survives_all_ops (s : AllocState) (a : Addr)
+    (halloc : s a = some .heap)
+    (ops : List ScopeOp)
+    (hno_free : ∀ op ∈ ops, op ≠ .freeHeap a) :
+    execScopeOps s ops a = some .heap := by
+  induction ops generalizing s with
+  | nil => simp [execScopeOps]; exact halloc
+  | cons op rest ih =>
+    simp [execScopeOps]
+    have hne_free : op ≠ .freeHeap a := hno_free op (List.mem_cons_self _ _)
+    have hrest_free : ∀ op ∈ rest, op ≠ .freeHeap a :=
+      fun o ho => hno_free o (List.mem_cons_of_mem _ ho)
+    apply ih (execScopeOp s op) _ hrest_free
+    cases op with
+    | alloc addr' kind =>
+      simp [execScopeOp]
+      by_cases haa : a = addr'
+      · simp [haa]; rfl
+      · simp [haa]; exact halloc
+    | use _ => simp [execScopeOp]; exact halloc
+    | exitScope sc =>
+      simp [execScopeOp, halloc]
+    | freeHeap addr' =>
+      have hne : a ≠ addr' := fun h => hne_free (h ▸ rfl)
+      simp [execScopeOp, hne]
+
 -- ══════════════════════════════════════════════════════════════════
 -- Section 5: No use-after-free for stack allocations
 -- ══════════════════════════════════════════════════════════════════
@@ -241,10 +270,15 @@ theorem transformation_preserves_observations
     = readObj (execScopeOps s_stack ops) store a := by
   -- Both allocation strategies keep the object live until scope exit / free.
   -- Since neither occurs in ops, both are live, so reads are equal.
-  -- TODO(formal, owner:runtime, milestone:M4, priority:P1, status:partial):
-  --   Complete by induction on ops, showing both states remain `some _`
-  --   at address `a` throughout, then applying alloc_kind_does_not_affect_reads.
-  sorry
+  have h_heap_live : execScopeOps (fun x => if x = a then some .heap else none) ops a
+      = some .heap :=
+    heap_survives_all_ops _ a (by simp) ops hno_free
+  have h_stack_live : execScopeOps (fun x => if x = a then some (.stack scope) else none) ops a
+      = some (.stack scope) :=
+    stack_live_before_exit _ a scope (by simp) ops hno_exit hno_free
+  apply alloc_kind_does_not_affect_reads
+  · simp [h_heap_live]
+  · simp [h_stack_live]
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 7: Escape analysis correctness — non-escaping ↔ stack-safe
