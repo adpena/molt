@@ -23359,99 +23359,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         result = self.visit(node.values[0])
         if result is None:
             raise NotImplementedError("Unsupported bool op operand")
-        # Invariant: short-circuit bool ops must preserve operand object identity.
-        # Keep list-cell lowering as the canonical path until PHI merge semantics
-        # are proven object-exact across all short-circuit branches.
         for value in node.values[1:]:
             if isinstance(node.op, ast.And):
-                cell = MoltValue(self.next_var(), type_hint="list")
-                self.emit(MoltOp(kind="LIST_NEW", args=[result], result=cell))
-                idx = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[0], result=idx))
-                cell_slot = None
-                idx_slot = None
-                if self._expr_may_yield(value):
-                    cell_slot = self._spill_async_value(
-                        cell, f"__bool_cell_{len(self.async_locals)}"
-                    )
-                    idx_slot = self._spill_async_value(
-                        idx, f"__bool_idx_{len(self.async_locals)}"
-                    )
-                self.emit(MoltOp(kind="IF", args=[result], result=MoltValue("none")))
                 right = self.visit(value)
                 if right is None:
                     raise NotImplementedError("Unsupported bool op operand")
-                store_cell = cell
-                store_idx = idx
-                if cell_slot is not None and idx_slot is not None:
-                    store_cell = self._reload_async_value(cell_slot, "list")
-                    store_idx = self._reload_async_value(idx_slot, "int")
-                self.emit(
-                    MoltOp(
-                        kind="STORE_INDEX",
-                        args=[store_cell, store_idx, right],
-                        result=MoltValue("none"),
-                    )
-                )
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                final_cell = cell
-                final_idx = idx
-                if cell_slot is not None and idx_slot is not None:
-                    final_cell = self._reload_async_value(cell_slot, "list")
-                    final_idx = self._reload_async_value(idx_slot, "int")
-                result = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(
-                    MoltOp(
-                        kind="INDEX",
-                        args=[final_cell, final_idx],
-                        result=result,
-                    )
-                )
+                new_result = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(MoltOp(kind="and", args=[result, right], result=new_result))
+                result = new_result
             elif isinstance(node.op, ast.Or):
-                cell = MoltValue(self.next_var(), type_hint="list")
-                self.emit(MoltOp(kind="LIST_NEW", args=[result], result=cell))
-                idx = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[0], result=idx))
-                cell_slot = None
-                idx_slot = None
-                if self._expr_may_yield(value):
-                    cell_slot = self._spill_async_value(
-                        cell, f"__bool_cell_{len(self.async_locals)}"
-                    )
-                    idx_slot = self._spill_async_value(
-                        idx, f"__bool_idx_{len(self.async_locals)}"
-                    )
-                self.emit(MoltOp(kind="IF", args=[result], result=MoltValue("none")))
-                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
                 right = self.visit(value)
                 if right is None:
                     raise NotImplementedError("Unsupported bool op operand")
-                store_cell = cell
-                store_idx = idx
-                if cell_slot is not None and idx_slot is not None:
-                    store_cell = self._reload_async_value(cell_slot, "list")
-                    store_idx = self._reload_async_value(idx_slot, "int")
-                self.emit(
-                    MoltOp(
-                        kind="STORE_INDEX",
-                        args=[store_cell, store_idx, right],
-                        result=MoltValue("none"),
-                    )
-                )
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                final_cell = cell
-                final_idx = idx
-                if cell_slot is not None and idx_slot is not None:
-                    final_cell = self._reload_async_value(cell_slot, "list")
-                    final_idx = self._reload_async_value(idx_slot, "int")
-                result = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(
-                    MoltOp(
-                        kind="INDEX",
-                        args=[final_cell, final_idx],
-                        result=result,
-                    )
-                )
+                new_result = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(MoltOp(kind="or", args=[result, right], result=new_result))
+                result = new_result
             else:
                 raise NotImplementedError("Unsupported boolean operator")
         return result
