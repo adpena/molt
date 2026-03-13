@@ -1876,8 +1876,18 @@ pub unsafe extern "C" fn molt_string_from_bytes(
             if out.is_null() {
                 return 2;
             }
-            if ptr.is_null() && len != 0 {
-                return 1;
+            if ptr.is_null() {
+                if len != 0 {
+                    return 1;
+                }
+                // Empty string: allocate directly to avoid from_raw_parts UB
+                // with a null pointer (even with len 0).
+                let obj_ptr = alloc_string(_py, &[]);
+                if obj_ptr.is_null() {
+                    return 2;
+                }
+                *out = MoltObject::from_ptr(obj_ptr).bits();
+                return 0;
             }
             let slice = std::slice::from_raw_parts(ptr, len);
             if !is_wtf8(slice) {
@@ -1907,8 +1917,16 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
             if out.is_null() {
                 return 2;
             }
-            if ptr.is_null() && len != 0 {
-                return 1;
+            if ptr.is_null() {
+                if len != 0 {
+                    return 1;
+                }
+                let obj_ptr = alloc_bytes(_py, &[]);
+                if obj_ptr.is_null() {
+                    return 2;
+                }
+                *out = MoltObject::from_ptr(obj_ptr).bits();
+                return 0;
             }
             let slice = std::slice::from_raw_parts(ptr, len);
             let obj_ptr = alloc_bytes(_py, slice);
