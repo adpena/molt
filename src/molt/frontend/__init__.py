@@ -23365,14 +23365,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if right is None:
                     raise NotImplementedError("Unsupported bool op operand")
                 new_result = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(MoltOp(kind="and", args=[result, right], result=new_result))
+                self.emit(MoltOp(kind="AND", args=[result, right], result=new_result))
                 result = new_result
             elif isinstance(node.op, ast.Or):
                 right = self.visit(value)
                 if right is None:
                     raise NotImplementedError("Unsupported bool op operand")
                 new_result = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(MoltOp(kind="or", args=[result, right], result=new_result))
+                self.emit(MoltOp(kind="OR", args=[result, right], result=new_result))
                 result = new_result
             else:
                 raise NotImplementedError("Unsupported boolean operator")
