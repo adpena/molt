@@ -13,6 +13,7 @@ lean_lib MoltTIR where
              `MoltTIR.Semantics.State, `MoltTIR.Semantics.EvalExpr,
              `MoltTIR.Semantics.ExecBlock, `MoltTIR.Semantics.ExecFunc,
              `MoltTIR.Semantics.Determinism,
+             `MoltTIR.Semantics.BlockCorrect, `MoltTIR.Semantics.FuncCorrect,
              `MoltTIR.CFG, `MoltTIR.CFG.Loops,
              `MoltTIR.Passes.Effects,
              `MoltTIR.Passes.ConstFold, `MoltTIR.Passes.ConstFoldCorrect,
@@ -58,6 +59,8 @@ lean_lib MoltTIR where
              `MoltTIR.Validation.ConstFoldValid,
              `MoltTIR.Validation.SCCPValid,
              `MoltTIR.Validation.DCEValid,
+             `MoltTIR.EndToEndProperties,
+             `MoltTIR.EndToEnd,
              `MoltTIR.Tests.Smoke]
 
 lean_lib MoltPython where
