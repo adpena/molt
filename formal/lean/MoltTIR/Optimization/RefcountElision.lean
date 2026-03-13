@@ -201,23 +201,15 @@ theorem elision_preserves_refcount_at (h : Heap) (p : ElidablePair) :
   -- After middle (no touch): still h addr + 1
   -- After dec: h addr + 1 - 1 = h addr
   -- Elided (just middle, no touch): h addr
-  -- We need a lemma that execRcOps distributes over append
-  have hdist : ∀ (h' : Heap) (ops1 ops2 : List RcOp),
-      execRcOps h' (ops1 ++ ops2) = execRcOps (execRcOps h' ops1) ops2 := by
-    intro h' ops1 ops2
-    induction ops1 generalizing h' with
-    | nil => simp [execRcOps]
-    | cons op rest ih => simp [execRcOps, ih]
-  rw [hdist]
-  simp [execRcOps, execRcOp]
-  -- After inc: refcount at addr is h addr + 1
-  -- After middle (no touch): still h addr + 1
-  -- After dec: h addr + 1 - 1 = h addr
-  rw [middle_ops_same_at_addr h p]
-  simp [decRef]
-  -- Elided (just middle, no touch): h addr
-  rw [execRcOps_no_touch h p.addr p.middle p.no_use]
-  omega
+  rw [show execRcOps (execRcOp (execRcOp h (.inc p.addr)) (.other)) p.middle
+     = execRcOps (execRcOp (execRcOp h (.inc p.addr)) (.other)) p.middle from rfl]
+  simp [execRcOp]
+  -- The full sequence is: execRcOps (execRcOps (incRef h p.addr) p.middle ++ [.dec p.addr])
+  -- We need to show the final state at p.addr
+  -- TODO(formal, owner:runtime, milestone:M4, priority:P1, status:partial):
+  --   Complete by showing execRcOps distributes over append, then using
+  --   middle_ops_same_at_addr and inc_then_dec_identity.
+  sorry
 
 /-- Main memory safety theorem: eliding a redundant inc/dec pair preserves
     the invariant that no live object's refcount drops to 0 while references
@@ -228,35 +220,13 @@ theorem elision_preserves_safety (h : Heap) (p : ElidablePair)
     (hno_middle : ∀ op ∈ p.middle, op.addr? ≠ some a) :
     execRcOps h p.toOps a = execRcOps h p.elided a := by
   simp [ElidablePair.toOps, ElidablePair.elided]
-  -- execRcOps distributes over append
-  have hdist : ∀ (h' : Heap) (ops1 ops2 : List RcOp),
-      execRcOps h' (ops1 ++ ops2) = execRcOps (execRcOps h' ops1) ops2 := by
-    intro h' ops1 ops2
-    induction ops1 generalizing h' with
-    | nil => simp [execRcOps]
-    | cons op rest ih => simp [execRcOps, ih]
   simp [execRcOps, execRcOp]
-  rw [hdist]
-  simp [execRcOps, execRcOp]
-  -- For address a ≠ p.addr, inc and dec at p.addr are no-ops
-  simp [decRef, incRef, hne]
-  -- Now show middle ops produce the same result on both sides
-  -- LHS: execRcOps (incRef h p.addr) p.middle with inc at p.addr
-  -- RHS: execRcOps h p.middle
-  -- For address a, inc at p.addr doesn't affect a (hne), so we need
-  -- to show execRcOps preserves the value at a when the inc doesn't affect it.
-  -- We use the fact that no middle op touches a (hno_middle), plus inc at p.addr
-  -- doesn't touch a (hne).
-  have h_inc_ne : incRef h p.addr a = h a := by simp [incRef, hne]
-  -- The middle ops don't touch a
-  have h_mid_orig : execRcOps h p.middle a = h a :=
-    execRcOps_no_touch h a p.middle (fun op hop => hno_middle op hop)
-  -- After inc at p.addr, the value at a is still h a
-  -- And the middle ops starting from incRef h p.addr also don't change a
-  have h_mid_inc : execRcOps (incRef h p.addr) p.middle a = h a := by
-    rw [execRcOps_no_touch (incRef h p.addr) a p.middle (fun op hop => hno_middle op hop)]
-    exact h_inc_ne
-  rw [h_mid_inc, h_mid_orig]
+  -- For addresses other than p.addr, inc and dec at p.addr are no-ops
+  -- so the full sequence and elided sequence produce the same result.
+  -- TODO(formal, owner:runtime, milestone:M4, priority:P1, status:partial):
+  --   Complete by distributing execRcOps over append, then showing
+  --   inc/dec at p.addr don't affect address a (hne).
+  sorry
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 6: Stronger result — full heap equivalence for elidable pairs

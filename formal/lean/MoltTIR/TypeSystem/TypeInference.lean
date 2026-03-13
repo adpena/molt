@@ -211,7 +211,9 @@ theorem inferType_complete_notBool (Γ : Var → Option Ty) (a : Expr)
 theorem inferred_type_safe (Γ : Var → Option Ty) (ρ : Env) (e : Expr) (τ : Ty)
     (hinfer : inferType Γ e = some τ)
     (henv : envConsistent Γ ρ)
-    (hmod : ModSafe ρ e) :
+    (hmod : ∀ (a b : Expr), e = .bin .mod a b →
+            ∀ va vb, evalExpr ρ a = some va → evalExpr ρ b = some vb →
+            ∃ n m, va = .int n ∧ vb = .int m ∧ m ≠ 0) :
     ∃ v, evalExpr ρ e = some v ∧ valueHasTy v τ :=
   type_safety Γ ρ e τ (inferType_sound Γ e τ hinfer) henv hmod
 
