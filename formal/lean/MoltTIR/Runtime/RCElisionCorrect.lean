@@ -308,17 +308,13 @@ theorem precise_drop_transfer (obj : ObjRef) (σ : RCState) (h_init : σ obj = 1
 -- the pair can be elided. We prove this preserves refcounts at function exit.
 -- ══════════════════════════════════════════════════════════════════
 
-/-- An RC elision pass: given a function body, return the optimized body
-    with certain inc/dec pairs removed. Modeled as a relation between
-    original and optimized instruction streams. -/
-structure RCElision where
-  /-- The original instruction stream. -/
-  original : RCFunc
-  /-- The optimized instruction stream. -/
-  optimized : RCFunc
-  /-- Elision witness: the optimized stream is derived from the original
-      by removing zero or more elidable inc/dec pairs. -/
-  valid : ElidedFrom original optimized
+/-- No instruction in the middle sequence touches address `a` (RC version). -/
+def noInterveningUseRC (a : ObjRef) (middle : RCFunc) : Prop :=
+  ∀ instr ∈ middle,
+    instr ≠ .inc_ref a ∧
+    instr ≠ .dec_ref a ∧
+    (∀ sc, instr ≠ .alloc a sc) ∧
+    ¬ storesIntoHeap instr a
 
 /-- Relation: `optimized` is derived from `original` by removing elidable
     inc/dec pairs. Defined inductively:
@@ -340,13 +336,17 @@ inductive ElidedFrom : RCFunc → RCFunc → Prop where
       (h_tail : ElidedFrom orig opt) :
       ElidedFrom (instr :: orig) (instr :: opt)
 
-/-- No instruction in the middle sequence touches address `a` (RC version). -/
-def noInterveningUseRC (a : ObjRef) (middle : RCFunc) : Prop :=
-  ∀ instr ∈ middle,
-    instr ≠ .inc_ref a ∧
-    instr ≠ .dec_ref a ∧
-    (∀ sc, instr ≠ .alloc a sc) ∧
-    ¬ storesIntoHeap instr a
+/-- An RC elision pass: given a function body, return the optimized body
+    with certain inc/dec pairs removed. Modeled as a relation between
+    original and optimized instruction streams. -/
+structure RCElision where
+  /-- The original instruction stream. -/
+  original : RCFunc
+  /-- The optimized instruction stream. -/
+  optimized : RCFunc
+  /-- Elision witness: the optimized stream is derived from the original
+      by removing zero or more elidable inc/dec pairs. -/
+  valid : ElidedFrom original optimized
 
 /-- Helper: executing an instruction that doesn't touch `a` preserves RC at `a`. -/
 theorem execRCInstr_no_touch_RC (σ : RCState) (instr : RCInstr) (a : ObjRef)
@@ -445,8 +445,8 @@ theorem no_use_after_free (body : RCFunc) (obj : ObjRef)
     (h_wf : wellFormedRC body)
     (i j : OpIdx) (h_drop : isDrop body i obj) (h_use : isUse body j obj)
     (h_after : i ≤ j) : False := by
-  have := h_wf obj i j h_drop h_use
-  omega
+  have hlt : j < i := h_wf obj i j h_drop h_use
+  exact Nat.not_le.mpr hlt h_after
 
 /-- Corollary: well-formed RC implies that for every drop-use pair,
     the use strictly precedes the drop (contrapositive of use-after-free). -/

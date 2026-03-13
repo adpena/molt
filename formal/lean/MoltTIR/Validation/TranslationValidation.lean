@@ -36,6 +36,7 @@
 import MoltTIR.Semantics.ExecFunc
 import MoltTIR.Passes.Lattice
 import MoltTIR.Passes.Effects
+import MoltTIR.Passes.SCCPCorrect
 
 set_option autoImplicit false
 
@@ -62,15 +63,13 @@ def ExprEquiv (e1 e2 : Expr) : Prop :=
 
 /-- Equivalence implies forward refinement. -/
 theorem exprEquiv_implies_refines (e1 e2 : Expr) (h : ExprEquiv e1 e2) :
-    ExprRefines e1 e2 := by
-  intro ρ v hout
-  rw [← h ρ]; exact hout
+    ExprRefines e1 e2 :=
+  fun ρ _v hout => (h ρ).symm ▸ hout
 
 /-- Equivalence implies backward refinement. -/
 theorem exprEquiv_implies_refines_rev (e1 e2 : Expr) (h : ExprEquiv e1 e2) :
-    ExprRefines e2 e1 := by
-  intro ρ v hin
-  rw [h ρ]; exact hin
+    ExprRefines e2 e1 :=
+  fun ρ _v hin => (h ρ) ▸ hin
 
 /-- Equivalence is symmetric. -/
 theorem exprEquiv_symm (e1 e2 : Expr) (h : ExprEquiv e1 e2) :
@@ -205,9 +204,8 @@ def ExprEquivUnder (σ : AbsEnv) (e1 e2 : Expr) : Prop :=
 /-- Conditional equivalence implies conditional refinement. -/
 theorem exprEquivUnder_implies_refinesUnder (σ : AbsEnv) (e1 e2 : Expr)
     (h : ExprEquivUnder σ e1 e2) :
-    ExprRefinesUnder σ e1 e2 := by
-  intro ρ hsound v hout
-  rw [← h ρ hsound]; exact hout
+    ExprRefinesUnder σ e1 e2 :=
+  fun ρ hsound _v hout => (h ρ hsound).symm ▸ hout
 
 /-- Unconditional equivalence implies conditional equivalence. -/
 theorem exprEquiv_implies_equivUnder (σ : AbsEnv) (e1 e2 : Expr)

@@ -42061,6 +42061,10 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 return out;
             }
             if type_id == TYPE_ID_TUPLE {
+                let guard = ReprGuard::new(_py, ptr);
+                if !guard.active() {
+                    return "(...)".to_string();
+                }
                 let elems = seq_vec_ref(ptr);
                 let mut out = String::from("(");
                 for (idx, elem) in elems.iter().enumerate() {
@@ -42153,6 +42157,16 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 || type_id == TYPE_ID_DICT_VALUES_VIEW
                 || type_id == TYPE_ID_DICT_ITEMS_VIEW
             {
+                let guard = ReprGuard::new(_py, ptr);
+                if !guard.active() {
+                    return if type_id == TYPE_ID_DICT_KEYS_VIEW {
+                        "dict_keys(...)".to_string()
+                    } else if type_id == TYPE_ID_DICT_VALUES_VIEW {
+                        "dict_values(...)".to_string()
+                    } else {
+                        "dict_items(...)".to_string()
+                    };
+                }
                 let dict_bits = dict_view_dict_bits(ptr);
                 let dict_obj = obj_from_bits(dict_bits);
                 if let Some(dict_ptr) = dict_obj.as_ptr()
