@@ -2893,11 +2893,52 @@ impl SimpleBackend {
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_mul", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        builder.set_cold_block(slow_block);
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
                         let prod = builder.ins().imul(lhs_val, rhs_val);
-                        box_int_value(&mut builder, prod)
+                        let fast_res = box_int_value(&mut builder, prod);
+                        let fits_inline = int_value_fits_inline(&mut builder, prod);
+                        builder
+                            .ins()
+                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        builder.seal_block(fast_block);
+                        jump_block(&mut builder, merge_block, &[fast_res]);
+
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(call)[0];
+                        jump_block(&mut builder, merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
                     } else {
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_mul", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut builder, *lhs);
                         let (rhs_xored, rhs_val) = fused_tag_check_and_unbox_int(&mut builder, *rhs);
                         let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
@@ -2914,19 +2955,18 @@ impl SimpleBackend {
                         builder.seal_block(fast_block);
                         let prod = builder.ins().imul(lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, prod);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
+                        let fits_inline = int_value_fits_inline(&mut builder, prod);
+                        brif_block(
+                            &mut builder,
+                            fits_inline,
+                            merge_block,
+                            &[fast_res],
+                            slow_block,
+                            &[],
+                        );
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
-                        let mut sig = self.module.make_signature();
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.returns.push(AbiParam::new(types::I64));
-                        let callee = self
-                            .module
-                            .declare_function("molt_mul", Linkage::Import, &sig)
-                            .unwrap();
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
@@ -2942,11 +2982,52 @@ impl SimpleBackend {
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_inplace_mul", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        builder.set_cold_block(slow_block);
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
                         let prod = builder.ins().imul(lhs_val, rhs_val);
-                        box_int_value(&mut builder, prod)
+                        let fast_res = box_int_value(&mut builder, prod);
+                        let fits_inline = int_value_fits_inline(&mut builder, prod);
+                        builder
+                            .ins()
+                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        builder.seal_block(fast_block);
+                        jump_block(&mut builder, merge_block, &[fast_res]);
+
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(call)[0];
+                        jump_block(&mut builder, merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
                     } else {
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_inplace_mul", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut builder, *lhs);
                         let (rhs_xored, rhs_val) = fused_tag_check_and_unbox_int(&mut builder, *rhs);
                         let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
@@ -2963,19 +3044,18 @@ impl SimpleBackend {
                         builder.seal_block(fast_block);
                         let prod = builder.ins().imul(lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, prod);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
+                        let fits_inline = int_value_fits_inline(&mut builder, prod);
+                        brif_block(
+                            &mut builder,
+                            fits_inline,
+                            merge_block,
+                            &[fast_res],
+                            slow_block,
+                            &[],
+                        );
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
-                        let mut sig = self.module.make_signature();
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.returns.push(AbiParam::new(types::I64));
-                        let callee = self
-                            .module
-                            .declare_function("molt_inplace_mul", Linkage::Import, &sig)
-                            .unwrap();
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
