@@ -20661,16 +20661,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             true_val = self.visit(node.body)
             if true_val is None:
                 raise NotImplementedError("Unsupported if expression true branch")
+            # Ensure an explicit op in the true branch so the backend sees a
+            # definition local to this branch (otherwise the PHI references a
+            # variable defined before the IF, and the backend can't tell which
+            # branch produced the value).
+            true_alias = MoltValue(self.next_var(), type_hint=true_val.type_hint)
+            self.emit(MoltOp(kind="IDENTITY_ALIAS", args=[true_val], result=true_alias))
             self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
             false_val = self.visit(node.orelse)
             if false_val is None:
                 raise NotImplementedError("Unsupported if expression false branch")
+            false_alias = MoltValue(self.next_var(), type_hint=false_val.type_hint)
+            self.emit(
+                MoltOp(kind="IDENTITY_ALIAS", args=[false_val], result=false_alias)
+            )
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             res_type = "Any"
-            if true_val.type_hint == false_val.type_hint:
-                res_type = true_val.type_hint
+            if true_alias.type_hint == false_alias.type_hint:
+                res_type = true_alias.type_hint
             merged = MoltValue(self.next_var(), type_hint=res_type)
-            self.emit(MoltOp(kind="PHI", args=[true_val, false_val], result=merged))
+            self.emit(MoltOp(kind="PHI", args=[true_alias, false_alias], result=merged))
             return merged
 
         placeholder = MoltValue(self.next_var(), type_hint="None")
@@ -27877,6 +27887,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     json_ops.append(
                         {
                             "kind": lowered_kind,
+                            "args": [op.args[0].name],
+                            "out": op.result.name,
+                        }
+                    )
+            elif op.kind == "IDENTITY_ALIAS":
+                if (
+                    op.args
+                    and isinstance(op.args[0], MoltValue)
+                    and op.result.name != "none"
+                ):
+                    json_ops.append(
+                        {
+                            "kind": "identity_alias",
                             "args": [op.args[0].name],
                             "out": op.result.name,
                         }

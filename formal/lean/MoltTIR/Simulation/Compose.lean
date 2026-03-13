@@ -172,8 +172,8 @@ theorem pipeline_compose_behavioral
   | nil => exact BehavioralEquivalence.refl f
   | cons g rest ih =>
     simp only [List.foldl]
-    apply BehavioralEquivalence.trans
-    · exact ih (g f) (fun g' hg' => sims g' (List.mem_cons_of_mem _ hg'))
+    apply BehavioralEquivalence.trans (f2 := g f)
+    · exact ih (fun g' hg' f' => sims g' (List.mem_cons_of_mem _ hg') f') (g f)
     · exact sims g (List.mem_cons_self _ _) f
 
 -- ══════════════════════════════════════════════════════════════════
