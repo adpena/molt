@@ -19,6 +19,7 @@
      identity. Definitions unchanged, uses may decrease.
 -/
 import MoltTIR.SSA.WellFormedSSA
+import MoltTIR.Semantics.BlockCorrect
 import MoltTIR.Passes.ConstFold
 import MoltTIR.Passes.DCE
 import MoltTIR.Passes.SCCP
@@ -55,9 +56,48 @@ private theorem blocks_map_some_inv (f : Func) (g : Block → Block) (lbl : Labe
   | cons p rest ih =>
     obtain ⟨l, b⟩ := p
     simp only [List.map, List.find?] at *
+    cases hlbl : (l == lbl) <;> simp_all
+
+/-- Generalized inverse for label-dependent block transforms:
+    if the mapped blockList (using label-dependent g) contains a block at lbl,
+    then the original had a block there and the result is g lbl original. -/
+private theorem blocks_map_some_inv_dep (f : Func) (g : Label → Block → Block)
+    (lbl : Label) (blk' : Block)
+    (h : ({ f with blockList := f.blockList.map fun (l, b) => (l, g l b) } : Func).blocks lbl = some blk') :
+    ∃ blk, f.blocks lbl = some blk ∧ blk' = g lbl blk := by
+  simp only [Func.blocks] at *
+  generalize f.blockList = xs at h ⊢
+  induction xs with
+  | nil => simp [List.find?] at h
+  | cons p rest ih =>
+    obtain ⟨l, b⟩ := p
+    simp only [List.map, List.find?] at *
     cases hlbl : (l == lbl)
     · simp [hlbl] at h ⊢; exact ih h
-    · simp [hlbl] at h ⊢; exact ⟨b, rfl, h⟩
+    · simp [hlbl] at h ⊢
+      have := BEq.eq_of_beq hlbl
+      subst this
+      exact ⟨b, rfl, h⟩
+
+/-- Forward direction for label-dependent block transforms:
+    if f.blocks lbl = some blk then the mapped version has g lbl blk. -/
+private theorem blocks_map_some_dep (f : Func) (g : Label → Block → Block)
+    (lbl : Label) (blk : Block)
+    (h : f.blocks lbl = some blk) :
+    ({ f with blockList := f.blockList.map fun (l, b) => (l, g l b) } : Func).blocks lbl
+    = some (g lbl blk) := by
+  simp only [Func.blocks] at *
+  generalize f.blockList = xs at h ⊢
+  induction xs with
+  | nil => simp [List.find?] at h
+  | cons p rest ih =>
+    obtain ⟨l, b⟩ := p
+    simp only [List.map, List.find?] at *
+    cases hlbl : (l == lbl)
+    · simp [hlbl] at h ⊢; exact ih h
+    · simp [hlbl] at h ⊢
+      have := BEq.eq_of_beq hlbl
+      subst this; subst h; rfl
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 2: Constant folding preserves SSA
@@ -153,11 +193,13 @@ private theorem constFold_isSuccessor_iff (f : Func) (l1 l2 : Label) :
   constructor
   · intro ⟨blk', hblk', hsucc'⟩
     obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_inv f constFoldBlock l1 blk' hblk'
-    rw [constFoldTerminator_successors] at hsucc'
+    simp only [constFoldBlock, constFoldTerminator_successors] at hsucc'
     exact ⟨blk, hblk, hsucc'⟩
   · intro ⟨blk, hblk, hsucc⟩
     have hblk' := blocks_map_some f constFoldBlock l1 blk hblk
-    rw [← constFoldTerminator_successors] at hsucc
+    have hterm : termSuccessors (constFoldBlock blk).term = termSuccessors blk.term := by
+      simp only [constFoldBlock, constFoldTerminator_successors]
+    rw [hterm]
     exact ⟨constFoldBlock blk, hblk', hsucc⟩
 
 theorem constFold_preserves_ssa (f : Func) (h : SSAWellFormed f) :
@@ -289,10 +331,53 @@ theorem sccp_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     unfold sccpFunc
     exact mapFunc_blocks_isSome_gen (fun ⟨l, _⟩ => by simp) h.entry_exists
 
+/-- sccpMultiBlock preserves instruction destinations. -/
+private theorem sccpMultiBlock_instrs_dsts (σ : AbsEnv) (b : Block) :
+    (sccpMultiBlock σ b).instrs.map Instr.dst = b.instrs.map Instr.dst := by
+  unfold sccpMultiBlock; simp; exact sccpInstrs_dsts σ b.instrs
+
+/-- sccpMultiBlock preserves block params. -/
+private theorem sccpMultiBlock_params (σ : AbsEnv) (b : Block) :
+    (sccpMultiBlock σ b).params = b.params := by
+  unfold sccpMultiBlock; simp
+
+/-- sccpMultiBlock preserves all block definitions. -/
+private theorem sccpMultiBlock_defs (σ : AbsEnv) (b : Block) :
+    blockAllDefs (sccpMultiBlock σ b) = blockAllDefs b := by
+  simp only [blockAllDefs, sccpMultiBlock_params, sccpMultiBlock_instrs_dsts]
+
+/-- DefinedIn equivalence for sccpMultiApply. -/
+private theorem sccpMulti_definedIn_iff (f : Func) (st : SCCPState) (v : Var) (lbl : Label) :
+    DefinedIn (sccpMultiApply f st) v lbl ↔ DefinedIn f v lbl := by
+  constructor
+  · intro ⟨blk', hblk', hdef'⟩
+    obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_inv_dep
+      f (fun l b => sccpMultiBlock (st.blockStates l |>.inEnv) b) lbl blk'
+      (by unfold sccpMultiApply at hblk'; exact hblk')
+    rw [sccpMultiBlock_defs] at hdef'
+    exact ⟨blk, hblk, hdef'⟩
+  · intro ⟨blk, hblk, hdef⟩
+    have hblk' := blocks_map_some_dep
+      f (fun l b => sccpMultiBlock (st.blockStates l |>.inEnv) b) lbl blk hblk
+    rw [← sccpMultiBlock_defs] at hdef
+    exact ⟨sccpMultiBlock (st.blockStates lbl |>.inEnv) blk, hblk', hdef⟩
+
 /-- Multi-block SCCP preserves SSA. -/
 theorem sccpMulti_preserves_ssa (f : Func) (fuel : Nat) (h : SSAWellFormed f) :
     SSAWellFormed (sccpMultiFunc f fuel) := by
-  sorry
+  unfold sccpMultiFunc
+  constructor
+  · -- unique_defs: dsts preserved by sccpMultiBlock_defs
+    intro v lbl₁ lbl₂ hdef₁ hdef₂
+    have hdef₁' := (sccpMulti_definedIn_iff f _ v lbl₁).mp hdef₁
+    have hdef₂' := (sccpMulti_definedIn_iff f _ v lbl₂).mp hdef₂
+    exact h.unique_defs v lbl₁ lbl₂ hdef₁' hdef₂'
+  · sorry  -- use_dom_def: dominance unchanged; requires CFG equivalence lifting
+  · -- Entry preserved
+    show ((sccpMultiApply f (sccpWorklist f fuel)).blocks
+          (sccpMultiApply f (sccpWorklist f fuel)).entry).isSome
+    unfold sccpMultiApply
+    exact mapFunc_blocks_isSome_gen (fun ⟨l, _⟩ => by simp) h.entry_exists
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 5: CSE preserves SSA
@@ -311,10 +396,8 @@ private theorem cseInstrs_dsts (avail : AvailMap) (instrs : List Instr) :
   induction instrs generalizing avail with
   | nil => simp [cseInstrs]
   | cons i rest ih =>
-    simp only [cseInstrs, List.map]
-    congr 1
-    · exact cseInstr_dst (avail) i
-    · exact ih _
+    simp only [cseInstrs, List.map, cseInstr_dst]
+    exact congrArg _ (ih _)
 
 private theorem cseBlock_params (b : Block) :
     (cseBlock b).params = b.params := by
@@ -493,20 +576,46 @@ theorem edgeThreadBlock_instrs (σ : AbsEnv) (b : Block) :
     (edgeThreadBlock σ b).instrs = b.instrs := by
   unfold edgeThreadBlock; rfl
 
+/-- Edge threading preserves block params. -/
+private theorem edgeThreadBlock_params (σ : AbsEnv) (b : Block) :
+    (edgeThreadBlock σ b).params = b.params := by
+  unfold edgeThreadBlock; rfl
+
+/-- Edge threading preserves all block definitions. -/
+private theorem edgeThreadBlock_defs (σ : AbsEnv) (b : Block) :
+    blockAllDefs (edgeThreadBlock σ b) = blockAllDefs b := by
+  simp only [blockAllDefs, edgeThreadBlock_instrs, edgeThreadBlock_params]
+
+/-- DefinedIn equivalence for edgeThreadFunc. -/
+private theorem edgeThread_definedIn_iff (f : Func) (st : SCCPState) (v : Var) (lbl : Label) :
+    DefinedIn (edgeThreadFunc f st) v lbl ↔ DefinedIn f v lbl := by
+  constructor
+  · intro ⟨blk', hblk', hdef'⟩
+    obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_inv_dep
+      f (fun l b => edgeThreadBlock (st.blockStates l |>.inEnv) b) lbl blk'
+      (by unfold edgeThreadFunc at hblk'; exact hblk')
+    rw [edgeThreadBlock_defs] at hdef'
+    exact ⟨blk, hblk, hdef'⟩
+  · intro ⟨blk, hblk, hdef⟩
+    have hblk' := blocks_map_some_dep
+      f (fun l b => edgeThreadBlock (st.blockStates l |>.inEnv) b) lbl blk hblk
+    rw [← edgeThreadBlock_defs] at hdef
+    exact ⟨edgeThreadBlock (st.blockStates lbl |>.inEnv) blk, hblk', hdef⟩
+
 /-- Edge threading preserves SSA: only terminators change.
     Edge threading only removes edges (br->jmp removes one successor).
     Removing edges cannot break dominance of existing def-use pairs:
     a definition that dominated a use via all paths still dominates
     via the subset of paths that remain. -/
-
 theorem edgeThread_preserves_ssa (f : Func) (st : SCCPState) (h : SSAWellFormed f) :
     SSAWellFormed (edgeThreadFunc f st) := by
   constructor
-  · -- unique_defs: instructions unchanged. EdgeThreadFunc uses a label-dependent
-    -- block transform (st.blockStates lbl), so blocks_map_some_inv (uniform g)
-    -- doesn't directly apply. Requires a generalized label-dependent inverse lemma.
-    sorry
-  · sorry  -- Dominance preserved (edge removal only)
+  · -- unique_defs: instructions unchanged, using label-dependent inverse lemma
+    intro v lbl₁ lbl₂ hdef₁ hdef₂
+    have hdef₁' := (edgeThread_definedIn_iff f st v lbl₁).mp hdef₁
+    have hdef₂' := (edgeThread_definedIn_iff f st v lbl₂).mp hdef₂
+    exact h.unique_defs v lbl₁ lbl₂ hdef₁' hdef₂'
+  · sorry  -- Dominance preserved (edge removal only strengthens dominance)
   · -- Entry preserved
     show ((edgeThreadFunc f st).blocks (edgeThreadFunc f st).entry).isSome
     unfold edgeThreadFunc
