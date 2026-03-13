@@ -148,9 +148,9 @@ theorem int_mask_sub_pointer : INT_MASK &&& POINTER_MASK = INT_MASK := by native
 -- Section 4: Tag injectivity — different types produce different tags
 -- ══════════════════════════════════════════════════════════════════
 
-/-- The tag-check field uniquely identifies the type.
-    This is the foundation of NaN-box type safety: no two distinct
-    value types can produce the same TAG_CHECK-masked bits. -/
+-- The tag-check field uniquely identifies the type.
+-- This is the foundation of NaN-box type safety: no two distinct
+-- value types can produce the same TAG_CHECK-masked bits.
 
 /-- Int encoding always has the INT tag in the TAG_CHECK field. -/
 theorem int_tag_field (i : Int) :
@@ -304,7 +304,7 @@ def xorTagCheck (bits : UInt64) : UInt64 := bits ^^^ EXPECTED_INT_TAG
 /-- The fused tag check: (xored >>> 47) == 0 iff the value was an int.
     Models the backend's `ushr(xored, INT_WIDTH)` followed by `icmp_imm == 0`. -/
 def fusedIsInt (bits : UInt64) : Bool :=
-  (xorTagCheck bits) >>> INT_WIDTH = 0
+  ((xorTagCheck bits) >>> (47 : UInt64)) == (0 : UInt64)
 
 /-- Fused XOR check agrees with the mask-based IsInt predicate.
     This proves the backend's optimization is correct: XOR against the expected
@@ -410,7 +410,7 @@ def fusedBothInt (a b : UInt64) : Bool :=
   let xa := xorTagCheck a
   let xb := xorTagCheck b
   let combined := xa ||| xb
-  combined >>> INT_WIDTH = 0
+  ((combined >>> (47 : UInt64)) == (0 : UInt64))
 
 /-- The BOR dual check is equivalent to checking both operands individually.
     This proves the backend's optimization is sound: OR-ing the XOR'd values

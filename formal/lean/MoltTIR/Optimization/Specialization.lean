@@ -145,6 +145,38 @@ theorem specialization_is_refinement
   | some false => exact Or.inl rfl
   | none => exact Or.inr rfl
 
+/-- evalGuard returns some when the guard variable is defined. -/
+theorem evalGuard_isSome (ρ : Env) (g : TypeGuard)
+    (hdef : (ρ g.var).isSome = true) :
+    (evalGuard ρ g).isSome = true := by
+  unfold evalGuard
+  cases hv : ρ g.var with
+  | none => simp [hv] at hdef
+  | some v => simp
+
+/-- evalGuards returns some when all guard variables are defined. -/
+theorem evalGuards_isSome (ρ : Env) (guards : List TypeGuard)
+    (hdef : ∀ g ∈ guards, (ρ g.var).isSome = true) :
+    (evalGuards ρ guards).isSome = true := by
+  induction guards with
+  | nil => simp [evalGuards]
+  | cons g gs ih =>
+    simp [evalGuards]
+    have hg_def := hdef g (List.mem_cons_self _ _)
+    have hgs_def : ∀ g' ∈ gs, (ρ g'.var).isSome = true :=
+      fun g' hg' => hdef g' (List.mem_cons_of_mem _ hg')
+    cases heg : evalGuard ρ g with
+    | none =>
+      have := evalGuard_isSome ρ g hg_def
+      simp [heg] at this
+    | some b =>
+      simp [heg]
+      cases b with
+      | true =>
+        simp
+        exact ih hgs_def
+      | false => simp
+
 /-- Stronger version: when the environment is well-formed (all guard
     variables are defined), the specialization always produces the same
     result as generic. -/
@@ -163,11 +195,11 @@ theorem specialization_always_equiv
     -- This case is impossible: all guard vars are defined, so evalGuards
     -- cannot return none.
     exfalso
-    -- TODO(formal, owner:compiler, milestone:M4, priority:P1, status:partial):
-    --   Prove that evalGuards returns some when all guard vars are defined.
-    --   Requires an induction on op.guards showing evalGuard returns some
-    --   when the var is defined.
-    sorry
+    -- evalGuards returns some when all guard vars are defined.
+    have : (evalGuards ρ op.guards).isSome = true := by
+      have := evalGuards_isSome ρ op.guards hguards_defined
+      exact this
+    simp [hg] at this
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 5: Concrete specialization examples

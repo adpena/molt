@@ -63,7 +63,7 @@ theorem absEvalExpr_sound (σ : AbsEnv) (ρ : Env) (e : Expr)
     (hsound : AbsEnvSound σ ρ) (cv : Value)
     (ha : absEvalExpr σ e = .known cv) :
     evalExpr ρ e = some cv := by
-  induction e with
+  induction e generalizing cv with
   | val v =>
     simp [absEvalExpr] at ha
     simp [evalExpr, ha]
@@ -80,13 +80,33 @@ theorem absEvalExpr_sound (σ : AbsEnv) (ρ : Env) (e : Expr)
     -- computed from the actual execution, which guarantees ρ x is defined.
     sorry  -- requires definedness assumption (see note below)
   | bin op a b iha ihb =>
-    -- TODO(formal, owner:compiler, milestone:M5, priority:P1, status:partial):
-    -- The bin case requires careful case analysis on absEvalExpr results.
-    sorry
+    simp only [absEvalExpr] at ha
+    -- Case split on the abstract results of a and b
+    cases ha_abs : absEvalExpr σ a <;> cases hb_abs : absEvalExpr σ b <;>
+      simp [ha_abs, hb_abs, absEvalBinOp] at ha
+    -- The only non-trivial case: both are .known
+    · rename_i va vb
+      -- ha : (match evalBinOp op va vb with ...) = .known cv
+      split at ha
+      · -- evalBinOp op va vb = some v
+        rename_i v heval
+        cases ha
+        -- Now v = cv (from AbsVal.known injection)
+        have ha_eq := iha va ha_abs
+        have hb_eq := ihb vb hb_abs
+        simp [evalExpr, ha_eq, hb_eq, heval]
+      · -- evalBinOp op va vb = none → result is .overdefined, not .known cv
+        exact absurd ha (by simp [AbsVal.noConfusion])
   | un op a iha =>
-    -- TODO(formal, owner:compiler, milestone:M5, priority:P1, status:partial):
-    -- Same structure as bin case.
-    sorry
+    simp only [absEvalExpr] at ha
+    cases ha_abs : absEvalExpr σ a <;> simp [ha_abs, absEvalUnOp] at ha
+    · rename_i va
+      split at ha
+      · rename_i v heval
+        cases ha
+        have ha_eq := iha va ha_abs
+        simp [evalExpr, ha_eq, heval]
+      · exact absurd ha (by simp [AbsVal.noConfusion])
 
 /-
   NOTE on the `sorry` in the var case:
@@ -150,7 +170,25 @@ theorem absEnvStrongSound_set (σ : AbsEnv) (ρ : Env) (x : Var) (v : Value) (a 
     AbsEnvStrongSound (σ.set x a) (ρ.set x v) := by
   constructor
   · exact absEnvSound_set σ ρ x v a hsound.1 hconc
-  · sorry
+  · intro y w hy
+    unfold AbsEnv.set at hy
+    unfold Env.set
+    by_cases heq : y = x
+    · -- y = x: hy says a = .known w
+      simp [heq] at hy ⊢
+      -- From hdef: a = .known w → w = v, so w = v
+      -- hdef : a = .known v ∨ a ≠ .known v → ∀ w, a = .known w → w = v
+      -- We can provide either disjunct.
+      -- We know a = .known w from hy. Need a = .known v or a ≠ .known v.
+      -- By cases on whether v = w:
+      have hw_eq : w = v := by
+        by_cases hvw : a = .known v
+        · exact hdef (Or.inl hvw) w hy
+        · exact hdef (Or.inr hvw) w hy
+      rw [hw_eq]
+    · -- y ≠ x: use original strong soundness
+      simp [heq] at hy ⊢
+      exact hsound.2 y w hy
 
 /-- Abstract expression evaluation is sound under strong soundness.
     This version has NO sorry for the var case — the var case uses the
@@ -161,15 +199,35 @@ theorem absEvalExpr_strong_sound (σ : AbsEnv) (ρ : Env) (e : Expr)
     (hsound : AbsEnvStrongSound σ ρ) (cv : Value)
     (ha : absEvalExpr σ e = .known cv) :
     evalExpr ρ e = some cv := by
-  induction e with
+  induction e generalizing cv with
   | val v =>
     simp [absEvalExpr] at ha
     simp [evalExpr, ha]
   | var x =>
     simp [absEvalExpr] at ha
     exact hsound.2 x cv ha
-  | bin op a b iha ihb => sorry
-  | un op a iha => sorry
+  | bin op a b iha ihb =>
+    simp only [absEvalExpr] at ha
+    cases ha_abs : absEvalExpr σ a <;> cases hb_abs : absEvalExpr σ b <;>
+      simp [ha_abs, hb_abs, absEvalBinOp] at ha
+    · rename_i va vb
+      split at ha
+      · rename_i v heval
+        cases ha
+        have ha_eq := iha va ha_abs
+        have hb_eq := ihb vb hb_abs
+        simp [evalExpr, ha_eq, hb_eq, heval]
+      · exact absurd ha (by simp [AbsVal.noConfusion])
+  | un op a iha =>
+    simp only [absEvalExpr] at ha
+    cases ha_abs : absEvalExpr σ a <;> simp [ha_abs, absEvalUnOp] at ha
+    · rename_i va
+      split at ha
+      · rename_i v heval
+        cases ha
+        have ha_eq := iha va ha_abs
+        simp [evalExpr, ha_eq, heval]
+      · exact absurd ha (by simp [AbsVal.noConfusion])
 
 /-- SCCP-transformed expressions preserve semantics when the abstract
     value is known (main pass correctness, modulo definedness).
