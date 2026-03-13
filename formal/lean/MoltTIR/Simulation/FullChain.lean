@@ -36,8 +36,6 @@ import MoltTIR.Simulation.Adequacy
 import MoltTIR.Passes.FullPipeline
 import MoltTIR.Backend.LuauCorrect
 import MoltTIR.Runtime.WasmNativeCorrect
--- TODO(formal, owner:compiler, milestone:M4, priority:P1, status:partial):
--- MoltTIR.EndToEnd is not in lakefile roots; olean unavailable.
 -- import MoltTIR.EndToEnd
 import MoltLowering.Correct
 
@@ -270,9 +268,7 @@ theorem full_pipeline_observable_equiv (f : Func) :
 theorem full_pipeline_cross_target_agreement :
     Runtime.WasmNativeCorrect.nativeLayout = Runtime.WasmNativeCorrect.wasmLayout ∧
     Runtime.WasmNativeCorrect.nativeCallConv = Runtime.WasmNativeCorrect.wasmCallConv :=
-  -- TODO(formal, owner:compiler, milestone:M4, priority:P1, status:partial):
-  -- Requires endToEnd_wasm_native_agree from MoltTIR.EndToEnd (not in lakefile roots).
-  sorry
+  ⟨rfl, rfl⟩
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 8: Adequacy integration
@@ -297,7 +293,7 @@ theorem full_pipeline_adequate (f : Func) :
   (composes Phase 1 + Phase 2 + Phase 3 without sorry)
 - `full_pipeline_preserves_semantics_default` — same with safe defaults
 - `full_pipeline_observable_equiv` — function-level observable equivalence
-- `full_pipeline_cross_target_agreement` — native/WASM target agreement
+- `full_pipeline_cross_target_agreement` — native/WASM target agreement (proven)
 - `full_pipeline_adequate` — adequacy (contextual equivalence)
 - `behavioral_to_observable` — bridge lemma
 - `phase1_lowering_correct` — Phase 1 re-export
