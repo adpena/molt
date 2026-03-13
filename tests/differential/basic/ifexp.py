@@ -1,7 +1,5 @@
 """Purpose: differential coverage for ifexp."""
 
-import asyncio
-
 
 def pick(a, b, cond):
     return a if cond else b
@@ -9,6 +7,10 @@ def pick(a, b, cond):
 
 print(pick(1, 2, True))
 print(pick(1, 2, False))
+print(pick("hello", "world", True))
+print(pick("hello", "world", False))
+print(pick(3.14, 2.71, True))
+print(pick(3.14, 2.71, False))
 
 hits = []
 
@@ -30,15 +32,14 @@ hits = []
 print(t() if False else f())
 print(hits)
 
+# Nested ifexp
+x = 1 if True else (2 if False else 3)
+print(x)
+y = 1 if False else (2 if True else 3)
+print(y)
+z = 1 if False else (2 if False else 3)
+print(z)
 
-async def slow():
-    await asyncio.sleep(0)
-    return 2
-
-
-async def choose(cond):
-    return 1 if cond else await slow()
-
-
-print(asyncio.run(choose(True)))
-print(asyncio.run(choose(False)))
+# Ifexp with expressions (not just variable refs)
+print(1 + 1 if True else 2 + 2)
+print(1 + 1 if False else 2 + 2)

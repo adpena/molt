@@ -120,8 +120,6 @@ theorem fullPipeline_semantically_idempotent
     evalExpr ρ (fullPipelineExpr σ avail e) := by
   -- Both sides evaluate to evalExpr ρ e
   rw [fullPipelineExpr_correct σ ρ (fullPipelineExpr σ avail e) avail hsound havail]
-  -- Now we have: evalExpr ρ (fullPipelineExpr σ avail e) = evalExpr ρ (fullPipelineExpr σ avail e)
-  rfl
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 3: Monotonicity — adding passes preserves correctness
