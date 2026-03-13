@@ -241,53 +241,10 @@ theorem transformation_preserves_observations
     = readObj (execScopeOps s_stack ops) store a := by
   -- Both allocation strategies keep the object live until scope exit / free.
   -- Since neither occurs in ops, both are live, so reads are equal.
-  simp
-  have h_heap_live : ∀ op ∈ ops, op ≠ .exitScope scope := hno_exit
-  have h_heap_nofree : ∀ op ∈ ops, op ≠ .freeHeap a := hno_free
-  have h_heap_alive := stack_live_before_exit
-    (fun x => if x = a then some (.stack scope) else none)
-    a scope (by simp) ops h_heap_live h_heap_nofree
-  have h_stack_alive := stack_live_before_exit
-    (fun x => if x = a then some (.stack scope) else none)
-    a scope (by simp) ops h_heap_live h_heap_nofree
-  -- For the heap allocation state, we need a similar lemma
-  -- heap_survives_scope_exit shows heap allocs survive scope exit,
-  -- but we need to show heap allocs survive all ops (no freeHeap a).
-  -- We use a helper: heap allocation is preserved by all ops that are not freeHeap a.
-  have h_heap_state : execScopeOps (fun x => if x = a then some .heap else none)
-      ops a = some .heap := by
-    induction ops generalizing with
-    | nil => simp [execScopeOps]
-    | cons op rest ih =>
-      simp [execScopeOps]
-      have hne_free : op ≠ .freeHeap a := hno_free op (List.mem_cons_self _ _)
-      have hne_exit : op ≠ .exitScope scope := hno_exit op (List.mem_cons_self _ _)
-      have hrest_exit : ∀ op ∈ rest, op ≠ .exitScope scope :=
-        fun o ho => hno_exit o (List.mem_cons_of_mem _ ho)
-      have hrest_free : ∀ op ∈ rest, op ≠ .freeHeap a :=
-        fun o ho => hno_free o (List.mem_cons_of_mem _ ho)
-      apply ih hrest_exit hrest_free
-      cases op with
-      | alloc addr' kind =>
-        simp [execScopeOp]
-        by_cases h : a = addr'
-        · simp [h]
-        · simp [h]
-      | use _ => simp [execScopeOp]
-      | exitScope sc =>
-        simp [execScopeOp]
-      | freeHeap addr' =>
-        have : a ≠ addr' := fun h => hne_free (h ▸ rfl)
-        simp [execScopeOp, this]
-  -- Now both states are some at address a
-  have h1 : (execScopeOps (fun x => if x = a then some .heap else none) ops a).isSome = true := by
-    rw [h_heap_state]; simp
-  have h2 : (execScopeOps (fun x => if x = a then some (.stack scope) else none) ops a).isSome = true := by
-    rw [h_stack_alive]; simp
-  exact alloc_kind_does_not_affect_reads
-    (execScopeOps (fun x => if x = a then some .heap else none) ops)
-    (execScopeOps (fun x => if x = a then some (.stack scope) else none) ops)
-    store a h1 h2
+  -- TODO(formal, owner:runtime, milestone:M4, priority:P1, status:partial):
+  --   Complete by induction on ops, showing both states remain `some _`
+  --   at address `a` throughout, then applying alloc_kind_does_not_affect_reads.
+  sorry
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 7: Escape analysis correctness — non-escaping ↔ stack-safe
