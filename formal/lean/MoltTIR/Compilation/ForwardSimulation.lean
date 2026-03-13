@@ -43,6 +43,7 @@ import MoltTIR.Simulation.Compose
 import MoltTIR.Simulation.Adequacy
 import MoltTIR.Passes.FullPipeline
 import MoltLowering.ASTtoTIR
+import MoltLowering.Correct
 import MoltPython.Semantics.EvalExpr
 
 set_option autoImplicit false
@@ -320,16 +321,11 @@ def DeterministicPassSimulation.compose
     rw [sim2.preserves_exec (g1 f) fuel ρ lbl]
     rw [sim1.preserves_exec f fuel ρ lbl]
 
-/-- Compose a list of deterministic pass simulations. -/
-def DeterministicPassSimulation.composeList
-    (passes : List (Σ g : MoltTIR.Func -> MoltTIR.Func, DeterministicPassSimulation g)) :
-    DeterministicPassSimulation
-      (passes.foldr (fun ⟨g, _⟩ acc => g ∘ acc) id) := by
-  induction passes with
-  | nil =>
-    exact { preserves_exec := fun _ _ _ _ => rfl }
-  | cons ⟨g, sim⟩ rest ih =>
-    exact DeterministicPassSimulation.compose ih sim
+-- TODO(formal, owner:compiler, milestone:M4, priority:P2, status:partial):
+-- composeList requires Σ (dependent pair) but DeterministicPassSimulation
+-- lives in Prop in Lean 4.16 (subsingleton elimination). Needs restructuring
+-- to use PSigma or a different encoding.
+-- def DeterministicPassSimulation.composeList ... := sorry
 
 -- ======================================================================
 -- Section 6: Expression-Level Phase Simulations (concrete instances)
@@ -431,95 +427,26 @@ theorem fullPipelineFunc_behavioral_equiv (f : MoltTIR.Func) :
   -- The expression-level correctness of both passes is already proven.
   -- The gap is lifting to function level, same pattern as DCE/SCCP/CSE.
 
-/-- The full pipeline produces observably equivalent functions. -/
+/-- The full pipeline produces observably equivalent functions.
+    TODO(formal, owner:compiler, milestone:M4, priority:P1, status:partial):
+    ObservablyEquivalent and behavioral_to_observable are not yet defined. -/
 theorem fullPipelineFunc_observable_equiv (f : MoltTIR.Func) :
-    ObservablyEquivalent (fullPipelineFunc f) f := by
-  exact behavioral_to_observable (fullPipelineFunc_behavioral_equiv f)
+    BehavioralEquivalence (fullPipelineFunc f) f := by
+  sorry
 
 -- ======================================================================
 -- Section 8: Three-Phase Composition (Expression Level)
 -- ======================================================================
 
-/-- The three-phase composition at expression level.
-
-    Given all phase preconditions, the full pipeline from Python expression
-    to backend code preserves evaluation semantics.
-
-    This re-exports full_pipeline_preserves_semantics from FullChain.lean
-    in the ForwardSimulation vocabulary, establishing the connection between
-    the per-phase simulations and the end-to-end guarantee. -/
-theorem three_phase_expr_correct
-    -- Phase 1: Lowering
-    (nm : MoltLowering.NameMap) (pyEnv : MoltPython.PyEnv) (tirEnv : MoltTIR.Env)
-    (henv : MoltLowering.envCorr nm pyEnv tirEnv)
-    (fuel : Nat) (hfuel : fuel > 0)
-    (e : MoltPython.PyExpr)
-    (te : MoltTIR.Expr) (hlower : MoltLowering.lowerExpr nm e = some te)
-    (pv : MoltPython.PyValue) (heval : MoltPython.evalPyExpr fuel pyEnv e = some pv)
-    (tv : MoltTIR.Value) (hlv : MoltLowering.lowerValue pv = some tv)
-    -- Phase 2: Midend
-    (σ : AbsEnv) (avail : AvailMap)
-    (hsound : AbsEnvSound σ tirEnv)
-    (havail : AvailMapSound avail tirEnv)
-    -- Phase 3: Backend (Luau)
-    (names : Backend.VarNames) (lenv : Backend.LuauEnv)
-    (hcorr : Backend.LuauEnvCorresponds names tirEnv lenv) :
-    -- Conclusion
-    Backend.evalLuauExpr lenv
-      (Backend.emitExpr names (fullPipelineExpr σ avail te)) =
-      some (Backend.valueToLuau tv) := by
-  -- Phase 1: Lowering preserves evaluation
-  have h1 : evalExpr tirEnv te = some tv :=
-    loweringSimulation.preserves_eval nm pyEnv tirEnv henv fuel hfuel
-      e te hlower pv heval tv hlv
-  -- Phase 2: Midend preserves evaluation
-  have h2 : evalExpr tirEnv (fullPipelineExpr σ avail te) = some tv := by
-    rw [midendSimulation.preserves_expr σ tirEnv te avail hsound havail]
-    exact h1
-  -- Phase 3: Backend preserves evaluation
-  exact Backend.emitExpr_correct names tirEnv lenv
-    (fullPipelineExpr σ avail te) tv hcorr h2
-
--- ======================================================================
--- Section 9: Three-Phase Composition (Rust Backend)
--- ======================================================================
-
-/-- Three-phase composition with the Rust backend instead of Luau.
-
-    The same pipeline correctness holds when targeting Rust emission.
-    The proof structure is identical --- only the backend correctness
-    theorem changes (RustCorrect.emitRustExpr_correct vs LuauCorrect.emitExpr_correct). -/
-theorem three_phase_expr_correct_rust
-    -- Phase 1: Lowering
-    (nm : MoltLowering.NameMap) (pyEnv : MoltPython.PyEnv) (tirEnv : MoltTIR.Env)
-    (henv : MoltLowering.envCorr nm pyEnv tirEnv)
-    (fuel : Nat) (hfuel : fuel > 0)
-    (e : MoltPython.PyExpr)
-    (te : MoltTIR.Expr) (hlower : MoltLowering.lowerExpr nm e = some te)
-    (pv : MoltPython.PyValue) (heval : MoltPython.evalPyExpr fuel pyEnv e = some pv)
-    (tv : MoltTIR.Value) (hlv : MoltLowering.lowerValue pv = some tv)
-    -- Phase 2: Midend
-    (σ : AbsEnv) (avail : AvailMap)
-    (hsound : AbsEnvSound σ tirEnv)
-    (havail : AvailMapSound avail tirEnv)
-    -- Phase 3: Backend (Rust)
-    (rnames : Backend.RustVarNames) (renv : Backend.RustEnv)
-    (hcorr : Backend.RustEnvCorresponds rnames tirEnv renv) :
-    -- Conclusion
-    Backend.evalRustExpr renv
-      (Backend.emitRustExpr rnames (fullPipelineExpr σ avail te)) =
-      some (Backend.valueToRust tv) := by
-  -- Phase 1
-  have h1 : evalExpr tirEnv te = some tv :=
-    loweringSimulation.preserves_eval nm pyEnv tirEnv henv fuel hfuel
-      e te hlower pv heval tv hlv
-  -- Phase 2
-  have h2 : evalExpr tirEnv (fullPipelineExpr σ avail te) = some tv := by
-    rw [midendSimulation.preserves_expr σ tirEnv te avail hsound havail]
-    exact h1
-  -- Phase 3
-  exact Backend.emitRustExpr_correct rnames tirEnv renv
-    (fullPipelineExpr σ avail te) tv hcorr h2
+-- TODO(formal, owner:compiler, milestone:M4, priority:P1, status:planned):
+-- three_phase_expr_correct and three_phase_expr_correct_rust require
+-- Backend.VarNames, Backend.LuauEnv, Backend.RustEnv, and related types
+-- which are not yet defined. Commented out pending backend formalization.
+/-
+/-- The three-phase composition at expression level. -/
+theorem three_phase_expr_correct ... := sorry
+theorem three_phase_expr_correct_rust ... := sorry
+-/
 
 -- ======================================================================
 -- Section 10: Proof Status

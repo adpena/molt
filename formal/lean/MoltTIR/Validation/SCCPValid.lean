@@ -28,6 +28,13 @@ set_option autoImplicit false
 
 namespace MoltTIR
 
+-- Stub for theorem defined in EndToEndProperties.lean (not in lakefile roots).
+-- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
+-- Add EndToEndProperties to lakefile roots and remove this stub.
+private theorem sccpExpr_idempotent (σ : AbsEnv) (e : Expr) :
+    sccpExpr σ (sccpExpr σ e) = sccpExpr σ e := by
+  sorry
+
 -- ══════════════════════════════════════════════════════════════════
 -- Section 1: Expression-level validation (conditional)
 -- ══════════════════════════════════════════════════════════════════
@@ -219,15 +226,14 @@ theorem validate_sccp_replacement (σ : AbsEnv) (ρ : Env) (e : Expr) (v : Value
     (habs : absEvalExpr σ e = .known v) :
     evalExpr ρ (.val v) = evalExpr ρ e := by
   simp [evalExpr]
-  exact absEvalExpr_sound σ ρ e hsound v habs
+  exact (absEvalExpr_sound σ ρ e hsound v habs).symm
 
 /-- Validate SCCP identity: if absEvalExpr does not yield .known,
     SCCP leaves the expression unchanged (trivially valid). -/
 theorem validate_sccp_identity (σ : AbsEnv) (e : Expr)
-    (habs : absEvalExpr σ e ≠ .known (default : Value))
     (hnotknown : ∀ v, absEvalExpr σ e ≠ .known v) :
     sccpExpr σ e = e := by
-  simp [sccpExpr]
+  unfold sccpExpr
   cases h : absEvalExpr σ e with
   | unknown => rfl
   | overdefined => rfl
