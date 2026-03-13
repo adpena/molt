@@ -200,14 +200,28 @@ def _compute_successors(
         if op.kind == "IF":
             add_succ(block_id, next_block)
             false_idx = control.if_to_else.get(op_idx)
-            if false_idx is None:
+            if false_idx is not None:
+                # The IF's false branch should target the first op AFTER the
+                # ELSE marker (the actual else-content), not the ELSE marker
+                # block itself.  The ELSE marker terminates the then-path and
+                # jumps to END_IF; it must not be the entry point for the
+                # else-path, otherwise the else-content block has no predecessor
+                # and becomes unreachable.
+                add_succ(block_id, block_for_index(false_idx + 1))
+            else:
                 false_idx = control.if_to_end.get(op_idx)
-            add_succ(block_id, block_for_index(false_idx))
+                add_succ(block_id, block_for_index(false_idx))
             continue
         if op.kind == "ELSE":
             end_if_idx = control.else_to_end.get(op_idx)
-            after_end_if = None if end_if_idx is None else end_if_idx + 1
-            add_succ(block_id, block_for_index(after_end_if))
+            # Target the END_IF block itself (not end_if_idx + 1) — END_IF
+            # is a block leader so it starts its own block which falls through
+            # to the merge point.  Using end_if_idx + 1 produces an out-of-
+            # bounds index when END_IF is the last op, silently giving the
+            # ELSE block zero successors and making the else-content block
+            # unreachable.  That breaks liveness and allows the CSE/DCE to
+            # incorrectly eliminate ops inside else branches.
+            add_succ(block_id, block_for_index(end_if_idx))
             continue
         if op.kind == "LOOP_BREAK":
             owner = control.loop_owner.get(op_idx)
