@@ -38,6 +38,7 @@ lean_lib MoltTIR where
              `MoltTIR.Backend.LuauCorrect,
              `MoltTIR.Runtime.NanBox, `MoltTIR.Runtime.NanBoxCorrect,
              `MoltTIR.Runtime.Refcount,
+             `MoltTIR.Optimization.RefcountElision,
              `MoltTIR.Runtime.RCElisionCorrect,
              `MoltTIR.Runtime.WasmNative,
              `MoltTIR.Runtime.WasmABI, `MoltTIR.Runtime.WasmNativeCorrect,

@@ -34,57 +34,12 @@ theorem lowerValue_injective (a b : MoltPython.PyValue)
     (heq : ta = tb) :
     a = b := by
   subst heq
-  cases a <;> cases b <;> simp [lowerValue] at ha hb <;> try (first | rfl | contradiction)
-  · -- intVal, intVal
-    obtain ⟨rfl⟩ := ha; obtain ⟨rfl⟩ := hb; rfl
-  · -- intVal, floatVal — discriminant mismatch
-    obtain ⟨rfl⟩ := ha; simp [MoltTIR.Value.int.injEq] at hb
-  · -- intVal, boolVal
-    obtain ⟨rfl⟩ := ha; simp at hb
-  · -- intVal, strVal
-    obtain ⟨rfl⟩ := ha; simp at hb
-  · -- intVal, noneVal
-    obtain ⟨rfl⟩ := ha; simp at hb
-  · -- floatVal, intVal
-    obtain ⟨rfl⟩ := ha; simp at hb
-  · -- floatVal, floatVal
-    obtain ⟨rfl⟩ := ha; obtain ⟨rfl⟩ := hb; rfl
-  · -- floatVal, boolVal
-    obtain ⟨rfl⟩ := ha; simp at hb
-  · -- floatVal, strVal
-    obtain ⟨rfl⟩ := ha; simp at hb
-  · -- floatVal, noneVal
-    obtain ⟨rfl⟩ := ha; simp at hb
-  · -- boolVal, intVal
-    obtain ⟨rfl⟩ := ha; simp at hb
-  · -- boolVal, floatVal
-    obtain ⟨rfl⟩ := ha; simp at hb
-  · -- boolVal, boolVal
-    obtain ⟨rfl⟩ := ha; obtain ⟨rfl⟩ := hb; rfl
-  · -- boolVal, strVal
-    obtain ⟨rfl⟩ := ha; simp at hb
-  · -- boolVal, noneVal
-    obtain ⟨rfl⟩ := ha; simp at hb
-  · -- strVal, intVal
-    obtain ⟨rfl⟩ := ha; simp at hb
-  · -- strVal, floatVal
-    obtain ⟨rfl⟩ := ha; simp at hb
-  · -- strVal, boolVal
-    obtain ⟨rfl⟩ := ha; simp at hb
-  · -- strVal, strVal
-    obtain ⟨rfl⟩ := ha; obtain ⟨rfl⟩ := hb; rfl
-  · -- strVal, noneVal
-    obtain ⟨rfl⟩ := ha; simp at hb
-  · -- noneVal, intVal
-    simp at ha
-  · -- noneVal, floatVal
-    simp at ha
-  · -- noneVal, boolVal
-    simp at ha
-  · -- noneVal, strVal
-    simp at ha
-  · -- noneVal, noneVal
-    rfl
+  cases a <;> cases b <;> simp [lowerValue] at ha hb <;>
+    first
+    | (obtain ⟨rfl⟩ := ha; obtain ⟨rfl⟩ := hb; rfl)
+    | (obtain ⟨rfl⟩ := ha; simp at hb)
+    | rfl
+    | contradiction
 
 /-- lowerValue roundtrips: lowering then comparing equals comparing directly
     for scalar types. -/
@@ -97,7 +52,7 @@ theorem lowerValue_some_scalar (v : MoltPython.PyValue) (tv : MoltTIR.Value)
     | .strVal s   => tv = .str s
     | .noneVal    => tv = .none
     | _           => False := by
-  cases v <;> simp [lowerValue] at h <;> exact h
+  cases v <;> simp [lowerValue] at h <;> subst h <;> rfl
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Operator lowering injectivity

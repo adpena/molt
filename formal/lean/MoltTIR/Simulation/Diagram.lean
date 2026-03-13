@@ -146,7 +146,7 @@ theorem ForwardSimulationStar.star_simulation {S T : Type}
     (hm : sim.match_states s1 t1)
     (hs : StarStep ss s1 s2) :
     ∃ t2, StarStep ts t1 t2 ∧ sim.match_states s2 t2 := by
-  induction hs with
+  induction hs generalizing t1 with
   | refl s => exact ⟨t1, .refl t1, hm⟩
   | cons sa sb sc step_ab _star_bc ih =>
     obtain ⟨tb, htb, hmb⟩ := sim.simulation sa sb t1 hm step_ab
@@ -215,14 +215,13 @@ structure ExecState where
 /-- A single block-transition step in execFunc: execute the current block's
     instructions and terminator, consuming one unit of fuel. -/
 inductive BlockStep : ExecState → ExecState → Prop where
-  | step (f : Func) (n : Nat) (ρ ρ' : Env) (lbl target : Label) (blk : Block)
+  | step (f : Func) (n : Nat) (ρ ρ' ρ'' : Env) (lbl target : Label) (blk : Block)
     (hblk : f.blocks lbl = some blk)
     (hinstr : execInstrs ρ blk.instrs = some ρ')
-    (hterm : evalTerminator f ρ' blk.term = some (.jump target _env'))
-    (hbind : _env' = _env') :  -- placeholder for env from evalTerminator
+    (hterm : evalTerminator f ρ' blk.term = some (.jump target ρ'')) :
     BlockStep
       { func := f, fuel := n + 1, env := ρ, label := lbl }
-      { func := f, fuel := n, env := _env', label := target }
+      { func := f, fuel := n, env := ρ'', label := target }
 
 /-- Simulation at the Molt TIR function level: a transform `g` on functions
     preserves BlockStep transitions. This is the key interface between the
