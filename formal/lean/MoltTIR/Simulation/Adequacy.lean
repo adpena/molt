@@ -115,7 +115,7 @@ theorem traceInclusion_both_to_contextual {f1 f2 : Func}
   | some o1, some o2 =>
     have := h12 fuel ρ lbl o1 h1
     rw [h2] at this
-    exact congrArg some (Option.some.inj this)
+    cases this; rfl
   | some o1, none =>
     -- Source succeeded but target ran out of fuel.
     -- Forward trace inclusion says target also produces o1 — contradiction.
@@ -238,7 +238,7 @@ theorem pipeline_contextual_equiv
   | cons g rest ih =>
     simp only [List.foldl]
     apply ContextualEquivalence.trans
-    · exact ih (g f) (fun g' hg' => hpasses g' (List.mem_cons_of_mem _ hg'))
+    · exact ih (fun g' hg' f' => hpasses g' (List.mem_cons_of_mem _ hg') f') (g f)
     · exact hpasses g (List.mem_cons_self _ _) f
 
 -- ══════════════════════════════════════════════════════════════════
