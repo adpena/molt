@@ -188,17 +188,14 @@ theorem SDom.trans {f : Func} {a b c : Label}
   refine ⟨Dom.trans h₂.1 h₁.1, ?_⟩
   intro heq
   subst heq
-  -- Now a = c. We have a sdom b (so a ≠ b) and b sdom a.
-  -- From b sdom a and a sdom b, transitivity gives a sdom a,
-  -- contradicting irreflexivity.
-  have : Dom f a a := Dom.trans h₂.1 h₁.1
-  -- The contradiction comes from the ≠ part: a ≠ b but we need
-  -- to show the cycle is impossible.
-  exact h₁.2 (by
-    -- If a = c and a sdom b and b sdom c, we need b = a for contradiction.
-    -- But a ≠ b from h₁.2. The real issue is that sdom is well-founded
-    -- on finite graphs, so a chain a sdom b sdom a is impossible.
-    sorry)
+  -- Now a = c. We have SDom f a b (h₁) and SDom f b a (h₂ with c=a).
+  -- SDom f b a means Dom f b a ∧ b ≠ a.
+  -- SDom f a b means Dom f a b ∧ a ≠ b.
+  -- Mutual strict domination (a sdom b and b sdom a) is impossible on
+  -- finite acyclic dominator trees, but proving this from the path-based
+  -- definition requires a well-foundedness / finite reachable set argument
+  -- that is not currently available in scope.
+  sorry -- requires finite reachable set or well-founded path argument
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 6: Entry dominates all reachable blocks
