@@ -132,21 +132,30 @@ theorem sccpInstrs_correct (σ : AbsEnv) (ρ : Env) (instrs : List Instr)
   | nil => rfl
   | cons i rest ih =>
     simp only [sccpInstrs, execInstrs]
-    -- The new RHS matches sccpExpr σ i.rhs by definition
-    have heval : evalExpr ρ (match absEvalExpr σ i.rhs with
-        | .known v => Expr.val v | _ => i.rhs) = evalExpr ρ i.rhs := by
-      cases h : absEvalExpr σ i.rhs with
-      | known v =>
-        simp only [evalExpr]
-        exact (absEvalExpr_sound σ ρ i.rhs hsound v h).symm
-      | unknown => rfl
-      | overdefined => rfl
-    rw [heval]
-    match hm : evalExpr ρ i.rhs with
-    | none => rfl
-    | some v =>
-      exact ih (absEnvSound_set σ ρ i.dst v (absEvalExpr σ i.rhs) hsound
-        (absEvalExpr_concretizes σ ρ i.rhs v hsound hm))
+    -- Case split on abstract evaluation of i.rhs
+    cases hab : absEvalExpr σ i.rhs with
+    | known v =>
+      -- sccpInstrs replaces i.rhs with Expr.val v
+      simp only [hab]
+      -- absEvalExpr_sound tells us evalExpr ρ i.rhs = some v
+      have heval := absEvalExpr_sound σ ρ i.rhs hsound v hab
+      simp only [evalExpr, heval]
+      exact ih _ _ (absEnvSound_set σ ρ i.dst v (.known v) hsound
+        (by rw [← hab]; exact absEvalExpr_concretizes σ ρ i.rhs v hsound heval))
+    | unknown =>
+      simp only [hab]
+      match hm : evalExpr ρ i.rhs with
+      | none => rfl
+      | some w =>
+        exact ih _ _ (absEnvSound_set σ ρ i.dst w .unknown hsound
+          (by rw [← hab]; exact absEvalExpr_concretizes σ ρ i.rhs w hsound hm))
+    | overdefined =>
+      simp only [hab]
+      match hm : evalExpr ρ i.rhs with
+      | none => rfl
+      | some w =>
+        exact ih _ _ (absEnvSound_set σ ρ i.dst w .overdefined hsound
+          (by rw [← hab]; exact absEvalExpr_concretizes σ ρ i.rhs w hsound hm))
 
 /-- SCCP preserves evalTerminator even when the function is also
     SCCP-transformed. The terminator expression is unchanged and the
@@ -198,12 +207,12 @@ theorem sccpFunc_correct (f : Func) (fuel : Nat) (ρ : Env) (lbl : Label) :
     | none =>
       simp [sccpFunc_blocks_none' f lbl hblk]
     | some blk =>
-      simp only [sccpFunc_blocks_some' f lbl blk hblk]
+      simp only [sccpFunc_blocks_some' f lbl blk hblk, sccpBlock]
       rw [sccpInstrs_correct AbsEnv.top ρ blk.instrs (absEnvTop_sound ρ)]
       match execInstrs ρ blk.instrs with
       | none => rfl
       | some ρ' =>
-        simp only [sccpBlock_term, sccp_evalTerminator, ih]
+        simp only [sccp_evalTerminator, ih]
 
 /-- SCCP simulation. -/
 def sccpSim : FuncSimulation sccpFunc where
