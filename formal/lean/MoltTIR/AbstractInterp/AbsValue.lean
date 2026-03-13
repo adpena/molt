@@ -102,8 +102,8 @@ theorem absval_meet_assoc (a b c : AbsVal) :
     all_goals first | simp_all [absval_meet] | skip
     -- Remaining case: match on stuck if-then-else.
     -- The if (v2 = v1) is false by Ne.symm of h, but Lean's match
-    -- reduction doesn't evaluate through it. Trivially true by enumeration.
-    all_goals sorry)
+    -- reduction doesn't evaluate through it. Use Ne.symm to close.
+    all_goals (simp [absval_meet, show v2 ≠ v1 from fun heq => h heq.symm]))
 
 theorem absval_meet_idem (a : AbsVal) : absval_meet a a = a := by
   cases a <;> simp [absval_meet]

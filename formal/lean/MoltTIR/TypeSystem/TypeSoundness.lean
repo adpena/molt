@@ -220,14 +220,22 @@ theorem progress_abs_int (ρ : Env) (a : Expr) (n : Int)
 
 /-! ## Progress theorem (general) -/
 
+/-- An expression is mod-safe if every mod sub-expression has a non-zero divisor. -/
+def ModSafe (ρ : Env) : Expr → Prop
+  | .val _ => True
+  | .var _ => True
+  | .bin .mod a b =>
+      ModSafe ρ a ∧ ModSafe ρ b ∧
+      (∀ va vb, evalExpr ρ a = some va → evalExpr ρ b = some vb →
+        ∃ n m, va = .int n ∧ vb = .int m ∧ m ≠ 0)
+  | .bin _ a b => ModSafe ρ a ∧ ModSafe ρ b
+  | .un _ a => ModSafe ρ a
+
 /-- Progress: a well-typed expression in a consistent environment evaluates
-    to some value. Exception: `mod` by zero is a runtime error even for
-    well-typed programs — we exclude it with a non-zero precondition. -/
+    to some value, provided all mod sub-expressions have non-zero divisors. -/
 theorem progress (Γ : Var → Option Ty) (ρ : Env) (e : Expr) (τ : Ty)
     (htyp : HasType Γ e τ) (henv : envConsistent Γ ρ)
-    (hmod : ∀ (a b : Expr), e = .bin .mod a b →
-            ∀ va vb, evalExpr ρ a = some va → evalExpr ρ b = some vb →
-            ∃ n m, va = .int n ∧ vb = .int m ∧ m ≠ 0) :
+    (hmod : ModSafe ρ e) :
     ∃ v, evalExpr ρ e = some v := by
   induction htyp with
   | intVal => exact ⟨_, rfl⟩
@@ -238,21 +246,132 @@ theorem progress (Γ : Var → Option Ty) (ρ : Env) (e : Expr) (τ : Ty)
   | var x _ hx =>
     obtain ⟨v, hv, _⟩ := henv x _ hx
     exact ⟨v, hv⟩
-  | addInt => sorry
-  | subInt => sorry
-  | mulInt => sorry
-  | modInt => sorry
-  | eqInt => sorry
-  | neInt => sorry
-  | ltInt => sorry
-  | leInt => sorry
-  | gtInt => sorry
-  | geInt => sorry
-  | eqBool => sorry
-  | neBool => sorry
-  | negInt => sorry
-  | notBool => sorry
-  | absInt => sorry
+  | @addInt _ a b _ _ iha ihb =>
+    obtain ⟨hma, hmb⟩ := hmod
+    obtain ⟨va, hva⟩ := iha henv hma
+    obtain ⟨vb, hvb⟩ := ihb henv hmb
+    have hva_ty := preservation Γ ρ a .int va (by assumption) henv hva
+    have hvb_ty := preservation Γ ρ b .int vb (by assumption) henv hvb
+    obtain ⟨na, rfl⟩ := canonical_int va hva_ty
+    obtain ⟨nb, rfl⟩ := canonical_int vb hvb_ty
+    exact progress_add_int ρ a b na nb hva hvb
+  | @subInt _ a b _ _ iha ihb =>
+    obtain ⟨hma, hmb⟩ := hmod
+    obtain ⟨va, hva⟩ := iha henv hma
+    obtain ⟨vb, hvb⟩ := ihb henv hmb
+    have hva_ty := preservation Γ ρ a .int va (by assumption) henv hva
+    have hvb_ty := preservation Γ ρ b .int vb (by assumption) henv hvb
+    obtain ⟨na, rfl⟩ := canonical_int va hva_ty
+    obtain ⟨nb, rfl⟩ := canonical_int vb hvb_ty
+    exact progress_sub_int ρ a b na nb hva hvb
+  | @mulInt _ a b _ _ iha ihb =>
+    obtain ⟨hma, hmb⟩ := hmod
+    obtain ⟨va, hva⟩ := iha henv hma
+    obtain ⟨vb, hvb⟩ := ihb henv hmb
+    have hva_ty := preservation Γ ρ a .int va (by assumption) henv hva
+    have hvb_ty := preservation Γ ρ b .int vb (by assumption) henv hvb
+    obtain ⟨na, rfl⟩ := canonical_int va hva_ty
+    obtain ⟨nb, rfl⟩ := canonical_int vb hvb_ty
+    exact progress_mul_int ρ a b na nb hva hvb
+  | @modInt _ a b _ _ iha ihb =>
+    obtain ⟨hma, hmb, hmod_nz⟩ := hmod
+    obtain ⟨va, hva⟩ := iha henv hma
+    obtain ⟨vb, hvb⟩ := ihb henv hmb
+    have hva_ty := preservation Γ ρ a .int va (by assumption) henv hva
+    have hvb_ty := preservation Γ ρ b .int vb (by assumption) henv hvb
+    obtain ⟨na, rfl⟩ := canonical_int va hva_ty
+    obtain ⟨nb, rfl⟩ := canonical_int vb hvb_ty
+    obtain ⟨_, _, hna, hnb, hne⟩ := hmod_nz (.int na) (.int nb) hva hvb
+    simp at hna hnb; subst hna; subst hnb
+    have hne' : (nb == 0) = false := by simp [beq_iff_eq]; exact hne
+    exact ⟨.int (na % nb), by simp [evalExpr, hva, hvb, evalBinOp, hne']⟩
+  | @eqInt _ a b _ _ iha ihb =>
+    obtain ⟨hma, hmb⟩ := hmod
+    obtain ⟨va, hva⟩ := iha henv hma
+    obtain ⟨vb, hvb⟩ := ihb henv hmb
+    have hva_ty := preservation Γ ρ a .int va (by assumption) henv hva
+    have hvb_ty := preservation Γ ρ b .int vb (by assumption) henv hvb
+    obtain ⟨na, rfl⟩ := canonical_int va hva_ty
+    obtain ⟨nb, rfl⟩ := canonical_int vb hvb_ty
+    exact ⟨.bool (na == nb), by simp [evalExpr, hva, hvb, evalBinOp]⟩
+  | @neInt _ a b _ _ iha ihb =>
+    obtain ⟨hma, hmb⟩ := hmod
+    obtain ⟨va, hva⟩ := iha henv hma
+    obtain ⟨vb, hvb⟩ := ihb henv hmb
+    have hva_ty := preservation Γ ρ a .int va (by assumption) henv hva
+    have hvb_ty := preservation Γ ρ b .int vb (by assumption) henv hvb
+    obtain ⟨na, rfl⟩ := canonical_int va hva_ty
+    obtain ⟨nb, rfl⟩ := canonical_int vb hvb_ty
+    exact ⟨.bool (na != nb), by simp [evalExpr, hva, hvb, evalBinOp]⟩
+  | @ltInt _ a b _ _ iha ihb =>
+    obtain ⟨hma, hmb⟩ := hmod
+    obtain ⟨va, hva⟩ := iha henv hma
+    obtain ⟨vb, hvb⟩ := ihb henv hmb
+    have hva_ty := preservation Γ ρ a .int va (by assumption) henv hva
+    have hvb_ty := preservation Γ ρ b .int vb (by assumption) henv hvb
+    obtain ⟨na, rfl⟩ := canonical_int va hva_ty
+    obtain ⟨nb, rfl⟩ := canonical_int vb hvb_ty
+    exact ⟨.bool (decide (na < nb)), by simp [evalExpr, hva, hvb, evalBinOp]⟩
+  | @leInt _ a b _ _ iha ihb =>
+    obtain ⟨hma, hmb⟩ := hmod
+    obtain ⟨va, hva⟩ := iha henv hma
+    obtain ⟨vb, hvb⟩ := ihb henv hmb
+    have hva_ty := preservation Γ ρ a .int va (by assumption) henv hva
+    have hvb_ty := preservation Γ ρ b .int vb (by assumption) henv hvb
+    obtain ⟨na, rfl⟩ := canonical_int va hva_ty
+    obtain ⟨nb, rfl⟩ := canonical_int vb hvb_ty
+    exact ⟨.bool (decide (na ≤ nb)), by simp [evalExpr, hva, hvb, evalBinOp]⟩
+  | @gtInt _ a b _ _ iha ihb =>
+    obtain ⟨hma, hmb⟩ := hmod
+    obtain ⟨va, hva⟩ := iha henv hma
+    obtain ⟨vb, hvb⟩ := ihb henv hmb
+    have hva_ty := preservation Γ ρ a .int va (by assumption) henv hva
+    have hvb_ty := preservation Γ ρ b .int vb (by assumption) henv hvb
+    obtain ⟨na, rfl⟩ := canonical_int va hva_ty
+    obtain ⟨nb, rfl⟩ := canonical_int vb hvb_ty
+    exact ⟨.bool (decide (na > nb)), by simp [evalExpr, hva, hvb, evalBinOp]⟩
+  | @geInt _ a b _ _ iha ihb =>
+    obtain ⟨hma, hmb⟩ := hmod
+    obtain ⟨va, hva⟩ := iha henv hma
+    obtain ⟨vb, hvb⟩ := ihb henv hmb
+    have hva_ty := preservation Γ ρ a .int va (by assumption) henv hva
+    have hvb_ty := preservation Γ ρ b .int vb (by assumption) henv hvb
+    obtain ⟨na, rfl⟩ := canonical_int va hva_ty
+    obtain ⟨nb, rfl⟩ := canonical_int vb hvb_ty
+    exact ⟨.bool (decide (na ≥ nb)), by simp [evalExpr, hva, hvb, evalBinOp]⟩
+  | @eqBool _ a b _ _ iha ihb =>
+    obtain ⟨hma, hmb⟩ := hmod
+    obtain ⟨va, hva⟩ := iha henv hma
+    obtain ⟨vb, hvb⟩ := ihb henv hmb
+    have hva_ty := preservation Γ ρ a .bool va (by assumption) henv hva
+    have hvb_ty := preservation Γ ρ b .bool vb (by assumption) henv hvb
+    obtain ⟨ba, rfl⟩ := canonical_bool va hva_ty
+    obtain ⟨bb, rfl⟩ := canonical_bool vb hvb_ty
+    exact ⟨.bool (ba == bb), by simp [evalExpr, hva, hvb, evalBinOp]⟩
+  | @neBool _ a b _ _ iha ihb =>
+    obtain ⟨hma, hmb⟩ := hmod
+    obtain ⟨va, hva⟩ := iha henv hma
+    obtain ⟨vb, hvb⟩ := ihb henv hmb
+    have hva_ty := preservation Γ ρ a .bool va (by assumption) henv hva
+    have hvb_ty := preservation Γ ρ b .bool vb (by assumption) henv hvb
+    obtain ⟨ba, rfl⟩ := canonical_bool va hva_ty
+    obtain ⟨bb, rfl⟩ := canonical_bool vb hvb_ty
+    exact ⟨.bool (ba != bb), by simp [evalExpr, hva, hvb, evalBinOp]⟩
+  | @negInt _ a _ iha =>
+    obtain ⟨va, hva⟩ := iha henv hmod
+    have hva_ty := preservation Γ ρ a .int va (by assumption) henv hva
+    obtain ⟨na, rfl⟩ := canonical_int va hva_ty
+    exact progress_neg_int ρ a na hva
+  | @notBool _ a _ iha =>
+    obtain ⟨va, hva⟩ := iha henv hmod
+    have hva_ty := preservation Γ ρ a .bool va (by assumption) henv hva
+    obtain ⟨ba, rfl⟩ := canonical_bool va hva_ty
+    exact progress_not_bool ρ a ba hva
+  | @absInt _ a _ iha =>
+    obtain ⟨va, hva⟩ := iha henv hmod
+    have hva_ty := preservation Γ ρ a .int va (by assumption) henv hva
+    obtain ⟨na, rfl⟩ := canonical_int va hva_ty
+    exact progress_abs_int ρ a na hva
 
 /-! ## Preservation theorem -/
 
@@ -277,21 +396,180 @@ theorem preservation (Γ : Var → Option Ty) (ρ : Env) (e : Expr) (τ : Ty) (v
     obtain ⟨v', hv', hvt⟩ := henv x _ hx
     simp [evalExpr] at heval
     rw [hv'] at heval; simp at heval; subst heval; exact hvt
-  | addInt => sorry
-  | subInt => sorry
-  | mulInt => sorry
-  | modInt => sorry
-  | eqInt => sorry
-  | neInt => sorry
-  | ltInt => sorry
-  | leInt => sorry
-  | gtInt => sorry
-  | geInt => sorry
-  | eqBool => sorry
-  | neBool => sorry
-  | negInt => sorry
-  | notBool => sorry
-  | absInt => sorry
+  | @addInt _ a b ha_ty hb_ty iha ihb =>
+    simp only [evalExpr] at heval
+    match ha_eval : evalExpr ρ a, hb_eval : evalExpr ρ b with
+    | some va, some vb =>
+      simp [ha_eval, hb_eval] at heval
+      have hva := iha ha_eval
+      have hvb := ihb hb_eval
+      obtain ⟨na, rfl⟩ := canonical_int va hva
+      obtain ⟨nb, rfl⟩ := canonical_int vb hvb
+      simp [evalBinOp] at heval; subst heval; trivial
+    | some _, none => simp [ha_eval, hb_eval] at heval
+    | none, _ => simp [ha_eval] at heval
+  | @subInt _ a b ha_ty hb_ty iha ihb =>
+    simp only [evalExpr] at heval
+    match ha_eval : evalExpr ρ a, hb_eval : evalExpr ρ b with
+    | some va, some vb =>
+      simp [ha_eval, hb_eval] at heval
+      have hva := iha ha_eval
+      have hvb := ihb hb_eval
+      obtain ⟨na, rfl⟩ := canonical_int va hva
+      obtain ⟨nb, rfl⟩ := canonical_int vb hvb
+      simp [evalBinOp] at heval; subst heval; trivial
+    | some _, none => simp [ha_eval, hb_eval] at heval
+    | none, _ => simp [ha_eval] at heval
+  | @mulInt _ a b ha_ty hb_ty iha ihb =>
+    simp only [evalExpr] at heval
+    match ha_eval : evalExpr ρ a, hb_eval : evalExpr ρ b with
+    | some va, some vb =>
+      simp [ha_eval, hb_eval] at heval
+      have hva := iha ha_eval
+      have hvb := ihb hb_eval
+      obtain ⟨na, rfl⟩ := canonical_int va hva
+      obtain ⟨nb, rfl⟩ := canonical_int vb hvb
+      simp [evalBinOp] at heval; subst heval; trivial
+    | some _, none => simp [ha_eval, hb_eval] at heval
+    | none, _ => simp [ha_eval] at heval
+  | @modInt _ a b ha_ty hb_ty iha ihb =>
+    simp only [evalExpr] at heval
+    match ha_eval : evalExpr ρ a, hb_eval : evalExpr ρ b with
+    | some va, some vb =>
+      simp [ha_eval, hb_eval] at heval
+      have hva := iha ha_eval
+      have hvb := ihb hb_eval
+      obtain ⟨na, rfl⟩ := canonical_int va hva
+      obtain ⟨nb, rfl⟩ := canonical_int vb hvb
+      simp [evalBinOp] at heval
+      split at heval
+      · contradiction
+      · simp at heval; subst heval; trivial
+    | some _, none => simp [ha_eval, hb_eval] at heval
+    | none, _ => simp [ha_eval] at heval
+  | @eqInt _ a b ha_ty hb_ty iha ihb =>
+    simp only [evalExpr] at heval
+    match ha_eval : evalExpr ρ a, hb_eval : evalExpr ρ b with
+    | some va, some vb =>
+      simp [ha_eval, hb_eval] at heval
+      have hva := iha ha_eval
+      have hvb := ihb hb_eval
+      obtain ⟨na, rfl⟩ := canonical_int va hva
+      obtain ⟨nb, rfl⟩ := canonical_int vb hvb
+      simp [evalBinOp] at heval; subst heval; trivial
+    | some _, none => simp [ha_eval, hb_eval] at heval
+    | none, _ => simp [ha_eval] at heval
+  | @neInt _ a b ha_ty hb_ty iha ihb =>
+    simp only [evalExpr] at heval
+    match ha_eval : evalExpr ρ a, hb_eval : evalExpr ρ b with
+    | some va, some vb =>
+      simp [ha_eval, hb_eval] at heval
+      have hva := iha ha_eval
+      have hvb := ihb hb_eval
+      obtain ⟨na, rfl⟩ := canonical_int va hva
+      obtain ⟨nb, rfl⟩ := canonical_int vb hvb
+      simp [evalBinOp] at heval; subst heval; trivial
+    | some _, none => simp [ha_eval, hb_eval] at heval
+    | none, _ => simp [ha_eval] at heval
+  | @ltInt _ a b ha_ty hb_ty iha ihb =>
+    simp only [evalExpr] at heval
+    match ha_eval : evalExpr ρ a, hb_eval : evalExpr ρ b with
+    | some va, some vb =>
+      simp [ha_eval, hb_eval] at heval
+      have hva := iha ha_eval
+      have hvb := ihb hb_eval
+      obtain ⟨na, rfl⟩ := canonical_int va hva
+      obtain ⟨nb, rfl⟩ := canonical_int vb hvb
+      simp [evalBinOp] at heval; subst heval; trivial
+    | some _, none => simp [ha_eval, hb_eval] at heval
+    | none, _ => simp [ha_eval] at heval
+  | @leInt _ a b ha_ty hb_ty iha ihb =>
+    simp only [evalExpr] at heval
+    match ha_eval : evalExpr ρ a, hb_eval : evalExpr ρ b with
+    | some va, some vb =>
+      simp [ha_eval, hb_eval] at heval
+      have hva := iha ha_eval
+      have hvb := ihb hb_eval
+      obtain ⟨na, rfl⟩ := canonical_int va hva
+      obtain ⟨nb, rfl⟩ := canonical_int vb hvb
+      simp [evalBinOp] at heval; subst heval; trivial
+    | some _, none => simp [ha_eval, hb_eval] at heval
+    | none, _ => simp [ha_eval] at heval
+  | @gtInt _ a b ha_ty hb_ty iha ihb =>
+    simp only [evalExpr] at heval
+    match ha_eval : evalExpr ρ a, hb_eval : evalExpr ρ b with
+    | some va, some vb =>
+      simp [ha_eval, hb_eval] at heval
+      have hva := iha ha_eval
+      have hvb := ihb hb_eval
+      obtain ⟨na, rfl⟩ := canonical_int va hva
+      obtain ⟨nb, rfl⟩ := canonical_int vb hvb
+      simp [evalBinOp] at heval; subst heval; trivial
+    | some _, none => simp [ha_eval, hb_eval] at heval
+    | none, _ => simp [ha_eval] at heval
+  | @geInt _ a b ha_ty hb_ty iha ihb =>
+    simp only [evalExpr] at heval
+    match ha_eval : evalExpr ρ a, hb_eval : evalExpr ρ b with
+    | some va, some vb =>
+      simp [ha_eval, hb_eval] at heval
+      have hva := iha ha_eval
+      have hvb := ihb hb_eval
+      obtain ⟨na, rfl⟩ := canonical_int va hva
+      obtain ⟨nb, rfl⟩ := canonical_int vb hvb
+      simp [evalBinOp] at heval; subst heval; trivial
+    | some _, none => simp [ha_eval, hb_eval] at heval
+    | none, _ => simp [ha_eval] at heval
+  | @eqBool _ a b ha_ty hb_ty iha ihb =>
+    simp only [evalExpr] at heval
+    match ha_eval : evalExpr ρ a, hb_eval : evalExpr ρ b with
+    | some va, some vb =>
+      simp [ha_eval, hb_eval] at heval
+      have hva := iha ha_eval
+      have hvb := ihb hb_eval
+      obtain ⟨ba, rfl⟩ := canonical_bool va hva
+      obtain ⟨bb, rfl⟩ := canonical_bool vb hvb
+      simp [evalBinOp] at heval; subst heval; trivial
+    | some _, none => simp [ha_eval, hb_eval] at heval
+    | none, _ => simp [ha_eval] at heval
+  | @neBool _ a b ha_ty hb_ty iha ihb =>
+    simp only [evalExpr] at heval
+    match ha_eval : evalExpr ρ a, hb_eval : evalExpr ρ b with
+    | some va, some vb =>
+      simp [ha_eval, hb_eval] at heval
+      have hva := iha ha_eval
+      have hvb := ihb hb_eval
+      obtain ⟨ba, rfl⟩ := canonical_bool va hva
+      obtain ⟨bb, rfl⟩ := canonical_bool vb hvb
+      simp [evalBinOp] at heval; subst heval; trivial
+    | some _, none => simp [ha_eval, hb_eval] at heval
+    | none, _ => simp [ha_eval] at heval
+  | @negInt _ a ha_ty iha =>
+    simp only [evalExpr] at heval
+    match ha_eval : evalExpr ρ a with
+    | some va =>
+      simp [ha_eval] at heval
+      have hva := iha ha_eval
+      obtain ⟨na, rfl⟩ := canonical_int va hva
+      simp [evalUnOp] at heval; subst heval; trivial
+    | none => simp [ha_eval] at heval
+  | @notBool _ a ha_ty iha =>
+    simp only [evalExpr] at heval
+    match ha_eval : evalExpr ρ a with
+    | some va =>
+      simp [ha_eval] at heval
+      have hva := iha ha_eval
+      obtain ⟨ba, rfl⟩ := canonical_bool va hva
+      simp [evalUnOp] at heval; subst heval; trivial
+    | none => simp [ha_eval] at heval
+  | @absInt _ a ha_ty iha =>
+    simp only [evalExpr] at heval
+    match ha_eval : evalExpr ρ a with
+    | some va =>
+      simp [ha_eval] at heval
+      have hva := iha ha_eval
+      obtain ⟨na, rfl⟩ := canonical_int va hva
+      simp [evalUnOp] at heval; subst heval; trivial
+    | none => simp [ha_eval] at heval
 
 /-! ## Preservation: concrete operation lemmas (fully proved) -/
 
@@ -340,12 +618,11 @@ theorem preservation_not_bool (ρ : Env) (a : Expr) (v : Value)
 
 /-- Type safety: conjunction of progress and preservation.
     A well-typed expression in a consistent environment either evaluates to
-    a value of the expected type, or is a mod-by-zero case. -/
+    a value of the expected type, provided all mod sub-expressions have
+    non-zero divisors. -/
 theorem type_safety (Γ : Var → Option Ty) (ρ : Env) (e : Expr) (τ : Ty)
     (htyp : HasType Γ e τ) (henv : envConsistent Γ ρ)
-    (hmod : ∀ (a b : Expr), e = .bin .mod a b →
-            ∀ va vb, evalExpr ρ a = some va → evalExpr ρ b = some vb →
-            ∃ n m, va = .int n ∧ vb = .int m ∧ m ≠ 0) :
+    (hmod : ModSafe ρ e) :
     ∃ v, evalExpr ρ e = some v ∧ valueHasTy v τ := by
   have ⟨v, hv⟩ := progress Γ ρ e τ htyp henv hmod
   exact ⟨v, hv, preservation Γ ρ e τ v htyp henv hv⟩

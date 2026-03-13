@@ -163,11 +163,34 @@ theorem specialization_always_equiv
     -- This case is impossible: all guard vars are defined, so evalGuards
     -- cannot return none.
     exfalso
-    -- TODO(formal, owner:compiler, milestone:M4, priority:P1, status:partial):
-    --   Prove that evalGuards returns some when all guard vars are defined.
-    --   Requires an induction on op.guards showing evalGuard returns some
-    --   when the var is defined.
-    sorry
+    -- Prove by induction on op.guards that evalGuards returns some when
+    -- all guard vars are defined.
+    have : ∀ (gs : List TypeGuard),
+        (∀ g ∈ gs, (ρ g.var).isSome = true) →
+        ∃ b, evalGuards ρ gs = some b := by
+      intro gs hgs
+      induction gs with
+      | nil => exact ⟨true, rfl⟩
+      | cons g rest ih =>
+        have hg_def := hgs g (List.mem_cons_self _ _)
+        have hrest := fun g' hg' => hgs g' (List.mem_cons_of_mem _ hg')
+        obtain ⟨b_rest, hb_rest⟩ := ih hrest
+        -- evalGuard returns some when the var is defined
+        have hg_some : ∃ b, evalGuard ρ g = some b := by
+          simp [evalGuard]
+          cases hv : ρ g.var with
+          | none => simp [hv] at hg_def
+          | some v => exact ⟨_, rfl⟩
+        obtain ⟨bg, hbg⟩ := hg_some
+        cases bg with
+        | true =>
+          simp [evalGuards, hbg]
+          exact ⟨b_rest, hb_rest⟩
+        | false =>
+          exact ⟨false, by simp [evalGuards, hbg]⟩
+    obtain ⟨b, hb⟩ := this op.guards hguards_defined
+    rw [hb] at hg
+    exact Option.noConfusion hg
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 5: Concrete specialization examples
