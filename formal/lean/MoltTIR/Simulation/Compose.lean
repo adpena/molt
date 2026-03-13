@@ -67,6 +67,28 @@ def composeFuncSimulations
   simulation := fun f fuel ρ lbl => by
     show execFunc (g2 (g1 f)) fuel ρ lbl = execFunc f fuel ρ lbl
     rw [sim2.simulation (g1 f) fuel ρ lbl, sim1.simulation f fuel ρ lbl]
+  entry_preserved := fun f => by
+    show (g2 (g1 f)).entry = f.entry
+    rw [sim2.entry_preserved (g1 f), sim1.entry_preserved f]
+  entry_block_some := fun f blk h => by
+    obtain ⟨blk1, hblk1, hparams1⟩ := sim1.entry_block_some f blk h
+    have hentry1 : (g1 f).entry = f.entry := sim1.entry_preserved f
+    have hblk1' : (g1 f).blocks (g1 f).entry = some blk1 := by rw [hentry1]; exact hblk1
+    obtain ⟨blk2, hblk2, hparams2⟩ := sim2.entry_block_some (g1 f) blk1 hblk1'
+    -- hblk2 : (g2 (g1 f)).blocks (g1 f).entry = some blk2
+    -- Need: (g2 (g1 f)).blocks f.entry = some blk2
+    have hblk2' : (g2 (g1 f)).blocks f.entry = some blk2 := by rw [← hentry1]; exact hblk2
+    exact ⟨blk2, hblk2', hparams2.trans hparams1⟩
+  entry_block_none := fun f h => by
+    have hentry1 : (g1 f).entry = f.entry := sim1.entry_preserved f
+    have hnone1 : (g1 f).blocks f.entry = none := sim1.entry_block_none f h
+    have hnone1' : (g1 f).blocks (g1 f).entry = none := hentry1 ▸ hnone1
+    have hnone2 : (g2 (g1 f)).blocks (g2 (g1 f)).entry = none := by
+      rw [sim2.entry_preserved (g1 f)]
+      exact sim2.entry_block_none (g1 f) hnone1'
+    have hentry2 : (g2 (g1 f)).entry = f.entry := by
+      rw [sim2.entry_preserved (g1 f), sim1.entry_preserved f]
+    rw [← hentry2]; exact hnone2
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 3: Composing BehavioralEquivalence
@@ -75,23 +97,8 @@ def composeFuncSimulations
 /-- If g preserves execFunc for all inputs, then g preserves runFunc. -/
 theorem funcSimulation_to_behavioral {g : Func → Func}
     (sim : FuncSimulation g) (f : Func) :
-    BehavioralEquivalence (g f) f := by
-  intro fuel
-  simp only [runFunc]
-  -- The simulation gives us: execFunc (g f) fuel ρ lbl = execFunc f fuel ρ lbl
-  -- But we need to also know that g preserves f.entry and block lookup at entry.
-  -- The general FuncSimulation does not carry this info, so this theorem
-  -- cannot be proven without additional structure on g.
-  -- However, sim.simulation gives execFunc equality for all ρ/lbl, including
-  -- the entry. The gap is that runFunc checks (g f).blocks (g f).entry vs
-  -- f.blocks f.entry, which requires knowing g preserves entry and block lookup.
-  -- Since FuncSimulation.simulation only speaks about execFunc (not blocks/entry),
-  -- this gap is fundamental to the current FuncSimulation definition.
-  -- We mark this as sorry until FuncSimulation is extended.
-  sorry
-  -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
-  -- Requires FuncSimulation to carry proof that g preserves f.entry
-  -- and block params. All current transforms do this trivially.
+    BehavioralEquivalence (g f) f :=
+  sim.toBehavioralEquiv f
 
 /-- Composition of behavioral equivalences. -/
 theorem behavioral_equiv_compose {g1 g2 : Func → Func}
@@ -121,9 +128,9 @@ theorem constFold_pipeline_correct (f : Func) :
     Pipeline: constFold → SCCP → DCE → CSE
 
     This theorem chains all four pass simulations. Currently, only
-    constFold is fully proven; the remaining passes have sorry stubs
-    at the function level (their expression/instruction correctness
-    is proven). -/
+    constFold is fully proven; the remaining passes inherit sorry stubs
+    from their FuncSimulation.simulation fields (their expression/instruction
+    correctness is proven). -/
 theorem fullPipeline_behavioral_equiv (f : Func) :
     BehavioralEquivalence (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) f := by
   apply behavioral_equiv_compose
@@ -135,26 +142,14 @@ theorem fullPipeline_behavioral_equiv (f : Func) :
       (g1 := constFoldFunc)
       (g2 := sccpFunc)
     · exact constFold_behavioralEquiv
-    · intro f''
-      -- SCCP behavioral equiv (sorry — depends on sccpSim.simulation)
-      sorry
-      -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
-      -- Close once sccpSim.simulation is proven.
+    · exact sccpSim.toBehavioralEquiv
   · -- dce ∘ cse preserves behavior
     intro f'
     apply behavioral_equiv_compose
       (g1 := dceFunc)
       (g2 := cseFunc)
-    · intro f''
-      -- DCE behavioral equiv (sorry — depends on dceSim.simulation)
-      sorry
-      -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
-      -- Close once dceSim.simulation is proven.
-    · intro f''
-      -- CSE behavioral equiv (sorry — depends on cseSim.simulation)
-      sorry
-      -- TODO(formal, owner:compiler, milestone:M3, priority:P2, status:partial):
-      -- Close once cseSim.simulation is proven.
+    · exact dceSim.toBehavioralEquiv
+    · exact cseSim.toBehavioralEquiv
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 5: Pipeline simulation composition theorem (generic)
@@ -191,11 +186,11 @@ theorem pipeline_compose_behavioral
   | behavioral_equiv_compose         | proven  |
   | pipeline_compose_behavioral      | proven  |
   | constFold_pipeline_correct       | proven  |
-  | fullPipeline_behavioral_equiv    | 3 sorry |
+  | fullPipeline_behavioral_equiv    | proven (inherits pass sorrys) |
 
-  The 3 remaining sorry stubs correspond exactly to the 3 unproven
-  FuncSimulation instances (DCE, SCCP, CSE). Once those are closed,
-  fullPipeline_behavioral_equiv follows mechanically.
+  fullPipeline_behavioral_equiv is now proven structurally via
+  toBehavioralEquiv, inheriting sorry from the 3 unproven
+  FuncSimulation.simulation fields (DCE, SCCP, CSE).
 -/
 
 end MoltTIR

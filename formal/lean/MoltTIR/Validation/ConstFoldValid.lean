@@ -19,17 +19,12 @@
 -/
 import MoltTIR.Validation.TranslationValidation
 import MoltTIR.Passes.ConstFoldCorrect
+import MoltTIR.Semantics.FuncCorrect
+import MoltTIR.EndToEndProperties
 
 set_option autoImplicit false
 
 namespace MoltTIR
-
--- Stub for theorem defined in EndToEndProperties.lean (not in lakefile roots).
--- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
--- Add EndToEndProperties to lakefile roots and remove this stub.
-private theorem constFoldExpr_idempotent (e : Expr) :
-    constFoldExpr (constFoldExpr e) = constFoldExpr e := by
-  sorry
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 1: Expression-level validation (from full proof)
@@ -94,8 +89,8 @@ theorem constFoldInstr_refines (i : Instr) : InstrRefines i (constFoldInstr i) :
 -- Section 4: Block-level validation
 -- ══════════════════════════════════════════════════════════════════
 
-/-- Constant folding preserves block parameters. -/
-theorem constFoldBlock_params (b : Block) :
+/-- Constant folding preserves block parameters (validation layer). -/
+theorem constFoldBlock_params_valid (b : Block) :
     (constFoldBlock b).params = b.params := rfl
 
 /-- Constant folding preserves instruction count. -/
@@ -133,7 +128,8 @@ theorem constFoldFunc_labels (f : Func) :
 theorem constFoldFunc_refines (f : Func) : FuncRefines f (constFoldFunc f) := by
   constructor
   · exact constFoldFunc_entry f
-  · sorry
+  · intro fuel ρ lbl result hout _hstuck
+    exact ⟨fuel, by rw [constFoldFunc_correct] at hout; exact hout⟩
 
 /-- Constant folding is a valid function transform (uses FuncRefines). -/
 theorem constFold_valid_func_transform : ValidFuncTransform constFoldFunc :=
@@ -143,19 +139,50 @@ theorem constFold_valid_func_transform : ValidFuncTransform constFoldFunc :=
 -- Section 6: Function-level idempotency
 -- ══════════════════════════════════════════════════════════════════
 
+/-- Constant folding an instruction is idempotent. -/
+private theorem constFoldInstr_idempotent (i : Instr) :
+    constFoldInstr (constFoldInstr i) = constFoldInstr i := by
+  simp [constFoldInstr, constFoldExpr_idempotent]
+
+/-- Mapping constFoldExpr over a list is idempotent. -/
+private theorem constFoldExpr_map_idempotent (es : List Expr) :
+    (es.map constFoldExpr).map constFoldExpr = es.map constFoldExpr := by
+  induction es with
+  | nil => rfl
+  | cons e rest ih => simp [List.map, constFoldExpr_idempotent, ih]
+
+/-- Constant folding a terminator is idempotent. -/
+private theorem constFoldTerminator_idempotent (t : Terminator) :
+    constFoldTerminator (constFoldTerminator t) = constFoldTerminator t := by
+  cases t with
+  | ret e => simp [constFoldTerminator, constFoldExpr_idempotent]
+  | jmp target args =>
+    simp only [constFoldTerminator]
+    rw [constFoldExpr_map_idempotent]
+  | br cond tl ta el ea =>
+    simp only [constFoldTerminator, constFoldExpr_idempotent]
+    congr 1 <;> exact constFoldExpr_map_idempotent _
+
+/-- Constant folding a block is idempotent. -/
+private theorem constFoldBlock_idempotent (b : Block) :
+    constFoldBlock (constFoldBlock b) = constFoldBlock b := by
+  simp only [constFoldBlock]
+  congr 1
+  · -- instrs: map constFoldInstr is idempotent
+    simp [List.map_map, Function.comp, constFoldInstr_idempotent]
+  · -- term: constFoldTerminator is idempotent
+    exact constFoldTerminator_idempotent b.term
+
 /-- Function-level constant folding is syntactically idempotent.
 
     Key insight: constFoldFunc maps constFoldBlock over all blocks.
     constFoldBlock maps constFoldInstr + constFoldTerminator over the block.
     constFoldInstr maps constFoldExpr over the RHS.
-    Since constFoldExpr is idempotent, the whole pipeline is idempotent.
-
-    TODO(formal, owner:compiler, milestone:M6, priority:P2, status:partial):
-    Requires lifting expression-level idempotency through Instr/Block/Func. -/
+    Since constFoldExpr is idempotent, the whole pipeline is idempotent. -/
 theorem constFoldFunc_idempotent : FuncSyntacticIdempotent constFoldFunc := by
-  -- TODO(formal, owner:compiler, milestone:M6, priority:P2, status:partial):
-  -- Requires lifting constFoldExpr_idempotent through Instr/Block/Func.
-  -- Lean 4.16 Prod/struct goal shape changed; needs restructured proof.
-  sorry
+  intro f
+  simp only [constFoldFunc]
+  congr 1
+  simp [List.map_map, Function.comp, constFoldBlock_idempotent]
 
 end MoltTIR

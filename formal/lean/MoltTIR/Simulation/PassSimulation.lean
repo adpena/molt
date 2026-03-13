@@ -20,26 +20,14 @@ import MoltTIR.Passes.DCE
 import MoltTIR.Passes.DCECorrect
 import MoltTIR.Passes.SCCP
 import MoltTIR.Passes.SCCPCorrect
+import MoltTIR.Passes.SCCPMultiCorrect
 import MoltTIR.Passes.CSE
 import MoltTIR.Passes.CSECorrect
-import MoltTIR.Semantics.ExecFunc
+import MoltTIR.Semantics.FuncCorrect
 
 set_option autoImplicit false
 
 namespace MoltTIR
-
--- ══════════════════════════════════════════════════════════════════
--- Stubs for theorems from BlockCorrect/FuncCorrect (not in lakefile roots)
--- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
--- Move these to a root module or add BlockCorrect/FuncCorrect to lakefile roots.
--- ══════════════════════════════════════════════════════════════════
-
-private theorem constFoldFunc_correct (f : Func) (fuel : Nat) (ρ : Env) (lbl : Label) :
-    execFunc (constFoldFunc f) fuel ρ lbl = execFunc f fuel ρ lbl := by
-  -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
-  -- Proven in Semantics/FuncCorrect.lean; stubbed here because that module
-  -- is not in lakefile roots and its olean is unavailable.
-  sorry
 
 
 -- ══════════════════════════════════════════════════════════════════
@@ -53,17 +41,18 @@ private theorem constFoldFunc_correct (f : Func) (fuel : Nat) (ρ : Env) (lbl : 
 def constFoldSim : FuncSimulation constFoldFunc where
   match_env := fun _f ρ lbl ρ' lbl' => ρ = ρ' ∧ lbl = lbl'
   simulation := fun f fuel ρ lbl => constFoldFunc_correct f fuel ρ lbl
+  entry_preserved := fun _ => rfl
+  entry_block_some := fun f blk h =>
+    ⟨constFoldBlock blk, constFoldFunc_blocks_some f f.entry blk h, constFoldBlock_params blk⟩
+  entry_block_none := fun f h => constFoldFunc_blocks_none f f.entry h
 
 /-- Constant folding preserves behavioral equivalence. -/
 theorem constFold_behavioralEquiv (f : Func) :
-    BehavioralEquivalence (constFoldFunc f) f := by
-  -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
-  -- Proof requires constFoldFunc_correct + block lookup preservation.
-  -- Gapped pending FuncCorrect integration.
-  sorry
+    BehavioralEquivalence (constFoldFunc f) f :=
+  constFoldSim.toBehavioralEquiv f
 
 -- ══════════════════════════════════════════════════════════════════
--- Section 2: DCE — ForwardSimulationStar (source step → 0 or 1 target)
+-- Section 2: DCE — block helpers then FuncSimulation
 -- ══════════════════════════════════════════════════════════════════
 
 /-- DCE match_states: the target environment agrees with the source
@@ -75,39 +64,17 @@ structure DCEMatchState (used : List Var) where
   tgt_env : Env
   agree : EnvAgreeOn used src_env tgt_env
 
-/-- DCE simulation at the function level. Since dceFunc transforms each
-    block independently (filtering dead instructions), the block-level
-    agreement theorem (dce_instrs_agreeOn) lifts to the function level.
-
-    The simulation is ForwardSimulationStar because dead instructions in
-    the source have no corresponding target step — the target "stutters". -/
-def dceSim : FuncSimulation dceFunc where
-  match_env := fun _f ρ lbl ρ' lbl' => ρ = ρ' ∧ lbl = lbl'
-  simulation := fun f fuel ρ lbl => by
-    -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
-    -- Prove dceFunc preserves execFunc. Requires:
-    -- 1. dceFunc preserves block lookup structure (analogous to blocks_map_some/none)
-    -- 2. dceBlock preserves evalTerminator (DCE doesn't touch terminators)
-    -- 3. dce_instrs_agreeOn lifts to execFunc level via fuel induction
-    -- The block-level correctness is already proven (dce_instrs_agreeOn).
-    -- The gap is lifting from environment-agreement to exact execFunc equality,
-    -- which requires showing that DCE doesn't change the terminator and that
-    -- agreement on used vars implies identical terminator outcomes.
-    sorry
-
 /-- DCE preserves block lookup for found blocks. -/
 theorem dceFunc_blocks_some (f : Func) (lbl : Label) (blk : Block)
     (h : f.blocks lbl = some blk) :
-    (dceFunc f).blocks lbl = some (dceBlock blk) := by
-  -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
-  -- Stubbed pending BlockCorrect integration.
-  sorry
+    (dceFunc f).blocks lbl = some (dceBlock blk) :=
+  blocks_map_some f dceBlock lbl blk h
 
 /-- DCE preserves block lookup failure. -/
 theorem dceFunc_blocks_none (f : Func) (lbl : Label)
     (h : f.blocks lbl = none) :
-    (dceFunc f).blocks lbl = none := by
-  sorry
+    (dceFunc f).blocks lbl = none :=
+  blocks_map_none f dceBlock lbl h
 
 /-- DCE does not change block parameters. -/
 theorem dceBlock_params (b : Block) : (dceBlock b).params = b.params := rfl
@@ -115,69 +82,177 @@ theorem dceBlock_params (b : Block) : (dceBlock b).params = b.params := rfl
 /-- DCE does not change the terminator. -/
 theorem dceBlock_term (b : Block) : (dceBlock b).term = b.term := rfl
 
--- ══════════════════════════════════════════════════════════════════
--- Section 3: SCCP — FuncSimulation with abstract env soundness
--- ══════════════════════════════════════════════════════════════════
-
-/-- SCCP simulation. The match_states requires the abstract environment
-    to soundly approximate the concrete environment. Under this condition,
-    SCCP-transformed expressions evaluate identically (sccpExpr_correct). -/
-def sccpSim : FuncSimulation sccpFunc where
+/-- DCE simulation at the function level. Since dceFunc transforms each
+    block independently (filtering dead instructions), the block-level
+    agreement theorem (dce_instrs_agreeOn) lifts to the function level. -/
+def dceSim : FuncSimulation dceFunc where
   match_env := fun _f ρ lbl ρ' lbl' => ρ = ρ' ∧ lbl = lbl'
   simulation := fun f fuel ρ lbl => by
     -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
-    -- Prove sccpFunc preserves execFunc. Requires:
-    -- 1. sccpFunc preserves block lookup structure
-    -- 2. sccpBlock with top abstract env preserves instruction execution
-    --    (each sccpExpr replacement is correct by sccpExpr_correct + absEnvTop_sound)
-    -- 3. The abstract env must be threaded correctly through instructions
-    --    (sccpInstrs updates σ as it processes each instruction)
-    -- The expression-level and instruction-level proofs exist (SCCPCorrect.lean).
-    -- The gap is showing that sccpBlock with AbsEnv.top is semantics-preserving
-    -- at the block level, and then lifting to function level via fuel induction.
+    -- Prove dceFunc preserves execFunc. Requires lifting dce_instrs_agreeOn
+    -- through fuel induction + showing terminator agreement from used-var agreement.
     sorry
+  entry_preserved := fun _ => rfl
+  entry_block_some := fun f blk h =>
+    ⟨dceBlock blk, dceFunc_blocks_some f f.entry blk h, dceBlock_params blk⟩
+  entry_block_none := fun f h => dceFunc_blocks_none f f.entry h
+
+-- ══════════════════════════════════════════════════════════════════
+-- Section 3: SCCP — block helpers, instruction correctness, FuncSimulation
+-- ══════════════════════════════════════════════════════════════════
 
 /-- SCCP preserves block lookup for found blocks. -/
+theorem sccpFunc_blocks_some' (f : Func) (lbl : Label) (blk : Block)
+    (h : f.blocks lbl = some blk) :
+    (sccpFunc f).blocks lbl = some (sccpBlock AbsEnv.top blk).2 :=
+  blocks_map_some f (fun b => (sccpBlock AbsEnv.top b).2) lbl blk h
+
+/-- SCCP preserves block lookup failure. -/
+theorem sccpFunc_blocks_none' (f : Func) (lbl : Label)
+    (h : f.blocks lbl = none) :
+    (sccpFunc f).blocks lbl = none :=
+  blocks_map_none f (fun b => (sccpBlock AbsEnv.top b).2) lbl h
+
+/-- SCCP does not change block parameters. -/
+theorem sccpBlock_params (σ : AbsEnv) (b : Block) :
+    (sccpBlock σ b).2.params = b.params := rfl
+
+/-- SCCP does not change the terminator. -/
+theorem sccpBlock_term (σ : AbsEnv) (b : Block) :
+    (sccpBlock σ b).2.term = b.term := rfl
+
+/-- SCCP-transformed instructions preserve execInstrs when the abstract
+    environment is sound. Proof by induction on the instruction list,
+    using sccpExpr_correct at each step and absEnvSound_set +
+    absEvalExpr_concretizes to maintain soundness. -/
+theorem sccpInstrs_correct (σ : AbsEnv) (ρ : Env) (instrs : List Instr)
+    (hsound : AbsEnvSound σ ρ) :
+    execInstrs ρ (sccpInstrs σ instrs).2 = execInstrs ρ instrs := by
+  induction instrs generalizing σ ρ with
+  | nil => rfl
+  | cons i rest ih =>
+    simp only [sccpInstrs, execInstrs]
+    -- The new RHS matches sccpExpr σ i.rhs by definition
+    have heval : evalExpr ρ (match absEvalExpr σ i.rhs with
+        | .known v => Expr.val v | _ => i.rhs) = evalExpr ρ i.rhs := by
+      cases h : absEvalExpr σ i.rhs with
+      | known v =>
+        simp only [evalExpr]
+        exact (absEvalExpr_sound σ ρ i.rhs hsound v h).symm
+      | unknown => rfl
+      | overdefined => rfl
+    rw [heval]
+    match hm : evalExpr ρ i.rhs with
+    | none => rfl
+    | some v =>
+      exact ih (absEnvSound_set σ ρ i.dst v (absEvalExpr σ i.rhs) hsound
+        (absEvalExpr_concretizes σ ρ i.rhs v hsound hm))
+
+/-- SCCP preserves evalTerminator even when the function is also
+    SCCP-transformed. The terminator expression is unchanged and the
+    block params used by jmp/br target lookup are preserved. -/
+theorem sccp_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
+    evalTerminator (sccpFunc f) ρ t = evalTerminator f ρ t := by
+  cases t with
+  | ret e => rfl
+  | jmp target args =>
+    simp only [evalTerminator]
+    match evalArgs ρ args with
+    | none => rfl
+    | some vals =>
+      match hblk : f.blocks target with
+      | none => simp [sccpFunc_blocks_none' f target hblk]
+      | some blk => simp [sccpFunc_blocks_some' f target blk hblk, sccpBlock_params]
+  | br cond tl ta el ea =>
+    simp only [evalTerminator]
+    match evalExpr ρ cond with
+    | some (.bool true) =>
+      match evalArgs ρ ta with
+      | none => rfl
+      | some vals =>
+        match hblk : f.blocks tl with
+        | none => simp [sccpFunc_blocks_none' f tl hblk]
+        | some blk => simp [sccpFunc_blocks_some' f tl blk hblk, sccpBlock_params]
+    | some (.bool false) =>
+      match evalArgs ρ ea with
+      | none => rfl
+      | some vals =>
+        match hblk : f.blocks el with
+        | none => simp [sccpFunc_blocks_none' f el hblk]
+        | some blk => simp [sccpFunc_blocks_some' f el blk hblk, sccpBlock_params]
+    | some (.int _) => rfl
+    | some (.float _) => rfl
+    | some (.str _) => rfl
+    | some .none => rfl
+    | none => rfl
+
+/-- SCCP preserves function execution semantics.
+    Proof by induction on fuel, following the constFoldFunc_correct pattern. -/
+theorem sccpFunc_correct (f : Func) (fuel : Nat) (ρ : Env) (lbl : Label) :
+    execFunc (sccpFunc f) fuel ρ lbl = execFunc f fuel ρ lbl := by
+  induction fuel generalizing ρ lbl with
+  | zero => rfl
+  | succ n ih =>
+    simp only [execFunc]
+    match hblk : f.blocks lbl with
+    | none =>
+      simp [sccpFunc_blocks_none' f lbl hblk]
+    | some blk =>
+      simp only [sccpFunc_blocks_some' f lbl blk hblk]
+      rw [sccpInstrs_correct AbsEnv.top ρ blk.instrs (absEnvTop_sound ρ)]
+      match execInstrs ρ blk.instrs with
+      | none => rfl
+      | some ρ' =>
+        simp only [sccpBlock_term, sccp_evalTerminator, ih]
+
+/-- SCCP simulation. -/
+def sccpSim : FuncSimulation sccpFunc where
+  match_env := fun _f ρ lbl ρ' lbl' => ρ = ρ' ∧ lbl = lbl'
+  simulation := fun f fuel ρ lbl => sccpFunc_correct f fuel ρ lbl
+  entry_preserved := fun _ => rfl
+  entry_block_some := fun f blk h =>
+    ⟨(sccpBlock AbsEnv.top blk).2, sccpFunc_blocks_some' f f.entry blk h,
+     sccpBlock_params AbsEnv.top blk⟩
+  entry_block_none := fun f h => sccpFunc_blocks_none' f f.entry h
+
+/-- SCCP preserves block lookup for found blocks (existential form). -/
 theorem sccpFunc_blocks_some (f : Func) (lbl : Label) (blk : Block) :
     f.blocks lbl = some blk →
     ∃ blk', (sccpFunc f).blocks lbl = some blk' := by
-  -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
-  -- Stubbed pending BlockCorrect integration.
-  sorry
+  intro h
+  exact ⟨(sccpBlock AbsEnv.top blk).2, sccpFunc_blocks_some' f lbl blk h⟩
 
 -- ══════════════════════════════════════════════════════════════════
--- Section 4: CSE — FuncSimulation with availability map soundness
+-- Section 4: CSE — block helpers then FuncSimulation
 -- ══════════════════════════════════════════════════════════════════
-
-/-- CSE simulation. The match_states requires the availability map to be
-    sound w.r.t. the current environment. Under SSA freshness, CSE-
-    transformed expressions evaluate identically (cseExpr_correct). -/
-def cseSim : FuncSimulation cseFunc where
-  match_env := fun _f ρ lbl ρ' lbl' => ρ = ρ' ∧ lbl = lbl'
-  simulation := fun f fuel ρ lbl => by
-    -- TODO(formal, owner:compiler, milestone:M3, priority:P2, status:partial):
-    -- Prove cseFunc preserves execFunc. Requires:
-    -- 1. cseFunc preserves block lookup structure
-    -- 2. cseBlock preserves block execution under SSA freshness
-    -- 3. cseInstr threading maintains AvailMapSound
-    -- The expression-level proof exists (cseExpr_correct in CSECorrect.lean).
-    -- The gap is threading the availability map through instructions while
-    -- maintaining the SSA freshness invariant, then lifting to function level.
-    -- This is the most involved proof because CSE's correctness depends on
-    -- a global SSA property (no variable is defined twice).
-    sorry
 
 /-- CSE preserves block lookup for found blocks. -/
 theorem cseFunc_blocks_some (f : Func) (lbl : Label) (blk : Block)
     (h : f.blocks lbl = some blk) :
-    (cseFunc f).blocks lbl = some (cseBlock blk) := by
-  sorry
+    (cseFunc f).blocks lbl = some (cseBlock blk) :=
+  blocks_map_some f cseBlock lbl blk h
 
 /-- CSE preserves block lookup failure. -/
 theorem cseFunc_blocks_none (f : Func) (lbl : Label)
     (h : f.blocks lbl = none) :
-    (cseFunc f).blocks lbl = none := by
-  sorry
+    (cseFunc f).blocks lbl = none :=
+  blocks_map_none f cseBlock lbl h
+
+/-- CSE does not change block parameters. -/
+theorem cseBlock_params (b : Block) : (cseBlock b).params = b.params := rfl
+
+/-- CSE simulation. -/
+def cseSim : FuncSimulation cseFunc where
+  match_env := fun _f ρ lbl ρ' lbl' => ρ = ρ' ∧ lbl = lbl'
+  simulation := fun f fuel ρ lbl => by
+    -- TODO(formal, owner:compiler, milestone:M3, priority:P2, status:partial):
+    -- Prove cseFunc preserves execFunc. Requires threading AvailMapSound
+    -- through instructions under SSA freshness and lifting via fuel induction.
+    sorry
+  entry_preserved := fun _ => rfl
+  entry_block_some := fun f blk h =>
+    ⟨cseBlock blk, cseFunc_blocks_some f f.entry blk h, cseBlock_params blk⟩
+  entry_block_none := fun f h => cseFunc_blocks_none f f.entry h
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 5: Summary of simulation status
@@ -186,18 +261,25 @@ theorem cseFunc_blocks_none (f : Func) (lbl : Label)
 /-
   Pass simulation status:
 
-  | Pass          | FuncSimulation | execFunc preserved | Behavioral equiv |
-  |---------------|:--------------:|:------------------:|:----------------:|
-  | ConstFold     |       ✓        |         ✓          |        ✓         |
-  | DCE           |    sorry (P1)  |     sorry (P1)     |    sorry (P1)    |
-  | SCCP          |    sorry (P1)  |     sorry (P1)     |    sorry (P1)    |
-  | CSE           |    sorry (P2)  |     sorry (P2)     |    sorry (P2)    |
+  | Pass          | FuncSimulation | execFunc preserved | Behavioral equiv | blocks_some/none |
+  |---------------|:--------------:|:------------------:|:----------------:|:----------------:|
+  | ConstFold     |       ✓        |         ✓          |        ✓         |        ✓         |
+  | DCE           |    sorry (P1)  |     sorry (P1)     |    sorry (P1)    |        ✓         |
+  | SCCP          |       ✓        |         ✓          |        ✓         |        ✓         |
+  | CSE           |    sorry (P2)  |     sorry (P2)     |    sorry (P2)    |        ✓         |
 
-  ConstFold is the only pass with a complete end-to-end proof (via
-  constFoldFunc_correct). The remaining passes have expression-level or
-  instruction-level correctness proven, but the lift to function-level
-  execFunc preservation requires additional work as described in each
-  sorry's TODO comment.
+  ConstFold has a complete end-to-end proof chain: FuncSimulation (via
+  constFoldFunc_correct from Semantics/FuncCorrect.lean) and BehavioralEquivalence
+  (via FuncSimulation.toBehavioralEquiv).
+
+  SCCP now has a complete end-to-end proof chain: FuncSimulation (via
+  sccpFunc_correct proved here using sccpInstrs_correct + sccp_evalTerminator)
+  and BehavioralEquivalence (via FuncSimulation.toBehavioralEquiv).
+
+  DCE/CSE block lookup lemmas are now proven via blocks_map_some/none
+  from BlockCorrect. The remaining sorry gaps are the function-level execFunc
+  preservation proofs, which require lifting block-level correctness through
+  fuel induction (see TODO comments on each).
 -/
 
 end MoltTIR

@@ -58,6 +58,8 @@ import MoltTIR.Compilation.ForwardSimulation
 import MoltTIR.Simulation.FullChain
 import MoltTIR.Runtime.WasmNativeCorrect
 import MoltTIR.Determinism.CompileDeterminism
+import MoltTIR.EndToEnd
+import MoltTIR.Semantics.FuncCorrect
 
 set_option autoImplicit false
 
@@ -168,15 +170,9 @@ theorem compile_preserves_wf {prog : MoltProgram}
     (hwf : WellFormed prog) :
     WellFormed (compile prog) := by
   constructor
-  · -- Entry function exists in compiled program
-    -- compile maps each function through compileFunc, preserving the list structure
-    simp only [compile, MoltProgram.entryFunc, MoltProgram.lookupFunc]
-    -- The entry name is preserved (compile_preserves_entry)
-    -- The function list is mapped, so if the entry existed before, it exists after
+  · -- TODO(formal, owner:compiler, milestone:M4, priority:P2, status:partial):
+    -- Requires showing List.map preserves List.find? for name-preserving maps.
     sorry
-    -- TODO(formal, owner:compiler, milestone:M4, priority:P2, status:partial):
-    -- Requires showing that List.map preserves List.find? for the same key.
-    -- This is a straightforward list lemma.
   · exact ⟨⟩
 
 -- ======================================================================
@@ -247,10 +243,8 @@ theorem forward_simulation (f : MoltTIR.Func) (fuel : Nat) (ρ : MoltTIR.Env)
   -- constFoldFunc is proven (constFoldFunc_correct).
   -- The others have sorry stubs at the FuncSimulation level.
   -- We chain them via transitivity.
-  have h_cf : execFunc (constFoldFunc f) fuel ρ lbl = execFunc f fuel ρ lbl := by
-    -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
-    -- Proven in Semantics/FuncCorrect.lean; not available as FuncCorrect is not in lakefile roots.
-    sorry
+  have h_cf : execFunc (constFoldFunc f) fuel ρ lbl = execFunc f fuel ρ lbl :=
+    constFoldFunc_correct f fuel ρ lbl
   -- For the remaining passes, we need their FuncSimulation instances.
   -- Currently, sccpSim, dceSim, cseSim have sorry stubs.
   -- guardHoistFunc and joinCanonFunc don't have FuncSimulation instances yet.
@@ -301,9 +295,7 @@ theorem observable_equivalence (f : MoltTIR.Func) :
 theorem cross_target_agreement :
     Runtime.WasmNativeCorrect.nativeLayout = Runtime.WasmNativeCorrect.wasmLayout ∧
     Runtime.WasmNativeCorrect.nativeCallConv = Runtime.WasmNativeCorrect.wasmCallConv :=
-  -- TODO(formal, owner:compiler, milestone:M4, priority:P1, status:partial):
-  -- endToEnd_wasm_native_agree from MoltTIR.EndToEnd not available (not in lakefile roots).
-  sorry
+  endToEnd_wasm_native_agree
 
 -- ======================================================================
 -- Section 7: Determinism of Compilation

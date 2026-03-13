@@ -36,10 +36,8 @@ theorem dce_valid_removal (used : List Var) (instrs : List Instr) :
     ∀ (i : Instr), i ∈ instrs → i ∉ dceInstrs used instrs →
       ¬isLive used i := by
   intro i hmem hfiltered
-  simp [dceInstrs] at hfiltered
-  -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
-  -- Type mismatch after Lean 4.16 filter API change; needs update.
-  sorry
+  simp only [dceInstrs, List.mem_filter, decide_eq_true_eq] at hfiltered
+  exact fun hlive => hfiltered ⟨hmem, hlive⟩
 
 /-- Every live instruction is preserved by DCE. -/
 theorem dce_preserves_live (used : List Var) (instrs : List Instr) :
@@ -134,10 +132,11 @@ theorem dceBlock_valid (b : Block)
 theorem dce_instrs_idempotent (used : List Var) (instrs : List Instr) :
     dceInstrs used (dceInstrs used instrs) = dceInstrs used instrs := by
   simp only [dceInstrs]
-  -- TODO(formal, owner:compiler, milestone:M6, priority:P2, status:partial):
-  -- Filter idempotency: filter p (filter p xs) = filter p xs.
-  -- Needs Lean 4.16-compatible List.filter_filter lemma.
-  sorry
+  induction instrs with
+  | nil => rfl
+  | cons x xs ih =>
+    simp only [List.filter_cons]
+    split <;> simp_all
 
 /-- DCE at the block level is syntactically idempotent.
 
