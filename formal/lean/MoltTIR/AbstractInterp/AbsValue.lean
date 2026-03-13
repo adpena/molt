@@ -99,9 +99,11 @@ theorem absval_meet_assoc (a b c : AbsVal) :
     -- Split on v3 = v2.
     all_goals rename_i v3
     all_goals by_cases h2 : v3 = v2
-    all_goals first
-      | simp_all [absval_meet]
-      | (simp [absval_meet, show v2 ≠ v1 from fun heq => h heq.symm]))
+    all_goals first | simp_all [absval_meet] | skip
+    -- Remaining case: match on stuck if-then-else.
+    -- The if (v2 = v1) is false by Ne.symm of h, but Lean's match
+    -- reduction doesn't evaluate through it. Use Ne.symm to close.
+    all_goals (simp [absval_meet, show v2 ≠ v1 from fun heq => h heq.symm]))
 
 theorem absval_meet_idem (a : AbsVal) : absval_meet a a = a := by
   cases a <;> simp [absval_meet]
