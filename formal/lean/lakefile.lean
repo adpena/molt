@@ -53,6 +53,10 @@ lean_lib MoltTIR where
              `MoltTIR.Simulation.FullChain,
              `MoltTIR.Compilation.ForwardSimulation,
              `MoltTIR.Compilation.CompilationCorrectness,
+             `MoltTIR.Validation.TranslationValidation,
+             `MoltTIR.Validation.ConstFoldValid,
+             `MoltTIR.Validation.SCCPValid,
+             `MoltTIR.Validation.DCEValid,
              `MoltTIR.Tests.Smoke]
 
 lean_lib MoltPython where

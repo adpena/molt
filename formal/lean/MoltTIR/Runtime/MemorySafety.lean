@@ -16,6 +16,7 @@
 -/
 import MoltTIR.Runtime.NanBox
 import MoltTIR.Runtime.Refcount
+import MoltTIR.Runtime.WasmNative
 
 set_option autoImplicit false
 
@@ -132,7 +133,7 @@ def ArrayBoundsCheck (h : Heap) (a : Addr) (headerSize : Nat)
 def trueRefcount (h : Heap) (liveAddrs : List Addr) (target : Addr) : Nat :=
   liveAddrs.foldl (fun acc a =>
     match h a with
-    | some meta => acc + meta.pointers.filter (· == target) |>.length
+    | some meta => acc + (meta.pointers.filter (· == target)).length
     | none => acc
   ) 0
 
