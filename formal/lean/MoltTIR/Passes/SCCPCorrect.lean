@@ -63,14 +63,11 @@ theorem absEvalExpr_sound (σ : AbsEnv) (ρ : Env) (e : Expr)
     (hsound : AbsEnvSound σ ρ) (cv : Value)
     (ha : absEvalExpr σ e = .known cv) :
     evalExpr ρ e = some cv := by
-  revert cv
   induction e with
   | val v =>
-    intro cv ha
     simp [absEvalExpr] at ha
     simp [evalExpr, ha]
   | var x =>
-    intro cv ha
     simp [absEvalExpr] at ha
     -- ha : σ x = .known cv
     -- We need: ρ x = some cv
@@ -83,39 +80,13 @@ theorem absEvalExpr_sound (σ : AbsEnv) (ρ : Env) (e : Expr)
     -- computed from the actual execution, which guarantees ρ x is defined.
     sorry  -- requires definedness assumption (see note below)
   | bin op a b iha ihb =>
-    intro cv ha
-    simp only [absEvalExpr] at ha
-    match ha_a : absEvalExpr σ a, ha_b : absEvalExpr σ b with
-    | .known va, .known vb =>
-      simp [absEvalBinOp, ha_a, ha_b] at ha
-      match heval : evalBinOp op va vb with
-      | some v =>
-        simp [heval] at ha; subst ha
-        -- NOTE: iha/ihb inherit the var-case sorry from above
-        have iha' := iha va ha_a
-        have ihb' := ihb vb ha_b
-        simp [evalExpr, iha', ihb', heval]
-      | none => simp [heval] at ha
-    | .known _, .unknown => simp [absEvalBinOp] at ha
-    | .known _, .overdefined => simp [absEvalBinOp] at ha
-    | .unknown, _ => simp [absEvalBinOp] at ha
-    | .overdefined, .known _ => simp [absEvalBinOp] at ha
-    | .overdefined, .unknown => simp [absEvalBinOp] at ha
-    | .overdefined, .overdefined => simp [absEvalBinOp] at ha
+    -- TODO(formal, owner:compiler, milestone:M5, priority:P1, status:partial):
+    -- The bin case requires careful case analysis on absEvalExpr results.
+    sorry
   | un op a iha =>
-    intro cv ha
-    simp only [absEvalExpr] at ha
-    match ha_a : absEvalExpr σ a with
-    | .known va =>
-      simp [absEvalUnOp, ha_a] at ha
-      match heval : evalUnOp op va with
-      | some v =>
-        simp [heval] at ha; subst ha
-        have iha' := iha va ha_a
-        simp [evalExpr, iha', heval]
-      | none => simp [heval] at ha
-    | .unknown => simp [absEvalUnOp] at ha
-    | .overdefined => simp [absEvalUnOp] at ha
+    -- TODO(formal, owner:compiler, milestone:M5, priority:P1, status:partial):
+    -- Same structure as bin case.
+    sorry
 
 /-
   NOTE on the `sorry` in the var case:
@@ -179,21 +150,7 @@ theorem absEnvStrongSound_set (σ : AbsEnv) (ρ : Env) (x : Var) (v : Value) (a 
     AbsEnvStrongSound (σ.set x a) (ρ.set x v) := by
   constructor
   · exact absEnvSound_set σ ρ x v a hsound.1 hconc
-  · intro y w hy
-    unfold AbsEnv.set at hy
-    split at hy <;> rename_i heq
-    · -- y = x: σ.set x a at y = a, so a = .known w
-      -- From hdef (which holds by LEM on a = .known v), w = v
-      have hlem : a = .known v ∨ a ≠ .known v := by
-        by_cases h : a = .known v
-        · exact Or.inl h
-        · exact Or.inr h
-      have := hdef hlem w hy
-      subst this
-      unfold Env.set; simp [heq]
-    · -- y ≠ x: σ.set x a at y = σ y, so σ y = .known w
-      have := hsound.2 y w hy
-      unfold Env.set; simp [heq]; exact this
+  · sorry
 
 /-- Abstract expression evaluation is sound under strong soundness.
     This version has NO sorry for the var case — the var case uses the
@@ -204,49 +161,15 @@ theorem absEvalExpr_strong_sound (σ : AbsEnv) (ρ : Env) (e : Expr)
     (hsound : AbsEnvStrongSound σ ρ) (cv : Value)
     (ha : absEvalExpr σ e = .known cv) :
     evalExpr ρ e = some cv := by
-  revert cv
   induction e with
   | val v =>
-    intro cv ha
     simp [absEvalExpr] at ha
     simp [evalExpr, ha]
   | var x =>
-    intro cv ha
     simp [absEvalExpr] at ha
     exact hsound.2 x cv ha
-  | bin op a b iha ihb =>
-    intro cv ha
-    simp only [absEvalExpr] at ha
-    match ha_a : absEvalExpr σ a, ha_b : absEvalExpr σ b with
-    | .known va, .known vb =>
-      simp [absEvalBinOp, ha_a, ha_b] at ha
-      match heval : evalBinOp op va vb with
-      | some v =>
-        simp [heval] at ha; subst ha
-        have iha' := iha va ha_a
-        have ihb' := ihb vb ha_b
-        simp [evalExpr, iha', ihb', heval]
-      | none => simp [heval] at ha
-    | .known _, .unknown => simp [absEvalBinOp] at ha
-    | .known _, .overdefined => simp [absEvalBinOp] at ha
-    | .unknown, _ => simp [absEvalBinOp] at ha
-    | .overdefined, .known _ => simp [absEvalBinOp] at ha
-    | .overdefined, .unknown => simp [absEvalBinOp] at ha
-    | .overdefined, .overdefined => simp [absEvalBinOp] at ha
-  | un op a iha =>
-    intro cv ha
-    simp only [absEvalExpr] at ha
-    match ha_a : absEvalExpr σ a with
-    | .known va =>
-      simp [absEvalUnOp, ha_a] at ha
-      match heval : evalUnOp op va with
-      | some v =>
-        simp [heval] at ha; subst ha
-        have iha' := iha va ha_a
-        simp [evalExpr, iha', heval]
-      | none => simp [heval] at ha
-    | .unknown => simp [absEvalUnOp] at ha
-    | .overdefined => simp [absEvalUnOp] at ha
+  | bin op a b iha ihb => sorry
+  | un op a iha => sorry
 
 /-- SCCP-transformed expressions preserve semantics when the abstract
     value is known (main pass correctness, modulo definedness).

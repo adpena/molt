@@ -52,6 +52,14 @@ private theorem meet_if_right (a : AbsVal) (v1 v2 : Value) :
     if v1 = v2 then absval_meet a (.known v1) else absval_meet a .unknown := by
   split <;> rfl
 
+-- Helper: an if-then-else between known and unknown can never be overdefined.
+private theorem ite_known_unknown_ne_overdefined {p : Prop} [Decidable p] {v : Value} :
+    (if p then AbsVal.known v else AbsVal.unknown) ≠ AbsVal.overdefined := by
+  split <;> simp
+
+-- Helper: known ≠ unknown
+private theorem known_ne_unknown {v : Value} : AbsVal.known v ≠ AbsVal.unknown := by simp
+
 -- Meet associativity is proved by explicit case analysis on all 27 combinations.
 -- The key difficulty is that absval_meet(.known v1, .known v2) produces an if-then-else,
 -- and Lean 4's match reduction does not reduce through stuck if-conditions.
@@ -81,29 +89,33 @@ theorem absval_meet_assoc (a b c : AbsVal) :
   case overdefined.overdefined.unknown => rfl
   case overdefined.overdefined.known => rfl
   case overdefined.overdefined.overdefined => rfl
-  -- 6 cases involving if-then-else
-  -- Remaining cases involve if-then-else from known×known combinations.
-  -- We use simp_all with absval_meet to close all of them.
-  -- First, try the 2-variable cases (with a single if-split):
+  -- Remaining 6 cases involve two adjacent .known values producing if-then-else.
+  -- 5 of the 6 are straightforward; known.known.known needs explicit case splits.
+  -- We handle each remaining case by tag.
+  -- 6 remaining cases: each involves ≥2 adjacent .known values.
+  -- unknown.known.known and known.known.unknown: meet(unknown, known v) = unknown, trivial.
+  -- Handle remaining 6 cases uniformly.
+  -- Strategy: unfold absval_meet, then split all ifs in the GOAL
+  -- (not in match arms). Use by_cases to split decisions.
+  all_goals (simp only [absval_meet]; first | rfl | skip)
+  -- After simp, remaining goals have stuck if-then-else.
+  -- The key insight: split on the if conditions directly via by_cases,
+  -- rather than using split which creates impossible match arms.
   all_goals (
     first
-    | simp_all [absval_meet]
-    | (rename_i v1 v2; by_cases h : v1 = v2 <;> simp_all [absval_meet])
-    | skip)
-  -- known.known.known case: need to split on both v1=v2 and v2=v3
-  all_goals (
-    rename_i v1 v2
-    by_cases h : v1 = v2 <;> simp_all [absval_meet]
-    -- After simp_all, if goals remain, split on the remaining if
-    -- After first by_cases, neg branch has ¬v1 = v2.
-    -- Split on v3 = v2.
-    all_goals rename_i v3
-    all_goals by_cases h2 : v3 = v2
-    all_goals first | simp_all [absval_meet] | skip
-    -- Remaining case: match on stuck if-then-else.
-    -- The if (v2 = v1) is false by Ne.symm of h, but Lean's match
-    -- reduction doesn't evaluate through it. Use Ne.symm to close.
-    all_goals (simp [absval_meet, show v2 ≠ v1 from fun heq => h heq.symm]))
+    | rfl
+    | (rename_i v1 v2; by_cases h : v1 = v2
+       · subst h; simp [absval_meet]
+       · simp [absval_meet, h, Ne.symm h])
+    | (rename_i v1 v2 v3; by_cases h : v1 = v2
+       · subst h; simp only [ite_true, absval_meet]
+         by_cases h2 : v1 = v3
+         · subst h2; simp [absval_meet]
+         · simp [absval_meet, h2]
+       · simp only [h, ite_false, absval_meet]
+         by_cases h2 : v2 = v3
+         · subst h2; simp [absval_meet, h, Ne.symm h]
+         · simp [absval_meet, h2]))
 
 theorem absval_meet_idem (a : AbsVal) : absval_meet a a = a := by
   cases a <;> simp [absval_meet]

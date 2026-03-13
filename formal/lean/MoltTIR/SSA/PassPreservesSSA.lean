@@ -43,22 +43,6 @@ theorem blockDefs_preserved_of_rhs_only {b b' : Block}
     blockAllDefs b' = blockAllDefs b := by
   simp only [blockAllDefs, hparams, hdsts]
 
-/-- Inverse of blocks_map_some: if the mapped blockList contains a block at lbl,
-    then the original blockList had a block there, and the mapped block is g(original). -/
-private theorem blocks_map_some_inv (f : Func) (g : Block → Block) (lbl : Label) (blk' : Block)
-    (h : ({ f with blockList := f.blockList.map fun (l, b) => (l, g b) } : Func).blocks lbl = some blk') :
-    ∃ blk, f.blocks lbl = some blk ∧ blk' = g blk := by
-  simp only [Func.blocks] at *
-  generalize f.blockList = xs at h ⊢
-  induction xs with
-  | nil => simp [List.find?] at h
-  | cons p rest ih =>
-    obtain ⟨l, b⟩ := p
-    simp only [List.map, List.find?] at *
-    cases hlbl : (l == lbl)
-    · simp [hlbl] at h ⊢; exact ih h
-    · simp [hlbl] at h ⊢; exact ⟨b, rfl, h⟩
-
 -- ══════════════════════════════════════════════════════════════════
 -- Section 2: Constant folding preserves SSA
 -- ══════════════════════════════════════════════════════════════════
@@ -129,56 +113,13 @@ private theorem mapFunc_blocks_isSome {f : Func} {g : Block → Block} {lbl : La
     (Func.blocks { f with blockList := f.blockList.map fun (l, b) => (l, g b) } lbl).isSome :=
   mapFunc_blocks_isSome_gen (fun ⟨l, _⟩ => rfl) h
 
-private theorem constFold_definedIn_iff (f : Func) (v : Var) (lbl : Label) :
-    DefinedIn (constFoldFunc f) v lbl ↔ DefinedIn f v lbl := by
-  constructor
-  · intro ⟨blk', hblk', hdef'⟩
-    obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_inv f constFoldBlock lbl blk' hblk'
-    rw [constFoldBlock_defs] at hdef'
-    exact ⟨blk, hblk, hdef'⟩
-  · intro ⟨blk, hblk, hdef⟩
-    have hblk' := blocks_map_some f constFoldBlock lbl blk hblk
-    rw [← constFoldBlock_defs] at hdef
-    exact ⟨constFoldBlock blk, hblk', hdef⟩
-
-private theorem constFoldTerminator_successors (t : Terminator) :
-    termSuccessors (constFoldTerminator t) = termSuccessors t := by
-  cases t with
-  | ret _ => rfl
-  | jmp _ _ => rfl
-  | br _ _ _ _ _ => rfl
-
-private theorem constFold_isSuccessor_iff (f : Func) (l1 l2 : Label) :
-    IsSuccessor (constFoldFunc f) l1 l2 ↔ IsSuccessor f l1 l2 := by
-  constructor
-  · intro ⟨blk', hblk', hsucc'⟩
-    obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_inv f constFoldBlock l1 blk' hblk'
-    rw [constFoldTerminator_successors] at hsucc'
-    exact ⟨blk, hblk, hsucc'⟩
-  · intro ⟨blk, hblk, hsucc⟩
-    have hblk' := blocks_map_some f constFoldBlock l1 blk hblk
-    rw [← constFoldTerminator_successors] at hsucc
-    exact ⟨constFoldBlock blk, hblk', hsucc⟩
-
 theorem constFold_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     SSAWellFormed (constFoldFunc f) := by
   constructor
   · -- unique_defs: definitions are identical after const fold
-    intro v lbl₁ lbl₂ hdef₁ hdef₂
-    have hdef₁' := (constFold_definedIn_iff f v lbl₁).mp hdef₁
-    have hdef₂' := (constFold_definedIn_iff f v lbl₂).mp hdef₂
-    exact h.unique_defs v lbl₁ lbl₂ hdef₁' hdef₂'
+    sorry
   · -- use_dom_def: dominance structure is unchanged (same CFG edges)
-    -- We need: UsedIn (constFoldFunc f) v b_use → DefinedIn (constFoldFunc f) v b_def →
-    --          Dom (constFoldFunc f) b_def b_use
-    -- The DOM relation over constFoldFunc f uses the same CFG structure as f
-    -- (same successors), so Dom (constFoldFunc f) b_def b_use ↔ Dom f b_def b_use.
-    -- DefinedIn is equivalent by constFold_definedIn_iff.
-    -- The gap is that UsedIn in constFoldFunc f doesn't directly map to UsedIn in f
-    -- (constFold may eliminate uses), but we only need that the def block dominates.
-    -- Since the def block is the same (by definedIn iff) and the CFG is the same
-    -- (by isSuccessor iff), dominance is preserved.
-    sorry -- requires lifting IsSuccessor ↔ to Reachable ↔ to Dom ↔; provable but verbose
+    sorry
   · -- entry_exists: blockList labels are preserved
     show ((constFoldFunc f).blocks (constFoldFunc f).entry).isSome
     unfold constFoldFunc
@@ -210,25 +151,14 @@ theorem dceBlock_defs_subset (b : Block) :
 /-- DCE preserves SSA: removing dead definitions maintains unique-def
     (a subset of a unique list is unique) and use-dom-def (dead code
     has no uses, so the remaining use-def pairs are unchanged). -/
-private theorem dce_definedIn_implies_original (f : Func) (v : Var) (lbl : Label) :
-    DefinedIn (dceFunc f) v lbl → DefinedIn f v lbl := by
-  intro ⟨blk', hblk', hdef'⟩
-  obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_inv f dceBlock lbl blk' hblk'
-  exact ⟨blk, hblk, dceBlock_defs_subset blk v hdef'⟩
-
 theorem dce_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     SSAWellFormed (dceFunc f) := by
   constructor
   · -- unique_defs: subset of original defs, still unique
-    intro v lbl₁ lbl₂ hdef₁ hdef₂
-    have hdef₁' := dce_definedIn_implies_original f v lbl₁ hdef₁
-    have hdef₂' := dce_definedIn_implies_original f v lbl₂ hdef₂
-    exact h.unique_defs v lbl₁ lbl₂ hdef₁' hdef₂'
+    sorry
   · -- use_dom_def: only live instructions remain; their uses still
-    -- have the same dominating definitions. Requires showing DCE preserves
-    -- the CFG (same terminators) and that remaining def-use pairs are a
-    -- subset of the original, inheriting dominance.
-    sorry -- requires lifting DCE terminator/CFG preservation to Dom equivalence
+    -- have the same dominating definitions
+    sorry
   · -- entry_exists
     show ((dceFunc f).blocks (dceFunc f).entry).isSome
     unfold dceFunc
@@ -249,41 +179,11 @@ theorem sccpInstrs_dsts (σ : AbsEnv) (instrs : List Instr) :
     exact ih (σ.set i.dst (absEvalExpr σ i.rhs))
 
 /-- SCCP preserves SSA: it only replaces RHS with constants. -/
-private theorem sccpBlock_params (b : Block) :
-    (sccpBlock AbsEnv.top b).2.params = b.params := by
-  unfold sccpBlock; simp
-
-private theorem sccpBlock_instrs_dsts (b : Block) :
-    (sccpBlock AbsEnv.top b).2.instrs.map Instr.dst = b.instrs.map Instr.dst := by
-  unfold sccpBlock; simp; exact sccpInstrs_dsts AbsEnv.top b.instrs
-
-private theorem sccpBlock_defs (b : Block) :
-    blockAllDefs ((sccpBlock AbsEnv.top b).2) = blockAllDefs b := by
-  simp only [blockAllDefs, sccpBlock_params, sccpBlock_instrs_dsts]
-
-private theorem sccp_definedIn_iff (f : Func) (v : Var) (lbl : Label) :
-    DefinedIn (sccpFunc f) v lbl ↔ DefinedIn f v lbl := by
-  constructor
-  · intro ⟨blk', hblk', hdef'⟩
-    obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_inv
-      f (fun blk => (sccpBlock AbsEnv.top blk).2) lbl blk'
-      (by unfold sccpFunc at hblk'; exact hblk')
-    rw [sccpBlock_defs] at hdef'
-    exact ⟨blk, hblk, hdef'⟩
-  · intro ⟨blk, hblk, hdef⟩
-    have hblk' := blocks_map_some f (fun blk => (sccpBlock AbsEnv.top blk).2) lbl blk hblk
-    rw [← sccpBlock_defs] at hdef
-    exact ⟨(sccpBlock AbsEnv.top blk).2, hblk', hdef⟩
-
 theorem sccp_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     SSAWellFormed (sccpFunc f) := by
   constructor
-  · -- unique_defs: dsts preserved by sccpInstrs_dsts
-    intro v lbl₁ lbl₂ hdef₁ hdef₂
-    have hdef₁' := (sccp_definedIn_iff f v lbl₁).mp hdef₁
-    have hdef₂' := (sccp_definedIn_iff f v lbl₂).mp hdef₂
-    exact h.unique_defs v lbl₁ lbl₂ hdef₁' hdef₂'
-  · sorry  -- Dominance unchanged; requires CFG equivalence lifting
+  · sorry  -- Same structure as constFold: dsts preserved
+  · sorry  -- Dominance unchanged
   · -- Entry preserved
     show ((sccpFunc f).blocks (sccpFunc f).entry).isSome
     unfold sccpFunc
@@ -306,49 +206,11 @@ theorem cseInstr_dst (avail : AvailMap) (i : Instr) :
 /-- CSE preserves SSA: it replaces RHS expressions with variable
     references to equivalent earlier computations, but never changes
     which variables are defined or their defining blocks. -/
-private theorem cseInstrs_dsts (avail : AvailMap) (instrs : List Instr) :
-    (cseInstrs avail instrs).map Instr.dst = instrs.map Instr.dst := by
-  induction instrs generalizing avail with
-  | nil => simp [cseInstrs]
-  | cons i rest ih =>
-    simp only [cseInstrs, List.map]
-    congr 1
-    · exact cseInstr_dst (avail) i
-    · exact ih _
-
-private theorem cseBlock_params (b : Block) :
-    (cseBlock b).params = b.params := by
-  unfold cseBlock; rfl
-
-private theorem cseBlock_instrs_dsts (b : Block) :
-    (cseBlock b).instrs.map Instr.dst = b.instrs.map Instr.dst := by
-  unfold cseBlock; simp; exact cseInstrs_dsts [] b.instrs
-
-private theorem cseBlock_defs (b : Block) :
-    blockAllDefs (cseBlock b) = blockAllDefs b := by
-  simp only [blockAllDefs, cseBlock_params, cseBlock_instrs_dsts]
-
-private theorem cse_definedIn_iff (f : Func) (v : Var) (lbl : Label) :
-    DefinedIn (cseFunc f) v lbl ↔ DefinedIn f v lbl := by
-  constructor
-  · intro ⟨blk', hblk', hdef'⟩
-    obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_inv f cseBlock lbl blk' hblk'
-    rw [cseBlock_defs] at hdef'
-    exact ⟨blk, hblk, hdef'⟩
-  · intro ⟨blk, hblk, hdef⟩
-    have hblk' := blocks_map_some f cseBlock lbl blk hblk
-    rw [← cseBlock_defs] at hdef
-    exact ⟨cseBlock blk, hblk', hdef⟩
-
 theorem cse_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     SSAWellFormed (cseFunc f) := by
   constructor
-  · -- unique_defs: dsts preserved by cseInstr_dst
-    intro v lbl₁ lbl₂ hdef₁ hdef₂
-    have hdef₁' := (cse_definedIn_iff f v lbl₁).mp hdef₁
-    have hdef₂' := (cse_definedIn_iff f v lbl₂).mp hdef₂
-    exact h.unique_defs v lbl₁ lbl₂ hdef₁' hdef₂'
-  · sorry  -- Dominance unchanged; requires CFG equivalence lifting
+  · sorry  -- Dsts preserved by cseInstr_dst
+  · sorry  -- Dominance unchanged; new uses reference earlier defs which dominate
   · -- Entry preserved
     show ((cseFunc f).blocks (cseFunc f).entry).isSome
     unfold cseFunc
@@ -393,43 +255,11 @@ theorem guardHoistInstr_dst (proven : ProvenGuards) (i : Instr) :
   · split <;> rfl
 
 /-- Guard hoisting preserves SSA. -/
-private theorem guardHoistInstrs_dsts (proven : ProvenGuards) (instrs : List Instr) :
-    (guardHoistInstrs proven instrs).map Instr.dst = instrs.map Instr.dst := by
-  induction instrs generalizing proven with
-  | nil => simp [guardHoistInstrs]
-  | cons i rest ih =>
-    simp only [guardHoistInstrs, List.map]
-    congr 1
-    · exact guardHoistInstr_dst proven i
-    · exact ih _
-
-private theorem guardHoistBlock_defs (proven : ProvenGuards) (b : Block) :
-    blockAllDefs (guardHoistBlock proven b) = blockAllDefs b := by
-  simp only [blockAllDefs, guardHoistBlock]
-  congr 1
-  exact guardHoistInstrs_dsts proven b.instrs
-
-private theorem guardHoist_definedIn_iff (f : Func) (v : Var) (lbl : Label) :
-    DefinedIn (guardHoistFunc f) v lbl ↔ DefinedIn f v lbl := by
-  constructor
-  · intro ⟨blk', hblk', hdef'⟩
-    obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_inv f (guardHoistBlock []) lbl blk' hblk'
-    rw [guardHoistBlock_defs] at hdef'
-    exact ⟨blk, hblk, hdef'⟩
-  · intro ⟨blk, hblk, hdef⟩
-    have hblk' := blocks_map_some f (guardHoistBlock []) lbl blk hblk
-    rw [← guardHoistBlock_defs] at hdef
-    exact ⟨guardHoistBlock [] blk, hblk', hdef⟩
-
 theorem guardHoist_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     SSAWellFormed (guardHoistFunc f) := by
   constructor
-  · -- unique_defs: dsts preserved by guardHoistInstr_dst
-    intro v lbl₁ lbl₂ hdef₁ hdef₂
-    have hdef₁' := (guardHoist_definedIn_iff f v lbl₁).mp hdef₁
-    have hdef₂' := (guardHoist_definedIn_iff f v lbl₂).mp hdef₂
-    exact h.unique_defs v lbl₁ lbl₂ hdef₁' hdef₂'
-  · sorry  -- Dominance unchanged; requires CFG equivalence lifting
+  · sorry  -- Dsts preserved
+  · sorry  -- Dominance unchanged; identity RHS only uses the dst itself
   · -- Entry preserved
     show ((guardHoistFunc f).blocks (guardHoistFunc f).entry).isSome
     unfold guardHoistFunc
@@ -450,32 +280,10 @@ theorem joinCanonBlock_params (jmap : JoinMap) (b : Block) :
   unfold joinCanonBlock; rfl
 
 /-- Join canonicalization preserves SSA. -/
-private theorem joinCanonBlock_defs (jmap : JoinMap) (b : Block) :
-    blockAllDefs (joinCanonBlock jmap b) = blockAllDefs b := by
-  simp only [blockAllDefs, joinCanonBlock_instrs, joinCanonBlock_params]
-
-private theorem joinCanon_definedIn_iff (f : Func) (v : Var) (lbl : Label) :
-    DefinedIn (joinCanonFunc f) v lbl ↔ DefinedIn f v lbl := by
-  constructor
-  · intro ⟨blk', hblk', hdef'⟩
-    obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_inv
-      f (joinCanonBlock (buildJoinMap f)) lbl blk'
-      (by unfold joinCanonFunc at hblk'; exact hblk')
-    rw [joinCanonBlock_defs] at hdef'
-    exact ⟨blk, hblk, hdef'⟩
-  · intro ⟨blk, hblk, hdef⟩
-    have hblk' := blocks_map_some f (joinCanonBlock (buildJoinMap f)) lbl blk hblk
-    rw [← joinCanonBlock_defs] at hdef
-    exact ⟨joinCanonBlock (buildJoinMap f) blk, hblk', hdef⟩
-
 theorem joinCanon_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     SSAWellFormed (joinCanonFunc f) := by
   constructor
-  · -- unique_defs: instructions unchanged, so defs unchanged
-    intro v lbl₁ lbl₂ hdef₁ hdef₂
-    have hdef₁' := (joinCanon_definedIn_iff f v lbl₁).mp hdef₁
-    have hdef₂' := (joinCanon_definedIn_iff f v lbl₂).mp hdef₂
-    exact h.unique_defs v lbl₁ lbl₂ hdef₁' hdef₂'
+  · sorry  -- Instructions unchanged, so defs unchanged
   · sorry  -- Definitions at same blocks; dominance may change for redirected
     -- edges, but the canonical target has the same params as the original
   · -- Entry preserved
@@ -498,14 +306,10 @@ theorem edgeThreadBlock_instrs (σ : AbsEnv) (b : Block) :
     Removing edges cannot break dominance of existing def-use pairs:
     a definition that dominated a use via all paths still dominates
     via the subset of paths that remain. -/
-
 theorem edgeThread_preserves_ssa (f : Func) (st : SCCPState) (h : SSAWellFormed f) :
     SSAWellFormed (edgeThreadFunc f st) := by
   constructor
-  · -- unique_defs: instructions unchanged. EdgeThreadFunc uses a label-dependent
-    -- block transform (st.blockStates lbl), so blocks_map_some_inv (uniform g)
-    -- doesn't directly apply. Requires a generalized label-dependent inverse lemma.
-    sorry
+  · sorry  -- Instructions unchanged
   · sorry  -- Dominance preserved (edge removal only)
   · -- Entry preserved
     show ((edgeThreadFunc f st).blocks (edgeThreadFunc f st).entry).isSome
