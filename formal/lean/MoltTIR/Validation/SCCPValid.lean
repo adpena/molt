@@ -23,17 +23,11 @@
 import MoltTIR.Validation.TranslationValidation
 import MoltTIR.Passes.SCCPCorrect
 import MoltTIR.Passes.SCCPMultiCorrect
+import MoltTIR.EndToEndProperties
 
 set_option autoImplicit false
 
 namespace MoltTIR
-
--- Stub for theorem defined in EndToEndProperties.lean (not in lakefile roots).
--- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
--- Add EndToEndProperties to lakefile roots and remove this stub.
-private theorem sccpExpr_idempotent (σ : AbsEnv) (e : Expr) :
-    sccpExpr σ (sccpExpr σ e) = sccpExpr σ e := by
-  sorry
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 1: Expression-level validation (conditional)
@@ -72,15 +66,14 @@ theorem sccp_valid_strong (σ : AbsEnv) (e : Expr) :
       evalExpr ρ (sccpExpr σ e) = evalExpr ρ e :=
   fun ρ hsound => sccpExpr_correct_strong σ ρ e hsound
 
-/-- Strong soundness for SCCP gives unconditional equivalence
-    (under the strong invariant). -/
+/-- Strong soundness for SCCP gives equivalence at the witnessing
+    environment. (The original formulation universally quantified over
+    all ρ', which is unprovable from a hypothesis about a single ρ.
+    The correct universal version is `SCCPEquivStrong` below.) -/
 theorem sccp_strong_equiv (σ : AbsEnv) (e : Expr) (ρ : Env)
     (hsound : AbsEnvStrongSound σ ρ) :
-    ExprEquiv e (sccpExpr σ e) :=
-  fun ρ' => by
-    -- This only holds for the specific ρ, not all ρ'.
-    -- We need to weaken to conditional equivalence.
-    sorry
+    evalExpr ρ (sccpExpr σ e) = evalExpr ρ e :=
+  sccpExpr_correct_strong σ ρ e hsound
 
 /-- Correct formulation: SCCP equivalence under strong soundness
     is conditional on the specific environment satisfying strong soundness. -/
