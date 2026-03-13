@@ -43095,6 +43095,9 @@ pub(crate) fn is_truthy(_py: &PyToken<'_>, obj: MoltObject) -> bool {
         return !big.is_zero();
     }
     if let Some(ptr) = obj.as_ptr() {
+        if ptr.is_null() {
+            return false;
+        }
         unsafe {
             let type_id = object_type_id(ptr);
             if type_id == TYPE_ID_STRING {
