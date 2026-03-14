@@ -62,3 +62,4 @@ packaging/out/
 !/WORKFLOW.md
 !/docs/**/*.md
 !/packaging/**/*.md
+.claude/worktrees/
