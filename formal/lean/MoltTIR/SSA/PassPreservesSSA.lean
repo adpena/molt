@@ -206,9 +206,104 @@ theorem constFoldBlock_defs (b : Block) :
     blockAllDefs (constFoldBlock b) = blockAllDefs b := by
   simp only [blockAllDefs, constFoldBlock, List.map_map, Function.comp_def, constFoldInstr_dst]
 
-/-- Constant folding preserves SSA: it only changes RHS expressions,
-    never introduces new definitions or changes the def-use structure
-    at the definition level. -/
+/-- Constant folding can only remove variable references from expressions,
+    never introduce new ones. -/
+theorem constFoldExpr_vars_subset : ∀ (e : Expr) (v : Var),
+    v ∈ exprVars (constFoldExpr e) → v ∈ exprVars e := by
+  intro e
+  induction e with
+  | val _ => simp [constFoldExpr, exprVars]
+  | var x => simp [constFoldExpr, exprVars]
+  | bin op a b iha ihb =>
+    intro v hv
+    have key : v ∈ exprVars (constFoldExpr a) ++ exprVars (constFoldExpr b) →
+               v ∈ exprVars (.bin op a b) := by
+      intro hmem
+      simp only [exprVars]
+      rcases List.mem_append.mp hmem with ha | hb
+      · exact List.mem_append_left _ (iha v ha)
+      · exact List.mem_append_right _ (ihb v hb)
+    simp only [constFoldExpr] at hv
+    split at hv
+    · -- (.val va, .val vb): need to split on evalBinOp
+      split at hv
+      · exact absurd hv (List.not_mem_nil _)
+      · exact key hv
+    · -- catch-all: result is .bin op a' b'
+      exact key hv
+  | un op a ih =>
+    intro v hv
+    simp only [constFoldExpr] at hv
+    split at hv
+    · -- (.val va): split on evalUnOp
+      split at hv
+      · exact absurd hv (List.not_mem_nil _)
+      · simp only [exprVars] at hv; exact ih v hv
+    · -- catch-all: result is .un op a'
+      simp only [exprVars] at hv; exact ih v hv
+
+/-- Constant folding preserves terminator successors. -/
+theorem constFoldTerminator_successors (t : Terminator) :
+    termSuccessors (constFoldTerminator t) = termSuccessors t := by
+  cases t with
+  | ret _ => simp [constFoldTerminator, termSuccessors]
+  | jmp target args => simp [constFoldTerminator, termSuccessors]
+  | br cond tl ta el ea => simp [constFoldTerminator, termSuccessors]
+
+/-- constFoldBlock preserves terminator successors. -/
+theorem constFoldBlock_successors (b : Block) :
+    termSuccessors (constFoldBlock b).term = termSuccessors b.term := by
+  simp [constFoldBlock, constFoldTerminator_successors]
+
+/-- Mapping constFoldExpr over a list preserves vars subset. -/
+private theorem map_constFoldExpr_vars_subset (es : List Expr) :
+    ∀ v, v ∈ (es.map constFoldExpr).flatMap exprVars → v ∈ es.flatMap exprVars := by
+  intro v hv
+  simp only [List.mem_flatMap, List.mem_map] at hv
+  obtain ⟨e', ⟨e, he_mem, rfl⟩, hv_in⟩ := hv
+  simp only [List.mem_flatMap]
+  exact ⟨e, he_mem, constFoldExpr_vars_subset e v hv_in⟩
+
+/-- Constant folding can only remove variable references from terminators. -/
+theorem constFoldTerminator_vars_subset (t : Terminator) :
+    ∀ v, v ∈ termVars (constFoldTerminator t) → v ∈ termVars t := by
+  intro v hv
+  cases t with
+  | ret e =>
+    simp only [constFoldTerminator, termVars] at *
+    exact constFoldExpr_vars_subset e v hv
+  | jmp target args =>
+    simp only [constFoldTerminator, termVars] at *
+    exact map_constFoldExpr_vars_subset args v hv
+  | br cond tl ta el ea =>
+    simp only [constFoldTerminator, termVars] at hv ⊢
+    rcases List.mem_append.mp hv with hce | hea'
+    · rcases List.mem_append.mp hce with hc | hta'
+      · exact List.mem_append_left _ (List.mem_append_left _ (constFoldExpr_vars_subset cond v hc))
+      · exact List.mem_append_left _ (List.mem_append_right _ (map_constFoldExpr_vars_subset ta v hta'))
+    · exact List.mem_append_right _ (map_constFoldExpr_vars_subset ea v hea')
+
+/-- constFoldBlock uses are a subset of original block uses. -/
+theorem constFoldBlock_uses_subset (b : Block) :
+    ∀ v ∈ blockAllUses (constFoldBlock b), v ∈ blockAllUses b := by
+  intro v hv
+  simp only [blockAllUses, constFoldBlock] at hv ⊢
+  rcases List.mem_append.mp hv with hi | ht
+  · apply List.mem_append_left
+    simp only [List.mem_flatMap, List.mem_map] at hi ⊢
+    obtain ⟨i', ⟨i, hi_mem, rfl⟩, hv_rhs⟩ := hi
+    simp only [constFoldInstr] at hv_rhs
+    exact ⟨i, hi_mem, constFoldExpr_vars_subset i.rhs v hv_rhs⟩
+  · apply List.mem_append_right
+    exact constFoldTerminator_vars_subset b.term v ht
+
+/-- UsedIn in const-folded function implies UsedIn in original. -/
+private theorem usedIn_constFoldFunc_imp (f : Func) (v : Var) (lbl : Label)
+    (h : UsedIn (constFoldFunc f) v lbl) : UsedIn f v lbl := by
+  obtain ⟨blk', hblk', hv⟩ := h
+  obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_rev f constFoldBlock lbl blk' hblk'
+  exact ⟨blk, hblk, constFoldBlock_uses_subset blk v hv⟩
+
 private theorem find_map_preserves_label {bl : List (Label × Block)}
     {lbl : Label} {g : Block → Block}
     (hfind : (bl.find? (fun p => p.1 == lbl)).isSome) :
@@ -274,10 +369,11 @@ theorem constFold_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     show ∀ v b_use b_def, UsedIn (constFoldFunc f) v b_use →
       DefinedIn (constFoldFunc f) v b_def → Dom (constFoldFunc f) b_def b_use
     unfold constFoldFunc
-    sorry
-    -- TODO(formal, owner:compiler, milestone:M4, priority:P1, status:partial):
-    -- Needs constFoldExpr_vars_subset + constFoldTerminator_vars_subset
-    -- to supply the huses witness to use_dom_def_of_mapFunc.
+    exact use_dom_def_of_mapFunc f constFoldBlock
+      constFoldBlock_defs
+      constFoldBlock_successors
+      (fun v lbl hu => usedIn_constFoldFunc_imp f v lbl hu)
+      h
   · -- entry_exists: blockList labels are preserved
     show ((constFoldFunc f).blocks (constFoldFunc f).entry).isSome
     unfold constFoldFunc
