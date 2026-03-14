@@ -224,22 +224,37 @@ theorem dceFunc_correct_wt (f : Func) (ht : InstrTotal f) (fuel : Nat) (ρ : Env
     | some blk =>
       simp only [dceFunc_blocks_some f lbl blk hblk]
       -- InstrTotal gives us that the original instructions evaluate
-      have htotal := ht lbl blk ρ hblk
-      obtain ⟨ρ_orig, hρ_orig⟩ := Option.isSome_iff_exists.mp htotal
+      have htotal_orig := ht lbl blk ρ hblk
+      obtain ⟨ρ_orig, hρ_orig⟩ := Option.isSome_iff_exists.mp htotal_orig
+      -- InstrTotal (dceFunc f) gives us that the DCE'd instructions evaluate
+      have ht_dce := dce_preserves_total f ht
+      have hblk_dce := dceFunc_blocks_some f lbl blk hblk
+      have htotal_dce := ht_dce lbl (dceBlock blk) ρ hblk_dce
+      obtain ⟨ρ_dce, hρ_dce⟩ := Option.isSome_iff_exists.mp htotal_dce
       -- DCE'd block instructions
       simp only [dceBlock]
-      -- Need to show execInstrs on filtered instrs succeeds and agrees
-      -- with the original on termVars, then use dce_evalTerminator + IH
-      sorry
-      -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
-      -- Remaining steps:
-      -- 1. Show execInstrs ρ (dceInstrs used blk.instrs) = some ρ_dce
-      -- 2. Apply dce_instrs_agreeOn with ρ₁ = ρ, ρ₂ = ρ to get
-      --    EnvAgreeOn used ρ_dce ρ_orig
-      -- 3. Use evalTerminator_agreeOn (termVars ⊆ used) to show
-      --    evalTerminator f ρ_dce blk.term = evalTerminator f ρ_orig blk.term
-      -- 4. Use dce_evalTerminator for the function argument difference
-      -- 5. Match on the terminator result and apply IH
+      -- Rewrite both sides with known execInstrs results
+      simp only [dceBlock] at hρ_dce
+      simp only [hρ_dce, hρ_orig]
+      -- Now apply dce_instrs_agreeOn to get environment agreement
+      have hdead := dce_instrs_agreeOn_precond_dead blk.instrs blk.term
+      have hrhs := dce_instrs_agreeOn_precond_rhs blk.instrs blk.term
+      have hagree_init : EnvAgreeOn (usedVarsSuffix blk.instrs blk.term) ρ ρ :=
+        envAgreeOn_refl (usedVarsSuffix blk.instrs blk.term) ρ
+      have hagree_final : EnvAgreeOn (usedVarsSuffix blk.instrs blk.term) ρ_dce ρ_orig :=
+        dce_instrs_agreeOn (usedVarsSuffix blk.instrs blk.term) blk.instrs
+          hdead hrhs ρ ρ hagree_init ρ_dce ρ_orig hρ_dce hρ_orig
+      -- termVars ⊆ used, so agreement on used implies agreement on termVars
+      have hagree_term : EnvAgreeOn (termVars blk.term) ρ_dce ρ_orig :=
+        fun x hx => hagree_final x (termVars_sub_usedVarsSuffix blk.instrs blk.term x hx)
+      -- Terminators agree: first swap dceFunc↔f, then swap ρ_dce↔ρ_orig
+      rw [dce_evalTerminator f ρ_dce blk.term]
+      rw [evalTerminator_agreeOn f ρ_dce ρ_orig blk.term hagree_term]
+      -- Now both sides match on evalTerminator f ρ_orig blk.term
+      match evalTerminator f ρ_orig blk.term with
+      | none => rfl
+      | some (.ret v) => rfl
+      | some (.jump target env') => exact ih env' target
 
 /-- DCE simulation at the function level (well-typed variant).
     Unlike FuncSimulation, FuncSimulationWT adds an InstrTotal precondition,
@@ -432,12 +447,12 @@ def cseSim : FuncSimulation cseFunc where
 /-
   Pass simulation status:
 
-  | Pass          | Simulation type   | execFunc preserved     | Behavioral equiv | blocks_some/none |
-  |---------------|:-----------------:|:----------------------:|:----------------:|:----------------:|
-  | ConstFold     | FuncSimulation    |         ✓              |        ✓         |        ✓         |
-  | DCE           | FuncSimulationWT  | sorry (fuel step, P1)  | via WT (P1)      |        ✓         |
-  | SCCP          | FuncSimulation    |         ✓              |        ✓         |        ✓         |
-  | CSE           | FuncSimulation    |     sorry (P2)         |    sorry (P2)    |        ✓         |
+  | Pass          | Simulation type   | execFunc preserved         | Behavioral equiv | blocks_some/none |
+  |---------------|:-----------------:|:--------------------------:|:----------------:|:----------------:|
+  | ConstFold     | FuncSimulation    |             ✓              |        ✓         |        ✓         |
+  | DCE           | FuncSimulationWT  | ✓ (modulo preserves_total) | via WT           |        ✓         |
+  | SCCP          | FuncSimulation    |             ✓              |        ✓         |        ✓         |
+  | CSE           | FuncSimulation    |         sorry (P2)         |    sorry (P2)    |        ✓         |
 
   ConstFold has a complete end-to-end proof chain: FuncSimulation (via
   constFoldFunc_correct from Semantics/FuncCorrect.lean) and BehavioralEquivalence
@@ -448,10 +463,12 @@ def cseSim : FuncSimulation cseFunc where
   and BehavioralEquivalence (via FuncSimulation.toBehavioralEquiv).
 
   DCE now uses FuncSimulationWT (well-typed simulation) with InstrTotal f
-  as precondition. This correctly captures that DCE requires well-formed IR
-  (no dead type-erroneous instructions). The dce_evalTerminator lemma is
-  fully proven; the fuel induction step and preserves_total have sorry stubs
-  pending the env-agreement-to-terminator-agreement bridge.
+  as precondition. The fuel induction step is fully proven: dce_instrs_agreeOn
+  gives env agreement, evalTerminator_agreeOn bridges envs for the terminator,
+  dce_evalTerminator handles the function difference, and the IH closes the
+  recursive case. The only remaining sorry is dce_preserves_total (showing
+  InstrTotal is preserved by DCE), which requires proving that filtering
+  instructions preserves totality.
 
   CSE block lookup lemmas are proven via blocks_map_some/none from BlockCorrect.
 -/
