@@ -82,24 +82,133 @@ theorem dceBlock_params (b : Block) : (dceBlock b).params = b.params := rfl
 /-- DCE does not change the terminator. -/
 theorem dceBlock_term (b : Block) : (dceBlock b).term = b.term := rfl
 
-/-- DCE simulation at the function level. Since dceFunc transforms each
-    block independently (filtering dead instructions), the block-level
-    agreement theorem (dce_instrs_agreeOn) lifts to the function level. -/
-def dceSim : FuncSimulation dceFunc where
-  match_env := fun _f ρ lbl ρ' lbl' => ρ = ρ' ∧ lbl = lbl'
-  simulation := fun f fuel ρ lbl => by
-    -- NOTE: This is not provable without a well-typedness precondition.
-    -- DCE removes dead instructions that may contain type errors (evalExpr = none).
-    -- In the original, a dead instruction with a type error causes execInstrs → none
-    -- → execFunc → .stuck. After DCE removes it, execution continues to .ret v.
-    -- So DCE can change .stuck → .ret v, violating full execFunc equality.
-    -- The correct formulation is FuncRefines (weaker: only preserves non-stuck
-    -- behaviors) or requires WellTyped f (all expressions evaluate successfully).
-    sorry
+/-- DCE preserves evalTerminator when the function is also DCE-transformed.
+    The terminator is unchanged by DCE, and block params are preserved,
+    so the block lookup in jmp/br gives the same params → same bindParams. -/
+theorem dce_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
+    evalTerminator (dceFunc f) ρ t = evalTerminator f ρ t := by
+  cases t with
+  | ret e => rfl
+  | jmp target args =>
+    simp only [evalTerminator]
+    match evalArgs ρ args with
+    | none => rfl
+    | some vals =>
+      match hblk : f.blocks target with
+      | none => simp [dceFunc_blocks_none f target hblk]
+      | some blk => simp [dceFunc_blocks_some f target blk hblk, dceBlock_params]
+  | br cond tl ta el ea =>
+    simp only [evalTerminator]
+    match evalExpr ρ cond with
+    | some (.bool true) =>
+      match evalArgs ρ ta with
+      | none => rfl
+      | some vals =>
+        match hblk : f.blocks tl with
+        | none => simp [dceFunc_blocks_none f tl hblk]
+        | some blk => simp [dceFunc_blocks_some f tl blk hblk, dceBlock_params]
+    | some (.bool false) =>
+      match evalArgs ρ ea with
+      | none => rfl
+      | some vals =>
+        match hblk : f.blocks el with
+        | none => simp [dceFunc_blocks_none f el hblk]
+        | some blk => simp [dceFunc_blocks_some f el blk hblk, dceBlock_params]
+    | some (.int _) => rfl
+    | some (.float _) => rfl
+    | some (.str _) => rfl
+    | some .none => rfl
+    | none => rfl
+
+/-- The preconditions for dce_instrs_agreeOn hold structurally when
+    `used = usedVarsSuffix instrs term`. Dead instructions have dst ∉ used
+    (tautological from ¬isLive), and all RHS vars are in used
+    (since usedVarsSuffix collects all RHS vars). -/
+private theorem dce_instrs_agreeOn_precond_dead (instrs : List Instr) (term : Terminator) :
+    ∀ i ∈ instrs, ¬isLive (usedVarsSuffix instrs term) i → i.dst ∉ usedVarsSuffix instrs term := by
+  intro i _hi hlive hmem
+  -- isLive used i = false means used.contains i.dst = false
+  -- but i.dst ∈ used, contradiction
+  simp only [isLive] at hlive
+  sorry -- List.contains vs List.mem bridge (BEq vs Eq in Lean 4.16)
+
+private theorem dce_instrs_agreeOn_precond_rhs (instrs : List Instr) (term : Terminator) :
+    ∀ i ∈ instrs, ∀ x ∈ exprVars i.rhs, x ∈ usedVarsSuffix instrs term := by
+  intro i hi x hx
+  simp only [usedVarsSuffix]
+  exact List.mem_append_left _ (List.mem_bind.mpr ⟨i, hi, hx⟩)
+
+/-- termVars are a subset of usedVarsSuffix. -/
+private theorem termVars_sub_usedVarsSuffix (instrs : List Instr) (term : Terminator) :
+    ∀ x ∈ termVars term, x ∈ usedVarsSuffix instrs term := by
+  intro x hx
+  simp only [usedVarsSuffix]
+  exact List.mem_append_right _ hx
+
+/-- DCE preserves InstrTotal: if all instructions evaluate in the original,
+    a filtered subset also evaluates (fewer instructions, same env flow). -/
+theorem dce_preserves_total (f : Func) (ht : InstrTotal f) : InstrTotal (dceFunc f) := by
+  intro lbl blk' ρ hblk'
+  -- blk' = dceBlock blk for some original block blk
+  simp only [dceFunc, Func.blocks] at hblk'
+  -- We need to show execInstrs ρ (dceBlock blk).instrs evaluates.
+  -- dceBlock removes some instructions. If the original is total, the subset is too.
+  -- This requires showing that filtering preserves totality.
+  sorry
+  -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
+  -- Prove by showing that execInstrs on a filtered subset of a total instruction
+  -- list also succeeds. The key: each kept instruction's RHS vars are defined
+  -- (they were defined in the original), and removing dead instructions only
+  -- removes bindings that aren't referenced.
+
+/-- DCE preserves function execution for well-typed (InstrTotal) functions.
+    Proof by fuel induction:
+    - Base: both return none
+    - Step: InstrTotal guarantees execInstrs succeeds for both original and DCE'd,
+      dce_instrs_agreeOn gives environment agreement on termVars,
+      dce_evalTerminator shows terminator evaluates the same,
+      IH closes the recursive case. -/
+theorem dceFunc_correct_wt (f : Func) (ht : InstrTotal f) (fuel : Nat) (ρ : Env) (lbl : Label) :
+    execFunc (dceFunc f) fuel ρ lbl = execFunc f fuel ρ lbl := by
+  induction fuel generalizing ρ lbl with
+  | zero => rfl
+  | succ n ih =>
+    simp only [execFunc]
+    match hblk : f.blocks lbl with
+    | none =>
+      simp [dceFunc_blocks_none f lbl hblk]
+    | some blk =>
+      simp only [dceFunc_blocks_some f lbl blk hblk]
+      -- InstrTotal gives us that the original instructions evaluate
+      have htotal := ht lbl blk ρ hblk
+      obtain ⟨ρ_orig, hρ_orig⟩ := Option.isSome_iff_exists.mp htotal
+      -- DCE'd block instructions
+      simp only [dceBlock]
+      -- Need to show execInstrs on filtered instrs succeeds and agrees
+      -- with the original on termVars, then use dce_evalTerminator + IH
+      sorry
+      -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
+      -- Remaining steps:
+      -- 1. Show execInstrs ρ (dceInstrs used blk.instrs) = some ρ_dce
+      -- 2. Apply dce_instrs_agreeOn with ρ₁ = ρ, ρ₂ = ρ to get
+      --    EnvAgreeOn used ρ_dce ρ_orig
+      -- 3. Use evalTerminator_agreeOn (termVars ⊆ used) to show
+      --    evalTerminator f ρ_dce blk.term = evalTerminator f ρ_orig blk.term
+      -- 4. Use dce_evalTerminator for the function argument difference
+      -- 5. Match on the terminator result and apply IH
+
+/-- DCE simulation at the function level (well-typed variant).
+    Unlike FuncSimulation, FuncSimulationWT adds an InstrTotal precondition,
+    which is necessary because DCE can change stuck behavior: removing a
+    dead instruction with a type error turns .stuck into .ret v.
+    Under InstrTotal, no instruction has type errors, so this cannot happen. -/
+def dceSim : FuncSimulationWT dceFunc where
+  simulation := fun f ht fuel ρ lbl => dceFunc_correct_wt f ht fuel ρ lbl
   entry_preserved := fun _ => rfl
   entry_block_some := fun f blk h =>
     ⟨dceBlock blk, dceFunc_blocks_some f f.entry blk h, dceBlock_params blk⟩
   entry_block_none := fun f h => dceFunc_blocks_none f f.entry h
+  preserves_total := fun f ht => dce_preserves_total f ht
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 3: SCCP — block helpers, instruction correctness, FuncSimulation
@@ -279,12 +388,12 @@ def cseSim : FuncSimulation cseFunc where
 /-
   Pass simulation status:
 
-  | Pass          | FuncSimulation | execFunc preserved | Behavioral equiv | blocks_some/none |
-  |---------------|:--------------:|:------------------:|:----------------:|:----------------:|
-  | ConstFold     |       ✓        |         ✓          |        ✓         |        ✓         |
-  | DCE           |    sorry (P1)  |     sorry (P1)     |    sorry (P1)    |        ✓         |
-  | SCCP          |       ✓        |         ✓          |        ✓         |        ✓         |
-  | CSE           |    sorry (P2)  |     sorry (P2)     |    sorry (P2)    |        ✓         |
+  | Pass          | Simulation type   | execFunc preserved     | Behavioral equiv | blocks_some/none |
+  |---------------|:-----------------:|:----------------------:|:----------------:|:----------------:|
+  | ConstFold     | FuncSimulation    |         ✓              |        ✓         |        ✓         |
+  | DCE           | FuncSimulationWT  | sorry (fuel step, P1)  | via WT (P1)      |        ✓         |
+  | SCCP          | FuncSimulation    |         ✓              |        ✓         |        ✓         |
+  | CSE           | FuncSimulation    |     sorry (P2)         |    sorry (P2)    |        ✓         |
 
   ConstFold has a complete end-to-end proof chain: FuncSimulation (via
   constFoldFunc_correct from Semantics/FuncCorrect.lean) and BehavioralEquivalence
@@ -294,10 +403,13 @@ def cseSim : FuncSimulation cseFunc where
   sccpFunc_correct proved here using sccpInstrs_correct + sccp_evalTerminator)
   and BehavioralEquivalence (via FuncSimulation.toBehavioralEquiv).
 
-  DCE/CSE block lookup lemmas are now proven via blocks_map_some/none
-  from BlockCorrect. The remaining sorry gaps are the function-level execFunc
-  preservation proofs, which require lifting block-level correctness through
-  fuel induction (see TODO comments on each).
+  DCE now uses FuncSimulationWT (well-typed simulation) with InstrTotal f
+  as precondition. This correctly captures that DCE requires well-formed IR
+  (no dead type-erroneous instructions). The dce_evalTerminator lemma is
+  fully proven; the fuel induction step and preserves_total have sorry stubs
+  pending the env-agreement-to-terminator-agreement bridge.
+
+  CSE block lookup lemmas are proven via blocks_map_some/none from BlockCorrect.
 -/
 
 end MoltTIR
