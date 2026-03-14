@@ -19,6 +19,7 @@
      identity. Definitions unchanged, uses may decrease.
 -/
 import MoltTIR.SSA.WellFormedSSA
+import MoltTIR.Semantics.BlockCorrect
 import MoltTIR.Passes.ConstFold
 import MoltTIR.Passes.DCE
 import MoltTIR.Passes.SCCP
@@ -42,6 +43,46 @@ theorem blockDefs_preserved_of_rhs_only {b b' : Block}
     (hdsts : b'.instrs.map Instr.dst = b.instrs.map Instr.dst) :
     blockAllDefs b' = blockAllDefs b := by
   simp only [blockAllDefs, hparams, hdsts]
+
+/-- Reverse of blocks_map_some: if the mapped function has blocks = some blk',
+    then there exists blk in the original with f.blocks = some blk and blk' = g blk. -/
+private theorem blocks_map_some_rev (f : Func) (g : Block → Block) (lbl : Label)
+    (blk' : Block)
+    (h : ({ f with blockList := f.blockList.map fun (l, b) => (l, g b) } : Func).blocks lbl = some blk') :
+    ∃ blk, f.blocks lbl = some blk ∧ blk' = g blk := by
+  simp only [Func.blocks] at *
+  generalize f.blockList = xs at h ⊢
+  induction xs with
+  | nil => simp_all [List.find?]
+  | cons p rest ih =>
+    obtain ⟨l, b⟩ := p
+    simp only [List.map, List.find?] at *
+    cases hlbl : (l == lbl) <;> simp_all
+
+/-- For a defs-preserving block map, DefinedIn is preserved in both directions. -/
+private theorem definedIn_mapFunc_iff (f : Func) (g : Block → Block)
+    (hdefs : ∀ b, blockAllDefs (g b) = blockAllDefs b) (v : Var) (lbl : Label) :
+    DefinedIn { f with blockList := f.blockList.map fun (l, b) => (l, g b) } v lbl ↔
+    DefinedIn f v lbl := by
+  constructor
+  · intro ⟨blk', hblk', hv⟩
+    obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_rev f g lbl blk' hblk'
+    exact ⟨blk, hblk, hdefs blk ▸ hv⟩
+  · intro ⟨blk, hblk, hv⟩
+    exact ⟨g blk, blocks_map_some f g lbl blk hblk, (hdefs blk).symm ▸ hv⟩
+
+/-- For a defs-preserving block map, unique_defs is preserved. -/
+private theorem unique_defs_of_mapFunc (f : Func) (g : Block → Block)
+    (hdefs : ∀ b, blockAllDefs (g b) = blockAllDefs b)
+    (h : ∀ v lbl₁ lbl₂, DefinedIn f v lbl₁ → DefinedIn f v lbl₂ → lbl₁ = lbl₂) :
+    ∀ v lbl₁ lbl₂,
+      DefinedIn { f with blockList := f.blockList.map fun (l, b) => (l, g b) } v lbl₁ →
+      DefinedIn { f with blockList := f.blockList.map fun (l, b) => (l, g b) } v lbl₂ →
+      lbl₁ = lbl₂ := by
+  intro v lbl₁ lbl₂ h₁ h₂
+  exact h v lbl₁ lbl₂
+    ((definedIn_mapFunc_iff f g hdefs v lbl₁).mp h₁)
+    ((definedIn_mapFunc_iff f g hdefs v lbl₂).mp h₂)
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 2: Constant folding preserves SSA
@@ -117,7 +158,10 @@ theorem constFold_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     SSAWellFormed (constFoldFunc f) := by
   constructor
   · -- unique_defs: definitions are identical after const fold
-    sorry
+    show ∀ v lbl₁ lbl₂, DefinedIn (constFoldFunc f) v lbl₁ →
+      DefinedIn (constFoldFunc f) v lbl₂ → lbl₁ = lbl₂
+    unfold constFoldFunc
+    exact unique_defs_of_mapFunc f constFoldBlock constFoldBlock_defs h.unique_defs
   · -- use_dom_def: dominance structure is unchanged (same CFG edges)
     sorry
   · -- entry_exists: blockList labels are preserved
@@ -178,11 +222,19 @@ theorem sccpInstrs_dsts (σ : AbsEnv) (instrs : List Instr) :
     congr 1
     exact ih (σ.set i.dst (absEvalExpr σ i.rhs))
 
+/-- sccpBlock preserves block definitions. -/
+theorem sccpBlock_defs (σ : AbsEnv) (b : Block) :
+    blockAllDefs (sccpBlock σ b).2 = blockAllDefs b := by
+  simp only [blockAllDefs, sccpBlock, sccpInstrs_dsts]
+
 /-- SCCP preserves SSA: it only replaces RHS with constants. -/
 theorem sccp_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     SSAWellFormed (sccpFunc f) := by
   constructor
-  · sorry  -- Same structure as constFold: dsts preserved
+  · show ∀ v lbl₁ lbl₂, DefinedIn (sccpFunc f) v lbl₁ →
+      DefinedIn (sccpFunc f) v lbl₂ → lbl₁ = lbl₂
+    unfold sccpFunc
+    exact unique_defs_of_mapFunc f (fun b => (sccpBlock AbsEnv.top b).2) (sccpBlock_defs AbsEnv.top) h.unique_defs
   · sorry  -- Dominance unchanged
   · -- Entry preserved
     show ((sccpFunc f).blocks (sccpFunc f).entry).isSome
@@ -203,13 +255,29 @@ theorem cseInstr_dst (avail : AvailMap) (i : Instr) :
     (cseInstr avail i).1.dst = i.dst := by
   unfold cseInstr; rfl
 
+/-- CSE preserves instruction list destinations. -/
+theorem cseInstrs_dsts (avail : AvailMap) (instrs : List Instr) :
+    (cseInstrs avail instrs).map Instr.dst = instrs.map Instr.dst := by
+  induction instrs generalizing avail with
+  | nil => simp [cseInstrs]
+  | cons i rest ih =>
+    simp only [cseInstrs, List.map, cseInstr_dst, ih]
+
+/-- CSE preserves block definitions. -/
+theorem cseBlock_defs (b : Block) :
+    blockAllDefs (cseBlock b) = blockAllDefs b := by
+  simp only [blockAllDefs, cseBlock, cseInstrs_dsts]
+
 /-- CSE preserves SSA: it replaces RHS expressions with variable
     references to equivalent earlier computations, but never changes
     which variables are defined or their defining blocks. -/
 theorem cse_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     SSAWellFormed (cseFunc f) := by
   constructor
-  · sorry  -- Dsts preserved by cseInstr_dst
+  · show ∀ v lbl₁ lbl₂, DefinedIn (cseFunc f) v lbl₁ →
+      DefinedIn (cseFunc f) v lbl₂ → lbl₁ = lbl₂
+    unfold cseFunc
+    exact unique_defs_of_mapFunc f cseBlock cseBlock_defs h.unique_defs
   · sorry  -- Dominance unchanged; new uses reference earlier defs which dominate
   · -- Entry preserved
     show ((cseFunc f).blocks (cseFunc f).entry).isSome
@@ -254,11 +322,30 @@ theorem guardHoistInstr_dst (proven : ProvenGuards) (i : Instr) :
   · rfl
   · split <;> rfl
 
+/-- guardHoistInstrs preserves instruction list destinations. -/
+theorem guardHoistInstrs_dsts (proven : ProvenGuards) (instrs : List Instr) :
+    (guardHoistInstrs proven instrs).map Instr.dst = instrs.map Instr.dst := by
+  induction instrs generalizing proven with
+  | nil => simp [guardHoistInstrs]
+  | cons i rest ih =>
+    simp only [guardHoistInstrs, List.map]
+    congr 1
+    · exact guardHoistInstr_dst proven i
+    · exact ih (guardHoistInstr proven i).2
+
+/-- guardHoistBlock preserves block definitions. -/
+theorem guardHoistBlock_defs (proven : ProvenGuards) (b : Block) :
+    blockAllDefs (guardHoistBlock proven b) = blockAllDefs b := by
+  simp only [blockAllDefs, guardHoistBlock, guardHoistInstrs_dsts]
+
 /-- Guard hoisting preserves SSA. -/
 theorem guardHoist_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     SSAWellFormed (guardHoistFunc f) := by
   constructor
-  · sorry  -- Dsts preserved
+  · show ∀ v lbl₁ lbl₂, DefinedIn (guardHoistFunc f) v lbl₁ →
+      DefinedIn (guardHoistFunc f) v lbl₂ → lbl₁ = lbl₂
+    unfold guardHoistFunc
+    exact unique_defs_of_mapFunc f (guardHoistBlock []) (guardHoistBlock_defs []) h.unique_defs
   · sorry  -- Dominance unchanged; identity RHS only uses the dst itself
   · -- Entry preserved
     show ((guardHoistFunc f).blocks (guardHoistFunc f).entry).isSome
