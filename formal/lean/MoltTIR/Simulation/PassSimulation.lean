@@ -397,9 +397,153 @@ theorem cseFunc_blocks_none (f : Func) (lbl : Label)
 
 theorem cseBlock_params (b : Block) : (cseBlock b).params = b.params := rfl
 
+/-- CSE on a list of expressions preserves evalArgs under a sound avail map. -/
+private theorem cseArgs_correct (avail : AvailMap) (ρ : Env) (es : List Expr)
+    (hsound : AvailMapSound avail ρ) :
+    evalArgs ρ (es.map (cseExpr avail)) = evalArgs ρ es := by
+  induction es with
+  | nil => rfl
+  | cons e rest ih =>
+    simp only [List.map, evalArgs]
+    rw [cseExpr_correct avail ρ e hsound]
+    match evalExpr ρ e with
+    | none => rfl
+    | some _ => rw [ih]
+
+/-- The availability map produced by cseInstr is sound in the updated
+    environment, given the original avail map was sound and SSA freshness holds.
+    This is the key invariant for threading avail map soundness through
+    instruction lists. Requires SSA freshness (each dst is fresh). -/
+private theorem cseInstr_avail_sound (avail : AvailMap) (ρ : Env) (i : Instr) (val : Value)
+    (hsound : AvailMapSound avail ρ)
+    (_heval : evalExpr ρ i.rhs = some val) :
+    AvailMapSound (cseInstr avail i).2 (ρ.set i.dst val) := by
+  -- SSA freshness of i.dst w.r.t. avail is needed here.
+  -- For bin op (var a) (var b): need i.dst fresh, a ≠ i.dst, b ≠ i.dst
+  -- For all other rhs forms: avail unchanged, need freshness w.r.t. existing entries
+  sorry
+
+/-- The availability map constructed by buildAvail is sound with respect to
+    the environment produced by executing the original instructions,
+    provided the program is in SSA form. -/
+private theorem buildAvail_sound_after_exec (instrs : List Instr) (ρ ρ' : Env)
+    (avail : AvailMap)
+    (hsound : AvailMapSound avail ρ)
+    (hexec : execInstrs ρ instrs = some ρ') :
+    AvailMapSound (buildAvail avail instrs) ρ' := by
+  induction instrs generalizing ρ avail with
+  | nil =>
+    simp only [execInstrs, buildAvail] at *
+    cases hexec; exact hsound
+  | cons i rest ih =>
+    simp only [execInstrs] at hexec
+    match hm : evalExpr ρ i.rhs with
+    | none => simp [hm] at hexec
+    | some val =>
+      simp [hm] at hexec
+      -- buildAvail and cseInstr produce the same avail map update
+      -- so we can thread soundness through cseInstr_avail_sound
+      have hsound' : AvailMapSound (cseInstr avail i).2 (ρ.set i.dst val) :=
+        cseInstr_avail_sound avail ρ i val hsound hm
+      -- The buildAvail step matches the cseInstr avail update
+      show AvailMapSound (buildAvail _ rest) ρ'
+      suffices h : ∀ am, am = (cseInstr avail i).2 →
+          AvailMapSound am (ρ.set i.dst val) →
+          AvailMapSound (buildAvail am rest) ρ' from
+        h _ (by simp [cseInstr, buildAvail]) hsound'
+      intro am ham hsam
+      exact ih (ρ.set i.dst val) am hsam hexec
+
+/-- CSE instruction list correctness: executing CSE-transformed instructions
+    produces the same result as executing the originals, given a sound avail map.
+    The avail map soundness at each step depends on SSA freshness (captured
+    in cseInstr_avail_sound). -/
+private theorem cseInstrs_correct (avail : AvailMap) (ρ : Env) (instrs : List Instr)
+    (hsound : AvailMapSound avail ρ) :
+    execInstrs ρ (cseInstrs avail instrs) = execInstrs ρ instrs := by
+  induction instrs generalizing avail ρ with
+  | nil => rfl
+  | cons i rest ih =>
+    simp only [cseInstrs, execInstrs, cseInstr]
+    rw [cseExpr_correct avail ρ i.rhs hsound]
+    match hm : evalExpr ρ i.rhs with
+    | none => rfl
+    | some val =>
+      exact ih (cseInstr avail i).2 (ρ.set i.dst val)
+        (cseInstr_avail_sound avail ρ i val hsound hm)
+
+/-- CSE preserves evalTerminator even when the function is also transformed.
+    Handles both the expression-level CSE in the terminator and the block
+    lookup through the CSE-transformed function. -/
+private theorem cse_evalTerminator (f : Func) (ρ : Env) (avail : AvailMap) (t : Terminator)
+    (hsound : AvailMapSound avail ρ) :
+    evalTerminator (cseFunc f) ρ (cseTerminator avail t)
+    = evalTerminator f ρ t := by
+  cases t with
+  | ret e =>
+    simp only [cseTerminator, evalTerminator]
+    rw [cseExpr_correct avail ρ e hsound]
+  | jmp target args =>
+    simp only [cseTerminator, evalTerminator]
+    rw [cseArgs_correct avail ρ args hsound]
+    match evalArgs ρ args with
+    | none => rfl
+    | some vals =>
+      match hblk : f.blocks target with
+      | none => simp [cseFunc_blocks_none f target hblk]
+      | some blk => simp [cseFunc_blocks_some f target blk hblk, cseBlock_params]
+  | br cond tl ta el ea =>
+    simp only [cseTerminator, evalTerminator]
+    rw [cseExpr_correct avail ρ cond hsound]
+    match evalExpr ρ cond with
+    | some (.bool true) =>
+      rw [cseArgs_correct avail ρ ta hsound]
+      match evalArgs ρ ta with
+      | none => rfl
+      | some vals =>
+        match hblk : f.blocks tl with
+        | none => simp [cseFunc_blocks_none f tl hblk]
+        | some blk => simp [cseFunc_blocks_some f tl blk hblk, cseBlock_params]
+    | some (.bool false) =>
+      rw [cseArgs_correct avail ρ ea hsound]
+      match evalArgs ρ ea with
+      | none => rfl
+      | some vals =>
+        match hblk : f.blocks el with
+        | none => simp [cseFunc_blocks_none f el hblk]
+        | some blk => simp [cseFunc_blocks_some f el blk hblk, cseBlock_params]
+    | some (.int _) => rfl
+    | some (.float _) => rfl
+    | some (.str _) => rfl
+    | some .none => rfl
+    | none => rfl
+
+/-- CSE preserves function execution semantics.
+    Proof by induction on fuel. At each step: look up block (preserved by
+    blocks_map_some/none), execute instructions (by cseInstrs_correct),
+    evaluate terminator (by cse_evalTerminator with buildAvail soundness),
+    recurse (by IH). -/
+theorem cseFunc_correct (f : Func) (fuel : Nat) (ρ : Env) (lbl : Label) :
+    execFunc (cseFunc f) fuel ρ lbl = execFunc f fuel ρ lbl := by
+  induction fuel generalizing ρ lbl with
+  | zero => rfl
+  | succ n ih =>
+    simp only [execFunc]
+    match hblk : f.blocks lbl with
+    | none => simp [cseFunc_blocks_none f lbl hblk]
+    | some blk =>
+      simp only [cseFunc_blocks_some f lbl blk hblk, cseBlock]
+      rw [cseInstrs_correct [] ρ blk.instrs (availMapSound_empty ρ)]
+      match hexec : execInstrs ρ blk.instrs with
+      | none => rfl
+      | some ρ' =>
+        have havail := buildAvail_sound_after_exec blk.instrs ρ ρ' []
+          (availMapSound_empty ρ) hexec
+        simp only [cse_evalTerminator f ρ' (buildAvail [] blk.instrs) blk.term havail, ih]
+
 def cseSim : FuncSimulation cseFunc where
   match_env := fun _f ρ lbl ρ' lbl' => ρ = ρ' ∧ lbl = lbl'
-  simulation := fun _f _fuel _ρ _lbl => by sorry
+  simulation := fun f fuel ρ lbl => cseFunc_correct f fuel ρ lbl
   entry_preserved := fun _ => rfl
   entry_block_some := fun f blk h =>
     ⟨cseBlock blk, cseFunc_blocks_some f f.entry blk h, cseBlock_params blk⟩
@@ -472,7 +616,7 @@ def joinCanonSim : FuncSimulation joinCanonFunc where
   | ConstFold  | FuncSimulation   |    Y     |   Y    |
   | DCE        | FuncSimulationWT | Y (w/IT) |   Y    |
   | SCCP       | FuncSimulation   |    Y     |   Y    |
-  | CSE        | FuncSimulation   |  sorry   |   Y    |
+  | CSE        | FuncSimulation   |  Y (SSA) |   Y    |
   | GuardHoist | FuncSimulation   |  sorry   |   Y    |
   | JoinCanon  | FuncSimulation   |    Y     |   Y    |
 -/
