@@ -127,10 +127,13 @@ theorem dce_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
 private theorem dce_instrs_agreeOn_precond_dead (instrs : List Instr) (term : Terminator) :
     ∀ i ∈ instrs, ¬isLive (usedVarsSuffix instrs term) i → i.dst ∉ usedVarsSuffix instrs term := by
   intro i _hi hlive hmem
-  -- isLive used i = false means used.contains i.dst = false
-  -- but i.dst ∈ used, contradiction
-  simp only [isLive] at hlive
-  sorry -- List.contains vs List.mem bridge (BEq vs Eq in Lean 4.16)
+  -- isLive used i = used.contains i.dst, which unfolds to List.elem
+  -- ¬isLive means ¬(used.contains i.dst = true)
+  -- but hmem : i.dst ∈ used, so used.contains i.dst = true, contradiction
+  apply hlive
+  simp only [isLive]
+  unfold List.contains
+  exact List.elem_iff.mpr hmem
 
 private theorem dce_instrs_agreeOn_precond_rhs (instrs : List Instr) (term : Terminator) :
     ∀ i ∈ instrs, ∀ x ∈ exprVars i.rhs, x ∈ usedVarsSuffix instrs term := by
@@ -144,6 +147,47 @@ private theorem termVars_sub_usedVarsSuffix (instrs : List Instr) (term : Termin
   intro x hx
   simp only [usedVarsSuffix]
   exact List.mem_append_right _ hx
+
+/-- If environments agree on termVars, evalTerminator gives the same result.
+    The terminator only reads variables through evalExpr/evalArgs, so
+    agreement on the referenced variables suffices. -/
+private theorem evalTerminator_agreeOn (f : Func) (ρ₁ ρ₂ : Env) (t : Terminator)
+    (h : EnvAgreeOn (termVars t) ρ₁ ρ₂) :
+    evalTerminator f ρ₁ t = evalTerminator f ρ₂ t := by
+  cases t with
+  | ret e =>
+    simp only [evalTerminator]
+    rw [evalExpr_agreeOn ρ₁ ρ₂ e h]
+  | jmp target args =>
+    simp only [evalTerminator]
+    have hargs : EnvAgreeOn (args.flatMap exprVars) ρ₁ ρ₂ :=
+      fun x hx => h x (by simp only [termVars]; exact hx)
+    rw [evalArgs_agreeOn ρ₁ ρ₂ args hargs]
+  | br cond tl ta el ea =>
+    simp only [evalTerminator]
+    have hcond : EnvAgreeOn (exprVars cond) ρ₁ ρ₂ :=
+      fun x hx => h x (by
+        simp only [termVars]
+        exact List.mem_append_left _ (List.mem_append_left _ hx))
+    rw [evalExpr_agreeOn ρ₁ ρ₂ cond hcond]
+    match evalExpr ρ₂ cond with
+    | some (.bool true) =>
+      have hta : EnvAgreeOn (ta.flatMap exprVars) ρ₁ ρ₂ :=
+        fun x hx => h x (by
+          simp only [termVars]
+          exact List.mem_append_left _ (List.mem_append_right _ hx))
+      rw [evalArgs_agreeOn ρ₁ ρ₂ ta hta]
+    | some (.bool false) =>
+      have hea : EnvAgreeOn (ea.flatMap exprVars) ρ₁ ρ₂ :=
+        fun x hx => h x (by
+          simp only [termVars]
+          exact List.mem_append_right _ hx)
+      rw [evalArgs_agreeOn ρ₁ ρ₂ ea hea]
+    | some (.int _) => rfl
+    | some (.float _) => rfl
+    | some (.str _) => rfl
+    | some .none => rfl
+    | none => rfl
 
 /-- DCE preserves InstrTotal: if all instructions evaluate in the original,
     a filtered subset also evaluates (fewer instructions, same env flow). -/
