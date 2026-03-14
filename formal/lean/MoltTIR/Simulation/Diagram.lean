@@ -363,10 +363,22 @@ def composeFuncSimWT
     show (g2 (g1 f)).entry = f.entry
     rw [sim2.entry_preserved (g1 f), sim1.entry_preserved f]
   entry_block_some := fun f blk h => by
-    -- Same pattern as composeFuncSimulations.entry_block_some
-    sorry
+    obtain ⟨blk1, hblk1, hparams1⟩ := sim1.entry_block_some f blk h
+    have hentry1 : (g1 f).entry = f.entry := sim1.entry_preserved f
+    have hblk1' : (g1 f).blocks (g1 f).entry = some blk1 := by rw [hentry1]; exact hblk1
+    obtain ⟨blk2, hblk2, hparams2⟩ := sim2.entry_block_some (g1 f) blk1 hblk1'
+    have hblk2' : (g2 (g1 f)).blocks f.entry = some blk2 := by rw [← hentry1]; exact hblk2
+    exact ⟨blk2, hblk2', hparams2.trans hparams1⟩
   entry_block_none := fun f h => by
-    sorry
+    have hentry1 : (g1 f).entry = f.entry := sim1.entry_preserved f
+    have hnone1 : (g1 f).blocks f.entry = none := sim1.entry_block_none f h
+    have hnone1' : (g1 f).blocks (g1 f).entry = none := hentry1 ▸ hnone1
+    have hnone2 : (g2 (g1 f)).blocks (g2 (g1 f)).entry = none := by
+      rw [sim2.entry_preserved (g1 f)]
+      exact sim2.entry_block_none (g1 f) hnone1'
+    have hentry2 : (g2 (g1 f)).entry = f.entry := by
+      rw [sim2.entry_preserved (g1 f), sim1.entry_preserved f]
+    rw [← hentry2]; exact hnone2
   preserves_total := fun f ht => sim2.preserves_total (g1 f) (hpres1 f ht)
 
 end MoltTIR
