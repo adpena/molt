@@ -88,9 +88,13 @@ theorem dceBlock_term (b : Block) : (dceBlock b).term = b.term := rfl
 def dceSim : FuncSimulation dceFunc where
   match_env := fun _f ρ lbl ρ' lbl' => ρ = ρ' ∧ lbl = lbl'
   simulation := fun f fuel ρ lbl => by
-    -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
-    -- Prove dceFunc preserves execFunc. Requires lifting dce_instrs_agreeOn
-    -- through fuel induction + showing terminator agreement from used-var agreement.
+    -- NOTE: This is not provable without a well-typedness precondition.
+    -- DCE removes dead instructions that may contain type errors (evalExpr = none).
+    -- In the original, a dead instruction with a type error causes execInstrs → none
+    -- → execFunc → .stuck. After DCE removes it, execution continues to .ret v.
+    -- So DCE can change .stuck → .ret v, violating full execFunc equality.
+    -- The correct formulation is FuncRefines (weaker: only preserves non-stuck
+    -- behaviors) or requires WellTyped f (all expressions evaluate successfully).
     sorry
   entry_preserved := fun _ => rfl
   entry_block_some := fun f blk h =>
@@ -255,8 +259,13 @@ def cseSim : FuncSimulation cseFunc where
   match_env := fun _f ρ lbl ρ' lbl' => ρ = ρ' ∧ lbl = lbl'
   simulation := fun f fuel ρ lbl => by
     -- TODO(formal, owner:compiler, milestone:M3, priority:P2, status:partial):
-    -- Prove cseFunc preserves execFunc. Requires threading AvailMapSound
-    -- through instructions under SSA freshness and lifting via fuel induction.
+    -- Unlike DCE, CSE simulation IS provable without well-typedness:
+    -- CSE replaces e with .var x where x was defined by an earlier instruction
+    -- with the same RHS. Under SSA, the env at the use point has x = evalExpr ρ e,
+    -- so .var x evaluates to the same value. Requires:
+    -- 1. AvailMapSound threading through sccpInstrs
+    -- 2. SSA freshness (x not redefined between def and use)
+    -- 3. Fuel induction with block-level agreement
     sorry
   entry_preserved := fun _ => rfl
   entry_block_some := fun f blk h =>
