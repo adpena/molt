@@ -423,13 +423,11 @@ theorem guardHoistBlock_params_preserved (b : Block) :
     (guardHoistBlock [] b).params = b.params := rfl
 
 /-- Guard hoisting simulation.
-    NOTE: The current model has a fidelity gap: guardHoistInstr replaces
-    redundant guards with `.var i.dst` (self-reference), but i.dst is
-    undefined at that point in the env (it's being defined by this instruction).
-    The real compiler's guard hoisting replaces with the first guard's result
-    variable, which IS defined. Closing this sorry requires either:
-    (a) fixing guardHoistInstr to use the proven guard's dst, or
-    (b) adding a model where identity assignments are no-ops. -/
+    The model now replaces redundant guards with `.val (.bool true)`.
+    Correctness requires: if isGuardProven proven g, then the guard
+    expression g evaluates to `true` in the current env. This follows
+    from the soundness of the proven set (guards from dominating blocks
+    that were already evaluated to true). -/
 def guardHoistSim : FuncSimulation guardHoistFunc where
   match_env := fun _f ρ lbl ρ' lbl' => ρ = ρ' ∧ lbl = lbl'
   simulation := fun _f _fuel _ρ _lbl => by sorry
