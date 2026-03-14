@@ -126,9 +126,9 @@ theorem phase2_midend_correct (σ : AbsEnv) (ρ : Env) (e : Expr)
     behaviorally equivalent functions.
 
     Re-export of fullPipeline_behavioral_equiv from Compose.lean. -/
-theorem phase2_midend_behavioral (f : Func) :
+theorem phase2_midend_behavioral (f : Func) (ht : InstrTotal f) :
     BehavioralEquivalence (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) f :=
-  fullPipeline_behavioral_equiv f
+  fullPipeline_behavioral_equiv f ht
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 4: Phase 3 — Backend emission preserves semantics
@@ -244,9 +244,9 @@ theorem full_pipeline_preserves_semantics_default
 
     This lifts the expression-level pipeline theorem to the function level
     via the BehavioralEquivalence from Compose.lean. -/
-theorem full_pipeline_observable_equiv (f : Func) :
+theorem full_pipeline_observable_equiv (f : Func) (ht : InstrTotal f) :
     ObservablyEquivalent (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) f :=
-  behavioral_to_observable (phase2_midend_behavioral f)
+  behavioral_to_observable (phase2_midend_behavioral f ht)
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 7: Cross-target agreement in the full chain

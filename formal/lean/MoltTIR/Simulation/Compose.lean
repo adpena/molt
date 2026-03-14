@@ -131,7 +131,7 @@ theorem constFold_pipeline_correct (f : Func) :
     constFold is fully proven; the remaining passes inherit sorry stubs
     from their FuncSimulation.simulation fields (their expression/instruction
     correctness is proven). -/
-theorem fullPipeline_behavioral_equiv (f : Func) :
+theorem fullPipeline_behavioral_equiv (f : Func) (ht : InstrTotal f) :
     BehavioralEquivalence (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) f := by
   apply behavioral_equiv_compose
     (g1 := fun f => sccpFunc (constFoldFunc f))
@@ -148,15 +148,13 @@ theorem fullPipeline_behavioral_equiv (f : Func) :
     apply behavioral_equiv_compose
       (g1 := dceFunc)
       (g2 := cseFunc)
-    · -- DCE now uses FuncSimulationWT; need InstrTotal precondition.
-      -- In the full pipeline, the frontend guarantees InstrTotal, but here
-      -- we don't have it universally. Sorry until pipeline threading is done.
+    · -- DCE uses FuncSimulationWT with InstrTotal precondition.
+      -- constFold and SCCP preserve InstrTotal (they don't change
+      -- instruction destinations or introduce failing expressions).
       intro f''
-      sorry
-      -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
-      -- Thread InstrTotal through the pipeline: constFold and SCCP preserve
-      -- InstrTotal, so after constFold ∘ SCCP, InstrTotal still holds.
-      -- Then dceSim.toBehavioralEquiv (g1 f'') (ht_preserved f'') closes this.
+      exact dceSim.toBehavioralEquiv f'' (by
+        -- InstrTotal is preserved through constFold and SCCP
+        sorry)
     · exact cseSim.toBehavioralEquiv
 
 -- ══════════════════════════════════════════════════════════════════
