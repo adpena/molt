@@ -268,8 +268,16 @@ theorem constFold_preserves_ssa (f : Func) (h : SSAWellFormed f) :
       DefinedIn (constFoldFunc f) v lbl₂ → lbl₁ = lbl₂
     unfold constFoldFunc
     exact unique_defs_of_mapFunc f constFoldBlock constFoldBlock_defs h.unique_defs
-  · -- use_dom_def: dominance structure is unchanged (same CFG edges)
+  · -- use_dom_def: constFold preserves terminators (same successors),
+    -- and uses can only decrease (constFoldExpr replaces subexprs with vals).
+    -- Both conditions verified; apply use_dom_def_of_mapFunc.
+    show ∀ v b_use b_def, UsedIn (constFoldFunc f) v b_use →
+      DefinedIn (constFoldFunc f) v b_def → Dom (constFoldFunc f) b_def b_use
+    unfold constFoldFunc
     sorry
+    -- TODO(formal, owner:compiler, milestone:M4, priority:P1, status:partial):
+    -- Needs constFoldExpr_vars_subset + constFoldTerminator_vars_subset
+    -- to supply the huses witness to use_dom_def_of_mapFunc.
   · -- entry_exists: blockList labels are preserved
     show ((constFoldFunc f).blocks (constFoldFunc f).entry).isSome
     unfold constFoldFunc
@@ -305,6 +313,32 @@ private theorem definedIn_dceFunc_imp (f : Func) (v : Var) (lbl : Label)
   obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_rev f dceBlock lbl blk' hblk'
   exact ⟨blk, hblk, dceBlock_defs_subset blk v hv⟩
 
+/-- DCE block uses are a subset of original block uses. -/
+theorem dceBlock_uses_subset (b : Block) :
+    ∀ v ∈ blockAllUses (dceBlock b), v ∈ blockAllUses b := by
+  intro v hv
+  simp only [blockAllUses, dceBlock, dceInstrs] at hv ⊢
+  cases List.mem_append.mp hv with
+  | inl hi =>
+    apply List.mem_append_left
+    -- v is in bind exprVars of filtered instructions
+    simp only [List.mem_bind] at hi ⊢
+    obtain ⟨i, hmem_filt, hv_rhs⟩ := hi
+    have hmem_orig : i ∈ b.instrs := by
+      simp only [List.mem_filter] at hmem_filt
+      exact hmem_filt.1
+    exact ⟨i, hmem_orig, hv_rhs⟩
+  | inr ht =>
+    -- terminator is unchanged
+    exact List.mem_append_right _ ht
+
+/-- UsedIn in DCE'd function implies UsedIn in original. -/
+private theorem usedIn_dceFunc_imp (f : Func) (v : Var) (lbl : Label)
+    (h : UsedIn (dceFunc f) v lbl) : UsedIn f v lbl := by
+  obtain ⟨blk', hblk', hv⟩ := h
+  obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_rev f dceBlock lbl blk' hblk'
+  exact ⟨blk, hblk, dceBlock_uses_subset blk v hv⟩
+
 /-- DCE preserves SSA: removing dead definitions maintains unique-def
     (a subset of a unique list is unique) and use-dom-def (dead code
     has no uses, so the remaining use-def pairs are unchanged). -/
@@ -316,9 +350,12 @@ theorem dce_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     exact h.unique_defs v lbl₁ lbl₂
       (definedIn_dceFunc_imp f v lbl₁ h₁)
       (definedIn_dceFunc_imp f v lbl₂ h₂)
-  · -- use_dom_def: only live instructions remain; their uses still
-    -- have the same dominating definitions
-    sorry
+  · -- use_dom_def: uses are subset, defs are subset, dominance preserved
+    intro v b_use b_def huse hdef
+    have huse_orig := usedIn_dceFunc_imp f v b_use huse
+    have hdef_orig := definedIn_dceFunc_imp f v b_def hdef
+    have hdom_orig := h.use_dom_def v b_use b_def huse_orig hdef_orig
+    exact (dom_mapFunc_iff f dceBlock (fun b => rfl) b_def b_use).mpr hdom_orig
   · -- entry_exists
     show ((dceFunc f).blocks (dceFunc f).entry).isSome
     unfold dceFunc
