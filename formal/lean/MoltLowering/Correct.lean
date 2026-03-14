@@ -52,7 +52,15 @@ def envCorr (nm : NameMap) (pyEnv : MoltPython.PyEnv) (tirEnv : MoltTIR.Env) : P
     pyEnv.lookup x = some v →
     ∃ tv, lowerValue v = some tv ∧ tirEnv n = some tv
 
-/-- lowerEnv produces an environment that corresponds to the source. -/
+/-- lowerEnv produces an environment that corresponds to the source.
+
+    TODO(compiler, owner:compiler, milestone:M3, priority:P1, status:planned):
+    Full proof requires an injectivity hypothesis on the NameMap (each Python
+    name maps to a distinct SSA variable). Without injectivity, lowerScope
+    can overwrite an earlier binding for variable n with a later binding from
+    a different Python name that also maps to n. The real compiler guarantees
+    injectivity by construction (fresh SSA variable for each Python name).
+    Deferred: add NameMap.Injective hypothesis and complete the proof. -/
 theorem lowerEnv_corr (nm : NameMap) (pyEnv : MoltPython.PyEnv)
     -- We require that all mapped Python values are scalar (lowerable).
     (hscalar : ∀ (x : MoltPython.Name) (n : MoltTIR.Var) (v : MoltPython.PyValue),
@@ -60,25 +68,19 @@ theorem lowerEnv_corr (nm : NameMap) (pyEnv : MoltPython.PyEnv)
       pyEnv.lookup x = some v →
       ∃ tv, lowerValue v = some tv) :
     envCorr nm pyEnv (lowerEnv nm pyEnv) := by
-  -- TODO(compiler, owner:compiler, milestone:M3, priority:P1, status:planned):
-  --   Full proof requires induction over the scope chain and showing that
-  --   lowerScope/lowerScopes correctly threads bindings through MoltTIR.Env.set.
-  --   The key lemma is that inner scopes shadow outer scopes in both Python
-  --   (via lookupScopes) and TIR (via Env.set overwriting earlier bindings).
-  --   Deferred: needs auxiliary lemmas about lowerScope/lookupScopes interaction.
   sorry
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Operator semantics correspondence
 -- ═══════════════════════════════════════════════════════════════════════════
 
-/-- Binary operator semantics correspondence for int×int arithmetic.
+/-- Binary operator semantics correspondence for int*int arithmetic.
 
     Shows that evaluating a Python BinOp on integer values and then lowering
     the result equals lowering the values first and evaluating the TIR BinOp.
 
     This covers: add, sub, mul, mod (the ops that both formalizations
-    implement for int×int). -/
+    implement for int*int). -/
 theorem binOp_int_comm (op : MoltPython.BinOp) (x y : Int)
     (hresult : ∃ pv, MoltPython.evalBinOp op (.intVal x) (.intVal y) = some pv)
     (htir : ∃ tv, MoltTIR.evalBinOp (lowerBinOp op) (.int x) (.int y) = some tv) :
@@ -140,10 +142,6 @@ theorem lowering_preserves_eval
     MoltTIR.evalExpr tirEnv te = some tv := by
   cases e with
   | intLit n =>
-    -- Python: evalPyExpr (fuel+1) env (intLit n) = some (intVal n)
-    -- Lower:  lowerExpr nm (intLit n) = some (val (int n))
-    -- TIR:    evalExpr tirEnv (val (int n)) = some (int n)
-    -- Value:  lowerValue (intVal n) = some (int n) ✓
     simp [lowerExpr] at hlower
     subst hlower
     cases fuel with
@@ -222,24 +220,33 @@ theorem lowering_preserves_eval
         subst this
         exact htir
     · simp at hlower
-  | binOp op left right =>
-    -- BinOp case: structural induction
-    -- TODO(compiler, owner:compiler, milestone:M3, priority:P1, status:planned):
-    --   Full inductive proof requires:
-    --   1. Extracting that lowerExpr nm left = some tl and lowerExpr nm right = some tr
-    --      from the lowerExpr nm (binOp op left right) = some te hypothesis
-    --   2. Extracting that evalPyExpr fuel pyEnv left = some pvl and similar for right
-    --      from the evalPyExpr fuel pyEnv (binOp op left right) = some pv hypothesis
-    --   3. Applying the induction hypothesis to left and right
-    --   4. Using binOp_int_comm (or analogous lemma) to connect the operator semantics
-    --   The main challenge is that the induction hypothesis needs to be applied to
-    --   sub-expressions, and we need to know that their results are also scalar (lowerable).
-    --   This requires a "well-typed lowerable expression" side condition.
+  | binOp _op _left _right =>
+    -- TODO(compiler, owner:compiler, milestone:M3, priority:P1, status:partial):
+    --   The binOp inductive case requires structural induction (to get IH for
+    --   sub-expressions), sub-expression lowerability, and operator correspondence.
+    --
+    --   Blockers preventing proof completion:
+    --   (a) TIR evalBinOp only models int*int arithmetic (add, sub, mul, mod)
+    --       and int*int comparisons. Python evalBinOp also supports float, str,
+    --       list, and tuple operations. The operator correspondence fails for
+    --       these types because TIR returns none where Python succeeds.
+    --   (b) TIR evalBinOp does not model pow, div, floorDiv, or bitwise ops
+    --       even for int*int. The catch-all returns none.
+    --
+    --   To close: either extend TIR evalBinOp to cover the full operator set,
+    --   or restrict the theorem to the int*int arithmetic subset that TIR
+    --   supports (requires a "TIR-compatible types" predicate on expressions).
     sorry
-  | unaryOp op operand =>
-    -- UnaryOp case: similar structure to BinOp
-    -- TODO(compiler, owner:compiler, milestone:M3, priority:P1, status:planned):
-    --   Analogous to binOp case but simpler (single recursive argument).
+  | unaryOp _op _operand =>
+    -- TODO(compiler, owner:compiler, milestone:M3, priority:P1, status:partial):
+    --   The unaryOp case has a semantic gap for .not: Python's .not accepts
+    --   any value via truthy coercion (e.g., not [] == True), but TIR's .not
+    --   only accepts bool. When the operand evaluates to a non-boolean scalar
+    --   (str, int, none), the operand IS lowerable but TIR .not would fail.
+    --   This requires either:
+    --   (a) Extending TIR evalUnOp .not to handle truthy coercion, or
+    --   (b) Lowering .not to a truthy-then-negate instruction sequence.
+    --   For .neg on int, the correspondence holds (proved via unaryOp_neg_int_comm).
     sorry
   | compare _ _ _ =>
     -- compare does not lower to a single TIR Expr
