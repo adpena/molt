@@ -147,23 +147,30 @@ theorem dce_instrs_idempotent (used : List Var) (instrs : List Instr) :
     instructions that survived the first filter are still live w.r.t.
     the smaller `used'`.
 
-    TODO(formal, owner:compiler, milestone:M6, priority:P2, status:partial):
-    The subtlety is that `used` changes between applications because the
-    filtered instruction list contributes fewer variables to `usedVarsSuffix`.
-    However, every instruction that survived filtering has `isLive used i = true`,
-    meaning `i.dst ∈ used`, and since `used'` only removes variables from
-    dead instructions (which are already gone), `isLive used' i = true` still
-    holds for all surviving instructions. -/
+    NOTE: This theorem is FALSE for the current definition of dceBlock.
+    dceBlock recomputes usedVarsSuffix each time. After removing dead
+    instructions, variables that were only referenced by those dead
+    instructions are no longer in usedVarsSuffix. This creates a cascade:
+    instructions that defined those now-unreferenced variables become dead
+    in the second pass. DCE requires fixpoint iteration for idempotency.
+
+    Example: A defines x, B uses x and defines y (dead). First pass removes B.
+    Second pass: x is no longer referenced, so A becomes dead and is removed.
+    dceBlock (dceBlock b) ≠ dceBlock b.
+
+    To make DCE idempotent, either iterate to fixpoint or compute a transitive
+    liveness closure upfront. -/
 theorem dceBlock_idempotent (b : Block) :
     dceBlock (dceBlock b) = dceBlock b := by
   sorry
+  -- NOTE: This is likely false. See doc comment above.
 
 /-- Function-level DCE is syntactically idempotent.
-    Follows from block-level idempotency. -/
+    NOTE: Like dceBlock_idempotent, this is false for the current single-pass
+    DCE definition. Requires fixpoint iteration for true idempotency. -/
 theorem dceFunc_idempotent : FuncSyntacticIdempotent dceFunc := by
-  -- TODO(formal, owner:compiler, milestone:M6, priority:P2, status:partial):
-  -- Follows from dceBlock_idempotent; blocked on Lean 4.16 Prod goal shape.
   sorry
+  -- NOTE: False as stated — see dceBlock_idempotent comment.
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 5: Function-level validation
