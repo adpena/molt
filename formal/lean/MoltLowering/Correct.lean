@@ -65,6 +65,7 @@ theorem lowerEnv_corr (nm : NameMap) (pyEnv : MoltPython.PyEnv)
   --   lowerScope/lowerScopes correctly threads bindings through MoltTIR.Env.set.
   --   The key lemma is that inner scopes shadow outer scopes in both Python
   --   (via lookupScopes) and TIR (via Env.set overwriting earlier bindings).
+  --   Deferred: needs auxiliary lemmas about lowerScope/lookupScopes interaction.
   sorry
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -84,11 +85,12 @@ theorem binOp_int_comm (op : MoltPython.BinOp) (x y : Int)
     (do let pv ← MoltPython.evalBinOp op (.intVal x) (.intVal y)
         lowerValue pv) =
     MoltTIR.evalBinOp (lowerBinOp op) (.int x) (.int y) := by
-  -- TODO(compiler, owner:compiler, milestone:M3, priority:P1, status:partial):
-  -- Per-operator case analysis. After Lean 4.16 changes, some rfl goals
-  -- no longer close automatically; the full proof needs restructuring
-  -- to handle evalBinOp/lowerValue definitional unfolding correctly.
-  sorry
+  obtain ⟨pv, hpv⟩ := hresult
+  obtain ⟨tv, htv⟩ := htir
+  cases op <;> simp_all [MoltPython.evalBinOp, MoltTIR.evalBinOp, lowerBinOp,
+    lowerValue, Option.bind]
+  -- mod case: conditional on y == 0
+  all_goals split <;> simp_all
 
 /-- Unary operator semantics correspondence.
 
