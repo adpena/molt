@@ -422,11 +422,16 @@ theorem fullPipelineFunc_behavioral_equiv (f : MoltTIR.Func) :
   have h_inner : BehavioralEquivalence
       (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) f :=
     fullPipeline_behavioral_equiv f (by sorry) -- InstrTotal from frontend
-  -- Step 2: guardHoist preserves behavior (via FuncSimulation)
+  -- Step 2: guardHoist preserves behavior (via FuncSimulationWT, requires InstrTotal)
   have h_gh : BehavioralEquivalence
       (guardHoistFunc (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))))
       (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) :=
-    guardHoistSim.toBehavioralEquiv (cseFunc (dceFunc (sccpFunc (constFoldFunc f))))
+    guardHoistSim.toBehavioralEquiv
+      (cseFunc (dceFunc (sccpFunc (constFoldFunc f))))
+      (cse_preserves_total _
+        (dce_preserves_total _
+          (sccp_preserves_total _
+            (constFold_preserves_total f (by sorry)))))
   -- Step 3: joinCanon preserves behavior (fully proven, no sorry)
   have h_jc : BehavioralEquivalence
       (joinCanonFunc (guardHoistFunc (cseFunc (dceFunc (sccpFunc (constFoldFunc f))))))
@@ -480,7 +485,7 @@ theorem three_phase_expr_correct_rust ... := sorry
   Mitigation: bypassed by DeterministicPassSimulation.compose for Molt.
 - `fullPipelineFunc_behavioral_equiv` -- inherits 2 sorrys:
   (1) InstrTotal precondition from frontend
-  (2) guardHoistSim.simulation (SSA+dominance reasoning needed)
+  (2) guardHoistSim.simulation (FuncSimulationWT: guard-value-agreement model needed)
   joinCanon is now fully proven via buildJoinMap identity mapping.
 
 ### Sorry Inherited from Dependencies
