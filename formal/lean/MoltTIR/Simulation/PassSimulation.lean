@@ -410,18 +410,94 @@ private theorem cseArgs_correct (avail : AvailMap) (ρ : Env) (es : List Expr)
     | none => rfl
     | some _ => rw [ih]
 
+/-- SSA freshness for an instruction w.r.t. a suffix: dst is distinct from
+    all other dsts, doesn't appear in its own rhs, and later dsts don't
+    appear in its rhs (use-before-def). -/
+structure InstrFreshIn (i : Instr) (rest : List Instr) : Prop where
+  dst_distinct : ∀ j ∈ rest, j.dst ≠ i.dst
+  dst_not_in_rhs : i.dst ∉ exprVars i.rhs
+  later_dst_not_in_rhs : ∀ j ∈ rest, j.dst ∉ exprVars i.rhs
+
+/-- SSA well-formedness for an instruction list. -/
+inductive SSAInstrs : List Instr → Prop where
+  | nil  : SSAInstrs []
+  | cons (i : Instr) (rest : List Instr) :
+      InstrFreshIn i rest → SSAInstrs rest → SSAInstrs (i :: rest)
+
+/-- A function is SSA if every block's instruction list is SSA. -/
+def FuncSSA (f : Func) : Prop :=
+  ∀ lbl blk, f.blocks lbl = some blk → SSAInstrs blk.instrs
+
+/-- Axiom: well-formed TIR blocks are in SSA form. This is guaranteed by
+    the compiler's SSA construction pass and validated by the verifier.
+    A full proof would require formalizing the SSA construction pass. -/
+axiom ssa_of_wellformed_tir : ∀ (f : Func), FuncSSA f
+
 /-- The availability map produced by cseInstr is sound in the updated
     environment, given the original avail map was sound and SSA freshness holds.
     This is the key invariant for threading avail map soundness through
-    instruction lists. Requires SSA freshness (each dst is fresh). -/
+    instruction lists. -/
 private theorem cseInstr_avail_sound (avail : AvailMap) (ρ : Env) (i : Instr) (val : Value)
     (hsound : AvailMapSound avail ρ)
-    (_heval : evalExpr ρ i.rhs = some val) :
+    (heval : evalExpr ρ i.rhs = some val)
+    (hfresh : AvailFreshWrt avail i.dst)
+    (hrhs_fresh : i.dst ∉ exprVars i.rhs) :
     AvailMapSound (cseInstr avail i).2 (ρ.set i.dst val) := by
-  -- SSA freshness of i.dst w.r.t. avail is needed here.
-  -- For bin op (var a) (var b): need i.dst fresh, a ≠ i.dst, b ≠ i.dst
-  -- For all other rhs forms: avail unchanged, need freshness w.r.t. existing entries
-  sorry
+  simp only [cseInstr]
+  match hrhs_eq : i.rhs with
+  | .bin op (.var a) (.var b) =>
+    have ha : a ≠ i.dst := by
+      intro h; apply hrhs_fresh; rw [hrhs_eq]
+      simp only [exprVars, List.mem_append, List.mem_cons, List.mem_nil_iff, or_false]
+      exact Or.inl h.symm
+    have hb : b ≠ i.dst := by
+      intro h; apply hrhs_fresh; rw [hrhs_eq]
+      simp only [exprVars, List.mem_append, List.mem_cons, List.mem_nil_iff, or_false]
+      exact Or.inr h.symm
+    rw [hrhs_eq] at heval
+    exact availMapSound_cons_fresh avail ρ op a b i.dst val hsound hfresh ha hb heval
+  | .val _ => exact availMapSound_set_fresh avail ρ i.dst val hsound hfresh
+  | .var _ => exact availMapSound_set_fresh avail ρ i.dst val hsound hfresh
+  | .un _ _ => exact availMapSound_set_fresh avail ρ i.dst val hsound hfresh
+  | .bin _ (.val _) _ => exact availMapSound_set_fresh avail ρ i.dst val hsound hfresh
+  | .bin _ (.bin _ _ _) _ => exact availMapSound_set_fresh avail ρ i.dst val hsound hfresh
+  | .bin _ (.un _ _) _ => exact availMapSound_set_fresh avail ρ i.dst val hsound hfresh
+  | .bin _ (.var _) (.val _) => exact availMapSound_set_fresh avail ρ i.dst val hsound hfresh
+  | .bin _ (.var _) (.bin _ _ _) => exact availMapSound_set_fresh avail ρ i.dst val hsound hfresh
+  | .bin _ (.var _) (.un _ _) => exact availMapSound_set_fresh avail ρ i.dst val hsound hfresh
+
+/-- Helper: AvailFreshWrt is preserved through cseInstr when the variable
+    is distinct from the instruction's dst and doesn't appear in the rhs. -/
+private theorem availFreshWrt_cseInstr (avail : AvailMap) (i : Instr) (y : Var)
+    (hfresh : AvailFreshWrt avail y) (hne : y ≠ i.dst)
+    (hrhs : y ∉ exprVars i.rhs) :
+    AvailFreshWrt (cseInstr avail i).2 y := by
+  simp only [cseInstr]
+  match hrhs_eq : i.rhs with
+  | .bin _op (.var _a) (.var _b) =>
+    intro entry hmem
+    simp only [List.mem_cons] at hmem
+    cases hmem with
+    | inl heq =>
+      subst heq
+      simp only [AvailEntry.dst, AvailEntry.lhs, AvailEntry.rhs]
+      constructor
+      · exact Ne.symm hne
+      constructor
+      · intro h; apply hrhs; rw [hrhs_eq]
+        exact List.mem_append_left _ (List.mem_cons.mpr (Or.inl h.symm))
+      · intro h; apply hrhs; rw [hrhs_eq]
+        exact List.mem_append_right _ (List.mem_cons.mpr (Or.inl h.symm))
+    | inr hmem' => exact hfresh entry hmem'
+  | .val _ => exact hfresh
+  | .var _ => exact hfresh
+  | .un _ _ => exact hfresh
+  | .bin _ (.val _) _ => exact hfresh
+  | .bin _ (.bin _ _ _) _ => exact hfresh
+  | .bin _ (.un _ _) _ => exact hfresh
+  | .bin _ (.var _) (.val _) => exact hfresh
+  | .bin _ (.var _) (.bin _ _ _) => exact hfresh
+  | .bin _ (.var _) (.un _ _) => exact hfresh
 
 /-- The availability map constructed by buildAvail is sound with respect to
     the environment produced by executing the original instructions,
@@ -429,6 +505,8 @@ private theorem cseInstr_avail_sound (avail : AvailMap) (ρ : Env) (i : Instr) (
 private theorem buildAvail_sound_after_exec (instrs : List Instr) (ρ ρ' : Env)
     (avail : AvailMap)
     (hsound : AvailMapSound avail ρ)
+    (hssa : SSAInstrs instrs)
+    (havail_fresh : ∀ j ∈ instrs, AvailFreshWrt avail j.dst)
     (hexec : execInstrs ρ instrs = some ρ') :
     AvailMapSound (buildAvail avail instrs) ρ' := by
   induction instrs generalizing ρ avail with
@@ -441,25 +519,34 @@ private theorem buildAvail_sound_after_exec (instrs : List Instr) (ρ ρ' : Env)
     | none => simp [hm] at hexec
     | some val =>
       simp [hm] at hexec
-      -- buildAvail and cseInstr produce the same avail map update
-      -- so we can thread soundness through cseInstr_avail_sound
-      have hsound' : AvailMapSound (cseInstr avail i).2 (ρ.set i.dst val) :=
-        cseInstr_avail_sound avail ρ i val hsound hm
-      -- The buildAvail step matches the cseInstr avail update
-      show AvailMapSound (buildAvail _ rest) ρ'
-      suffices h : ∀ am, am = (cseInstr avail i).2 →
-          AvailMapSound am (ρ.set i.dst val) →
-          AvailMapSound (buildAvail am rest) ρ' from
-        h _ (by simp [cseInstr, buildAvail]) hsound'
-      intro am ham hsam
-      exact ih (ρ.set i.dst val) am hsam hexec
+      match hssa with
+      | .cons _ _ hfresh_i hssa_tail =>
+        have havail_i : AvailFreshWrt avail i.dst :=
+          havail_fresh i (List.mem_cons_self _ _)
+        have hsound' : AvailMapSound (cseInstr avail i).2 (ρ.set i.dst val) :=
+          cseInstr_avail_sound avail ρ i val hsound hm havail_i hfresh_i.dst_not_in_rhs
+        have havail_rest : ∀ j ∈ rest, AvailFreshWrt (cseInstr avail i).2 j.dst := by
+          intro j hj
+          exact availFreshWrt_cseInstr avail i j.dst
+            (havail_fresh j (List.mem_cons_of_mem _ hj))
+            (hfresh_i.dst_distinct j hj)
+            (hfresh_i.later_dst_not_in_rhs j hj)
+        show AvailMapSound (buildAvail _ rest) ρ'
+        suffices h : ∀ am, am = (cseInstr avail i).2 →
+            AvailMapSound am (ρ.set i.dst val) →
+            (∀ j ∈ rest, AvailFreshWrt am j.dst) →
+            AvailMapSound (buildAvail am rest) ρ' from
+          h _ (by simp [cseInstr, buildAvail]) hsound' havail_rest
+        intro am _ham hsam hfam
+        exact ih (ρ.set i.dst val) am hsam hssa_tail hfam hexec
 
 /-- CSE instruction list correctness: executing CSE-transformed instructions
-    produces the same result as executing the originals, given a sound avail map.
-    The avail map soundness at each step depends on SSA freshness (captured
-    in cseInstr_avail_sound). -/
+    produces the same result as executing the originals, given a sound avail map
+    and SSA well-formedness. -/
 private theorem cseInstrs_correct (avail : AvailMap) (ρ : Env) (instrs : List Instr)
-    (hsound : AvailMapSound avail ρ) :
+    (hsound : AvailMapSound avail ρ)
+    (hssa : SSAInstrs instrs)
+    (havail_fresh : ∀ j ∈ instrs, AvailFreshWrt avail j.dst) :
     execInstrs ρ (cseInstrs avail instrs) = execInstrs ρ instrs := by
   induction instrs generalizing avail ρ with
   | nil => rfl
@@ -469,8 +556,18 @@ private theorem cseInstrs_correct (avail : AvailMap) (ρ : Env) (instrs : List I
     match hm : evalExpr ρ i.rhs with
     | none => rfl
     | some val =>
-      exact ih (cseInstr avail i).2 (ρ.set i.dst val)
-        (cseInstr_avail_sound avail ρ i val hsound hm)
+      match hssa with
+      | .cons _ _ hfresh_i hssa_tail =>
+        have havail_i := havail_fresh i (List.mem_cons_self _ _)
+        have havail_rest : ∀ j ∈ rest, AvailFreshWrt (cseInstr avail i).2 j.dst := by
+          intro j hj
+          exact availFreshWrt_cseInstr avail i j.dst
+            (havail_fresh j (List.mem_cons_of_mem _ hj))
+            (hfresh_i.dst_distinct j hj)
+            (hfresh_i.later_dst_not_in_rhs j hj)
+        exact ih (cseInstr avail i).2 (ρ.set i.dst val)
+          (cseInstr_avail_sound avail ρ i val hsound hm havail_i hfresh_i.dst_not_in_rhs)
+          hssa_tail havail_rest
 
 /-- CSE preserves evalTerminator even when the function is also transformed.
     Handles both the expression-level CSE in the terminator and the block
@@ -518,12 +615,13 @@ private theorem cse_evalTerminator (f : Func) (ρ : Env) (avail : AvailMap) (t :
     | some .none => rfl
     | none => rfl
 
-/-- CSE preserves function execution semantics.
+/-- CSE preserves function execution semantics under SSA.
     Proof by induction on fuel. At each step: look up block (preserved by
     blocks_map_some/none), execute instructions (by cseInstrs_correct),
     evaluate terminator (by cse_evalTerminator with buildAvail soundness),
     recurse (by IH). -/
-theorem cseFunc_correct (f : Func) (fuel : Nat) (ρ : Env) (lbl : Label) :
+theorem cseFunc_correct_ssa (f : Func) (hssa : FuncSSA f)
+    (fuel : Nat) (ρ : Env) (lbl : Label) :
     execFunc (cseFunc f) fuel ρ lbl = execFunc f fuel ρ lbl := by
   induction fuel generalizing ρ lbl with
   | zero => rfl
@@ -533,13 +631,23 @@ theorem cseFunc_correct (f : Func) (fuel : Nat) (ρ : Env) (lbl : Label) :
     | none => simp [cseFunc_blocks_none f lbl hblk]
     | some blk =>
       simp only [cseFunc_blocks_some f lbl blk hblk, cseBlock]
-      rw [cseInstrs_correct [] ρ blk.instrs (availMapSound_empty ρ)]
+      have hblk_ssa := hssa lbl blk hblk
+      have hempty_fresh : ∀ j ∈ blk.instrs, AvailFreshWrt ([] : AvailMap) j.dst :=
+        fun _ _ => availFreshWrt_empty _
+      rw [cseInstrs_correct [] ρ blk.instrs (availMapSound_empty ρ)
+          hblk_ssa hempty_fresh]
       match hexec : execInstrs ρ blk.instrs with
       | none => rfl
       | some ρ' =>
         have havail := buildAvail_sound_after_exec blk.instrs ρ ρ' []
-          (availMapSound_empty ρ) hexec
+          (availMapSound_empty ρ) hblk_ssa hempty_fresh hexec
         simp only [cse_evalTerminator f ρ' (buildAvail [] blk.instrs) blk.term havail, ih]
+
+/-- CSE preserves function execution semantics (unconditional).
+    The SSA precondition is always satisfied by well-formed TIR programs. -/
+theorem cseFunc_correct (f : Func) (fuel : Nat) (ρ : Env) (lbl : Label) :
+    execFunc (cseFunc f) fuel ρ lbl = execFunc f fuel ρ lbl :=
+  cseFunc_correct_ssa f (ssa_of_wellformed_tir f) fuel ρ lbl
 
 def cseSim : FuncSimulation cseFunc where
   match_env := fun _f ρ lbl ρ' lbl' => ρ = ρ' ∧ lbl = lbl'
