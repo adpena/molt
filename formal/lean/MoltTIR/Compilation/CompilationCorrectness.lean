@@ -170,12 +170,30 @@ theorem compile_preserves_wf {prog : MoltProgram}
     (hwf : WellFormed prog) :
     WellFormed (compile prog) := by
   constructor
-  · -- Show (compile prog).entryFunc.isSome
-    -- TODO(formal, owner:compiler, milestone:M4, priority:P2, status:partial):
-    -- Requires showing List.map preserves List.find? for name-preserving maps.
-    -- The mathematical content is trivial but Lean's definitional unfolding
-    -- of pattern-matching lambdas makes the tactic proof fragile.
-    sorry
+  · -- Show (compile prog).entryFunc.isSome = true
+    have hentry := hwf.entry_exists
+    show (compile prog).entryFunc.isSome = true
+    unfold MoltProgram.entryFunc MoltProgram.lookupFunc at hentry ⊢
+    unfold compile
+    simp only []
+    -- Now goal and hentry have the same shape but over mapped vs original list.
+    -- Do induction on the function list.
+    revert hentry
+    generalize prog.functions = l
+    generalize prog.entryName = en
+    intro hentry
+    induction l with
+    | nil =>
+      simp only [List.find?, List.map] at hentry
+      exact hentry
+    | cons hd tl ih =>
+      simp only [List.map]
+      cases hc : (hd.fst == en)
+      · -- hd.fst == en is false: find? skips hd, recurse on tl
+        simp only [List.find?, hc, ite_false] at hentry ⊢
+        exact ih hentry
+      · -- hd.fst == en is true: find? returns some hd (resp. mapped hd)
+        simp only [List.find?, hc, ite_true, Option.isSome]
   · exact ⟨⟩
 
 -- ======================================================================
