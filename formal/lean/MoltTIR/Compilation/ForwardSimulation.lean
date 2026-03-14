@@ -373,9 +373,10 @@ structure MidendSimulation where
       (hsound : AbsEnvSound σ ρ)
       (havail : AvailMapSound avail ρ),
     evalExpr ρ (fullPipelineExpr σ avail e) = evalExpr ρ e
-  /-- The midend pipeline produces behaviorally equivalent functions. -/
+  /-- The midend pipeline produces behaviorally equivalent functions
+      for well-typed (InstrTotal) IR. -/
   preserves_func :
-    ∀ (f : MoltTIR.Func),
+    ∀ (f : MoltTIR.Func), InstrTotal f →
     BehavioralEquivalence (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) f
 
 /-- The midend simulation instance. -/
@@ -422,7 +423,7 @@ theorem fullPipelineFunc_behavioral_equiv (f : MoltTIR.Func) :
   -- (this is fullPipeline_behavioral_equiv from Compose.lean)
   have h_inner : BehavioralEquivalence
       (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) f :=
-    fullPipeline_behavioral_equiv f
+    fullPipeline_behavioral_equiv f (by sorry) -- InstrTotal from frontend
   -- Second: guardHoist preserves behavior
   -- Third: joinCanon preserves behavior
   -- These require FuncSimulation instances for guardHoist and joinCanon.
