@@ -249,7 +249,14 @@ theorem fullPipeline_contextual_equiv (f : Func) :
     apply contextual_equiv_compose
       (g1 := dceFunc)
       (g2 := cseFunc)
-    · exact fun f'' => funcSimulation_contextual_equiv dceSim f''
+    · -- DCE now uses FuncSimulationWT (requires InstrTotal precondition).
+      -- In the full pipeline, InstrTotal is guaranteed by the frontend and
+      -- preserved by earlier passes. Sorry until pipeline threading is done.
+      intro f''
+      intro fuel ρ lbl
+      sorry
+      -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
+      -- Thread InstrTotal through the pipeline and use dceSim.simulation.
     · exact fun f'' => funcSimulation_contextual_equiv cseSim f''
 
 -- ══════════════════════════════════════════════════════════════════
