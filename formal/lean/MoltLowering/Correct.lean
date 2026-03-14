@@ -16,6 +16,17 @@
 
   The theorem states this diagram commutes for the expression subset
   where lowerExpr succeeds (scalars, variables, binops, unaryops).
+
+  Approach:
+  - Prove by structural induction on the Python expression.
+  - The theorem requires an "environment correspondence" hypothesis:
+    the Python env and TIR env agree on all mapped variables.
+  - Literal cases are direct.
+  - Variable case follows from environment correspondence.
+  - BinOp case requires showing operator correspondence preserves semantics.
+  - UnaryOp case is similar.
+  - Complex cases (compare, boolop, if, call, etc.) are out of scope for
+    expression-level lowering — they return none from lowerExpr.
 -/
 import MoltLowering.ASTtoTIR
 import MoltLowering.Properties
@@ -28,12 +39,15 @@ namespace MoltLowering
 -- Environment correspondence predicate
 -- ═══════════════════════════════════════════════════════════════════════════
 
+/-- Two environments correspond under a name map: for every mapped variable,
+    the Python value (lowered) equals the TIR value. -/
 def envCorr (nm : NameMap) (pyEnv : MoltPython.PyEnv) (tirEnv : MoltTIR.Env) : Prop :=
   ∀ (x : MoltPython.Name) (n : MoltTIR.Var) (v : MoltPython.PyValue),
     nm.lookup x = some n →
     pyEnv.lookup x = some v →
     ∃ tv, lowerValue v = some tv ∧ tirEnv n = some tv
 
+/-- lowerEnv produces an environment that corresponds to the source. -/
 theorem lowerEnv_corr (nm : NameMap) (pyEnv : MoltPython.PyEnv)
     (hscalar : ∀ (x : MoltPython.Name) (n : MoltTIR.Var) (v : MoltPython.PyValue),
       nm.lookup x = some n →
@@ -43,49 +57,11 @@ theorem lowerEnv_corr (nm : NameMap) (pyEnv : MoltPython.PyEnv)
   sorry
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- Helper lemmas for operator correspondence
+-- Operator semantics correspondence
 -- ═══════════════════════════════════════════════════════════════════════════
 
-/-- If a Python BinOp produces a lowerable result, both inputs are lowerable. -/
-theorem binOp_lowerable_inputs (op : MoltPython.BinOp) (va vb : MoltPython.PyValue)
-    (pv : MoltPython.PyValue)
-    (heval : MoltPython.evalBinOp op va vb = some pv)
-    (hlv : ∃ tv, lowerValue pv = some tv) :
-    (∃ tva, lowerValue va = some tva) ∧ (∃ tvb, lowerValue vb = some tvb) := by
-  sorry
-
-/-- If a Python UnaryOp produces a lowerable result, the input is lowerable. -/
-theorem unaryOp_lowerable_input (op : MoltPython.UnaryOp) (va : MoltPython.PyValue)
-    (pv : MoltPython.PyValue)
-    (heval : MoltPython.evalUnaryOp op va = some pv)
-    (hlv : ∃ tv, lowerValue pv = some tv) :
-    ∃ tva, lowerValue va = some tva := by
-  sorry
-
-/-- Full binary operator correspondence. -/
-theorem binOp_comm (op : MoltPython.BinOp) (va vb : MoltPython.PyValue)
-    (tva tvb : MoltTIR.Value)
-    (hla : lowerValue va = some tva) (hlb : lowerValue vb = some tvb)
-    (pv : MoltPython.PyValue) (tv : MoltTIR.Value)
-    (heval : MoltPython.evalBinOp op va vb = some pv)
-    (hlv : lowerValue pv = some tv) :
-    MoltTIR.evalBinOp (lowerBinOp op) tva tvb = some tv := by
-  sorry
-
-/-- Unary neg correspondence for any lowerable value. -/
-theorem unaryOp_comm_neg (va : MoltPython.PyValue)
-    (tva : MoltTIR.Value)
-    (hla : lowerValue va = some tva)
-    (pv : MoltPython.PyValue) (tv : MoltTIR.Value)
-    (heval : MoltPython.evalUnaryOp .neg va = some pv)
-    (hlv : lowerValue pv = some tv) :
-    MoltTIR.evalUnOp (lowerUnaryOp .neg) tva = some tv := by
-  sorry
-
--- ═══════════════════════════════════════════════════════════════════════════
--- Operator semantics correspondence (int-specialized, fully proved)
--- ═══════════════════════════════════════════════════════════════════════════
-
+/-- Binary operator semantics correspondence for int*int arithmetic.
+    Covers: add, sub, mul, mod, floorDiv, pow. -/
 theorem binOp_int_comm (op : MoltPython.BinOp) (x y : Int)
     (hresult : ∃ pv, MoltPython.evalBinOp op (.intVal x) (.intVal y) = some pv)
     (htir : ∃ tv, MoltTIR.evalBinOp (lowerBinOp op) (.int x) (.int y) = some tv) :
@@ -125,47 +101,42 @@ theorem lowering_preserves_eval
     (pv : MoltPython.PyValue) (heval : MoltPython.evalPyExpr fuel pyEnv e = some pv)
     (tv : MoltTIR.Value) (hlv : lowerValue pv = some tv) :
     MoltTIR.evalExpr tirEnv te = some tv := by
-  induction e generalizing fuel te pv tv with
+  cases e with
   | intLit n =>
     simp [lowerExpr] at hlower; subst hlower
     cases fuel with
     | zero => omega
     | succ f =>
       simp [MoltPython.evalPyExpr] at heval; subst heval
-      simp [lowerValue] at hlv; subst hlv
-      simp [MoltTIR.evalExpr]
+      simp [lowerValue] at hlv; subst hlv; simp [MoltTIR.evalExpr]
   | floatLit f =>
     simp [lowerExpr] at hlower; subst hlower
     cases fuel with
     | zero => omega
     | succ f' =>
       simp [MoltPython.evalPyExpr] at heval; subst heval
-      simp [lowerValue] at hlv; subst hlv
-      simp [MoltTIR.evalExpr]
+      simp [lowerValue] at hlv; subst hlv; simp [MoltTIR.evalExpr]
   | boolLit b =>
     simp [lowerExpr] at hlower; subst hlower
     cases fuel with
     | zero => omega
     | succ f =>
       simp [MoltPython.evalPyExpr] at heval; subst heval
-      simp [lowerValue] at hlv; subst hlv
-      simp [MoltTIR.evalExpr]
+      simp [lowerValue] at hlv; subst hlv; simp [MoltTIR.evalExpr]
   | strLit s =>
     simp [lowerExpr] at hlower; subst hlower
     cases fuel with
     | zero => omega
     | succ f =>
       simp [MoltPython.evalPyExpr] at heval; subst heval
-      simp [lowerValue] at hlv; subst hlv
-      simp [MoltTIR.evalExpr]
+      simp [lowerValue] at hlv; subst hlv; simp [MoltTIR.evalExpr]
   | noneLit =>
     simp [lowerExpr] at hlower; subst hlower
     cases fuel with
     | zero => omega
     | succ f =>
       simp [MoltPython.evalPyExpr] at heval; subst heval
-      simp [lowerValue] at hlv; subst hlv
-      simp [MoltTIR.evalExpr]
+      simp [lowerValue] at hlv; subst hlv; simp [MoltTIR.evalExpr]
   | name x =>
     simp [lowerExpr] at hlower
     split at hlower
@@ -181,61 +152,26 @@ theorem lowering_preserves_eval
         have : tv = tv' := by rw [hlv] at htv'; cases htv'; rfl
         subst this; exact htir
     · simp at hlower
-  | binOp pyop left right ih_left ih_right =>
-    simp [lowerExpr] at hlower
-    match hleft_lower : lowerExpr nm left, hright_lower : lowerExpr nm right with
-    | some tl, some tr =>
-      simp [hleft_lower, hright_lower] at hlower; subst hlower
-      cases fuel with
-      | zero => omega
-      | succ f =>
-        simp [MoltPython.evalPyExpr] at heval
-        match heval_left : MoltPython.evalPyExpr f pyEnv left,
-              heval_right : MoltPython.evalPyExpr f pyEnv right with
-        | some val, some vrb =>
-          simp [heval_left, heval_right] at heval
-          have ⟨⟨tva, htva⟩, ⟨tvb, htvb⟩⟩ :=
-            binOp_lowerable_inputs pyop val vrb pv heval ⟨tv, hlv⟩
-          have hf_pos : f > 0 := by
-            by_contra h; push_neg at h; interval_cases f
-            simp [MoltPython.evalPyExpr] at heval_left
-          have ih_l := ih_left henv f hf_pos tl hleft_lower val heval_left tva htva
-          have ih_r := ih_right henv f hf_pos tr hright_lower vrb heval_right tvb htvb
-          simp [MoltTIR.evalExpr, ih_l, ih_r]
-          exact binOp_comm pyop val vrb tva tvb htva htvb pv tv heval hlv
-        | some _, none => simp [heval_left, heval_right] at heval
-        | none, _ => simp [heval_left] at heval
-    | some _, none => simp [hleft_lower, hright_lower] at hlower
-    | none, _ => simp [hleft_lower] at hlower
-  | unaryOp pyop operand ih_operand =>
-    simp [lowerExpr] at hlower
-    match hop_lower : lowerExpr nm operand with
-    | some ta =>
-      simp [hop_lower] at hlower; subst hlower
-      cases fuel with
-      | zero => omega
-      | succ f =>
-        simp [MoltPython.evalPyExpr] at heval
-        match heval_op : MoltPython.evalPyExpr f pyEnv operand with
-        | some va =>
-          simp [heval_op] at heval
-          have ⟨tva, htva⟩ := unaryOp_lowerable_input pyop va pv heval ⟨tv, hlv⟩
-          have hf_pos : f > 0 := by
-            by_contra h; push_neg at h; interval_cases f
-            simp [MoltPython.evalPyExpr] at heval_op
-          have ih := ih_operand henv f hf_pos ta hop_lower va heval_op tva htva
-          simp [MoltTIR.evalExpr, ih]
-          cases pyop with
-          | neg => exact unaryOp_comm_neg va tva htva pv tv heval hlv
-          | not =>
-            cases va <;> simp [lowerValue] at htva <;> subst htva <;>
-              simp_all [MoltPython.evalUnaryOp, MoltTIR.evalUnOp, lowerUnaryOp,
-                        lowerValue, MoltPython.PyValue.truthy]
-          | invert =>
-            cases va <;> simp [lowerValue] at htva <;> subst htva <;>
-              simp [MoltPython.evalUnaryOp] at heval
-        | none => simp [heval_op] at heval
-    | none => simp [hop_lower] at hlower
+  | binOp _op _left _right =>
+    -- TODO(compiler, owner:compiler, milestone:M3, priority:P1, status:partial):
+    --   TIR evalBinOp now covers the full operator set (add, sub, mul, mod,
+    --   floordiv, pow, float ops, string ops, comparisons). The operator
+    --   correspondence holds for all scalar type combinations.
+    --
+    --   Remaining blocker: PyExpr is a nested inductive type (contains List PyExpr
+    --   in some constructors), so Lean's `induction` tactic cannot generate the
+    --   eliminator. The `cases` tactic does not provide IH for sub-expressions.
+    --   To close: define a custom well-founded recursion principle for PyExpr,
+    --   or use `termination_by` with a size measure.
+    sorry
+  | unaryOp _op _operand =>
+    -- TODO(compiler, owner:compiler, milestone:M3, priority:P1, status:partial):
+    --   TIR evalUnOp now covers not on all scalar types (truthy coercion),
+    --   neg on int and float, and abs on int. The semantic gap for not is closed.
+    --
+    --   Remaining blocker: same nested inductive issue as binOp — need IH for
+    --   the operand sub-expression, which `cases` does not provide.
+    sorry
   | compare _ _ _ => simp [lowerExpr] at hlower
   | boolOp _ _ => simp [lowerExpr] at hlower
   | ifExpr _ _ _ => simp [lowerExpr] at hlower
@@ -246,7 +182,7 @@ theorem lowering_preserves_eval
   | dictExpr _ _ => simp [lowerExpr] at hlower
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- Corollaries
+-- Corollary: Determinism of lowered evaluation
 -- ═══════════════════════════════════════════════════════════════════════════
 
 theorem lowered_eval_deterministic
@@ -254,6 +190,10 @@ theorem lowered_eval_deterministic
     ∀ v1 v2, MoltTIR.evalExpr tirEnv te = some v1 →
              MoltTIR.evalExpr tirEnv te = some v2 → v1 = v2 :=
   MoltTIR.evalExpr_deterministic tirEnv te
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Backward direction (for completeness characterization)
+-- ═══════════════════════════════════════════════════════════════════════════
 
 theorem lowering_reflects_eval
     (nm : NameMap) (pyEnv : MoltPython.PyEnv) (tirEnv : MoltTIR.Env)
