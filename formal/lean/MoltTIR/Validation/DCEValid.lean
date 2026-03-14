@@ -20,6 +20,7 @@
 -/
 import MoltTIR.Validation.TranslationValidation
 import MoltTIR.Passes.DCECorrect
+import MoltTIR.Simulation.PassSimulation
 
 set_option autoImplicit false
 
@@ -83,13 +84,7 @@ theorem validation_evalExpr_agreeOn (ρ₁ ρ₂ : Env) (e : Expr)
 -- Section 3: Block-level validation
 -- ══════════════════════════════════════════════════════════════════
 
-/-- DCE preserves block parameters (DCE does not touch params). -/
-theorem dceBlock_params (b : Block) :
-    (dceBlock b).params = b.params := rfl
-
-/-- DCE preserves the terminator (DCE does not touch the terminator). -/
-theorem dceBlock_term (b : Block) :
-    (dceBlock b).term = b.term := rfl
+-- dceBlock_params and dceBlock_term are in PassSimulation.lean
 
 /-- DCE block output has fewer or equal instructions. -/
 theorem dceBlock_fewer_instrs (b : Block) :
@@ -202,14 +197,16 @@ theorem dceFunc_labels (f : Func) :
     Requires an induction over the fuel-bounded execution trace, using
     dceBlock_valid at each step and showing that environment agreement
     on the used set is sufficient for terminator evaluation agreement. -/
-theorem dceFunc_refines (f : Func) : FuncRefines f (dceFunc f) := by
+theorem dceFunc_refines (f : Func) (ht : InstrTotal f) : FuncRefines f (dceFunc f) := by
   constructor
   · exact dceFunc_entry f
-  · sorry
+  · intro fuel ρ lbl result hout _hstuck
+    have h := dceFunc_correct_wt f ht fuel ρ lbl
+    exact ⟨fuel, h ▸ hout⟩
 
-/-- DCE is a valid function transform. -/
-theorem dce_valid_func_transform : ValidFuncTransform dceFunc :=
-  dceFunc_refines
+/-- DCE is a valid function transform (for well-typed IR). -/
+theorem dce_valid_func_transform (f : Func) (ht : InstrTotal f) : FuncRefines f (dceFunc f) :=
+  dceFunc_refines f ht
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 6: Validation checklist (documentation)
