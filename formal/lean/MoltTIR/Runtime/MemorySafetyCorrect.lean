@@ -9,9 +9,6 @@
   - NaN-boxed pointer values always point to live objects (given heap invariant).
   - Heap invariant implies no use-after-free.
 
-  Proofs that require full heap-trace semantics (tracking every dereference
-  across a complete program execution) use sorry with precise TODO markers.
-
   References:
   - runtime/molt-obj-model/src/lib.rs (object model, RC)
   - runtime/molt-runtime/src/call/bind.rs (protect_callargs_aliased_return)
@@ -29,225 +26,361 @@ open MoltTIR.Runtime
 open MoltTIR.Runtime.MemorySafety
 
 -- ══════════════════════════════════════════════════════════════════
+-- Preliminary helpers for heap operations
+-- ══════════════════════════════════════════════════════════════════
+
+private theorem alloc_at_self (h : Heap) (a : Addr) (meta : ObjMeta) :
+    alloc h a meta a = some meta := by
+  unfold alloc; simp
+
+private theorem alloc_at_other (h : Heap) (a : Addr) (meta : ObjMeta) (addr : Addr) (hne : addr ≠ a) :
+    alloc h a meta addr = h addr := by
+  unfold alloc; simp [hne]
+
+private theorem dealloc_at_self (h : Heap) (a : Addr) :
+    dealloc h a a = none := by
+  unfold dealloc; simp
+
+private theorem dealloc_at_other (h : Heap) (a : Addr) (addr : Addr) (hne : addr ≠ a) :
+    dealloc h a addr = h addr := by
+  unfold dealloc; simp [hne]
+
+private theorem exists_meta_of_live (h : Heap) (a : Addr) (halive : IsLive h a) :
+    ∃ m, h a = some m := by
+  unfold IsLive at halive
+  cases hq : h a with
+  | none => rw [hq] at halive; simp at halive
+  | some m => exact ⟨m, rfl⟩
+
+private theorem getMeta_of_eq (h : Heap) (a : Addr) (m : ObjMeta)
+    (hm : h a = some m) (hlive : IsLive h a) :
+    getMeta h a hlive = m := by
+  unfold getMeta; simp [hm]
+
+-- ══════════════════════════════════════════════════════════════════
 -- Section 1: Allocation preserves heap invariant
 -- ══════════════════════════════════════════════════════════════════
 
-/-- Allocating a new object at a fresh address preserves the heap invariant,
-    provided:
-    1. The address was not previously allocated.
-    2. All pointers in the new object point to already-live addresses.
-    This matches the runtime: `alloc()` returns a fresh address and the
-    caller must initialize fields to point to existing objects (with
-    appropriate inc_ref). -/
 theorem alloc_preserves_heap_invariant
     (h : Heap) (a : Addr) (meta : ObjMeta)
     (hfresh : IsFreed h a)
     (hptrs : ∀ p ∈ meta.pointers, IsLive h p)
     (hinv : HeapInvariant h) :
     HeapInvariant (alloc h a meta) := by
-  unfold HeapInvariant at *
-  intro addr hlive hlive'
+  unfold HeapInvariant
+  intro addr _ hlive'
   intro p hp
-  unfold alloc at *
   by_cases heq : addr = a
-  · -- The newly allocated object: its pointers must all be live in the new heap.
+  · -- addr = a: the newly allocated object
+    -- After heq, use addr everywhere (subst replaces a with addr)
     subst heq
-    simp at hlive'
-    -- getMeta on the new heap at `a` returns `meta`
-    have hmeta : getMeta (fun x => if x = a then some meta else h x) a hlive' = meta := by
-      unfold getMeta
-      simp
-    rw [hmeta] at hp
-    -- The pointer `p` was live in the old heap; show it's live in the new heap.
-    have hold : IsLive h p := hptrs p hp
-    unfold IsLive at hold ⊢
-    simp
-    by_cases hpa : p = a
-    · simp [hpa]
-    · simp [hpa]; exact hold
-  · -- An existing object: its pointers were live in the old heap.
-    -- In the new heap, existing entries are unchanged (addr ≠ a).
-    have hold_live : IsLive h addr := by
-      unfold IsLive at hlive'
-      simp [heq] at hlive'
-      unfold IsLive
-      exact hlive'
-    -- getMeta at addr is the same in old and new heap
-    have hmeta_eq : getMeta (alloc h a meta) addr hlive'
-                  = getMeta h addr hold_live := by
-      unfold getMeta alloc
-      simp [heq]
+    have ha_new : alloc h addr meta addr = some meta := alloc_at_self h addr meta
+    have hmeta_val : getMeta (alloc h addr meta) addr hlive' = meta :=
+      getMeta_of_eq _ _ _ ha_new hlive'
+    rw [hmeta_val] at hp
+    have hp_old : IsLive h p := hptrs p hp
+    unfold IsLive
+    by_cases hpa : p = addr
+    · subst hpa; rw [ha_new]; rfl
+    · rw [alloc_at_other h addr meta p hpa]; exact hp_old
+  · -- addr ≠ a: existing object, unchanged
+    have haddr_eq : alloc h a meta addr = h addr := alloc_at_other h a meta addr heq
+    have haddr_old_live : IsLive h addr := by
+      unfold IsLive; rw [← haddr_eq]; exact hlive'
+    have hmeta_eq : getMeta (alloc h a meta) addr hlive' = getMeta h addr haddr_old_live := by
+      unfold getMeta; simp [haddr_eq]
     rw [hmeta_eq] at hp
-    have hold_p : IsLive h p := hinv addr hold_live hold_live p hp
-    unfold IsLive at hold_p ⊢
-    unfold alloc
+    have hp_old : IsLive h p := hinv addr haddr_old_live haddr_old_live p hp
+    unfold IsLive
     by_cases hpa : p = a
-    · simp [hpa]
-    · simp [hpa]; exact hold_p
+    · subst hpa; rw [alloc_at_self]; rfl
+    · rw [alloc_at_other h a meta p hpa]; exact hp_old
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 2: Deallocation preserves heap invariant
 -- ══════════════════════════════════════════════════════════════════
 
-/-- Deallocating an object preserves the heap invariant when:
-    1. The object's refcount is 0 (no references from other live objects).
-    2. No live object in the heap has a pointer to the deallocated address.
-    This matches the runtime: an object is only freed when its refcount
-    drops to 0, meaning no other live object references it. -/
 theorem dealloc_preserves_heap_invariant
-    (h : Heap) (a : Addr) (liveAddrs : List Addr)
+    (h : Heap) (a : Addr) (_liveAddrs : List Addr)
     (hno_refs : ∀ addr, IsLive h addr →
       ∀ (hlive : IsLive h addr),
         a ∉ (getMeta h addr hlive).pointers)
     (hinv : HeapInvariant h) :
     HeapInvariant (dealloc h a) := by
-  unfold HeapInvariant at *
-  intro addr hlive hlive'
+  unfold HeapInvariant
+  intro addr _ hlive'
   intro p hp
-  unfold dealloc at *
-  -- addr must be different from a (since dealloc makes a non-live)
   have hne : addr ≠ a := by
-    intro heq
-    subst heq
+    intro heq; subst heq
     unfold IsLive at hlive'
-    simp at hlive'
-  -- addr was live in old heap
+    rw [dealloc_at_self] at hlive'; simp at hlive'
+  have haddr_eq : dealloc h a addr = h addr := dealloc_at_other h a addr hne
   have haddr_old : IsLive h addr := by
-    unfold IsLive at hlive' ⊢
-    simp [hne] at hlive'
-    exact hlive'
-  -- getMeta at addr is the same in old and new heap
-  have hmeta_eq : getMeta (dealloc h a) addr hlive'
-                = getMeta h addr haddr_old := by
-    unfold getMeta dealloc
-    simp [hne]
+    unfold IsLive; rw [← haddr_eq]; exact hlive'
+  have hmeta_eq : getMeta (dealloc h a) addr hlive' = getMeta h addr haddr_old := by
+    unfold getMeta; simp [haddr_eq]
   rw [hmeta_eq] at hp
-  -- p was live in old heap
   have hp_old : IsLive h p := hinv addr haddr_old haddr_old p hp
-  -- p ≠ a (since no live object points to a)
-  have hp_ne_a : p ≠ a := by
-    intro heq
-    subst heq
+  have hp_ne : p ≠ a := by
+    intro heq; subst heq
     exact hno_refs addr haddr_old haddr_old hp
-  -- p is still live in the new heap
-  unfold IsLive at hp_old ⊢
-  unfold dealloc
-  simp [hp_ne_a]
+  unfold IsLive
+  rw [dealloc_at_other h a p hp_ne]
   exact hp_old
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 3: inc_ref preserves refcount soundness
 -- ══════════════════════════════════════════════════════════════════
 
-/-- Incrementing an object's refcount by 1 preserves refcount soundness
-    when exactly one new reference to the object is being created.
-    This models the runtime's `inc_ref()`: when a new pointer to an
-    object is stored (e.g., in a variable, field, or callargs), the
-    refcount is incremented to match. -/
+private theorem incRef_at_self (h : Heap) (a : Addr) (m : ObjMeta) (hm : h a = some m) :
+    incRef h a a = some { m with refcount := m.refcount + 1 } := by
+  unfold incRef; simp [hm]
+
+private theorem incRef_at_other (h : Heap) (a addr : Addr) (hne : addr ≠ a) :
+    incRef h a addr = h addr := by
+  unfold incRef; simp [hne]
+
+private theorem isLive_incRef_iff (h : Heap) (a addr : Addr) (halive : IsLive h a) :
+    IsLive (incRef h a) addr ↔ IsLive h addr := by
+  obtain ⟨ma, hma⟩ := exists_meta_of_live h a halive
+  constructor
+  · intro hlive
+    unfold IsLive at hlive ⊢
+    by_cases heq : addr = a
+    · subst heq; exact halive
+    · rw [incRef_at_other h addr addr heq] at hlive; exact hlive
+  · intro hlive
+    unfold IsLive at hlive ⊢
+    by_cases heq : addr = a
+    · subst heq; rw [incRef_at_self h addr ma hma]; rfl
+    · rw [incRef_at_other h addr addr heq]; exact hlive
+
+-- ── trueRefcount unchanged by incRef ──
+
+private theorem trueRefcount_incRef_eq (h : Heap) (a : Addr) (addrs : List Addr) (target : Addr) :
+    trueRefcount (incRef h a) addrs target = trueRefcount h addrs target := by
+  unfold trueRefcount
+  suffices ∀ (acc : Nat), List.foldl (fun acc' x =>
+      match incRef h a x with
+      | some meta => acc' + (meta.pointers.filter (· == target)).length
+      | none => acc') acc addrs
+    = List.foldl (fun acc' x =>
+      match h x with
+      | some meta => acc' + (meta.pointers.filter (· == target)).length
+      | none => acc') acc addrs from this 0
+  intro acc
+  induction addrs generalizing acc with
+  | nil => rfl
+  | cons hd tl ih =>
+    simp only [List.foldl_cons]
+    suffices hstep : (match incRef h a hd with
+            | some meta => acc + (meta.pointers.filter (· == target)).length
+            | none => acc) =
+           (match h hd with
+            | some meta => acc + (meta.pointers.filter (· == target)).length
+            | none => acc) by
+      rw [hstep]; exact ih _
+    by_cases heq : hd = a
+    · -- hd = a: incRef changes refcount but not pointers
+      subst heq
+      cases hm : h hd with
+      | none =>
+        have : incRef h hd hd = none := by unfold incRef; simp [hm]
+        simp [this, hm]
+      | some m =>
+        have : incRef h hd hd = some { m with refcount := m.refcount + 1 } :=
+          incRef_at_self h hd m hm
+        simp [this, hm]
+    · rw [incRef_at_other h a hd heq]
+
+private theorem getMeta_incRef_self_rc (h : Heap) (a : Addr) (m : ObjMeta) (hm : h a = some m)
+    (hlive_new : IsLive (incRef h a) a) :
+    (getMeta (incRef h a) a hlive_new).refcount = m.refcount + 1 := by
+  have hinc := incRef_at_self h a m hm
+  have hg : getMeta (incRef h a) a hlive_new = { m with refcount := m.refcount + 1 } :=
+    getMeta_of_eq _ _ _ hinc hlive_new
+  rw [hg]
+
+private theorem getMeta_incRef_other_eq (h : Heap) (a addr : Addr) (hne : addr ≠ a)
+    (hlive_old : IsLive h addr) (hlive_new : IsLive (incRef h a) addr) :
+    getMeta (incRef h a) addr hlive_new = getMeta h addr hlive_old := by
+  unfold getMeta
+  simp [incRef_at_other h a addr hne]
+
 theorem inc_ref_preserves_refcount_sound
     (h : Heap) (liveAddrs : List Addr) (roots : Addr → Nat) (a : Addr)
     (halive : IsLive h a)
     (hsound : RefcountSound h liveAddrs roots) :
-    RefcountSound (MemorySafety.incRef h a) liveAddrs (fun x => if x = a then roots x + 1 else roots x) := by
-  -- TODO(formal, owner:runtime, milestone:M4, priority:P1, status:partial):
-  --   Prove that incRef increments the stored refcount by 1, and the new roots
-  --   function adds 1 root reference to `a`, so the soundness equation
-  --   (refcount = trueRefcount + roots) is preserved.
-  --   Requires showing: trueRefcount is unchanged by incRef (which only changes
-  --   metadata, not the pointer graph), and the stored refcount goes from
-  --   n to n+1 while roots(a) goes from r to r+1.
-  sorry
+    RefcountSound (incRef h a) liveAddrs (fun x => if x = a then roots x + 1 else roots x) := by
+  unfold RefcountSound at *
+  intro addr hmem hlive_new
+  have hlive_old : IsLive h addr := (isLive_incRef_iff h a addr halive).mp hlive_new
+  have hsound_addr := hsound addr hmem hlive_old
+  obtain ⟨ma, hma⟩ := exists_meta_of_live h a halive
+  by_cases heq : addr = a
+  · -- Case addr = a: refcount goes up by 1, roots go up by 1
+    subst heq
+    have hrc := getMeta_incRef_self_rc h addr ma hma hlive_new
+    rw [trueRefcount_incRef_eq]
+    simp
+    have hgold : getMeta h addr halive = ma := getMeta_of_eq _ _ _ hma halive
+    rw [hgold] at hsound_addr
+    omega
+  · -- Case addr ≠ a: everything unchanged
+    have hg := getMeta_incRef_other_eq h a addr heq hlive_old hlive_new
+    rw [hg, trueRefcount_incRef_eq]
+    simp [heq]
+    exact hsound_addr
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 4: dec_ref preserves refcount soundness
 -- ══════════════════════════════════════════════════════════════════
 
-/-- Decrementing an object's refcount by 1 preserves refcount soundness
-    when exactly one reference to the object is being removed.
-    This models the runtime's `dec_ref()`: when a pointer to an object
-    is overwritten or goes out of scope, the refcount is decremented. -/
+private theorem decRef_at_self (h : Heap) (a : Addr) (m : ObjMeta) (hm : h a = some m) :
+    decRef h a a = some { m with refcount := m.refcount - 1 } := by
+  unfold decRef; simp [hm]
+
+private theorem decRef_at_other (h : Heap) (a addr : Addr) (hne : addr ≠ a) :
+    decRef h a addr = h addr := by
+  unfold decRef; simp [hne]
+
+private theorem isLive_decRef_iff (h : Heap) (a addr : Addr) (halive : IsLive h a) :
+    IsLive (decRef h a) addr ↔ IsLive h addr := by
+  obtain ⟨ma, hma⟩ := exists_meta_of_live h a halive
+  constructor
+  · intro hlive
+    unfold IsLive at hlive ⊢
+    by_cases heq : addr = a
+    · subst heq; exact halive
+    · rw [decRef_at_other h addr addr heq] at hlive; exact hlive
+  · intro hlive
+    unfold IsLive at hlive ⊢
+    by_cases heq : addr = a
+    · subst heq; rw [decRef_at_self h addr ma hma]; rfl
+    · rw [decRef_at_other h addr addr heq]; exact hlive
+
+private theorem trueRefcount_decRef_eq (h : Heap) (a : Addr) (addrs : List Addr) (target : Addr) :
+    trueRefcount (decRef h a) addrs target = trueRefcount h addrs target := by
+  unfold trueRefcount
+  suffices ∀ (acc : Nat), List.foldl (fun acc' x =>
+      match decRef h a x with
+      | some meta => acc' + (meta.pointers.filter (· == target)).length
+      | none => acc') acc addrs
+    = List.foldl (fun acc' x =>
+      match h x with
+      | some meta => acc' + (meta.pointers.filter (· == target)).length
+      | none => acc') acc addrs from this 0
+  intro acc
+  induction addrs generalizing acc with
+  | nil => rfl
+  | cons hd tl ih =>
+    simp only [List.foldl_cons]
+    suffices hstep : (match decRef h a hd with
+            | some meta => acc + (meta.pointers.filter (· == target)).length
+            | none => acc) =
+           (match h hd with
+            | some meta => acc + (meta.pointers.filter (· == target)).length
+            | none => acc) by
+      rw [hstep]; exact ih _
+    by_cases heq : hd = a
+    · subst heq
+      cases hm : h hd with
+      | none =>
+        have : decRef h hd hd = none := by unfold decRef; simp [hm]
+        simp [this, hm]
+      | some m =>
+        have : decRef h hd hd = some { m with refcount := m.refcount - 1 } :=
+          decRef_at_self h hd m hm
+        simp [this, hm]
+    · rw [decRef_at_other h a hd heq]
+
+private theorem getMeta_decRef_self_rc (h : Heap) (a : Addr) (m : ObjMeta) (hm : h a = some m)
+    (hlive_new : IsLive (decRef h a) a) :
+    (getMeta (decRef h a) a hlive_new).refcount = m.refcount - 1 := by
+  have hdec := decRef_at_self h a m hm
+  have hg : getMeta (decRef h a) a hlive_new = { m with refcount := m.refcount - 1 } :=
+    getMeta_of_eq _ _ _ hdec hlive_new
+  rw [hg]
+
+private theorem getMeta_decRef_other_eq (h : Heap) (a addr : Addr) (hne : addr ≠ a)
+    (hlive_old : IsLive h addr) (hlive_new : IsLive (decRef h a) addr) :
+    getMeta (decRef h a) addr hlive_new = getMeta h addr hlive_old := by
+  unfold getMeta
+  simp [decRef_at_other h a addr hne]
+
 theorem dec_ref_preserves_refcount_sound
     (h : Heap) (liveAddrs : List Addr) (roots : Addr → Nat) (a : Addr)
     (halive : IsLive h a)
     (hroots_pos : roots a ≥ 1)
     (hsound : RefcountSound h liveAddrs roots) :
-    RefcountSound (MemorySafety.decRef h a) liveAddrs (fun x => if x = a then roots x - 1 else roots x) := by
-  -- TODO(formal, owner:runtime, milestone:M4, priority:P1, status:partial):
-  --   Symmetric to inc_ref proof: decRef decrements stored refcount by 1,
-  --   the new roots function removes 1 root reference, and the soundness
-  --   equation is preserved. Requires hroots_pos to ensure roots(a) ≥ 1
-  --   (cannot remove a reference that doesn't exist).
-  sorry
+    RefcountSound (decRef h a) liveAddrs (fun x => if x = a then roots x - 1 else roots x) := by
+  unfold RefcountSound at *
+  intro addr hmem hlive_new
+  have hlive_old : IsLive h addr := (isLive_decRef_iff h a addr halive).mp hlive_new
+  have hsound_addr := hsound addr hmem hlive_old
+  obtain ⟨ma, hma⟩ := exists_meta_of_live h a halive
+  by_cases heq : addr = a
+  · -- Case addr = a: refcount goes down by 1, roots go down by 1
+    subst heq
+    have hrc := getMeta_decRef_self_rc h addr ma hma hlive_new
+    rw [trueRefcount_decRef_eq]
+    simp
+    have hgold : getMeta h addr halive = ma := getMeta_of_eq _ _ _ hma halive
+    rw [hgold] at hsound_addr
+    omega
+  · -- Case addr ≠ a: everything unchanged
+    have hg := getMeta_decRef_other_eq h a addr heq hlive_old hlive_new
+    rw [hg, trueRefcount_decRef_eq]
+    simp [heq]
+    exact hsound_addr
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 5: NaN-boxed pointer values always point to live objects
 -- ══════════════════════════════════════════════════════════════════
 
-/-- If a NaN-boxed value is a pointer and the heap invariant holds and
-    the value is in the set of values reachable from roots, then the
-    pointer target is live.
-    This is the core NaN-box safety property: the type tag tells you
-    whether the value is a pointer, and if it is, the heap invariant
-    guarantees the target is live. -/
 theorem nanbox_ptr_always_valid
     (h : Heap) (v : UInt64) (hptr : IsPtr v)
     (hsafe : NanBoxSafe h v) :
     IsLive h (v &&& WasmNative.POINTER_MASK).toNat := by
   exact hsafe hptr
 
-/-- Non-pointer NaN-boxed values are trivially memory-safe: they don't
-    reference the heap at all. Inline values (int, bool, none, float)
-    carry their data in the NaN-boxed bits themselves. -/
 theorem nanbox_inline_safe (h : Heap) (v : UInt64) (hnot_ptr : ¬IsPtr v) :
     NanBoxSafe h v := by
   unfold NanBoxSafe
   intro hptr
   exact absurd hptr hnot_ptr
 
-/-- Int values are always memory-safe (they are inline, not heap pointers). -/
 theorem nanbox_int_safe (h : Heap) (v : UInt64) (hint : IsInt v) :
     NanBoxSafe h v :=
   nanbox_inline_safe h v (int_not_ptr v hint)
 
-/-- Bool values are always memory-safe (inline). -/
 theorem nanbox_bool_safe (h : Heap) (v : UInt64) (hbool : IsBool v) :
     NanBoxSafe h v :=
   nanbox_inline_safe h v (bool_not_ptr v hbool)
 
-/-- None values are always memory-safe (inline). -/
 theorem nanbox_none_safe (h : Heap) (v : UInt64) (hnone : IsNone_ v) :
     NanBoxSafe h v :=
   nanbox_inline_safe h v (none_not_ptr v hnone)
 
-/-- Float values are always memory-safe (inline). -/
 theorem nanbox_float_safe (h : Heap) (v : UInt64) (hfloat : IsFloat v) :
     NanBoxSafe h v :=
   nanbox_inline_safe h v (fun hptr => absurd (isPtr_tagged v hptr) (float_not_tagged v hfloat))
 
-/-- Pending values are always memory-safe (inline sentinel). -/
 theorem nanbox_pending_safe (h : Heap) (v : UInt64) (hpend : IsPending v) :
     NanBoxSafe h v :=
-  nanbox_inline_safe h v (fun hptr => absurd (ptr_not_pending v hptr) (not_not.mpr hpend))
+  nanbox_inline_safe h v (fun hptr => absurd hpend (ptr_not_pending v hptr))
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 6: Heap invariant implies no use-after-free
 -- ══════════════════════════════════════════════════════════════════
 
-/-- If the heap invariant holds and all dereference events target values
-    that are NanBoxSafe, then no use-after-free occurs.
-    This is the key bridge from static invariant to dynamic safety:
-    the heap invariant is maintained by every operation (Sections 1-4),
-    and NanBoxSafe values only dereference live addresses (Section 5). -/
 theorem no_use_after_free_invariant
     (h : Heap) (events : List DerefEvent)
-    (hinv : HeapInvariant h)
+    (_hinv : HeapInvariant h)
     (hall_live : ∀ e ∈ events, IsLive h e.addr) :
     NoUseAfterFree h events := by
   exact hall_live
 
-/-- Corollary: if the full MemorySafe property holds for a heap, then
-    any dereference of an active NaN-boxed pointer value targets a live
-    address. -/
 theorem memory_safe_no_dangling
     (h : Heap) (liveAddrs : List Addr) (activeValues : List UInt64)
     (roots : Addr → Nat)
@@ -261,13 +394,6 @@ theorem memory_safe_no_dangling
 -- Section 7: Allocation preserves MemorySafe (composite)
 -- ══════════════════════════════════════════════════════════════════
 
-/-- Allocating a new object at a fresh address with refcount = (number of
-    new root references) preserves the composite MemorySafe property.
-    The caller must ensure:
-    1. The address is fresh.
-    2. All pointer fields in the new object point to live addresses.
-    3. Existing active values remain safe (alloc doesn't invalidate them).
-    4. The new object's refcount matches its root references. -/
 theorem alloc_preserves_memory_safe
     (h : Heap) (a : Addr) (meta : ObjMeta)
     (liveAddrs : List Addr) (activeValues : List UInt64)
@@ -282,8 +408,6 @@ theorem alloc_preserves_memory_safe
 -- Section 8: Bounds checking is preserved by non-overlapping operations
 -- ══════════════════════════════════════════════════════════════════
 
-/-- If a bounds check passes for object `a`, it still passes after
-    allocating at a different address `b`. -/
 theorem bounds_check_preserved_by_alloc
     (h : Heap) (a b : Addr) (off accessSize : Nat) (meta : ObjMeta)
     (hne : a ≠ b)
@@ -291,10 +415,10 @@ theorem bounds_check_preserved_by_alloc
     BoundsCheck (alloc h b meta) a off accessSize := by
   unfold BoundsCheck at *
   obtain ⟨m, hm, hfit⟩ := hbc
-  exact ⟨m, by unfold alloc; simp [hne.symm]; exact hm, hfit⟩
+  refine ⟨m, ?_, hfit⟩
+  rw [alloc_at_other h b meta a hne]
+  exact hm
 
-/-- If a bounds check passes, the access is within the object's allocated
-    region — no buffer overflow. -/
 theorem bounds_check_no_overflow
     (h : Heap) (a : Addr) (off accessSize : Nat)
     (hbc : BoundsCheck h a off accessSize) :
@@ -305,13 +429,11 @@ theorem bounds_check_no_overflow
 -- Section 9: Concrete examples — counterexamples and witnesses
 -- ══════════════════════════════════════════════════════════════════
 
-/-- The empty heap trivially satisfies the heap invariant. -/
 theorem empty_heap_invariant : HeapInvariant emptyHeap := by
   unfold HeapInvariant emptyHeap IsLive
   intro a hlive
   simp at hlive
 
-/-- A single-object heap with no outgoing pointers satisfies the invariant. -/
 theorem singleton_heap_invariant :
     HeapInvariant (fun a => if a = 0 then some ⟨1, 16, []⟩ else none) := by
   unfold HeapInvariant
@@ -323,7 +445,6 @@ theorem singleton_heap_invariant :
   · unfold IsLive at hlive'
     simp [ha] at hlive'
 
-/-- Counterexample: a heap with a dangling pointer violates the invariant. -/
 theorem dangling_ptr_breaks_invariant :
     ¬ HeapInvariant (fun a => if a = 0 then some ⟨1, 16, [1]⟩ else none) := by
   unfold HeapInvariant

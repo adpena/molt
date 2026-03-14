@@ -188,17 +188,15 @@ theorem SDom.trans {f : Func} {a b c : Label}
   refine ⟨Dom.trans h₂.1 h₁.1, ?_⟩
   intro heq
   subst heq
-  -- Now a = c. We have a sdom b (so a ≠ b) and b sdom a.
-  -- From b sdom a and a sdom b, transitivity gives a sdom a,
-  -- contradicting irreflexivity.
-  have : Dom f a a := Dom.trans h₂.1 h₁.1
-  -- The contradiction comes from the ≠ part: a ≠ b but we need
-  -- to show the cycle is impossible.
-  exact h₁.2 (by
-    -- If a = c and a sdom b and b sdom c, we need b = a for contradiction.
-    -- But a ≠ b from h₁.2. The real issue is that sdom is well-founded
-    -- on finite graphs, so a chain a sdom b sdom a is impossible.
-    sorry)
+  -- After subst, we have h₁ : SDom f a b and h₂ : SDom f b a.
+  -- A dominance cycle (a sdom b sdom a) is impossible in a finite CFG,
+  -- but proving this requires well-foundedness / finiteness of the
+  -- reachable set, which is not available in the current formulation.
+  -- The Dom definition is conditional on reachability, so mutual
+  -- domination is vacuously consistent for unreachable nodes.
+  -- Closing this sorry requires adding a finite-reachable-set hypothesis
+  -- (similar to domTree_is_tree's hfinite parameter).
+  sorry
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 6: Entry dominates all reachable blocks
@@ -253,11 +251,33 @@ theorem domTree_is_tree (f : Func) (l : Label)
 -- Section 8: Compatibility with CFG.Dominates
 -- ══════════════════════════════════════════════════════════════════
 
+/-- CFGPath implies Dominates.pathFromTo. -/
+private theorem cfgPath_to_pathFromTo {f : Func} {src dst : Label} {path : List Label}
+    (h : CFGPath f src dst path) : Dominates.pathFromTo f src dst path := by
+  induction h with
+  | single l => exact ⟨rfl, rfl⟩
+  | cons l₁ l₂ dst' rest hedge htail ih =>
+    exact ⟨rfl, hedge, ih⟩
+
+/-- Dominates.pathFromTo implies CFGPath (for nonempty paths). -/
+private theorem pathFromTo_to_cfgPath {f : Func} : {src dst : Label} → {path : List Label} →
+    Dominates.pathFromTo f src dst path → CFGPath f src dst path
+  | _, _, [], h => absurd h (by simp [Dominates.pathFromTo])
+  | _, _, [x], ⟨hsrc, hdst⟩ => by subst hsrc; subst hdst; exact .single _
+  | _, _, x :: y :: rest, ⟨hsrc, hedge, hrest⟩ => by
+      subst hsrc; exact .cons _ y _ rest hedge (pathFromTo_to_cfgPath hrest)
+
 /-- Our Dom definition is compatible with the original Dominates from CFG.lean.
     (The definitions are morally equivalent; they differ only in the path
     representation used.) -/
 theorem Dom_iff_Dominates (f : Func) (d l : Label) :
     Dom f d l ↔ Dominates f d l := by
-  sorry
+  constructor
+  · -- Dom → Dominates
+    intro hdom hreach path hpath
+    exact hdom hreach path (pathFromTo_to_cfgPath hpath)
+  · -- Dominates → Dom
+    intro hdom hreach path hpath
+    exact hdom hreach path (cfgPath_to_pathFromTo hpath)
 
 end MoltTIR

@@ -6,7 +6,7 @@
   more "borrows" (temporary references that don't affect the refcount).
 
   Proves that ownership discipline + refcounting = memory safety:
-  - Every owned object has refcount ≥ 1.
+  - Every owned object has refcount >= 1.
   - Borrows don't outlive the owner.
   - When ownership is transferred, refcounts are updated correctly.
   - The ownership discipline implies the MemorySafe property.
@@ -113,7 +113,7 @@ def acquire (h : Heap) (os : OwnershipState) (a : Addr) (holder : Nat) :
 def release (h : Heap) (os : OwnershipState) (a : Addr) (holder : Nat) :
     Heap × OwnershipState :=
   (MemorySafety.decRef h a,
-   { os with claims := os.claims.filter (fun c => ¬(c.target == a && c.holder == holder)) })
+   { os with claims := os.claims.filter (fun c => !(c.target == a && c.holder == holder)) })
 
 /-- Create a borrow: add a borrow record without touching refcounts. -/
 def borrow (os : OwnershipState) (a : Addr) (scope : Nat) : OwnershipState :=
@@ -121,40 +121,131 @@ def borrow (os : OwnershipState) (a : Addr) (scope : Nat) : OwnershipState :=
 
 /-- End a borrow: remove the borrow record without touching refcounts. -/
 def endBorrow (os : OwnershipState) (a : Addr) (scope : Nat) : OwnershipState :=
-  { os with borrows := os.borrows.filter (fun b => ¬(b.target == a && b.scope == scope)) }
+  { os with borrows := os.borrows.filter (fun b => !(b.target == a && b.scope == scope)) }
 
 -- ══════════════════════════════════════════════════════════════════
--- Section 4: Ownership discipline preserves refcount soundness
+-- Section 4: Helper lemmas for claim count operations
+-- ══════════════════════════════════════════════════════════════════
+
+/-- claimCount after prepending a claim with the same target increases by 1. -/
+private theorem claimCount_cons_self (os : OwnershipState) (a : Addr) (holder : Nat) :
+    claimCount { os with claims := ⟨a, holder⟩ :: os.claims } a =
+    claimCount os a + 1 := by
+  unfold claimCount
+  simp only [List.filter_cons]
+  simp [beq_self_eq_true, List.length_cons]
+
+/-- claimCount after prepending a claim with a different target is unchanged. -/
+private theorem claimCount_cons_ne (os : OwnershipState) (target a : Addr) (holder : Nat)
+    (hne : target ≠ a) :
+    claimCount { os with claims := ⟨target, holder⟩ :: os.claims } a =
+    claimCount os a := by
+  unfold claimCount
+  simp only [List.filter_cons]
+  simp [beq_eq_false_iff_ne.mpr hne]
+
+/-- Filtering out claims matching (a, holder) does not change claimCount
+    at addresses different from a. -/
+private theorem claimCount_release_ne (claims : List OwnershipClaim)
+    (a addr holder : Nat) (hne : addr ≠ a) :
+    ((claims.filter (fun c => !(c.target == a && c.holder == holder))).filter
+      (fun c => c.target == addr)).length =
+    (claims.filter (fun c => c.target == addr)).length := by
+  induction claims with
+  | nil => rfl
+  | cons c rest ih =>
+    simp only [List.filter_cons]
+    split
+    · -- c passes the release filter
+      simp only [List.filter_cons]
+      split
+      · simp only [List.length_cons]; omega
+      · exact ih
+    · -- c fails the release filter: c.target == a && c.holder == holder = true
+      rename_i hfilt
+      simp [Bool.not_eq_true'] at hfilt
+      obtain ⟨hta, _⟩ := hfilt
+      have hct_false : (c.target == addr) = false := by
+        rw [beq_eq_false_iff_ne]
+        exact hta ▸ (Ne.symm hne)
+      simp only [List.filter_cons, hct_false, ite_false]
+      exact ih
+
+-- ══════════════════════════════════════════════════════════════════
+-- Section 5: Ownership discipline preserves refcount soundness
 -- ══════════════════════════════════════════════════════════════════
 
 /-- Acquiring ownership preserves the ownership invariant:
     the new claim adds +1 to claimCount, and incRef adds +1 to refcount. -/
 theorem acquire_preserves_invariant
-    (h : Heap) (os : OwnershipState) (a : Addr) (holder : Nat)
+    (h : Heap) (os : OwnershipState) (a : Addr) (holderArg : Nat)
     (halive : IsLive h a)
     (hinv : OwnershipInvariant h os) :
-    let (h', os') := acquire h os a holder
+    let (h', os') := acquire h os a holderArg
     OwnershipInvariant h' os' := by
-  -- TODO(formal, owner:runtime, milestone:M4, priority:P1, status:partial):
-  --   Prove that incRef at `a` adds +1 to refcount and the new claim adds +1
-  --   to claimCount, preserving the equation. For addresses ≠ a, both sides
-  --   are unchanged.
-  sorry
+  simp only [acquire]
+  unfold OwnershipInvariant at *
+  intro addr hlive'
+  by_cases haddr : addr = a
+  · -- Case addr = a: refcount increases by 1, claimCount increases by 1
+    subst haddr
+    rw [claimCount_cons_self]
+    have hinv_a := hinv addr halive
+    unfold getMeta MemorySafety.incRef at *
+    simp only [ite_true]
+    obtain ⟨meta, hm⟩ := Option.isSome_iff_exists.mp halive
+    simp [hm] at hinv_a ⊢
+    omega
+  · -- Case addr != a: both sides unchanged
+    have hlive_orig : IsLive h addr := by
+      unfold IsLive MemorySafety.incRef at hlive'
+      simp [haddr] at hlive'
+      exact hlive'
+    rw [claimCount_cons_ne os a addr holderArg (Ne.symm haddr)]
+    unfold getMeta MemorySafety.incRef
+    simp [haddr]
+    exact hinv addr hlive_orig
 
 /-- Releasing ownership preserves the ownership invariant:
     the removed claim subtracts 1 from claimCount, and decRef subtracts 1
     from refcount. -/
 theorem release_preserves_invariant
-    (h : Heap) (os : OwnershipState) (a : Addr) (holder : Nat)
+    (h : Heap) (os : OwnershipState) (a : Addr) (holderArg : Nat)
     (halive : IsLive h a)
-    (hclaim : ⟨a, holder⟩ ∈ os.claims)
+    (hclaim : ⟨a, holderArg⟩ ∈ os.claims)
     (hinv : OwnershipInvariant h os) :
-    let (h', os') := release h os a holder
+    let (h', os') := release h os a holderArg
     OwnershipInvariant h' os' := by
-  -- TODO(formal, owner:runtime, milestone:M4, priority:P1, status:partial):
-  --   Symmetric to acquire: decRef subtracts 1, removing the claim subtracts 1.
-  --   Requires proving that List.filter removes exactly one matching claim.
-  sorry
+  simp only [release]
+  unfold OwnershipInvariant at *
+  intro addr hlive'
+  by_cases haddr : addr = a
+  · -- Case addr = a: refcount decreases by 1, claimCount decreases correspondingly.
+    -- The filter removes all claims matching (a, holderArg). We need to show
+    -- that the new refcount (old - 1) equals the new claimCount.
+    -- This requires knowing exactly how many claims the filter removes,
+    -- which depends on uniqueness of (target, holder) pairs. Without Mathlib
+    -- list counting infrastructure, we defer this sub-case.
+    sorry
+  · -- Case addr != a: both sides unchanged
+    have hlive_orig : IsLive h addr := by
+      unfold IsLive MemorySafety.decRef at hlive'
+      simp [haddr] at hlive'
+      exact hlive'
+    -- getMeta is unchanged at addr != a
+    have hmeta : (getMeta (MemorySafety.decRef h a) addr hlive').refcount =
+                 (getMeta h addr hlive_orig).refcount := by
+      unfold getMeta MemorySafety.decRef
+      simp [haddr]
+    rw [hmeta]
+    -- claimCount is unchanged at addr != a
+    have hcc : claimCount
+        ⟨os.claims.filter (fun c => !(c.target == a && c.holder == holderArg)),
+         os.borrows⟩ addr = claimCount os addr := by
+      unfold claimCount
+      exact claimCount_release_ne os.claims a addr holderArg haddr
+    rw [hcc]
+    exact hinv addr hlive_orig
 
 /-- Borrowing does not affect the ownership invariant (borrows don't
     touch refcounts or claims). -/
@@ -164,8 +255,6 @@ theorem borrow_preserves_invariant
     OwnershipInvariant h (borrow os a scope) := by
   unfold OwnershipInvariant at *
   intro addr hlive
-  -- borrow only modifies os.borrows, not os.claims
-  -- claimCount only looks at os.claims
   unfold borrow claimCount
   simp
   exact hinv addr hlive
@@ -182,11 +271,11 @@ theorem endBorrow_preserves_invariant
   exact hinv addr hlive
 
 -- ══════════════════════════════════════════════════════════════════
--- Section 5: Ownership discipline implies memory safety
+-- Section 6: Ownership discipline implies memory safety
 -- ══════════════════════════════════════════════════════════════════
 
-/-- If every live object has at least one ownership claim (claimCount ≥ 1),
-    then its refcount is ≥ 1, meaning it won't be prematurely freed. -/
+/-- If every live object has at least one ownership claim (claimCount >= 1),
+    then its refcount is >= 1, meaning it won't be prematurely freed. -/
 theorem ownership_prevents_premature_free
     (h : Heap) (os : OwnershipState) (a : Addr)
     (halive : IsLive h a)
@@ -220,29 +309,30 @@ theorem ownership_plus_refcount_implies_safety
   unfold HeapInvariant
   intro a hlive hlive' p hp
   have hclaimed := hptr_claims a hlive' p hp
-  -- claimCount ≥ 1 means the filter is non-empty, so there exists a claim targeting p
+  -- claimCount >= 1 means the filter is non-empty, so there exists a claim targeting p
   unfold claimCount at hclaimed
   have hne : (List.filter (fun c => c.target == p) os.claims).length ≥ 1 := hclaimed
   have hnonempty : (List.filter (fun c => c.target == p) os.claims) ≠ [] := by
     intro hempty
     simp [hempty] at hne
   obtain ⟨c, hc_mem⟩ := List.exists_mem_of_ne_nil _ hnonempty
-  have hc_in_claims : c ∈ os.claims := List.mem_of_mem_filter hc_mem
+  have hc_in_claims : c ∈ os.claims := (List.mem_filter.mp hc_mem).1
+  have hc_target : c.target = p := by
+    have := (List.mem_filter.mp hc_mem).2
+    exact beq_iff_eq.mp this
+  rw [← hc_target]
   exact hno_orphans c hc_in_claims
 
 -- ══════════════════════════════════════════════════════════════════
--- Section 6: CallArgs ownership protocol (connects to Refcount.lean)
+-- Section 7: CallArgs ownership protocol (connects to Refcount.lean)
 -- ══════════════════════════════════════════════════════════════════
 
-/-- CallArgs ownership: each address pushed to callargs gets an ownership
-    claim (inc_ref on push). The protect_callargs_aliased_return protocol
-    adds an extra claim if the return value aliases a callargs entry.
-    Then callargs_dec_ref_all releases all callargs claims.
-
-    This bridges the abstract ownership model to the concrete callargs
-    protocol proven in Refcount.lean. -/
-
-/-- Model callargs as a sequence of ownership claims with a shared holder ID. -/
+/-- Model callargs as a sequence of ownership claims with a shared holder ID.
+    Each address pushed to callargs gets an ownership claim (inc_ref on push).
+    The protect_callargs_aliased_return protocol adds an extra claim if the
+    return value aliases a callargs entry. Then callargs_dec_ref_all releases
+    all callargs claims. This bridges the abstract ownership model to the
+    concrete callargs protocol proven in Refcount.lean. -/
 def callargsClaims (addrs : List Addr) (callId : Nat) : List OwnershipClaim :=
   addrs.map fun a => ⟨a, callId⟩
 
@@ -257,17 +347,17 @@ theorem callargs_ownership_safe
   Refcount.protect_then_cleanup_preserves h result addrs hmem hcount h_ge
 
 -- ══════════════════════════════════════════════════════════════════
--- Section 7: Concrete ownership scenarios
+-- Section 8: Concrete ownership scenarios
 -- ══════════════════════════════════════════════════════════════════
 
 /-- Example: a variable assignment creates ownership.
-    `x = obj` → acquire(obj, x_id) → refcount goes from 0 to 1. -/
+    `x = obj` -> acquire(obj, x_id) -> refcount goes from 0 to 1. -/
 example : claimCount
     { claims := [⟨42, 0⟩], borrows := [] }
     42 = 1 := by native_decide
 
-/-- Example: two variables pointing to the same object → refcount = 2.
-    `x = obj; y = x` → two claims on obj. -/
+/-- Example: two variables pointing to the same object -> refcount = 2.
+    `x = obj; y = x` -> two claims on obj. -/
 example : claimCount
     { claims := [⟨42, 0⟩, ⟨42, 1⟩], borrows := [] }
     42 = 2 := by native_decide
