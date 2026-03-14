@@ -275,7 +275,9 @@ theorem forward_simulation (f : MoltTIR.Func) (ht : InstrTotal f)
   have ht_sccp := sccp_preserves_total (constFoldFunc f) ht_cf
   have h_dce := dceSim.simulation (sccpFunc (constFoldFunc f)) ht_sccp fuel ρ lbl
   have h_cse := cseSim.simulation (dceFunc (sccpFunc (constFoldFunc f))) fuel ρ lbl
-  have h_gh := guardHoistSim.simulation (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) fuel ρ lbl
+  have ht_dce := dce_preserves_total (sccpFunc (constFoldFunc f)) ht_sccp
+  have ht_cse := cse_preserves_total (dceFunc (sccpFunc (constFoldFunc f))) ht_dce
+  have h_gh := guardHoistSim.simulation (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) ht_cse fuel ρ lbl
   have h_jc := joinCanonSim.simulation (guardHoistFunc (cseFunc (dceFunc (sccpFunc (constFoldFunc f))))) fuel ρ lbl
   rw [h_jc, h_gh, h_cse, h_dce, h_sccp, h_cf]
   --   cseSim.simulation (sorry -- CSECorrect lift)
