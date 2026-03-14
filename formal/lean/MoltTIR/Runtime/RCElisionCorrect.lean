@@ -710,11 +710,25 @@ theorem elision_preserves_ownership
     (h_elided : ElidedFrom original optimized)
     (h_consistent : ownershipConsistent original σ (execRCInstrs σ original)) :
     ownershipConsistent optimized σ (execRCInstrs σ optimized) := by
+  -- TODO(formal, owner:runtime, milestone:M4, priority:P2, status:partial):
   -- The counting-terms argument requires careful bookkeeping across
-  -- ElidedFrom cases. The key insight is that each elided inc/dec pair
-  -- removes exactly +1 from incCount and +1 from dropCount, preserving
-  -- the balance. Full mechanization deferred pending Lean 4 list lemma
-  -- improvements.
+  -- ElidedFrom cases. Each elided inc/dec pair removes exactly +1 from
+  -- incCount and +1 from dropCount, preserving the balance equation:
+  --   σ(a) + incCount + heapStoreCount + allocBit = σ'(a) + dropCount
+  -- The proof requires:
+  -- (1) List filter lemmas for (prefix ++ suffix) to split counts across
+  --     the inc_ref/middle/dec_ref/rest decomposition in the elide case.
+  -- (2) Showing incCount/dropCount each decrease by exactly 1 in the
+  --     elide step (since the removed inc_ref a increments incCount by 1
+  --     and the removed dec_ref a increments dropCount by 1).
+  -- (3) heapStoreCount and allocBit are unchanged (no heap_store or alloc
+  --     is removed by elision).
+  -- (4) elision_safe (Theorem 3b) gives us σ'_original = σ'_optimized,
+  --     so the RHS σ'(a) is the same.
+  -- The cons case follows from the induction hypothesis since counts and
+  -- execution both decompose over cons.
+  -- Full mechanization deferred: the List.filter_append and counting
+  -- lemmas are straightforward but tedious to wire together.
   sorry
 
 end MoltTIR.Runtime.RCElisionCorrect
