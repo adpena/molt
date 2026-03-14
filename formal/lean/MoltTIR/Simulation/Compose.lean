@@ -112,6 +112,51 @@ theorem behavioral_equiv_compose {g1 g2 : Func → Func}
   simp_all [runFunc, BehavioralEquivalence]
 
 -- ══════════════════════════════════════════════════════════════════
+-- Section 3b: InstrTotal preservation through constFold and SCCP
+-- ══════════════════════════════════════════════════════════════════
+
+/-- Reverse of blocks_map_some: if a mapped function's block lookup yields
+    some blk', then there exists an original block blk with f.blocks lbl = some blk
+    and blk' = g blk. -/
+private theorem blocks_map_some_rev' (f : Func) (g : Block → Block) (lbl : Label)
+    (blk' : Block)
+    (h : ({ f with blockList := f.blockList.map fun (l, b) => (l, g b) } : Func).blocks lbl = some blk') :
+    ∃ blk, f.blocks lbl = some blk ∧ blk' = g blk := by
+  simp only [Func.blocks] at *
+  generalize f.blockList = xs at h ⊢
+  induction xs with
+  | nil => simp_all [List.find?]
+  | cons p rest ih =>
+    obtain ⟨l, b⟩ := p
+    simp only [List.map, List.find?] at *
+    cases hlbl : (l == lbl) <;> simp_all
+
+/-- Constant folding preserves InstrTotal. constFoldExpr preserves evaluation
+    (constFoldExpr_correct), so if every instruction evaluates in the original,
+    every instruction evaluates in the folded version. -/
+theorem constFold_preserves_total (f : Func) (ht : InstrTotal f) :
+    InstrTotal (constFoldFunc f) := by
+  intro lbl blk' ρ hblk'
+  obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_rev' f constFoldBlock lbl blk' hblk'
+  have h_orig := ht lbl blk ρ hblk
+  simp only [constFoldBlock]
+  rw [constFoldInstrs_correct ρ blk.instrs]
+  exact h_orig
+
+/-- SCCP preserves InstrTotal. sccpExpr either replaces the RHS with a literal
+    (which always evaluates) or keeps the original (which evaluates by InstrTotal).
+    In both cases, sccpInstrs_correct gives execInstrs equality. -/
+theorem sccp_preserves_total (f : Func) (ht : InstrTotal f) :
+    InstrTotal (sccpFunc f) := by
+  intro lbl blk' ρ hblk'
+  obtain ⟨blk, hblk, rfl⟩ :=
+    blocks_map_some_rev' f (fun b => (sccpBlock AbsEnv.top b).2) lbl blk' hblk'
+  have h_orig := ht lbl blk ρ hblk
+  simp only [sccpBlock]
+  rw [sccpInstrs_correct AbsEnv.top ρ blk.instrs (absEnvTop_sound ρ)]
+  exact h_orig
+
+-- ══════════════════════════════════════════════════════════════════
 -- Section 4: Full pipeline simulation
 -- ══════════════════════════════════════════════════════════════════
 
@@ -133,29 +178,23 @@ theorem constFold_pipeline_correct (f : Func) :
     correctness is proven). -/
 theorem fullPipeline_behavioral_equiv (f : Func) (ht : InstrTotal f) :
     BehavioralEquivalence (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) f := by
-  apply behavioral_equiv_compose
-    (g1 := fun f => sccpFunc (constFoldFunc f))
-    (g2 := fun f => cseFunc (dceFunc f))
-  · -- constFold ∘ sccp preserves behavior
-    intro f'
-    apply behavioral_equiv_compose
-      (g1 := constFoldFunc)
-      (g2 := sccpFunc)
-    · exact constFold_behavioralEquiv
-    · exact sccpSim.toBehavioralEquiv
-  · -- dce ∘ cse preserves behavior
-    intro f'
-    apply behavioral_equiv_compose
-      (g1 := dceFunc)
-      (g2 := cseFunc)
-    · -- DCE uses FuncSimulationWT with InstrTotal precondition.
-      -- constFold and SCCP preserve InstrTotal (they don't change
-      -- instruction destinations or introduce failing expressions).
-      intro f''
-      exact dceSim.toBehavioralEquiv f'' (by
-        -- InstrTotal is preserved through constFold and SCCP
-        sorry)
-    · exact cseSim.toBehavioralEquiv
+  -- Chain: f → constFold f → sccp (constFold f) → dce (sccp (constFold f)) → cse (dce ...)
+  -- Step 1: constFold preserves behavior (unconditional)
+  have h_cf : BehavioralEquivalence (constFoldFunc f) f :=
+    constFold_behavioralEquiv f
+  -- Step 2: SCCP preserves behavior (unconditional)
+  have h_sccp : BehavioralEquivalence (sccpFunc (constFoldFunc f)) (constFoldFunc f) :=
+    sccpSim.toBehavioralEquiv (constFoldFunc f)
+  -- Step 3: DCE preserves behavior (requires InstrTotal, threaded through passes)
+  have ht_cf : InstrTotal (constFoldFunc f) := constFold_preserves_total f ht
+  have ht_sccp : InstrTotal (sccpFunc (constFoldFunc f)) := sccp_preserves_total (constFoldFunc f) ht_cf
+  have h_dce : BehavioralEquivalence (dceFunc (sccpFunc (constFoldFunc f))) (sccpFunc (constFoldFunc f)) :=
+    dceSim.toBehavioralEquiv (sccpFunc (constFoldFunc f)) ht_sccp
+  -- Step 4: CSE preserves behavior (unconditional)
+  have h_cse : BehavioralEquivalence (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) (dceFunc (sccpFunc (constFoldFunc f))) :=
+    cseSim.toBehavioralEquiv (dceFunc (sccpFunc (constFoldFunc f)))
+  -- Chain all four via transitivity
+  exact h_cse.trans (h_dce.trans (h_sccp.trans h_cf))
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 5: Pipeline simulation composition theorem (generic)
