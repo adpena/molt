@@ -148,12 +148,12 @@ private theorem isLive_incRef_iff (h : Heap) (a addr : Addr) (halive : IsLive h 
     unfold IsLive at hlive ⊢
     by_cases heq : addr = a
     · subst heq; exact halive
-    · rw [incRef_at_other h addr addr heq] at hlive; exact hlive
+    · rw [incRef_at_other h a addr heq] at hlive; exact hlive
   · intro hlive
     unfold IsLive at hlive ⊢
     by_cases heq : addr = a
     · subst heq; rw [incRef_at_self h addr ma hma]; rfl
-    · rw [incRef_at_other h addr addr heq]; exact hlive
+    · rw [incRef_at_other h a addr heq]; exact hlive
 
 -- ── trueRefcount unchanged by incRef ──
 
@@ -252,12 +252,12 @@ private theorem isLive_decRef_iff (h : Heap) (a addr : Addr) (halive : IsLive h 
     unfold IsLive at hlive ⊢
     by_cases heq : addr = a
     · subst heq; exact halive
-    · rw [decRef_at_other h addr addr heq] at hlive; exact hlive
+    · rw [decRef_at_other h a addr heq] at hlive; exact hlive
   · intro hlive
     unfold IsLive at hlive ⊢
     by_cases heq : addr = a
     · subst heq; rw [decRef_at_self h addr ma hma]; rfl
-    · rw [decRef_at_other h addr addr heq]; exact hlive
+    · rw [decRef_at_other h a addr heq]; exact hlive
 
 private theorem trueRefcount_decRef_eq (h : Heap) (a : Addr) (addrs : List Addr) (target : Addr) :
     trueRefcount (decRef h a) addrs target = trueRefcount h addrs target := by
