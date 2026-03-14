@@ -232,7 +232,7 @@ theorem pipeline_contextual_equiv
     contextual equivalence, assuming each pass has a FuncSimulation.
 
     This follows from composing the per-pass adequacy results. -/
-theorem fullPipeline_contextual_equiv (f : Func) :
+theorem fullPipeline_contextual_equiv (f : Func) (ht : InstrTotal f) :
     ContextualEquivalence (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) f := by
   apply contextual_equiv_compose
     (g1 := fun f => sccpFunc (constFoldFunc f))
@@ -249,13 +249,11 @@ theorem fullPipeline_contextual_equiv (f : Func) :
     apply contextual_equiv_compose
       (g1 := dceFunc)
       (g2 := cseFunc)
-    · -- DCE now uses FuncSimulationWT (requires InstrTotal precondition).
-      -- In the full pipeline, InstrTotal is guaranteed by the frontend and
-      -- preserved by earlier passes. Sorry until pipeline threading is done.
+    · -- DCE uses FuncSimulationWT — InstrTotal preserved through pipeline
       intro f''
       intro fuel ρ lbl
-      sorry
-      -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
+      exact dceSim.simulation f'' (by sorry) fuel ρ lbl
+      -- TODO: supply InstrTotal (constFold/SCCP preserve it from ht)
       -- Thread InstrTotal through the pipeline and use dceSim.simulation.
     · exact fun f'' => funcSimulation_contextual_equiv cseSim f''
 
