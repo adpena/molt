@@ -156,6 +156,21 @@ theorem sccp_preserves_total (f : Func) (ht : InstrTotal f) :
   rw [sccpInstrs_correct AbsEnv.top ρ blk.instrs (absEnvTop_sound ρ)]
   exact h_orig
 
+/-- CSE preserves InstrTotal. cseInstrs_correct (under the SSA axiom) gives
+    `execInstrs ρ (cseInstrs [] instrs) = execInstrs ρ instrs`, so if the
+    original succeeds the CSE version does too. -/
+theorem cse_preserves_total (f : Func) (ht : InstrTotal f) :
+    InstrTotal (cseFunc f) := by
+  intro lbl blk' ρ hblk'
+  obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_rev' f cseBlock lbl blk' hblk'
+  have h_orig := ht lbl blk ρ hblk
+  simp only [cseBlock]
+  have hssa := ssa_of_wellformed_tir f lbl blk hblk
+  have hempty_fresh : ∀ j ∈ blk.instrs, AvailFreshWrt ([] : AvailMap) j.dst :=
+    fun _ _ => availFreshWrt_empty _
+  rw [cseInstrs_correct [] ρ blk.instrs (availMapSound_empty ρ) hssa hempty_fresh]
+  exact h_orig
+
 -- ══════════════════════════════════════════════════════════════════
 -- Section 4: Full pipeline simulation
 -- ══════════════════════════════════════════════════════════════════
