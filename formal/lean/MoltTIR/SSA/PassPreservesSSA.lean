@@ -85,6 +85,119 @@ private theorem unique_defs_of_mapFunc (f : Func) (g : Block → Block)
     ((definedIn_mapFunc_iff f g hdefs v lbl₂).mp h₂)
 
 -- ══════════════════════════════════════════════════════════════════
+-- Section 1b: CFG preservation for successor-preserving block maps
+-- ══════════════════════════════════════════════════════════════════
+
+/-- For a block map that preserves termSuccessors, IsSuccessor is
+    preserved from original to mapped function. -/
+private theorem isSuccessor_mapFunc_of_original (f : Func) (g : Block → Block)
+    (hterm : ∀ b, termSuccessors (g b).term = termSuccessors b.term)
+    {l1 l2 : Label} (h : IsSuccessor f l1 l2) :
+    IsSuccessor { f with blockList := f.blockList.map fun (l, b) => (l, g b) } l1 l2 := by
+  obtain ⟨blk, hblk, hmem⟩ := h
+  exact ⟨g blk, blocks_map_some f g l1 blk hblk, (hterm blk) ▸ hmem⟩
+
+/-- For a block map that preserves termSuccessors, IsSuccessor is
+    preserved from mapped function to original. -/
+private theorem isSuccessor_mapFunc_of_mapped (f : Func) (g : Block → Block)
+    (hterm : ∀ b, termSuccessors (g b).term = termSuccessors b.term)
+    {l1 l2 : Label} (h : IsSuccessor { f with blockList := f.blockList.map fun (l, b) => (l, g b) } l1 l2) :
+    IsSuccessor f l1 l2 := by
+  obtain ⟨blk', hblk', hmem⟩ := h
+  obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_rev f g l1 blk' hblk'
+  exact ⟨blk, hblk, (hterm blk) ▸ hmem⟩
+
+/-- For a successor-preserving block map, CFGPath is preserved from
+    original to mapped function. -/
+private theorem cfgPath_mapFunc_of_original (f : Func) (g : Block → Block)
+    (hterm : ∀ b, termSuccessors (g b).term = termSuccessors b.term)
+    {src dst : Label} {path : List Label}
+    (h : CFGPath f src dst path) :
+    CFGPath { f with blockList := f.blockList.map fun (l, b) => (l, g b) } src dst path := by
+  induction h with
+  | single l => exact .single l
+  | cons l₁ l₂ dst' rest hedge _ ih =>
+    exact .cons l₁ l₂ dst' rest (isSuccessor_mapFunc_of_original f g hterm hedge) ih
+
+/-- For a successor-preserving block map, CFGPath is preserved from
+    mapped function to original. -/
+private theorem cfgPath_mapFunc_of_mapped (f : Func) (g : Block → Block)
+    (hterm : ∀ b, termSuccessors (g b).term = termSuccessors b.term)
+    {src dst : Label} {path : List Label}
+    (h : CFGPath { f with blockList := f.blockList.map fun (l, b) => (l, g b) } src dst path) :
+    CFGPath f src dst path := by
+  induction h with
+  | single l => exact .single l
+  | cons l₁ l₂ dst' rest hedge _ ih =>
+    exact .cons l₁ l₂ dst' rest (isSuccessor_mapFunc_of_mapped f g hterm hedge) ih
+
+/-- For a successor-preserving block map, Reachable is preserved from
+    original to mapped function. -/
+private theorem reachable_mapFunc_of_original (f : Func) (g : Block → Block)
+    (hterm : ∀ b, termSuccessors (g b).term = termSuccessors b.term)
+    {l1 l2 : Label} (h : Reachable f l1 l2) :
+    Reachable { f with blockList := f.blockList.map fun (l, b) => (l, g b) } l1 l2 := by
+  induction h with
+  | refl l => exact .refl l
+  | step l1' l2' l3' hedge _ ih =>
+    exact .step l1' l2' l3' (isSuccessor_mapFunc_of_original f g hterm hedge) ih
+
+/-- For a successor-preserving block map, Reachable is preserved from
+    mapped function to original. -/
+private theorem reachable_mapFunc_of_mapped (f : Func) (g : Block → Block)
+    (hterm : ∀ b, termSuccessors (g b).term = termSuccessors b.term)
+    {l1 l2 : Label} (h : Reachable { f with blockList := f.blockList.map fun (l, b) => (l, g b) } l1 l2) :
+    Reachable f l1 l2 := by
+  induction h with
+  | refl l => exact .refl l
+  | step l1' l2' l3' hedge _ ih =>
+    exact .step l1' l2' l3' (isSuccessor_mapFunc_of_mapped f g hterm hedge) ih
+
+/-- For a successor-preserving block map, Dom is preserved in both directions.
+    This is the key lemma for proving use_dom_def for RHS-only passes. -/
+private theorem dom_mapFunc_iff (f : Func) (g : Block → Block)
+    (hterm : ∀ b, termSuccessors (g b).term = termSuccessors b.term)
+    (d l : Label) :
+    Dom { f with blockList := f.blockList.map fun (l, b) => (l, g b) } d l ↔
+    Dom f d l := by
+  simp only [Dom]
+  constructor
+  · intro hdom hreach path hpath
+    have hreach' := reachable_mapFunc_of_original f g hterm hreach
+    have hpath' := cfgPath_mapFunc_of_original f g hterm hpath
+    exact hdom hreach' path hpath'
+  · intro hdom hreach path hpath
+    have hreach' := reachable_mapFunc_of_mapped f g hterm hreach
+    have hpath' := cfgPath_mapFunc_of_mapped f g hterm hpath
+    exact hdom hreach' path hpath'
+
+/-- For a successor-preserving and defs-preserving block map,
+    use_dom_def is preserved from the original SSA well-formed function. -/
+private theorem use_dom_def_of_mapFunc (f : Func) (g : Block → Block)
+    (hdefs : ∀ b, blockAllDefs (g b) = blockAllDefs b)
+    (hterm : ∀ b, termSuccessors (g b).term = termSuccessors b.term)
+    (hssa : SSAWellFormed f) :
+    ∀ v b_use b_def,
+      UsedIn { f with blockList := f.blockList.map fun (l, b) => (l, g b) } v b_use →
+      DefinedIn { f with blockList := f.blockList.map fun (l, b) => (l, g b) } v b_def →
+      Dom { f with blockList := f.blockList.map fun (l, b) => (l, g b) } b_def b_use := by
+  intro v b_use b_def _huse hdef
+  -- Convert DefinedIn in mapped function to DefinedIn in original
+  have hdef_orig := (definedIn_mapFunc_iff f g hdefs v b_def).mp hdef
+  -- For use_dom_def we need UsedIn in the mapped function to imply
+  -- that b_def dominates b_use. Since dominance is preserved (same CFG),
+  -- it suffices to show Dom f b_def b_use and then convert.
+  -- However, we need the original use to apply hssa.use_dom_def.
+  -- The mapped function may have *different* uses (e.g., CSE adds uses).
+  -- But the use site label is the same, and dominance only depends on labels.
+  -- We use: if there exists any DefinedIn f v b_def, and Dom f b_def b_use
+  -- holds for the original, then it transfers.
+  -- The problem is we don't have UsedIn f v b_use in general.
+  -- For strictly RHS-only passes, UsedIn is also preserved, but we
+  -- don't prove that here. Instead, use sorry for the use-to-original step.
+  sorry
+
+-- ══════════════════════════════════════════════════════════════════
 -- Section 2: Constant folding preserves SSA
 -- ══════════════════════════════════════════════════════════════════
 
@@ -192,6 +305,13 @@ theorem dceBlock_defs_subset (b : Block) :
       exact hmem.1
     exact List.mem_map_of_mem Instr.dst hmem_orig
 
+/-- Every definition in the DCE'd function was a definition in the original. -/
+private theorem definedIn_dceFunc_imp (f : Func) (v : Var) (lbl : Label)
+    (h : DefinedIn (dceFunc f) v lbl) : DefinedIn f v lbl := by
+  obtain ⟨blk', hblk', hv⟩ := h
+  obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_rev f dceBlock lbl blk' hblk'
+  exact ⟨blk, hblk, dceBlock_defs_subset blk v hv⟩
+
 /-- DCE preserves SSA: removing dead definitions maintains unique-def
     (a subset of a unique list is unique) and use-dom-def (dead code
     has no uses, so the remaining use-def pairs are unchanged). -/
@@ -199,7 +319,10 @@ theorem dce_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     SSAWellFormed (dceFunc f) := by
   constructor
   · -- unique_defs: subset of original defs, still unique
-    sorry
+    intro v lbl₁ lbl₂ h₁ h₂
+    exact h.unique_defs v lbl₁ lbl₂
+      (definedIn_dceFunc_imp f v lbl₁ h₁)
+      (definedIn_dceFunc_imp f v lbl₂ h₂)
   · -- use_dom_def: only live instructions remain; their uses still
     -- have the same dominating definitions
     sorry
@@ -241,10 +364,61 @@ theorem sccp_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     unfold sccpFunc
     exact mapFunc_blocks_isSome_gen (fun ⟨l, _⟩ => by simp) h.entry_exists
 
+/-- sccpMultiBlock preserves block definitions. -/
+theorem sccpMultiBlock_defs (σ : AbsEnv) (b : Block) :
+    blockAllDefs (sccpMultiBlock σ b) = blockAllDefs b := by
+  simp only [blockAllDefs, sccpMultiBlock, sccpInstrs_dsts]
+
+/-- Reverse lookup for label-dependent block maps: if the mapped function
+    has a block blk' at label lbl, then the original had some block there
+    and the transform was applied. -/
+private theorem blocks_map_gen_some_rev (f : Func) (g : Label → Block → Block) (lbl : Label)
+    (blk' : Block)
+    (h : ({ f with blockList := f.blockList.map fun (l, b) => (l, g l b) } : Func).blocks lbl = some blk') :
+    ∃ blk, f.blocks lbl = some blk ∧ blk' = g lbl blk := by
+  simp only [Func.blocks] at *
+  generalize f.blockList = xs at h ⊢
+  induction xs with
+  | nil => simp_all [List.find?]
+  | cons p rest ih =>
+    obtain ⟨l, b⟩ := p
+    simp only [List.map, List.find?] at *
+    cases hlbl : (l == lbl) <;> simp_all
+
+/-- For a label-dependent block map where each transform preserves defs,
+    DefinedIn in the transformed function implies DefinedIn in the original. -/
+private theorem definedIn_mapGen_imp (f : Func) (g : Label → Block → Block)
+    (hdefs : ∀ lbl b, blockAllDefs (g lbl b) = blockAllDefs b) (v : Var) (lbl : Label)
+    (h : DefinedIn { f with blockList := f.blockList.map fun (l, b) => (l, g l b) } v lbl) :
+    DefinedIn f v lbl := by
+  obtain ⟨blk', hblk', hv⟩ := h
+  obtain ⟨blk, hblk, rfl⟩ := blocks_map_gen_some_rev f g lbl blk' hblk'
+  exact ⟨blk, hblk, (hdefs lbl blk) ▸ hv⟩
+
+/-- sccpMultiApply preserves SSA. -/
+theorem sccpMultiApply_preserves_ssa (f : Func) (st : SCCPState) (h : SSAWellFormed f) :
+    SSAWellFormed (sccpMultiApply f st) := by
+  constructor
+  · -- unique_defs
+    show ∀ v lbl₁ lbl₂, DefinedIn (sccpMultiApply f st) v lbl₁ →
+      DefinedIn (sccpMultiApply f st) v lbl₂ → lbl₁ = lbl₂
+    unfold sccpMultiApply
+    intro v lbl₁ lbl₂ h₁ h₂
+    have hdefs : ∀ l b, blockAllDefs (sccpMultiBlock (st.blockStates l).inEnv b) = blockAllDefs b :=
+      fun l b => sccpMultiBlock_defs _ b
+    exact h.unique_defs v lbl₁ lbl₂
+      (definedIn_mapGen_imp f (fun l b => sccpMultiBlock (st.blockStates l).inEnv b) hdefs v lbl₁ h₁)
+      (definedIn_mapGen_imp f (fun l b => sccpMultiBlock (st.blockStates l).inEnv b) hdefs v lbl₂ h₂)
+  · sorry  -- Dominance unchanged
+  · show ((sccpMultiApply f st).blocks (sccpMultiApply f st).entry).isSome
+    unfold sccpMultiApply
+    exact mapFunc_blocks_isSome_gen (fun ⟨l, _⟩ => by simp) h.entry_exists
+
 /-- Multi-block SCCP preserves SSA. -/
 theorem sccpMulti_preserves_ssa (f : Func) (fuel : Nat) (h : SSAWellFormed f) :
     SSAWellFormed (sccpMultiFunc f fuel) := by
-  sorry
+  unfold sccpMultiFunc
+  exact sccpMultiApply_preserves_ssa f (sccpWorklist f fuel) h
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 5: CSE preserves SSA
@@ -366,11 +540,21 @@ theorem joinCanonBlock_params (jmap : JoinMap) (b : Block) :
     (joinCanonBlock jmap b).params = b.params := by
   unfold joinCanonBlock; rfl
 
+/-- joinCanonBlock preserves block definitions (only changes terminator). -/
+theorem joinCanonBlock_defs (jmap : JoinMap) (b : Block) :
+    blockAllDefs (joinCanonBlock jmap b) = blockAllDefs b := by
+  simp only [blockAllDefs, joinCanonBlock_instrs, joinCanonBlock_params]
+
 /-- Join canonicalization preserves SSA. -/
 theorem joinCanon_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     SSAWellFormed (joinCanonFunc f) := by
   constructor
-  · sorry  -- Instructions unchanged, so defs unchanged
+  · -- unique_defs: Instructions and params unchanged, so defs unchanged
+    show ∀ v lbl₁ lbl₂, DefinedIn (joinCanonFunc f) v lbl₁ →
+      DefinedIn (joinCanonFunc f) v lbl₂ → lbl₁ = lbl₂
+    unfold joinCanonFunc
+    exact unique_defs_of_mapFunc f (joinCanonBlock (buildJoinMap f))
+      (joinCanonBlock_defs (buildJoinMap f)) h.unique_defs
   · sorry  -- Definitions at same blocks; dominance may change for redirected
     -- edges, but the canonical target has the same params as the original
   · -- Entry preserved
@@ -388,6 +572,16 @@ theorem edgeThreadBlock_instrs (σ : AbsEnv) (b : Block) :
     (edgeThreadBlock σ b).instrs = b.instrs := by
   unfold edgeThreadBlock; rfl
 
+/-- edgeThreadBlock preserves params. -/
+theorem edgeThreadBlock_params (σ : AbsEnv) (b : Block) :
+    (edgeThreadBlock σ b).params = b.params := by
+  unfold edgeThreadBlock; rfl
+
+/-- edgeThreadBlock preserves block definitions (only changes terminator). -/
+theorem edgeThreadBlock_defs (σ : AbsEnv) (b : Block) :
+    blockAllDefs (edgeThreadBlock σ b) = blockAllDefs b := by
+  simp only [blockAllDefs, edgeThreadBlock_instrs, edgeThreadBlock_params]
+
 /-- Edge threading preserves SSA: only terminators change.
     Edge threading only removes edges (br->jmp removes one successor).
     Removing edges cannot break dominance of existing def-use pairs:
@@ -396,7 +590,16 @@ theorem edgeThreadBlock_instrs (σ : AbsEnv) (b : Block) :
 theorem edgeThread_preserves_ssa (f : Func) (st : SCCPState) (h : SSAWellFormed f) :
     SSAWellFormed (edgeThreadFunc f st) := by
   constructor
-  · sorry  -- Instructions unchanged
+  · -- unique_defs: Instructions unchanged
+    show ∀ v lbl₁ lbl₂, DefinedIn (edgeThreadFunc f st) v lbl₁ →
+      DefinedIn (edgeThreadFunc f st) v lbl₂ → lbl₁ = lbl₂
+    unfold edgeThreadFunc
+    intro v lbl₁ lbl₂ h₁ h₂
+    have hdefs : ∀ l b, blockAllDefs (edgeThreadBlock (st.blockStates l).inEnv b) = blockAllDefs b :=
+      fun l b => edgeThreadBlock_defs _ b
+    exact h.unique_defs v lbl₁ lbl₂
+      (definedIn_mapGen_imp f (fun l b => edgeThreadBlock (st.blockStates l).inEnv b) hdefs v lbl₁ h₁)
+      (definedIn_mapGen_imp f (fun l b => edgeThreadBlock (st.blockStates l).inEnv b) hdefs v lbl₂ h₂)
   · sorry  -- Dominance preserved (edge removal only)
   · -- Entry preserved
     show ((edgeThreadFunc f st).blocks (edgeThreadFunc f st).entry).isSome
