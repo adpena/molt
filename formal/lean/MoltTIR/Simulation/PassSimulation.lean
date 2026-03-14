@@ -423,8 +423,13 @@ theorem guardHoistBlock_params_preserved (b : Block) :
     (guardHoistBlock [] b).params = b.params := rfl
 
 /-- Guard hoisting simulation.
-    TODO(formal, owner:compiler, milestone:M5, priority:P2, status:partial):
-    Requires SSA + dominance reasoning for the redundant-guard case. -/
+    NOTE: The current model has a fidelity gap: guardHoistInstr replaces
+    redundant guards with `.var i.dst` (self-reference), but i.dst is
+    undefined at that point in the env (it's being defined by this instruction).
+    The real compiler's guard hoisting replaces with the first guard's result
+    variable, which IS defined. Closing this sorry requires either:
+    (a) fixing guardHoistInstr to use the proven guard's dst, or
+    (b) adding a model where identity assignments are no-ops. -/
 def guardHoistSim : FuncSimulation guardHoistFunc where
   match_env := fun _f ρ lbl ρ' lbl' => ρ = ρ' ∧ lbl = lbl'
   simulation := fun _f _fuel _ρ _lbl => by sorry
