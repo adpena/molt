@@ -220,12 +220,16 @@ theorem release_preserves_invariant
   unfold OwnershipInvariant at *
   intro addr hlive'
   by_cases haddr : addr = a
-  · -- Case addr = a: refcount decreases by 1, claimCount decreases correspondingly.
-    -- The filter removes all claims matching (a, holderArg). We need to show
-    -- that the new refcount (old - 1) equals the new claimCount.
-    -- This requires knowing exactly how many claims the filter removes,
-    -- which depends on uniqueness of (target, holder) pairs. Without Mathlib
-    -- list counting infrastructure, we defer this sub-case.
+  · -- Case addr = a: refcount decreases by 1 (decRef), and the filter removes
+    -- all claims matching (a, holderArg).
+    -- To close this goal we need: claimCount(filtered, a) = claimCount(os, a) - k
+    -- where k = number of (a, holderArg) claims. Combined with hinv (refcount =
+    -- claimCount) and decRef (refcount - 1), we need k = 1 (unique claim).
+    -- The theorem statement lacks a uniqueness hypothesis on (target, holder)
+    -- pairs, and the general filter-counting arithmetic requires list induction
+    -- infrastructure beyond what bare Lean 4 provides ergonomically.
+    -- TODO(formal, owner:runtime, milestone:M4, priority:P1, status:partial):
+    --   Add huniq hypothesis or prove filter-count lemma to close this.
     sorry
   · -- Case addr != a: both sides unchanged
     have hlive_orig : IsLive h addr := by
@@ -300,8 +304,8 @@ theorem borrow_targets_live
     correspond to ownership claims). -/
 theorem ownership_plus_refcount_implies_safety
     (h : Heap) (os : OwnershipState)
-    (hinv : OwnershipInvariant h os)
-    (hbs : BorrowSafety h os)
+    (_hinv : OwnershipInvariant h os)
+    (_hbs : BorrowSafety h os)
     (hno_orphans : NoOrphanClaims h os)
     (hptr_claims : ∀ (a : Addr) (hlive : IsLive h a),
       ∀ p ∈ (getMeta h a hlive).pointers, claimCount os p ≥ 1) :
