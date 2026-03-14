@@ -63,3 +63,10 @@ packaging/out/
 !/docs/**/*.md
 !/packaging/**/*.md
 .claude/worktrees/
+
+# Agent worktrees — Claude Code, Codex, Gemini
+.claude/worktrees/
+.codex/worktrees/
+.codex/
+.gemini/worktrees/
+.claude/todos/
