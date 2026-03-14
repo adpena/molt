@@ -702,42 +702,87 @@ def ownershipConsistent (body : RCFunc) (σ σ' : RCState) : Prop :=
     = σ' a + dropCount body a
 
 
-/-- ElidedFrom preserves counting balance: for each address a, the difference
-    incCount - dropCount changes by the same amount, and heapStoreCount and
-    allocBit are unchanged. Combined with elision_safe (same final states),
-    this implies ownershipConsistent is preserved. -/
-private theorem elidedFrom_count_balance
+/-- ElidedFrom preserves the inc-drop balance. -/
+private theorem elidedFrom_inc_drop_balance
     (original optimized : RCFunc) (a : ObjRef)
     (h_elided : ElidedFrom original optimized) :
-    incCount original a + dropCount optimized a + heapStoreCount optimized a +
-      (if optimized.any (fun i => match i with | .alloc b _ => b == a | _ => false) then 1 else 0)
-    = incCount optimized a + dropCount original a + heapStoreCount original a +
-      (if original.any (fun i => match i with | .alloc b _ => b == a | _ => false) then 1 else 0) := by
+    incCount original a + dropCount optimized a
+    = incCount optimized a + dropCount original a := by
   induction h_elided with
-  | refl _ => ring
+  | refl _ => rfl
   | elide b middle rest h_no_use =>
-    -- original = [inc_ref b] ++ (middle ++ ([dec_ref b] ++ rest))
-    -- optimized = middle ++ rest
-    have h_orig_eq : RCInstr.inc_ref b :: middle ++ [RCInstr.dec_ref b] ++ rest
-        = [RCInstr.inc_ref b] ++ (middle ++ ([RCInstr.dec_ref b] ++ rest)) := by
-      simp [List.append_assoc]
-    -- Decompose all counts on original using append
-    show incCount ([RCInstr.inc_ref b] ++ (middle ++ ([RCInstr.dec_ref b] ++ rest))) a +
-         dropCount (middle ++ rest) a + heapStoreCount (middle ++ rest) a +
-         (if (middle ++ rest).any (fun i => match i with | .alloc c _ => c == a | _ => false) then 1 else 0) =
-       incCount (middle ++ rest) a +
-         dropCount ([RCInstr.inc_ref b] ++ (middle ++ ([RCInstr.dec_ref b] ++ rest))) a +
-         heapStoreCount ([RCInstr.inc_ref b] ++ (middle ++ ([RCInstr.dec_ref b] ++ rest))) a +
-         (if ([RCInstr.inc_ref b] ++ (middle ++ ([RCInstr.dec_ref b] ++ rest))).any
-           (fun i => match i with | .alloc c _ => c == a | _ => false) then 1 else 0)
-    sorry
+    simp only [incCount, dropCount]
+    rw [show RCInstr.inc_ref b :: middle ++ [RCInstr.dec_ref b] ++ rest
+        = [RCInstr.inc_ref b] ++ (middle ++ ([RCInstr.dec_ref b] ++ rest)) from by
+        simp [List.append_assoc]]
+    simp only [List.filter_append, List.length_append]
+    simp only [List.filter,
+      show ∀ x y : ObjRef, (RCInstr.inc_ref x == RCInstr.dec_ref y) =
+        decide (RCInstr.inc_ref x = RCInstr.dec_ref y) from fun _ _ => rfl,
+      show ∀ x y : ObjRef, (RCInstr.dec_ref x == RCInstr.inc_ref y) =
+        decide (RCInstr.dec_ref x = RCInstr.inc_ref y) from fun _ _ => rfl,
+      show ∀ x y : ObjRef, (RCInstr.inc_ref x == RCInstr.inc_ref y) =
+        decide (RCInstr.inc_ref x = RCInstr.inc_ref y) from fun _ _ => rfl,
+      show ∀ x y : ObjRef, (RCInstr.dec_ref x == RCInstr.dec_ref y) =
+        decide (RCInstr.dec_ref x = RCInstr.dec_ref y) from fun _ _ => rfl,
+      show ∀ x y : ObjRef, (RCInstr.inc_ref x = RCInstr.inc_ref y) ↔ x = y from
+        fun _ _ => ⟨RCInstr.inc_ref.inj, congrArg _⟩,
+      show ∀ x y : ObjRef, (RCInstr.dec_ref x = RCInstr.dec_ref y) ↔ x = y from
+        fun _ _ => ⟨RCInstr.dec_ref.inj, congrArg _⟩]
+    by_cases hab : b = a <;> simp_all <;> omega
   | cons instr orig opt h_tail ih =>
-    sorry
+    simp only [incCount, dropCount]
+    rw [show instr :: orig = [instr] ++ orig from rfl,
+        show instr :: opt = [instr] ++ opt from rfl]
+    simp only [List.filter_append, List.length_append]
+    simp only [incCount, dropCount] at ih
+    omega
+
+/-- ElidedFrom preserves heapStoreCount. -/
+private theorem elidedFrom_heapStoreCount
+    (original optimized : RCFunc) (a : ObjRef)
+    (h_elided : ElidedFrom original optimized) :
+    heapStoreCount original a = heapStoreCount optimized a := by
+  induction h_elided with
+  | refl _ => rfl
+  | elide b middle rest h_no_use =>
+    simp only [heapStoreCount]
+    rw [show RCInstr.inc_ref b :: middle ++ [RCInstr.dec_ref b] ++ rest
+        = [RCInstr.inc_ref b] ++ (middle ++ ([RCInstr.dec_ref b] ++ rest)) from by
+        simp [List.append_assoc]]
+    simp only [List.filter_append, List.length_append]
+    have h1 : (List.filter (fun i => match i with | .heap_store _ s => s == a | _ => false) [RCInstr.inc_ref b]).length = 0 := by
+      simp [List.filter]
+    have h2 : (List.filter (fun i => match i with | .heap_store _ s => s == a | _ => false) [RCInstr.dec_ref b]).length = 0 := by
+      simp [List.filter]
+    omega
+  | cons instr orig opt h_tail ih =>
+    simp only [heapStoreCount]
+    rw [show instr :: orig = [instr] ++ orig from rfl,
+        show instr :: opt = [instr] ++ opt from rfl]
+    simp only [List.filter_append, List.length_append]
+    simp only [heapStoreCount] at ih; omega
+
+/-- ElidedFrom preserves allocBit. -/
+private theorem elidedFrom_allocBit
+    (original optimized : RCFunc) (a : ObjRef)
+    (h_elided : ElidedFrom original optimized) :
+    original.any (fun i => match i with | .alloc c _ => c == a | _ => false)
+    = optimized.any (fun i => match i with | .alloc c _ => c == a | _ => false) := by
+  induction h_elided with
+  | refl _ => rfl
+  | elide b middle rest h_no_use =>
+    rw [show RCInstr.inc_ref b :: middle ++ [RCInstr.dec_ref b] ++ rest
+        = [RCInstr.inc_ref b] ++ (middle ++ ([RCInstr.dec_ref b] ++ rest)) from by
+        simp [List.append_assoc]]
+    simp [List.any_append, List.any]
+  | cons instr orig opt h_tail ih =>
+    rw [show instr :: orig = [instr] ++ orig from rfl,
+        show instr :: opt = [instr] ++ opt from rfl]
+    simp only [List.any_append, ih]
 
 /-- If an RC instruction stream is ownership-consistent and the ElidedFrom
-    relation holds, then the elided stream is also ownership-consistent.
-    This bridges the instruction-level elision proof to the claim-level
-    ownership model. -/
+    relation holds, then the elided stream is also ownership-consistent. -/
 theorem elision_preserves_ownership
     (original optimized : RCFunc) (σ : RCState)
     (h_elided : ElidedFrom original optimized)
@@ -748,7 +793,9 @@ theorem elision_preserves_ownership
     elision_safe original optimized σ h_elided
   rw [← h_same a]
   have h_orig := h_consistent a
-  have h_bal := elidedFrom_count_balance original optimized a h_elided
+  rw [elidedFrom_heapStoreCount original optimized a h_elided,
+      elidedFrom_allocBit original optimized a h_elided] at h_orig
+  have h_bal := elidedFrom_inc_drop_balance original optimized a h_elided
   omega
 
 end MoltTIR.Runtime.RCElisionCorrect
