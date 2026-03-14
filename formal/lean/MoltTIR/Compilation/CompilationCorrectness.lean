@@ -170,8 +170,11 @@ theorem compile_preserves_wf {prog : MoltProgram}
     (hwf : WellFormed prog) :
     WellFormed (compile prog) := by
   constructor
-  · -- TODO(formal, owner:compiler, milestone:M4, priority:P2, status:partial):
+  · -- Show (compile prog).entryFunc.isSome
+    -- TODO(formal, owner:compiler, milestone:M4, priority:P2, status:partial):
     -- Requires showing List.map preserves List.find? for name-preserving maps.
+    -- The mathematical content is trivial but Lean's definitional unfolding
+    -- of pattern-matching lambdas makes the tactic proof fragile.
     sorry
   · exact ⟨⟩
 

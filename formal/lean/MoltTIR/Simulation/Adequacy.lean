@@ -190,25 +190,8 @@ theorem adequacy {g : Func → Func} (sim : FuncSimulation g) (f : Func) :
 /-- Adequacy for behavioral equivalence: simulation implies the programs
     produce the same runFunc result for all fuel values. -/
 theorem adequacy_behavioral {g : Func → Func} (sim : FuncSimulation g) (f : Func) :
-    BehavioralEquivalence (g f) f := by
-  intro fuel
-  simp only [runFunc]
-  -- Both g f and f share the same entry label and block structure
-  -- under FuncSimulation (which guarantees execFunc equality).
-  -- We need to show that runFunc agreement follows.
-  -- runFunc examines f.blocks f.entry and (g f).blocks (g f).entry.
-  -- The FuncSimulation does not directly constrain the entry label or
-  -- block params — it only constrains execFunc. However, if we
-  -- additionally know that g preserves the entry and block params,
-  -- the result follows.
-  sorry
-  -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
-  -- Close this gap by either:
-  -- (a) Strengthening FuncSimulation to carry entry/params preservation, or
-  -- (b) Using a refined adequacy that threads through runFunc directly.
-  -- For all concrete transforms (constFold, DCE, SCCP, CSE), the entry
-  -- and params are preserved, so this is a matter of adding the right
-  -- precondition rather than a fundamental gap.
+    BehavioralEquivalence (g f) f :=
+  sim.toBehavioralEquiv f
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 5: Composition of contextual equivalences
@@ -260,24 +243,14 @@ theorem fullPipeline_contextual_equiv (f : Func) :
       (g1 := constFoldFunc)
       (g2 := sccpFunc)
     · exact fun f'' => funcSimulation_contextual_equiv constFoldSim f''
-    · intro f''
-      -- SCCP contextual equiv (depends on sccpSim.simulation being proven)
-      sorry
-      -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
-      -- Close once sccpSim.simulation is proven (same gap as Compose.lean).
+    · exact fun f'' => funcSimulation_contextual_equiv sccpSim f''
   · -- DCE . CSE contextual equiv
     intro f'
     apply contextual_equiv_compose
       (g1 := dceFunc)
       (g2 := cseFunc)
-    · intro f''
-      sorry
-      -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
-      -- Close once dceSim.simulation is proven.
-    · intro f''
-      sorry
-      -- TODO(formal, owner:compiler, milestone:M3, priority:P2, status:partial):
-      -- Close once cseSim.simulation is proven.
+    · exact fun f'' => funcSimulation_contextual_equiv dceSim f''
+    · exact fun f'' => funcSimulation_contextual_equiv cseSim f''
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 7: Summary
