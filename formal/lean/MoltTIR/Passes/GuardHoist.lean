@@ -59,8 +59,8 @@ def guardHoistInstr (proven : ProvenGuards) (i : Instr) :
   | none => (i, proven)
   | some g =>
       if isGuardProven proven g then
-        -- Redundant: replace with identity assignment
-        ({ i with rhs := .var i.dst }, proven)
+        -- Redundant: replace with constant true (guard is known to pass)
+        ({ i with rhs := .val (.bool true) }, proven)
       else
         -- First occurrence: keep guard, add to proven set
         (i, g :: proven)

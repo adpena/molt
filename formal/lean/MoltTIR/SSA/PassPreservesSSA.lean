@@ -791,9 +791,8 @@ theorem guardHoist_preserves_ssa (f : Func) (h : SSAWellFormed f) :
               · rename_i g _
                 split at hw_hd
                 · simp only [exprVars] at hw_hd
-                  rcases List.mem_cons.mp hw_hd with rfl | habs
-                  · right; exact List.mem_cons_self _ _
-                  · exact absurd habs (List.not_mem_nil _)
+                  -- RHS is .val (.bool true), exprVars = [], so hw_hd is False
+                  exact absurd hw_hd (List.not_mem_nil _)
                 · left; exact List.mem_append_left _ hw_hd
             · rcases ih _ w hw_tl with h_rest | h_dst_rest
               · left; exact List.mem_append_right _ h_rest
