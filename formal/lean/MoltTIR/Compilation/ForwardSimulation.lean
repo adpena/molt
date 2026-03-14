@@ -417,24 +417,23 @@ def midendSimulation : MidendSimulation where
 theorem fullPipelineFunc_behavioral_equiv (f : MoltTIR.Func) :
     BehavioralEquivalence (fullPipelineFunc f) f := by
   -- fullPipelineFunc = joinCanon . guardHoist . cse . dce . sccp . constFold
-  -- We compose the behavioral equivalences of each sub-pipeline.
   unfold fullPipelineFunc
-  -- First: cse . dce . sccp . constFold preserves behavior
-  -- (this is fullPipeline_behavioral_equiv from Compose.lean)
+  -- Step 1: cse . dce . sccp . constFold preserves behavior
   have h_inner : BehavioralEquivalence
       (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) f :=
     fullPipeline_behavioral_equiv f (by sorry) -- InstrTotal from frontend
-  -- Second: guardHoist preserves behavior
-  -- Third: joinCanon preserves behavior
-  -- These require FuncSimulation instances for guardHoist and joinCanon.
-  -- Currently, these passes don't have FuncSimulation instances because
-  -- they require auxiliary state (loop info, join point analysis).
-  -- We mark this composition as sorry until those instances are available.
-  sorry
-  -- TODO(formal, owner:compiler, milestone:M4, priority:P1, status:partial):
-  -- Close once guardHoistSim and joinCanonSim are defined.
-  -- The expression-level correctness of both passes is already proven.
-  -- The gap is lifting to function level, same pattern as DCE/SCCP/CSE.
+  -- Step 2: guardHoist preserves behavior (via FuncSimulation)
+  have h_gh : BehavioralEquivalence
+      (guardHoistFunc (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))))
+      (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) :=
+    guardHoistSim.toBehavioralEquiv (cseFunc (dceFunc (sccpFunc (constFoldFunc f))))
+  -- Step 3: joinCanon preserves behavior (fully proven, no sorry)
+  have h_jc : BehavioralEquivalence
+      (joinCanonFunc (guardHoistFunc (cseFunc (dceFunc (sccpFunc (constFoldFunc f))))))
+      (guardHoistFunc (cseFunc (dceFunc (sccpFunc (constFoldFunc f))))) :=
+    joinCanonSim.toBehavioralEquiv (guardHoistFunc (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))))
+  -- Chain via transitivity
+  exact h_jc.trans (h_gh.trans h_inner)
 
 /-- The full pipeline produces observably equivalent functions.
     TODO(formal, owner:compiler, milestone:M4, priority:P1, status:partial):
@@ -479,13 +478,14 @@ theorem three_phase_expr_correct_rust ... := sorry
 - `PhaseSimulation.compose` -- general phase composition (1 sorry)
   Gap: receptiveness condition for intermediate state.
   Mitigation: bypassed by DeterministicPassSimulation.compose for Molt.
-- `fullPipelineFunc_behavioral_equiv` -- function-level full pipeline (1 sorry)
-  Gap: guardHoist and joinCanon lack FuncSimulation instances.
-  These passes have expression-level correctness already.
+- `fullPipelineFunc_behavioral_equiv` -- inherits 2 sorrys:
+  (1) InstrTotal precondition from frontend
+  (2) guardHoistSim.simulation (SSA+dominance reasoning needed)
+  joinCanon is now fully proven via buildJoinMap identity mapping.
 
 ### Sorry Inherited from Dependencies
 - Phase 1 (lowering): 2 sorry in binOp/unaryOp inductive cases
-- Phase 2 (midend): 3 sorry in SCCP/DCE/CSE FuncSimulation instances
+- Phase 2 (midend): 2 sorry in CSE/GuardHoist FuncSimulation instances
 - Phase 3 (backend): sorry in emitExpr_correct abs/bin/un cases
 -/
 
