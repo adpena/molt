@@ -268,4 +268,105 @@ theorem FuncSimulation.toBehavioralEquiv {g : Func → Func}
     · exact sim.simulation f fuel Env.empty f.entry
     · rfl
 
+-- ══════════════════════════════════════════════════════════════════
+-- Section 11: Well-typed IR — precondition for DCE-class simulations
+-- ══════════════════════════════════════════════════════════════════
+
+/-- A function has total instruction evaluation: every instruction's RHS
+    evaluates successfully under any environment. This is the CompCert/LLVM
+    "well-formed IR" assumption — the frontend guarantees it before midend
+    passes run.
+
+    Security: creates a proof obligation at the compiler boundary. If
+    malformed IR gets past the frontend, the formal model detects it as
+    a precondition violation rather than silently miscompiling.
+
+    Performance: enables aggressive optimizations. DCE can safely remove
+    any instruction knowing its removal won't change stuck/non-stuck behavior. -/
+def InstrTotal (f : Func) : Prop :=
+  ∀ (lbl : Label) (blk : Block) (ρ : Env),
+    f.blocks lbl = some blk →
+    (execInstrs ρ blk.instrs).isSome
+
+/-- InstrTotal implies execInstrs never fails. -/
+theorem InstrTotal.execInstrs_some {f : Func} (ht : InstrTotal f)
+    {lbl : Label} {blk : Block} {ρ : Env}
+    (hblk : f.blocks lbl = some blk) :
+    ∃ ρ', execInstrs ρ blk.instrs = some ρ' := by
+  have h := ht lbl blk ρ hblk
+  exact Option.isSome_iff_exists.mp h
+
+/-- FuncSimulation under well-typedness: the transform preserves execFunc
+    for well-typed functions. This is strictly weaker than FuncSimulation
+    (which requires preservation for ALL functions) but sufficient for
+    DCE-class passes that change stuck behavior.
+
+    The key insight: DCE removes dead instructions that may contain type
+    errors. In well-typed IR, no instruction has type errors, so removal
+    is always safe. -/
+structure FuncSimulationWT (g : Func → Func) where
+  /-- The simulation holds for well-typed functions. -/
+  simulation : ∀ (f : Func), InstrTotal f →
+    ∀ (fuel : Nat) (ρ : Env) (lbl : Label),
+      execFunc (g f) fuel ρ lbl = execFunc f fuel ρ lbl
+  /-- The transform preserves the entry label. -/
+  entry_preserved : ∀ (f : Func), (g f).entry = f.entry
+  /-- The transform preserves entry block existence and params. -/
+  entry_block_some : ∀ (f : Func) (blk : Block),
+    f.blocks f.entry = some blk →
+    ∃ blk', (g f).blocks f.entry = some blk' ∧ blk'.params = blk.params
+  /-- The transform preserves entry block absence. -/
+  entry_block_none : ∀ (f : Func),
+    f.blocks f.entry = none → (g f).blocks f.entry = none
+  /-- The transform preserves well-typedness. -/
+  preserves_total : ∀ (f : Func), InstrTotal f → InstrTotal (g f)
+
+/-- FuncSimulation implies FuncSimulationWT (stronger implies weaker). -/
+def FuncSimulation.toWT {g : Func → Func} (sim : FuncSimulation g)
+    (hpres : ∀ f, InstrTotal f → InstrTotal (g f)) :
+    FuncSimulationWT g where
+  simulation := fun f _ => sim.simulation f
+  entry_preserved := sim.entry_preserved
+  entry_block_some := sim.entry_block_some
+  entry_block_none := sim.entry_block_none
+  preserves_total := hpres
+
+/-- FuncSimulationWT implies behavioral equivalence for well-typed functions. -/
+theorem FuncSimulationWT.toBehavioralEquiv {g : Func → Func}
+    (sim : FuncSimulationWT g) (f : Func) (ht : InstrTotal f) :
+    BehavioralEquivalence (g f) f := by
+  intro fuel
+  simp only [runFunc]
+  rw [sim.entry_preserved f]
+  match hblk : f.blocks f.entry with
+  | none =>
+    simp [sim.entry_block_none f hblk]
+  | some blk =>
+    obtain ⟨blk', hblk', hparams⟩ := sim.entry_block_some f blk hblk
+    simp only [hblk', hparams]
+    split
+    · exact sim.simulation f ht fuel Env.empty f.entry
+    · rfl
+
+/-- Compose a FuncSimulation with a FuncSimulationWT. The first pass
+    doesn't need well-typedness; the second does. -/
+def composeFuncSimWT
+    {g1 g2 : Func → Func}
+    (sim1 : FuncSimulation g1)
+    (sim2 : FuncSimulationWT g2)
+    (hpres1 : ∀ f, InstrTotal f → InstrTotal (g1 f)) :
+    FuncSimulationWT (g2 ∘ g1) where
+  simulation := fun f ht fuel ρ lbl => by
+    show execFunc (g2 (g1 f)) fuel ρ lbl = execFunc f fuel ρ lbl
+    rw [sim2.simulation (g1 f) (hpres1 f ht) fuel ρ lbl, sim1.simulation f fuel ρ lbl]
+  entry_preserved := fun f => by
+    show (g2 (g1 f)).entry = f.entry
+    rw [sim2.entry_preserved (g1 f), sim1.entry_preserved f]
+  entry_block_some := fun f blk h => by
+    -- Same pattern as composeFuncSimulations.entry_block_some
+    sorry
+  entry_block_none := fun f h => by
+    sorry
+  preserves_total := fun f ht => sim2.preserves_total (g1 f) (hpres1 f ht)
+
 end MoltTIR
