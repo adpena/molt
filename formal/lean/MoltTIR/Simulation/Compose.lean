@@ -148,7 +148,15 @@ theorem fullPipeline_behavioral_equiv (f : Func) :
     apply behavioral_equiv_compose
       (g1 := dceFunc)
       (g2 := cseFunc)
-    · exact dceSim.toBehavioralEquiv
+    · -- DCE now uses FuncSimulationWT; need InstrTotal precondition.
+      -- In the full pipeline, the frontend guarantees InstrTotal, but here
+      -- we don't have it universally. Sorry until pipeline threading is done.
+      intro f''
+      sorry
+      -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
+      -- Thread InstrTotal through the pipeline: constFold and SCCP preserve
+      -- InstrTotal, so after constFold ∘ SCCP, InstrTotal still holds.
+      -- Then dceSim.toBehavioralEquiv (g1 f'') (ht_preserved f'') closes this.
     · exact cseSim.toBehavioralEquiv
 
 -- ══════════════════════════════════════════════════════════════════
