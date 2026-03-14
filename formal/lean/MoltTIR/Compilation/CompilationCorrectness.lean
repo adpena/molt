@@ -264,27 +264,20 @@ theorem compilation_preserves_semantics (prog : MoltProgram)
     The proof is the composition of per-pass DeterministicPassSimulations
     for constFold, SCCP, DCE, and CSE, extended with guardHoist and
     joinCanon. -/
-theorem forward_simulation (f : MoltTIR.Func) (fuel : Nat) (ρ : MoltTIR.Env)
-    (lbl : MoltTIR.Label) :
+theorem forward_simulation (f : MoltTIR.Func) (ht : InstrTotal f)
+    (fuel : Nat) (ρ : MoltTIR.Env) (lbl : MoltTIR.Label) :
     execFunc (compileFunc f) fuel ρ lbl = execFunc f fuel ρ lbl := by
-  -- compileFunc = fullPipelineFunc
-  -- = joinCanonFunc . guardHoistFunc . cseFunc . dceFunc . sccpFunc . constFoldFunc
   unfold compileFunc fullPipelineFunc
-  -- We need to show each pass preserves execFunc.
-  -- constFoldFunc is proven (constFoldFunc_correct).
-  -- The others have sorry stubs at the FuncSimulation level.
-  -- We chain them via transitivity.
-  have h_cf : execFunc (constFoldFunc f) fuel ρ lbl = execFunc f fuel ρ lbl :=
-    constFoldFunc_correct f fuel ρ lbl
-  -- For the remaining passes, we need their FuncSimulation instances.
-  -- Currently, sccpSim, dceSim, cseSim have sorry stubs.
-  -- guardHoistFunc and joinCanonFunc don't have FuncSimulation instances yet.
-  sorry
-  -- TODO(formal, owner:compiler, milestone:M4, priority:P1, status:partial):
-  -- Close this sorry by chaining:
-  --   constFoldFunc_correct (proven)
-  --   sccpSim.simulation (sorry -- SCCPCorrect lift)
-  --   dceSim.simulation (sorry -- DCECorrect lift)
+  -- Chain all 6 passes via transitivity
+  have h_cf := constFoldFunc_correct f fuel ρ lbl
+  have h_sccp := sccpSim.simulation (constFoldFunc f) fuel ρ lbl
+  have ht_cf := constFold_preserves_total f ht
+  have ht_sccp := sccp_preserves_total (constFoldFunc f) ht_cf
+  have h_dce := dceSim.simulation (sccpFunc (constFoldFunc f)) ht_sccp fuel ρ lbl
+  have h_cse := cseSim.simulation (dceFunc (sccpFunc (constFoldFunc f))) fuel ρ lbl
+  have h_gh := guardHoistSim.simulation (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) fuel ρ lbl
+  have h_jc := joinCanonSim.simulation (guardHoistFunc (cseFunc (dceFunc (sccpFunc (constFoldFunc f))))) fuel ρ lbl
+  rw [h_jc, h_gh, h_cse, h_dce, h_sccp, h_cf]
   --   cseSim.simulation (sorry -- CSECorrect lift)
   --   guardHoistSim.simulation (not yet defined)
   --   joinCanonSim.simulation (not yet defined)
@@ -465,13 +458,10 @@ theorem bidirectional_refinement (f : MoltTIR.Func) :
 
     This is the analog of CakeML's top-level theorem:
       semantics_prog (compile prog) = semantics_prog prog -/
-theorem compilation_contextual_equiv (f : MoltTIR.Func) :
+theorem compilation_contextual_equiv (f : MoltTIR.Func) (ht : InstrTotal f) :
     ContextualEquivalence (compileFunc f) f := by
-  -- compileFunc = fullPipelineFunc
-  -- = joinCanon . guardHoist . cse . dce . sccp . constFold
-  -- We need forward_simulation, which shows execFunc agreement.
   intro fuel ρ lbl
-  exact forward_simulation f fuel ρ lbl
+  exact forward_simulation f ht fuel ρ lbl
 
 -- ======================================================================
 -- Section 12: Proof Architecture Summary
