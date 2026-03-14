@@ -189,21 +189,80 @@ private theorem evalTerminator_agreeOn (f : Func) (ρ₁ ρ₂ : Env) (t : Termi
     | some .none => rfl
     | none => rfl
 
+/-- Helper: if the full instruction list evaluates from ρ₂, then the DCE-filtered
+    list evaluates from ρ₁ whenever ρ₁ agrees with ρ₂ on the used vars.
+    This is the "forward totality" companion to dce_instrs_agreeOn. -/
+private theorem execInstrs_dce_of_total
+    (used : List Var) (instrs : List Instr)
+    (hdead : ∀ i ∈ instrs, ¬isLive used i → i.dst ∉ used)
+    (hrhs : ∀ i ∈ instrs, ∀ x ∈ exprVars i.rhs, x ∈ used)
+    (ρ₁ ρ₂ : Env) (hagree : EnvAgreeOn used ρ₁ ρ₂)
+    (htotal : (execInstrs ρ₂ instrs).isSome) :
+    (execInstrs ρ₁ (dceInstrs used instrs)).isSome := by
+  induction instrs generalizing ρ₁ ρ₂ with
+  | nil => simp [dceInstrs, List.filter, execInstrs]
+  | cons i rest ih =>
+    -- From htotal, decompose execInstrs ρ₂ (i :: rest)
+    simp only [execInstrs] at htotal
+    -- evalExpr ρ₂ i.rhs must succeed
+    match hm : evalExpr ρ₂ i.rhs with
+    | none => simp [hm] at htotal
+    | some val =>
+      simp [hm] at htotal
+      -- evalExpr agrees on used vars
+      have hrhs_i : ∀ x ∈ exprVars i.rhs, x ∈ used :=
+        hrhs i (List.mem_cons_self _ _)
+      have hagree_rhs : EnvAgreeOn (exprVars i.rhs) ρ₁ ρ₂ :=
+        fun x hx => hagree x (hrhs_i x hx)
+      have hm1 : evalExpr ρ₁ i.rhs = some val := by
+        rw [evalExpr_agreeOn ρ₁ ρ₂ i.rhs hagree_rhs, hm]
+      -- Hypotheses for rest
+      have hdead_rest : ∀ j ∈ rest, ¬isLive used j → j.dst ∉ used :=
+        fun j hj => hdead j (List.mem_cons_of_mem _ hj)
+      have hrhs_rest : ∀ j ∈ rest, ∀ x ∈ exprVars j.rhs, x ∈ used :=
+        fun j hj => hrhs j (List.mem_cons_of_mem _ hj)
+      -- Case split on whether i is live
+      simp only [dceInstrs, List.filter]
+      by_cases hlive : isLive used i
+      · -- Live: keep i in filtered list
+        simp [hlive, execInstrs, hm1]
+        have hagree' : EnvAgreeOn used (ρ₁.set i.dst val) (ρ₂.set i.dst val) :=
+          envAgreeOn_set_both used ρ₁ ρ₂ i.dst val hagree
+        exact ih hdead_rest hrhs_rest (ρ₁.set i.dst val) (ρ₂.set i.dst val) hagree' htotal
+      · -- Dead: skip i in filtered list
+        simp [hlive]
+        have hdst_unused : i.dst ∉ used := hdead i (List.mem_cons_self _ _) hlive
+        have hagree' : EnvAgreeOn used ρ₁ (ρ₂.set i.dst val) :=
+          envAgreeOn_set_right_irrelevant used ρ₁ ρ₂ i.dst val hagree hdst_unused
+        exact ih hdead_rest hrhs_rest ρ₁ (ρ₂.set i.dst val) hagree' htotal
+
 /-- DCE preserves InstrTotal: if all instructions evaluate in the original,
     a filtered subset also evaluates (fewer instructions, same env flow). -/
 theorem dce_preserves_total (f : Func) (ht : InstrTotal f) : InstrTotal (dceFunc f) := by
   intro lbl blk' ρ hblk'
-  -- blk' = dceBlock blk for some original block blk
+  -- Extract original block: blk' = dceBlock blk for some blk with f.blocks lbl = some blk
   simp only [dceFunc, Func.blocks] at hblk'
-  -- We need to show execInstrs ρ (dceBlock blk).instrs evaluates.
-  -- dceBlock removes some instructions. If the original is total, the subset is too.
-  -- This requires showing that filtering preserves totality.
-  sorry
-  -- TODO(formal, owner:compiler, milestone:M3, priority:P1, status:partial):
-  -- Prove by showing that execInstrs on a filtered subset of a total instruction
-  -- list also succeeds. The key: each kept instruction's RHS vars are defined
-  -- (they were defined in the original), and removing dead instructions only
-  -- removes bindings that aren't referenced.
+  -- Re-derive blocks_map_some_rev inline
+  have hrev : ∃ blk, f.blocks lbl = some blk ∧ blk' = dceBlock blk := by
+    simp only [Func.blocks]
+    generalize f.blockList = xs at hblk' ⊢
+    induction xs with
+    | nil => simp_all [List.find?]
+    | cons p rest ih =>
+      obtain ⟨l, b⟩ := p
+      simp only [List.map, List.find?] at *
+      cases hlbl : (l == lbl) <;> simp_all
+  obtain ⟨blk, hblk, rfl⟩ := hrev
+  -- InstrTotal gives us that the original block evaluates from any env
+  have htotal := ht lbl blk ρ hblk
+  -- dceBlock blk has instrs = dceInstrs (usedVarsSuffix blk.instrs blk.term) blk.instrs
+  simp only [dceBlock]
+  -- Apply the helper with ρ₁ = ρ₂ = ρ and reflexive agreement
+  exact execInstrs_dce_of_total
+    (usedVarsSuffix blk.instrs blk.term) blk.instrs
+    (dce_instrs_agreeOn_precond_dead blk.instrs blk.term)
+    (dce_instrs_agreeOn_precond_rhs blk.instrs blk.term)
+    ρ ρ (envAgreeOn_refl _ ρ) htotal
 
 /-- DCE preserves function execution for well-typed (InstrTotal) functions.
     Proof by fuel induction:

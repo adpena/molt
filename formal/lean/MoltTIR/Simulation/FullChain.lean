@@ -277,9 +277,9 @@ theorem full_pipeline_cross_target_agreement :
 /-- The midend pipeline satisfies adequacy: the simulation-based proof
     implies that the optimized program is contextually equivalent to
     the source (at the execFunc level). -/
-theorem full_pipeline_adequate (f : Func) :
+theorem full_pipeline_adequate (f : Func) (ht : InstrTotal f) :
     ContextualEquivalence (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) f :=
-  fullPipeline_contextual_equiv f
+  fullPipeline_contextual_equiv f ht
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 9: Proof status summary
