@@ -214,14 +214,10 @@ private theorem u64_three_or_and_distrib (a b c d : UInt64) :
     in the AND is false. -/
 private theorem u32_to_u64_le_ptr_mask (addr : UInt32) :
     addr.toUInt64 &&& TAG_CHECK = 0 := by
-  -- Strategy: work at the Nat level. TAG_CHECK = 0x7fff000000000000 = k * 2^48
-  -- where k = 0x7fff. addr.toUInt64.toNat < 2^32 < 2^48.
-  -- Nat.and of a number < 2^48 with a multiple of 2^48 is 0.
   sorry
   -- TODO(formal, owner:runtime, milestone:M4, priority:P2, status:partial):
-  -- Proof requires: (1) TAG_CHECK.toNat = 0x7fff * 2^48 (native_decide),
-  -- (2) addr.toUInt64.toNat < 2^32 (from UInt32 bound),
-  -- (3) Nat.and n (k * 2^48) = 0 when n < 2^48.
+  -- addr.toUInt64 has only bits 0-31, TAG_CHECK has only bits 48-62.
+  -- No overlap → AND is 0. Needs BitVec zero-extension lemma.
   -- Step (3) needs a Nat.bitwise lemma not in Lean 4.16 stdlib.
 
 /-- A boxed WASM32 pointer is recognized as IsPtr. -/
