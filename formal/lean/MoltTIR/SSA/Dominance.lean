@@ -311,30 +311,206 @@ theorem immDom_unique {f : Func} {l d₁ d₂ : Label}
       exact cfgPath_implies_reachable hpref
     exact absurd (SDom.trans hd1_reach h_d1_sdom_d2 h_d2_sdom_d1) (SDom.irrefl f d₁)
 
+-- ── Path concatenation and suffix extraction ─────────────────────
+
+private theorem CFGPath.append {f : Func} {a b c : Label}
+    {p₁ p₂ : List Label}
+    (h₁ : CFGPath f a b p₁) (h₂ : CFGPath f b c p₂) :
+    ∃ p, CFGPath f a c p ∧ (∀ x, x ∈ p → x ∈ p₁ ∨ x ∈ p₂) := by
+  induction h₁ with
+  | single _ => exact ⟨p₂, h₂, fun x hx => .inr hx⟩
+  | cons l₁ l₂ _ rest hedge htail ih =>
+    obtain ⟨p', hp', hsub⟩ := ih h₂
+    cases hp' with
+    | single =>
+      refine ⟨[l₁, _], .cons _ _ _ _ hedge (.single _), fun x hx => ?_⟩
+      rcases List.mem_cons.mp hx with rfl | hx'
+      · exact .inl (List.Mem.head _)
+      · rcases List.mem_cons.mp hx' with rfl | hx''
+        · exact .inr (CFGPath.dst_mem h₂)
+        · simp at hx''
+    | cons _ _ _ _ hedge' htail' =>
+      refine ⟨l₁ :: _ :: _ :: _, .cons _ _ _ _ hedge (.cons _ _ _ _ hedge' htail'),
+        fun x hx => ?_⟩
+      rcases List.mem_cons.mp hx with rfl | hx'
+      · exact .inl (List.Mem.head _)
+      · rcases hsub x hx' with h | h
+        · exact .inl (List.Mem.tail _ h)
+        · exact .inr h
+
+private theorem CFGPath.suffix_from {f : Func} {src dst d : Label}
+    {path : List Label}
+    (hpath : CFGPath f src dst path) (hd : d ∈ path) :
+    ∃ sp, CFGPath f d dst sp ∧ (∀ x ∈ sp, x ∈ path) := by
+  induction hpath with
+  | single l => simp at hd; subst hd; exact ⟨[d], .single d, fun _ hx => hx⟩
+  | cons l₁ l₂ dst' rest hedge htail ih =>
+    rcases List.mem_cons.mp hd with rfl | hd'
+    · exact ⟨d :: l₂ :: rest, .cons d l₂ dst' rest hedge htail, fun _ hx => hx⟩
+    · obtain ⟨sp, hsp, hsub⟩ := ih hd'
+      exact ⟨sp, hsp, fun x hx => List.Mem.tail _ (hsub x hx)⟩
+
+private theorem CFGPath.suffix_shorter {f : Func} {src dst d : Label}
+    {path : List Label}
+    (hpath : CFGPath f src dst path) (hd : d ∈ path) (hne : d ≠ src) :
+    ∃ sp, CFGPath f d dst sp ∧ sp.length < path.length := by
+  induction hpath with
+  | single l => simp at hd; subst hd; exact absurd rfl hne
+  | cons l₁ l₂ dst' rest hedge htail ih =>
+    rcases List.mem_cons.mp hd with rfl | hd'
+    · exact absurd rfl hne
+    · by_cases hd_eq : d = l₂
+      · subst hd_eq; exact ⟨d :: rest, htail, by simp⟩
+      · obtain ⟨sp, hsp, hlen⟩ := ih hd' hd_eq
+        have : (l₂ :: rest).length < (l₁ :: l₂ :: rest).length := by simp
+        exact ⟨sp, hsp, Nat.lt_trans hlen this⟩
+
+private theorem dom_reachable {f : Func} {d l : Label}
+    (hreach : Reachable f f.entry l) (hdom : Dom f d l) :
+    Reachable f f.entry d := by
+  obtain ⟨p, hp⟩ := reachable_to_cfgPath hreach
+  have hd_in := hdom hreach p hp
+  obtain ⟨pref, hpref, _⟩ := CFGPath.prefix_to_member hp hd_in
+  exact cfgPath_implies_reachable hpref
+
+-- ── Dominator chain property ─────────────────────────────────────
+
+private theorem dom_chain {f : Func} {a b l : Label}
+    (hreach_l : Reachable f f.entry l)
+    (ha : Dom f a l) (hb : Dom f b l) :
+    Dom f a b ∨ Dom f b a := by
+  by_cases hab_dom : Dom f a b
+  · exact .inl hab_dom
+  · by_cases hba_dom : Dom f b a
+    · exact .inr hba_dom
+    · exfalso
+      have hab : a ≠ b := by intro heq; subst heq; exact hab_dom (Dom.refl f a)
+      have hba : b ≠ a := fun h => hab h.symm
+      have ⟨pb, hpb, ha_notin_pb⟩ : ∃ pb, CFGPath f f.entry b pb ∧ a ∉ pb :=
+        byContradiction fun h_all =>
+          hab_dom fun _ path hp =>
+            byContradiction fun ha_notin => h_all ⟨path, hp, ha_notin⟩
+      have ⟨pa, hpa, hb_notin_pa⟩ : ∃ pa, CFGPath f f.entry a pa ∧ b ∉ pa :=
+        byContradiction fun h_all =>
+          hba_dom fun _ path hp =>
+            byContradiction fun hb_notin => h_all ⟨path, hp, hb_notin⟩
+      obtain ⟨pl, hpl⟩ := reachable_to_cfgPath hreach_l
+      have hb_in_pl := hb hreach_l pl hpl
+      obtain ⟨sp₀, hsp₀, _⟩ := CFGPath.suffix_from hpl hb_in_pl
+      suffices ∀ (n : Nat) (sp : List Label),
+          CFGPath f b l sp → sp.length ≤ n → a ∉ sp by
+        have ha_notin := this sp₀.length sp₀ hsp₀ (Nat.le_refl _)
+        obtain ⟨comb, hcomb, hcomb_sub⟩ := CFGPath.append hpb hsp₀
+        have ha_in := ha hreach_l comb hcomb
+        rcases hcomb_sub a ha_in with h1 | h2
+        · exact ha_notin_pb h1
+        · exact ha_notin h2
+      intro n
+      induction n with
+      | zero => intro sp hsp hlen _; have := CFGPath.length_pos hsp; omega
+      | succ k ih =>
+        intro sp hsp hlen ha_in
+        obtain ⟨sal, hsal, hsal_len⟩ := CFGPath.suffix_shorter hsp ha_in hab
+        obtain ⟨c1, hc1, hc1_sub⟩ := CFGPath.append hpa hsal
+        have hb_in := hb hreach_l c1 hc1
+        rcases hc1_sub b hb_in with hb_pa | hb_sal
+        · exact hb_notin_pa hb_pa
+        · obtain ⟨sbl, hsbl, hsbl_len⟩ := CFGPath.suffix_shorter hsal hb_sal hba
+          have ha_notin_sbl := ih sbl hsbl (by omega)
+          obtain ⟨c2, hc2, hc2_sub⟩ := CFGPath.append hpb hsbl
+          have ha_in2 := ha hreach_l c2 hc2
+          rcases hc2_sub a ha_in2 with h1 | h2
+          · exact ha_notin_pb h1
+          · exact ha_notin_sbl h2
+
+-- ── Finding the immediate dominator via finite scan ──────────────
+
+private theorem find_idom (f : Func) (l : Label)
+    (hreach : Reachable f f.entry l)
+    (hS : List Label)
+    (hS_complete : ∀ m, Reachable f f.entry m → m ∈ hS) :
+    ∀ (d : Label), SDom f d l →
+      (∀ d', SDom f d' l → d' ∈ hS → d' = d ∨ SDom f d' d) →
+      ∃ d', ImmDom f d' l := by
+  intro d hd hd_best
+  refine ⟨d, hd, fun d' hd' hne => ?_⟩
+  have hd'_reach := dom_reachable hreach hd'.1
+  have hd'_in := hS_complete d' hd'_reach
+  rcases hd_best d' hd' hd'_in with heq | hsdom
+  · exact absurd heq hne
+  · exact hsdom
+
+private theorem scan_candidates (f : Func) (l : Label)
+    (hreach : Reachable f f.entry l)
+    (hS_full : List Label)
+    (hS_complete : ∀ m, Reachable f f.entry m → m ∈ hS_full) :
+    ∀ (candidates : List Label) (d : Label),
+      SDom f d l →
+      (∀ d', SDom f d' l → d' ∈ hS_full → d' ∉ candidates → d' = d ∨ SDom f d' d) →
+      ∃ d', ImmDom f d' l := by
+  intro candidates
+  induction candidates with
+  | nil =>
+    intro d hd hbest
+    exact find_idom f l hreach hS_full hS_complete d hd
+      (fun d' hd' hd'_in => hbest d' hd' hd'_in (List.not_mem_nil _))
+  | cons c rest ih =>
+    intro d hd hbest
+    by_cases hc_sdom : SDom f c l
+    · rcases dom_chain hreach hd.1 hc_sdom.1 with hd_dom_c | hc_dom_d
+      · by_cases hdc : d = c
+        · subst hdc
+          exact ih d hd (fun d' hd' hd'_in hd'_notin_rest => by
+            by_cases hd'd : d' = d
+            · exact .inl hd'd
+            · exact hbest d' hd' hd'_in (fun hmem =>
+                (List.mem_cons.mp hmem).elim (fun h => hd'd h) (fun h => hd'_notin_rest h)))
+        · have hd_sdom_c : SDom f d c := ⟨hd_dom_c, hdc⟩
+          have hc_reach := dom_reachable hreach hc_sdom.1
+          exact ih c hc_sdom (fun d' hd' hd'_in hd'_notin_rest => by
+            by_cases hd'c : d' = c
+            · exact .inl hd'c
+            · have hd'_notin_cands : d' ∉ c :: rest :=
+                fun hmem => (List.mem_cons.mp hmem).elim (fun h => hd'c h) (fun h => hd'_notin_rest h)
+              rcases hbest d' hd' hd'_in hd'_notin_cands with heq | hsdom
+              · exact .inr (heq ▸ hd_sdom_c)
+              · exact .inr (SDom.trans hc_reach hsdom hd_sdom_c))
+      · by_cases hcd : c = d
+        · exact ih d hd (fun d' hd' hd'_in hd'_notin_rest => by
+            by_cases hd'c : d' = c
+            · subst hd'c; exact .inl hcd
+            · exact hbest d' hd' hd'_in (fun hmem =>
+                (List.mem_cons.mp hmem).elim (fun h => hd'c h) (fun h => hd'_notin_rest h)))
+        · have hc_sdom_d : SDom f c d := ⟨hc_dom_d, hcd⟩
+          exact ih d hd (fun d' hd' hd'_in hd'_notin_rest => by
+            by_cases hd'c : d' = c
+            · exact .inr (hd'c ▸ hc_sdom_d)
+            · exact hbest d' hd' hd'_in (fun hmem =>
+                (List.mem_cons.mp hmem).elim (fun h => hd'c h) (fun h => hd'_notin_rest h)))
+    · exact ih d hd (fun d' hd' hd'_in hd'_notin_rest => by
+        by_cases hd'c : d' = c
+        · exact absurd (hd'c ▸ hd') hc_sdom
+        · exact hbest d' hd' hd'_in (fun hmem =>
+            (List.mem_cons.mp hmem).elim (fun h => hd'c h) (fun h => hd'_notin_rest h)))
+
 /-- The dominance relation forms a tree rooted at the entry block:
     every non-entry reachable block has an immediate dominator.
 
-    This requires finiteness of the reachable set; we parameterize
-    by a finite-reachable-set assumption.
-
-    Proof sketch: The set of strict dominators of l is nonempty (entry
-    strictly dominates every non-entry reachable block) and finite
-    (each strict dominator is reachable, hence in S). Dominators of a
-    reachable node form a total order under domination (the chain
-    property, Prosser 1959). The maximum element of this finite chain
-    (closest strict dominator to l) is the immediate dominator.
-
-    The chain property (dominators are totally ordered) is the key
-    lemma needed here. Its formalization requires path concatenation
-    and index-based reasoning on paths, which is factored as a
-    separate proof obligation.
-    TODO(formal, owner:runtime, milestone:LF3, priority:P2, status:partial):
-    close domTree_is_tree by proving the dominator chain property. -/
+    Proof: the entry strictly dominates l (nonempty set of strict
+    dominators). By the chain property, dominators of l are totally
+    ordered. We scan the finite list S of reachable nodes, maintaining
+    the "deepest" strict dominator seen so far. After processing all
+    of S, the current candidate is dominated by all strict dominators
+    of l, making it the immediate dominator. -/
 theorem domTree_is_tree (f : Func) (l : Label)
     (hreach : Reachable f f.entry l) (hne : l ≠ f.entry)
     (hfinite : ∃ (S : List Label), ∀ m, Reachable f f.entry m → m ∈ S) :
     ∃ d, ImmDom f d l := by
-  sorry
+  obtain ⟨S, hS⟩ := hfinite
+  have h_entry_sdom : SDom f f.entry l :=
+    ⟨entry_dom_all f l hreach, fun h => hne h.symm⟩
+  exact scan_candidates f l hreach S hS S f.entry h_entry_sdom
+    (fun d' hd' _ hnotin => (hnotin (hS d' (dom_reachable hreach hd'.1))).elim)
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 8: Compatibility with CFG.Dominates
