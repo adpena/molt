@@ -115,6 +115,17 @@ def evalLuauBinOp (op : LuauBinOp) (a b : LuauValue) : Option LuauValue :=
   | .sub,  .number x, .number y => some (.number (x - y))
   | .mul,  .number x, .number y => some (.number (x * y))
   | .mod,  .number x, .number y => if y == 0 then none else some (.number (x % y))
+  | .idiv, .number x, .number y => if y == 0 then none else some (.number (x / y))
+  | .pow,  .number x, .number y =>
+      if y < 0 then none
+      else some (.number (x ^ y.toNat))
+  | .add,  .str x, .str y => some (.str (x ++ y))
+  | .mul,  .str s, .number n =>
+      if n ≤ 0 then some (.str "")
+      else some (.str (String.join (List.replicate n.toNat s)))
+  | .mul,  .number n, .str s =>
+      if n ≤ 0 then some (.str "")
+      else some (.str (String.join (List.replicate n.toNat s)))
   -- comparison (number × number → boolean)
   | .eq,   .number x, .number y => some (.boolean (x == y))
   | .ne,   .number x, .number y => some (.boolean (x != y))
