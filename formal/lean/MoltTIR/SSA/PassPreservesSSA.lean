@@ -828,6 +828,94 @@ theorem joinCanonBlock_defs (jmap : JoinMap) (b : Block) :
     blockAllDefs (joinCanonBlock jmap b) = blockAllDefs b := by
   simp only [blockAllDefs, joinCanonBlock_instrs, joinCanonBlock_params]
 
+/-- buildJoinMap stores only (sig, sig.target) entries. -/
+private theorem buildJoinMap_entries (f : Func) :
+    ∀ s l, (s, l) ∈ buildJoinMap f → l = s.target := by
+  -- buildJoinMap is a foldl that only ever inserts (sig, sig.target).
+  -- We prove this by showing the foldl invariant: the accumulator only
+  -- contains (s, s.target) entries.
+  unfold buildJoinMap
+  suffices hinv : ∀ (bl : List (Label × Block)) (acc : JoinMap),
+    (∀ s l, (s, l) ∈ acc → l = s.target) →
+    ∀ s l, (s, l) ∈ bl.foldl (fun jmap p =>
+      match p.2.term with
+      | .jmp target args =>
+          let sig := { target := target, args := args : JoinSig }
+          match joinLookup jmap sig with
+          | some _ => jmap
+          | none => (sig, target) :: jmap
+      | _ => jmap) acc → l = s.target from
+    hinv f.blockList [] (fun _ _ h => absurd h (List.not_mem_nil _))
+  intro bl
+  induction bl with
+  | nil => intro acc hacc; simpa
+  | cons p rest ih =>
+    intro acc hacc
+    simp only [List.foldl]
+    apply ih
+    -- Show the invariant is maintained for one step
+    cases hterm : p.2.term with
+    | ret _ => simp only [hterm]; exact hacc
+    | jmp target args =>
+      simp only [hterm]
+      cases hjl : joinLookup acc { target := target, args := args : JoinSig } with
+      | some _ => exact hacc
+      | none =>
+        intro s l hmem
+        rcases List.mem_cons.mp hmem with heq | hmem'
+        · have ⟨hs, hl⟩ := Prod.mk.inj heq
+          rw [hl, hs]
+        · exact hacc s l hmem'
+    | br _ _ _ _ _ => simp only [hterm]; exact hacc
+
+/-- joinLookup that returns some l means l was stored in the map at a matching key. -/
+private theorem joinLookup_some_eq {jmap : JoinMap} {sig : JoinSig} {l : Label}
+    (hmap : ∀ s l, (s, l) ∈ jmap → l = s.target)
+    (hl : joinLookup jmap sig = some l) : l = sig.target := by
+  induction jmap with
+  | nil => simp [joinLookup] at hl
+  | cons p rest ih =>
+    obtain ⟨s', l'⟩ := p
+    simp only [joinLookup] at hl
+    split at hl
+    · rename_i heq
+      have hlbl := Option.some.inj hl
+      have hmem := hmap s' l' (List.mem_cons_self _ _)
+      have hsig := beq_iff_eq.mp heq
+      rw [← hlbl, hmem, hsig]
+    · exact ih (fun s l hm => hmap s l (List.mem_cons_of_mem _ hm)) hl
+
+/-- canonicalizeJump with a well-formed map preserves the target label. -/
+private theorem canonicalizeJump_target {jmap : JoinMap}
+    (hmap : ∀ s l, (s, l) ∈ jmap → l = s.target)
+    (target : Label) (args : List Expr) :
+    (canonicalizeJump jmap target args).1 = target := by
+  simp only [canonicalizeJump]
+  cases hl : joinLookup jmap { target := target, args := args } with
+  | none => rfl
+  | some canonical => exact joinLookup_some_eq hmap hl
+
+/-- joinCanonTerminator with buildJoinMap preserves termSuccessors.
+    Key insight: buildJoinMap stores (sig, sig.target), so canonicalizeJump
+    always returns the original target label. -/
+private theorem joinCanonTerminator_successors_eq (f : Func) (t : Terminator) :
+    termSuccessors (joinCanonTerminator (buildJoinMap f) t) = termSuccessors t := by
+  have hmap := buildJoinMap_entries f
+  cases t with
+  | ret _ => simp [joinCanonTerminator, termSuccessors]
+  | jmp target args =>
+    simp only [joinCanonTerminator, canonicalizeJump, termSuccessors]
+    cases hl : joinLookup (buildJoinMap f) { target := target, args := args } with
+    | none => rfl
+    | some canonical =>
+      simp only [termSuccessors]
+      exact congrArg (· :: []) (joinLookup_some_eq hmap hl)
+  | br cond tl ta el ea =>
+    simp only [joinCanonTerminator, termSuccessors]
+    have htl := canonicalizeJump_target hmap tl ta
+    have hel := canonicalizeJump_target hmap el ea
+    rw [htl, hel]
+
 /-- Join canonicalization preserves SSA. -/
 theorem joinCanon_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     SSAWellFormed (joinCanonFunc f) := by
@@ -838,8 +926,45 @@ theorem joinCanon_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     unfold joinCanonFunc
     exact unique_defs_of_mapFunc f (joinCanonBlock (buildJoinMap f))
       (joinCanonBlock_defs (buildJoinMap f)) h.unique_defs
-  · sorry  -- Definitions at same blocks; dominance may change for redirected
-    -- edges, but the canonical target has the same params as the original
+  · -- use_dom_def: joinCanon preserves both blockAllDefs and termSuccessors
+    -- (canonicalizeJump returns the original target because buildJoinMap
+    -- stores (sig, sig.target)). Uses transfer because joinCanonTerminator
+    -- only changes labels, not expressions. Apply generic mapFunc machinery.
+    show ∀ v b_use b_def, UsedIn (joinCanonFunc f) v b_use →
+      DefinedIn (joinCanonFunc f) v b_def → Dom (joinCanonFunc f) b_def b_use
+    unfold joinCanonFunc
+    have hterm : ∀ b, termSuccessors (joinCanonBlock (buildJoinMap f) b).term =
+        termSuccessors b.term := by
+      intro b; simp only [joinCanonBlock]
+      exact joinCanonTerminator_successors_eq f b.term
+    -- blockAllUses in new → blockAllUses in old (instructions same, termVars same)
+    have huses : ∀ v lbl,
+        UsedIn { f with blockList := f.blockList.map fun (l, b) =>
+          (l, joinCanonBlock (buildJoinMap f) b) } v lbl →
+        UsedIn f v lbl := by
+      intro v lbl ⟨blk', hblk', hv⟩
+      obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_rev f
+        (joinCanonBlock (buildJoinMap f)) lbl blk' hblk'
+      refine ⟨blk, hblk, ?_⟩
+      simp only [blockAllUses, joinCanonBlock] at hv ⊢
+      rcases List.mem_append.mp hv with hi | ht
+      · exact List.mem_append_left _ hi
+      · apply List.mem_append_right
+        -- joinCanonTerminator only changes labels, termVars preserved
+        revert ht
+        cases blk.term with
+        | ret _ => simp [joinCanonTerminator, termVars]
+        | jmp target args =>
+          simp only [joinCanonTerminator, canonicalizeJump, termVars]
+          cases joinLookup (buildJoinMap f) { target := target, args := args } <;>
+          exact id
+        | br cond tl ta el ea =>
+          simp only [joinCanonTerminator, canonicalizeJump, termVars]
+          cases joinLookup (buildJoinMap f) { target := tl, args := ta } <;>
+          cases joinLookup (buildJoinMap f) { target := el, args := ea } <;>
+          simp only [termVars] <;> exact id
+    exact use_dom_def_of_mapFunc f (joinCanonBlock (buildJoinMap f))
+      (joinCanonBlock_defs (buildJoinMap f)) hterm huses h
   · -- Entry preserved
     show ((joinCanonFunc f).blocks (joinCanonFunc f).entry).isSome
     unfold joinCanonFunc
@@ -865,6 +990,64 @@ theorem edgeThreadBlock_defs (σ : AbsEnv) (b : Block) :
     blockAllDefs (edgeThreadBlock σ b) = blockAllDefs b := by
   simp only [blockAllDefs, edgeThreadBlock_instrs, edgeThreadBlock_params]
 
+/-- edgeThreadTerminator successors are a subset of original successors.
+    br→jmp removes one branch, so the successor set shrinks or stays equal. -/
+private theorem edgeThreadTerminator_successors_subset (σ : AbsEnv) (t : Terminator) :
+    ∀ l, l ∈ termSuccessors (edgeThreadTerminator σ t) → l ∈ termSuccessors t := by
+  intro l hl
+  cases t with
+  | ret _ => simp [edgeThreadTerminator, termSuccessors] at hl
+  | jmp target args => simp [edgeThreadTerminator] at hl; exact hl
+  | br cond tl ta el ea =>
+    -- Case split on the abstract evaluation of the condition
+    simp only [edgeThreadTerminator] at hl
+    cases habsEval : absEvalExpr σ cond with
+    | unknown => simp [habsEval] at hl; exact hl
+    | overdefined => simp [habsEval] at hl; exact hl
+    | known cv =>
+      cases cv with
+      | bool b =>
+        cases b with
+        | true =>
+          simp [habsEval, termSuccessors] at hl
+          simp [termSuccessors, hl]
+        | false =>
+          simp [habsEval, termSuccessors] at hl
+          simp [termSuccessors, hl]
+      | int n => simp [habsEval] at hl; exact hl
+      | float n => simp [habsEval] at hl; exact hl
+      | str s => simp [habsEval] at hl; exact hl
+      | none => simp [habsEval] at hl; exact hl
+
+/-- edgeThreadTerminator only removes vars: termVars subset. -/
+private theorem edgeThreadTerminator_vars_subset (σ : AbsEnv) (t : Terminator) :
+    ∀ v, v ∈ termVars (edgeThreadTerminator σ t) → v ∈ termVars t := by
+  intro v hv
+  cases t with
+  | ret _ => simp [edgeThreadTerminator] at hv; exact hv
+  | jmp _ _ => simp [edgeThreadTerminator] at hv; exact hv
+  | br cond tl ta el ea =>
+    simp only [edgeThreadTerminator] at hv
+    cases habsEval : absEvalExpr σ cond with
+    | unknown => simp [habsEval] at hv; exact hv
+    | overdefined => simp [habsEval] at hv; exact hv
+    | known cv =>
+      cases cv with
+      | bool b =>
+        cases b with
+        | true =>
+          simp [habsEval, termVars] at hv
+          simp [termVars]
+          exact Or.inr (Or.inl hv)
+        | false =>
+          simp [habsEval, termVars] at hv
+          simp [termVars]
+          exact Or.inr (Or.inr hv)
+      | int n => simp [habsEval] at hv; exact hv
+      | float n => simp [habsEval] at hv; exact hv
+      | str s => simp [habsEval] at hv; exact hv
+      | none => simp [habsEval] at hv; exact hv
+
 /-- Edge threading preserves SSA: only terminators change.
     Edge threading only removes edges (br->jmp removes one successor).
     Removing edges cannot break dominance of existing def-use pairs:
@@ -883,7 +1066,54 @@ theorem edgeThread_preserves_ssa (f : Func) (st : SCCPState) (h : SSAWellFormed 
     exact h.unique_defs v lbl₁ lbl₂
       (definedIn_mapGen_imp f (fun l b => edgeThreadBlock (st.blockStates l).inEnv b) hdefs v lbl₁ h₁)
       (definedIn_mapGen_imp f (fun l b => edgeThreadBlock (st.blockStates l).inEnv b) hdefs v lbl₂ h₂)
-  · sorry  -- Dominance preserved (edge removal only)
+  · -- use_dom_def: edge threading removes edges, which strengthens dominance.
+    -- Every IsSuccessor in the new function is also an IsSuccessor in the
+    -- original. So every CFGPath in new implies a CFGPath in the original.
+    -- Dom in original → Dom in new (fewer paths to check in new function).
+    intro v b_use b_def huse hdef
+    unfold edgeThreadFunc at huse hdef
+    have hdefs : ∀ l b, blockAllDefs (edgeThreadBlock (st.blockStates l).inEnv b) = blockAllDefs b :=
+      fun l b => edgeThreadBlock_defs _ b
+    have hdef_orig := definedIn_mapGen_imp f
+      (fun l b => edgeThreadBlock (st.blockStates l).inEnv b) hdefs v b_def hdef
+    -- UsedIn transfers: instructions unchanged, termVars subset
+    have huse_orig : UsedIn f v b_use := by
+      obtain ⟨blk', hblk', hv⟩ := huse
+      obtain ⟨blk, hblk, rfl⟩ := blocks_map_gen_some_rev f
+        (fun l b => edgeThreadBlock (st.blockStates l).inEnv b) b_use blk' hblk'
+      refine ⟨blk, hblk, ?_⟩
+      simp only [blockAllUses, edgeThreadBlock] at hv ⊢
+      rcases List.mem_append.mp hv with hi | ht
+      · exact List.mem_append_left _ hi
+      · exact List.mem_append_right _
+          (edgeThreadTerminator_vars_subset _ blk.term v ht)
+    have hdom_orig := h.use_dom_def v b_use b_def huse_orig hdef_orig
+    -- Transfer IsSuccessor: new → original (edge threading only removes edges)
+    have hsucc_back : ∀ l1 l2,
+        IsSuccessor { f with blockList := f.blockList.map fun (l, b) =>
+          (l, edgeThreadBlock (st.blockStates l).inEnv b) } l1 l2 →
+        IsSuccessor f l1 l2 := by
+      intro l1 l2 ⟨blk', hblk', hmem⟩
+      obtain ⟨blk, hblk, rfl⟩ := blocks_map_gen_some_rev f
+        (fun l b => edgeThreadBlock (st.blockStates l).inEnv b) l1 blk' hblk'
+      exact ⟨blk, hblk, edgeThreadTerminator_successors_subset _ blk.term l2
+        (by simp only [edgeThreadBlock] at hmem; exact hmem)⟩
+    -- CFGPath transfer: new → original
+    have hpath_back : ∀ src dst path,
+        CFGPath { f with blockList := f.blockList.map fun (l, b) =>
+          (l, edgeThreadBlock (st.blockStates l).inEnv b) } src dst path →
+        CFGPath f src dst path := by
+      intro src dst path hp
+      induction hp with
+      | single l => exact .single l
+      | cons l₁ l₂ d rest hedge _ ih =>
+        exact .cons l₁ l₂ d rest (hsucc_back l₁ l₂ hedge) ih
+    -- Dom transfer: original → new (fewer paths)
+    show Dom { f with blockList := f.blockList.map fun (l, b) =>
+      (l, edgeThreadBlock (st.blockStates l).inEnv b) } b_def b_use
+    intro hreach path hpath
+    exact hdom_orig (cfgPath_implies_reachable (hpath_back _ _ _ hpath))
+      path (hpath_back _ _ _ hpath)
   · -- Entry preserved
     show ((edgeThreadFunc f st).blocks (edgeThreadFunc f st).entry).isSome
     unfold edgeThreadFunc
