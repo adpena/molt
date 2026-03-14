@@ -1,26 +1,16 @@
 /-
   MoltTIR.Passes.JoinCanonCorrect — correctness proof for join canonicalization.
 
-  Main theorem: join canonicalization preserves execution semantics.
-  Since it only rewrites labels (not values or expressions), correctness
-  reduces to showing that the canonical label resolves to a block with
-  the same parameters and that argument expressions are unchanged.
-
-  Key insight: join canonicalization is a label-renaming transformation.
-  The join map maps (target, args) → canonical_label where canonical_label
-  has the same block structure as the original target. If the mapping is
-  sound (canonical and original blocks are equivalent), then the
-  terminator evaluation produces the same TermResult (modulo label names).
-
-  Proof strategy:
-  - Define join-map soundness: canonical labels point to blocks with
-    the same params as the original targets.
-  - Show that canonicalizeJump preserves argument expressions.
-  - Show that evalTerminator produces equivalent results under a sound
-    join map.
+  Key insight: buildJoinMap maps each (target, args) signature to the
+  *original* target label. Therefore canonicalizeJump is always identity,
+  joinCanonTerminator is identity, and joinCanonFunc preserves execFunc.
 -/
 import MoltTIR.Passes.JoinCanon
 import MoltTIR.Semantics.ExecBlock
+import MoltTIR.Semantics.ExecFunc
+import MoltTIR.Semantics.BlockCorrect
+
+set_option autoImplicit false
 
 namespace MoltTIR
 
@@ -50,8 +40,8 @@ theorem canonicalizeJump_args (jmap : JoinMap) (target : Label) (args : List Exp
     (canonicalizeJump jmap target args).2 = args := by
   simp [canonicalizeJump]
   split
-  · rfl   -- lookup found canonical
-  · rfl   -- no canonical entry
+  · rfl
+  · rfl
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 3: Join lookup membership
@@ -77,7 +67,7 @@ theorem joinLookup_mem (jmap : JoinMap) (target : Label) (args : List Expr)
       exact List.mem_cons_of_mem _ (ih h)
 
 -- ══════════════════════════════════════════════════════════════════
--- Section 4: canonicalizeJump soundness (uses joinLookup_mem)
+-- Section 4: canonicalizeJump soundness
 -- ══════════════════════════════════════════════════════════════════
 
 /-- If canonicalizeJump rewrites the label, the original and canonical
@@ -92,26 +82,22 @@ theorem canonicalizeJump_sound (jmap : JoinMap) (f : Func)
       origBlk.params = canonBlk.params := by
   simp [canonicalizeJump]
   split
-  · -- lookup found canonical
-    case h_1 canonical hlookup =>
+  · case h_1 canonical hlookup =>
       intro origBlk canonBlk hOrig hCanon
       have hmem := joinLookup_mem jmap target args canonical hlookup
       exact hsound { target := target, args := args } canonical hmem origBlk canonBlk hOrig hCanon
-  · -- no canonical entry: target' = target, so params trivially agree
-    intro origBlk canonBlk hOrig hCanon
+  · intro origBlk canonBlk hOrig hCanon
     simp_all
 
 -- ══════════════════════════════════════════════════════════════════
--- Section 4: Terminator-level correctness
+-- Section 5: Structural preservation
 -- ══════════════════════════════════════════════════════════════════
 
 /-- Join canonicalization on a return terminator is identity. -/
 theorem joinCanonTerminator_ret (jmap : JoinMap) (e : Expr) :
     joinCanonTerminator jmap (.ret e) = .ret e := rfl
 
-/-- Join canonicalization preserves terminator variable references.
-    Since canonicalizeJump only changes labels (not expressions),
-    all variable references in the terminator are preserved. -/
+/-- Join canonicalization preserves terminator variable references. -/
 theorem joinCanonTerminator_preserves_vars (jmap : JoinMap) (t : Terminator) :
     termVars (joinCanonTerminator jmap t) = termVars t := by
   cases t with
@@ -121,35 +107,15 @@ theorem joinCanonTerminator_preserves_vars (jmap : JoinMap) (t : Terminator) :
     have h := canonicalizeJump_args jmap target args
     generalize canonicalizeJump jmap target args = p at h
     obtain ⟨target', args'⟩ := p
-    simp at h
-    simp [h]
+    simp at h; simp [h]
   | br cond tl ta el ea =>
     simp only [joinCanonTerminator, termVars]
     have h1 := canonicalizeJump_args jmap tl ta
     have h2 := canonicalizeJump_args jmap el ea
     generalize canonicalizeJump jmap tl ta = p1 at h1
     generalize canonicalizeJump jmap el ea = p2 at h2
-    obtain ⟨tl', ta'⟩ := p1
-    obtain ⟨el', ea'⟩ := p2
-    simp at h1 h2
-    simp [h1, h2]
-
--- ══════════════════════════════════════════════════════════════════
--- Section 5: Expression evaluation preservation
--- ══════════════════════════════════════════════════════════════════
-
-/-- Join canonicalization does not affect expression evaluation:
-    it only rewrites labels, not expressions. For any expression e
-    appearing in the terminator, evalExpr ρ e is unchanged.
-
-    This follows trivially because joinCanonTerminator only changes
-    labels via canonicalizeJump, which preserves args (section 2). -/
-theorem joinCanon_evalExpr_preserved (jmap : JoinMap) (ρ : Env) (e : Expr) :
-    evalExpr ρ e = evalExpr ρ e := rfl
-
--- ══════════════════════════════════════════════════════════════════
--- Section 6: Block and function structural preservation
--- ══════════════════════════════════════════════════════════════════
+    obtain ⟨tl', ta'⟩ := p1; obtain ⟨el', ea'⟩ := p2
+    simp at h1 h2; simp [h1, h2]
 
 /-- Join canonicalization preserves block instructions. -/
 theorem joinCanonBlock_instrs (jmap : JoinMap) (b : Block) :
@@ -159,25 +125,176 @@ theorem joinCanonBlock_instrs (jmap : JoinMap) (b : Block) :
 theorem joinCanonBlock_params (jmap : JoinMap) (b : Block) :
     (joinCanonBlock jmap b).params = b.params := rfl
 
-/-- Join canonicalization preserves the number of blocks in the function. -/
+/-- Join canonicalization preserves the number of blocks. -/
 theorem joinCanonFunc_blockCount (f : Func) :
     (joinCanonFunc f).blockList.length = f.blockList.length := by
   simp [joinCanonFunc, List.length_map]
 
-/-- Main correctness theorem: join canonicalization preserves
-    instruction semantics (instructions are completely untouched).
+-- ══════════════════════════════════════════════════════════════════
+-- Section 6: buildJoinMap produces identity mappings
+-- ══════════════════════════════════════════════════════════════════
 
-    For terminator semantics, the transformation is correct when the
-    join map is sound (canonical labels have the same block params),
-    which guarantees that bindParams produces the same environment.
+/-- Key invariant: every entry in the join map maps a signature to its
+    own target. For every (sig, lbl) in the map, lbl = sig.target. -/
+def JoinMapIdentity (jmap : JoinMap) : Prop :=
+  ∀ sig lbl, (sig, lbl) ∈ jmap → lbl = sig.target
 
-    TODO(formal, owner:compiler, milestone:M5, priority:P2, status:partial):
-    The full terminator-level correctness requires showing that
-    evalTerminator with the rewritten labels produces a TermResult
-    that is equivalent (same return value, or jump to a block that
-    produces the same execution). This needs a bisimulation argument
-    over the CFG execution trace. -/
-theorem joinCanon_instr_semantics_preserved (jmap : JoinMap) (ρ : Env) (i : Instr) :
-    evalExpr ρ i.rhs = evalExpr ρ i.rhs := rfl
+/-- The fold accumulator in buildJoinMap maintains JoinMapIdentity. -/
+private theorem buildJoinMap_fold_identity
+    (blocks : List (Label × Block)) (acc : JoinMap)
+    (hacc : JoinMapIdentity acc) :
+    JoinMapIdentity (blocks.foldl (fun jmap (_, blk) =>
+      match blk.term with
+      | .jmp target args =>
+          let sig := { target := target, args := args : JoinSig }
+          match joinLookup jmap sig with
+          | some _ => jmap
+          | none => (sig, target) :: jmap
+      | _ => jmap) acc) := by
+  induction blocks generalizing acc with
+  | nil => exact hacc
+  | cons p rest ih =>
+    obtain ⟨_, blk⟩ := p
+    simp only [List.foldl]
+    apply ih
+    cases blk.term with
+    | ret _ => exact hacc
+    | jmp target args =>
+      simp only
+      cases joinLookup acc { target := target, args := args : JoinSig } with
+      | some _ => exact hacc
+      | none =>
+        intro sig' lbl' hmem
+        simp only [List.mem_cons] at hmem
+        cases hmem with
+        | inl heq =>
+          have hpair := Prod.mk.inj heq
+          rw [hpair.2, hpair.1]
+        | inr hmem => exact hacc sig' lbl' hmem
+    | br _ _ _ _ _ => exact hacc
+
+/-- buildJoinMap produces a join map where every entry maps to the original target. -/
+theorem buildJoinMap_identity (f : Func) : JoinMapIdentity (buildJoinMap f) := by
+  simp only [buildJoinMap]
+  exact buildJoinMap_fold_identity f.blockList [] (fun _ _ h => absurd h (List.not_mem_nil _))
+
+/-- If all map entries are identity, joinLookup returns the original target. -/
+theorem joinLookup_identity (jmap : JoinMap) (sig : JoinSig)
+    (hid : JoinMapIdentity jmap) (canonical : Label)
+    (h : joinLookup jmap sig = some canonical) :
+    canonical = sig.target := by
+  have hmem := joinLookup_mem jmap sig.target sig.args canonical (by
+    cases sig with | mk t a => exact h)
+  cases sig with | mk t a =>
+    exact hid { target := t, args := a } canonical hmem
+
+/-- canonicalizeJump is identity when the join map has the identity property. -/
+theorem canonicalizeJump_identity (jmap : JoinMap) (target : Label) (args : List Expr)
+    (hid : JoinMapIdentity jmap) :
+    canonicalizeJump jmap target args = (target, args) := by
+  simp only [canonicalizeJump]
+  split
+  · case h_1 canonical hlookup =>
+    have := joinLookup_identity jmap { target := target, args := args } hid canonical hlookup
+    simp [this]
+  · rfl
+
+/-- joinCanonTerminator is identity when the join map has the identity property. -/
+theorem joinCanonTerminator_identity (jmap : JoinMap) (t : Terminator)
+    (hid : JoinMapIdentity jmap) :
+    joinCanonTerminator jmap t = t := by
+  cases t with
+  | ret _ => rfl
+  | jmp target args =>
+    simp only [joinCanonTerminator, canonicalizeJump_identity jmap target args hid]
+  | br cond tl ta el ea =>
+    simp only [joinCanonTerminator,
+               canonicalizeJump_identity jmap tl ta hid,
+               canonicalizeJump_identity jmap el ea hid]
+
+-- ══════════════════════════════════════════════════════════════════
+-- Section 7: Function-level correctness
+-- ══════════════════════════════════════════════════════════════════
+
+/-- joinCanonFunc preserves block lookup (found blocks). -/
+theorem joinCanonFunc_blocks_some (f : Func) (lbl : Label) (blk : Block)
+    (h : f.blocks lbl = some blk) :
+    (joinCanonFunc f).blocks lbl = some (joinCanonBlock (buildJoinMap f) blk) :=
+  blocks_map_some f (joinCanonBlock (buildJoinMap f)) lbl blk h
+
+/-- joinCanonFunc preserves block lookup failure. -/
+theorem joinCanonFunc_blocks_none (f : Func) (lbl : Label)
+    (h : f.blocks lbl = none) :
+    (joinCanonFunc f).blocks lbl = none :=
+  blocks_map_none f (joinCanonBlock (buildJoinMap f)) lbl h
+
+/-- joinCanonFunc does not change block parameters. -/
+theorem joinCanonFunc_block_params (f : Func) (b : Block) :
+    (joinCanonBlock (buildJoinMap f) b).params = b.params := rfl
+
+/-- evalTerminator is preserved by joinCanonFunc. -/
+theorem joinCanon_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
+    evalTerminator (joinCanonFunc f) ρ t = evalTerminator f ρ t := by
+  cases t with
+  | ret _ => rfl
+  | jmp target args =>
+    simp only [evalTerminator]
+    match evalArgs ρ args with
+    | none => rfl
+    | some _ =>
+      match hblk : f.blocks target with
+      | none => simp [joinCanonFunc_blocks_none f target hblk]
+      | some blk => simp [joinCanonFunc_blocks_some f target blk hblk,
+                           joinCanonFunc_block_params]
+  | br cond tl ta el ea =>
+    simp only [evalTerminator]
+    match evalExpr ρ cond with
+    | some (.bool true) =>
+      match evalArgs ρ ta with
+      | none => rfl
+      | some _ =>
+        match hblk : f.blocks tl with
+        | none => simp [joinCanonFunc_blocks_none f tl hblk]
+        | some blk => simp [joinCanonFunc_blocks_some f tl blk hblk,
+                             joinCanonFunc_block_params]
+    | some (.bool false) =>
+      match evalArgs ρ ea with
+      | none => rfl
+      | some _ =>
+        match hblk : f.blocks el with
+        | none => simp [joinCanonFunc_blocks_none f el hblk]
+        | some blk => simp [joinCanonFunc_blocks_some f el blk hblk,
+                             joinCanonFunc_block_params]
+    | some (.int _) => rfl
+    | some (.float _) => rfl
+    | some (.str _) => rfl
+    | some .none => rfl
+    | none => rfl
+
+/-- joinCanonFunc preserves execFunc for all inputs.
+    Proof by fuel induction, using the identity property of buildJoinMap. -/
+theorem joinCanonFunc_correct (f : Func) (fuel : Nat) (ρ : Env) (lbl : Label) :
+    execFunc (joinCanonFunc f) fuel ρ lbl = execFunc f fuel ρ lbl := by
+  have hid := buildJoinMap_identity f
+  induction fuel generalizing ρ lbl with
+  | zero => rfl
+  | succ n ih =>
+    simp only [execFunc]
+    match hblk : f.blocks lbl with
+    | none =>
+      simp [joinCanonFunc_blocks_none f lbl hblk]
+    | some blk =>
+      have hblk_id : joinCanonBlock (buildJoinMap f) blk = blk := by
+        simp only [joinCanonBlock, joinCanonTerminator_identity (buildJoinMap f) blk.term hid]
+      simp only [joinCanonFunc_blocks_some f lbl blk hblk, hblk_id]
+      match hei : execInstrs ρ blk.instrs with
+      | none => simp [hei]
+      | some ρ' =>
+        simp only [hei]
+        rw [joinCanon_evalTerminator f ρ' blk.term]
+        match evalTerminator f ρ' blk.term with
+        | none => rfl
+        | some (.ret v) => rfl
+        | some (.jump target env') => exact ih env' target
 
 end MoltTIR
