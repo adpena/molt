@@ -171,13 +171,108 @@ theorem none_tag_field :
 theorem pending_tag_field :
     (toNanBox .pending) &&& TAG_CHECK = QNAN ||| TAG_PEND := by native_decide
 
+/-- Concrete: POINTER_MASK &&& TAG_CHECK = 0. -/
+private theorem pointer_mask_and_tag_check : POINTER_MASK &&& TAG_CHECK = 0 := by native_decide
+
+/-- Concrete: (QNAN ||| TAG_PTR) &&& TAG_CHECK = QNAN ||| TAG_PTR. -/
+private theorem qnan_or_ptr_and_tag_check :
+    (QNAN ||| TAG_PTR) &&& TAG_CHECK = QNAN ||| TAG_PTR := by native_decide
+
+/-- Algebraic: uint64_and_or_distrib_right for NanBoxCorrect scope. -/
+private theorem uint64_and_or_distrib_right' (a b c : UInt64) :
+    (a ||| b) &&& c = (a &&& c) ||| (b &&& c) := by
+  apply UInt64.eq_of_toBitVec_eq
+  simp only [UInt64.toBitVec_and, UInt64.toBitVec_or]
+  ext i; simp only [BitVec.getLsbD_and, BitVec.getLsbD_or]
+  cases a.toBitVec.getLsbD i <;> cases b.toBitVec.getLsbD i <;> cases c.toBitVec.getLsbD i <;> rfl
+
+private theorem uint64_and_assoc' (a b c : UInt64) : a &&& b &&& c = a &&& (b &&& c) := by
+  cases a with | mk av => cases b with | mk bv => cases c with | mk cv =>
+  show UInt64.mk _ = UInt64.mk _; congr 1; exact BitVec.and_assoc av bv cv
+
+private theorem uint64_and_zero' (a : UInt64) : a &&& 0 = 0 := by
+  cases a with | mk av => show UInt64.mk _ = UInt64.mk _; congr 1; exact BitVec.and_zero
+
+private theorem uint64_or_zero' (a : UInt64) : a ||| 0 = a := by
+  cases a with | mk av => show UInt64.mk _ = UInt64.mk _; congr 1; exact BitVec.or_zero
+
+/-- XOR of A ||| B with A gives B when A and B have disjoint bits. -/
+private theorem uint64_xor_or_self_disjoint (a b : UInt64)
+    (hdisj : a &&& b = 0) :
+    (a ||| b) ^^^ a = b := by
+  apply UInt64.eq_of_toBitVec_eq
+  ext i
+  simp only [UInt64.toBitVec_xor, UInt64.toBitVec_or, UInt64.toBitVec_and,
+             BitVec.getLsbD_xor, BitVec.getLsbD_or, BitVec.getLsbD_and, BitVec.getLsbD_zero]
+  have hdisj' : a.toBitVec &&& b.toBitVec = 0#64 := by
+    have := congrArg UInt64.toBitVec hdisj
+    simp only [UInt64.toBitVec_and, UInt64.toBitVec_ofNat] at this
+    exact this
+  have hi : (a.toBitVec &&& b.toBitVec).getLsbD i = (0#64).getLsbD i := by
+    rw [hdisj']
+  simp only [BitVec.getLsbD_and, BitVec.getLsbD_zero] at hi
+  cases ha : a.toBitVec.getLsbD i <;> cases hb : b.toBitVec.getLsbD i <;> simp_all
+
+/-- Shifting right by 47 gives 0 when all bits >= 47 are 0.
+    Key: INT_MASK has exactly bits 0..46 set, so (raw &&& INT_MASK) has no bits >= 47. -/
+private theorem uint64_eq_of_toNat_eq (a b : UInt64) (h : a.toNat = b.toNat) : a = b :=
+  UInt64.eq_of_toBitVec_eq (BitVec.eq_of_toNat_eq h)
+
+private theorem int_mask_ushr47_zero (raw : UInt64) :
+    (raw &&& INT_MASK) >>> (47 : UInt64) = 0 := by
+  apply uint64_eq_of_toNat_eq
+  rw [UInt64.toNat_shiftRight, UInt64.toNat_and]
+  -- Goal involves: (raw.toNat &&& INT_MASK.toNat) >>> (47.toNat % 64) = 0.toNat
+  -- raw.toNat &&& INT_MASK.toNat ≤ INT_MASK.toNat (by Nat.and_le_right)
+  -- INT_MASK.toNat = 0x00007fffffffffff = 2^47 - 1 < 2^47
+  -- So the AND result < 2^47, and >>> 47 gives 0
+  have hle := @Nat.and_le_right raw.toNat INT_MASK.toNat
+  have hint_mask_val : INT_MASK.toNat = 0x00007fffffffffff := by native_decide
+  rw [hint_mask_val] at hle
+  have h47 : (47 : UInt64).toNat % 64 = 47 := by native_decide
+  rw [h47]
+  have h0 : (0 : UInt64).toNat = 0 := by native_decide
+  rw [h0]
+  rw [hint_mask_val]
+  exact Nat.shiftRight_eq_zero _ _ (by omega)
+
+private theorem uint64_and_comm (a b : UInt64) : a &&& b = b &&& a := by
+  apply UInt64.eq_of_toBitVec_eq
+  ext i
+  simp only [UInt64.toBitVec_and, BitVec.getLsbD_and]
+  cases a.toBitVec.getLsbD i <;> cases b.toBitVec.getLsbD i <;> rfl
+
+/-- If a &&& c = 0 then a &&& (b &&& c) = 0 (because b &&& c is a submask of c). -/
+private theorem uint64_and_masked_zero (a b c : UInt64) (h : a &&& c = 0) :
+    a &&& (b &&& c) = 0 := by
+  -- a &&& (b &&& c) = (a &&& b) &&& c  -- no, use a &&& (b &&& c) = a &&& c &&& b?
+  -- Actually: rearrange using assoc+comm: a &&& (b &&& c) = (a &&& c) &&& b via comm+assoc
+  -- Then (a &&& c) = 0, so 0 &&& b = 0
+  have step1 : a &&& (b &&& c) = a &&& (c &&& b) := by rw [uint64_and_comm b c]
+  have step2 : a &&& (c &&& b) = (a &&& c) &&& b := by rw [uint64_and_assoc']
+  rw [step1, step2, h, uint64_and_comm 0 b, uint64_and_zero']
+
+/-- (QNAN ||| TAG_INT) &&& INT_MASK = 0. The tag bits are above the INT_MASK region. -/
+private theorem qnan_or_int_and_int_mask : (QNAN ||| TAG_INT) &&& INT_MASK = 0 := by native_decide
+
+/-- INT_MASK &&& (QNAN ||| TAG_INT) = 0. Commuted form. -/
+private theorem int_mask_and_qnan_or_int : INT_MASK &&& (QNAN ||| TAG_INT) = 0 := by native_decide
+
+/-- POINTER_MASK &&& (QNAN ||| TAG_PTR) = 0. -/
+private theorem pointer_mask_and_qnan_or_ptr : POINTER_MASK &&& (QNAN ||| TAG_PTR) = 0 := by native_decide
+
+/-- The tag-check property for any raw payload masked by POINTER_MASK.
+    Structurally identical to fromInt_isInt_aux from NanBox.lean. -/
+theorem fromPtr_isPtr_aux (raw : UInt64) :
+    (QNAN ||| TAG_PTR ||| (raw &&& POINTER_MASK)) &&& TAG_CHECK = QNAN ||| TAG_PTR := by
+  rw [uint64_and_or_distrib_right', qnan_or_ptr_and_tag_check]
+  rw [uint64_and_assoc', pointer_mask_and_tag_check, uint64_and_zero', uint64_or_zero']
+
 /-- Ptr encoding always has the PTR tag in the TAG_CHECK field. -/
 theorem ptr_tag_field (addr : UInt64) :
     (toNanBox (.ptr addr)) &&& TAG_CHECK = QNAN ||| TAG_PTR := by
   unfold toNanBox
-  -- TAG_CHECK mask zeroes out the pointer payload bits, leaving only QNAN | TAG_PTR
-  -- This follows the same algebraic structure as fromInt_isInt_aux
-  sorry
+  exact fromPtr_isPtr_aux addr
 
 /-- Tag injectivity for Value: if two values encode to the same bits, they
     must be the same value. This is the master injectivity theorem.
