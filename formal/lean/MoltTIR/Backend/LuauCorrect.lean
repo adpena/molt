@@ -297,7 +297,13 @@ theorem emitExpr_correct (names : VarNames) (ρ : MoltTIR.Env) (lenv : LuauEnv)
       cases op <;> cases va <;> simp [MoltTIR.evalUnOp] at heval
       all_goals (first
         | (subst heval; simp [emitUnOp, evalLuauUnOp, valueToLuau]; done)
-        | sorry)  -- abs maps to neg (approximation); see emitUnOp note
+        | sorry)  -- INTENTIONAL: abs→neg is an intentional model approximation.
+                   -- The real Luau backend emits `math.abs(x)`, not `-x`, but
+                   -- our LuauUnOp model lacks an `abs` constructor (it only has
+                   -- neg/lnot/len/bnot). emitUnOp maps abs→neg as a placeholder.
+                   -- Since evalUnOp .abs (.int x) = if x<0 then -x else x, while
+                   -- evalLuauUnOp .neg (.number x) = -x, the two disagree for x≥0.
+                   -- Closing this requires adding LuauUnOp.abs + evalLuauUnOp.abs.
     | none => simp [ha_eval] at heval
 
 /-- Instruction emission preserves environment correspondence.
