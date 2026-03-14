@@ -123,13 +123,19 @@ theorem ssa_use_after_def {f : Func} (hssa : SSAWellFormed f)
     and no dst collides with a block parameter. -/
 def blockSSA (b : Block) : Prop :=
   let dsts := b.instrs.map Instr.dst
-  dsts.Nodup ∧
+  dsts.Nodup ∧ b.params.Nodup ∧
   ∀ v ∈ dsts, v ∉ b.params
 
 /-- Block-level SSA implies no duplicate definitions within a block. -/
 theorem blockSSA_no_dup_defs {b : Block} (h : blockSSA b) :
     (blockAllDefs b).Nodup := by
-  sorry
+  unfold blockAllDefs blockSSA at *
+  obtain ⟨hdsts_nodup, hparams_nodup, hdisj⟩ := h
+  unfold List.Nodup at *
+  rw [List.pairwise_append]
+  refine ⟨hparams_nodup, hdsts_nodup, ?_⟩
+  intro a ha b hb
+  exact Ne.symm (fun heq => hdisj b hb (heq ▸ ha))
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 6: Connecting to WellFormed.lean
