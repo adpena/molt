@@ -55,6 +55,13 @@ theorem CFGPath.nonempty {f : Func} {src dst : Label} {path : List Label}
   | single _ => simp
   | cons _ _ _ _ _ _ => simp
 
+/-- A CFGPath has length ≥ 1. -/
+theorem CFGPath.length_pos {f : Func} {src dst : Label} {path : List Label}
+    (h : CFGPath f src dst path) : 0 < path.length := by
+  cases h with
+  | single _ => simp
+  | cons _ _ _ _ _ _ => simp
+
 /-- The source label is always in the path. -/
 theorem CFGPath.src_mem {f : Func} {src dst : Label} {path : List Label}
     (h : CFGPath f src dst path) : src ∈ path := by
@@ -82,29 +89,61 @@ theorem CFGPath.prefix_to_member {f : Func} {src dst d : Label}
     simp at hd; subst hd
     exact ⟨[d], .single d, fun _ hx => hx⟩
   | cons l₁ l₂ dst' rest hedge htail ih =>
-    -- d ∈ (l₁ :: l₂ :: rest); either d = l₁ or d ∈ l₂ :: rest
     rcases List.mem_cons.mp hd with rfl | hd'
-    · -- d = l₁: trivially, [d] is a path from d to d
-      exact ⟨[d], .single d, fun x hx => by
+    · exact ⟨[d], .single d, fun x hx => by
         simp at hx; subst hx; exact List.Mem.head _⟩
-    · -- d ∈ l₂ :: rest; by ih there's a prefix path from l₂ to d
-      obtain ⟨prefix_path, hprefix, hsubset⟩ := ih hd'
-      -- Case split on hprefix to get the right path shape for the cons constructor
+    · obtain ⟨prefix_path, hprefix, hsubset⟩ := ih hd'
       cases hprefix with
       | single =>
-        -- prefix_path = [l₂], d = l₂
-        -- Build path [l₁, d] using cons
         refine ⟨[l₁, d], .cons _ _ d [] hedge (.single d), fun x hx => ?_⟩
         rcases List.mem_cons.mp hx with rfl | hx'
         · exact List.Mem.head _
         · exact List.Mem.tail _ (hsubset x hx')
       | cons l₃ l₄ _ rest' hedge' htail' =>
-        -- prefix_path = l₂ :: l₃ :: ... :: rest'  (but l₂ is actually l₃ here after case split)
-        -- Build path l₁ :: prefix
         refine ⟨l₁ :: _ :: _ :: _, .cons _ _ d _ hedge (.cons _ _ d _ hedge' htail'), fun x hx => ?_⟩
         rcases List.mem_cons.mp hx with rfl | hx'
         · exact List.Mem.head _
         · exact List.Mem.tail _ (hsubset x hx')
+
+-- ══════════════════════════════════════════════════════════════════
+-- Section 1b: Path infrastructure (reachable→path, prefix_shorter)
+-- ══════════════════════════════════════════════════════════════════
+
+/-- Helper: construct a CFGPath from Reachable. -/
+theorem reachable_to_cfgPath {f : Func} {src dst : Label}
+    (h : Reachable f src dst) : ∃ path, CFGPath f src dst path := by
+  induction h with
+  | refl _ => exact ⟨[_], .single _⟩
+  | step l1 _ _ hs _ ih =>
+    obtain ⟨path, hpath⟩ := ih
+    cases hpath with
+    | single _ =>
+      exact ⟨[l1, _], .cons _ _ _ _ hs (.single _)⟩
+    | cons _ _ _ _ hedge' htail =>
+      exact ⟨l1 :: _ :: _ :: _, .cons _ _ _ _ hs (.cons _ _ _ _ hedge' htail)⟩
+
+/-- If d ∈ path from src to dst and d ≠ dst, there is a strictly shorter
+    prefix path from src to d. -/
+theorem CFGPath.prefix_shorter {f : Func} {src dst d : Label}
+    {path : List Label}
+    (hpath : CFGPath f src dst path) : d ∈ path → d ≠ dst →
+    ∃ pp : List Label, CFGPath f src d pp ∧ pp.length < path.length := by
+  induction hpath with
+  | single l =>
+    intro hd hne
+    simp at hd; subst hd; exact absurd rfl hne
+  | cons l₁ l₂ dst' rest hedge htail ih =>
+    intro hd hne
+    rcases List.mem_cons.mp hd with rfl | hd'
+    · -- d = l₁: prefix [d] has length 1 < 2 + |rest|
+      exact ⟨[d], .single d, by simp⟩
+    · -- d ∈ l₂ :: rest: use IH to get shorter prefix from l₂ to d
+      obtain ⟨pp, hpp, hlen⟩ := ih hd' hne
+      cases hpp with
+      | single =>
+        exact ⟨[l₁, d], .cons _ _ d [] hedge (.single d), by simp at hlen ⊢; omega⟩
+      | cons a _ _ _ hedge' htail' =>
+        exact ⟨l₁ :: _ :: _ :: _, .cons _ _ d _ hedge (.cons _ _ d _ hedge' htail'), by simp at hlen ⊢; omega⟩
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 2: Dominance (path-based, classical)
@@ -161,15 +200,11 @@ theorem Dom.trans {f : Func} {d₁ d₂ l : Label}
     (h₁ : Dom f d₁ l) (h₂ : Dom f d₂ d₁) : Dom f d₂ l := by
   intro hreach path hpath
   have hd₁_mem := h₁ hreach path hpath
-  -- d₁ is in path; extract prefix from entry to d₁
   obtain ⟨prefix_path, hprefix, hsubset⟩ :=
     CFGPath.prefix_to_member hpath hd₁_mem
-  -- d₂ dominates d₁, and prefix_path is a path from entry to d₁
-  -- so d₂ ∈ prefix_path
   have hd₁_reach : Reachable f f.entry d₁ :=
     cfgPath_implies_reachable hprefix
   have hd₂_in_prefix := h₂ hd₁_reach prefix_path hprefix
-  -- prefix_path ⊆ path, so d₂ ∈ path
   exact hsubset d₂ hd₂_in_prefix
 
 -- ══════════════════════════════════════════════════════════════════
@@ -181,22 +216,60 @@ theorem SDom.irrefl (f : Func) (l : Label) : ¬SDom f l l := by
   intro ⟨_, hne⟩
   exact hne rfl
 
-/-- Strict dominance is transitive.
-    Uses Dom.trans for the dominance part and a cycle argument for ≠. -/
+/-- Mutual strict domination is impossible when one node is reachable.
+
+    Proof by well-founded descent on path length: if SDom f a b and
+    SDom f b a with a reachable, any path P from entry to a contains b
+    (by Dom f b a). Since b ≠ a, the prefix to b is strictly shorter.
+    Then a appears in that prefix (by Dom f a b, since b is reachable
+    via the prefix). Since a ≠ b, the sub-prefix to a is even shorter.
+    This gives a path from entry to a strictly shorter than P, yielding
+    infinite descent in ℕ — contradiction. -/
+private theorem sdom_not_symmetric {f : Func} {a b : Label}
+    (hreach : Reachable f f.entry a)
+    (hab : SDom f a b) (hba : SDom f b a) : False := by
+  obtain ⟨p₀, hp₀⟩ := reachable_to_cfgPath hreach
+  suffices ∀ (n : Nat) (p : List Label),
+      CFGPath f f.entry a p → p.length ≤ n → False by
+    exact this p₀.length p₀ hp₀ (Nat.le_refl _)
+  intro n
+  induction n with
+  | zero =>
+    intro p hp hlen
+    have := CFGPath.length_pos hp
+    omega
+  | succ k ih =>
+    intro p hp hlen
+    -- b ∈ p (since b dom a and a is reachable)
+    have hb_in := hba.1 hreach p hp
+    -- Prefix to b is strictly shorter (b ≠ a)
+    obtain ⟨pb, hpb, hpb_len⟩ := CFGPath.prefix_shorter hp hb_in hba.2
+    -- b is reachable (via the prefix)
+    have hb_reach := cfgPath_implies_reachable hpb
+    -- a ∈ pb (since a dom b and b is reachable)
+    have ha_in := hab.1 hb_reach pb hpb
+    -- Sub-prefix to a is strictly shorter than pb
+    obtain ⟨pa, hpa, hpa_len⟩ := CFGPath.prefix_shorter hpb ha_in hab.2
+    -- pa.length < pb.length < p.length ≤ k + 1
+    exact ih pa hpa (by omega)
+
+/-- Strict dominance is transitive (for reachable targets).
+
+    Requires reachability of the target c, since mutual strict domination
+    of unreachable nodes is vacuously consistent under the conditional
+    Dom definition. In practice, SSA verification only reasons about
+    reachable blocks, so this hypothesis is always available.
+
+    Uses Dom.trans for the dominance part and sdom_not_symmetric (the
+    well-founded descent argument) to rule out the a = c case. -/
 theorem SDom.trans {f : Func} {a b c : Label}
+    (hreach : Reachable f f.entry c)
     (h₁ : SDom f a b) (h₂ : SDom f b c) : SDom f a c := by
   refine ⟨Dom.trans h₂.1 h₁.1, ?_⟩
   intro heq
   subst heq
-  -- After subst, we have h₁ : SDom f a b and h₂ : SDom f b a.
-  -- A dominance cycle (a sdom b sdom a) is impossible in a finite CFG,
-  -- but proving this requires well-foundedness / finiteness of the
-  -- reachable set, which is not available in the current formulation.
-  -- The Dom definition is conditional on reachability, so mutual
-  -- domination is vacuously consistent for unreachable nodes.
-  -- Closing this sorry requires adding a finite-reachable-set hypothesis
-  -- (similar to domTree_is_tree's hfinite parameter).
-  sorry
+  -- After subst: h₁ : SDom f a b, h₂ : SDom f b a, a (= c) is reachable
+  exact sdom_not_symmetric hreach h₁ h₂
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 6: Entry dominates all reachable blocks
@@ -205,7 +278,7 @@ theorem SDom.trans {f : Func} {a b c : Label}
 /-- The entry block dominates every reachable block.
     Proof: every path from entry to l starts with entry, so entry ∈ path. -/
 theorem entry_dom_all (f : Func) (l : Label)
-    (hreach : Reachable f f.entry l) :
+    (_hreach : Reachable f f.entry l) :
     Dom f f.entry l := by
   intro _ path hpath
   exact CFGPath.src_mem hpath
@@ -217,34 +290,50 @@ theorem entry_dom_all (f : Func) (l : Label)
 /-- The immediate dominator of a block (if it exists) is unique.
     This follows from the definition: if d₁ and d₂ are both immediate
     dominators of l, then each strictly dominates the other (from the
-    "closest" clause), which contradicts irreflexivity of sdom. -/
+    "closest" clause), which contradicts acyclicity of strict domination.
+
+    Requires reachability of l for SDom.trans (needed to derive the
+    contradiction from the strict domination cycle d₁ sdom d₂ sdom d₁). -/
 theorem immDom_unique {f : Func} {l d₁ d₂ : Label}
+    (hreach : Reachable f f.entry l)
     (h₁ : ImmDom f d₁ l) (h₂ : ImmDom f d₂ l) : d₁ = d₂ := by
-  -- If d₁ = d₂ we're done. Otherwise derive contradiction via sdom cycle.
   by_cases hne : d₁ = d₂
   · exact hne
   · exfalso
     have hne' : d₂ ≠ d₁ := fun heq => hne heq.symm
-    -- d₂ sdom l and d₂ ≠ d₁, so by idom closeness: d₂ sdom d₁
     have h_d2_sdom_d1 : SDom f d₂ d₁ := h₁.2 d₂ h₂.1 hne'
-    -- d₁ sdom l and d₁ ≠ d₂, so by idom closeness: d₁ sdom d₂
     have h_d1_sdom_d2 : SDom f d₁ d₂ := h₂.2 d₁ h₁.1 hne
-    -- SDom.trans gives d₁ sdom d₁, contradicting irreflexivity
-    exact absurd (SDom.trans h_d1_sdom_d2 h_d2_sdom_d1) (SDom.irrefl f d₁)
+    -- d₁ is reachable (it dominates reachable l, so it's on paths to l)
+    have hd1_reach : Reachable f f.entry d₁ := by
+      obtain ⟨pathL, hpathL⟩ := reachable_to_cfgPath hreach
+      have hd1_in := h₁.1.1 hreach pathL hpathL
+      obtain ⟨pref, hpref, _⟩ := CFGPath.prefix_to_member hpathL hd1_in
+      exact cfgPath_implies_reachable hpref
+    exact absurd (SDom.trans hd1_reach h_d1_sdom_d2 h_d2_sdom_d1) (SDom.irrefl f d₁)
 
 /-- The dominance relation forms a tree rooted at the entry block:
     every non-entry reachable block has an immediate dominator.
 
     This requires finiteness of the reachable set; we parameterize
-    by a finite-reachable-set assumption. -/
+    by a finite-reachable-set assumption.
+
+    Proof sketch: The set of strict dominators of l is nonempty (entry
+    strictly dominates every non-entry reachable block) and finite
+    (each strict dominator is reachable, hence in S). Dominators of a
+    reachable node form a total order under domination (the chain
+    property, Prosser 1959). The maximum element of this finite chain
+    (closest strict dominator to l) is the immediate dominator.
+
+    The chain property (dominators are totally ordered) is the key
+    lemma needed here. Its formalization requires path concatenation
+    and index-based reasoning on paths, which is factored as a
+    separate proof obligation.
+    TODO(formal, owner:runtime, milestone:LF3, priority:P2, status:partial):
+    close domTree_is_tree by proving the dominator chain property. -/
 theorem domTree_is_tree (f : Func) (l : Label)
     (hreach : Reachable f f.entry l) (hne : l ≠ f.entry)
     (hfinite : ∃ (S : List Label), ∀ m, Reachable f f.entry m → m ∈ S) :
     ∃ d, ImmDom f d l := by
-  -- The set of strict dominators of l is nonempty (entry is one, by
-  -- entry_dom_all and hne) and finite (subset of reachable blocks).
-  -- The element closest to l (furthest from entry in the dom chain)
-  -- is the immediate dominator.
   sorry
 
 -- ══════════════════════════════════════════════════════════════════

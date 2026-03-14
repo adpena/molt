@@ -52,11 +52,11 @@ namespace MoltTIR.Meta
 
   | # | File                 | Theorem / location                         | Difficulty | Deps                        | Priority |
   |---|----------------------|--------------------------------------------|------------|-----------------------------|----------|
-  | 3 | Dominance.lean       | CFGPath.prefix_to_member                   | Medium     | Path induction               | P1       |
-  | 4 | Dominance.lean       | Dom.trans (reachability sub-goal)           | Easy       | CFGPath implies Reachable    | P1       |
-  | 5 | Dominance.lean       | SDom.trans (cycle impossibility)            | Hard       | Well-foundedness of finite graphs | P2  |
-  | 6 | Dominance.lean       | immDom_unique                              | Medium     | SDom.trans                   | P2       |
-  | 7 | Dominance.lean       | domTree_is_tree                            | Hard       | Finite reachable set         | P3       |
+  | 3 | Dominance.lean       | CFGPath.prefix_to_member — CLOSED          | Medium     | Path induction               | P1       |
+  | 4 | Dominance.lean       | Dom.trans — CLOSED                         | Easy       | CFGPath implies Reachable    | P1       |
+  | 5 | Dominance.lean       | SDom.trans — CLOSED                        | Hard       | sdom_not_symmetric (descent) | P2  |
+  | 6 | Dominance.lean       | immDom_unique — CLOSED                     | Medium     | SDom.trans (reachability)    | P2       |
+  | 7 | Dominance.lean       | domTree_is_tree                            | Hard       | Dominator chain property     | P3       |
   | 8 | Dominance.lean       | Dom_iff_Dominates                          | Medium     | Path representation equiv    | P3       |
   | 9 | WellFormedSSA.lean   | blockSSA_no_dup_defs                       | Easy       | List.Nodup append            | P2       |
   |10 | WellFormedSSA.lean   | ssa_implies_wellformed                     | Hard       | blockWellFormed semantics    | P3       |
