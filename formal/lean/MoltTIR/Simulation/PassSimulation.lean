@@ -423,11 +423,19 @@ theorem guardHoistBlock_params_preserved (b : Block) :
     (guardHoistBlock [] b).params = b.params := rfl
 
 /-- Guard hoisting simulation.
-    The model now replaces redundant guards with `.val (.bool true)`.
-    Correctness requires: if isGuardProven proven g, then the guard
-    expression g evaluates to `true` in the current env. This follows
-    from the soundness of the proven set (guards from dominating blocks
-    that were already evaluated to true). -/
+    The model replaces redundant guards with `.val (.bool true)`.
+    Correctness requires proving that redundant guards always evaluate
+    to `true`. This needs:
+    (1) Guard soundness: isGuardProven means the guard WAS true
+    (2) SSA preservation: the guarded variable x doesn't change between
+        the first and second occurrence
+    (3) The guard expr `not (var x)` is deterministic
+    The real compiler only hoists guards from dominating positions where
+    the guard was tested and branched on (so it WAS true on this path).
+    The simplified model processes intra-block only with empty proven set,
+    so redundancy only occurs when the same guard appears twice in one block.
+    Closing this sorry needs a GuardSoundness invariant threaded through
+    guardHoistInstrs. -/
 def guardHoistSim : FuncSimulation guardHoistFunc where
   match_env := fun _f ρ lbl ρ' lbl' => ρ = ρ' ∧ lbl = lbl'
   simulation := fun _f _fuel _ρ _lbl => by sorry
