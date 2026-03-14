@@ -176,26 +176,19 @@ private theorem dom_mapFunc_iff (f : Func) (g : Block → Block)
 private theorem use_dom_def_of_mapFunc (f : Func) (g : Block → Block)
     (hdefs : ∀ b, blockAllDefs (g b) = blockAllDefs b)
     (hterm : ∀ b, termSuccessors (g b).term = termSuccessors b.term)
+    (huses : ∀ v lbl,
+      UsedIn { f with blockList := f.blockList.map fun (l, b) => (l, g b) } v lbl →
+      UsedIn f v lbl)
     (hssa : SSAWellFormed f) :
     ∀ v b_use b_def,
       UsedIn { f with blockList := f.blockList.map fun (l, b) => (l, g b) } v b_use →
       DefinedIn { f with blockList := f.blockList.map fun (l, b) => (l, g b) } v b_def →
       Dom { f with blockList := f.blockList.map fun (l, b) => (l, g b) } b_def b_use := by
-  intro v b_use b_def _huse hdef
-  -- Convert DefinedIn in mapped function to DefinedIn in original
+  intro v b_use b_def huse hdef
   have hdef_orig := (definedIn_mapFunc_iff f g hdefs v b_def).mp hdef
-  -- For use_dom_def we need UsedIn in the mapped function to imply
-  -- that b_def dominates b_use. Since dominance is preserved (same CFG),
-  -- it suffices to show Dom f b_def b_use and then convert.
-  -- However, we need the original use to apply hssa.use_dom_def.
-  -- The mapped function may have *different* uses (e.g., CSE adds uses).
-  -- But the use site label is the same, and dominance only depends on labels.
-  -- We use: if there exists any DefinedIn f v b_def, and Dom f b_def b_use
-  -- holds for the original, then it transfers.
-  -- The problem is we don't have UsedIn f v b_use in general.
-  -- For strictly RHS-only passes, UsedIn is also preserved, but we
-  -- don't prove that here. Instead, use sorry for the use-to-original step.
-  sorry
+  have huse_orig := huses v b_use huse
+  have hdom_orig := hssa.use_dom_def v b_use b_def huse_orig hdef_orig
+  exact (dom_mapFunc_iff f g hterm b_def b_use).mpr hdom_orig
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 2: Constant folding preserves SSA
