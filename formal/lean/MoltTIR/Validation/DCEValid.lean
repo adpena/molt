@@ -133,39 +133,11 @@ theorem dce_instrs_idempotent (used : List Var) (instrs : List Instr) :
     simp only [List.filter_cons]
     split <;> simp_all
 
-/-- DCE at the block level is syntactically idempotent.
-
-    Key insight: dceBlock computes `used = usedVarsSuffix b.instrs b.term`,
-    then filters instructions by liveness w.r.t. `used`. Applying dceBlock
-    again recomputes `used'` from the filtered instructions. Since the
-    filtered instructions are a subset, `used'` may be smaller, but all
-    instructions that survived the first filter are still live w.r.t.
-    the smaller `used'`.
-
-    NOTE: This theorem is FALSE for the current definition of dceBlock.
-    dceBlock recomputes usedVarsSuffix each time. After removing dead
-    instructions, variables that were only referenced by those dead
-    instructions are no longer in usedVarsSuffix. This creates a cascade:
-    instructions that defined those now-unreferenced variables become dead
-    in the second pass. DCE requires fixpoint iteration for idempotency.
-
-    Example: A defines x, B uses x and defines y (dead). First pass removes B.
-    Second pass: x is no longer referenced, so A becomes dead and is removed.
-    dceBlock (dceBlock b) ≠ dceBlock b.
-
-    To make DCE idempotent, either iterate to fixpoint or compute a transitive
-    liveness closure upfront. -/
-theorem dceBlock_idempotent (b : Block) :
-    dceBlock (dceBlock b) = dceBlock b := by
-  sorry
-  -- NOTE: This is likely false. See doc comment above.
-
-/-- Function-level DCE is syntactically idempotent.
-    NOTE: Like dceBlock_idempotent, this is false for the current single-pass
-    DCE definition. Requires fixpoint iteration for true idempotency. -/
-theorem dceFunc_idempotent : FuncSyntacticIdempotent dceFunc := by
-  sorry
-  -- NOTE: False as stated — see dceBlock_idempotent comment.
+-- NOTE: dceBlock_idempotent and dceFunc_idempotent were REMOVED because
+-- they are FALSE for single-pass DCE. dceBlock recomputes usedVarsSuffix
+-- each time, creating cascading dead code that requires fixpoint iteration.
+-- Example: A defines x, B uses x and defines y (dead). First pass removes B.
+-- Second pass: x is no longer referenced, so A becomes dead and is removed.
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 5: Function-level validation
