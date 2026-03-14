@@ -439,8 +439,8 @@ theorem fullPipelineFunc_behavioral_equiv (f : MoltTIR.Func) :
     TODO(formal, owner:compiler, milestone:M4, priority:P1, status:partial):
     ObservablyEquivalent and behavioral_to_observable are not yet defined. -/
 theorem fullPipelineFunc_observable_equiv (f : MoltTIR.Func) :
-    BehavioralEquivalence (fullPipelineFunc f) f := by
-  sorry
+    BehavioralEquivalence (fullPipelineFunc f) f :=
+  fullPipelineFunc_behavioral_equiv f
 
 -- ======================================================================
 -- Section 8: Three-Phase Composition (Expression Level)
