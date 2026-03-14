@@ -585,7 +585,59 @@ theorem sccpMultiApply_preserves_ssa (f : Func) (st : SCCPState) (h : SSAWellFor
     exact h.unique_defs v lbl₁ lbl₂
       (definedIn_mapGen_imp f (fun l b => sccpMultiBlock (st.blockStates l).inEnv b) hdefs v lbl₁ h₁)
       (definedIn_mapGen_imp f (fun l b => sccpMultiBlock (st.blockStates l).inEnv b) hdefs v lbl₂ h₂)
-  · sorry  -- Dominance unchanged
+  · -- use_dom_def: sccpMultiBlock only changes instruction RHS (uses subset),
+    -- and terminators are unchanged (CFG structure identical).
+    intro v b_use b_def huse hdef
+    unfold sccpMultiApply at huse hdef
+    have hdefs : ∀ l b, blockAllDefs (sccpMultiBlock (st.blockStates l).inEnv b) = blockAllDefs b :=
+      fun l b => sccpMultiBlock_defs _ b
+    have hdef_orig := definedIn_mapGen_imp f
+      (fun l b => sccpMultiBlock (st.blockStates l).inEnv b) hdefs v b_def hdef
+    -- Transfer UsedIn back to original
+    have huse_orig : UsedIn f v b_use := by
+      obtain ⟨blk', hblk', hv⟩ := huse
+      obtain ⟨blk, hblk, rfl⟩ := blocks_map_gen_some_rev f
+        (fun l b => sccpMultiBlock (st.blockStates l).inEnv b) b_use blk' hblk'
+      refine ⟨blk, hblk, ?_⟩
+      simp only [blockAllUses, sccpMultiBlock] at hv ⊢
+      rcases List.mem_append.mp hv with hi | ht
+      · exact List.mem_append_left _ (sccpInstrs_uses_subset _ blk.instrs v hi)
+      · exact List.mem_append_right _ ht
+    have hdom_orig := h.use_dom_def v b_use b_def huse_orig hdef_orig
+    -- Dom transfers because terminators are unchanged (same CFG)
+    -- IsSuccessor in mapped → IsSuccessor in original
+    have hsucc_back : ∀ l1 l2,
+        IsSuccessor { f with blockList := f.blockList.map fun (l, b) =>
+          (l, sccpMultiBlock (st.blockStates l).inEnv b) } l1 l2 →
+        IsSuccessor f l1 l2 := by
+      intro l1 l2 ⟨blk', hblk', hmem⟩
+      obtain ⟨blk, hblk, rfl⟩ := blocks_map_gen_some_rev f
+        (fun l b => sccpMultiBlock (st.blockStates l).inEnv b) l1 blk' hblk'
+      exact ⟨blk, hblk, by simp only [sccpMultiBlock, termSuccessors] at hmem ⊢; exact hmem⟩
+    -- Reachable in mapped → Reachable in original
+    have hreach_back : ∀ l1 l2,
+        Reachable { f with blockList := f.blockList.map fun (l, b) =>
+          (l, sccpMultiBlock (st.blockStates l).inEnv b) } l1 l2 →
+        Reachable f l1 l2 := by
+      intro l1 l2 hr
+      induction hr with
+      | refl => exact .refl _
+      | step a b c hab _ ih => exact .step a b c (hsucc_back a b hab) ih
+    -- CFGPath in mapped → CFGPath in original
+    have hpath_back : ∀ src dst path,
+        CFGPath { f with blockList := f.blockList.map fun (l, b) =>
+          (l, sccpMultiBlock (st.blockStates l).inEnv b) } src dst path →
+        CFGPath f src dst path := by
+      intro src dst path hp
+      induction hp with
+      | single l => exact .single l
+      | cons l₁ l₂ d rest hedge _ ih =>
+        exact .cons l₁ l₂ d rest (hsucc_back l₁ l₂ hedge) ih
+    show Dom { f with blockList := f.blockList.map fun (l, b) =>
+      (l, sccpMultiBlock (st.blockStates l).inEnv b) } b_def b_use
+    intro hreach path hpath
+    have hpath_orig := hpath_back _ _ _ hpath
+    exact hdom_orig (cfgPath_implies_reachable hpath_orig) path hpath_orig
   · show ((sccpMultiApply f st).blocks (sccpMultiApply f st).entry).isSome
     unfold sccpMultiApply
     exact mapFunc_blocks_isSome_gen (fun ⟨l, _⟩ => by simp) h.entry_exists
@@ -696,7 +748,62 @@ theorem guardHoist_preserves_ssa (f : Func) (h : SSAWellFormed f) :
       DefinedIn (guardHoistFunc f) v lbl₂ → lbl₁ = lbl₂
     unfold guardHoistFunc
     exact unique_defs_of_mapFunc f (guardHoistBlock []) (guardHoistBlock_defs []) h.unique_defs
-  · sorry  -- Dominance unchanged; identity RHS only uses the dst itself
+  · -- use_dom_def: guardHoist may introduce new uses (`.var i.dst`),
+    -- but those are defined in the same block → Dom reflexive.
+    -- Original uses transfer via dom_mapFunc_iff (terminators unchanged).
+    intro v b_use b_def huse hdef
+    unfold guardHoistFunc at huse hdef
+    have hdefs := guardHoistBlock_defs ([] : ProvenGuards)
+    have hdef_orig := (definedIn_mapFunc_iff f (guardHoistBlock []) hdefs v b_def).mp hdef
+    obtain ⟨blk', hblk', hv_use⟩ := huse
+    obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_rev f (guardHoistBlock []) b_use blk' hblk'
+    by_cases hv_orig : v ∈ blockAllUses blk
+    · -- v was used in the original block
+      have huse_orig : UsedIn f v b_use := ⟨blk, hblk, hv_orig⟩
+      have hdom_orig := h.use_dom_def v b_use b_def huse_orig hdef_orig
+      exact (dom_mapFunc_iff f (guardHoistBlock []) (fun b => rfl) b_def b_use).mpr hdom_orig
+    · -- v is a NEW use from `.var i.dst`. So v ∈ blockAllDefs blk.
+      have hv_in_defs : v ∈ blockAllDefs blk := by
+        simp only [blockAllUses, guardHoistBlock] at hv_use
+        rcases List.mem_append.mp hv_use with hi | ht
+        · -- v in instruction uses of guardHoistInstrs but not in original
+          simp only [blockAllDefs]
+          apply List.mem_append_right
+          have hv_not_orig_instr : v ∉ blk.instrs.flatMap (fun i => exprVars i.rhs) := by
+            intro hc; exact hv_orig (List.mem_append_left _ hc)
+          -- Any use in guardHoistInstrs is either original or an instr dst
+          suffices hsuff : ∀ (proven : ProvenGuards) (instrs : List Instr),
+            ∀ w, w ∈ (guardHoistInstrs proven instrs).flatMap (fun i => exprVars i.rhs) →
+            w ∈ instrs.flatMap (fun i => exprVars i.rhs) ∨ w ∈ instrs.map Instr.dst by
+            rcases hsuff [] blk.instrs v hi with h_orig | h_dst
+            · exact absurd h_orig hv_not_orig_instr
+            · exact h_dst
+          intro proven instrs
+          induction instrs generalizing proven with
+          | nil => simp [guardHoistInstrs]
+          | cons i rest ih =>
+            intro w hw
+            simp only [guardHoistInstrs, List.flatMap_cons, List.mem_append] at hw
+            rcases hw with hw_hd | hw_tl
+            · simp only [guardHoistInstr] at hw_hd
+              split at hw_hd
+              · left; exact List.mem_append_left _ hw_hd
+              · rename_i g _
+                split at hw_hd
+                · simp only [exprVars] at hw_hd
+                  rcases List.mem_cons.mp hw_hd with rfl | habs
+                  · right; exact List.mem_cons_self _ _
+                  · exact absurd habs (List.not_mem_nil _)
+                · left; exact List.mem_append_left _ hw_hd
+            · rcases ih _ w hw_tl with h_rest | h_dst_rest
+              · left; exact List.mem_append_right _ h_rest
+              · right; exact List.mem_cons_of_mem _ h_dst_rest
+        · -- v in termVars (unchanged), contradicts hv_orig
+          exact absurd (List.mem_append_right _ ht) hv_orig
+      have hdef_at_use : DefinedIn f v b_use := ⟨blk, hblk, hv_in_defs⟩
+      have heq : b_def = b_use := h.unique_defs v b_def b_use hdef_orig hdef_at_use
+      rw [heq]
+      exact (dom_mapFunc_iff f (guardHoistBlock []) (fun b => rfl) b_use b_use).mpr (Dom.refl f b_use)
   · -- Entry preserved
     show ((guardHoistFunc f).blocks (guardHoistFunc f).entry).isSome
     unfold guardHoistFunc
