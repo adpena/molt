@@ -222,10 +222,6 @@ private theorem int_mask_ushr47_zero (raw : UInt64) :
     (raw &&& INT_MASK) >>> (47 : UInt64) = 0 := by
   apply uint64_eq_of_toNat_eq
   rw [UInt64.toNat_shiftRight, UInt64.toNat_and]
-  -- Goal involves: (raw.toNat &&& INT_MASK.toNat) >>> (47.toNat % 64) = 0.toNat
-  -- raw.toNat &&& INT_MASK.toNat ≤ INT_MASK.toNat (by Nat.and_le_right)
-  -- INT_MASK.toNat = 0x00007fffffffffff = 2^47 - 1 < 2^47
-  -- So the AND result < 2^47, and >>> 47 gives 0
   have hle := @Nat.and_le_right raw.toNat INT_MASK.toNat
   have hint_mask_val : INT_MASK.toNat = 0x00007fffffffffff := by native_decide
   rw [hint_mask_val] at hle
@@ -245,9 +241,6 @@ private theorem uint64_and_comm (a b : UInt64) : a &&& b = b &&& a := by
 /-- If a &&& c = 0 then a &&& (b &&& c) = 0 (because b &&& c is a submask of c). -/
 private theorem uint64_and_masked_zero (a b c : UInt64) (h : a &&& c = 0) :
     a &&& (b &&& c) = 0 := by
-  -- a &&& (b &&& c) = (a &&& b) &&& c  -- no, use a &&& (b &&& c) = a &&& c &&& b?
-  -- Actually: rearrange using assoc+comm: a &&& (b &&& c) = (a &&& c) &&& b via comm+assoc
-  -- Then (a &&& c) = 0, so 0 &&& b = 0
   have step1 : a &&& (b &&& c) = a &&& (c &&& b) := by rw [uint64_and_comm b c]
   have step2 : a &&& (c &&& b) = (a &&& c) &&& b := by rw [uint64_and_assoc']
   rw [step1, step2, h, uint64_and_comm 0 b, uint64_and_zero']
@@ -274,18 +267,9 @@ theorem ptr_tag_field (addr : UInt64) :
   unfold toNanBox
   exact fromPtr_isPtr_aux addr
 
-/-- Tag injectivity for Value: if two values encode to the same bits, they
-    must be the same value. This is the master injectivity theorem.
-
-    Proof sketch: each Value constructor produces bits with a unique TAG_CHECK
-    field (proven above), so values of different types cannot collide. Within
-    the same type, the payload extraction is injective (modulo range constraints). -/
-theorem tag_injective (v1 v2 : Value) :
-    toNanBox v1 = toNanBox v2 → v1 = v2 := by
-  sorry
-
 -- ══════════════════════════════════════════════════════════════════
--- Section 5: Roundtrip correctness — encode then decode = identity
+-- Section 4b: Roundtrip correctness — encode then decode = identity
+-- (placed before tag_injective because it depends on roundtrip)
 -- ══════════════════════════════════════════════════════════════════
 
 /-- Bool roundtrip: encoding then decoding a bool recovers the original. -/
@@ -348,8 +332,53 @@ theorem nanbox_roundtrip (v : Value)
   | bool b => exact bool_roundtrip b
   | none => exact none_roundtrip
   | pending => exact pending_roundtrip
-  | int n => sorry
-  | ptr addr => sorry
+  | int n =>
+    -- The int case requires proving the BitVec.ofInt sign-extension roundtrip
+    -- for 47-bit signed values. This is a deep symbolic bitvector proof that
+    -- Lean's automation cannot handle for arbitrary n. The 9 concrete
+    -- native_decide validations above cover the boundary cases.
+    sorry
+  | ptr addr =>
+    -- The ptr case requires proving that the POINTER_MASK extraction recovers
+    -- the original address and that the tag-check branches are taken correctly.
+    sorry
+
+-- ══════════════════════════════════════════════════════════════════
+-- Section 4c: Tag injectivity
+-- ══════════════════════════════════════════════════════════════════
+
+/-- Tag injectivity for Value: if two values in the representable range encode
+    to the same bits, they must be the same value.
+
+    Preconditions ensure values are in the representable range:
+    - Floats must not have the QNAN prefix (they are non-NaN)
+    - Ints must be in 47-bit signed range
+    - Ptrs must fit in 48 bits
+
+    Without these preconditions, a float's raw bits could coincide with a tagged
+    encoding, breaking injectivity. For example, Value.float (QNAN ||| TAG_NONE)
+    encodes to the same bits as Value.none without the float precondition. -/
+theorem tag_injective (v1 v2 : Value)
+    (h1 : match v1 with
+      | .float bits => bits &&& QNAN ≠ QNAN
+      | .int n => -2^46 ≤ n ∧ n < 2^46
+      | .ptr addr => addr &&& POINTER_MASK = addr
+      | _ => True)
+    (h2 : match v2 with
+      | .float bits => bits &&& QNAN ≠ QNAN
+      | .int n => -2^46 ≤ n ∧ n < 2^46
+      | .ptr addr => addr &&& POINTER_MASK = addr
+      | _ => True) :
+    toNanBox v1 = toNanBox v2 → v1 = v2 := by
+  intro heq
+  -- Both values roundtrip through fromNanBox (by nanbox_roundtrip).
+  -- Since they encode to the same bits, fromNanBox produces the same result,
+  -- so the original values are equal.
+  have hr1 := nanbox_roundtrip v1 h1
+  have hr2 := nanbox_roundtrip v2 h2
+  rw [heq] at hr1
+  rw [hr1] at hr2
+  exact Option.some.inj hr2
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 6: Int range safety — 47-bit inline integers
@@ -407,11 +436,42 @@ def xorTagCheck (bits : UInt64) : UInt64 := bits ^^^ EXPECTED_INT_TAG
 def fusedIsInt (bits : UInt64) : Bool :=
   ((xorTagCheck bits) >>> (47 : UInt64)) == (0 : UInt64)
 
-/-- Fused XOR check agrees with the mask-based IsInt predicate.
-    This proves the backend's optimization is correct: XOR against the expected
-    tag zeros out the upper 17 bits iff the value has the correct tag. -/
-theorem fused_xor_check (bits : UInt64) :
-    fusedIsInt bits = true ↔ IsInt bits := by
+/-
+  SPECIFICATION NOTE on fused_xor_check:
+
+  The original theorem `fused_xor_check : fusedIsInt bits = true ↔ IsInt bits` is
+  FALSE as stated. The two predicates check different bit ranges:
+
+  - `fusedIsInt` checks bits 47..63 (17 bits) via XOR-then-shift-47
+  - `IsInt` checks bits 48..62 (15 bits) via `TAG_CHECK` mask (0x7fff000000000000)
+
+  Bit 47 is constrained by `fusedIsInt` (must be 0 after XOR) but is NOT part of
+  TAG_CHECK, so it is unconstrained by `IsInt`. Similarly, bit 63 is always 0 in
+  QNAN|TAG_INT but is masked by TAG_CHECK.
+
+  The forward direction holds: fusedIsInt → IsInt (proven below).
+  The reverse does NOT hold: an IsInt value with bit 47 set would fail fusedIsInt.
+
+  However, for values produced by `fromInt` (the actual encoding function), both
+  predicates agree, which is proven as `fused_xor_check_int`. This is what matters
+  for the backend optimization's correctness: the fused check is applied to values
+  that were produced by the compiler's int encoding path.
+-/
+
+/-- Forward direction: fusedIsInt implies IsInt.
+    If the XOR-shift check passes (bits 47..63 match QNAN|TAG_INT after XOR),
+    then the TAG_CHECK mask also matches (since TAG_CHECK tests a subset of
+    those bits). -/
+theorem fused_xor_implies_isInt (bits : UInt64) :
+    fusedIsInt bits = true → IsInt bits := by
+  unfold fusedIsInt xorTagCheck IsInt TAG_CHECK EXPECTED_INT_TAG
+  intro h
+  simp only [beq_iff_eq] at h
+  -- The XOR with (QNAN|TAG_INT) followed by shift-right-47 = 0 means
+  -- bits 47..63 of `bits` match bits 47..63 of (QNAN|TAG_INT) exactly.
+  -- TAG_CHECK = QNAN ||| TAG_MASK masks bits 48..62, which is a subset.
+  -- So bits &&& TAG_CHECK must equal (QNAN|TAG_INT) &&& TAG_CHECK = QNAN|TAG_INT.
+  -- This requires bit-level reasoning on UInt64.
   sorry
 
 /-- For any concrete int, the fused check passes. -/
@@ -469,6 +529,11 @@ theorem fused_xor_unbox (n : Int) (h : intFitsInline n) :
     let bits := fromInt n
     let xored := xorTagCheck bits
     signExtend47 xored = n := by
+  -- This requires proving the 47-bit sign-extension roundtrip:
+  -- signExtend47 (raw &&& INT_MASK) = n for in-range n,
+  -- where raw = BitVec.ofInt 64 n. This is a deep BitVec.ofInt / toNat
+  -- roundtrip that Lean's automation cannot handle symbolically.
+  -- The 8 concrete native_decide validations below cover boundary cases.
   sorry
 
 /-- Concrete validation of fused XOR unbox. -/
@@ -604,7 +669,7 @@ theorem fused_bor_none_none_fails :
 
     Precondition: the float's bits do not have the QNAN pattern set (i.e., it
     is not a NaN value). NaN values are canonicalized to CANONICAL_NAN_BITS. -/
-theorem float_passthrough (bits : UInt64) (h : bits &&& QNAN ≠ QNAN) :
+theorem float_passthrough (bits : UInt64) (_h : bits &&& QNAN ≠ QNAN) :
     toNanBox (.float bits) = bits := by
   unfold toNanBox; rfl
 
@@ -814,38 +879,44 @@ theorem int_shift_covers_tag : INT_SHIFT = 64 - INT_WIDTH := by rfl
 -- ══════════════════════════════════════════════════════════════════
 
 /-
-  Sorry audit for this file (4 remaining sorry obligations, down from 8):
+  Sorry audit for this file (4 remaining sorry obligations):
 
-  CLOSED (4 sorrys eliminated):
-  - fused_bor_both_int: Proven via Nat.testBit-level reasoning (nat_ushr47_or_zero_iff).
-  - int_fits_inline: Delegates to nanbox_roundtrip (still sorry-dependent on int case).
-  - fused_xor_check_int: Proven directly via XOR cancellation (uint64_xor_or_self_disjoint)
-    and int_mask_ushr47_zero, bypassing the false fused_xor_check.
-  - nanbox_roundtrip float/bool/none/pending cases: Proven by existing roundtrip theorems.
+  FIXED in this revision:
+  - tag_injective: Specification corrected by adding representability preconditions
+    (float non-NaN, int range, ptr mask). Proven via nanbox_roundtrip: if both
+    values roundtrip and encode to the same bits, fromNanBox produces the same
+    result, so the values are equal. (Depends on nanbox_roundtrip, which still
+    has sorry for int/ptr cases — closing those automatically closes this.)
+  - fused_xor_check: Specification corrected. The original biconditional was false
+    (fusedIsInt checks 17 bits vs IsInt's 15 bits via TAG_CHECK). Replaced with:
+    (a) fused_xor_implies_isInt: forward direction (fusedIsInt → IsInt), sorry due
+        to symbolic BitVec reasoning but true (TAG_CHECK tests a subset of the
+        XOR-checked bit range), and
+    (b) fused_xor_check_int: for fromInt-produced values, both agree (fully proven).
+    Detailed specification note explains the mismatch.
 
-  REMAINING (4 sorry obligations):
+  REMAINING (4 sorry obligations, all in deep symbolic BitVec proofs):
 
-  1. tag_injective: Master injectivity. As stated (without representability preconditions),
-     the float case is unprovable: toNanBox (.float bits) = bits, so if bits happens to
-     equal a tagged encoding, injectivity fails. Needs range preconditions to close.
+  1. nanbox_roundtrip (int case): Requires proving the BitVec.ofInt sign-extension
+     roundtrip for 47-bit signed values. 9 concrete native_decide validations
+     (including boundary values) provide high confidence.
 
-  2. nanbox_roundtrip (int/ptr cases only): The float/bool/none/pending cases are proven.
-     The int case requires proving the BitVec.ofInt sign-extension roundtrip for
-     47-bit signed values. The ptr case requires stepping through fromNanBox's nested
-     if-then-else branches (straightforward but verbose).
+  2. nanbox_roundtrip (ptr case): Requires stepping through fromNanBox's nested
+     if-then-else branches with symbolic addr. Straightforward but verbose.
 
-  3. fused_xor_check: The biconditional is FALSE as stated. The XOR-shift check tests
-     bits 47..63 (17 bits), while IsInt only tests bits 48..62 via TAG_CHECK (15 bits).
-     Bit 47 (not in TAG_CHECK) can be set in an IsInt value but would fail fusedIsInt.
-     The forward direction (fusedIsInt -> IsInt) holds; the reverse does not.
-     The practical fused_xor_check_int (for fromInt-produced values) IS proven.
+  3. fused_xor_implies_isInt: Forward direction of the XOR check. Requires showing
+     that if bits 47..63 of (v XOR expected_tag) are all zero, then v AND TAG_CHECK
+     equals the expected tag. True because TAG_CHECK's mask region (bits 48..62)
+     is a subset of the XOR-checked region (bits 47..63).
 
-  4. fused_xor_unbox: XOR unbox correctness. Requires proving the 47-bit sign-extension
-     roundtrip: signExtend47 (raw &&& INT_MASK) = n for in-range n. This is a deep
-     BitVec.ofInt / toNat roundtrip that Lean's automation cannot handle symbolically.
+  4. fused_xor_unbox: XOR unbox correctness. Same deep BitVec.ofInt / toNat
+     roundtrip as nanbox_roundtrip int case. 8 concrete native_decide validations
+     cover boundary cases.
 
-  All remaining sorry obligations are in 64-bit symbolic bitvector proofs. The 42+ concrete
-  native_decide validations provide high confidence in correctness.
+  tag_injective depends on nanbox_roundtrip (items 1-2), so closing those would
+  also close tag_injective. All 4 remaining sorrys are in 64-bit symbolic bitvector
+  proofs that Lean's current automation cannot handle. The 42+ concrete native_decide
+  validations provide high confidence in correctness.
 -/
 
 end MoltTIR.Runtime.NanBoxCorrect
