@@ -380,6 +380,38 @@ theorem sccpBlock_defs (σ : AbsEnv) (b : Block) :
     blockAllDefs (sccpBlock σ b).2 = blockAllDefs b := by
   simp only [blockAllDefs, sccpBlock, sccpInstrs_dsts]
 
+/-- SCCP instruction uses are a subset of original uses. -/
+theorem sccpInstrs_uses_subset (σ : AbsEnv) (instrs : List Instr) :
+    ∀ v, v ∈ (sccpInstrs σ instrs).2.bind (fun i => exprVars i.rhs) →
+         v ∈ instrs.bind (fun i => exprVars i.rhs) := by
+  induction instrs generalizing σ with
+  | nil => simp [sccpInstrs]
+  | cons i rest ih =>
+    intro v hv
+    simp only [sccpInstrs, List.bind, List.mem_append] at hv ⊢
+    sorry
+    -- TODO(formal, owner:compiler, milestone:M4, priority:P1, status:partial):
+    -- SCCP instruction RHS is either .val (no vars) or unchanged.
+    -- Needs careful case split on absEvalExpr result.
+
+/-- SCCP block uses are a subset of original block uses. -/
+theorem sccpBlock_uses_subset (σ : AbsEnv) (b : Block) :
+    ∀ v ∈ blockAllUses (sccpBlock σ b).2, v ∈ blockAllUses b := by
+  intro v hv
+  simp only [blockAllUses, sccpBlock] at hv ⊢
+  rcases List.mem_append.mp hv with hi | ht
+  · exact List.mem_append_left _ (sccpInstrs_uses_subset σ b.instrs v hi)
+  · exact List.mem_append_right _ ht
+
+/-- UsedIn in SCCP'd function implies UsedIn in original. -/
+private theorem usedIn_sccpFunc_imp (f : Func) (v : Var) (lbl : Label)
+    (h : UsedIn (sccpFunc f) v lbl) : UsedIn f v lbl := by
+  obtain ⟨blk', hblk', hv⟩ := h
+  unfold sccpFunc at hblk'
+  obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_rev f
+    (fun b => (sccpBlock AbsEnv.top b).2) lbl blk' hblk'
+  exact ⟨blk, hblk, sccpBlock_uses_subset AbsEnv.top blk v hv⟩
+
 /-- SCCP preserves SSA: it only replaces RHS with constants. -/
 theorem sccp_preserves_ssa (f : Func) (h : SSAWellFormed f) :
     SSAWellFormed (sccpFunc f) := by
@@ -388,7 +420,14 @@ theorem sccp_preserves_ssa (f : Func) (h : SSAWellFormed f) :
       DefinedIn (sccpFunc f) v lbl₂ → lbl₁ = lbl₂
     unfold sccpFunc
     exact unique_defs_of_mapFunc f (fun b => (sccpBlock AbsEnv.top b).2) (sccpBlock_defs AbsEnv.top) h.unique_defs
-  · sorry  -- Dominance unchanged
+  · -- use_dom_def: uses subset, defs preserved, dominance preserved
+    intro v b_use b_def huse hdef
+    have huse_orig := usedIn_sccpFunc_imp f v b_use huse
+    have hdef_orig := (definedIn_mapFunc_iff f (fun b => (sccpBlock AbsEnv.top b).2)
+      (sccpBlock_defs AbsEnv.top) v b_def).mp hdef
+    have hdom_orig := h.use_dom_def v b_use b_def huse_orig hdef_orig
+    exact (dom_mapFunc_iff f (fun b => (sccpBlock AbsEnv.top b).2)
+      (fun b => rfl) b_def b_use).mpr hdom_orig
   · -- Entry preserved
     show ((sccpFunc f).blocks (sccpFunc f).entry).isSome
     unfold sccpFunc
