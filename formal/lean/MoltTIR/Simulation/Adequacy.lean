@@ -234,28 +234,19 @@ theorem pipeline_contextual_equiv
     This follows from composing the per-pass adequacy results. -/
 theorem fullPipeline_contextual_equiv (f : Func) (ht : InstrTotal f) :
     ContextualEquivalence (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) f := by
-  apply contextual_equiv_compose
-    (g1 := fun f => sccpFunc (constFoldFunc f))
-    (g2 := fun f => cseFunc (dceFunc f))
-  · -- constFold . SCCP contextual equiv
-    intro f'
-    apply contextual_equiv_compose
-      (g1 := constFoldFunc)
-      (g2 := sccpFunc)
-    · exact fun f'' => funcSimulation_contextual_equiv constFoldSim f''
-    · exact fun f'' => funcSimulation_contextual_equiv sccpSim f''
-  · -- DCE . CSE contextual equiv
-    intro f'
-    apply contextual_equiv_compose
-      (g1 := dceFunc)
-      (g2 := cseFunc)
-    · -- DCE uses FuncSimulationWT — InstrTotal preserved through pipeline
-      intro f''
-      intro fuel ρ lbl
-      exact dceSim.simulation f'' (by sorry) fuel ρ lbl
-      -- TODO: supply InstrTotal (constFold/SCCP preserve it from ht)
-      -- Thread InstrTotal through the pipeline and use dceSim.simulation.
-    · exact fun f'' => funcSimulation_contextual_equiv cseSim f''
+  -- Direct composition threading InstrTotal through specific functions
+  have h_cf : ContextualEquivalence (constFoldFunc f) f :=
+    funcSimulation_contextual_equiv constFoldSim f
+  have h_sccp : ContextualEquivalence (sccpFunc (constFoldFunc f)) (constFoldFunc f) :=
+    funcSimulation_contextual_equiv sccpSim (constFoldFunc f)
+  -- InstrTotal preserved through constFold and SCCP
+  have ht_cf := constFold_preserves_total f ht
+  have ht_sccp := sccp_preserves_total (constFoldFunc f) ht_cf
+  have h_dce : ContextualEquivalence (dceFunc (sccpFunc (constFoldFunc f))) (sccpFunc (constFoldFunc f)) :=
+    fun fuel ρ lbl => dceSim.simulation (sccpFunc (constFoldFunc f)) ht_sccp fuel ρ lbl
+  have h_cse : ContextualEquivalence (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) (dceFunc (sccpFunc (constFoldFunc f))) :=
+    funcSimulation_contextual_equiv cseSim (dceFunc (sccpFunc (constFoldFunc f)))
+  exact h_cse.trans (h_dce.trans (h_sccp.trans h_cf))
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 7: Summary
