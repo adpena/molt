@@ -231,8 +231,8 @@ theorem compilation_preserves_semantics (prog : MoltProgram)
     (fuel : Nat) :
     observeProgram (compile prog) fuel = observeProgram prog fuel := by
   sorry
-  -- Architecture: compile_entryFunc + fullPipeline_behavioral_equiv close this.
-  -- The tactic proof is fragile due to observe/match unfolding.
+  -- TODO: compile_entryFunc + fullPipeline_behavioral_equiv.
+  -- Tactic proof blocked by observe/match unfolding in Lean 4.16.
 
 /-- **Theorem 2: Forward simulation (function level).**
 
