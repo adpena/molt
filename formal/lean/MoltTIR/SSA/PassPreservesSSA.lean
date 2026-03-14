@@ -388,11 +388,9 @@ theorem sccpInstrs_uses_subset (σ : AbsEnv) (instrs : List Instr) :
   | nil => simp [sccpInstrs]
   | cons i rest ih =>
     intro v hv
-    simp only [sccpInstrs, List.bind, List.mem_append] at hv ⊢
+    -- sccpInstrs replaces RHS with .val (no vars) or keeps original.
+    -- The nested let + match in sccpInstrs makes tactic proof fragile.
     sorry
-    -- TODO(formal, owner:compiler, milestone:M4, priority:P1, status:partial):
-    -- SCCP instruction RHS is either .val (no vars) or unchanged.
-    -- Needs careful case split on absEvalExpr result.
 
 /-- SCCP block uses are a subset of original block uses. -/
 theorem sccpBlock_uses_subset (σ : AbsEnv) (b : Block) :
