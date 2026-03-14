@@ -7,7 +7,7 @@
   - dceSim        — dead code elimination (source step → 0 or 1 target steps)
   - sccpSim       — SCCP (1-to-1 with abstract env soundness)
   - cseSim        — CSE (n-to-1 expression merging, 1-to-1 block steps)
-  - guardHoistSim — guard hoisting (sorry: requires SSA+dominance reasoning)
+  - guardHoistSim — guard hoisting (FuncSimulationWT; preserves_total+simulation sorry)
   - joinCanonSim  — join canonicalization (fully proven via identity mapping)
 
   Each instantiation defines match_states and proves (or stubs with sorry)
@@ -543,7 +543,7 @@ private theorem buildAvail_sound_after_exec (instrs : List Instr) (ρ ρ' : Env)
 /-- CSE instruction list correctness: executing CSE-transformed instructions
     produces the same result as executing the originals, given a sound avail map
     and SSA well-formedness. -/
-private theorem cseInstrs_correct (avail : AvailMap) (ρ : Env) (instrs : List Instr)
+theorem cseInstrs_correct (avail : AvailMap) (ρ : Env) (instrs : List Instr)
     (hsound : AvailMapSound avail ρ)
     (hssa : SSAInstrs instrs)
     (havail_fresh : ∀ j ∈ instrs, AvailFreshWrt avail j.dst) :
@@ -658,7 +658,7 @@ def cseSim : FuncSimulation cseFunc where
   entry_block_none := fun f h => cseFunc_blocks_none f f.entry h
 
 -- ══════════════════════════════════════════════════════════════════
--- Section 5: Guard Hoisting — FuncSimulation
+-- Section 5: Guard Hoisting — FuncSimulationWT
 -- ══════════════════════════════════════════════════════════════════
 
 theorem guardHoistFunc_blocks_some (f : Func) (lbl : Label) (blk : Block)
@@ -674,28 +674,115 @@ theorem guardHoistFunc_blocks_none (f : Func) (lbl : Label)
 theorem guardHoistBlock_params_preserved (b : Block) :
     (guardHoistBlock [] b).params = b.params := rfl
 
-/-- Guard hoisting simulation.
-    The model replaces redundant guards with `.val (.bool true)`.
-    Correctness requires proving that redundant guards always evaluate
-    to `true`. This needs:
-    (1) Guard soundness: isGuardProven means the guard WAS true
-    (2) SSA preservation: the guarded variable x doesn't change between
-        the first and second occurrence
-    (3) The guard expr `not (var x)` is deterministic
-    The real compiler only hoists guards from dominating positions where
-    the guard was tested and branched on (so it WAS true on this path).
-    The simplified model processes intra-block only with empty proven set,
-    so redundancy only occurs when the same guard appears twice in one block.
-    Closing this sorry needs a GuardSoundness invariant threaded through
-    guardHoistInstrs. -/
-def guardHoistSim : FuncSimulation guardHoistFunc where
-  match_env := fun _f ρ lbl ρ' lbl' => ρ = ρ' ∧ lbl = lbl'
-  simulation := fun _f _fuel _ρ _lbl => by sorry
+/-- Guard hoisting preserves evalTerminator: block lookups through the
+    transformed function resolve correctly because guardHoistBlock preserves
+    block params and the terminator is unchanged. -/
+private theorem guardHoist_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
+    evalTerminator (guardHoistFunc f) ρ t = evalTerminator f ρ t := by
+  cases t with
+  | ret e => rfl
+  | jmp target args =>
+    simp only [evalTerminator]
+    match evalArgs ρ args with
+    | none => rfl
+    | some vals =>
+      match hblk : f.blocks target with
+      | none => simp [guardHoistFunc_blocks_none f target hblk]
+      | some blk => simp [guardHoistFunc_blocks_some f target blk hblk,
+                           guardHoistBlock_params_preserved]
+  | br cond tl ta el ea =>
+    simp only [evalTerminator]
+    match evalExpr ρ cond with
+    | some (.bool true) =>
+      match evalArgs ρ ta with
+      | none => rfl
+      | some vals =>
+        match hblk : f.blocks tl with
+        | none => simp [guardHoistFunc_blocks_none f tl hblk]
+        | some blk => simp [guardHoistFunc_blocks_some f tl blk hblk,
+                             guardHoistBlock_params_preserved]
+    | some (.bool false) =>
+      match evalArgs ρ ea with
+      | none => rfl
+      | some vals =>
+        match hblk : f.blocks el with
+        | none => simp [guardHoistFunc_blocks_none f el hblk]
+        | some blk => simp [guardHoistFunc_blocks_some f el blk hblk,
+                             guardHoistBlock_params_preserved]
+    | some (.int _) => rfl
+    | some (.float _) => rfl
+    | some (.str _) => rfl
+    | some .none => rfl
+    | none => rfl
+
+/-- Guard hoisting preserves InstrTotal.
+
+    For each block, guardHoistInstrs replaces some guard RHSs with
+    `.val (.bool true)`. Since `evalExpr ρ (.val v) = some v` always
+    succeeds, and non-guard instructions are unchanged, totality is preserved.
+
+    The env threading requires showing that downstream instructions still
+    evaluate when a guard destination holds `.bool true` instead of the
+    original guard result. This follows from InstrTotal (which gives
+    evaluation under ANY env) but the formal connection between
+    full-block totality and per-suffix totality requires a stronger
+    InstrTotal formulation (per-instruction RHS totality).
+
+    TODO(formal, owner:compiler, milestone:M5, priority:P2, status:partial):
+    Strengthen InstrTotal to per-instruction eval totality, then close. -/
+theorem guardHoist_preserves_total (f : Func) (ht : InstrTotal f) :
+    InstrTotal (guardHoistFunc f) := by
+  sorry
+
+/-- Guard hoisting correctness under InstrTotal (well-typed IR).
+
+    This is the core simulation step:
+      `execFunc (guardHoistFunc f) fuel ρ lbl = execFunc f fuel ρ lbl`
+
+    The proof requires establishing that for each block, the guard-hoisted
+    instructions produce an environment that agrees with the original on
+    all variables read by the terminator. The key gaps:
+
+    (1) Guard redundancy soundness: when `isGuardProven proven g` is true,
+        the guard `un .not (var x)` would produce the SAME value as a
+        previous occurrence in the same block (SSA + determinism).
+
+    (2) The replacement `.bool true` may differ from the original guard
+        result. Correctness requires either:
+        (a) Guard-output irrelevance: terminators never read guard dsts, OR
+        (b) Guard-value agreement: proven guards evaluate to `.bool true`.
+
+    (3) Path (b) matches the real compiler (guards that pass produce true)
+        but this simplified formal model uses `not` as the guard op, which
+        doesn't capture the pass/fail semantics directly.
+
+    TODO(formal, owner:compiler, milestone:M5, priority:P2, status:partial):
+    Close with GuardSoundness invariant + guard-value-agreement model. -/
+private theorem guardHoistFunc_correct_wt (f : Func) (ht : InstrTotal f)
+    (fuel : Nat) (ρ : Env) (lbl : Label) :
+    execFunc (guardHoistFunc f) fuel ρ lbl = execFunc f fuel ρ lbl := by
+  sorry
+
+/-- Guard hoisting simulation (FuncSimulationWT — requires InstrTotal).
+
+    Guard hoisting replaces redundant guards with `.val (.bool true)`.
+    The transformation preserves InstrTotal (guardHoist_preserves_total)
+    and the core simulation step (guardHoistFunc_correct_wt) both carry
+    sorrys that require extending the formal model with:
+    - Per-instruction eval totality (stronger InstrTotal)
+    - GuardSoundness invariant + guard-value-agreement model
+
+    Sorry count: 2
+    (1) guardHoist_preserves_total — env-threading for suffix totality
+    (2) guardHoistFunc_correct_wt — core simulation step -/
+def guardHoistSim : FuncSimulationWT guardHoistFunc where
+  simulation := fun f ht fuel ρ lbl => guardHoistFunc_correct_wt f ht fuel ρ lbl
   entry_preserved := fun _ => rfl
   entry_block_some := fun f blk h =>
     ⟨guardHoistBlock [] blk, guardHoistFunc_blocks_some f f.entry blk h,
      guardHoistBlock_params_preserved blk⟩
   entry_block_none := fun f h => guardHoistFunc_blocks_none f f.entry h
+  preserves_total := fun f ht => guardHoist_preserves_total f ht
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 6: Join Canonicalization — FuncSimulation (fully proven)
@@ -719,14 +806,14 @@ def joinCanonSim : FuncSimulation joinCanonFunc where
 -- ══════════════════════════════════════════════════════════════════
 
 /-
-  | Pass       | Type             | execFunc | blocks |
-  |------------|:----------------:|:--------:|:------:|
-  | ConstFold  | FuncSimulation   |    Y     |   Y    |
-  | DCE        | FuncSimulationWT | Y (w/IT) |   Y    |
-  | SCCP       | FuncSimulation   |    Y     |   Y    |
-  | CSE        | FuncSimulation   |  Y (SSA) |   Y    |
-  | GuardHoist | FuncSimulation   |  sorry   |   Y    |
-  | JoinCanon  | FuncSimulation   |    Y     |   Y    |
+  | Pass       | Type             | execFunc     | blocks | preserves_total |
+  |------------|:----------------:|:------------:|:------:|:---------------:|
+  | ConstFold  | FuncSimulation   |      Y       |   Y    |       --        |
+  | DCE        | FuncSimulationWT |   Y (w/IT)   |   Y    |       Y         |
+  | SCCP       | FuncSimulation   |      Y       |   Y    |       --        |
+  | CSE        | FuncSimulation   |   Y (SSA)    |   Y    |       --        |
+  | GuardHoist | FuncSimulationWT | sorry (w/IT) |   Y    |     sorry       |
+  | JoinCanon  | FuncSimulation   |      Y       |   Y    |       --        |
 -/
 
 end MoltTIR
