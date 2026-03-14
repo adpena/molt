@@ -17,6 +17,30 @@ def evalBinOp (op : BinOp) (a b : Value) : Option Value :=
   | .sub, .int x, .int y => some (.int (x - y))
   | .mul, .int x, .int y => some (.int (x * y))
   | .mod, .int x, .int y => if y == 0 then none else some (.int (x % y))
+  | .floordiv, .int x, .int y => if y == 0 then none else some (.int (x / y))
+  | .pow, .int x, .int y =>
+      if y < 0 then none
+      else some (.int (x ^ y.toNat))
+  -- string concatenation
+  | .add, .str x, .str y => some (.str (x ++ y))
+  -- string repetition (str * int)
+  | .mul, .str s, .int n =>
+      if n ≤ 0 then some (.str "")
+      else some (.str (String.join (List.replicate n.toNat s)))
+  | .mul, .int n, .str s =>
+      if n ≤ 0 then some (.str "")
+      else some (.str (String.join (List.replicate n.toNat s)))
+  -- int * float promotion
+  | .add, .int x, .float y => some (.float (x + y))
+  | .sub, .int x, .float y => some (.float (x - y))
+  | .mul, .int x, .float y => some (.float (x * y))
+  | .add, .float x, .int y => some (.float (x + y))
+  | .sub, .float x, .int y => some (.float (x - y))
+  | .mul, .float x, .int y => some (.float (x * y))
+  -- float * float arithmetic
+  | .add, .float x, .float y => some (.float (x + y))
+  | .sub, .float x, .float y => some (.float (x - y))
+  | .mul, .float x, .float y => some (.float (x * y))
   -- comparison (int × int → bool)
   | .eq,  .int x, .int y => some (.bool (x == y))
   | .ne,  .int x, .int y => some (.bool (x != y))
