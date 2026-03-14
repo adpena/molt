@@ -341,7 +341,13 @@ theorem emitRustExpr_correct (names : RustVarNames) (ρ : MoltTIR.Env)
       cases op <;> cases va <;> simp [MoltTIR.evalUnOp] at heval
       all_goals (first
         | (subst heval; simp [emitRustUnOp, evalRustUnOp, valueToRust]; done)
-        | sorry)  -- abs maps to neg (approximation); see emitRustUnOp note
+        | sorry)  -- INTENTIONAL: abs→neg is an intentional model approximation.
+                   -- The real Rust backend emits `i64::abs(x)`, not `-x`, but
+                   -- our RustUnOp model lacks an `abs` constructor. emitRustUnOp
+                   -- maps abs→neg as a placeholder. Since evalUnOp .abs (.int x) =
+                   -- if x<0 then -x else x, while evalRustUnOp .neg (.int x) = -x,
+                   -- the two disagree for x≥0. Closing this requires adding
+                   -- RustUnOp.abs + evalRustUnOp.abs.
     | none => simp [ha_eval] at heval
 
 -- ======================================================================
