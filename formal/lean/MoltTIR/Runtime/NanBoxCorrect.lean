@@ -254,6 +254,36 @@ private theorem int_mask_and_qnan_or_int : INT_MASK &&& (QNAN ||| TAG_INT) = 0 :
 /-- POINTER_MASK &&& (QNAN ||| TAG_PTR) = 0. -/
 private theorem pointer_mask_and_qnan_or_ptr : POINTER_MASK &&& (QNAN ||| TAG_PTR) = 0 := by native_decide
 
+/-- Concrete: POINTER_MASK &&& QNAN = 0. -/
+private theorem pointer_mask_and_qnan : POINTER_MASK &&& QNAN = 0 := by native_decide
+
+/-- Concrete: (QNAN ||| TAG_PTR) &&& POINTER_MASK = 0. -/
+private theorem qnan_or_ptr_and_pointer_mask : (QNAN ||| TAG_PTR) &&& POINTER_MASK = 0 := by native_decide
+
+/-- Concrete: INT_MASK &&& QNAN = 0. -/
+private theorem int_mask_and_qnan : INT_MASK &&& QNAN = 0 := by native_decide
+
+/-- Concrete: (QNAN ||| TAG_INT) &&& INT_MASK = 0. -/
+private theorem qnan_or_int_and_int_mask_v2 : (QNAN ||| TAG_INT) &&& INT_MASK = 0 := by native_decide
+
+/-- Idempotence of AND with POINTER_MASK. -/
+private theorem uint64_and_idem_pointer_mask (a : UInt64) :
+    (a &&& POINTER_MASK) &&& POINTER_MASK = a &&& POINTER_MASK := by
+  apply UInt64.eq_of_toBitVec_eq
+  ext i; simp only [UInt64.toBitVec_and, BitVec.getLsbD_and]
+  cases a.toBitVec.getLsbD i <;> cases POINTER_MASK.toBitVec.getLsbD i <;> rfl
+
+/-- Idempotence of AND with INT_MASK. -/
+private theorem uint64_and_idem_int_mask (a : UInt64) :
+    (a &&& INT_MASK) &&& INT_MASK = a &&& INT_MASK := by
+  apply UInt64.eq_of_toBitVec_eq
+  ext i; simp only [UInt64.toBitVec_and, BitVec.getLsbD_and]
+  cases a.toBitVec.getLsbD i <;> cases INT_MASK.toBitVec.getLsbD i <;> rfl
+
+/-- 0 ||| a = a. -/
+private theorem uint64_zero_or (a : UInt64) : 0 ||| a = a := by
+  cases a with | mk av => show UInt64.mk _ = UInt64.mk _; congr 1; exact BitVec.zero_or
+
 /-- The tag-check property for any raw payload masked by POINTER_MASK.
     Structurally identical to fromInt_isInt_aux from NanBox.lean. -/
 theorem fromPtr_isPtr_aux (raw : UInt64) :
@@ -313,6 +343,195 @@ theorem int_roundtrip_concrete_max_positive :
 theorem int_roundtrip_concrete_min_negative :
     fromNanBox (toNanBox (.int (-70368744177664))) = some (.int (-70368744177664)) := by native_decide
 
+-- ══════════════════════════════════════════════════════════════════
+-- Helper lemmas for ptr and int roundtrip proofs
+-- ══════════════════════════════════════════════════════════════════
+
+/-- The QNAN bits are set in a ptr-encoded value. -/
+private theorem ptr_encoded_qnan (addr : UInt64) :
+    (QNAN ||| TAG_PTR ||| (addr &&& POINTER_MASK)) &&& QNAN = QNAN := by
+  rw [uint64_and_or_distrib_right']
+  have : (QNAN ||| TAG_PTR) &&& QNAN = QNAN := by native_decide
+  rw [this, uint64_and_assoc', pointer_mask_and_qnan, uint64_and_zero', uint64_or_zero']
+
+/-- The payload extraction recovers addr for ptr values. -/
+private theorem ptr_payload_extract (addr : UInt64) (h : addr &&& POINTER_MASK = addr) :
+    (QNAN ||| TAG_PTR ||| (addr &&& POINTER_MASK)) &&& POINTER_MASK = addr := by
+  rw [uint64_and_or_distrib_right', qnan_or_ptr_and_pointer_mask,
+      uint64_and_idem_pointer_mask, h, uint64_zero_or]
+
+/-- The QNAN bits are set in an int-encoded value. -/
+private theorem int_encoded_qnan (raw : UInt64) :
+    (QNAN ||| TAG_INT ||| (raw &&& INT_MASK)) &&& QNAN = QNAN := by
+  rw [uint64_and_or_distrib_right']
+  have : (QNAN ||| TAG_INT) &&& QNAN = QNAN := by native_decide
+  rw [this, uint64_and_assoc', int_mask_and_qnan, uint64_and_zero', uint64_or_zero']
+
+/-- The payload extraction for int values: upper bits vanish, payload is idempotent. -/
+private theorem int_payload_extract (raw : UInt64) :
+    (QNAN ||| TAG_INT ||| (raw &&& INT_MASK)) &&& INT_MASK = raw &&& INT_MASK := by
+  rw [uint64_and_or_distrib_right', qnan_or_int_and_int_mask_v2,
+      uint64_and_idem_int_mask, uint64_zero_or]
+
+/-- Ptr roundtrip: encoding then decoding a pointer recovers the original. -/
+theorem ptr_roundtrip (addr : UInt64) (hrange : addr &&& POINTER_MASK = addr) :
+    fromNanBox (toNanBox (.ptr addr)) = some (.ptr addr) := by
+  simp only [toNanBox]
+  unfold fromNanBox
+  -- Navigate all 7 branches of the if-chain
+  split
+  · -- Cond 1: bits &&& QNAN ≠ QNAN (float) — contradiction
+    rename_i hne; exact absurd (ptr_encoded_qnan addr) hne
+  · -- Cond 1 false; check cond 2
+    split
+    · -- Cond 2: TAG_INT — contradiction
+      rename_i htag
+      exact absurd ((fromPtr_isPtr_aux addr).symm.trans htag) (by native_decide)
+    · -- Cond 2 false; check cond 3
+      split
+      · -- Cond 3: TAG_BOOL — contradiction
+        rename_i htag
+        exact absurd ((fromPtr_isPtr_aux addr).symm.trans htag) (by native_decide)
+      · -- Cond 3 false; check cond 4
+        split
+        · -- Cond 4: TAG_NONE — contradiction
+          rename_i htag
+          exact absurd ((fromPtr_isPtr_aux addr).symm.trans htag) (by native_decide)
+        · -- Cond 4 false; check cond 5
+          split
+          · -- Cond 5: TAG_PTR — correct branch!
+            exact congrArg (some ∘ Value.ptr) (ptr_payload_extract addr hrange)
+          · -- Cond 5 false — contradiction (PTR tag holds by fromPtr_isPtr_aux)
+            -- The accumulated context includes ¬(TAG_CHECK = QNAN ||| TAG_PTR)
+            -- which contradicts fromPtr_isPtr_aux addr.
+            exfalso
+            -- The split for cond 5 put the negation in context
+            rename_i hne5
+            exact hne5 (fromPtr_isPtr_aux addr)
+
+/-- Int roundtrip: encoding then decoding an integer recovers the original.
+    The proof navigates the if-chain in fromNanBox to reach the int branch,
+    then proves the sign-extension extraction recovers n. -/
+theorem int_roundtrip (n : Int) (hrange : -2^46 ≤ n ∧ n < 2^46) :
+    fromNanBox (toNanBox (.int n)) = some (.int n) := by
+  simp only [toNanBox]
+  unfold fromNanBox
+  -- Navigate the if-chain using split
+  split
+  · -- bits &&& QNAN ≠ QNAN — contradiction (QNAN is set in int encoding)
+    rename_i hne
+    exact absurd (int_encoded_qnan (UInt64.mk (BitVec.ofInt 64 n))) hne
+  · split
+    · -- bits &&& TAG_CHECK = QNAN ||| TAG_INT — correct branch!
+      -- After the tag match, we need to show the sign extension recovers n
+      -- Rewrite payload to extract the raw masked value
+      have hpayload := int_payload_extract (UInt64.mk (BitVec.ofInt 64 n))
+      -- The goal has `let payload := bits &&& INT_MASK; if payload ...`
+      -- We need to rewrite the payload and then split on the sign bit.
+      -- Use simp to inline the let and then rw.
+      simp only []
+      rw [hpayload]
+      obtain ⟨hlo, hhi⟩ := hrange
+      split
+      · -- Sign bit is set: payload &&& INT_SIGN ≠ 0 (negative n case)
+        rename_i hsign
+        congr 1
+        -- Need: (raw &&& INT_MASK).toNat - (1 <<< 47) = n
+        -- Convert payload.toNat using BitVec.toNat_ofInt
+        have hpay_toNat : (UInt64.mk (BitVec.ofInt 64 n) &&& INT_MASK).toNat =
+            (n % (2^47 : Int)).toNat := by
+          rw [UInt64.toNat_and, UInt64.toNat_mk, BitVec.toNat_ofInt]
+          have : INT_MASK.toNat = 2^47 - 1 := by native_decide
+          rw [this, Nat.and_pow_two_sub_one_eq_mod]
+          omega
+        rw [hpay_toNat]
+        have h1 : (1 <<< 47 : Nat) = 2^47 := by native_decide
+        rw [h1]
+        -- If n ≥ 0 with sign bit set, contradiction
+        -- If n < 0: n % 2^47 = n + 2^47, result = (n + 2^47).toNat - 2^47 = n
+        by_cases hn : n ≥ 0
+        · -- n ≥ 0: sign bit should be clear, contradiction
+          exfalso; apply hsign
+          apply uint64_eq_of_toNat_eq
+          rw [UInt64.toNat_and, hpay_toNat]
+          have hsv : INT_SIGN.toNat = 2^46 := by native_decide
+          rw [hsv]
+          have hmod47 : n % (2^47 : Int) = n := by omega
+          rw [hmod47]
+          -- Goal: n.toNat &&& 2^46 = (0 : UInt64).toNat
+          have h0val : (0 : UInt64).toNat = 0 := by native_decide
+          rw [h0val]
+          -- n.toNat &&& 2^46 = 0 because n.toNat < 2^46
+          have hnat_small : n.toNat < 2^46 := by omega
+          apply Nat.eq_of_testBit_eq
+          intro i
+          simp only [Nat.testBit_and, Nat.testBit_two_pow, Nat.zero_testBit]
+          by_cases hi : 46 = i
+          · -- i = 46: testBit n.toNat 46 = false since n.toNat < 2^46
+            subst hi
+            simp [Nat.testBit_lt_two_pow hnat_small]
+          · simp [hi]
+        · -- n < 0: payload encodes n + 2^47
+          have hmod47 : n % (2^47 : Int) = n + 2^47 := by omega
+          rw [hmod47]
+          -- Goal: ↑(n + 2^47).toNat - ↑(1 <<< 47) = n
+          have h1 : (1 <<< 47 : Nat) = 2^47 := by native_decide
+          simp only [h1, Int.toNat_of_nonneg (by omega : (0 : Int) ≤ n + 2^47)]
+          -- Goal should be n + 2^47 - ↑(2^47 : Nat) = n
+          -- Need to normalize the Nat→Int coercion
+          -- Goal: Value.int (n + 2^47 - ↑(2^47 : Nat)) = Value.int n
+          congr 1; omega
+      · -- Sign bit is clear: payload &&& INT_SIGN = 0 (non-negative n case)
+        rename_i hsign
+        congr 1
+        have hpay_toNat : (UInt64.mk (BitVec.ofInt 64 n) &&& INT_MASK).toNat =
+            (n % (2^47 : Int)).toNat := by
+          rw [UInt64.toNat_and, UInt64.toNat_mk, BitVec.toNat_ofInt]
+          have : INT_MASK.toNat = 2^47 - 1 := by native_decide
+          rw [this, Nat.and_pow_two_sub_one_eq_mod]
+          omega
+        rw [hpay_toNat]
+        by_cases hn : n ≥ 0
+        · -- n ≥ 0: n % 2^47 = n, ↑n.toNat = n
+          have hmod47 : n % (2^47 : Int) = n := by omega
+          rw [hmod47]
+          -- Goal: ↑n.toNat = n
+          simp only [Int.toNat_of_nonneg (by omega : (0 : Int) ≤ n)]
+        · -- n < 0: sign bit should be set, contradiction
+          exfalso
+          have hn_neg : n < 0 := by omega
+          apply hsign
+          intro h
+          have h0 := congrArg UInt64.toNat h
+          rw [UInt64.toNat_and, hpay_toNat] at h0
+          have : INT_SIGN.toNat = 2^46 := by native_decide
+          rw [this] at h0
+          have hmod47 : n % (2^47 : Int) = n + 2^47 := by omega
+          rw [hmod47] at h0
+          have h0val : (0 : UInt64).toNat = 0 := by native_decide
+          rw [h0val] at h0
+          -- h0: (n + 2^47).toNat &&& 2^46 = 0
+          -- But (n + 2^47).toNat ∈ [2^46, 2^47), so bit 46 is set
+          have hge : (n + 2^47).toNat ≥ 2^46 := by omega
+          have hlt : (n + 2^47).toNat < 2^47 := by omega
+          -- testBit (n + 2^47).toNat 46 = true since value ∈ [2^46, 2^47)
+          have hbit46 : (n + 2^47).toNat.testBit 46 = true := by
+            rw [Nat.testBit_to_div_mod]
+            simp only [decide_eq_true_eq]
+            -- (n + 2^47).toNat / 2^46 % 2 = 1
+            -- Since 2^46 ≤ val < 2^47, val / 2^46 = 1, 1 % 2 = 1
+            omega
+          -- But (x &&& 2^46).testBit 46 = x.testBit 46 && true = x.testBit 46
+          have hcontra : ((n + 2^47).toNat &&& 2^46).testBit 46 = true := by
+            rw [Nat.testBit_and, hbit46, Nat.testBit_two_pow]
+            simp
+          -- h0 says &&& = 0, so testBit 46 = false. Contradiction.
+          rw [h0] at hcontra
+          exact absurd hcontra (by simp [Nat.zero_testBit])
+    · -- TAG_CHECK ≠ QNAN ||| TAG_INT — contradiction
+      rename_i hne
+      exact absurd (fromInt_isInt_aux (UInt64.mk (BitVec.ofInt 64 n))) hne
+
 /-- Master roundtrip theorem: for any Value in the representable range,
     encoding then decoding yields the original value.
 
@@ -332,16 +551,8 @@ theorem nanbox_roundtrip (v : Value)
   | bool b => exact bool_roundtrip b
   | none => exact none_roundtrip
   | pending => exact pending_roundtrip
-  | int n =>
-    -- The int case requires proving the BitVec.ofInt sign-extension roundtrip
-    -- for 47-bit signed values. This is a deep symbolic bitvector proof that
-    -- Lean's automation cannot handle for arbitrary n. The 9 concrete
-    -- native_decide validations above cover the boundary cases.
-    sorry
-  | ptr addr =>
-    -- The ptr case requires proving that the POINTER_MASK extraction recovers
-    -- the original address and that the tag-check branches are taken correctly.
-    sorry
+  | int n => exact int_roundtrip n hrange
+  | ptr addr => exact ptr_roundtrip addr hrange
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 4c: Tag injectivity
@@ -879,44 +1090,33 @@ theorem int_shift_covers_tag : INT_SHIFT = 64 - INT_WIDTH := by rfl
 -- ══════════════════════════════════════════════════════════════════
 
 /-
-  Sorry audit for this file (4 remaining sorry obligations):
+  Sorry audit for this file (2 remaining sorry obligations):
 
-  FIXED in this revision:
-  - tag_injective: Specification corrected by adding representability preconditions
-    (float non-NaN, int range, ptr mask). Proven via nanbox_roundtrip: if both
-    values roundtrip and encode to the same bits, fromNanBox produces the same
-    result, so the values are equal. (Depends on nanbox_roundtrip, which still
-    has sorry for int/ptr cases — closing those automatically closes this.)
-  - fused_xor_check: Specification corrected. The original biconditional was false
-    (fusedIsInt checks 17 bits vs IsInt's 15 bits via TAG_CHECK). Replaced with:
-    (a) fused_xor_implies_isInt: forward direction (fusedIsInt → IsInt), sorry due
-        to symbolic BitVec reasoning but true (TAG_CHECK tests a subset of the
-        XOR-checked bit range), and
-    (b) fused_xor_check_int: for fromInt-produced values, both agree (fully proven).
-    Detailed specification note explains the mismatch.
+  CLOSED in this revision:
+  - nanbox_roundtrip (int case): Proven via int_roundtrip. The proof navigates
+    the fromNanBox if-chain using split, then proves the sign-extension roundtrip
+    by converting UInt64 AND to Nat mod (via Nat.and_pow_two_sub_one_eq_mod),
+    case-splitting on n ≥ 0 vs n < 0, and using testBit for sign-bit reasoning.
+  - nanbox_roundtrip (ptr case): Proven via ptr_roundtrip. Navigates the if-chain
+    and shows payload extraction recovers the original address via disjointness
+    of tag bits and POINTER_MASK bits.
+  - tag_injective: Now fully proven (was blocked by nanbox_roundtrip sorry).
 
-  REMAINING (4 sorry obligations, all in deep symbolic BitVec proofs):
+  PREVIOUSLY FIXED:
+  - tag_injective: Specification corrected with representability preconditions.
+  - fused_xor_check: Specification corrected (biconditional was false).
 
-  1. nanbox_roundtrip (int case): Requires proving the BitVec.ofInt sign-extension
-     roundtrip for 47-bit signed values. 9 concrete native_decide validations
-     (including boundary values) provide high confidence.
+  REMAINING (2 sorry obligations, both in symbolic BitVec proofs):
 
-  2. nanbox_roundtrip (ptr case): Requires stepping through fromNanBox's nested
-     if-then-else branches with symbolic addr. Straightforward but verbose.
-
-  3. fused_xor_implies_isInt: Forward direction of the XOR check. Requires showing
+  1. fused_xor_implies_isInt: Forward direction of the XOR check. Requires showing
      that if bits 47..63 of (v XOR expected_tag) are all zero, then v AND TAG_CHECK
      equals the expected tag. True because TAG_CHECK's mask region (bits 48..62)
-     is a subset of the XOR-checked region (bits 47..63).
+     is a subset of the XOR-checked region (bits 47..63). Concrete validations
+     cover all tag patterns.
 
-  4. fused_xor_unbox: XOR unbox correctness. Same deep BitVec.ofInt / toNat
-     roundtrip as nanbox_roundtrip int case. 8 concrete native_decide validations
-     cover boundary cases.
-
-  tag_injective depends on nanbox_roundtrip (items 1-2), so closing those would
-  also close tag_injective. All 4 remaining sorrys are in 64-bit symbolic bitvector
-  proofs that Lean's current automation cannot handle. The 42+ concrete native_decide
-  validations provide high confidence in correctness.
+  2. fused_xor_unbox: XOR unbox correctness. Requires the 47-bit sign-extension
+     roundtrip via shift-left-then-arithmetic-right-shift. 8 concrete native_decide
+     validations cover boundary cases.
 -/
 
 end MoltTIR.Runtime.NanBoxCorrect
