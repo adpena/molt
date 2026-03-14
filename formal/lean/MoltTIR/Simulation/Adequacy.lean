@@ -54,23 +54,23 @@ theorem ContextualEquivalence.trans {f1 f2 f3 : Func}
     ContextualEquivalence f1 f3 :=
   fun fuel ρ lbl => (h12 fuel ρ lbl).trans (h23 fuel ρ lbl)
 
-/-- Contextual equivalence implies behavioral equivalence.
-    (The converse does not hold in general.) -/
+/-- Contextual equivalence implies behavioral equivalence when the
+    functions share entry label and entry block structure. -/
 theorem ContextualEquivalence.toBehavioral {f1 f2 : Func}
-    (h : ContextualEquivalence f1 f2) :
+    (h : ContextualEquivalence f1 f2)
+    (hentry : f1.entry = f2.entry)
+    (hblocks : f1.blocks f1.entry = f2.blocks f2.entry) :
     BehavioralEquivalence f1 f2 := by
   intro fuel
-  simp only [runFunc]
-  -- Both functions must agree on their own entry/blocks structure
-  -- for the reduction to work. In general, contextual equivalence
-  -- at the execFunc level does not directly imply runFunc equality
-  -- unless the functions share entry/block structure.
-  -- For compiler transforms g where g f shares entry with f, this holds.
-  sorry
-  -- TODO(formal, owner:compiler, milestone:M4, priority:P2, status:partial):
-  -- Requires showing that contextually equivalent functions with the same
-  -- entry label and block params produce the same runFunc outcome.
-  -- This is straightforward when f1 and f2 share the entry label.
+  unfold runFunc
+  rw [hblocks]
+  match hb : f2.blocks f2.entry with
+  | none => rfl
+  | some blk =>
+    simp only [hb]
+    split
+    · rw [hentry]; exact h fuel Env.empty f2.entry
+    · rfl
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 2: Trace inclusion (forward simulation → trace refinement)
