@@ -225,14 +225,32 @@ theorem compile_entryFunc (prog : MoltProgram) (f : MoltTIR.Func)
       simp at h
       rw [h]
 
+/-- Helper: behavioral equivalence implies observable equivalence. -/
+private theorem behavioral_equiv_observe {f1 f2 : MoltTIR.Func}
+    (h : BehavioralEquivalence f1 f2) (fuel : Nat) :
+    observe f1 fuel = observe f2 fuel := by
+  unfold observe
+  rw [h fuel]
+
 theorem compilation_preserves_semantics (prog : MoltProgram)
     (hwf : WellFormed prog)
     (ht : ∀ f, prog.entryFunc = some f → InstrTotal f)
     (fuel : Nat) :
     observeProgram (compile prog) fuel = observeProgram prog fuel := by
-  sorry
-  -- TODO: compile_entryFunc + fullPipeline_behavioral_equiv.
-  -- Tactic proof blocked by observe/match unfolding in Lean 4.16.
+  unfold observeProgram
+  -- Case split on whether the entry function exists
+  cases hentry : prog.entryFunc with
+  | none =>
+    -- Contradicts well-formedness: entry_exists says isSome = true
+    have he := hwf.entry_exists
+    rw [hentry] at he
+    simp at he
+  | some f =>
+    -- Rewrite compiled entry using compile_entryFunc
+    have hc := compile_entryFunc prog f hentry
+    rw [hc]
+    -- Now goal is: observe (compileFunc f) fuel = observe f fuel
+    exact behavioral_equiv_observe (fullPipelineFunc_behavioral_equiv f) fuel
 
 /-- **Theorem 2: Forward simulation (function level).**
 
@@ -503,7 +521,7 @@ eval
 
 | Theorem | Sorry count | Dependency |
 |---------|-------------|------------|
-| compilation_preserves_semantics | 1 | List.map + find? lemma + fullPipelineFunc |
+| compilation_preserves_semantics | 0 | proven (inherits sorry from fullPipelineFunc_behavioral_equiv) |
 | forward_simulation | 1 | 5 pass FuncSimulation lifts |
 | behavioral_equivalence | 0 | delegates to fullPipelineFunc_behavioral_equiv |
 | observable_equivalence | 0 | delegates |
