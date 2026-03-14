@@ -381,6 +381,15 @@ theorem sccpBlock_defs (σ : AbsEnv) (b : Block) :
   simp only [blockAllDefs, sccpBlock, sccpInstrs_dsts]
 
 /-- SCCP instruction uses are a subset of original uses. -/
+private theorem sccpInstr_rhs_vars_subset (σ : AbsEnv) (i : Instr) :
+    ∀ v, v ∈ exprVars (match absEvalExpr σ i.rhs with | .known cv => Expr.val cv | _ => i.rhs) →
+         v ∈ exprVars i.rhs := by
+  intro v hv
+  cases habsRhs : absEvalExpr σ i.rhs with
+  | unknown => simp [habsRhs] at hv; exact hv
+  | known cv => simp [habsRhs, exprVars] at hv
+  | overdefined => simp [habsRhs] at hv; exact hv
+
 theorem sccpInstrs_uses_subset (σ : AbsEnv) (instrs : List Instr) :
     ∀ v, v ∈ (sccpInstrs σ instrs).2.bind (fun i => exprVars i.rhs) →
          v ∈ instrs.bind (fun i => exprVars i.rhs) := by
@@ -388,9 +397,13 @@ theorem sccpInstrs_uses_subset (σ : AbsEnv) (instrs : List Instr) :
   | nil => simp [sccpInstrs]
   | cons i rest ih =>
     intro v hv
-    -- sccpInstrs replaces RHS with .val (no vars) or keeps original.
-    -- The nested let + match in sccpInstrs makes tactic proof fragile.
-    sorry
+    simp only [sccpInstrs] at hv
+    simp only [List.flatMap_cons, List.mem_append] at hv ⊢
+    rcases hv with hhead | htail
+    · left
+      exact sccpInstr_rhs_vars_subset σ i v hhead
+    · right
+      exact ih _ v htail
 
 /-- SCCP block uses are a subset of original block uses. -/
 theorem sccpBlock_uses_subset (σ : AbsEnv) (b : Block) :
