@@ -36,7 +36,7 @@ ops/linear/*.secret*
 ops/linear/*.secrets*
 hello_molt
 *_molt
-*_molt.exe
+*.exe
 logs/
 docs/python_documentation/
 third_party/
@@ -60,6 +60,10 @@ packaging/out/
 !/ROADMAP.md
 !/SUPPORTED.md
 !/WORKFLOW.md
+!/CLAUDE.md
+!/STATUS.md
+!/INDEX.md
+!/tests/**/INDEX.md
 !/docs/**/*.md
 !/packaging/**/*.md
 .claude/worktrees/
