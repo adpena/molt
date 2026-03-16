@@ -20,7 +20,7 @@ managed = true
 
 [tool.ruff]
 line-length = 88
-target-version = "py313"
+target-version = "py312"
 extend-exclude = ["third_party", "tests/differential"]
 
 [tool.ruff.lint.per-file-ignores]
