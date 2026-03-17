@@ -38,6 +38,7 @@ pub(crate) use cancellation::{
 
 #[allow(unused_imports)]
 pub(crate) use scheduler::{
+    CompileGovernorSnapshot, CompileRateLimiter, OptLevel, compile_rate_limiter,
     AsyncHangProbe, CURRENT_TASK, MoltScheduler, MoltTask, SleepQueue, async_trace_enabled,
     asyncgen_registry, await_waiter_clear, await_waiter_register, await_waiters,
     await_waiters_take, block_on_wait_spec, current_task_key, current_task_ptr, fn_ptr_code_get,

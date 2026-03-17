@@ -37,6 +37,8 @@ _enum_flag_xor = _require_intrinsic("molt_enum_flag_xor", globals())
 _enum_str_value = _require_intrinsic("molt_enum_str_value", globals())
 _enum_unique_check = _require_intrinsic("molt_enum_unique_check", globals())
 _enum_verify_member = _require_intrinsic("molt_enum_verify_member", globals())
+_enum_is_descriptor = _require_intrinsic("molt_enum_is_descriptor", globals())
+_enum_is_auto = _require_intrinsic("molt_enum_is_auto", globals())
 
 
 class _AutoValue:
@@ -49,14 +51,13 @@ def auto() -> _AutoValue:
 
 
 def _is_descriptor(obj: object) -> bool:
-    if hasattr(obj, "__get__") or hasattr(obj, "__set__") or hasattr(obj, "__delete__"):
-        return True
-    # Molt property objects do not surface __get__/__set__/__delete__ to Python.
-    return hasattr(obj, "fget") or hasattr(obj, "fset") or hasattr(obj, "fdel")
+    return bool(_enum_is_descriptor(obj))
 
 
 def _is_auto_value(obj: object) -> bool:
-    return isinstance(obj, _AutoValue) or bool(getattr(obj, "_molt_auto", False))
+    if isinstance(obj, _AutoValue):
+        return True
+    return bool(_enum_is_auto(obj))
 
 
 class EnumType(type):

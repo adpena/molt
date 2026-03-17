@@ -1876,3 +1876,214 @@ def test_midend_budget_degrade_preserves_correctness() -> None:
     assert "budget_exceeded" in reasons
     cse_stats = gen.midend_pass_stats_by_function["<direct>"]["cse"]
     assert int(cse_stats["degraded"]) >= 1
+
+
+# ---------------------------------------------------------------------------
+# MOL-37: MISSING values must not leak into CALL/CALL_INDIRECT arg positions
+# ---------------------------------------------------------------------------
+
+
+def test_sccp_is_op_does_not_fold_through_missing_sentinels() -> None:
+    """Two MISSING values compared with IS must not fold to True.
+
+    The _SCCP_MISSING sentinel is a singleton in the lattice, so without an
+    explicit guard the IS evaluator would return ``True`` when both operands
+    map to _SCCP_MISSING — a miscompile because at runtime they are distinct
+    sentinel objects.
+    """
+    gen = SimpleTIRGenerator()
+    ops = [
+        MoltOp(kind="MISSING", args=[], result=MoltValue("a")),
+        MoltOp(kind="MISSING", args=[], result=MoltValue("b")),
+        MoltOp(
+            kind="IS",
+            args=[MoltValue("a"), MoltValue("b")],
+            result=MoltValue("cmp"),
+        ),
+        MoltOp(kind="RETURN", args=[MoltValue("cmp")], result=MoltValue("none")),
+    ]
+    cfg = build_cfg(ops)
+    sccp = gen._compute_sccp(ops, cfg)
+    # The IS result must NOT be folded to a constant True/False — it should
+    # stay overdefined because both operands originate from MISSING.
+    for block_id, known in sccp.out_values.items():
+        if "cmp" in known:
+            assert known["cmp"] is not True, (
+                "IS should not constant-fold through MISSING sentinels"
+            )
+            assert known["cmp"] is not False, (
+                "IS should not constant-fold through MISSING sentinels"
+            )
+
+
+def test_sccp_comparison_ops_do_not_fold_through_missing() -> None:
+    """EQ/NE and other comparisons must go overdefined for MISSING inputs."""
+    gen = SimpleTIRGenerator()
+    ops = [
+        MoltOp(kind="MISSING", args=[], result=MoltValue("x")),
+        MoltOp(kind="MISSING", args=[], result=MoltValue("y")),
+        MoltOp(
+            kind="EQ",
+            args=[MoltValue("x"), MoltValue("y")],
+            result=MoltValue("eq_result"),
+        ),
+        MoltOp(
+            kind="NE",
+            args=[MoltValue("x"), MoltValue("y")],
+            result=MoltValue("ne_result"),
+        ),
+        MoltOp(
+            kind="RETURN",
+            args=[MoltValue("eq_result")],
+            result=MoltValue("none"),
+        ),
+    ]
+    cfg = build_cfg(ops)
+    sccp = gen._compute_sccp(ops, cfg)
+    for block_id, known in sccp.out_values.items():
+        if "eq_result" in known:
+            assert not isinstance(known["eq_result"], bool), (
+                "EQ must not fold through MISSING sentinels"
+            )
+        if "ne_result" in known:
+            assert not isinstance(known["ne_result"], bool), (
+                "NE must not fold through MISSING sentinels"
+            )
+
+
+def test_missing_taint_propagates_through_phi_to_call() -> None:
+    """A PHI that collapses to a single MISSING-tainted input must be flagged.
+
+    After branch pruning, a PHI can resolve to a value that originated from
+    a MISSING op.  If that value then flows into a CALL arg position, the
+    verifier must flag it as a failure.  This test directly constructs the
+    post-trim IR to test the verifier's transitive taint tracking.
+    """
+    gen = SimpleTIRGenerator()
+    # Simulate the post-branch-pruning state: the PHI has been trimmed to
+    # a single arg that carries a MISSING value.
+    ops = [
+        MoltOp(kind="MISSING", args=[], result=MoltValue("v0")),
+        MoltOp(
+            kind="PHI",
+            args=[MoltValue("v0")],
+            result=MoltValue("joined"),
+        ),
+        MoltOp(
+            kind="CALL",
+            args=["some_func", MoltValue("joined")],
+            result=MoltValue("ret"),
+        ),
+        MoltOp(kind="RETURN", args=[MoltValue("ret")], result=MoltValue("none")),
+    ]
+    # The verifier should flag the CALL because "joined" is MISSING-tainted
+    # transitively through the PHI.
+    failures = gen._verify_definite_assignment_in_ops(
+        ops, predefined_value_names=set()
+    )
+    call_failures = [
+        (kind, name) for _, kind, name in failures if kind == "CALL"
+    ]
+    assert len(call_failures) > 0, (
+        "Verifier must flag MISSING-tainted value reaching CALL arg"
+    )
+
+
+def test_missing_taint_does_not_flag_direct_missing_at_call() -> None:
+    """Direct MISSING values at CALL sites are intentional sentinel defaults.
+
+    The verifier should NOT flag a CALL whose arg directly references a MISSING
+    op result — these are legitimate uses (e.g., optional defaults).
+    """
+    gen = SimpleTIRGenerator()
+    ops = [
+        MoltOp(kind="MISSING", args=[], result=MoltValue("sentinel")),
+        MoltOp(
+            kind="CALL",
+            args=["some_func", MoltValue("sentinel")],
+            result=MoltValue("ret"),
+        ),
+        MoltOp(kind="RETURN", args=[MoltValue("ret")], result=MoltValue("none")),
+    ]
+    failures = gen._verify_definite_assignment_in_ops(
+        ops, predefined_value_names=set()
+    )
+    # There should be no transitive-MISSING-taint failures for direct uses.
+    call_failures = [
+        (kind, name)
+        for _, kind, name in failures
+        if kind == "CALL" and name == "sentinel"
+    ]
+    assert len(call_failures) == 0, (
+        "Direct MISSING sentinel at CALL should not be flagged as taint leak"
+    )
+
+
+def test_full_pipeline_rejects_missing_leak_through_phi() -> None:
+    """End-to-end: the mid-end pipeline must not allow MISSING to leak through.
+
+    Construct an IR where branch pruning would collapse a PHI to a MISSING
+    value that then reaches a CALL.  The pipeline should either avoid this
+    situation or reject the optimization via the verifier.
+    """
+    gen = SimpleTIRGenerator(optimization_profile="release")
+    ops = [
+        MoltOp(kind="MISSING", args=[], result=MoltValue("uninit")),
+        MoltOp(kind="CONST_BOOL", args=[True], result=MoltValue("cond")),
+        MoltOp(kind="IF", args=[MoltValue("cond")], result=MoltValue("none")),
+        MoltOp(kind="ELSE", args=[], result=MoltValue("none")),
+        MoltOp(kind="CONST", args=[99], result=MoltValue("fallback")),
+        MoltOp(kind="END_IF", args=[], result=MoltValue("none")),
+        MoltOp(
+            kind="PHI",
+            args=[MoltValue("uninit"), MoltValue("fallback")],
+            result=MoltValue("result"),
+        ),
+        MoltOp(
+            kind="CALL",
+            args=["target_func", MoltValue("result")],
+            result=MoltValue("call_ret"),
+        ),
+        MoltOp(
+            kind="RETURN",
+            args=[MoltValue("call_ret")],
+            result=MoltValue("none"),
+        ),
+    ]
+    with _temp_env("MOLT_MIDEND_DISABLE", "0"):
+        rewritten = gen._canonicalize_control_aware_ops(ops)
+
+    # Verify: no CALL in the output should have a MISSING-tainted arg that
+    # is not a direct MISSING def.  The pipeline may:
+    # (a) Keep the CALL with the original (non-MISSING) arg,
+    # (b) Prune the CALL entirely, or
+    # (c) Substitute the MISSING arg directly (acceptable for sentinel defaults).
+    # What must NOT happen is a PHI-derived value carrying transitive MISSING
+    # taint ending up at a CALL arg position.
+    direct_missing = {
+        op.result.name for op in rewritten
+        if op.kind == "MISSING" and op.result.name != "none"
+    }
+    # Propagate taint through PHIs
+    tainted = set(direct_missing)
+    changed = True
+    while changed:
+        changed = False
+        for op in rewritten:
+            if op.kind != "PHI" or not op.args:
+                continue
+            if op.result.name in tainted or op.result.name == "none":
+                continue
+            phi_vals = [a for a in op.args if isinstance(a, MoltValue)]
+            if phi_vals and all(a.name in tainted for a in phi_vals):
+                tainted.add(op.result.name)
+                changed = True
+
+    for op in rewritten:
+        if op.kind in {"CALL", "CALL_INDIRECT", "CALL_INTERNAL"}:
+            for arg in op.args:
+                if isinstance(arg, MoltValue):
+                    assert arg.name not in (tainted - direct_missing), (
+                        f"MISSING-tainted value {arg.name!r} leaked into "
+                        f"{op.kind} after mid-end pipeline"
+                    )

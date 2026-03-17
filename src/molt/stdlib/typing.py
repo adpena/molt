@@ -797,7 +797,22 @@ class Generic:
         return _GenericAlias(cls, params, "Generic")
 
 
+_MOLT_PROTOCOL_CHECK = _require_intrinsic("molt_protocol_check", globals())
+_MOLT_PROTOCOL_GET_STRUCTURAL_MEMBERS = _require_intrinsic(
+    "molt_protocol_get_structural_members", globals()
+)
+
+
 class _ProtocolMeta(type):
+    """Metaclass for Protocol classes.
+
+    Protocol member collection is delegated to the Rust intrinsic
+    ``molt_protocol_get_structural_members`` and structural isinstance /
+    issubclass checks are performed by ``molt_protocol_check``.  This
+    eliminates the previous Python-level ABC scaffolding in favour of
+    deterministic, AOT-friendly intrinsic paths.
+    """
+
     def __init__(cls, name, bases, namespace, **kwargs) -> None:
         super().__init__(name, bases, namespace)
         global _PROTOCOL_BASE
@@ -811,44 +826,15 @@ class _ProtocolMeta(type):
         cls._is_protocol = is_protocol
         if not is_protocol:
             return
-        attrs = set(getattr(cls, "__annotations__", {}).keys())
-        ignored = {
-            "__dict__",
-            "__weakref__",
-            "__module__",
-            "__doc__",
-            "__annotations__",
-            "_is_protocol",
-            "_is_runtime_protocol",
-            "__protocol_attrs__",
-        }
-        for key in cls.__dict__:
-            if key in ignored:
-                continue
-            attrs.add(key)
-        cls.__protocol_attrs__ = frozenset(attrs)
+        # Delegate structural member extraction to the Rust intrinsic.
+        cls.__protocol_attrs__ = _MOLT_PROTOCOL_GET_STRUCTURAL_MEMBERS(cls)
         cls._is_runtime_protocol = False
 
     def __instancecheck__(cls, instance) -> bool:
-        if not getattr(cls, "_is_runtime_protocol", False):
-            raise TypeError(
-                "Instance and class checks can only be used with @runtime_checkable protocols"
-            )
-        return _structural_check(cls, instance)
+        return _MOLT_PROTOCOL_CHECK(cls, instance)
 
     def __subclasscheck__(cls, subclass) -> bool:
-        if not getattr(cls, "_is_runtime_protocol", False):
-            raise TypeError(
-                "Instance and class checks can only be used with @runtime_checkable protocols"
-            )
-        return _structural_check(cls, subclass)
-
-
-def _structural_check(proto, obj) -> bool:
-    for name in getattr(proto, "__protocol_attrs__", ()):
-        if not hasattr(obj, name):
-            return False
-    return True
+        return _MOLT_PROTOCOL_CHECK(cls, subclass)
 
 
 class Protocol(metaclass=_ProtocolMeta):

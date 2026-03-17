@@ -1,4 +1,4 @@
-"""Intrinsic-backed glob support for Molt."""
+"""Intrinsic-backed glob for Molt -- all operations delegated to Rust."""
 
 from __future__ import annotations
 
@@ -15,7 +15,8 @@ if sys.version_info >= (3, 13):
 
 _MOLT_GLOB_HAS_MAGIC = _require_intrinsic("molt_glob_has_magic", globals())
 _MOLT_GLOB_ESCAPE = _require_intrinsic("molt_glob_escape", globals())
-_MOLT_GLOB = _require_intrinsic("molt_glob", globals())
+_MOLT_GLOB_GLOB = _require_intrinsic("molt_glob_glob", globals())
+_MOLT_GLOB_IGLOB = _require_intrinsic("molt_glob_iglob", globals())
 _MOLT_PATH_ISDIR = _require_intrinsic("molt_path_isdir", globals())
 if sys.version_info >= (3, 13):
     _MOLT_GLOB_TRANSLATE = _require_intrinsic("molt_glob_translate", globals())
@@ -27,6 +28,7 @@ _DEPRECATED_FUNCTION_MESSAGE = (
 
 
 def has_magic(pathname: str) -> bool:
+    """Return True if the pathname contains glob magic characters."""
     return bool(_MOLT_GLOB_HAS_MAGIC(pathname))
 
 
@@ -38,12 +40,10 @@ def glob(
     recursive: Any = False,
     include_hidden: Any = False,
 ) -> list[str] | list[bytes]:
-    matches = _MOLT_GLOB(pathname, root_dir, dir_fd, recursive, include_hidden)
+    """Return a list of paths matching a pathname pattern (via Rust intrinsic)."""
+    matches = _MOLT_GLOB_GLOB(pathname, root_dir, recursive)
     if not isinstance(matches, list):
         raise RuntimeError("glob intrinsic returned invalid value")
-    for match in matches:
-        if not isinstance(match, (str, bytes)):
-            raise RuntimeError("glob intrinsic returned invalid value")
     return matches
 
 
@@ -55,16 +55,15 @@ def iglob(
     recursive: Any = False,
     include_hidden: Any = False,
 ):
-    yield from glob(
-        pathname,
-        root_dir=root_dir,
-        dir_fd=dir_fd,
-        recursive=recursive,
-        include_hidden=include_hidden,
-    )
+    """Return an iterator yielding paths matching a pathname pattern (via Rust intrinsic)."""
+    matches = _MOLT_GLOB_IGLOB(pathname, root_dir, recursive)
+    if not isinstance(matches, list):
+        raise RuntimeError("iglob intrinsic returned invalid value")
+    yield from matches
 
 
 def escape(pathname: Any) -> str | bytes:
+    """Escape all special characters in pathname (via Rust intrinsic)."""
     out = _MOLT_GLOB_ESCAPE(pathname)
     if not isinstance(out, (str, bytes)):
         raise RuntimeError("glob escape intrinsic returned invalid value")
@@ -80,6 +79,7 @@ if sys.version_info >= (3, 13):
         include_hidden: Any = False,
         seps: Any | None = None,
     ) -> str:
+        """Translate a pathname with shell wildcards to a regular expression."""
         out = _MOLT_GLOB_TRANSLATE(pathname, recursive, include_hidden, seps)
         if not isinstance(out, str):
             raise RuntimeError("glob translate intrinsic returned invalid value")
@@ -98,6 +98,7 @@ def _warn_deprecated(name: str, remove: tuple[int, int] = (3, 15)) -> None:
 
 
 def glob0(dirname: Any, pattern: Any):
+    """Deprecated: use glob.glob() with root_dir instead."""
     _warn_deprecated("glob.glob0")
     if pattern:
         return glob(escape(pattern), root_dir=dirname)
@@ -106,5 +107,6 @@ def glob0(dirname: Any, pattern: Any):
 
 
 def glob1(dirname: Any, pattern: Any):
+    """Deprecated: use glob.glob() with root_dir instead."""
     _warn_deprecated("glob.glob1")
     return glob(pattern, root_dir=dirname)

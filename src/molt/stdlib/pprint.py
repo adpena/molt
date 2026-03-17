@@ -40,6 +40,7 @@ _MOLT_PPRINT_SAFE_REPR = _require_intrinsic("molt_pprint_safe_repr", globals())
 _MOLT_PPRINT_PFORMAT = _require_intrinsic("molt_pprint_pformat", globals())
 _MOLT_PPRINT_ISREADABLE = _require_intrinsic("molt_pprint_isreadable", globals())
 _MOLT_PPRINT_ISRECURSIVE = _require_intrinsic("molt_pprint_isrecursive", globals())
+_MOLT_PPRINT_FORMAT_OBJECT = _require_intrinsic("molt_pprint_format_object", globals())
 
 
 __all__ = [
@@ -771,6 +772,12 @@ class PrettyPrinter:
         and flags indicating whether the representation is 'readable'
         and whether the object represents a recursive construct.
         """
+        try:
+            result = _MOLT_PPRINT_FORMAT_OBJECT(object, maxlevels, level)
+            if isinstance(result, tuple) and len(result) == 3:
+                return (str(result[0]), bool(result[1]), bool(result[2]))
+        except Exception:
+            pass
         return self._safe_repr(object, context, maxlevels, level)
 
     def _pprint_default_dict(

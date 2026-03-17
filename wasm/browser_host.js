@@ -1181,6 +1181,13 @@ export const createBrowserSocketHost = (state, options) => {
     localAddr: null,
     sockopts: new Map(),
     waiter: canBlock ? new Int32Array(new SharedArrayBuffer(4)) : null,
+    // Server socket state (bind/listen/accept)
+    listening: false,
+    backlog: 0,
+    acceptQueue: [],
+    // UDP datagram state (sendto/recvfrom)
+    dgram: meta.sockType === SOCK_DGRAM,
+    dgramRecvQueue: [], // [{data: Uint8Array, addr: {family, host, port}}]
   });
 
   const notifyWaiter = (core) => {
@@ -1222,6 +1229,14 @@ export const createBrowserSocketHost = (state, options) => {
     }
     if (events & IO_EVENT_READ) {
       if (core.recvQueue.length > 0 || core.state === 'closed' || core.state === 'error') {
+        mask |= IO_EVENT_READ;
+      }
+      // Listening sockets are readable when the accept queue is non-empty
+      if (core.listening && core.acceptQueue && core.acceptQueue.length > 0) {
+        mask |= IO_EVENT_READ;
+      }
+      // UDP sockets with datagrams ready
+      if (core.dgram && core.dgramRecvQueue && core.dgramRecvQueue.length > 0) {
         mask |= IO_EVENT_READ;
       }
     }
@@ -1341,7 +1356,7 @@ export const createBrowserSocketHost = (state, options) => {
     if (family !== AF_INET && family !== AF_INET6) {
       return BigInt(-EAFNOSUPPORT);
     }
-    if (sockType !== SOCK_STREAM) {
+    if (sockType !== SOCK_STREAM && sockType !== SOCK_DGRAM) {
       return BigInt(-EPROTONOSUPPORT);
     }
     const handle = allocHandle();
@@ -1379,14 +1394,67 @@ export const createBrowserSocketHost = (state, options) => {
     return BigInt(newHandle);
   };
 
-  const socketHostBind = (_handle, _addrPtr, _addrLen) => -EOPNOTSUPP;
-  const socketHostListen = (_handle, _backlog) => -EOPNOTSUPP;
-  const socketHostAccept = (_handle, _addrPtr, _addrCap, outLenPtr) => {
+  const socketHostBind = (handle, addrPtr, addrLen) => {
+    const core = sockets.get(Number(handle));
+    if (!core) return -EBADF;
     const memory = state.memory;
-    if (memory && outLenPtr) {
+    if (!memory) return -ENOSYS;
+    const bytes = readBytesFromMemory(memory, addrPtr, addrLen);
+    let addr;
+    try {
+      addr = decodeSockaddr(bytes);
+    } catch (err) {
+      return -EINVAL;
+    }
+    core.localAddr = addr;
+    return 0;
+  };
+
+  const socketHostListen = (handle, backlog) => {
+    const core = sockets.get(Number(handle));
+    if (!core) return -EBADF;
+    if (!core.localAddr) return -EINVAL;
+    core.listening = true;
+    core.backlog = typeof backlog === 'number' ? Math.max(backlog, 1) : 1;
+    core.state = 'listening';
+    return 0;
+  };
+
+  const socketHostAccept = (handle, addrPtr, addrCap, outLenPtr) => {
+    const memory = state.memory;
+    const core = sockets.get(Number(handle));
+    if (!core) return -BigInt(EBADF);
+    if (!core.listening) return -BigInt(EOPNOTSUPP);
+    if (core.acceptQueue.length === 0) {
+      return -BigInt(EWOULDBLOCK);
+    }
+    const accepted = core.acceptQueue.shift();
+    const newHandle = allocHandle();
+    const newCore = makeCore({
+      handle: newHandle,
+      family: core.family,
+      sockType: SOCK_STREAM,
+      proto: core.proto,
+    });
+    newCore.state = 'open';
+    newCore.ws = accepted.ws;
+    newCore.peerAddr = accepted.peerAddr;
+    newCore.localAddr = core.localAddr;
+    sockets.set(newHandle, newCore);
+    if (memory && addrPtr && accepted.peerAddr) {
+      try {
+        const encoded = encodeSockaddr(accepted.peerAddr);
+        if (encoded.length <= addrCap) {
+          writeBytesToMemory(memory, addrPtr, encoded);
+          if (outLenPtr) writeU32ToMemory(memory, outLenPtr, encoded.length);
+        }
+      } catch (err) {
+        if (outLenPtr) writeU32ToMemory(memory, outLenPtr, 0);
+      }
+    } else if (memory && outLenPtr) {
       writeU32ToMemory(memory, outLenPtr, 0);
     }
-    return -BigInt(EOPNOTSUPP);
+    return BigInt(newHandle);
   };
 
   const socketHostConnect = (handle, addrPtr, addrLen) => {
@@ -1461,35 +1529,151 @@ export const createBrowserSocketHost = (state, options) => {
     }
   };
 
-  const socketHostSendTo = () => -EOPNOTSUPP;
+  const socketHostSendTo = (handle, bufPtr, bufLen, flags, addrPtr, addrLen) => {
+    const core = sockets.get(Number(handle));
+    if (!core) return -EBADF;
+    const memory = state.memory;
+    if (!memory) return -ENOSYS;
+    // For connected sockets (TCP or connected UDP), ignore the addr and send normally.
+    if (core.state === 'open' && core.ws) {
+      return socketHostSend(handle, bufPtr, bufLen, flags);
+    }
+    // For unconnected UDP sockets, use the destination address to establish a
+    // WebSocket connection if not already connected, then send.
+    if (core.dgram) {
+      const payload = readBytesFromMemory(memory, bufPtr, bufLen);
+      let destAddr;
+      try {
+        const addrBytes = readBytesFromMemory(memory, addrPtr, addrLen);
+        destAddr = decodeSockaddr(addrBytes);
+      } catch (err) {
+        return -EINVAL;
+      }
+      // For UDP-over-WebSocket: connect on first sendto, then send
+      if (!core.ws || core.state === 'new') {
+        const rc = startConnect(core, destAddr);
+        if (rc !== -EINPROGRESS && rc !== 0) return rc;
+        // In browser context, the connection is async. Enqueue the data
+        // and it will be sent once connected.
+        core._pendingSends = core._pendingSends || [];
+        core._pendingSends.push(payload);
+        // Install a handler to flush pending sends once open
+        if (!core._sendFlusher) {
+          core._sendFlusher = true;
+          const origState = core.state;
+          const checkFlush = () => {
+            if (core.state === 'open' && core.ws && core._pendingSends) {
+              for (const pending of core._pendingSends) {
+                try { core.ws.send(pending); } catch (err) { /* ignore */ }
+              }
+              core._pendingSends = null;
+            }
+          };
+          if (origState === 'open') checkFlush();
+          else {
+            // Poll briefly for connection
+            const interval = setInterval(() => {
+              if (core.state === 'open' || core.state === 'error' || core.state === 'closed') {
+                clearInterval(interval);
+                checkFlush();
+              }
+            }, 1);
+          }
+        }
+        return payload.length;
+      }
+      if (core.state !== 'open') return -ENOTCONN;
+      try {
+        core.ws.send(payload);
+        return payload.length;
+      } catch (err) {
+        markError(core, EPIPE);
+        return -EPIPE;
+      }
+    }
+    return -EOPNOTSUPP;
+  };
 
   const socketHostSendMsg = (handle, bufPtr, bufLen, flags) =>
     socketHostSend(handle, bufPtr, bufLen, flags);
 
-  const socketHostRecvFrom = (_handle, _bufPtr, _bufLen, _flags, _addrPtr, _addrCap, outLenPtr) => {
+  const socketHostRecvFrom = (handle, bufPtr, bufLen, flags, addrPtr, addrCap, outLenPtr) => {
+    const core = sockets.get(Number(handle));
+    if (!core) return -EBADF;
     const memory = state.memory;
-    if (memory && outLenPtr) writeU32ToMemory(memory, outLenPtr, 0);
-    return -EOPNOTSUPP;
+    if (!memory) return -ENOSYS;
+    // For UDP sockets with datagram queue, use addr-tagged entries
+    if (core.dgram && core.dgramRecvQueue.length > 0) {
+      const peek = (flags & MSG_PEEK) !== 0;
+      const entry = peek ? core.dgramRecvQueue[0] : core.dgramRecvQueue.shift();
+      const want = typeof bufLen === 'bigint' ? Number(bufLen) : Number(bufLen);
+      const count = Math.min(want, entry.data.length);
+      const slice = entry.data.subarray(0, count);
+      if (!writeBytesToMemory(memory, bufPtr, slice)) return -EINVAL;
+      // Write source address
+      if (addrPtr && entry.addr) {
+        try {
+          const encoded = encodeSockaddr(entry.addr);
+          if (encoded.length <= addrCap) {
+            writeBytesToMemory(memory, addrPtr, encoded);
+            if (outLenPtr) writeU32ToMemory(memory, outLenPtr, encoded.length);
+          } else if (outLenPtr) {
+            writeU32ToMemory(memory, outLenPtr, 0);
+          }
+        } catch (err) {
+          if (outLenPtr) writeU32ToMemory(memory, outLenPtr, 0);
+        }
+      } else if (outLenPtr) {
+        writeU32ToMemory(memory, outLenPtr, 0);
+      }
+      return count;
+    }
+    // For connected sockets (TCP or connected UDP), fall back to recv and
+    // populate the peer address from the core.
+    const recvResult = socketHostRecv(handle, bufPtr, bufLen, flags);
+    if (recvResult < 0) {
+      if (outLenPtr) writeU32ToMemory(memory, outLenPtr, 0);
+      return recvResult;
+    }
+    // Fill peer address
+    if (addrPtr && core.peerAddr) {
+      try {
+        const encoded = encodeSockaddr(core.peerAddr);
+        if (encoded.length <= addrCap) {
+          writeBytesToMemory(memory, addrPtr, encoded);
+          if (outLenPtr) writeU32ToMemory(memory, outLenPtr, encoded.length);
+        } else if (outLenPtr) {
+          writeU32ToMemory(memory, outLenPtr, 0);
+        }
+      } catch (err) {
+        if (outLenPtr) writeU32ToMemory(memory, outLenPtr, 0);
+      }
+    } else if (outLenPtr) {
+      writeU32ToMemory(memory, outLenPtr, 0);
+    }
+    return recvResult;
   };
 
   const socketHostRecvMsg = (
-    _handle,
-    _bufPtr,
-    _bufLen,
-    _flags,
-    _addrPtr,
-    _addrCap,
+    handle,
+    bufPtr,
+    bufLen,
+    flags,
+    addrPtr,
+    addrCap,
     outAddrLenPtr,
-    _ancPtr,
-    _ancCap,
+    ancPtr,
+    ancCap,
     outAncLenPtr,
     outMsgFlagsPtr,
   ) => {
     const memory = state.memory;
-    if (memory && outAddrLenPtr) writeU32ToMemory(memory, outAddrLenPtr, 0);
+    // Write empty ancillary data (no cmsg support in browser)
     if (memory && outAncLenPtr) writeU32ToMemory(memory, outAncLenPtr, 0);
     if (memory && outMsgFlagsPtr) writeU32ToMemory(memory, outMsgFlagsPtr, 0);
-    return -EOPNOTSUPP;
+    // Delegate the data+address part to recvfrom
+    const rc = socketHostRecvFrom(handle, bufPtr, bufLen, flags, addrPtr, addrCap, outAddrLenPtr);
+    return rc;
   };
 
   const socketHostShutdown = (handle, _how) => {

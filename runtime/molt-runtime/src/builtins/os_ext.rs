@@ -2031,3 +2031,94 @@ pub extern "C" fn molt_os_sendfile(
         }
     })
 }
+
+// ---------------------------------------------------------------------------
+// waitpid status macros — intrinsic-backed
+// ---------------------------------------------------------------------------
+
+/// `os.WIFEXITED(status)` -> bool
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_wifexited(status_bits: u64) -> u64 {
+    let status = to_i64(obj_from_bits(status_bits)).unwrap_or(0) as i32;
+    let result = (status & 0x7F) == 0;
+    MoltObject::from_bool(result).bits()
+}
+
+/// `os.WEXITSTATUS(status)` -> int
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_wexitstatus(status_bits: u64) -> u64 {
+    let status = to_i64(obj_from_bits(status_bits)).unwrap_or(0) as i32;
+    let result = (status >> 8) & 0xFF;
+    MoltObject::from_int(result as i64).bits()
+}
+
+/// `os.WIFSIGNALED(status)` -> bool
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_wifsignaled(status_bits: u64) -> u64 {
+    let status = to_i64(obj_from_bits(status_bits)).unwrap_or(0) as i32;
+    let result = ((status & 0x7F) + 1) >> 1 > 0;
+    MoltObject::from_bool(result).bits()
+}
+
+/// `os.WTERMSIG(status)` -> int
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_wtermsig(status_bits: u64) -> u64 {
+    let status = to_i64(obj_from_bits(status_bits)).unwrap_or(0) as i32;
+    let result = status & 0x7F;
+    MoltObject::from_int(result as i64).bits()
+}
+
+/// `os.WIFSTOPPED(status)` -> bool
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_wifstopped(status_bits: u64) -> u64 {
+    let status = to_i64(obj_from_bits(status_bits)).unwrap_or(0) as i32;
+    let result = (status & 0xFF) == 0x7F;
+    MoltObject::from_bool(result).bits()
+}
+
+/// `os.WSTOPSIG(status)` -> int
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_wstopsig(status_bits: u64) -> u64 {
+    let status = to_i64(obj_from_bits(status_bits)).unwrap_or(0) as i32;
+    let result = (status >> 8) & 0xFF;
+    MoltObject::from_int(result as i64).bits()
+}
+
+/// `os.fspath(path)` -> str | bytes
+/// Resolves PathLike objects by calling __fspath__.
+/// If path is already str or bytes, returns it directly.
+/// Otherwise attempts __fspath__ protocol via path_from_bits.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_fspath(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(path_bits);
+        // Fast path: already str
+        if string_obj_to_owned(obj).is_some() {
+            inc_ref_bits(_py, path_bits);
+            return path_bits;
+        }
+        // Fast path: already bytes (check via type_id)
+        if let Some(ptr) = obj.as_ptr() {
+            let type_id = unsafe { object_type_id(ptr) };
+            if type_id == crate::object::type_ids::TYPE_ID_BYTES {
+                inc_ref_bits(_py, path_bits);
+                return path_bits;
+            }
+        }
+        // Try __fspath__ protocol via path_from_bits
+        match path_from_bits(_py, path_bits) {
+            Ok(pathbuf) => {
+                let s = pathbuf.to_string_lossy();
+                str_bits(_py, &s)
+            }
+            Err(_msg) => {
+                let tn = type_name(_py, obj);
+                let msg = format!(
+                    "expected str, bytes or os.PathLike object, not {}",
+                    tn
+                );
+                raise_exception::<u64>(_py, "TypeError", &msg)
+            }
+        }
+    })
+}

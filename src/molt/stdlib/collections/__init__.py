@@ -44,6 +44,9 @@ _MISSING = object()
 _MOLT_CLASS_NEW = _require_intrinsic("molt_class_new", globals())
 _MOLT_CLASS_SET_BASE = _require_intrinsic("molt_class_set_base", globals())
 _MOLT_CLASS_APPLY_SET_NAME = _require_intrinsic("molt_class_apply_set_name", globals())
+_MOLT_NAMEDTUPLE_VALIDATE = _require_intrinsic(
+    "molt_namedtuple_validate_fields", globals()
+)
 
 # --- deque intrinsics ---
 _MOLT_DEQUE_NEW = _require_intrinsic("molt_deque_new", globals())
@@ -369,39 +372,8 @@ def namedtuple(
     else:
         field_names = [str(name) for name in field_names]
 
-    if not typename.isidentifier() or _keyword.iskeyword(typename):
-        raise ValueError(
-            f"Type names and field names must be valid identifiers: {typename!r}"
-        )
-
-    seen: set[str] = set()
-    normalized: list[str] = []
-    for idx, name in enumerate(field_names):
-        invalid = (
-            (not name.isidentifier())
-            or _keyword.iskeyword(name)
-            or name.startswith("_")
-            or name in seen
-        )
-        if invalid:
-            if rename:
-                name = f"_{idx}"
-            else:
-                if name in seen:
-                    raise ValueError(f"Encountered duplicate field name: {name!r}")
-                if name.startswith("_"):
-                    raise ValueError(
-                        f"Field names cannot start with an underscore: {name!r}"
-                    )
-                raise ValueError(
-                    f"Type names and field names must be valid identifiers: {name!r}"
-                )
-        if name in seen:
-            raise ValueError(f"Encountered duplicate field name: {name!r}")
-        seen.add(name)
-        normalized.append(name)
-
-    field_names = normalized
+    # Validate typename and field names in Rust — raises ValueError on invalid.
+    field_names = list(_MOLT_NAMEDTUPLE_VALIDATE(typename, field_names, rename))
     field_tuple = tuple(field_names)
     num_fields = len(field_tuple)
     field_index = {name: idx for idx, name in enumerate(field_tuple)}

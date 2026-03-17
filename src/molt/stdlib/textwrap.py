@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-__all__ = ["TextWrapper", "wrap", "fill", "indent"]
+__all__ = ["TextWrapper", "wrap", "fill", "indent", "dedent", "shorten"]
 
 _MOLT_TEXTWRAP_WRAP_EX = _require_intrinsic("molt_textwrap_wrap_ex", globals())
 _MOLT_TEXTWRAP_FILL_EX = _require_intrinsic("molt_textwrap_fill_ex", globals())
 _MOLT_TEXTWRAP_INDENT_EX = _require_intrinsic("molt_textwrap_indent_ex", globals())
+_MOLT_TEXTWRAP_DEDENT = _require_intrinsic("molt_textwrap_dedent", globals())
+_MOLT_TEXTWRAP_SHORTEN = _require_intrinsic("molt_textwrap_shorten", globals())
 
 
 class TextWrapper:
@@ -96,4 +98,21 @@ def indent(text: str, prefix: str, predicate=None) -> str:
     out = _MOLT_TEXTWRAP_INDENT_EX(text, prefix, predicate)
     if not isinstance(out, str):
         raise RuntimeError("textwrap.indent intrinsic returned invalid value")
+    return out
+
+
+def dedent(text: str) -> str:
+    """Remove any common leading whitespace from all lines in text."""
+    out = _MOLT_TEXTWRAP_DEDENT(text)
+    if not isinstance(out, str):
+        raise RuntimeError("textwrap.dedent intrinsic returned invalid value")
+    return out
+
+
+def shorten(text: str, width: int, **kwargs) -> str:
+    """Collapse and truncate the given text to fit in the given width."""
+    placeholder = kwargs.get("placeholder", " [...]")
+    out = _MOLT_TEXTWRAP_SHORTEN(text, width, placeholder)
+    if not isinstance(out, str):
+        raise RuntimeError("textwrap.shorten intrinsic returned invalid value")
     return out

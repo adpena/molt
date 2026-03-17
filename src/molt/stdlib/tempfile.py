@@ -1,4 +1,4 @@
-"""Minimal tempfile shim for Molt."""
+"""Intrinsic-backed tempfile for Molt -- all operations delegated to Rust."""
 
 from __future__ import annotations
 
@@ -6,7 +6,13 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 import os as _os
 
-_MOLT_PATH_JOIN = _require_intrinsic("molt_path_join", globals())
+_MOLT_TEMPFILE_GETTEMPDIR = _require_intrinsic("molt_tempfile_gettempdir", globals())
+_MOLT_TEMPFILE_GETTEMPDIRB = _require_intrinsic("molt_tempfile_gettempdirb", globals())
+_MOLT_TEMPFILE_MKDTEMP = _require_intrinsic("molt_tempfile_mkdtemp", globals())
+_MOLT_TEMPFILE_MKSTEMP = _require_intrinsic("molt_tempfile_mkstemp", globals())
+_MOLT_TEMPFILE_NAMED = _require_intrinsic("molt_tempfile_named", globals())
+_MOLT_TEMPFILE_TEMPDIR = _require_intrinsic("molt_tempfile_tempdir", globals())
+_MOLT_TEMPFILE_CLEANUP = _require_intrinsic("molt_tempfile_cleanup", globals())
 
 __all__ = [
     "NamedTemporaryFile",
@@ -14,136 +20,45 @@ __all__ = [
     "gettempdir",
     "gettempdirb",
     "mkdtemp",
+    "mkstemp",
 ]
-
-_TEMP_DIR: str | None = None
-_TEMP_COUNTER = 0
-
-
-def _candidate_tempdir_list() -> list[str]:
-    dirlist: list[str] = []
-    for key in ("TMPDIR", "TEMP", "TMP"):
-        try:
-            val = _os.getenv(key)
-        except PermissionError:
-            # Capability-gated env reads can be denied; keep scanning deterministic
-            # OS fallbacks instead of hard-failing.
-            continue
-        if val:
-            dirlist.append(val)
-
-    if _os.name == "nt":
-        dirlist.extend(
-            [
-                _os.path.expanduser(r"~\AppData\Local\Temp"),
-                _os.path.expandvars(r"%SYSTEMROOT%\Temp"),
-                r"c:\temp",
-                r"c:\tmp",
-                r"\temp",
-                r"\tmp",
-            ]
-        )
-    else:
-        dirlist.extend(["/tmp", "/var/tmp", "/usr/tmp"])
-
-    try:
-        dirlist.append(_os.getcwd())
-    except (AttributeError, OSError):
-        dirlist.append(_os.curdir)
-
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for dirname in dirlist:
-        if not dirname:
-            continue
-        normalized = str(dirname)
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        ordered.append(normalized)
-    return ordered
-
-
-def _dir_is_usable(dirname: str) -> bool:
-    directory = dirname if dirname == _os.curdir else _os.path.abspath(dirname)
-    try:
-        if not _os.path.isdir(directory):
-            return False
-    except OSError:
-        return False
-
-    flags = _os.O_RDWR | _os.O_CREAT | _os.O_EXCL
-    if hasattr(_os, "O_BINARY"):
-        flags |= _os.O_BINARY
-
-    for seq in range(64):
-        probe_name = f".molt_tmp_probe_{_os.getpid()}_{seq}"
-        probe_path = _MOLT_PATH_JOIN(directory, probe_name)
-        try:
-            fd = _os.open(probe_path, flags, 0o600)
-        except FileExistsError:
-            continue
-        except PermissionError:
-            if _os.name == "nt":
-                try:
-                    if _os.path.isdir(directory) and _os.access(directory, _os.W_OK):
-                        continue
-                except OSError:
-                    pass
-            return False
-        except OSError:
-            return False
-
-        try:
-            _os.write(fd, b"molt")
-        finally:
-            _os.close(fd)
-        try:
-            _os.unlink(probe_path)
-        except OSError:
-            pass
-        return True
-
-    return False
-
-
-def _pick_tempdir() -> str:
-    dirlist = _candidate_tempdir_list()
-    for dirname in dirlist:
-        if _dir_is_usable(dirname):
-            return dirname if dirname == _os.curdir else _os.path.abspath(dirname)
-    raise FileNotFoundError(
-        "No usable temporary directory found in " + ", ".join(dirlist)
-    )
 
 
 def gettempdir() -> str:
-    global _TEMP_DIR
-    if _TEMP_DIR is None:
-        _TEMP_DIR = _pick_tempdir()
-    return _TEMP_DIR
+    """Return the name of the directory used for temporary files."""
+    return str(_MOLT_TEMPFILE_GETTEMPDIR())
 
 
 def gettempdirb() -> bytes:
-    return gettempdir().encode("utf-8")
+    """Return the name of the directory used for temporary files, as bytes."""
+    return _MOLT_TEMPFILE_GETTEMPDIRB()
 
 
-def mkdtemp(suffix: str = "", prefix: str = "tmp", dir: str | None = None) -> str:
-    global _TEMP_COUNTER
-    base = dir or gettempdir()
-    for _ in range(10000):
-        name = f"{prefix}{_TEMP_COUNTER}"
-        _TEMP_COUNTER += 1
-        candidate = _MOLT_PATH_JOIN(base, f"{name}{suffix}")
-        try:
-            _os.makedirs(candidate)
-            return candidate
-        except FileExistsError:
-            continue
-    raise FileExistsError("No usable temporary directory name")
+def mkdtemp(
+    suffix: str | None = None,
+    prefix: str | None = None,
+    dir: str | None = None,
+) -> str:
+    """Create and return a temporary directory (secure, via Rust intrinsic)."""
+    return str(_MOLT_TEMPFILE_MKDTEMP(suffix, prefix, dir))
+
+
+def mkstemp(
+    suffix: str | None = None,
+    prefix: str | None = None,
+    dir: str | None = None,
+    text: bool = False,
+) -> tuple[int, str]:
+    """Create a temporary file (secure, via Rust intrinsic) and return (fd, name)."""
+    result = _MOLT_TEMPFILE_MKSTEMP(suffix, prefix, dir)
+    return (int(result[0]), str(result[1]))
 
 
 class _NamedTemporaryFile:
+    """Wrapper for a named temporary file backed by Rust intrinsic creation."""
+
+    __slots__ = ("_handle", "name", "delete", "_closed")
+
     def __init__(self, handle, name: str, delete: bool) -> None:
         self._handle = handle
         self.name = name
@@ -178,67 +93,51 @@ def NamedTemporaryFile(
     buffering: int = -1,
     encoding: str | None = None,
     newline: str | None = None,
-    suffix: str = "",
-    prefix: str = "tmp",
+    suffix: str | None = None,
+    prefix: str | None = None,
     dir: str | None = None,
     delete: bool = True,
 ):
-    global _TEMP_COUNTER
-    base = dir or gettempdir()
-    open_mode = mode
-    if "x" not in open_mode:
-        if "w" in open_mode:
-            open_mode = open_mode.replace("w", "x", 1)
-        elif "a" in open_mode:
-            open_mode = open_mode.replace("a", "x", 1)
-        else:
-            open_mode = "x" + open_mode
-    for _ in range(10000):
-        name = f"{prefix}{_TEMP_COUNTER}"
-        _TEMP_COUNTER += 1
-        path = _MOLT_PATH_JOIN(base, f"{name}{suffix}")
-        try:
-            handle = open(
-                path, open_mode, buffering=buffering, encoding=encoding, newline=newline
-            )
-        except FileExistsError:
-            continue
-        return _NamedTemporaryFile(handle, path, delete)
-    raise FileExistsError("No usable temporary file name")
+    """Create a named temporary file (secure, via Rust intrinsic).
 
+    The file is created securely by the Rust tempfile crate, then opened
+    with the requested Python mode.
+    """
+    result = _MOLT_TEMPFILE_NAMED(suffix, prefix, dir, delete)
+    fd = int(result[0])
+    path = str(result[1])
+    should_delete = bool(result[2])
 
-def _rmtree(path: str) -> None:
-    try:
-        entries = _os.listdir(path)
-    except Exception:
-        entries = []
-    for name in entries:
-        entry = _MOLT_PATH_JOIN(path, name)
-        try:
-            if _os.path.isdir(entry):
-                _rmtree(entry)
-                _os.rmdir(entry)
-            else:
-                _os.unlink(entry)
-        except Exception:
-            pass
-    try:
-        _os.rmdir(path)
-    except Exception:
-        pass
+    # Close the raw fd and re-open with the requested mode
+    _os.close(fd)
+    handle = open(
+        path, mode, buffering=buffering, encoding=encoding, newline=newline
+    )
+    return _NamedTemporaryFile(handle, path, should_delete)
 
 
 class TemporaryDirectory:
+    """Create a temporary directory (secure, via Rust intrinsic).
+
+    Cleanup is handled by the Rust intrinsic on __exit__.
+    """
+
+    __slots__ = ("name", "_closed")
+
     def __init__(
-        self, suffix: str = "", prefix: str = "tmp", dir: str | None = None
+        self,
+        suffix: str | None = None,
+        prefix: str | None = None,
+        dir: str | None = None,
     ) -> None:
-        self.name = mkdtemp(suffix=suffix, prefix=prefix, dir=dir)
+        self.name = str(_MOLT_TEMPFILE_TEMPDIR(suffix, prefix, dir))
         self._closed = False
 
     def cleanup(self) -> None:
+        """Remove the temporary directory and all its contents."""
         if self._closed:
             return
-        _rmtree(self.name)
+        _MOLT_TEMPFILE_CLEANUP(self.name)
         self._closed = True
 
     def __enter__(self) -> str:

@@ -274,6 +274,25 @@ pub extern "C" fn molt_gzip_write(handle_bits: u64, data_bits: u64) -> u64 {
     })
 }
 
+/// `handle.flush() -> None`
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gzip_flush(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = gzip_handle_from_bits(handle_bits) else {
+            return raise_exception::<u64>(_py, "OSError", "invalid gzip handle");
+        };
+        match &mut handle.inner {
+            GzipHandleInner::Writing(enc) => {
+                if enc.flush().is_err() {
+                    return raise_exception::<u64>(_py, "OSError", "gzip flush failed");
+                }
+            }
+            GzipHandleInner::Reading(_) | GzipHandleInner::Closed => {}
+        }
+        MoltObject::none().bits()
+    })
+}
+
 /// `handle.close() -> None`  (finishes the gzip stream)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gzip_close(handle_bits: u64) -> u64 {

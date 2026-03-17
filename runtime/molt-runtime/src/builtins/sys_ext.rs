@@ -761,3 +761,216 @@ pub extern "C" fn molt_sys_copyright() -> u64 {
         str_bits(_py, text)
     })
 }
+
+// ---------------------------------------------------------------------------
+// 7. Additional sys intrinsics for full intrinsic-backing
+// ---------------------------------------------------------------------------
+
+/// `sys.getdefaultencoding()` -> "utf-8"
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_getdefaultencoding() -> u64 {
+    crate::with_gil_entry!(_py, { str_bits(_py, "utf-8") })
+}
+
+/// `sys.getfilesystemencoding()` -> "utf-8"
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_getfilesystemencoding() -> u64 {
+    crate::with_gil_entry!(_py, { str_bits(_py, "utf-8") })
+}
+
+// --- Thread switch interval (GIL timeslice stub) ---
+
+static SWITCH_INTERVAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new({
+    // 0.005 as f64 bits
+    0.005f64.to_bits()
+});
+
+/// `sys.getswitchinterval()` -> float seconds
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_getswitchinterval() -> u64 {
+    let bits = SWITCH_INTERVAL.load(AtomicOrdering::Relaxed);
+    MoltObject::from_float(f64::from_bits(bits)).bits()
+}
+
+/// `sys.setswitchinterval(interval)` -> None
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_setswitchinterval(interval_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(interval_bits);
+        let val = match to_f64(obj) {
+            Some(v) => v,
+            None => {
+                return raise_exception::<u64>(_py, "TypeError", "a float is required");
+            }
+        };
+        if val <= 0.0 {
+            return raise_exception::<u64>(
+                _py,
+                "ValueError",
+                "switch interval must be strictly positive",
+            );
+        }
+        SWITCH_INTERVAL.store(val.to_bits(), AtomicOrdering::Relaxed);
+        MoltObject::none().bits()
+    })
+}
+
+// --- Integer string conversion length limitation ---
+
+static INT_MAX_STR_DIGITS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(4300);
+const INT_STR_DIGITS_CHECK_THRESHOLD: i64 = 640;
+
+/// `sys.get_int_max_str_digits()` -> int
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_get_int_max_str_digits() -> u64 {
+    let val = INT_MAX_STR_DIGITS.load(AtomicOrdering::Relaxed);
+    MoltObject::from_int(val).bits()
+}
+
+/// `sys.set_int_max_str_digits(maxdigits)` -> None
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_set_int_max_str_digits(maxdigits_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let val = match to_i64(obj_from_bits(maxdigits_bits)) {
+            Some(v) => v,
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "set_int_max_str_digits() argument must be a positive integer or zero",
+                );
+            }
+        };
+        if val != 0 && val < INT_STR_DIGITS_CHECK_THRESHOLD {
+            let msg = format!(
+                "maxdigits must be 0 or larger than {}",
+                INT_STR_DIGITS_CHECK_THRESHOLD
+            );
+            return raise_exception::<u64>(_py, "ValueError", &msg);
+        }
+        INT_MAX_STR_DIGITS.store(val, AtomicOrdering::Relaxed);
+        MoltObject::none().bits()
+    })
+}
+
+// --- call_tracing ---
+
+/// `sys.call_tracing(func, args)` — validate types in Rust.
+/// Returns 0 for "valid, proceed" or raises TypeError.  The actual call
+/// is done on the Python side (since the result must be a Python object).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_call_tracing_validate(func_bits: u64, args_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !is_truthy(_py, obj_from_bits(molt_is_callable(func_bits))) {
+            return raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "call_tracing() argument 1 must be callable",
+            );
+        }
+        let args_obj = obj_from_bits(args_bits);
+        if let Some(args_ptr) = args_obj.as_ptr() {
+            let type_id = unsafe { crate::object_type_id(args_ptr) };
+            if type_id == crate::TYPE_ID_TUPLE {
+                return MoltObject::none().bits();
+            }
+        }
+        raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "call_tracing() argument 2 must be a tuple",
+        )
+    })
+}
+
+// --- Audit hooks ---
+
+static AUDIT_HOOKS: OnceLock<Mutex<Vec<u64>>> = OnceLock::new();
+
+fn audit_hooks() -> &'static Mutex<Vec<u64>> {
+    AUDIT_HOOKS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// `sys.addaudithook(hook)` -> None
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_addaudithook(hook_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !is_truthy(_py, obj_from_bits(molt_is_callable(hook_bits))) {
+            return raise_exception::<u64>(_py, "TypeError", "expected a callable object");
+        }
+        inc_ref_bits(_py, hook_bits);
+        let mut hooks = audit_hooks().lock().unwrap();
+        hooks.push(hook_bits);
+        MoltObject::none().bits()
+    })
+}
+
+/// `sys.audit(event, *args)` -> None
+/// Returns the hooks list length so the Python side can dispatch.
+/// Hooks are stored in Rust; the Python side calls each via the returned
+/// handle list.  For simplicity we return count; 0 means no hooks.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_audit_hook_count() -> u64 {
+    let hooks = audit_hooks().lock().unwrap();
+    MoltObject::from_int(hooks.len() as i64).bits()
+}
+
+/// `sys._audit_get_hooks()` -> list of callable bits
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_audit_get_hooks() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hooks = audit_hooks().lock().unwrap();
+        if hooks.is_empty() {
+            let ptr = alloc_list(_py, &[]);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        let ptr = alloc_list(_py, &hooks);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+/// `sys.exit(code)` -> raises SystemExit
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_exit(code_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let _ = code_bits;
+        raise_exception::<u64>(_py, "SystemExit", "")
+    })
+}
+
+// --- displayhook / excepthook / unraisablehook delegated to Python ---
+// These are complex functions that interact with Python's repr/traceback
+// formatting. We provide thin intrinsic stubs that the Python side calls
+// to write to stdout/stderr.
+
+/// `sys._displayhook_write(text)` -> None  (write text to stdout)
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_displayhook_write(text_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Some(s) = string_obj_to_owned(obj_from_bits(text_bits)) {
+            print!("{s}");
+            MoltObject::none().bits()
+        } else {
+            raise_exception::<u64>(_py, "TypeError", "expected str")
+        }
+    })
+}
+
+/// `sys._excepthook_write(text)` -> None  (write text to stderr)
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_excepthook_write(text_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Some(s) = string_obj_to_owned(obj_from_bits(text_bits)) {
+            eprint!("{s}");
+            MoltObject::none().bits()
+        } else {
+            raise_exception::<u64>(_py, "TypeError", "expected str")
+        }
+    })
+}

@@ -1,17 +1,22 @@
-"""Minimal intrinsic-gated `bz2` subset for Molt."""
+"""Fully intrinsic-backed `bz2` module for Molt."""
 
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+# --- One-shot compress / decompress ---
 _MOLT_BZ2_COMPRESS = _require_intrinsic("molt_bz2_compress", globals())
 _MOLT_BZ2_DECOMPRESS = _require_intrinsic("molt_bz2_decompress", globals())
+
+# --- Incremental compressor ---
 _MOLT_BZ2_COMPRESSOR_NEW = _require_intrinsic("molt_bz2_compressor_new", globals())
 _MOLT_BZ2_COMPRESSOR_COMPRESS = _require_intrinsic(
     "molt_bz2_compressor_compress", globals()
 )
 _MOLT_BZ2_COMPRESSOR_FLUSH = _require_intrinsic("molt_bz2_compressor_flush", globals())
 _MOLT_BZ2_COMPRESSOR_DROP = _require_intrinsic("molt_bz2_compressor_drop", globals())
+
+# --- Incremental decompressor ---
 _MOLT_BZ2_DECOMPRESSOR_NEW = _require_intrinsic("molt_bz2_decompressor_new", globals())
 _MOLT_BZ2_DECOMPRESSOR_DECOMPRESS = _require_intrinsic(
     "molt_bz2_decompressor_decompress", globals()
@@ -27,9 +32,16 @@ _MOLT_BZ2_DECOMPRESSOR_DROP = _require_intrinsic(
     "molt_bz2_decompressor_drop", globals()
 )
 
+# --- File handle intrinsics ---
+_MOLT_BZ2_FILE_OPEN = _require_intrinsic("molt_bz2_file_open", globals())
+_MOLT_BZ2_FILE_READ = _require_intrinsic("molt_bz2_file_read", globals())
+_MOLT_BZ2_FILE_WRITE = _require_intrinsic("molt_bz2_file_write", globals())
+_MOLT_BZ2_FILE_CLOSE = _require_intrinsic("molt_bz2_file_close", globals())
+_MOLT_BZ2_FILE_DROP = _require_intrinsic("molt_bz2_file_drop", globals())
+
 
 class BZ2Compressor:
-    """Incremental bz2 compressor."""
+    """Incremental bz2 compressor backed by Rust intrinsics."""
 
     def __init__(self, compresslevel: int = 9) -> None:
         if not 1 <= compresslevel <= 9:
@@ -58,7 +70,7 @@ class BZ2Compressor:
 
 
 class BZ2Decompressor:
-    """Incremental bz2 decompressor."""
+    """Incremental bz2 decompressor backed by Rust intrinsics."""
 
     def __init__(self) -> None:
         self._handle = _MOLT_BZ2_DECOMPRESSOR_NEW()
@@ -89,6 +101,72 @@ class BZ2Decompressor:
                 pass
 
 
+class BZ2File:
+    """BZ2 file object backed entirely by Rust intrinsics."""
+
+    def __init__(
+        self,
+        filename: str,
+        mode: str = "rb",
+        *,
+        compresslevel: int = 9,
+    ) -> None:
+        if mode not in ("rb", "wb", "ab", "r", "w", "a"):
+            raise ValueError(f"Invalid mode: {mode!r}")
+        self._handle = _MOLT_BZ2_FILE_OPEN(filename, mode, compresslevel)
+        self._mode = mode
+        self._closed = False
+        self._writing = "w" in mode or "a" in mode
+        self._reading = "r" in mode
+
+    def write(self, data: bytes) -> int:
+        if self._closed:
+            raise ValueError("I/O operation on closed file.")
+        if not self._writing:
+            raise OSError("File not open for writing")
+        return int(_MOLT_BZ2_FILE_WRITE(self._handle, data))
+
+    def read(self, size: int = -1) -> bytes:
+        if self._closed:
+            raise ValueError("I/O operation on closed file.")
+        if not self._reading:
+            raise OSError("File not open for reading")
+        return bytes(_MOLT_BZ2_FILE_READ(self._handle, size))
+
+    def readable(self) -> bool:
+        return self._reading
+
+    def writable(self) -> bool:
+        return self._writing
+
+    def seekable(self) -> bool:
+        return False
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        _MOLT_BZ2_FILE_CLOSE(self._handle)
+        _MOLT_BZ2_FILE_DROP(self._handle)
+        self._handle = None
+        self._closed = True
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def __enter__(self) -> "BZ2File":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
 def compress(data: bytes, compresslevel: int = 9) -> bytes:
     """Compress *data* in one shot, returning the compressed bytes."""
     try:
@@ -112,95 +190,16 @@ def open(
     encoding: str | None = None,
     errors: str | None = None,
     newline: str | None = None,
-) -> "_BZ2File":
-    """Open a bz2-compressed file in binary or text mode."""
-    return _BZ2File(filename, mode, compresslevel=compresslevel)
-
-
-class _BZ2File:
-    """Minimal bz2 file wrapper backed by one-shot compress/decompress."""
-
-    def __init__(
-        self,
-        filename: str,
-        mode: str = "rb",
-        *,
-        compresslevel: int = 9,
-    ) -> None:
-        if mode not in ("rb", "wb", "ab", "r", "w", "a"):
-            raise ValueError(f"Invalid mode: {mode!r}")
-        self._name = filename
-        self._mode = mode
-        self._compresslevel = compresslevel
-        self._closed = False
-        self._write_buf = bytearray()
-        self._read_buf: bytes | None = None
-        self._read_pos = 0
-        self._writing = "w" in mode or "a" in mode
-        self._reading = "r" in mode
-
-    def write(self, data: bytes) -> int:
-        if self._closed:
-            raise ValueError("I/O operation on closed file.")
-        if not self._writing:
-            raise OSError("File not open for writing")
-        self._write_buf.extend(data)
-        return len(data)
-
-    def read(self, size: int = -1) -> bytes:
-        if self._closed:
-            raise ValueError("I/O operation on closed file.")
-        if not self._reading:
-            raise OSError("File not open for reading")
-        if self._read_buf is None:
-            _open = (
-                __builtins__["open"]  # type: ignore[index]
-                if isinstance(__builtins__, dict)
-                else __builtins__.open  # type: ignore[union-attr]
-            )
-            with _open(self._name, "rb") as f:
-                raw = f.read()
-            self._read_buf = decompress(raw)
-            self._read_pos = 0
-        if size < 0:
-            result = self._read_buf[self._read_pos :]
-            self._read_pos = len(self._read_buf)
-            return result
-        result = self._read_buf[self._read_pos : self._read_pos + size]
-        self._read_pos += len(result)
-        return result
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        if self._writing and self._write_buf:
-            compressed = compress(bytes(self._write_buf), self._compresslevel)
-            _open = (
-                __builtins__["open"]  # type: ignore[index]
-                if isinstance(__builtins__, dict)
-                else __builtins__.open  # type: ignore[union-attr]
-            )
-            with _open(self._name, "wb") as f:
-                f.write(compressed)
-        self._closed = True
-
-    def __enter__(self) -> "_BZ2File":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        self.close()
-
-    def __del__(self) -> None:
-        try:
-            self.close()
-        except Exception:
-            pass
+) -> BZ2File:
+    """Open a bz2-compressed file in binary mode."""
+    return BZ2File(filename, mode, compresslevel=compresslevel)
 
 
 __all__ = [
     "compress",
     "decompress",
     "open",
+    "BZ2File",
     "BZ2Compressor",
     "BZ2Decompressor",
 ]

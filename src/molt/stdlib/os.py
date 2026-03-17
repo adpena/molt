@@ -131,6 +131,13 @@ _MOLT_OS_SYMLINK_V2 = _require_intrinsic("molt_os_symlink", globals())
 _MOLT_OS_READLINK_V2 = _require_intrinsic("molt_os_readlink", globals())
 _MOLT_PATH_EXPANDVARS = _require_intrinsic("molt_path_expandvars", globals())
 _MOLT_CAP_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
+_MOLT_OS_WIFEXITED = _require_intrinsic("molt_os_wifexited", globals())
+_MOLT_OS_WEXITSTATUS = _require_intrinsic("molt_os_wexitstatus", globals())
+_MOLT_OS_WIFSIGNALED = _require_intrinsic("molt_os_wifsignaled", globals())
+_MOLT_OS_WTERMSIG = _require_intrinsic("molt_os_wtermsig", globals())
+_MOLT_OS_WIFSTOPPED = _require_intrinsic("molt_os_wifstopped", globals())
+_MOLT_OS_WSTOPSIG = _require_intrinsic("molt_os_wstopsig", globals())
+_MOLT_OS_FSPATH = _require_intrinsic("molt_os_fspath", globals())
 
 
 def _resolve_os_name() -> str:
@@ -263,27 +270,27 @@ WUNTRACED = 2
 
 
 def WIFEXITED(status: int) -> bool:
-    return (status & 0x7F) == 0
+    return bool(_MOLT_OS_WIFEXITED(status))
 
 
 def WEXITSTATUS(status: int) -> int:
-    return (status >> 8) & 0xFF
+    return int(_MOLT_OS_WEXITSTATUS(status))
 
 
 def WIFSIGNALED(status: int) -> bool:
-    return ((status & 0x7F) + 1) >> 1 > 0
+    return bool(_MOLT_OS_WIFSIGNALED(status))
 
 
 def WTERMSIG(status: int) -> int:
-    return status & 0x7F
+    return int(_MOLT_OS_WTERMSIG(status))
 
 
 def WIFSTOPPED(status: int) -> bool:
-    return (status & 0xFF) == 0x7F
+    return bool(_MOLT_OS_WIFSTOPPED(status))
 
 
 def WSTOPSIG(status: int) -> int:
-    return (status >> 8) & 0xFF
+    return int(_MOLT_OS_WSTOPSIG(status))
 
 
 # access() mode constants
@@ -787,19 +794,7 @@ class PathLike(_abc.ABC):
 
 
 def fspath(path: Any) -> str | bytes:
-    if isinstance(path, (str, bytes)):
-        return path
-    method = getattr(path, "__fspath__", None)
-    if method is None:
-        raise TypeError(
-            f"expected str, bytes or os.PathLike object, not {type(path).__name__}"
-        )
-    value = method()
-    if isinstance(value, (str, bytes)):
-        return value
-    raise TypeError(
-        f"expected str, bytes or os.PathLike object, not {type(path).__name__}"
-    )
+    return _MOLT_OS_FSPATH(path)
 
 
 def fsencode(filename: Any) -> bytes:

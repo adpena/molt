@@ -1455,3 +1455,232 @@ pub extern "C" fn molt_random_sample(handle_bits: u64, population_bits: u64, k_b
         }
     })
 }
+
+// ─── Additional math helpers for binomialvariate ────────────────────────────
+
+#[inline(always)]
+fn rng_lgamma(x: f64) -> f64 {
+    libm::lgamma(x)
+}
+
+// ─── binomialvariate ────────────────────────────────────────────────────────
+
+/// Mirrors CPython random.Random.binomialvariate exactly.
+/// Parameters: handle, n (int), p (float).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_random_binomialvariate(
+    handle_bits: u64,
+    n_bits: u64,
+    p_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "Random handle must be an int");
+        };
+        let Some(n) = to_i64(obj_from_bits(n_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "n must be an integer");
+        };
+        let Some(p) = f64_from_bits(_py, p_bits, "p") else {
+            return raise_exception::<u64>(_py, "TypeError", "p must be a number");
+        };
+
+        if n < 0 {
+            return raise_exception::<u64>(_py, "ValueError", "n must be non-negative");
+        }
+        if p <= 0.0 || p >= 1.0 {
+            if p == 0.0 {
+                return MoltObject::from_int(0).bits();
+            }
+            if p == 1.0 {
+                return MoltObject::from_int(n).bits();
+            }
+            return raise_exception::<u64>(_py, "ValueError", "p must be in the range 0.0 <= p <= 1.0");
+        }
+
+        let mut reg = RANDOM_REGISTRY.lock().unwrap();
+        let Some(rng) = reg.get_mut(&id) else {
+            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+        };
+
+        let result = binomialvariate_impl(rng, n, p);
+        MoltObject::from_int(result).bits()
+    })
+}
+
+fn binomialvariate_impl(rng: &mut MersenneTwisterRng, n: i64, p: f64) -> i64 {
+    if n == 1 {
+        return if rng.random() < p { 1 } else { 0 };
+    }
+
+    if p > 0.5 {
+        return n - binomialvariate_impl(rng, n, 1.0 - p);
+    }
+
+    let nf = n as f64;
+    if nf * p < 10.0 {
+        // BTPE inverse transform
+        let mut x: i64 = 0;
+        let mut y: i64 = 0;
+        let c = rng_log2(1.0 - p);
+        if c == 0.0 {
+            return x;
+        }
+        loop {
+            y += rng_floor(rng_log2(rng.random()) / c) as i64 + 1;
+            if y > n {
+                return x;
+            }
+            x += 1;
+        }
+    }
+
+    // BTPE algorithm
+    let spq = rng_sqrt(nf * p * (1.0 - p));
+    let b = 1.15 + 2.53 * spq;
+    let a = -0.0873 + 0.0248 * b + 0.01 * p;
+    let c_val = nf * p + 0.5;
+    let vr = 0.92 - 4.2 / b;
+
+    let mut setup_complete = false;
+    let mut alpha = 0.0_f64;
+    let mut lpq = 0.0_f64;
+    let mut m = 0.0_f64;
+    let mut h = 0.0_f64;
+
+    loop {
+        let u = rng.random();
+        let u2 = u - 0.5;
+        let us = 0.5 - rng_fabs(u2);
+        let k = rng_floor((2.0 * a / us + b) * u2 + c_val) as i64;
+        if k < 0 || k > n {
+            continue;
+        }
+
+        let v = rng.random();
+        if us >= 0.07 && v <= vr {
+            return k;
+        }
+
+        if !setup_complete {
+            alpha = (2.83 + 5.1 / b) * spq;
+            lpq = rng_log(p / (1.0 - p));
+            m = rng_floor((nf + 1.0) * p);
+            h = rng_lgamma(m + 1.0) + rng_lgamma(nf - m + 1.0);
+            setup_complete = true;
+        }
+        let kf = k as f64;
+        let v2 = v * alpha / (a / (us * us) + b);
+        if rng_log(v2) <= h - rng_lgamma(kf + 1.0) - rng_lgamma(nf - kf + 1.0) + (kf - m) * lpq
+        {
+            return k;
+        }
+    }
+}
+
+/// randrange(start, stop, step) -> int
+/// All validation and range arithmetic done in Rust.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_random_randrange(
+    handle_bits: u64,
+    start_bits: u64,
+    stop_bits: u64,
+    step_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "Random handle must be an int");
+        };
+        let Some(istart) = to_i64(obj_from_bits(start_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "integer argument expected");
+        };
+        // stop = None is encoded as MoltObject::none()
+        let stop_obj = obj_from_bits(stop_bits);
+        let istop_opt = if stop_obj.is_none() { None } else { to_i64(stop_obj) };
+        let Some(istep) = to_i64(obj_from_bits(step_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "integer argument expected");
+        };
+
+        let mut reg = RANDOM_REGISTRY.lock().unwrap();
+        let Some(rng) = reg.get_mut(&id) else {
+            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+        };
+
+        if istop_opt.is_none() {
+            if istep != 1 {
+                return raise_exception::<u64>(_py, "TypeError", "Missing a non-None stop argument");
+            }
+            if istart <= 0 {
+                return raise_exception::<u64>(_py, "ValueError", "empty range for randrange()");
+            }
+            let n_big = BigInt::from(istart);
+            let result = rng.randbelow(&n_big);
+            return int_bits_from_bigint(_py, result);
+        }
+
+        let istop = istop_opt.unwrap();
+        let width = istop - istart;
+        if istep == 1 {
+            if width <= 0 {
+                return raise_exception::<u64>(_py, "ValueError", "empty range for randrange()");
+            }
+            let n_big = BigInt::from(width);
+            let r = rng.randbelow(&n_big);
+            let result = BigInt::from(istart) + r;
+            return int_bits_from_bigint(_py, result);
+        }
+
+        if istep == 0 {
+            return raise_exception::<u64>(_py, "ValueError", "zero step for randrange()");
+        }
+
+        let n = if istep > 0 {
+            (width + istep - 1) / istep
+        } else {
+            (width + istep + 1) / istep
+        };
+        if n <= 0 {
+            return raise_exception::<u64>(_py, "ValueError", "empty range for randrange()");
+        }
+
+        let n_big = BigInt::from(n);
+        let r = rng.randbelow(&n_big);
+        let result = BigInt::from(istart) + BigInt::from(istep) * r;
+        int_bits_from_bigint(_py, result)
+    })
+}
+
+/// randbytes(n) -> generates n random bytes
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_random_randbytes(handle_bits: u64, n_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "Random handle must be an int");
+        };
+        let Some(n) = to_i64(obj_from_bits(n_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "n must be an integer");
+        };
+        if n < 0 {
+            return raise_exception::<u64>(_py, "ValueError", "negative argument not allowed");
+        }
+        let n = n as usize;
+
+        let mut reg = RANDOM_REGISTRY.lock().unwrap();
+        let Some(rng) = reg.get_mut(&id) else {
+            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+        };
+
+        let total_bits = (n * 8) as u32;
+        let big = rng.randbits_biguint(total_bits);
+        let bytes_vec = big.to_bytes_le();
+        // Pad or truncate to exactly n bytes
+        let mut result = vec![0u8; n];
+        let copy_len = bytes_vec.len().min(n);
+        result[..copy_len].copy_from_slice(&bytes_vec[..copy_len]);
+
+        let ptr = crate::alloc_bytes(_py, &result);
+        if ptr.is_null() {
+            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}

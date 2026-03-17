@@ -1,4 +1,8 @@
-"""Intrinsic-backed pickle registry helpers."""
+# Shim churn audit: 2 intrinsic-direct / 10 total exports
+"""Intrinsic-backed pickle registry helpers.
+
+Pure-forwarding shims eliminated per MOL-215 where argument signatures permit.
+"""
 
 from __future__ import annotations
 
@@ -95,13 +99,8 @@ def __newobj__(cls: type, *args: object) -> object:
     return _MOLT_COPYREG_NEWOBJ(cls, args)
 
 
-def __newobj_ex__(cls: type, args: object, kwargs: object) -> object:
-    return _MOLT_COPYREG_NEWOBJ_EX(cls, args, kwargs)
+# --- Direct intrinsic bindings (no Python wrapper overhead) ---
 
-
-def _reconstructor(cls: type, base: type, state: object) -> object:
-    return _MOLT_COPYREG_RECONSTRUCTOR(cls, base, state)
-
-
-def _reduce_ex(self: object, proto: int) -> object:
-    return _MOLT_COPYREG_REDUCE_EX(self, proto)
+__newobj_ex__ = _MOLT_COPYREG_NEWOBJ_EX
+_reconstructor = _MOLT_COPYREG_RECONSTRUCTOR
+_reduce_ex = _MOLT_COPYREG_REDUCE_EX

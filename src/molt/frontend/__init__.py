@@ -1381,6 +1381,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.globals = {}
         self.imported_names = dict(self.global_imported_names)
         self.imported_modules = dict(self.global_imported_modules)
+        # Clear the per-function module cache so that module references are
+        # re-fetched via MODULE_CACHE_GET in each new chunk function.  Without
+        # this, a cached MoltValue from a previous chunk's WASM locals would be
+        # reused, but the corresponding WASM local does not exist in the new
+        # chunk — leaving the variable at its zero-initialized default (0x0),
+        # which is not a valid module object.
+        self._module_cache_values = {}
         self.async_locals = {}
         self.async_internal_locals = set()
         self.async_public_locals = set()
@@ -4021,27 +4028,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
 
     def _get_or_emit_module_cache(self, module_name: str) -> MoltValue:
-        """Return a cached MoltValue for *module_name* from MODULE_CACHE_GET.
+        """Return a MoltValue for *module_name* from MODULE_CACHE_GET.
 
-        On the first call within a function scope, emits a CONST_STR + MODULE_CACHE_GET
-        pair and stores the result in ``self._module_cache_values``.  Subsequent calls
-        for the same *module_name* within the same function scope reuse the cached
-        MoltValue, eliminating redundant mutex acquisitions on the hot path.
+        Emits a fresh CONST_STR + MODULE_CACHE_GET pair on every call.  Earlier
+        versions cached the MoltValue across the function scope, but state-machine
+        lowering (used for module init functions with jumps/labels) can place the
+        first MODULE_CACHE_GET in a branch that is skipped when a preceding
+        exception redirects the state machine.  Re-emitting the lookup each time
+        ensures the local is populated in the state that actually uses it.
 
         Note: this helper is only appropriate for simple, unconditional MODULE_CACHE_GET
         calls (i.e. for the *current* module or other modules that are guaranteed already
         loaded).  Use ``_emit_module_load`` for modules that may need lazy-initialisation.
         """
-        cached = self._module_cache_values.get(module_name)
-        if cached is not None:
-            return cached
         module_name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=module_name_val))
         module_val = MoltValue(self.next_var(), type_hint="module")
         self.emit(
             MoltOp(kind="MODULE_CACHE_GET", args=[module_name_val], result=module_val)
         )
-        self._module_cache_values[module_name] = module_val
         return module_val
 
     def _emit_module_attr_set(
@@ -4462,7 +4467,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_module_attr_get(self, name: str) -> MoltValue:
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
-        module_val = self._get_or_emit_module_cache(self.module_name)
+        if self.current_func_name == "molt_main" and self.module_obj is not None:
+            module_val = self.module_obj
+        else:
+            module_val = self._get_or_emit_module_cache(self.module_name)
         res = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
             MoltOp(kind="MODULE_GET_ATTR", args=[module_val, name_val], result=res)
@@ -4479,7 +4487,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_global_get(self, name: str) -> MoltValue:
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
-        module_val = self._get_or_emit_module_cache(self.module_name)
+        if self.current_func_name == "molt_main" and self.module_obj is not None:
+            module_val = self.module_obj
+        else:
+            module_val = self._get_or_emit_module_cache(self.module_name)
         res = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
             MoltOp(kind="MODULE_GET_GLOBAL", args=[module_val, name_val], result=res)
@@ -4798,7 +4809,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_module_attr_set_runtime(self, name: str, value: MoltValue) -> None:
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
-        module_val = self._get_or_emit_module_cache(self.module_name)
+        if self.current_func_name == "molt_main" and self.module_obj is not None:
+            module_val = self.module_obj
+        else:
+            module_val = self._get_or_emit_module_cache(self.module_name)
         self.emit(
             MoltOp(
                 kind="MODULE_SET_ATTR",
@@ -4828,12 +4842,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
 
     def _emit_module_load(self, module_name: str) -> MoltValue:
-        # Fast path: if we have already loaded this module earlier in the same
-        # function scope, reuse the cached MoltValue and skip the entire
-        # MODULE_CACHE_GET + conditional-init + import-guard sequence.
-        cached = self._module_cache_values.get(module_name)
-        if cached is not None:
-            return cached
+        # NOTE: Earlier versions cached loaded_val in _module_cache_values to
+        # avoid redundant MODULE_CACHE_GET + conditional-init sequences.  However,
+        # the WASM state-machine backend (used for module init functions with
+        # jumps/labels) can split the code into states where the cached local's
+        # assignment lives in a state that an exception-redirect path skips.
+        # When the later state that uses the cached local runs, the local is
+        # still 0 (its WASM default), causing "module attribute access expects
+        # module" errors in linked WASM artifacts.  Re-emitting the full
+        # load sequence each time ensures the local is populated in the state
+        # that actually uses it.
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=name_val))
         module_val = MoltValue(self.next_var(), type_hint="module")
@@ -4865,9 +4883,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         loaded_val = MoltValue(self.next_var(), type_hint="module")
         self.emit(MoltOp(kind="MODULE_CACHE_GET", args=[name_val], result=loaded_val))
         self._emit_import_guard(loaded_val, module_name)
-        # Cache the loaded module so subsequent accesses within this function scope
-        # do not re-emit MODULE_CACHE_GET + guard ops.
-        self._module_cache_values[module_name] = loaded_val
         return loaded_val
 
     def _lookup_func_defaults(
@@ -29996,6 +30011,32 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "round_snapshots": list(round_snapshots) if round_snapshots else [],
         }
 
+    def _log_degrade_levels(
+        self,
+        degrade_level: int,
+        reasons: list[str],
+        budget_ms: float,
+    ) -> None:
+        """Log which functions hit which degrade level and why (MOL-27)."""
+        func_name = self._active_midend_function_name
+        outcome = self.midend_policy_outcomes_by_function.get(func_name)
+        if outcome is not None:
+            outcome["degrade_level"] = degrade_level
+            outcome["degrade_level_reasons"] = list(reasons)
+            outcome["per_func_budget_ms"] = round(budget_ms, 3)
+        if os.getenv("MOLT_MIDEND_STATS") is not None:
+            level_desc = {
+                1: "skip LICM + guard hoist",
+                2: "skip SCCP multi-pass",
+                3: "skip all optimisation",
+            }.get(degrade_level, f"unknown({degrade_level})")
+            print(
+                f"molt midend degrade: {func_name} level={degrade_level}"
+                f" ({level_desc}) budget_ms={budget_ms:.1f}"
+                f" reasons={reasons}",
+                file=sys.stderr,
+            )
+
     def _maybe_report_midend_stats(self) -> None:
         if self._midend_stats_reported:
             return
@@ -31643,6 +31684,29 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if op.kind == "MISSING" and op.result.name != "none":
                 missing_value_defs.add(op.result.name)
 
+        # Propagate MISSING taint transitively through PHI nodes: if every
+        # input to a PHI is MISSING-tainted, the PHI result is also tainted.
+        # This catches cases where branch pruning collapses a PHI to a single
+        # MISSING-carrying input that escapes into CALL arg positions.
+        missing_tainted: set[str] = set(missing_value_defs)
+        _phi_changed = True
+        while _phi_changed:
+            _phi_changed = False
+            for op in ops:
+                if op.kind != "PHI" or not op.args:
+                    continue
+                out_name = op.result.name
+                if out_name == "none" or out_name in missing_tainted:
+                    continue
+                phi_value_args = [
+                    arg for arg in op.args if isinstance(arg, MoltValue)
+                ]
+                if phi_value_args and all(
+                    arg.name in missing_tainted for arg in phi_value_args
+                ):
+                    missing_tainted.add(out_name)
+                    _phi_changed = True
+
         block_defs: dict[int, set[str]] = {}
         for block in cfg.blocks:
             defs: set[str] = set()
@@ -31750,6 +31814,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         ):
                             if arg.name not in local_defs:
                                 failures.append((op_idx, op.kind, arg.name))
+                # Transitive MISSING taint check: if a CALL/CALL_INDIRECT
+                # arg is MISSING-tainted through a PHI collapse (not a direct
+                # MISSING def), that means an uninitialized variable leaked
+                # into a call site after branch pruning.
+                if op.kind in {"CALL", "CALL_INDIRECT", "CALL_INTERNAL"}:
+                    for arg in op.args:
+                        if isinstance(arg, MoltValue) and (
+                            arg.name in missing_tainted
+                            and arg.name not in missing_value_defs
+                        ):
+                            failures.append((op_idx, op.kind, arg.name))
                 out_name = op.result.name
                 if out_name != "none":
                     local_defs.add(out_name)
@@ -32113,6 +32188,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     return _SCCP_UNKNOWN
                 if is_overdefined(lhs_value) or is_overdefined(rhs_value):
                     return _SCCP_OVERDEFINED
+                # MISSING sentinels must never fold through arithmetic.
+                if is_missing_sentinel(lhs_value) or is_missing_sentinel(rhs_value):
+                    return _SCCP_OVERDEFINED
                 if (
                     isinstance(lhs_value, int)
                     and not isinstance(lhs_value, bool)
@@ -32132,7 +32210,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 arg_value = value_lattice(arg.name, known)
                 if arg_value is _SCCP_UNKNOWN:
                     return _SCCP_UNKNOWN
-                if is_overdefined(arg_value):
+                if is_overdefined(arg_value) or is_missing_sentinel(arg_value):
                     return _SCCP_OVERDEFINED
                 if isinstance(arg_value, bool):
                     return not arg_value
@@ -32144,7 +32222,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 arg_value = value_lattice(arg.name, known)
                 if arg_value is _SCCP_UNKNOWN:
                     return _SCCP_UNKNOWN
-                if is_overdefined(arg_value):
+                if is_overdefined(arg_value) or is_missing_sentinel(arg_value):
                     return _SCCP_OVERDEFINED
                 if isinstance(arg_value, (int, float)):
                     return abs(arg_value)
@@ -32159,6 +32237,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if lhs_value is _SCCP_UNKNOWN or rhs_value is _SCCP_UNKNOWN:
                     return _SCCP_UNKNOWN
                 if is_overdefined(lhs_value) or is_overdefined(rhs_value):
+                    return _SCCP_OVERDEFINED
+                # MISSING sentinels must never fold through boolean ops.
+                if is_missing_sentinel(lhs_value) or is_missing_sentinel(rhs_value):
                     return _SCCP_OVERDEFINED
                 if isinstance(lhs_value, bool) and isinstance(rhs_value, bool):
                     if op.kind == "AND":
@@ -32175,6 +32256,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if lhs_value is _SCCP_UNKNOWN or rhs_value is _SCCP_UNKNOWN:
                     return _SCCP_UNKNOWN
                 if is_overdefined(lhs_value) or is_overdefined(rhs_value):
+                    return _SCCP_OVERDEFINED
+                # MISSING sentinels are singleton objects in the lattice but
+                # represent distinct runtime values — never fold identity
+                # comparisons through them.
+                if is_missing_sentinel(lhs_value) or is_missing_sentinel(rhs_value):
                     return _SCCP_OVERDEFINED
                 return lhs_value is rhs_value
             if op.kind in {"EQ", "NE", "LT", "LE", "GT", "GE"} and len(op.args) == 2:
@@ -32195,6 +32281,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if lhs_value is _SCCP_UNKNOWN or rhs_value is _SCCP_UNKNOWN:
                     return _SCCP_UNKNOWN
                 if is_overdefined(lhs_value) or is_overdefined(rhs_value):
+                    return _SCCP_OVERDEFINED
+                if is_missing_sentinel(lhs_value) or is_missing_sentinel(rhs_value):
                     return _SCCP_OVERDEFINED
                 if not scalar_cmp_supported(lhs_value) or not scalar_cmp_supported(
                     rhs_value
@@ -32224,6 +32312,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if lhs_value is _SCCP_UNKNOWN or rhs_value is _SCCP_UNKNOWN:
                     return _SCCP_UNKNOWN
                 if is_overdefined(lhs_value) or is_overdefined(rhs_value):
+                    return _SCCP_OVERDEFINED
+                if is_missing_sentinel(lhs_value) or is_missing_sentinel(rhs_value):
                     return _SCCP_OVERDEFINED
                 if isinstance(lhs_value, str) and isinstance(rhs_value, str):
                     return lhs_value == rhs_value
@@ -34504,6 +34594,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         sccp_iter_cap = max(1, policy.sccp_iter_cap)
         cse_iter_cap = max(1, policy.cse_iter_cap)
 
+        # --- Per-function wall-time budget with 3-level degrade ladder (MOL-27) ---
+        per_func_budget_ms: float = self._midend_float_env(
+            "MOLT_MIDEND_BUDGET_MS", 5000.0,
+        )
+        degrade_level: int = 0
+        degrade_level_reasons: list[str] = []
+
         max_rounds = self._midend_positive_int_env(
             "MOLT_MIDEND_MAX_ROUNDS", max_rounds, minimum=1
         )
@@ -34569,6 +34666,79 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if value is not None:
                 event["value"] = value
             degrade_events.append(event)
+
+        def _check_per_func_budget(stage: str) -> bool:
+            """Apply the 3-level degrade ladder when the per-function budget is
+            exceeded.  Returns True if level 3 was reached (caller should bail)."""
+            nonlocal degrade_level, degraded
+            nonlocal enable_licm, enable_guard_hoist
+            nonlocal sccp_iter_cap, max_rounds
+            nonlocal enable_cse, enable_deep_edge_thread
+            nonlocal enable_idempotence_probe
+            spent = (time.perf_counter() - midend_start) * 1000.0
+            if spent <= per_func_budget_ms:
+                return False
+            if degrade_level < 1:
+                degrade_level = 1
+                reason = (
+                    f"per_func_budget_exceeded at {stage}: "
+                    f"spent={spent:.1f}ms > budget={per_func_budget_ms:.1f}ms; "
+                    f"level=1 (skip LICM + guard hoist)"
+                )
+                degrade_level_reasons.append(reason)
+                degraded = True
+                enable_licm = False
+                enable_guard_hoist = False
+                degrade_events.append({
+                    "reason": "per_func_budget_level_1",
+                    "stage": stage,
+                    "action": "disable_licm_and_guard_hoist",
+                    "spent_ms": round(max(0.0, spent), 3),
+                    "degrade_level": 1,
+                })
+            spent = (time.perf_counter() - midend_start) * 1000.0
+            if spent <= per_func_budget_ms:
+                return False
+            if degrade_level < 2:
+                degrade_level = 2
+                reason = (
+                    f"per_func_budget_exceeded at {stage}: "
+                    f"spent={spent:.1f}ms > budget={per_func_budget_ms:.1f}ms; "
+                    f"level=2 (skip SCCP multi-pass)"
+                )
+                degrade_level_reasons.append(reason)
+                sccp_iter_cap = 1
+                max_rounds = min(max_rounds, 1)
+                enable_cse = False
+                enable_deep_edge_thread = False
+                enable_idempotence_probe = False
+                degrade_events.append({
+                    "reason": "per_func_budget_level_2",
+                    "stage": stage,
+                    "action": "single_sccp_pass_only",
+                    "spent_ms": round(max(0.0, spent), 3),
+                    "degrade_level": 2,
+                })
+            spent = (time.perf_counter() - midend_start) * 1000.0
+            if spent <= per_func_budget_ms:
+                return False
+            if degrade_level < 3:
+                degrade_level = 3
+                reason = (
+                    f"per_func_budget_exceeded at {stage}: "
+                    f"spent={spent:.1f}ms > budget={per_func_budget_ms:.1f}ms; "
+                    f"level=3 (skip all optimisation)"
+                )
+                degrade_level_reasons.append(reason)
+                degrade_events.append({
+                    "reason": "per_func_budget_level_3",
+                    "stage": stage,
+                    "action": "emit_unoptimized_ir",
+                    "spent_ms": round(max(0.0, spent), 3),
+                    "degrade_level": 3,
+                })
+                return True
+            return degrade_level >= 3
 
         if not enable_deep_edge_thread:
             add_degrade_event(

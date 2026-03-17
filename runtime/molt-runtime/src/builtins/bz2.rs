@@ -1,8 +1,10 @@
+use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
 use bzip2::Compression as BzCompression;
 use bzip2::read::BzDecoder;
 use bzip2::write::BzEncoder;
-use std::io::{Read, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, Read, Write};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -325,5 +327,193 @@ pub extern "C" fn molt_bz2_decompressor_unused_data(handle_bits: u64) -> u64 {
         } else {
             return_bytes(_py, &[])
         }
+    })
+}
+
+// ── Stateful BZ2File handle ──────────────────────────────────────────────────
+
+enum Bz2FileInner {
+    Writing(BzEncoder<File>),
+    Reading(BufReader<BzDecoder<File>>),
+    Closed,
+}
+
+struct Bz2FileHandle {
+    inner: Bz2FileInner,
+}
+
+fn bz2_file_handle_from_bits(bits: u64) -> Option<&'static mut Bz2FileHandle> {
+    let ptr = ptr_from_bits(bits);
+    if ptr.is_null() {
+        return None;
+    }
+    Some(unsafe { &mut *(ptr as *mut Bz2FileHandle) })
+}
+
+/// `bz2.open(filename, mode, compresslevel) -> handle`
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bz2_file_open(
+    filename_bits: u64,
+    mode_bits: u64,
+    compresslevel_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let name_obj = obj_from_bits(filename_bits);
+        let Some(name) = string_obj_to_owned(name_obj) else {
+            return raise_exception::<u64>(_py, "TypeError", "filename must be str");
+        };
+        let mode_obj = obj_from_bits(mode_bits);
+        let mode = string_obj_to_owned(mode_obj).unwrap_or_else(|| "rb".to_string());
+        let compression = match bz_compression_from_level(_py, compresslevel_bits) {
+            Ok(c) => c,
+            Err(bits) => return bits,
+        };
+        let inner = match mode.trim_matches('b') {
+            "r" => {
+                let file = match File::open(&name) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let msg = format!("bz2.open: {e}");
+                        return raise_exception::<u64>(_py, "OSError", &msg);
+                    }
+                };
+                Bz2FileInner::Reading(BufReader::new(BzDecoder::new(file)))
+            }
+            "w" => {
+                let file = match OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&name)
+                {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let msg = format!("bz2.open: {e}");
+                        return raise_exception::<u64>(_py, "OSError", &msg);
+                    }
+                };
+                Bz2FileInner::Writing(BzEncoder::new(file, compression))
+            }
+            "a" => {
+                let file = match OpenOptions::new().create(true).append(true).open(&name) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let msg = format!("bz2.open: {e}");
+                        return raise_exception::<u64>(_py, "OSError", &msg);
+                    }
+                };
+                Bz2FileInner::Writing(BzEncoder::new(file, compression))
+            }
+            _ => {
+                return raise_exception::<u64>(
+                    _py,
+                    "ValueError",
+                    "Invalid mode ('r', 'rb', 'w', 'wb', 'a', 'ab' supported)",
+                );
+            }
+        };
+        let handle = Box::new(Bz2FileHandle { inner });
+        let ptr = Box::into_raw(handle) as *mut u8;
+        bits_from_ptr(ptr)
+    })
+}
+
+/// `handle.read(size=-1) -> bytes`
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bz2_file_read(handle_bits: u64, size_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = bz2_file_handle_from_bits(handle_bits) else {
+            return raise_exception::<u64>(_py, "OSError", "invalid bz2 file handle");
+        };
+        let Bz2FileInner::Reading(ref mut reader) = handle.inner else {
+            return raise_exception::<u64>(_py, "OSError", "file not open for reading");
+        };
+        let size = {
+            let obj = obj_from_bits(size_bits);
+            if obj.is_none() {
+                -1i64
+            } else {
+                let val = index_i64_from_obj(_py, size_bits, "size must be an integer");
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                val
+            }
+        };
+        let mut out = Vec::new();
+        let ok = if size < 0 {
+            reader.read_to_end(&mut out).is_ok()
+        } else {
+            out.resize(size as usize, 0);
+            match reader.read(&mut out) {
+                Ok(n) => {
+                    out.truncate(n);
+                    true
+                }
+                Err(_) => false,
+            }
+        };
+        if !ok {
+            return raise_exception::<u64>(_py, "OSError", "bz2 read failed");
+        }
+        return_bytes(_py, &out)
+    })
+}
+
+/// `handle.write(data) -> int`
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bz2_file_write(handle_bits: u64, data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = bz2_file_handle_from_bits(handle_bits) else {
+            return raise_exception::<u64>(_py, "OSError", "invalid bz2 file handle");
+        };
+        let Bz2FileInner::Writing(ref mut encoder) = handle.inner else {
+            return raise_exception::<u64>(_py, "OSError", "file not open for writing");
+        };
+        let data = match require_bytes_slice(_py, data_bits) {
+            Ok(s) => s,
+            Err(bits) => return bits,
+        };
+        match encoder.write_all(data) {
+            Ok(()) => int_bits_from_i64(_py, data.len() as i64),
+            Err(e) => {
+                let msg = format!("bz2 write failed: {e}");
+                raise_exception::<u64>(_py, "OSError", &msg)
+            }
+        }
+    })
+}
+
+/// `handle.close() -> None`  (finishes the bz2 stream)
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bz2_file_close(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = bz2_file_handle_from_bits(handle_bits) else {
+            return raise_exception::<u64>(_py, "OSError", "invalid bz2 file handle");
+        };
+        let inner = std::mem::replace(&mut handle.inner, Bz2FileInner::Closed);
+        match inner {
+            Bz2FileInner::Writing(enc) => {
+                if enc.finish().is_err() {
+                    return raise_exception::<u64>(_py, "OSError", "bz2 close/finish failed");
+                }
+            }
+            Bz2FileInner::Reading(_) | Bz2FileInner::Closed => {}
+        }
+        MoltObject::none().bits()
+    })
+}
+
+/// Free the handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bz2_file_drop(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ptr = ptr_from_bits(handle_bits);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        release_ptr(ptr);
+        let _ = unsafe { Box::from_raw(ptr as *mut Bz2FileHandle) };
+        MoltObject::none().bits()
     })
 }

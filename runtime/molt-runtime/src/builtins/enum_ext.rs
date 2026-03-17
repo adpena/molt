@@ -254,6 +254,65 @@ pub extern "C" fn molt_enum_verify_member(members_bits: u64, value_bits: u64) ->
 // StrEnum helper
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Enum metaclass helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Check whether an object is a descriptor (has __get__, __set__, __delete__,
+/// or Molt property attributes fget/fset/fdel).
+///
+/// Returns True/False as NaN-boxed bool.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_enum_is_descriptor(obj_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        for attr_name in &[
+            b"__get__" as &[u8],
+            b"__set__",
+            b"__delete__",
+            b"fget",
+            b"fset",
+            b"fdel",
+        ] {
+            if let Some(name_key) = attr_name_bits_from_bytes(_py, attr_name) {
+                let val = molt_getattr_builtin(obj_bits, name_key, missing);
+                dec_ref_bits(_py, name_key);
+                if exception_pending(_py) {
+                    clear_exception(_py);
+                    continue;
+                }
+                if val != missing {
+                    return MoltObject::from_bool(true).bits();
+                }
+            }
+        }
+        MoltObject::from_bool(false).bits()
+    })
+}
+
+/// Check whether an object is an auto() sentinel (has _molt_auto == True).
+///
+/// Returns True/False as NaN-boxed bool.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_enum_is_auto(obj_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        let Some(name_key) = attr_name_bits_from_bytes(_py, b"_molt_auto") else {
+            return MoltObject::from_bool(false).bits();
+        };
+        let val = molt_getattr_builtin(obj_bits, name_key, missing);
+        dec_ref_bits(_py, name_key);
+        if exception_pending(_py) {
+            clear_exception(_py);
+            return MoltObject::from_bool(false).bits();
+        }
+        if val == missing {
+            return MoltObject::from_bool(false).bits();
+        }
+        MoltObject::from_bool(is_truthy(_py, obj_from_bits(val))).bits()
+    })
+}
+
 /// Return the default StrEnum value for a member: the lowercased name.
 /// `name_bits` must be a str object.  Returns str.
 ///

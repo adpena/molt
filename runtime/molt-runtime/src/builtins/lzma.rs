@@ -1,6 +1,7 @@
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
-use std::io::{Read, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, Read, Write};
 
 // ── Format constants (mirror CPython lzma module) ────────────────────────────
 
@@ -573,6 +574,305 @@ pub extern "C" fn molt_lzma_decompressor_drop(handle_bits: u64) -> u64 {
         }
         release_ptr(ptr);
         let _ = unsafe { Box::from_raw(ptr as *mut LzmaDecompressorHandle) };
+        MoltObject::none().bits()
+    })
+}
+
+// ── Stateful LZMAFile handle ─────────────────────────────────────────────────
+
+enum LzmaFileInner {
+    Writing {
+        file: File,
+        buffer: Vec<u8>,
+        format: i64,
+        preset: u32,
+        check: xz2::stream::Check,
+    },
+    Reading(BufReader<xz2::read::XzDecoder<File>>),
+    ReadingLzma(BufReader<xz2::read::XzDecoder<File>>),
+    Closed,
+}
+
+struct LzmaFileHandle {
+    inner: LzmaFileInner,
+}
+
+fn lzma_file_handle_from_bits(bits: u64) -> Option<&'static mut LzmaFileHandle> {
+    let ptr = ptr_from_bits(bits);
+    if ptr.is_null() {
+        return None;
+    }
+    Some(unsafe { &mut *(ptr as *mut LzmaFileHandle) })
+}
+
+/// `lzma.open(filename, mode, format, check, preset) -> handle`
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_lzma_file_open(
+    filename_bits: u64,
+    mode_bits: u64,
+    format_bits: u64,
+    check_bits: u64,
+    preset_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let name_obj = obj_from_bits(filename_bits);
+        let Some(name) = string_obj_to_owned(name_obj) else {
+            return raise_exception::<u64>(_py, "TypeError", "filename must be str");
+        };
+        let mode_obj = obj_from_bits(mode_bits);
+        let mode = string_obj_to_owned(mode_obj).unwrap_or_else(|| "rb".to_string());
+        let format = match opt_i64(_py, format_bits, FORMAT_XZ, "format") {
+            Ok(v) => v,
+            Err(bits) => return bits,
+        };
+        let preset = match opt_i64(_py, preset_bits, PRESET_DEFAULT, "preset") {
+            Ok(v) => v,
+            Err(bits) => return bits,
+        };
+        let check_val = match opt_i64(_py, check_bits, -1, "check") {
+            Ok(v) => v,
+            Err(bits) => return bits,
+        };
+        let xz_preset = resolve_preset(preset);
+        let xz_check = if check_val < 0 {
+            xz2::stream::Check::Crc64
+        } else {
+            resolve_check(check_val)
+        };
+        let inner = match mode.trim_matches('b') {
+            "r" => {
+                let file = match File::open(&name) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let msg = format!("lzma.open: {e}");
+                        return raise_exception::<u64>(_py, "OSError", &msg);
+                    }
+                };
+                match format {
+                    FORMAT_ALONE | FORMAT_RAW => {
+                        let stream = match xz2::stream::Stream::new_lzma_decoder(u64::MAX) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                let msg = format!("lzma init error: {e}");
+                                return raise_exception::<u64>(_py, "lzma.LZMAError", &msg);
+                            }
+                        };
+                        LzmaFileInner::ReadingLzma(BufReader::new(
+                            xz2::read::XzDecoder::new_stream(file, stream),
+                        ))
+                    }
+                    _ => {
+                        // FORMAT_XZ or FORMAT_AUTO: XzDecoder auto-detects
+                        LzmaFileInner::Reading(BufReader::new(xz2::read::XzDecoder::new(file)))
+                    }
+                }
+            }
+            "w" => {
+                let file = match OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&name)
+                {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let msg = format!("lzma.open: {e}");
+                        return raise_exception::<u64>(_py, "OSError", &msg);
+                    }
+                };
+                LzmaFileInner::Writing {
+                    file,
+                    buffer: Vec::new(),
+                    format,
+                    preset: xz_preset,
+                    check: xz_check,
+                }
+            }
+            "a" => {
+                let file = match OpenOptions::new().create(true).append(true).open(&name) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let msg = format!("lzma.open: {e}");
+                        return raise_exception::<u64>(_py, "OSError", &msg);
+                    }
+                };
+                LzmaFileInner::Writing {
+                    file,
+                    buffer: Vec::new(),
+                    format,
+                    preset: xz_preset,
+                    check: xz_check,
+                }
+            }
+            _ => {
+                return raise_exception::<u64>(
+                    _py,
+                    "ValueError",
+                    "Invalid mode ('r', 'rb', 'w', 'wb', 'a', 'ab' supported)",
+                );
+            }
+        };
+        let handle = Box::new(LzmaFileHandle { inner });
+        let ptr = Box::into_raw(handle) as *mut u8;
+        bits_from_ptr(ptr)
+    })
+}
+
+/// `handle.read(size=-1) -> bytes`
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_lzma_file_read(handle_bits: u64, size_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = lzma_file_handle_from_bits(handle_bits) else {
+            return raise_exception::<u64>(_py, "lzma.LZMAError", "invalid lzma file handle");
+        };
+        let reader: &mut dyn Read = match &mut handle.inner {
+            LzmaFileInner::Reading(r) => r,
+            LzmaFileInner::ReadingLzma(r) => r,
+            _ => {
+                return raise_exception::<u64>(_py, "OSError", "file not open for reading");
+            }
+        };
+        let size = {
+            let obj = obj_from_bits(size_bits);
+            if obj.is_none() {
+                -1i64
+            } else {
+                let val = index_i64_from_obj(_py, size_bits, "size must be an integer");
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                val
+            }
+        };
+        let mut out = Vec::new();
+        let ok = if size < 0 {
+            reader.read_to_end(&mut out).is_ok()
+        } else {
+            out.resize(size as usize, 0);
+            match reader.read(&mut out) {
+                Ok(n) => {
+                    out.truncate(n);
+                    true
+                }
+                Err(_) => false,
+            }
+        };
+        if !ok {
+            return raise_exception::<u64>(_py, "lzma.LZMAError", "lzma read failed");
+        }
+        return_bytes(_py, &out)
+    })
+}
+
+/// `handle.write(data) -> int`
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_lzma_file_write(handle_bits: u64, data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = lzma_file_handle_from_bits(handle_bits) else {
+            return raise_exception::<u64>(_py, "lzma.LZMAError", "invalid lzma file handle");
+        };
+        let LzmaFileInner::Writing { ref mut buffer, .. } = handle.inner else {
+            return raise_exception::<u64>(_py, "OSError", "file not open for writing");
+        };
+        let data = match require_bytes_slice(_py, data_bits) {
+            Ok(s) => s,
+            Err(bits) => return bits,
+        };
+        buffer.extend_from_slice(data);
+        int_bits_from_i64(_py, data.len() as i64)
+    })
+}
+
+/// `handle.close() -> None` (finishes the lzma stream and writes to file)
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_lzma_file_close(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = lzma_file_handle_from_bits(handle_bits) else {
+            return raise_exception::<u64>(_py, "lzma.LZMAError", "invalid lzma file handle");
+        };
+        let inner = std::mem::replace(&mut handle.inner, LzmaFileInner::Closed);
+        match inner {
+            LzmaFileInner::Writing {
+                mut file,
+                buffer,
+                format,
+                preset,
+                check,
+            } => {
+                let result: Result<Vec<u8>, std::io::Error> = match format {
+                    FORMAT_XZ | FORMAT_AUTO => {
+                        let stream =
+                            match xz2::stream::Stream::new_easy_encoder(preset, check) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    let msg = format!("lzma init error: {e}");
+                                    return raise_exception::<u64>(
+                                        _py,
+                                        "lzma.LZMAError",
+                                        &msg,
+                                    );
+                                }
+                            };
+                        let mut enc = xz2::write::XzEncoder::new_stream(Vec::new(), stream);
+                        enc.write_all(&buffer).and_then(|()| enc.finish())
+                    }
+                    FORMAT_ALONE | FORMAT_RAW => {
+                        let opts = xz2::stream::LzmaOptions::new_preset(preset)
+                            .unwrap_or_else(|_| {
+                                xz2::stream::LzmaOptions::new_preset(6).unwrap()
+                            });
+                        let stream = match xz2::stream::Stream::new_lzma_encoder(&opts) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                let msg = format!("lzma init error: {e}");
+                                return raise_exception::<u64>(
+                                    _py,
+                                    "lzma.LZMAError",
+                                    &msg,
+                                );
+                            }
+                        };
+                        let mut enc = xz2::write::XzEncoder::new_stream(Vec::new(), stream);
+                        enc.write_all(&buffer).and_then(|()| enc.finish())
+                    }
+                    _ => {
+                        return raise_exception::<u64>(_py, "ValueError", "unknown format");
+                    }
+                };
+                match result {
+                    Ok(compressed) => {
+                        if file.write_all(&compressed).is_err() {
+                            return raise_exception::<u64>(
+                                _py,
+                                "OSError",
+                                "lzma write to file failed",
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        let msg = format!("lzma compress failed: {e}");
+                        return raise_exception::<u64>(_py, "lzma.LZMAError", &msg);
+                    }
+                }
+            }
+            LzmaFileInner::Reading(_)
+            | LzmaFileInner::ReadingLzma(_)
+            | LzmaFileInner::Closed => {}
+        }
+        MoltObject::none().bits()
+    })
+}
+
+/// Free the handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_lzma_file_drop(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ptr = ptr_from_bits(handle_bits);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        release_ptr(ptr);
+        let _ = unsafe { Box::from_raw(ptr as *mut LzmaFileHandle) };
         MoltObject::none().bits()
     })
 }
