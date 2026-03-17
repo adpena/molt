@@ -295,8 +295,7 @@ theorem emitRustExpr_correct_var (names : RustVarNames) (ρ : MoltTIR.Env)
     environments correspond, then evaluating the emitted Rust expression
     produces the same result (under value correspondence) as the IR evaluator.
 
-    The abs unary op maps to neg in the Rust model (an approximation of the
-    real i64::abs wrapper), so that case requires sorry. -/
+    The abs unary op maps to RustUnOp.abs with matching semantics (i64::abs). -/
 theorem emitRustExpr_correct (names : RustVarNames) (ρ : MoltTIR.Env)
     (renv : RustEnv) (e : MoltTIR.Expr) (v : MoltTIR.Value)
     (hcorr : RustEnvCorresponds names ρ renv)
@@ -341,13 +340,7 @@ theorem emitRustExpr_correct (names : RustVarNames) (ρ : MoltTIR.Env)
       cases op <;> cases va <;> simp [MoltTIR.evalUnOp] at heval
       all_goals (first
         | (subst heval; simp [emitRustUnOp, evalRustUnOp, valueToRust]; done)
-        | sorry)  -- INTENTIONAL: abs→neg is an intentional model approximation.
-                   -- The real Rust backend emits `i64::abs(x)`, not `-x`, but
-                   -- our RustUnOp model lacks an `abs` constructor. emitRustUnOp
-                   -- maps abs→neg as a placeholder. Since evalUnOp .abs (.int x) =
-                   -- if x<0 then -x else x, while evalRustUnOp .neg (.int x) = -x,
-                   -- the two disagree for x≥0. Closing this requires adding
-                   -- RustUnOp.abs + evalRustUnOp.abs.
+        | (simp_all [emitRustUnOp, evalRustUnOp, valueToRust]; done))
     | none => simp [ha_eval] at heval
 
 -- ======================================================================

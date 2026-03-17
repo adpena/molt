@@ -61,7 +61,7 @@ def emitBinOp : MoltTIR.BinOp → LuauBinOp
 def emitUnOp : MoltTIR.UnOp → LuauUnOp
   | .neg => .neg
   | .not => .lnot
-  | .abs => .neg      -- approximation; real backend uses math.abs wrapper
+  | .abs => .abs
   | .invert => .lnot  -- approximation; real backend uses bit32.bnot
 
 -- ======================================================================

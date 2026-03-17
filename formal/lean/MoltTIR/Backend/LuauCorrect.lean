@@ -249,9 +249,8 @@ theorem emitExpr_correct_var (names : VarNames) (ρ : MoltTIR.Env) (lenv : LuauE
 
     The bin/un cases use structural induction with `revert v` to generalize
     the value parameter in the induction hypotheses, then case-split on
-    operators and value types. The abs unary op maps to neg in the Luau model
-    (an approximation of the real math.abs wrapper), so that case requires
-    sorry — see emitUnOp definition note. -/
+    operators and value types. The abs unary op maps to LuauUnOp.abs with
+    matching semantics (math.abs). -/
 theorem emitExpr_correct (names : VarNames) (ρ : MoltTIR.Env) (lenv : LuauEnv)
     (e : MoltTIR.Expr) (v : MoltTIR.Value)
     (hcorr : LuauEnvCorresponds names ρ lenv)
@@ -299,13 +298,7 @@ theorem emitExpr_correct (names : VarNames) (ρ : MoltTIR.Env) (lenv : LuauEnv)
       cases op <;> cases va <;> simp [MoltTIR.evalUnOp] at heval
       all_goals (first
         | (subst heval; simp [emitUnOp, evalLuauUnOp, valueToLuau]; done)
-        | sorry)  -- INTENTIONAL: abs→neg is an intentional model approximation.
-                   -- The real Luau backend emits `math.abs(x)`, not `-x`, but
-                   -- our LuauUnOp model lacks an `abs` constructor (it only has
-                   -- neg/lnot/len/bnot). emitUnOp maps abs→neg as a placeholder.
-                   -- Since evalUnOp .abs (.int x) = if x<0 then -x else x, while
-                   -- evalLuauUnOp .neg (.number x) = -x, the two disagree for x≥0.
-                   -- Closing this requires adding LuauUnOp.abs + evalLuauUnOp.abs.
+        | (simp_all [emitUnOp, evalLuauUnOp, valueToLuau]; done))
     | none => simp [ha_eval] at heval
 
 /-- Instruction emission preserves environment correspondence.

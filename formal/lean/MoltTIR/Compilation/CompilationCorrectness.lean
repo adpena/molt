@@ -250,7 +250,7 @@ theorem compilation_preserves_semantics (prog : MoltProgram)
     have hc := compile_entryFunc prog f hentry
     rw [hc]
     -- Now goal is: observe (compileFunc f) fuel = observe f fuel
-    exact behavioral_equiv_observe (fullPipelineFunc_behavioral_equiv f) fuel
+    exact behavioral_equiv_observe (fullPipelineFunc_behavioral_equiv f (ht f hentry)) fuel
 
 /-- **Theorem 2: Forward simulation (function level).**
 
@@ -293,17 +293,17 @@ theorem forward_simulation (f : MoltTIR.Func) (ht : InstrTotal f)
 
     This is the immediate corollary of forward_simulation, restricted
     to the entry point with empty environment. -/
-theorem behavioral_equivalence (f : MoltTIR.Func) :
+theorem behavioral_equivalence (f : MoltTIR.Func) (ht : InstrTotal f) :
     BehavioralEquivalence (compileFunc f) f :=
-  fullPipelineFunc_behavioral_equiv f
+  fullPipelineFunc_behavioral_equiv f ht
 
 /-- **Theorem 4: Observable equivalence (function level).**
 
     The compiled function is observably equivalent to the source:
     observe agrees for all fuel values. -/
-theorem observable_equivalence (f : MoltTIR.Func) :
+theorem observable_equivalence (f : MoltTIR.Func) (ht : InstrTotal f) :
     BehavioralEquivalence (compileFunc f) f :=
-  fullPipelineFunc_observable_equiv f
+  fullPipelineFunc_observable_equiv f ht
 
 -- ======================================================================
 -- Section 6: Cross-Target Agreement
@@ -343,14 +343,15 @@ theorem compilation_deterministic (prog : MoltProgram) :
     Compiling an already-compiled function produces the same observable
     behavior as the once-compiled version. This means re-compilation
     is safe: it does not degrade the program. -/
-theorem compilation_semantically_idempotent (f : MoltTIR.Func) (fuel : Nat) :
+theorem compilation_semantically_idempotent (f : MoltTIR.Func)
+    (ht : InstrTotal f) (ht_cf : InstrTotal (compileFunc f)) (fuel : Nat) :
     observe (compileFunc (compileFunc f)) fuel = observe (compileFunc f) fuel := by
   simp only [observe]
   -- compileFunc (compileFunc f) behaves like compileFunc f behaves like f
   -- So compileFunc (compileFunc f) behaves like compileFunc f.
   -- By behavioral_equivalence, runFunc (compileFunc g) = runFunc g for any g.
   -- Taking g = compileFunc f:
-  have h := behavioral_equivalence (compileFunc f) fuel
+  have h := behavioral_equivalence (compileFunc f) ht_cf fuel
   rw [h]
 
 -- ======================================================================
@@ -380,20 +381,22 @@ theorem compilation_semantically_idempotent (f : MoltTIR.Func) (fuel : Nat) :
     trivially from the forward simulation: if runFunc (compile f) fuel
     = some (ret v), then by behavioral_equivalence, runFunc f fuel =
     some (ret v). -/
-theorem no_new_behaviors (f : MoltTIR.Func) (fuel : Nat) (v : MoltTIR.Value) :
+theorem no_new_behaviors (f : MoltTIR.Func) (ht : InstrTotal f)
+    (fuel : Nat) (v : MoltTIR.Value) :
     runFunc (compileFunc f) fuel = some (.ret v) →
     runFunc f fuel = some (.ret v) := by
   intro h
-  have := behavioral_equivalence f fuel
+  have := behavioral_equivalence f ht fuel
   rw [this] at h
   exact h
 
 /-- Converse: compilation does not lose terminating behaviors. -/
-theorem no_lost_behaviors (f : MoltTIR.Func) (fuel : Nat) (v : MoltTIR.Value) :
+theorem no_lost_behaviors (f : MoltTIR.Func) (ht : InstrTotal f)
+    (fuel : Nat) (v : MoltTIR.Value) :
     runFunc f fuel = some (.ret v) →
     runFunc (compileFunc f) fuel = some (.ret v) := by
   intro h
-  have := behavioral_equivalence f fuel
+  have := behavioral_equivalence f ht fuel
   rw [this]
   exact h
 
@@ -419,26 +422,26 @@ def ProgramRefines (f_impl f_spec : MoltTIR.Func) : Prop :=
     runFunc f_impl fuel = some o → runFunc f_spec fuel = some o
 
 /-- Compilation is a refinement: every compiled behavior is a source behavior. -/
-theorem compilation_refines (f : MoltTIR.Func) :
+theorem compilation_refines (f : MoltTIR.Func) (ht : InstrTotal f) :
     ProgramRefines (compileFunc f) f := by
   intro fuel o h
-  have := behavioral_equivalence f fuel
+  have := behavioral_equivalence f ht fuel
   rw [this] at h
   exact h
 
 /-- The source refines the compilation (reverse direction). -/
-theorem source_refines_compilation (f : MoltTIR.Func) :
+theorem source_refines_compilation (f : MoltTIR.Func) (ht : InstrTotal f) :
     ProgramRefines f (compileFunc f) := by
   intro fuel o h
-  have := behavioral_equivalence f fuel
+  have := behavioral_equivalence f ht fuel
   rw [← this] at h
   exact h
 
 /-- Bidirectional refinement: compilation and source mutually refine each other.
     This is the strongest correctness guarantee for deterministic programs. -/
-theorem bidirectional_refinement (f : MoltTIR.Func) :
+theorem bidirectional_refinement (f : MoltTIR.Func) (ht : InstrTotal f) :
     ProgramRefines (compileFunc f) f ∧ ProgramRefines f (compileFunc f) :=
-  ⟨compilation_refines f, source_refines_compilation f⟩
+  ⟨compilation_refines f ht, source_refines_compilation f ht⟩
 
 -- ======================================================================
 -- Section 11: Contextual Equivalence (Strongest Guarantee)

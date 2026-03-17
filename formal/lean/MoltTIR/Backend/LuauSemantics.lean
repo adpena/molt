@@ -146,6 +146,7 @@ def evalLuauUnOp (op : LuauUnOp) (a : LuauValue) : Option LuauValue :=
   match op, a with
   | .neg,  .number x  => some (.number (-x))
   | .lnot, .boolean x => some (.boolean (!x))
+  | .abs,  .number x  => some (.number (if x < 0 then -x else x))
   | _, _ => none
 
 -- ======================================================================

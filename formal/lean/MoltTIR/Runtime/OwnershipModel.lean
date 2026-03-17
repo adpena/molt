@@ -206,13 +206,46 @@ theorem acquire_preserves_invariant
     simp [haddr]
     exact hinv addr hlive_orig
 
+/-- Count occurrences of a specific (target, holder) pair in a claim list. -/
+private def claimPairCount (claims : List OwnershipClaim) (a : Addr) (holder : Nat) : Nat :=
+  (claims.filter (fun c => c.target == a && c.holder == holder)).length
+
+/-- Filtering out claims matching (a, holder) reduces claimCount at a
+    by exactly the number of (a, holder) claims removed. -/
+private theorem claimCount_after_release (claims : List OwnershipClaim) (a : Addr) (holder : Nat) :
+    (claims.filter (fun c => !(c.target == a && c.holder == holder))).filter
+      (fun c => c.target == a) |>.length =
+    (claims.filter (fun c => c.target == a)).length -
+    claimPairCount claims a holder := by
+  induction claims with
+  | nil => simp [claimPairCount]
+  | cons c rest ih =>
+    simp only [List.filter_cons, claimPairCount, List.filter_cons]
+    by_cases hpair : (c.target == a && c.holder == holder) = true
+    · -- c matches (a, holder): removed by release filter
+      simp [hpair, Bool.not_eq_true']
+      obtain ⟨hta, _hha⟩ := Bool.and_eq_true.mp hpair
+      simp [hta, List.length_cons, ih]
+      omega
+    · -- c doesn't match (a, holder): kept by release filter
+      simp [Bool.not_eq_true'] at hpair ⊢
+      simp [hpair]
+      by_cases hta : c.target == a
+      · simp [hta, List.length_cons, ih]; omega
+      · simp [hta, ih]
+
 /-- Releasing ownership preserves the ownership invariant:
     the removed claim subtracts 1 from claimCount, and decRef subtracts 1
-    from refcount. -/
+    from refcount.
+
+    Requires that (a, holderArg) appears exactly once in the claims list,
+    matching the Molt runtime protocol where each (address, holder) pair
+    has at most one ownership claim. -/
 theorem release_preserves_invariant
     (h : Heap) (os : OwnershipState) (a : Addr) (holderArg : Nat)
     (halive : IsLive h a)
     (hclaim : ⟨a, holderArg⟩ ∈ os.claims)
+    (huniq : claimPairCount os.claims a holderArg = 1)
     (hinv : OwnershipInvariant h os) :
     let (h', os') := release h os a holderArg
     OwnershipInvariant h' os' := by
@@ -220,17 +253,16 @@ theorem release_preserves_invariant
   unfold OwnershipInvariant at *
   intro addr hlive'
   by_cases haddr : addr = a
-  · -- Case addr = a: refcount decreases by 1 (decRef), and the filter removes
-    -- all claims matching (a, holderArg).
-    -- To close this goal we need: claimCount(filtered, a) = claimCount(os, a) - k
-    -- where k = number of (a, holderArg) claims. Combined with hinv (refcount =
-    -- claimCount) and decRef (refcount - 1), we need k = 1 (unique claim).
-    -- The theorem statement lacks a uniqueness hypothesis on (target, holder)
-    -- pairs, and the general filter-counting arithmetic requires list induction
-    -- infrastructure beyond what bare Lean 4 provides ergonomically.
-    -- TODO(formal, owner:runtime, milestone:M4, priority:P1, status:partial):
-    --   Add huniq hypothesis or prove filter-count lemma to close this.
-    sorry
+  · -- Case addr = a: refcount decreases by 1 (decRef), claimCount decreases by 1
+    subst haddr
+    have hinv_a := hinv a halive
+    unfold getMeta MemorySafety.decRef at *
+    simp only [ite_true]
+    obtain ⟨meta, hm⟩ := Option.isSome_iff_exists.mp halive
+    simp [hm] at hinv_a ⊢
+    unfold claimCount at hinv_a ⊢
+    rw [claimCount_after_release os.claims a holderArg, huniq]
+    omega
   · -- Case addr != a: both sides unchanged
     have hlive_orig : IsLive h addr := by
       unfold IsLive MemorySafety.decRef at hlive'
