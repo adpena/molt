@@ -690,26 +690,54 @@ theorem cse_preserves_ssa (f : Func) (h : SSAWellFormed f) :
 -- Section 6: LICM preserves SSA
 -- ══════════════════════════════════════════════════════════════════
 
-/-- LICM moves instructions from loop body to preheader. The preheader
-    dominates the loop header, which dominates all loop body blocks.
-    Therefore, hoisted definitions still dominate all their uses.
+/-- licmFunc maps blockList preserving labels (fst). -/
+private theorem licmFunc_preserves_fst (f : Func) (loop : NaturalLoop)
+    (pre : Block) (p : Label × Block) :
+    (if p.1 ∈ loop.body then
+      let (_, blk') := licmBlock f loop p.2
+      (p.1, blk')
+    else if p.1 = loop.preheader then
+      (p.1, { pre with instrs := pre.instrs ++ collectHoisted f loop })
+    else
+      (p.1, p.2)).1 = p.1 := by
+  split
+  · -- In loop body: licmBlock returns a pair; fst of (p.1, blk') = p.1
+    show (let r := licmBlock f loop p.2; (p.1, r.2)).1 = p.1
+    rfl
+  · split <;> rfl
 
-    This proof requires the loop validity predicate (header dominates body)
-    and the preheader dominance property. -/
 theorem licm_preserves_ssa (f : Func) (loop : NaturalLoop) (pre : Block)
     (h : SSAWellFormed f) (hloop : NaturalLoop.Valid f loop)
     (hpre_dom : Dom f loop.preheader loop.header) :
     SSAWellFormed (licmFunc f loop pre) := by
   constructor
-  · -- unique_defs: hoisted instructions are removed from body and added
-    -- to preheader. No new definitions are created.
+  · -- unique_defs: LICM redistributes instructions between blocks (removing
+    -- from loop body, adding to preheader) but creates no new definitions.
+    -- The set of all (var, label) pairs changes: some defs move from body
+    -- blocks to the preheader. Uniqueness is preserved because:
+    -- (a) defs removed from body blocks cannot duplicate with preheader
+    --     (they were unique before and are moved, not copied)
+    -- (b) no new definitions are created
+    -- This requires tracking the partition precisely through licmFunc.
+    intro v lbl₁ lbl₂ hdef₁ hdef₂
+    -- The full proof requires showing that partitionInstrs + collectHoisted
+    -- form a permutation of the original instruction set, preserving the
+    -- bijection between variables and their defining blocks.
+    -- We use the fact that every definition in licmFunc f either came from
+    -- a body block (now in preheader) or was already outside the loop.
     sorry
-  · -- use_dom_def: hoisted instructions were loop-invariant, so their
-    -- operands are defined outside the loop (which dominates preheader).
-    -- The hoisted definition in preheader dominates the loop header,
-    -- which dominates all body blocks where the var was used.
+  · -- use_dom_def: For hoisted definitions now in the preheader:
+    -- preheader dominates loop.header (hpre_dom), and loop.header dominates
+    -- all loop body blocks (hloop.headerDominates). By Dom.trans, preheader
+    -- dominates all body blocks. Since uses of hoisted vars are in body
+    -- blocks, dominance is preserved. For non-hoisted definitions, the CFG
+    -- structure is unchanged so dominance is inherited from h.use_dom_def.
     sorry
-  · sorry
+  · -- entry_exists: licmFunc preserves entry and label structure
+    show ((licmFunc f loop pre).blocks (licmFunc f loop pre).entry).isSome
+    unfold licmFunc
+    exact mapFunc_blocks_isSome_gen
+      (fun p => licmFunc_preserves_fst f loop pre p) h.entry_exists
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 7: GuardHoist preserves SSA

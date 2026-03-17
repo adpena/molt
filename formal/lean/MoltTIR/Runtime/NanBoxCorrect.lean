@@ -673,17 +673,89 @@ def fusedIsInt (bits : UInt64) : Bool :=
     If the XOR-shift check passes (bits 47..63 match QNAN|TAG_INT after XOR),
     then the TAG_CHECK mask also matches (since TAG_CHECK tests a subset of
     those bits). -/
+
+/-- XOR distributes over AND for UInt64. -/
+private theorem uint64_xor_and_distrib (a b c : UInt64) :
+    (a ^^^ b) &&& c = (a &&& c) ^^^ (b &&& c) := by
+  apply UInt64.eq_of_toBitVec_eq
+  ext i; simp only [UInt64.toBitVec_xor, UInt64.toBitVec_and,
+                     BitVec.getLsbD_xor, BitVec.getLsbD_and]
+  cases a.toBitVec.getLsbD i <;> cases b.toBitVec.getLsbD i <;> cases c.toBitVec.getLsbD i <;> rfl
+
+/-- XOR self-inverse: (a ^^^ b) ^^^ b = a. -/
+private theorem uint64_xor_self_cancel (a b : UInt64) :
+    (a ^^^ b) ^^^ b = a := by
+  apply UInt64.eq_of_toBitVec_eq
+  ext i; simp only [UInt64.toBitVec_xor, BitVec.getLsbD_xor]
+  cases a.toBitVec.getLsbD i <;> cases b.toBitVec.getLsbD i <;> rfl
+
+/-- 0 ^^^ a = a. -/
+private theorem uint64_zero_xor (a : UInt64) : 0 ^^^ a = a := by
+  apply UInt64.eq_of_toBitVec_eq
+  ext i; simp only [UInt64.toBitVec_xor, BitVec.getLsbD_xor, BitVec.getLsbD_zero]
+  cases a.toBitVec.getLsbD i <;> rfl
+
+/-- Concrete: (QNAN ||| TAG_INT) &&& (QNAN ||| TAG_MASK) = QNAN ||| TAG_INT. -/
+private theorem expected_int_and_tag_check :
+    (QNAN ||| TAG_INT) &&& (QNAN ||| TAG_MASK) = QNAN ||| TAG_INT := by native_decide
+
+/-- If x >>> 47 = 0 (as UInt64), then x &&& INT_MASK = x.
+    Because x has no bits at position ≥ 47, and INT_MASK = 2^47 - 1 covers bits 0..46. -/
+private theorem ushr47_eq_zero_and_int_mask (x : UInt64)
+    (h : x >>> (47 : UInt64) = (0 : UInt64)) :
+    x &&& INT_MASK = x := by
+  apply uint64_eq_of_toNat_eq
+  rw [UInt64.toNat_and]
+  have h_nat := congrArg UInt64.toNat h
+  rw [UInt64.toNat_shiftRight, uint64_toNat_47_mod_64, uint64_toNat_zero] at h_nat
+  -- h_nat : x.toNat >>> 47 = 0, so x.toNat / 2^47 = 0, hence x.toNat < 2^47
+  rw [Nat.shiftRight_eq_div_pow] at h_nat
+  have hx_lt : x.toNat < 2 ^ 47 := by omega
+  have hint_mask_val : INT_MASK.toNat = 2 ^ 47 - 1 := by native_decide
+  rw [hint_mask_val, Nat.and_pow_two_sub_one_eq_mod]
+  omega
+
+/-- If x >>> 47 = 0 (as UInt64), then x &&& TAG_CHECK = 0.
+    Proof: x = x &&& INT_MASK (from shift condition), so
+    x &&& TAG_CHECK = (x &&& INT_MASK) &&& TAG_CHECK
+    = x &&& (INT_MASK &&& TAG_CHECK) = x &&& 0 = 0. -/
+private theorem ushr47_zero_and_tag_check_zero (x : UInt64)
+    (h : x >>> (47 : UInt64) = (0 : UInt64)) :
+    x &&& (QNAN ||| TAG_MASK) = 0 := by
+  have hx_mask : x &&& INT_MASK = x := ushr47_eq_zero_and_int_mask x h
+  calc x &&& (QNAN ||| TAG_MASK)
+      = (x &&& INT_MASK) &&& (QNAN ||| TAG_MASK) := by rw [hx_mask]
+    _ = x &&& (INT_MASK &&& (QNAN ||| TAG_MASK)) := uint64_and_assoc' x INT_MASK (QNAN ||| TAG_MASK)
+    _ = x &&& 0 := by rw [int_mask_and_tag_check]
+    _ = 0 := uint64_and_zero' x
+
 theorem fused_xor_implies_isInt (bits : UInt64) :
     fusedIsInt bits = true → IsInt bits := by
   unfold fusedIsInt xorTagCheck IsInt TAG_CHECK EXPECTED_INT_TAG
   intro h
   simp only [beq_iff_eq] at h
-  -- The XOR with (QNAN|TAG_INT) followed by shift-right-47 = 0 means
-  -- bits 47..63 of `bits` match bits 47..63 of (QNAN|TAG_INT) exactly.
-  -- TAG_CHECK = QNAN ||| TAG_MASK masks bits 48..62, which is a subset.
-  -- So bits &&& TAG_CHECK must equal (QNAN|TAG_INT) &&& TAG_CHECK = QNAN|TAG_INT.
-  -- This requires bit-level reasoning on UInt64.
-  sorry
+  -- h : (bits ^^^ (QNAN ||| TAG_INT)) >>> (47 : UInt64) = 0
+  -- Goal: bits &&& (QNAN ||| TAG_MASK) = QNAN ||| TAG_INT
+  --
+  -- Strategy: let d = bits ^^^ expected where d >>> 47 = 0.
+  -- Then bits = d ^^^ expected (XOR self-inverse).
+  -- So bits &&& TAG_CHECK = (d ^^^ expected) &&& TAG_CHECK
+  --   = (d &&& TAG_CHECK) ^^^ (expected &&& TAG_CHECK)   [XOR-AND distributivity]
+  --   = 0 ^^^ expected                                    [d &&& TAG_CHECK = 0; expected &&& TAG_CHECK = expected]
+  --   = expected
+  set d := bits ^^^ (QNAN ||| TAG_INT) with hd_def
+  -- bits = d ^^^ (QNAN ||| TAG_INT)
+  have hbits : bits = d ^^^ (QNAN ||| TAG_INT) := by
+    rw [hd_def]; exact (uint64_xor_self_cancel bits (QNAN ||| TAG_INT)).symm
+  rw [hbits]
+  -- Goal: (d ^^^ (QNAN ||| TAG_INT)) &&& (QNAN ||| TAG_MASK) = QNAN ||| TAG_INT
+  rw [uint64_xor_and_distrib d (QNAN ||| TAG_INT) (QNAN ||| TAG_MASK)]
+  -- Goal: (d &&& (QNAN ||| TAG_MASK)) ^^^ ((QNAN ||| TAG_INT) &&& (QNAN ||| TAG_MASK)) = QNAN ||| TAG_INT
+  rw [expected_int_and_tag_check]
+  -- Goal: (d &&& (QNAN ||| TAG_MASK)) ^^^ (QNAN ||| TAG_INT) = QNAN ||| TAG_INT
+  rw [ushr47_zero_and_tag_check_zero d h]
+  -- Goal: 0 ^^^ (QNAN ||| TAG_INT) = QNAN ||| TAG_INT
+  exact uint64_zero_xor (QNAN ||| TAG_INT)
 
 /-- For any concrete int, the fused check passes. -/
 theorem fused_xor_check_int (i : Int) :
@@ -740,12 +812,93 @@ theorem fused_xor_unbox (n : Int) (h : intFitsInline n) :
     let bits := fromInt n
     let xored := xorTagCheck bits
     signExtend47 xored = n := by
-  -- This requires proving the 47-bit sign-extension roundtrip:
-  -- signExtend47 (raw &&& INT_MASK) = n for in-range n,
-  -- where raw = BitVec.ofInt 64 n. This is a deep BitVec.ofInt / toNat
-  -- roundtrip that Lean's automation cannot handle symbolically.
-  -- The 8 concrete native_decide validations below cover boundary cases.
-  sorry
+  -- Step 1: Simplify xorTagCheck (fromInt n) to raw &&& INT_MASK.
+  simp only []
+  unfold xorTagCheck fromInt EXPECTED_INT_TAG
+  set raw := UInt64.mk (BitVec.ofInt 64 n) with hraw_def
+  have hdisj : (QNAN ||| TAG_INT) &&& (raw &&& INT_MASK) = 0 :=
+    uint64_and_masked_zero (QNAN ||| TAG_INT) raw INT_MASK qnan_or_int_and_int_mask
+  have hxor : (QNAN ||| TAG_INT ||| (raw &&& INT_MASK)) ^^^ (QNAN ||| TAG_INT)
+              = raw &&& INT_MASK :=
+    uint64_xor_or_self_disjoint (QNAN ||| TAG_INT) (raw &&& INT_MASK) hdisj
+  rw [hxor]
+  -- Step 2: Unfold signExtend47 and simplify payload.
+  unfold signExtend47
+  simp only []
+  -- payload = (raw &&& INT_MASK) &&& INT_MASK = raw &&& INT_MASK (by idempotence)
+  rw [uint64_and_idem_int_mask raw]
+  -- Step 3: Prove the sign-extension roundtrip.
+  -- We need: if (raw &&& INT_MASK) &&& INT_SIGN ≠ 0
+  --          then (raw &&& INT_MASK).toNat - 2^47 = n
+  --          else (raw &&& INT_MASK).toNat = n
+  obtain ⟨hlo, hhi⟩ := h
+  -- Compute payload.toNat in terms of n
+  have hpay_toNat : (raw &&& INT_MASK).toNat = (n % (2 ^ 47 : Int)).toNat := by
+    rw [UInt64.toNat_and, hraw_def, UInt64.toNat_mk, BitVec.toNat_ofInt]
+    have : INT_MASK.toNat = 2 ^ 47 - 1 := by native_decide
+    rw [this, Nat.and_pow_two_sub_one_eq_mod]
+    omega
+  split
+  · -- Case: sign bit set (negative n)
+    rename_i hsign
+    rw [hpay_toNat]
+    have h1 : (1 <<< 47 : Nat) = 2 ^ 47 := by native_decide
+    rw [h1]
+    -- If n ≥ 0, the sign bit should be clear — contradiction.
+    by_cases hn : n ≥ 0
+    · -- n ≥ 0: sign bit should be clear, contradiction
+      exfalso; apply hsign
+      apply uint64_eq_of_toNat_eq
+      rw [UInt64.toNat_and, hpay_toNat]
+      have hsv : INT_SIGN.toNat = 2 ^ 46 := by native_decide
+      rw [hsv]
+      have hmod47 : n % (2 ^ 47 : Int) = n := by omega
+      rw [hmod47]
+      have h0val : (0 : UInt64).toNat = 0 := by native_decide
+      rw [h0val]
+      have hnat_small : n.toNat < 2 ^ 46 := by omega
+      apply Nat.eq_of_testBit_eq
+      intro i
+      simp only [Nat.testBit_and, Nat.testBit_two_pow, Nat.zero_testBit]
+      by_cases hi : 46 = i
+      · subst hi; simp [Nat.testBit_lt_two_pow hnat_small]
+      · simp [hi]
+    · -- n < 0: payload encodes n + 2^47
+      have hmod47 : n % (2 ^ 47 : Int) = n + 2 ^ 47 := by omega
+      rw [hmod47]
+      simp only [Int.toNat_of_nonneg (by omega : (0 : Int) ≤ n + 2 ^ 47)]
+      omega
+  · -- Case: sign bit clear (non-negative n)
+    rename_i hsign
+    rw [hpay_toNat]
+    by_cases hn : n ≥ 0
+    · -- n ≥ 0: n % 2^47 = n
+      have hmod47 : n % (2 ^ 47 : Int) = n := by omega
+      rw [hmod47]
+      simp only [Int.toNat_of_nonneg (by omega : (0 : Int) ≤ n)]
+    · -- n < 0: sign bit should be set, contradiction
+      exfalso
+      apply hsign
+      intro h0
+      have h0nat := congrArg UInt64.toNat h0
+      rw [UInt64.toNat_and, hpay_toNat] at h0nat
+      have : INT_SIGN.toNat = 2 ^ 46 := by native_decide
+      rw [this] at h0nat
+      have hmod47 : n % (2 ^ 47 : Int) = n + 2 ^ 47 := by omega
+      rw [hmod47] at h0nat
+      have h0val : (0 : UInt64).toNat = 0 := by native_decide
+      rw [h0val] at h0nat
+      have hge : (n + 2 ^ 47).toNat ≥ 2 ^ 46 := by omega
+      have hlt : (n + 2 ^ 47).toNat < 2 ^ 47 := by omega
+      have hbit46 : (n + 2 ^ 47).toNat.testBit 46 = true := by
+        rw [Nat.testBit_to_div_mod]
+        simp only [decide_eq_true_eq]
+        omega
+      have hcontra : ((n + 2 ^ 47).toNat &&& 2 ^ 46).testBit 46 = true := by
+        rw [Nat.testBit_and, hbit46, Nat.testBit_two_pow]
+        simp
+      rw [h0nat] at hcontra
+      exact absurd hcontra (by simp [Nat.zero_testBit])
 
 /-- Concrete validation of fused XOR unbox. -/
 theorem fused_xor_unbox_42 :
@@ -1090,9 +1243,9 @@ theorem int_shift_covers_tag : INT_SHIFT = 64 - INT_WIDTH := by rfl
 -- ══════════════════════════════════════════════════════════════════
 
 /-
-  Sorry audit for this file (2 remaining sorry obligations):
+  Sorry audit for this file: ALL OBLIGATIONS CLOSED (0 remaining).
 
-  CLOSED in this revision:
+  CLOSED:
   - nanbox_roundtrip (int case): Proven via int_roundtrip. The proof navigates
     the fromNanBox if-chain using split, then proves the sign-extension roundtrip
     by converting UInt64 AND to Nat mod (via Nat.and_pow_two_sub_one_eq_mod),
@@ -1101,22 +1254,19 @@ theorem int_shift_covers_tag : INT_SHIFT = 64 - INT_WIDTH := by rfl
     and shows payload extraction recovers the original address via disjointness
     of tag bits and POINTER_MASK bits.
   - tag_injective: Now fully proven (was blocked by nanbox_roundtrip sorry).
+  - fused_xor_implies_isInt: Forward direction of the XOR check. Proven via
+    XOR-AND distributivity: (bits ^^^ expected) >>> 47 = 0 implies the XOR
+    difference has no bits above 46, so d &&& TAG_CHECK = 0 (using
+    INT_MASK &&& TAG_CHECK = 0 and associativity). Then bits &&& TAG_CHECK
+    = (d ^^^ expected) &&& TAG_CHECK = 0 ^^^ expected = expected.
+  - fused_xor_unbox: XOR unbox correctness (47-bit sign-extension roundtrip).
+    Proven by simplifying xorTagCheck (fromInt n) to raw &&& INT_MASK via
+    XOR cancellation, then reusing the int_roundtrip sign-extension argument
+    (case split on sign of n, BitVec.ofInt/toNat roundtrip via omega).
 
   PREVIOUSLY FIXED:
   - tag_injective: Specification corrected with representability preconditions.
   - fused_xor_check: Specification corrected (biconditional was false).
-
-  REMAINING (2 sorry obligations, both in symbolic BitVec proofs):
-
-  1. fused_xor_implies_isInt: Forward direction of the XOR check. Requires showing
-     that if bits 47..63 of (v XOR expected_tag) are all zero, then v AND TAG_CHECK
-     equals the expected tag. True because TAG_CHECK's mask region (bits 48..62)
-     is a subset of the XOR-checked region (bits 47..63). Concrete validations
-     cover all tag patterns.
-
-  2. fused_xor_unbox: XOR unbox correctness. Requires the 47-bit sign-extension
-     roundtrip via shift-left-then-arithmetic-right-shift. 8 concrete native_decide
-     validations cover boundary cases.
 -/
 
 end MoltTIR.Runtime.NanBoxCorrect
