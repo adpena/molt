@@ -105,6 +105,10 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_abc_reset_registry", symbol: "molt_abc_reset_registry", arity: 1 },
     IntrinsicSpec { name: "molt_abc_reset_caches", symbol: "molt_abc_reset_caches", arity: 1 },
     IntrinsicSpec { name: "molt_abc_update_abstractmethods", symbol: "molt_abc_update_abstractmethods", arity: 1 },
+    IntrinsicSpec { name: "molt_abc_abstractmethod_check", symbol: "molt_abc_abstractmethod_check", arity: 1 },
+    IntrinsicSpec { name: "molt_protocol_check", symbol: "molt_protocol_check", arity: 2 },
+    IntrinsicSpec { name: "molt_protocol_get_structural_members", symbol: "molt_protocol_get_structural_members", arity: 1 },
+    IntrinsicSpec { name: "molt_protocol_register", symbol: "molt_protocol_register", arity: 2 },
     IntrinsicSpec { name: "molt_argparse_parse", symbol: "molt_argparse_parse", arity: 2 },
     IntrinsicSpec { name: "molt_enum_init_member", symbol: "molt_enum_init_member", arity: 3 },
     IntrinsicSpec { name: "molt_re_literal_matches", symbol: "molt_re_literal_matches", arity: 3 },
@@ -2206,7 +2210,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_tk_hex_to_rgb", symbol: "molt_tk_hex_to_rgb", arity: 1 },
     IntrinsicSpec { name: "molt_tk_normalize_delay_ms", symbol: "molt_tk_normalize_delay_ms", arity: 1 },
     IntrinsicSpec { name: "molt_tk_convert_stringval", symbol: "molt_tk_convert_stringval", arity: 1 },
-    // ── pathlib ──
     IntrinsicSpec { name: "molt_pathlib_join", symbol: "molt_pathlib_join", arity: 2 },
     IntrinsicSpec { name: "molt_pathlib_str", symbol: "molt_pathlib_str", arity: 1 },
     IntrinsicSpec { name: "molt_pathlib_parts", symbol: "molt_pathlib_parts", arity: 2 },
@@ -2263,13 +2266,10 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_pathlib_group", symbol: "molt_pathlib_group", arity: 1 },
     IntrinsicSpec { name: "molt_pathlib_samefile", symbol: "molt_pathlib_samefile", arity: 2 },
     IntrinsicSpec { name: "molt_pathlib_sep", symbol: "molt_pathlib_sep", arity: 0 },
-    // ── glob ──
     IntrinsicSpec { name: "molt_glob_glob", symbol: "molt_glob_glob", arity: 3 },
     IntrinsicSpec { name: "molt_glob_iglob", symbol: "molt_glob_iglob", arity: 3 },
-    // ── fnmatch ──
     IntrinsicSpec { name: "molt_fnmatch_fnmatch", symbol: "molt_fnmatch_fnmatch", arity: 2 },
     IntrinsicSpec { name: "molt_fnmatch_fnmatchcase", symbol: "molt_fnmatch_fnmatchcase", arity: 2 },
-    // ── tempfile ──
     IntrinsicSpec { name: "molt_tempfile_gettempdir", symbol: "molt_tempfile_gettempdir", arity: 0 },
     IntrinsicSpec { name: "molt_tempfile_gettempdirb", symbol: "molt_tempfile_gettempdirb", arity: 0 },
     IntrinsicSpec { name: "molt_tempfile_mkdtemp", symbol: "molt_tempfile_mkdtemp", arity: 3 },
@@ -2278,7 +2278,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_tempfile_tempdir", symbol: "molt_tempfile_tempdir", arity: 3 },
     IntrinsicSpec { name: "molt_tempfile_cleanup", symbol: "molt_tempfile_cleanup", arity: 1 },
     IntrinsicSpec { name: "molt_tempfile_tempdir_path", symbol: "molt_tempfile_tempdir_path", arity: 0 },
-    // --- sys module: fully intrinsic-backed additions ---
     IntrinsicSpec { name: "molt_sys_getdefaultencoding", symbol: "molt_sys_getdefaultencoding", arity: 0 },
     IntrinsicSpec { name: "molt_sys_getfilesystemencoding", symbol: "molt_sys_getfilesystemencoding", arity: 0 },
     IntrinsicSpec { name: "molt_sys_getswitchinterval", symbol: "molt_sys_getswitchinterval", arity: 0 },
@@ -2292,7 +2291,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_sys_exit", symbol: "molt_sys_exit", arity: 1 },
     IntrinsicSpec { name: "molt_sys_displayhook_write", symbol: "molt_sys_displayhook_write", arity: 1 },
     IntrinsicSpec { name: "molt_sys_excepthook_write", symbol: "molt_sys_excepthook_write", arity: 1 },
-    // --- os module: fully intrinsic-backed additions ---
     IntrinsicSpec { name: "molt_os_wifexited", symbol: "molt_os_wifexited", arity: 1 },
     IntrinsicSpec { name: "molt_os_wexitstatus", symbol: "molt_os_wexitstatus", arity: 1 },
     IntrinsicSpec { name: "molt_os_wifsignaled", symbol: "molt_os_wifsignaled", arity: 1 },
@@ -2402,6 +2400,10 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_abc_reset_registry" => Some(crate::molt_abc_reset_registry as *const () as usize as u64),
         "molt_abc_reset_caches" => Some(crate::molt_abc_reset_caches as *const () as usize as u64),
         "molt_abc_update_abstractmethods" => Some(crate::molt_abc_update_abstractmethods as *const () as usize as u64),
+        "molt_abc_abstractmethod_check" => Some(crate::molt_abc_abstractmethod_check as *const () as usize as u64),
+        "molt_protocol_check" => Some(crate::molt_protocol_check as *const () as usize as u64),
+        "molt_protocol_get_structural_members" => Some(crate::molt_protocol_get_structural_members as *const () as usize as u64),
+        "molt_protocol_register" => Some(crate::molt_protocol_register as *const () as usize as u64),
         "molt_argparse_parse" => Some(crate::molt_argparse_parse as *const () as usize as u64),
         "molt_enum_init_member" => Some(crate::molt_enum_init_member as *const () as usize as u64),
         "molt_re_literal_matches" => Some(crate::molt_re_literal_matches as *const () as usize as u64),
@@ -4503,7 +4505,6 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_tk_hex_to_rgb" => Some(crate::molt_tk_hex_to_rgb as *const () as usize as u64),
         "molt_tk_normalize_delay_ms" => Some(crate::molt_tk_normalize_delay_ms as *const () as usize as u64),
         "molt_tk_convert_stringval" => Some(crate::molt_tk_convert_stringval as *const () as usize as u64),
-        // ── pathlib ──
         "molt_pathlib_join" => Some(crate::molt_pathlib_join as *const () as usize as u64),
         "molt_pathlib_str" => Some(crate::molt_pathlib_str as *const () as usize as u64),
         "molt_pathlib_parts" => Some(crate::molt_pathlib_parts as *const () as usize as u64),
@@ -4560,13 +4561,10 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_pathlib_group" => Some(crate::molt_pathlib_group as *const () as usize as u64),
         "molt_pathlib_samefile" => Some(crate::molt_pathlib_samefile as *const () as usize as u64),
         "molt_pathlib_sep" => Some(crate::molt_pathlib_sep as *const () as usize as u64),
-        // ── glob ──
         "molt_glob_glob" => Some(crate::molt_glob_glob as *const () as usize as u64),
         "molt_glob_iglob" => Some(crate::molt_glob_iglob as *const () as usize as u64),
-        // ── fnmatch ──
         "molt_fnmatch_fnmatch" => Some(crate::molt_fnmatch_fnmatch as *const () as usize as u64),
         "molt_fnmatch_fnmatchcase" => Some(crate::molt_fnmatch_fnmatchcase as *const () as usize as u64),
-        // ── tempfile ──
         "molt_tempfile_gettempdir" => Some(crate::molt_tempfile_gettempdir as *const () as usize as u64),
         "molt_tempfile_gettempdirb" => Some(crate::molt_tempfile_gettempdirb as *const () as usize as u64),
         "molt_tempfile_mkdtemp" => Some(crate::molt_tempfile_mkdtemp as *const () as usize as u64),
@@ -4575,7 +4573,6 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_tempfile_tempdir" => Some(crate::molt_tempfile_tempdir as *const () as usize as u64),
         "molt_tempfile_cleanup" => Some(crate::molt_tempfile_cleanup as *const () as usize as u64),
         "molt_tempfile_tempdir_path" => Some(crate::molt_tempfile_tempdir_path as *const () as usize as u64),
-        // --- sys module: fully intrinsic-backed additions ---
         "molt_sys_getdefaultencoding" => Some(crate::molt_sys_getdefaultencoding as *const () as usize as u64),
         "molt_sys_getfilesystemencoding" => Some(crate::molt_sys_getfilesystemencoding as *const () as usize as u64),
         "molt_sys_getswitchinterval" => Some(crate::molt_sys_getswitchinterval as *const () as usize as u64),
@@ -4589,7 +4586,6 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_sys_exit" => Some(crate::molt_sys_exit as *const () as usize as u64),
         "molt_sys_displayhook_write" => Some(crate::molt_sys_displayhook_write as *const () as usize as u64),
         "molt_sys_excepthook_write" => Some(crate::molt_sys_excepthook_write as *const () as usize as u64),
-        // --- os module: fully intrinsic-backed additions ---
         "molt_os_wifexited" => Some(crate::molt_os_wifexited as *const () as usize as u64),
         "molt_os_wexitstatus" => Some(crate::molt_os_wexitstatus as *const () as usize as u64),
         "molt_os_wifsignaled" => Some(crate::molt_os_wifsignaled as *const () as usize as u64),
