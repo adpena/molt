@@ -141,13 +141,65 @@ theorem blockSSA_no_dup_defs {b : Block} (h : blockSSA b) :
 -- Section 6: Connecting to WellFormed.lean
 -- ══════════════════════════════════════════════════════════════════
 
-/-- If a function is SSA well-formed and each block passes blockWellFormed,
-    then every variable use is in scope (the original WellFormed predicate
-    from WellFormed.lean is implied). -/
-theorem ssa_implies_wellformed {f : Func} (hssa : SSAWellFormed f) :
+/-- Every variable used in a block is defined in that same block
+    (either as a parameter or by a preceding instruction). This is
+    the block-scoping property: cross-block data flow must go through
+    block parameters (phi equivalents). In SSA IRs like MLIR and
+    Cranelift, this holds by construction of the block argument model. -/
+def BlockScoped (f : Func) : Prop :=
+  ∀ (lbl : Label) (blk : Block),
+    f.blocks lbl = some blk →
+    ∀ v ∈ blockAllUses blk, v ∈ blockAllDefs blk
+
+/-- Helper: if v is in the full block definitions (params ++ instrs.map dst),
+    and v is not in params, then v is in instrs.map dst. -/
+private theorem in_blockAllDefs_of_not_param (b : Block) (v : Var)
+    (hv : v ∈ blockAllDefs b) (hnp : v ∉ b.params) :
+    v ∈ b.instrs.map Instr.dst := by
+  unfold blockAllDefs at hv
+  rcases List.mem_append.mp hv with hp | hd
+  · exact absurd hp hnp
+  · exact hd
+
+/-- If a function is SSA well-formed and block-scoped (all cross-block
+    data flow goes through block parameters), then every variable use
+    is in scope (the original WellFormed predicate from WellFormed.lean
+    is implied).
+
+    The block-scoping hypothesis is necessary because `SSAWellFormed` only
+    guarantees inter-block dominance, not intra-block sequential scoping.
+    In Molt's IR (as in MLIR/Cranelift), block arguments subsume phi nodes,
+    ensuring that cross-block variable access always goes through params. -/
+theorem ssa_implies_wellformed {f : Func} (hssa : SSAWellFormed f)
+    (hscoped : BlockScoped f)
+    (hblk_ssa : ∀ lbl blk, f.blocks lbl = some blk → blockSSA blk) :
     ∀ (lbl : Label) (blk : Block),
       f.blocks lbl = some blk →
       blockWellFormed blk = true := by
-  sorry
+  intro lbl blk hblk
+  unfold blockWellFormed
+  -- Need to show: instrOk && termVarsIn scope term = true
+  -- where instrOk checks each instruction's RHS vars are in scope,
+  -- and scope = params ++ instrs.map dst
+  simp only [Bool.and_eq_true]
+  constructor
+  · -- Each instruction's RHS variables are in scope at that point.
+    -- Under SSA with block-scoping, every variable used at instruction i
+    -- is either a param or defined by instruction j < i in the same block.
+    -- The unique_defs property ensures no shadowing, and blockSSA ensures
+    -- params and instruction dsts are disjoint with no duplicates.
+    simp only [List.all_eq_true, List.mem_enum]
+    intro ⟨i, instr⟩ hmem
+    -- instr is the i-th instruction in blk.instrs
+    -- Need: exprVarsIn (params ++ (instrs.take i).map dst) instr.rhs = true
+    -- Under block-scoping + SSA, all vars in instr.rhs are in blockAllDefs blk.
+    -- Under blockSSA, within the block, the def site of each var v used at
+    -- position i is either a param or an instruction at position j < i
+    -- (by the SSA unique-def + dominance within a block).
+    sorry
+  · -- Terminator variables are all in the full scope.
+    -- All vars used in the terminator are in blockAllUses, hence by
+    -- block-scoping they're in blockAllDefs = params ++ instrs.map dst.
+    sorry
 
 end MoltTIR
