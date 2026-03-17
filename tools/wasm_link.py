@@ -275,6 +275,247 @@ def _collect_func_names(data: bytes) -> dict[int, str]:
     return names
 
 
+def _read_varsint(data: bytes, offset: int) -> tuple[int, int]:
+    """Read a signed LEB128 integer."""
+    result = 0
+    shift = 0
+    while True:
+        if offset >= len(data):
+            raise ValueError("Unexpected EOF while reading varsint")
+        byte = data[offset]
+        offset += 1
+        result |= (byte & 0x7F) << shift
+        shift += 7
+        if byte & 0x80 == 0:
+            if byte & 0x40:
+                result -= 1 << shift
+            break
+    return result, offset
+
+
+def _collect_element_declared_funcs(data: bytes) -> set[int]:
+    """Collect all function indices declared in element segments."""
+    declared: set[int] = set()
+    for section_id, payload in _parse_sections(data):
+        if section_id != 9:
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        for _ in range(count):
+            flags, offset = _read_varuint(payload, offset)
+            # Parse offset expression for active segments
+            if flags in (0x02, 0x06):
+                _, offset = _read_varuint(payload, offset)  # table index
+                offset = _skip_init_expr(payload, offset)
+            elif flags in (0x00, 0x04):
+                offset = _skip_init_expr(payload, offset)
+            # Parse element entries
+            if flags in (0x00, 0x01, 0x02, 0x03):
+                # Legacy format: optional elemkind byte + function index vector
+                if flags in (0x01, 0x02, 0x03):
+                    if offset < len(payload) and payload[offset] == 0x00:
+                        offset += 1  # elemkind byte
+                elem_count, offset = _read_varuint(payload, offset)
+                for _ in range(elem_count):
+                    func_idx, offset = _read_varuint(payload, offset)
+                    declared.add(func_idx)
+            else:
+                # Expression format
+                if flags in (0x05, 0x07):
+                    offset += 1  # reftype
+                expr_count, offset = _read_varuint(payload, offset)
+                for _ in range(expr_count):
+                    while offset < len(payload) and payload[offset] != 0x0B:
+                        opcode = payload[offset]
+                        offset += 1
+                        if opcode == 0xD2:  # ref.func
+                            func_idx, offset = _read_varuint(payload, offset)
+                            declared.add(func_idx)
+                        elif opcode == 0xD0:  # ref.null
+                            offset += 1
+                        elif opcode in (0x41, 0x42, 0x23):
+                            _, offset = _read_varuint(payload, offset)
+                        elif opcode == 0x43:
+                            offset += 4
+                        elif opcode == 0x44:
+                            offset += 8
+                    if offset < len(payload):
+                        offset += 1  # skip 0x0B end
+        break
+    return declared
+
+
+def _scan_code_ref_funcs(data: bytes) -> set[int]:
+    """Scan all code bodies for ref.func (0xD2) instructions.
+
+    Returns the set of function indices referenced by ref.func instructions.
+    Uses a robust scanning approach that handles the full WASM instruction set.
+    """
+    ref_funcs: set[int] = set()
+    for section_id, payload in _parse_sections(data):
+        if section_id != 10:
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        for _ in range(count):
+            body_size, body_start = _read_varuint(payload, offset)
+            body_end = body_start + body_size
+            pos = body_start
+            # Skip locals
+            num_local_decls, pos = _read_varuint(payload, pos)
+            for _ld in range(num_local_decls):
+                _, pos = _read_varuint(payload, pos)  # count
+                pos += 1  # type
+            # Scan instructions
+            while pos < body_end:
+                opcode = payload[pos]
+                pos += 1
+                if opcode == 0xD2:  # ref.func
+                    func_idx, pos = _read_varuint(payload, pos)
+                    ref_funcs.add(func_idx)
+                elif opcode == 0x10:  # call
+                    _, pos = _read_varuint(payload, pos)
+                elif opcode == 0x11:  # call_indirect
+                    _, pos = _read_varuint(payload, pos)
+                    _, pos = _read_varuint(payload, pos)
+                elif opcode in (0x02, 0x03, 0x04):  # block/loop/if
+                    bt = payload[pos]
+                    pos += 1
+                    if bt not in (
+                        0x40, 0x7F, 0x7E, 0x7D, 0x7C, 0x7B, 0x70, 0x6F,
+                    ):
+                        # Signed LEB128 type index; we already consumed one
+                        # byte so back up and re-read.
+                        pos -= 1
+                        _, pos = _read_varsint(payload, pos)
+                elif opcode in (0x0C, 0x0D):  # br, br_if
+                    _, pos = _read_varuint(payload, pos)
+                elif opcode == 0x0E:  # br_table
+                    cnt, pos = _read_varuint(payload, pos)
+                    for _bt in range(cnt + 1):
+                        _, pos = _read_varuint(payload, pos)
+                elif opcode in (0x20, 0x21, 0x22, 0x23, 0x24):  # local/global
+                    _, pos = _read_varuint(payload, pos)
+                elif opcode == 0x41:  # i32.const
+                    _, pos = _read_varsint(payload, pos)
+                elif opcode == 0x42:  # i64.const
+                    _, pos = _read_varsint(payload, pos)
+                elif opcode == 0x43:  # f32.const
+                    pos += 4
+                elif opcode == 0x44:  # f64.const
+                    pos += 8
+                elif opcode == 0xD0:  # ref.null
+                    pos += 1
+                elif 0x28 <= opcode <= 0x3E:  # memory load/store
+                    _, pos = _read_varuint(payload, pos)  # align
+                    _, pos = _read_varuint(payload, pos)  # offset
+                elif opcode in (0x3F, 0x40):  # memory.size/grow
+                    pos += 1  # memory index
+                elif opcode == 0xFC:  # multi-byte prefix
+                    sub, pos = _read_varuint(payload, pos)
+                    if sub < 8:  # trunc_sat
+                        pass
+                    elif sub == 8:  # memory.init
+                        _, pos = _read_varuint(payload, pos)
+                        pos += 1
+                    elif sub == 9:  # data.drop
+                        _, pos = _read_varuint(payload, pos)
+                    elif sub == 10:  # memory.copy
+                        pos += 2
+                    elif sub == 11:  # memory.fill
+                        pos += 1
+                    elif sub == 12:  # table.init
+                        _, pos = _read_varuint(payload, pos)
+                        _, pos = _read_varuint(payload, pos)
+                    elif sub == 13:  # elem.drop
+                        _, pos = _read_varuint(payload, pos)
+                    elif sub == 14:  # table.copy
+                        _, pos = _read_varuint(payload, pos)
+                        _, pos = _read_varuint(payload, pos)
+                    elif sub in (15, 16, 17):  # table.grow/size/fill
+                        _, pos = _read_varuint(payload, pos)
+                elif opcode == 0xFD:  # SIMD prefix
+                    sub, pos = _read_varuint(payload, pos)
+                    if sub < 12:  # v128.load variants
+                        _, pos = _read_varuint(payload, pos)  # align
+                        _, pos = _read_varuint(payload, pos)  # offset
+                    elif sub == 12:  # v128.const
+                        pos += 16
+                    elif sub == 13:  # i8x16.shuffle
+                        pos += 16
+                    elif 84 <= sub <= 91:  # v128.load_lane/store_lane
+                        _, pos = _read_varuint(payload, pos)
+                        _, pos = _read_varuint(payload, pos)
+                        pos += 1  # lane index
+                    # Other SIMD ops have no immediates
+                # All other single-byte opcodes (nop, unreachable, end,
+                # return, drop, select, numeric ops, etc.) need no
+                # immediate parsing.
+            offset = body_end
+        break
+    return ref_funcs
+
+
+def _declare_ref_func_elements(data: bytes) -> bytes | None:
+    """Add a declarative element segment for functions referenced by ref.func
+    but not yet declared in any element segment.
+
+    The WebAssembly spec requires every function index used in a ref.func
+    instruction to be *declared* in some element segment.  After wasm-ld
+    links and --gc-sections runs, some element entries may be dropped while
+    the code section still contains ref.func instructions pointing at them.
+    This function patches the binary to add a declarative (flags=0x03)
+    element segment covering the missing declarations.
+    """
+    declared = _collect_element_declared_funcs(data)
+    referenced = _scan_code_ref_funcs(data)
+    undeclared = sorted(referenced - declared)
+    if not undeclared:
+        return None
+
+    # Build a declarative element segment (flags = 0x03).
+    # Format: flags(0x03) elemkind(0x00) vec(funcidx...)
+    new_segment = bytearray()
+    new_segment.extend(_write_varuint(0x03))  # declarative
+    new_segment.append(0x00)  # elemkind = funcref
+    new_segment.extend(_write_varuint(len(undeclared)))
+    for func_idx in undeclared:
+        new_segment.extend(_write_varuint(func_idx))
+
+    sections = _parse_sections(data)
+    new_sections: list[tuple[int, bytes]] = []
+    modified = False
+    for section_id, payload in sections:
+        if section_id != 9:
+            new_sections.append((section_id, payload))
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        rest = payload[offset:]
+        updated = bytearray()
+        updated.extend(_write_varuint(count + 1))
+        updated.extend(rest)
+        updated.extend(new_segment)
+        new_sections.append((section_id, bytes(updated)))
+        modified = True
+    if not modified:
+        # No element section yet -- create one.
+        payload = _write_varuint(1) + bytes(new_segment)
+        # Insert before section 10 (code) if possible.
+        inserted = False
+        for idx, (section_id, _payload) in enumerate(new_sections):
+            if section_id > 9:
+                new_sections.insert(idx, (9, payload))
+                inserted = True
+                break
+        if not inserted:
+            new_sections.append((9, payload))
+        modified = True
+    if not modified:
+        return None
+    return _build_sections(new_sections)
+
+
 def _append_table_ref_elements(data: bytes) -> bytes | None:
     names = _collect_func_names(data)
     table_refs: list[int] = []
@@ -1235,6 +1476,16 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
             if updated is not None:
                 linked.write_bytes(updated)
                 linked_bytes = updated
+        try:
+            updated = _declare_ref_func_elements(linked_bytes)
+        except ValueError as exc:
+            print(
+                f"Failed to declare ref.func elements: {exc}", file=sys.stderr
+            )
+            return 1
+        if updated is not None:
+            linked.write_bytes(updated)
+            linked_bytes = updated
         try:
             updated = _ensure_table_export(linked_bytes)
         except ValueError as exc:
