@@ -57,11 +57,19 @@ def evalBinOp (op : BinOp) (a b : Value) : Option Value :=
   -- catch-all for type mismatches, unmodeled ops, and bitwise
   | _, _, _ => none
 
-/-- Evaluate a unary operator. -/
+/-- Evaluate a unary operator.
+    `not` applies to all scalar types via truthy coercion (matching
+    Python's `not` semantics): bool→bool negation, int→bool (nonzero test),
+    float→bool (nonzero test), str→bool (nonempty test), none→true. -/
 def evalUnOp (op : UnOp) (a : Value) : Option Value :=
   match op, a with
   | .neg, .int x => some (.int (-x))
+  | .neg, .float x => some (.float (-x))
   | .not, .bool x => some (.bool (!x))
+  | .not, .int x => some (.bool (x == 0))
+  | .not, .float x => some (.bool (x == 0))
+  | .not, .str s => some (.bool (s == ""))
+  | .not, .none => some (.bool true)
   | .abs, .int x => some (.int (if x < 0 then -x else x))
   | _, _ => none
 
