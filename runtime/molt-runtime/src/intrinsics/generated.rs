@@ -2298,6 +2298,15 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_os_wifstopped", symbol: "molt_os_wifstopped", arity: 1 },
     IntrinsicSpec { name: "molt_os_wstopsig", symbol: "molt_os_wstopsig", arity: 1 },
     IntrinsicSpec { name: "molt_os_fspath", symbol: "molt_os_fspath", arity: 1 },
+    // ── stdlib completion: tokenize, codecs, ast, linecache ──────────────
+    IntrinsicSpec { name: "molt_tokenize_scan", symbol: "molt_tokenize_scan", arity: 1 },
+    IntrinsicSpec { name: "molt_codecs_charmap_build", symbol: "molt_codecs_charmap_build", arity: 1 },
+    IntrinsicSpec { name: "molt_codecs_charmap_decode", symbol: "molt_codecs_charmap_decode", arity: 3 },
+    IntrinsicSpec { name: "molt_codecs_charmap_encode", symbol: "molt_codecs_charmap_encode", arity: 3 },
+    IntrinsicSpec { name: "molt_codecs_make_identity_dict", symbol: "molt_codecs_make_identity_dict", arity: 1 },
+    IntrinsicSpec { name: "molt_ast_iter_fields", symbol: "molt_ast_iter_fields", arity: 1 },
+    IntrinsicSpec { name: "molt_ast_iter_child_nodes", symbol: "molt_ast_iter_child_nodes", arity: 1 },
+    IntrinsicSpec { name: "molt_linecache_detect_encoding", symbol: "molt_linecache_detect_encoding", arity: 2 },
 ];
 
 pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
@@ -4593,6 +4602,15 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_os_wifstopped" => Some(crate::molt_os_wifstopped as *const () as usize as u64),
         "molt_os_wstopsig" => Some(crate::molt_os_wstopsig as *const () as usize as u64),
         "molt_os_fspath" => Some(crate::molt_os_fspath as *const () as usize as u64),
+        // ── stdlib completion: tokenize, codecs, ast, linecache ──────────
+        "molt_tokenize_scan" => Some(crate::molt_tokenize_scan as *const () as usize as u64),
+        "molt_codecs_charmap_build" => Some(crate::molt_codecs_charmap_build as *const () as usize as u64),
+        "molt_codecs_charmap_decode" => Some(crate::molt_codecs_charmap_decode as *const () as usize as u64),
+        "molt_codecs_charmap_encode" => Some(crate::molt_codecs_charmap_encode as *const () as usize as u64),
+        "molt_codecs_make_identity_dict" => Some(crate::molt_codecs_make_identity_dict as *const () as usize as u64),
+        "molt_ast_iter_fields" => Some(crate::molt_ast_iter_fields as *const () as usize as u64),
+        "molt_ast_iter_child_nodes" => Some(crate::molt_ast_iter_child_nodes as *const () as usize as u64),
+        "molt_linecache_detect_encoding" => Some(crate::molt_linecache_detect_encoding as *const () as usize as u64),
         _ => None,
     }
 }

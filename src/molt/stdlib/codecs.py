@@ -57,6 +57,10 @@ _molt_stream_writer_write = _require_intrinsic(
 _molt_stream_writer_drop = _require_intrinsic(
     "molt_codecs_stream_writer_drop", globals()
 )
+_molt_charmap_build = _require_intrinsic("molt_codecs_charmap_build", globals())
+_molt_charmap_decode = _require_intrinsic("molt_codecs_charmap_decode", globals())
+_molt_charmap_encode = _require_intrinsic("molt_codecs_charmap_encode", globals())
+_molt_make_identity_dict = _require_intrinsic("molt_codecs_make_identity_dict", globals())
 
 # Align import-error provenance with uv-managed CPython layouts without
 # importing `glob` (which pulls in `re`/`warnings` during bootstrap).
@@ -449,10 +453,7 @@ def lookup_error(name):
 
 
 def make_identity_dict(rng):
-    out = {}
-    for i in rng:
-        out[i] = i
-    return out
+    return _molt_make_identity_dict(list(rng))
 
 
 class _EncodingMap(dict):
@@ -463,75 +464,15 @@ _EncodingMap.__name__ = "EncodingMap"
 
 
 def charmap_build(decoding_table):
-    out = _EncodingMap()
-    for i, ch in enumerate(decoding_table):
-        if ch == "\ufffe":
-            continue
-        if ch not in out:
-            out[ch] = i
-    return out
-
-
-def _coerce_mapping_decode_entry(mapping, value: int):
-    try:
-        item = mapping[value]
-    except Exception:
-        return None
-    if item is None:
-        return None
-    if isinstance(item, str):
-        return item
-    if isinstance(item, int):
-        try:
-            return chr(item)
-        except Exception:
-            return None
-    return None
+    return _molt_charmap_build(decoding_table)
 
 
 def charmap_decode(input, errors="strict", mapping=None):
-    if mapping is None:
-        return _decode_with_consumed(input, "latin-1", errors)
-    out_chars = []
-    for b in input:
-        ch = _coerce_mapping_decode_entry(mapping, b)
-        if ch is None:
-            if errors == "ignore":
-                continue
-            if errors == "replace":
-                out_chars.append("\ufffd")
-                continue
-            raise UnicodeDecodeError("charmap", bytes([b]), 0, 1, "undefined mapping")
-        out_chars.append(ch)
-    return "".join(out_chars), _safe_len(input)
+    return _molt_charmap_decode(input, errors, mapping)
 
 
 def charmap_encode(input, errors="strict", mapping=None):
-    if mapping is None:
-        return _encode_with_consumed(input, "latin-1", errors)
-    out = bytearray()
-    for idx, ch in enumerate(input):
-        mapped = mapping.get(ch) if hasattr(mapping, "get") else None
-        if mapped is None:
-            if isinstance(ch, str):
-                mapped = mapping.get(ord(ch)) if hasattr(mapping, "get") else None
-        if mapped is None:
-            if errors == "ignore":
-                continue
-            if errors == "replace":
-                out.extend(b"?")
-                continue
-            raise UnicodeEncodeError(
-                "charmap", input, idx, idx + 1, "character maps to undefined"
-            )
-        if isinstance(mapped, bytes):
-            out.extend(mapped)
-            continue
-        if isinstance(mapped, str):
-            out.extend(mapped.encode("latin-1", "replace"))
-            continue
-        out.append(int(mapped) & 0xFF)
-    return bytes(out), _safe_len(input)
+    return _molt_charmap_encode(input, errors, mapping)
 
 
 def ascii_encode(input, errors="strict"):

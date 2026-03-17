@@ -19,6 +19,9 @@ _MOLT_PATH_JOIN = _require_intrinsic("molt_path_join", globals())
 _MOLT_LINECACHE_LOADER_GET_SOURCE = _require_intrinsic(
     "molt_linecache_loader_get_source", globals()
 )
+_MOLT_LINECACHE_DETECT_ENCODING = _require_intrinsic(
+    "molt_linecache_detect_encoding", globals()
+)
 
 
 __all__ = ["getline", "clearcache", "checkcache", "lazycache"]
@@ -283,90 +286,30 @@ def _detect_encoding(readline, filename: str | None) -> tuple[str, list[bytes]]:
     except AttributeError:
         pass
 
-    bom_found = False
-    default = "utf-8"
-
     def read_or_stop() -> bytes:
         try:
             return readline()
         except StopIteration:
             return b""
 
-    def check(line: bytes, enc: str) -> None:
-        if b"\x00" in line:
-            raise SyntaxError("source code cannot contain null bytes")
-        if bom_found and enc.lower() != "utf-8":
-            if filename is None:
-                msg = "encoding problem: utf-8"
-            else:
-                msg = f"encoding problem for {filename!r}: utf-8"
-            raise SyntaxError(msg)
-
-    def find_cookie(line: bytes) -> str | None:
-        stripped = line.lstrip(b" \t\f")
-        if not stripped.startswith(b"#"):
-            return None
-        index = stripped.find(b"coding")
-        if index < 0:
-            return None
-        rest = stripped[index + 6 :]
-        rest = rest.lstrip(b" \t\f")
-        if not rest or rest[:1] not in (b":", b"="):
-            return None
-        rest = rest[1:].lstrip(b" \t\f")
-        if not rest:
-            return None
-        encoding_bytes = []
-        for value in rest:
-            if (
-                48 <= value <= 57
-                or 65 <= value <= 90
-                or 97 <= value <= 122
-                or value in (45, 95, 46)
-            ):
-                encoding_bytes.append(value)
-            else:
-                break
-        if not encoding_bytes:
-            return None
-        return bytes(encoding_bytes).decode("ascii")
-
-    def is_blank(line: bytes) -> bool:
-        stripped = line.lstrip(b" \t\f")
-        return not stripped or stripped.startswith((b"#", b"\r", b"\n"))
-
     first = read_or_stop()
-    if first.startswith(_BOM_UTF8):
-        bom_found = True
-        first = first[3:]
-        default = "utf-8-sig"
     if not first:
-        return default, []
-
-    encoding = find_cookie(first)
-    if encoding:
-        check(first, encoding)
-        if bom_found and encoding.lower() == "utf-8":
-            encoding = "utf-8-sig"
-        return encoding, [first]
-    if not is_blank(first):
-        check(first, default)
-        return default, [first]
+        return "utf-8", []
 
     second = read_or_stop()
-    if not second:
-        check(first, default)
-        return default, [first]
 
-    encoding = find_cookie(second)
-    if encoding:
-        check(first + second, encoding)
-        if bom_found and encoding.lower() == "utf-8":
-            encoding = "utf-8-sig"
-        return encoding, [first, second]
+    # Delegate encoding detection to the Rust intrinsic
+    encoding, _bom_found = _MOLT_LINECACHE_DETECT_ENCODING(first, second)
 
-    check(first + second, default)
-    return default, [first, second]
+    # Null byte check
+    combined = first + second
+    if b"\x00" in combined:
+        raise SyntaxError("source code cannot contain null bytes")
+
+    lines: list[bytes] = [first]
+    if second:
+        lines.append(second)
+    return encoding, lines
 
 
 def _open_source(filename: str):

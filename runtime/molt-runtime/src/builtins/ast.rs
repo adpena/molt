@@ -8,6 +8,7 @@ use crate::{
     exception_pending, inc_ref_bits, int_bits_from_bigint, missing_bits, molt_getattr_builtin,
     obj_from_bits, object_type_id, raise_exception, string_obj_to_owned,
 };
+use crate::builtins::exceptions::clear_exception;
 
 struct AstParseCtors {
     module: u64,
@@ -819,5 +820,182 @@ pub extern "C" fn molt_ast_get_docstring(node_bits: u64, clean_bits: u64) -> u64
         dec_if_heap(_py, expr_value_bits);
         dec_if_heap(_py, body_bits);
         out
+    })
+}
+
+/// Return a list of (field_name, value) tuples for an AST node.
+/// Reads the `_fields` class attribute and extracts each named attribute.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_ast_iter_fields(node_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let node = obj_from_bits(node_bits);
+        if node.is_none() {
+            return raise_exception::<_>(_py, "TypeError", "expected an AST node, got None");
+        }
+        let missing = missing_bits(_py);
+        // Get _fields from the class/type
+        let Some(fields_key) = attr_name_bits_from_bytes(_py, b"_fields") else {
+            let list_ptr = crate::alloc_list(_py, &[]);
+            if list_ptr.is_null() {
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            return MoltObject::from_ptr(list_ptr).bits();
+        };
+        let fields_bits = molt_getattr_builtin(node_bits, fields_key, missing);
+        dec_ref_bits(_py, fields_key);
+        if exception_pending(_py) {
+            clear_exception(_py);
+            let list_ptr = crate::alloc_list(_py, &[]);
+            if list_ptr.is_null() {
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            return MoltObject::from_ptr(list_ptr).bits();
+        }
+        let fields_obj = obj_from_bits(fields_bits);
+        let Some(fields_values) = decode_value_list(fields_obj) else {
+            let list_ptr = crate::alloc_list(_py, &[]);
+            if list_ptr.is_null() {
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            return MoltObject::from_ptr(list_ptr).bits();
+        };
+        let mut result_entries: Vec<u64> = Vec::with_capacity(fields_values.len());
+        for field_bits in &fields_values {
+            let field_obj = obj_from_bits(*field_bits);
+            let Some(field_name) = string_obj_to_owned(field_obj) else {
+                continue;
+            };
+            let Some(attr_key) = attr_name_bits_from_bytes(_py, field_name.as_bytes()) else {
+                continue;
+            };
+            let val_bits = molt_getattr_builtin(node_bits, attr_key, missing);
+            dec_ref_bits(_py, attr_key);
+            if exception_pending(_py) {
+                clear_exception(_py);
+                continue;
+            }
+            let name_ptr = alloc_string(_py, field_name.as_bytes());
+            if name_ptr.is_null() {
+                continue;
+            }
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let elems = [name_bits, val_bits];
+            let tuple_ptr = alloc_tuple(_py, &elems);
+            if tuple_ptr.is_null() {
+                dec_ref_bits(_py, name_bits);
+                continue;
+            }
+            result_entries.push(MoltObject::from_ptr(tuple_ptr).bits());
+        }
+        let list_ptr = crate::alloc_list(_py, &result_entries);
+        for bits in &result_entries {
+            dec_ref_bits(_py, *bits);
+        }
+        if list_ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(list_ptr).bits()
+    })
+}
+
+/// Helper: check if an object has a `_fields` attribute (heuristic for AST node).
+fn has_fields_attr(_py: &crate::PyToken<'_>, obj_bits: u64) -> bool {
+    let Some(fields_key) = attr_name_bits_from_bytes(_py, b"_fields") else {
+        return false;
+    };
+    let missing = missing_bits(_py);
+    let result = molt_getattr_builtin(obj_bits, fields_key, missing);
+    dec_ref_bits(_py, fields_key);
+    if exception_pending(_py) {
+        clear_exception(_py);
+        return false;
+    }
+    !obj_from_bits(result).is_none()
+}
+
+/// Return a list of direct AST child nodes for an AST node.
+/// Inspects `_fields`, collects values that are AST instances or
+/// lists containing AST instances.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_ast_iter_child_nodes(node_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let node = obj_from_bits(node_bits);
+        if node.is_none() {
+            return raise_exception::<_>(_py, "TypeError", "expected an AST node, got None");
+        }
+        let missing = missing_bits(_py);
+        let Some(fields_key) = attr_name_bits_from_bytes(_py, b"_fields") else {
+            let list_ptr = crate::alloc_list(_py, &[]);
+            if list_ptr.is_null() {
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            return MoltObject::from_ptr(list_ptr).bits();
+        };
+        let fields_bits = molt_getattr_builtin(node_bits, fields_key, missing);
+        dec_ref_bits(_py, fields_key);
+        if exception_pending(_py) {
+            clear_exception(_py);
+            let list_ptr = crate::alloc_list(_py, &[]);
+            if list_ptr.is_null() {
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            return MoltObject::from_ptr(list_ptr).bits();
+        }
+        let fields_obj = obj_from_bits(fields_bits);
+        let Some(fields_values) = decode_value_list(fields_obj) else {
+            let list_ptr = crate::alloc_list(_py, &[]);
+            if list_ptr.is_null() {
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            return MoltObject::from_ptr(list_ptr).bits();
+        };
+
+        let mut children: Vec<u64> = Vec::new();
+        for field_bits in &fields_values {
+            let field_obj = obj_from_bits(*field_bits);
+            let Some(field_name) = string_obj_to_owned(field_obj) else {
+                continue;
+            };
+            let Some(attr_key) = attr_name_bits_from_bytes(_py, field_name.as_bytes()) else {
+                continue;
+            };
+            let val_bits = molt_getattr_builtin(node_bits, attr_key, missing);
+            dec_ref_bits(_py, attr_key);
+            if exception_pending(_py) {
+                clear_exception(_py);
+                continue;
+            }
+            let val_obj = obj_from_bits(val_bits);
+            if val_obj.is_none() {
+                continue;
+            }
+            // Check if val has _fields (i.e., is an AST node)
+            if has_fields_attr(_py, val_bits) {
+                inc_ref_bits(_py, val_bits);
+                children.push(val_bits);
+                continue;
+            }
+            // Check if val is a list/tuple containing AST nodes
+            if let Some(items) = decode_value_list(val_obj) {
+                for item_bits in &items {
+                    let item_obj = obj_from_bits(*item_bits);
+                    if item_obj.is_none() {
+                        continue;
+                    }
+                    if has_fields_attr(_py, *item_bits) {
+                        inc_ref_bits(_py, *item_bits);
+                        children.push(*item_bits);
+                    }
+                }
+            }
+        }
+        let list_ptr = crate::alloc_list(_py, &children);
+        for bits in &children {
+            dec_ref_bits(_py, *bits);
+        }
+        if list_ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(list_ptr).bits()
     })
 }
