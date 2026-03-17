@@ -194,6 +194,7 @@ def evalRustUnOp (op : RustUnOp) (a : RustValue) : Option RustValue :=
   match op, a with
   | .neg, .int x    => Option.some (.int (-x))
   | .not, .boolean x => Option.some (.boolean (!x))
+  | .abs, .int x    => Option.some (.int (if x < 0 then -x else x))
   | _, _ => Option.none
 
 -- ======================================================================

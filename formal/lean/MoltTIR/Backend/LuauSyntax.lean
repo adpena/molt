@@ -42,6 +42,7 @@ inductive LuauUnOp where
   | neg     -- arithmetic negation (-)
   | lnot    -- logical negation (not)
   | len     -- length operator (#)
+  | abs     -- absolute value (math.abs)
   deriving DecidableEq, Repr
 
 -- ======================================================================

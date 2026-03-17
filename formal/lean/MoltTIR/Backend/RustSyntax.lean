@@ -76,6 +76,7 @@ inductive RustBinOp where
 inductive RustUnOp where
   | neg      -- arithmetic negation (-)
   | not      -- logical/bitwise negation (!)
+  | abs      -- absolute value (i64::abs)
   deriving DecidableEq, Repr
 
 -- ======================================================================

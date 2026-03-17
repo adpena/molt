@@ -93,7 +93,7 @@ def emitRustBinOp : MoltTIR.BinOp → RustBinOp
 def emitRustUnOp : MoltTIR.UnOp → RustUnOp
   | .neg => .neg
   | .not => .not
-  | .abs => .neg        -- approximation; real transpiler uses i64::abs()
+  | .abs => .abs
   | .invert => .not     -- approximation; real transpiler uses ! for bitwise
 
 -- ======================================================================
