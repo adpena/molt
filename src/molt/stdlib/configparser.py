@@ -1,4 +1,4 @@
-"""Intrinsic-backed configparser module for Molt."""
+"""Intrinsic-backed configparser module for Molt — fully intrinsic-backed."""
 
 from __future__ import annotations
 
@@ -42,6 +42,24 @@ _molt_configparser_remove_option = _require_intrinsic(
 )
 _molt_configparser_write = _require_intrinsic("molt_configparser_write", globals())
 _molt_configparser_drop = _require_intrinsic("molt_configparser_drop", globals())
+_molt_configparser_write_string = _require_intrinsic(
+    "molt_configparser_write_string", globals()
+)
+_molt_configparser_get_raw = _require_intrinsic(
+    "molt_configparser_get_raw", globals()
+)
+_molt_configparser_interpolate_basic = _require_intrinsic(
+    "molt_configparser_interpolate_basic", globals()
+)
+_molt_configparser_interpolate_extended = _require_intrinsic(
+    "molt_configparser_interpolate_extended", globals()
+)
+_molt_configparser_read_file = _require_intrinsic(
+    "molt_configparser_read_file", globals()
+)
+_molt_configparser_defaults = _require_intrinsic(
+    "molt_configparser_defaults", globals()
+)
 
 _MISSING = object()
 
@@ -199,18 +217,12 @@ class BasicInterpolation(Interpolation):
     def before_get(
         self, parser: Any, section: str, option: str, value: str, defaults: Any
     ) -> str:
-        depth = self._MAX_INTERPOLATION_DEPTH
-        rawval = value
-        while depth > 0:
-            depth -= 1
-            if "%" not in rawval:
-                break
-            rawval = self._interpolate_some(
-                parser, option, rawval, section, defaults, depth
+        # Delegate interpolation to the Rust intrinsic via the parser's handle
+        return str(
+            _molt_configparser_interpolate_basic(
+                parser._handle, str(section), value
             )
-        if "%" in rawval:
-            raise InterpolationDepthError(option, section, rawval)
-        return rawval
+        )
 
     def before_set(self, parser: Any, section: str, option: str, value: str) -> str:
         # Validate the value for interpolation markers.
@@ -223,62 +235,6 @@ class BasicInterpolation(Interpolation):
             )
         return value
 
-    @staticmethod
-    def _interpolate_some(
-        parser: Any,
-        option: str,
-        accum: str,
-        section: str,
-        defaults: Any,
-        depth: int,
-    ) -> str:
-        result = ""
-        rest = accum
-        while rest:
-            p = rest.find("%")
-            if p < 0:
-                result += rest
-                break
-            if p > 0:
-                result += rest[:p]
-                rest = rest[p:]
-            c = rest[1:2]
-            if c == "%":
-                result += "%"
-                rest = rest[2:]
-            elif c == "(":
-                end = rest.find(")")
-                if end < 0:
-                    raise InterpolationSyntaxError(
-                        option,
-                        section,
-                        "bad interpolation variable reference %r" % rest,
-                    )
-                key = rest[2:end]
-                rest = rest[end + 1 :]
-                if rest and rest[0] == "s":
-                    rest = rest[1:]
-                else:
-                    raise InterpolationSyntaxError(
-                        option,
-                        section,
-                        "'%%(%s)' is missing a conversion specifier" % key,
-                    )
-                if isinstance(defaults, dict):
-                    v = defaults.get(key)
-                else:
-                    v = None
-                if v is None:
-                    raise InterpolationMissingOptionError(option, section, rest, key)
-                result += str(v)
-            else:
-                raise InterpolationSyntaxError(
-                    option,
-                    section,
-                    "'%%' must be followed by '%%' or '(', found: %r" % (rest,),
-                )
-        return result
-
 
 class ExtendedInterpolation(Interpolation):
     """Advanced variant of interpolation, supports the syntax used by
@@ -290,74 +246,15 @@ class ExtendedInterpolation(Interpolation):
     def before_get(
         self, parser: Any, section: str, option: str, value: str, defaults: Any
     ) -> str:
-        depth = self._MAX_INTERPOLATION_DEPTH
-        rawval = value
-        while depth > 0:
-            depth -= 1
-            if "$" not in rawval:
-                break
-            rawval = self._interpolate_some(
-                parser, option, rawval, section, defaults, depth
+        # Delegate interpolation to the Rust intrinsic via the parser's handle
+        return str(
+            _molt_configparser_interpolate_extended(
+                parser._handle, str(section), value
             )
-        if "$" in rawval:
-            raise InterpolationDepthError(option, section, rawval)
-        return rawval
+        )
 
     def before_set(self, parser: Any, section: str, option: str, value: str) -> str:
         return value
-
-    @staticmethod
-    def _interpolate_some(
-        parser: Any,
-        option: str,
-        accum: str,
-        section: str,
-        defaults: Any,
-        depth: int,
-    ) -> str:
-        result = ""
-        rest = accum
-        while rest:
-            p = rest.find("$")
-            if p < 0:
-                result += rest
-                break
-            if p > 0:
-                result += rest[:p]
-                rest = rest[p:]
-            c = rest[1:2]
-            if c == "$":
-                result += "$"
-                rest = rest[2:]
-            elif c == "{":
-                end = rest.find("}")
-                if end < 0:
-                    raise InterpolationSyntaxError(
-                        option,
-                        section,
-                        "bad interpolation variable reference %r" % rest,
-                    )
-                path = rest[2:end]
-                rest = rest[end + 1 :]
-                if ":" in path:
-                    sect, opt = path.split(":", 1)
-                else:
-                    sect = section
-                    opt = path
-                opt = opt.strip().lower()
-                sect = sect.strip()
-                try:
-                    v = parser.get(sect, opt, raw=True)
-                except (NoSectionError, NoOptionError):
-                    raise InterpolationMissingOptionError(option, section, rest, path)
-                result += str(v)
-            else:
-                raise InterpolationSyntaxError(
-                    option,
-                    section,
-                    "'$' must be followed by '$' or '{', found: %r" % (rest,),
-                )
-        return result
 
 
 class InterpolationError(Error):
@@ -444,6 +341,24 @@ class RawConfigParser:
                 result.extend(read_files)
         return result
 
+    def read_file(self, f: Any, source: str | None = None) -> None:
+        content = f.read()
+        src = source if source is not None else getattr(f, "name", "<???>")
+        _molt_configparser_read_file(self._handle, str(content), str(src))
+
+    def read_dict(self, dictionary: dict[str, dict[str, str]], source: str = "<dict>") -> None:
+        for section, keys in dictionary.items():
+            try:
+                self.add_section(section)
+            except (DuplicateSectionError, ValueError):
+                pass
+            for key, value in keys.items():
+                self.set(section, key, value)
+
+    def defaults(self) -> dict[str, str]:
+        pairs = _molt_configparser_defaults(self._handle)
+        return {k: v for k, v in pairs}
+
     def sections(self) -> list[str]:
         return list(_molt_configparser_sections(self._handle))
 
@@ -528,12 +443,8 @@ class RawConfigParser:
         )
 
     def write(self, fp: Any, space_around_delimiters: bool = True) -> None:
-        # For file-like objects, get the name; for string paths, use directly.
-        name = getattr(fp, "name", None)
-        if name is not None:
-            _molt_configparser_write(self._handle, str(name))
-        else:
-            _molt_configparser_write(self._handle, str(fp))
+        content = str(_molt_configparser_write_string(self._handle))
+        fp.write(content)
 
 
 class ConfigParser(RawConfigParser):
@@ -570,12 +481,21 @@ class ConfigParser(RawConfigParser):
             if fallback is not _UNSET:
                 return fallback
             raise KeyError(option)
-        value = str(
-            _molt_configparser_get(self._handle, str(section), str(option), None)
+
+        # Get the raw value from the Rust backend
+        raw_value = _molt_configparser_get_raw(
+            self._handle, str(section), str(option)
         )
+        if raw_value is None:
+            if fallback is not _UNSET:
+                return fallback
+            raise KeyError(option)
+        value = str(raw_value)
+
         if raw or self._interpolation is None:
             return value
-        # Apply interpolation.
+
+        # Delegate interpolation to the intrinsic-backed interpolation class
         defaults_dict: dict[str, str] = {}
         for k, v in _molt_configparser_items(self._handle, str(section)):
             defaults_dict[k] = v

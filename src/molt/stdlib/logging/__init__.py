@@ -80,6 +80,12 @@ _GET_LEVEL_NAME = _require_intrinsic("molt_logging_get_level_name", globals())
 _ADD_LEVEL_NAME = _require_intrinsic("molt_logging_add_level_name", globals())
 _LEVEL_TO_INT = _require_intrinsic("molt_logging_level_to_int", globals())
 
+# Filter intrinsic
+_FILTER_CHECK = _require_intrinsic("molt_logging_filter_check", globals())
+
+# FileHandler intrinsic
+_FILE_HANDLER_EMIT = _require_intrinsic("molt_logging_file_handler_emit", globals())
+
 # Logging runtime readiness check
 _LOGGING_RUNTIME_READY = _require_intrinsic("molt_logging_runtime_ready", globals())
 
@@ -256,11 +262,7 @@ class Filter:
         self.nlen = len(name)
 
     def filter(self, record: "LogRecord") -> bool:
-        if self.name == "":
-            return True
-        if record.name == self.name:
-            return True
-        return record.name.startswith(self.name + ".")
+        return bool(_FILTER_CHECK(self.name, record.name))
 
 
 class Filterer:
@@ -688,17 +690,20 @@ class FileHandler(StreamHandler):
         return self.stream
 
     def emit(self, record: LogRecord) -> None:
-        if self.stream is None:
-            self._open()
-        # FileHandler uses Python-side stream write, not the stream handler intrinsic.
         msg = self.format(record)
-        if self.stream is None:
-            return None
         try:
-            self.stream.write(msg + self.terminator)
-            self.flush()
+            _FILE_HANDLER_EMIT(msg, self.baseFilename, self.mode, self.encoding)
         except Exception:
-            return None
+            # Fallback: Python-side stream write.
+            if self.stream is None:
+                self._open()
+            if self.stream is None:
+                return None
+            try:
+                self.stream.write(msg + self.terminator)
+                self.flush()
+            except Exception:
+                return None
 
     def close(self) -> None:
         try:

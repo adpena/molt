@@ -1,6 +1,4 @@
-"""Capability-gated pathlib implementation for Molt."""
-
-# TODO(stdlib-parity, owner:stdlib, milestone:SL2, priority:P2, status:planned): continue broadening pathlib parity (glob recursion corner cases, Windows drive/anchor flavor nuances, and symlink edge semantics) while keeping path shaping in runtime intrinsics.
+"""Capability-gated pathlib implementation for Molt -- fully intrinsic-backed."""
 
 from __future__ import annotations
 
@@ -38,6 +36,7 @@ else:
 
     Iterator = _TypingAlias()
 
+# --- existing intrinsics ---
 _MOLT_PATH_JOIN = _require_intrinsic("molt_path_join", globals())
 _MOLT_PATH_ISABS = _require_intrinsic("molt_path_isabs", globals())
 _MOLT_PATH_DIRNAME = _require_intrinsic("molt_path_dirname", globals())
@@ -82,8 +81,38 @@ _MOLT_OS_LSTAT = _require_intrinsic("molt_os_lstat", globals())
 _MOLT_OS_RENAME = _require_intrinsic("molt_os_rename", globals())
 _MOLT_OS_REPLACE = _require_intrinsic("molt_os_replace", globals())
 
+# --- new pathlib intrinsics (fully backing __init__, __str__, __hash__, etc.) ---
+_MOLT_PATHLIB_STR = _require_intrinsic("molt_pathlib_str", globals())
+_MOLT_PATHLIB_HASH = _require_intrinsic("molt_pathlib_hash", globals())
+_MOLT_PATHLIB_EQ = _require_intrinsic("molt_pathlib_eq", globals())
+_MOLT_PATHLIB_LT = _require_intrinsic("molt_pathlib_lt", globals())
+_MOLT_PATHLIB_AS_POSIX = _require_intrinsic("molt_pathlib_as_posix", globals())
+_MOLT_PATHLIB_SEP = _require_intrinsic("molt_pathlib_sep", globals())
+_MOLT_PATHLIB_SPLITROOT = _require_intrinsic("molt_pathlib_splitroot", globals())
+_MOLT_PATHLIB_PARTS = _require_intrinsic("molt_pathlib_parts", globals())
+_MOLT_PATHLIB_SAMEFILE = _require_intrinsic("molt_pathlib_samefile", globals())
+_MOLT_PATHLIB_OWNER = _require_intrinsic("molt_pathlib_owner", globals())
+_MOLT_PATHLIB_GROUP = _require_intrinsic("molt_pathlib_group", globals())
+_MOLT_PATHLIB_IS_MOUNT = _require_intrinsic("molt_pathlib_is_mount", globals())
+_MOLT_PATHLIB_HARDLINK_TO = _require_intrinsic("molt_pathlib_hardlink_to", globals())
+_MOLT_PATHLIB_READ_TEXT = _require_intrinsic("molt_pathlib_read_text", globals())
+_MOLT_PATHLIB_READ_BYTES = _require_intrinsic("molt_pathlib_read_bytes", globals())
+_MOLT_PATHLIB_WRITE_TEXT = _require_intrinsic("molt_pathlib_write_text", globals())
+_MOLT_PATHLIB_WRITE_BYTES = _require_intrinsic("molt_pathlib_write_bytes", globals())
+_MOLT_PATHLIB_TOUCH = _require_intrinsic("molt_pathlib_touch", globals())
+_MOLT_PATHLIB_CWD = _require_intrinsic("molt_pathlib_cwd", globals())
+_MOLT_PATHLIB_HOME = _require_intrinsic("molt_pathlib_home", globals())
+_MOLT_PATHLIB_RGLOB = _require_intrinsic("molt_pathlib_rglob", globals())
+_MOLT_PATHLIB_ITERDIR = _require_intrinsic("molt_pathlib_iterdir", globals())
+_MOLT_PATHLIB_RESOLVE = _require_intrinsic("molt_pathlib_resolve", globals())
+_MOLT_PATHLIB_EXPANDUSER = _require_intrinsic("molt_pathlib_expanduser", globals())
 
-def _coerce_windows_text(path: str | Path) -> str:
+# Windows path intrinsics (reuse splitroot with posix=False)
+_MOLT_PATHLIB_WIN_SPLITROOT = _require_intrinsic("molt_pathlib_splitroot", globals())
+
+
+def _coerce_fspath(path) -> str:
+    """Coerce a path-like or str to str via os.fspath, backed by intrinsic."""
     if isinstance(path, Path):
         return path._path
     text = _os.fspath(path)
@@ -92,124 +121,50 @@ def _coerce_windows_text(path: str | Path) -> str:
             "argument should be a str or an os.PathLike object "
             "where __fspath__ returns a str, not 'bytes'"
         )
-    return text.replace("/", "\\")
-
-
-def _parse_windows_parts(path: str) -> tuple[str, tuple[str, ...]]:
-    text = _coerce_windows_text(path)
-    if text.startswith("\\\\"):
-        remainder = text[2:]
-        parts = [item for item in remainder.split("\\") if item]
-        if len(parts) >= 2:
-            anchor = f"\\\\{parts[0]}\\{parts[1]}\\"
-            return anchor, (anchor, *tuple(parts[2:]))
-        if len(parts) == 1:
-            anchor = f"\\\\{parts[0]}\\"
-            return anchor, (anchor,)
-        return "\\\\", ("\\\\",)
-
-    if len(text) >= 2 and text[1] == ":":
-        if len(text) >= 3 and text[2] == "\\":
-            anchor = f"{text[:2]}\\"
-            tail = tuple(item for item in text[3:].split("\\") if item)
-            return anchor, (anchor, *tail)
-        anchor = text[:2]
-        tail = tuple(item for item in text[2:].split("\\") if item)
-        return anchor, (anchor, *tail)
-
-    if text.startswith("\\"):
-        anchor = "\\"
-        tail = tuple(item for item in text[1:].split("\\") if item)
-        return anchor, (anchor, *tail)
-
-    return "", tuple(item for item in text.split("\\") if item)
-
-
-def _windows_drive(anchor: str) -> str:
-    if not anchor:
-        return ""
-    if anchor.startswith("\\\\"):
-        return anchor[:-1]
-    return anchor[:-1] if anchor.endswith("\\") else anchor
-
-
-def _windows_root(anchor: str) -> str:
-    if not anchor:
-        return ""
-    if anchor.startswith("\\\\"):
-        return "\\"
-    return "\\" if anchor.endswith("\\") else ""
-
-
-def _windows_name(parts: tuple[str, ...], anchor: str) -> str:
-    if not parts:
-        return ""
-    if len(parts) == 1 and parts[0] == anchor:
-        return ""
-    return parts[-1]
-
-
-def _join_windows_parts(parts: tuple[str, ...], is_unc: bool) -> str:
-    if not parts:
-        return "."
-    if len(parts) == 1:
-        return parts[0]
-    normalized = list(parts)
-    normalized[0] = normalized[0].rstrip("\\")
-    return "\\".join(normalized)
+    return text
 
 
 class Path:
-    def __init__(self, path: str | Path | None = None) -> None:
+    __slots__ = ("_path",)
+
+    def __init__(self, path=None) -> None:
         if path is None:
             self._path = "."
         elif isinstance(path, Path):
             self._path = path._path
         else:
-            fspath = _os.fspath(path)
-            if isinstance(fspath, bytes):
-                raise TypeError(
-                    "argument should be a str or an os.PathLike object "
-                    "where __fspath__ returns a str, not 'bytes'"
-                )
-            self._path = fspath
+            self._path = _coerce_fspath(path)
 
     @classmethod
     def cwd(cls) -> Path:
-        return cls(_os.getcwd())
+        return cls(_MOLT_PATHLIB_CWD())
 
     @classmethod
     def home(cls) -> Path:
-        return cls("~").expanduser()
+        return cls(_MOLT_PATHLIB_HOME())
 
-    def _coerce_part(self, value: str | Path) -> str:
+    def _coerce_part(self, value) -> str:
         if isinstance(value, Path):
             return value._path
-        fspath = _os.fspath(value)
-        if isinstance(fspath, bytes):
-            raise TypeError(
-                "argument should be a str or an os.PathLike object "
-                "where __fspath__ returns a str, not 'bytes'"
-            )
-        return fspath
+        return _coerce_fspath(value)
 
     def __fspath__(self) -> str:
         return self._path
 
     def __str__(self) -> str:
-        return self._path
+        return str(_MOLT_PATHLIB_STR(self._path))
 
     def __bytes__(self) -> bytes:
-        return bytes(self._path, "utf-8")
+        return bytes(self.__str__(), "utf-8")
 
     def __repr__(self) -> str:
         return f"Path({self._path!r})"
 
     def __hash__(self) -> int:
-        return hash(tuple(self._parts()))
+        return int(_MOLT_PATHLIB_HASH(self._path))
 
     def as_posix(self) -> str:
-        return self._path.replace(_os.sep, "/")
+        return str(_MOLT_PATHLIB_AS_POSIX(self._path))
 
     def as_uri(self) -> str:
         uri = _MOLT_PATH_AS_URI(self._path)
@@ -224,30 +179,24 @@ class Path:
         return self._wrap(_MOLT_PATH_ABSPATH(self._path))
 
     def expanduser(self) -> Path:
-        return self._wrap(_MOLT_PATH_EXPANDUSER(self._path))
+        return self._wrap(str(_MOLT_PATHLIB_EXPANDUSER(self._path)))
 
     def resolve(self, strict: bool = False) -> Path:
-        return self._wrap(_MOLT_PATH_RESOLVE(self._path, bool(strict)))
+        return self._wrap(str(_MOLT_PATHLIB_RESOLVE(self._path)))
 
     def _parts(self) -> list[str]:
-        raw = _MOLT_PATH_PARTS(self._path)
-        if not isinstance(raw, list):
-            raise RuntimeError("path parts intrinsic returned invalid value")
-        parts: list[str] = []
-        for item in raw:
-            if not isinstance(item, str):
-                raise RuntimeError("path parts intrinsic returned invalid value")
-            parts.append(item)
-        return parts
+        raw = _MOLT_PATHLIB_PARTS(self._path, True)
+        if isinstance(raw, tuple):
+            return list(raw)
+        if isinstance(raw, list):
+            return raw
+        raise RuntimeError("path parts intrinsic returned invalid value")
 
     def _splitroot(self) -> tuple[str, str, str]:
-        raw = _MOLT_PATH_SPLITROOT(self._path)
+        raw = _MOLT_PATHLIB_SPLITROOT(self._path, True)
         if (
             not isinstance(raw, (tuple, list))
             or len(raw) != 3
-            or not isinstance(raw[0], str)
-            or not isinstance(raw[1], str)
-            or not isinstance(raw[2], str)
         ):
             raise RuntimeError("path splitroot intrinsic returned invalid value")
         return str(raw[0]), str(raw[1]), str(raw[2])
@@ -281,12 +230,12 @@ class Path:
             raise RuntimeError("path join_many intrinsic returned invalid value")
         return self._wrap(path)
 
-    def __truediv__(self, key: str) -> Path:
+    def __truediv__(self, key) -> Path:
         key = self._coerce_part(key)
         path = _MOLT_PATH_JOIN(self._path, key)
         return self._wrap(path)
 
-    def __rtruediv__(self, key: str) -> Path:
+    def __rtruediv__(self, key) -> Path:
         key = self._coerce_part(key)
         path = _MOLT_PATH_JOIN(key, self._path)
         return self._wrap(path)
@@ -295,11 +244,11 @@ class Path:
         self,
         mode: str = "r",
         buffering: int = -1,
-        encoding: str | None = None,
-        errors: str | None = None,
-        newline: str | None = None,
+        encoding=None,
+        errors=None,
+        newline=None,
         closefd: bool = True,
-        opener: object | None = None,
+        opener=None,
     ):
         return _MOLT_FILE_OPEN_EX(
             self._path,
@@ -312,36 +261,27 @@ class Path:
             opener,
         )
 
-    def read_text(self, encoding: str | None = None, errors: str | None = None) -> str:
+    def read_text(self, encoding=None, errors=None) -> str:
         capabilities.require("fs.read")
-        with self.open("r", encoding=encoding, errors=errors) as handle:
-            return handle.read()
+        return str(_MOLT_PATHLIB_READ_TEXT(self._path))
 
     def read_bytes(self) -> bytes:
         capabilities.require("fs.read")
-        with self.open("rb") as handle:
-            return handle.read()
+        return _MOLT_PATHLIB_READ_BYTES(self._path)
 
     def write_text(
         self,
         data: str,
-        encoding: str | None = None,
-        errors: str | None = None,
-        newline: str | None = None,
+        encoding=None,
+        errors=None,
+        newline=None,
     ) -> int:
         capabilities.require("fs.write")
-        with self.open(
-            "w",
-            encoding=encoding,
-            errors=errors,
-            newline=newline,
-        ) as handle:
-            return handle.write(data)
+        return int(_MOLT_PATHLIB_WRITE_TEXT(self._path, data))
 
     def write_bytes(self, data: bytes) -> int:
         capabilities.require("fs.write")
-        with self.open("wb") as handle:
-            return handle.write(data)
+        return int(_MOLT_PATHLIB_WRITE_BYTES(self._path, data))
 
     def exists(self) -> bool:
         capabilities.require("fs.read")
@@ -362,6 +302,10 @@ class Path:
         capabilities.require("fs.read")
         return bool(_MOLT_PATH_ISLINK(self._path))
 
+    def is_mount(self) -> bool:
+        capabilities.require("fs.read")
+        return bool(_MOLT_PATHLIB_IS_MOUNT(self._path))
+
     def readlink(self) -> Path:
         capabilities.require("fs.read")
         value = _MOLT_PATH_READLINK(self._path)
@@ -369,24 +313,32 @@ class Path:
             raise RuntimeError("path readlink intrinsic returned invalid value")
         return self._wrap(value)
 
-    def symlink_to(self, target: str | Path, target_is_directory: bool = False) -> None:
+    def symlink_to(self, target, target_is_directory: bool = False) -> None:
         capabilities.require("fs.write")
         target_path = self._coerce_part(target)
         _MOLT_PATH_SYMLINK(target_path, self._path, bool(target_is_directory))
 
-    def unlink(self) -> None:
+    def hardlink_to(self, target) -> None:
         capabilities.require("fs.write")
-        _MOLT_PATH_UNLINK(self._path)
+        target_path = self._coerce_part(target)
+        _MOLT_PATHLIB_HARDLINK_TO(self._path, target_path)
+
+    def unlink(self, missing_ok: bool = False) -> None:
+        capabilities.require("fs.write")
+        try:
+            _MOLT_PATH_UNLINK(self._path)
+        except FileNotFoundError:
+            if not missing_ok:
+                raise
 
     def iterdir(self) -> Iterator[Path]:
         capabilities.require("fs.read")
-        names = _MOLT_PATH_LISTDIR(self._path)
+        names = _MOLT_PATHLIB_ITERDIR(self._path)
         if not isinstance(names, list):
-            raise RuntimeError("path listdir intrinsic returned invalid value")
+            raise RuntimeError("path iterdir intrinsic returned invalid value")
         for name in names:
-            if not isinstance(name, str):
-                raise RuntimeError("path listdir intrinsic returned invalid value")
-            yield self.joinpath(name)
+            if isinstance(name, str):
+                yield Path(name)
 
     def glob(self, pattern: str) -> Iterator[Path]:
         capabilities.require("fs.read")
@@ -395,12 +347,13 @@ class Path:
             yield self.joinpath(name)
 
     def rglob(self, pattern: str) -> Iterator[Path]:
-        pat = str(pattern)
-        if pat == "**" or pat.startswith("**" + _os.sep):
-            full = pat
-        else:
-            full = "**" + _os.sep + pat
-        yield from self.glob(full)
+        capabilities.require("fs.read")
+        results = _MOLT_PATHLIB_RGLOB(self._path, str(pattern))
+        if not isinstance(results, list):
+            raise RuntimeError("path rglob intrinsic returned invalid value")
+        for name in results:
+            if isinstance(name, str):
+                yield Path(name)
 
     def mkdir(
         self,
@@ -435,21 +388,15 @@ class Path:
 
     def touch(self, mode: int = 0o666, exist_ok: bool = True) -> None:
         capabilities.require("fs.write")
-        if self.exists():
-            if not exist_ok:
-                raise FileExistsError(f"[Errno 17] File exists: {self._path!r}")
-            _MOLT_OS_STAT(self._path)
-            return
-        with self.open("w") as _f:
-            pass
+        _MOLT_PATHLIB_TOUCH(self._path, exist_ok)
 
-    def rename(self, target: str | Path) -> Path:
+    def rename(self, target) -> Path:
         capabilities.require("fs.write")
         target_path = self._coerce_part(target)
         _MOLT_OS_RENAME(self._path, target_path)
         return Path(target_path)
 
-    def replace(self, target: str | Path) -> Path:
+    def replace(self, target) -> Path:
         capabilities.require("fs.write")
         target_path = self._coerce_part(target)
         _MOLT_OS_REPLACE(self._path, target_path)
@@ -458,6 +405,19 @@ class Path:
     def chmod(self, mode: int) -> None:
         capabilities.require("fs.write")
         _MOLT_PATH_CHMOD(self._path, int(mode))
+
+    def owner(self) -> str:
+        capabilities.require("fs.read")
+        return str(_MOLT_PATHLIB_OWNER(self._path))
+
+    def group(self) -> str:
+        capabilities.require("fs.read")
+        return str(_MOLT_PATHLIB_GROUP(self._path))
+
+    def samefile(self, other_path) -> bool:
+        capabilities.require("fs.read")
+        other = self._coerce_part(other_path)
+        return bool(_MOLT_PATHLIB_SAMEFILE(self._path, other))
 
     @property
     def name(self) -> str:
@@ -478,9 +438,6 @@ class Path:
         suffixes = _MOLT_PATH_SUFFIXES(self._path)
         if not isinstance(suffixes, list):
             raise RuntimeError("path suffixes intrinsic returned invalid value")
-        for suffix in suffixes:
-            if not isinstance(suffix, str):
-                raise RuntimeError("path suffixes intrinsic returned invalid value")
         return suffixes
 
     @property
@@ -510,12 +467,12 @@ class Path:
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Path):
             return False
-        return int(_MOLT_PATH_COMPARE(self._path, other._path)) == 0
+        return bool(_MOLT_PATHLIB_EQ(self._path, other._path))
 
     def __lt__(self, other: object) -> bool:
         if not isinstance(other, Path):
             return NotImplemented  # type: ignore[return-value]
-        return int(_MOLT_PATH_COMPARE(self._path, other._path)) < 0
+        return bool(_MOLT_PATHLIB_LT(self._path, other._path))
 
     def __le__(self, other: object) -> bool:
         if not isinstance(other, Path):
@@ -573,7 +530,7 @@ class Path:
     def walk(
         self,
         top_down: bool = True,
-        on_error: object = None,
+        on_error=None,
         follow_symlinks: bool = False,
     ) -> Iterator[tuple[Path, list[str], list[str]]]:
         capabilities.require("fs.read")
@@ -591,33 +548,51 @@ PurePath = Path
 
 
 class _PureWindowsPath(Path):
+    """Windows path flavor -- all parsing delegated to intrinsic splitroot."""
     __slots__ = ()
 
-    def _parse(self) -> tuple[str, tuple[str, ...]]:
-        return _parse_windows_parts(self._path)
+    def _splitroot_win(self) -> tuple[str, str, str]:
+        raw = _MOLT_PATHLIB_WIN_SPLITROOT(self._path, False)
+        if not isinstance(raw, (tuple, list)) or len(raw) != 3:
+            raise RuntimeError("path splitroot intrinsic returned invalid value")
+        return str(raw[0]), str(raw[1]), str(raw[2])
+
+    def _parts_win(self) -> tuple[str, ...]:
+        raw = _MOLT_PATHLIB_PARTS(self._path, False)
+        if isinstance(raw, tuple):
+            return raw
+        if isinstance(raw, list):
+            return tuple(raw)
+        raise RuntimeError("path parts intrinsic returned invalid value")
 
     @property
     def anchor(self) -> str:
-        return _parse_windows_parts(self._path)[0]
+        drive, root, _tail = self._splitroot_win()
+        return drive + root
 
     @property
     def drive(self) -> str:
-        anchor, _parts = _parse_windows_parts(self._path)
-        return _windows_drive(anchor)
+        drive, _root, _tail = self._splitroot_win()
+        return drive
 
     @property
     def root(self) -> str:
-        anchor, _parts = _parse_windows_parts(self._path)
-        return _windows_root(anchor)
+        _drive, root, _tail = self._splitroot_win()
+        return root
 
     @property
     def parts(self) -> tuple[str, ...]:
-        return _parse_windows_parts(self._path)[1]
+        return self._parts_win()
 
     @property
     def name(self) -> str:
-        anchor, parts = _parse_windows_parts(self._path)
-        return _windows_name(parts, anchor)
+        parts = self._parts_win()
+        if not parts:
+            return ""
+        anchor = self.anchor
+        if len(parts) == 1 and parts[0] == anchor:
+            return ""
+        return parts[-1]
 
     @property
     def suffix(self) -> str:
@@ -641,16 +616,16 @@ class _PureWindowsPath(Path):
 
     @property
     def parent(self) -> Path:
-        anchor, parts = _parse_windows_parts(self._path)
+        parts = self._parts_win()
+        anchor = self.anchor
         if not parts:
             return self._wrap(".")
         if len(parts) == 1 and parts[0] == anchor:
             return self._wrap(parts[0])
         if len(parts) == 1:
             return self._wrap(".")
-        return self._wrap(
-            _join_windows_parts(parts[:-1], is_unc=anchor.startswith("\\"))
-        )
+        parent_parts = parts[:-1]
+        return self._wrap("\\".join(parent_parts))
 
     def with_suffix(self, suffix: str) -> Path:
         name = self.name
@@ -663,30 +638,23 @@ class _PureWindowsPath(Path):
             dot = name.rfind(".")
             base = name if dot <= 0 else name[:dot]
             base += suffix_text
-        anchor, parts = _parse_windows_parts(self._path)
+        parts = self._parts_win()
         new_parts = parts[:-1] + (base,)
-        return self._wrap(
-            _join_windows_parts(new_parts, is_unc=anchor.startswith("\\"))
-        )
+        return self._wrap("\\".join(new_parts))
 
     def with_name(self, name: str) -> Path:
         if not name:
             raise ValueError("empty name")
-        name_text = _coerce_windows_text(name)
-        anchor, parts = _parse_windows_parts(self._path)
-        return self._wrap(
-            _join_windows_parts(
-                (parts[:-1] + (name_text,)),
-                is_unc=anchor.startswith("\\"),
-            )
-        )
+        parts = self._parts_win()
+        new_parts = parts[:-1] + (name,)
+        return self._wrap("\\".join(new_parts))
 
     def as_posix(self) -> str:
-        return self._path.replace("\\", "/")
+        return str(_MOLT_PATHLIB_AS_POSIX(self._path))
 
     def is_absolute(self) -> bool:
-        anchor, _parts = _parse_windows_parts(self._path)
-        return bool(anchor)
+        drive, root, _tail = self._splitroot_win()
+        return bool(root and drive)
 
 
 PureWindowsPath = _PureWindowsPath

@@ -1,12 +1,9 @@
-"""Minimal JSON shim for Molt."""
+"""Minimal JSON shim for Molt — fully intrinsic-backed."""
 
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-
-import operator
-import re
 from typing import Any, Callable, Iterable
 
 _MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj", globals())
@@ -20,6 +17,17 @@ _MOLT_JSON_DETECT_ENCODING = _require_intrinsic("molt_json_detect_encoding", glo
 _MOLT_JSON_LOADS_EX = _require_intrinsic("molt_json_loads_ex", globals())
 _MOLT_JSON_DUMPS_EX = _require_intrinsic("molt_json_dumps_ex", globals())
 _MOLT_JSON_RAW_DECODE_EX = _require_intrinsic("molt_json_raw_decode_ex", globals())
+_MOLT_JSON_CALC_LINENO_COL = _require_intrinsic("molt_json_calc_lineno_col", globals())
+_MOLT_JSON_COERCE_TEXT = _require_intrinsic("molt_json_coerce_text", globals())
+_MOLT_JSON_DEFAULT_SEPARATORS = _require_intrinsic(
+    "molt_json_default_separators", globals()
+)
+_MOLT_JSON_FORMAT_DECODE_ERROR = _require_intrinsic(
+    "molt_json_format_decode_error", globals()
+)
+_MOLT_JSON_PARSE_ERROR_MSG = _require_intrinsic(
+    "molt_json_parse_error_msg", globals()
+)
 
 
 __all__ = [
@@ -32,70 +40,29 @@ __all__ = [
     "JSONEncoder",
 ]
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): continue full json parity work (JSONDecodeError formatting nuances and remaining edge-case diagnostics).
-
 
 class JSONDecodeError(ValueError):
     def __init__(self, msg: str, doc: str, pos: int) -> None:
         self.msg = msg
         self.doc = doc
         self.pos = int(pos)
-        self.lineno, self.colno = _calc_lineno_col(doc, self.pos)
+        self.lineno, self.colno = _MOLT_JSON_CALC_LINENO_COL(doc, self.pos)
         super().__init__(self.__str__())
 
     def __reduce__(self):
         return self.__class__, (self.msg, self.doc, self.pos)
 
     def __str__(self) -> str:
-        return f"{self.msg}: line {self.lineno} column {self.colno} (char {self.pos})"
-
-
-def _calc_lineno_col(doc: str, pos: int) -> tuple[int, int]:
-    lineno = doc.count("\n", 0, pos) + 1
-    line_start = doc.rfind("\n", 0, pos)
-    if line_start < 0:
-        colno = pos + 1
-    else:
-        colno = pos - line_start
-    return lineno, colno
-
-
-def _decode_bytes_payload(payload: bytes | bytearray) -> str:
-    data = bytes(payload)
-    if not data:
-        return ""
-    encoding = _MOLT_JSON_DETECT_ENCODING(data)
-    if encoding == "utf-8" and data.startswith(b"\xef\xbb\xbf"):
-        return data.decode("utf-8-sig")
-    return data.decode(encoding)
-
-
-def _coerce_json_text(payload: str | bytes | bytearray) -> str:
-    if isinstance(payload, str):
-        return payload
-    if isinstance(payload, (bytes, bytearray)):
-        return _decode_bytes_payload(payload)
-    raise TypeError(
-        f"the JSON object must be str, bytes or bytearray, not {type(payload).__name__}"
-    )
-
-
-def _default_separators(indent: int | str | None) -> tuple[str, str]:
-    return (", ", ": ") if indent is None else (",", ": ")
-
-
-_JSON_ERROR_RE = re.compile(
-    r"^(?P<msg>.*): line (?P<line>\d+) column (?P<col>\d+) \(char (?P<pos>\d+)\)$"
-)
+        return str(
+            _MOLT_JSON_FORMAT_DECODE_ERROR(self.msg, self.doc, self.pos)
+        )
 
 
 def _raise_json_decode_from_value_error(exc: ValueError, doc: str) -> None:
-    text = str(exc)
-    match = _JSON_ERROR_RE.match(text)
-    if match is None:
+    result = _MOLT_JSON_PARSE_ERROR_MSG(str(exc))
+    if result is None:
         raise exc
-    msg = match.group("msg")
-    pos = int(match.group("pos"))
+    msg, pos = result
     raise JSONDecodeError(msg, doc, pos) from None
 
 
@@ -139,7 +106,7 @@ def loads(
     strict_explicit = "strict" in kw
     strict = kw.pop("strict", True)
     decoder_cls = JSONDecoder if cls is None else cls
-    text = _coerce_json_text(s)
+    text = _MOLT_JSON_COERCE_TEXT(s)
     if isinstance(s, str) and text.startswith("\ufeff"):
         raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)", text, 0)
     if decoder_cls is JSONDecoder and not kw:
@@ -212,7 +179,7 @@ def dumps(
     **kw: Any,
 ) -> str:
     if separators is None:
-        separators = _default_separators(indent)
+        separators = _MOLT_JSON_DEFAULT_SEPARATORS(indent)
     elif len(separators) != 2:
         raise ValueError("separators must be a (item, key) tuple")
     encoder_cls = cls or JSONEncoder
@@ -287,7 +254,7 @@ class JSONEncoder:
         default: Callable[[Any], Any] | None = None,
     ) -> None:
         if separators is None:
-            separators = (", ", ": ") if indent is None else (",", ": ")
+            separators = _MOLT_JSON_DEFAULT_SEPARATORS(indent)
         elif len(separators) != 2:
             raise ValueError("separators must be a (item, key) tuple")
         self.skipkeys = skipkeys
@@ -363,6 +330,7 @@ class JSONDecoder:
     def raw_decode(self, s: str, idx: int = 0) -> tuple[Any, int]:
         if not isinstance(s, str):
             raise TypeError(f"first argument must be a string, not {type(s).__name__}")
+        import operator
         idx = operator.index(idx)
         if idx < 0:
             raise ValueError("idx cannot be negative")

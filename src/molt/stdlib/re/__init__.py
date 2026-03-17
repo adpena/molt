@@ -17,6 +17,8 @@ _molt_re_expand_replacement = _require_intrinsic(
     "molt_re_expand_replacement", globals()
 )
 _molt_re_group_values = _require_intrinsic("molt_re_group_values", globals())
+_molt_re_split = _require_intrinsic("molt_re_split", globals())
+_molt_re_sub = _require_intrinsic("molt_re_sub", globals())
 
 __all__ = [
     "NOFLAG",
@@ -272,14 +274,23 @@ class Pattern:
                 results.append(m.groups())
         return results
 
-    def split(self, string: str, maxsplit: int = 0) -> list[str]:
-        return _split(self, string, maxsplit=maxsplit)
+    def split(self, string: str, maxsplit: int = 0) -> list[str | Any]:
+        text = _ensure_text(string)
+        return _molt_re_split(self._handle, text, maxsplit)
 
     def sub(self, repl: object, string: str, count: int = 0) -> str:
-        return _subn(self, repl, string, count=count)[0]
+        return self.subn(repl, string, count=count)[0]
 
     def subn(self, repl: object, string: str, count: int = 0) -> tuple[str, int]:
-        return _subn(self, repl, string, count=count)
+        text = _ensure_text(string)
+        if count < 0:
+            raise ValueError("count must be non-negative")
+        if callable(repl):
+            # Callable replacement must stay in Python — iterate via finditer.
+            return _subn_callable(self, repl, text, count=count)
+        if not isinstance(repl, str):
+            repl = str(repl)
+        return _molt_re_sub(self._handle, repl, text, count)
 
     def __repr__(self) -> str:
         return f"re.compile({self.pattern!r}, {self.flags!r})"
@@ -372,9 +383,10 @@ def _coerce_pattern(pattern: Any, flags: int) -> Pattern:
     return compiled
 
 
-def _subn(
+def _subn_callable(
     pattern: Pattern, repl: object, string: str, *, count: int = 0
 ) -> tuple[str, int]:
+    """sub/subn with a callable replacement — must stay in Python."""
     if count < 0:
         raise ValueError("count must be non-negative")
     text = _ensure_text(string)
@@ -392,28 +404,6 @@ def _subn(
         replaced += 1
     parts.append(text[last:])
     return ("".join(parts), replaced)
-
-
-def _split(pattern: Pattern, string: str, *, maxsplit: int = 0) -> list[str]:
-    if maxsplit < 0:
-        raise ValueError("maxsplit must be non-negative")
-    text = _ensure_text(string)
-    out: list[str] = []
-    last = 0
-    splits = 0
-    limit = None if maxsplit == 0 else maxsplit
-    for match_obj in pattern.finditer(text, 0, None):
-        if limit is not None and splits >= limit:
-            break
-        m_start, m_end = match_obj.span()
-        out.append(text[last:m_start])
-        if pattern.groups:
-            for value in match_obj.groups():
-                out.append("" if value is None else value)
-        last = m_end
-        splits += 1
-    out.append(text[last:])
-    return out
 
 
 # ---------------------------------------------------------------------------

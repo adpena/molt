@@ -207,7 +207,9 @@ pub(crate) use crate::builtins::exceptions::{
 pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errno};
 pub use crate::builtins::fractions::*;
 pub use crate::builtins::functions::*;
+pub use crate::builtins::fnmatch::*;
 pub use crate::builtins::functools::*;
+pub use crate::builtins::glob_mod::*;
 pub use crate::builtins::graphlib::*;
 pub use crate::builtins::gzip::*;
 pub use crate::builtins::hashlib::*;
@@ -237,6 +239,7 @@ pub(crate) use crate::builtins::numbers::{
 };
 pub use crate::builtins::operator::*;
 pub use crate::builtins::os_ext::*;
+pub use crate::builtins::pathlib::*;
 pub use crate::builtins::platform::*;
 pub use crate::builtins::platform_mod::*;
 pub use crate::builtins::pprint_ext::*;
@@ -263,6 +266,7 @@ pub use crate::builtins::structs::*;
 pub use crate::builtins::subprocess_ext::*;
 pub use crate::builtins::sys_ext::*;
 pub use crate::builtins::tarfile::*;
+pub use crate::builtins::tempfile_mod::*;
 pub use crate::builtins::tkinter_core::*;
 pub(crate) use crate::builtins::type_ops::{
     class_bases_vec, class_mro_ref, class_mro_vec, isinstance_bits, isinstance_runtime,

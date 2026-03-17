@@ -1,4 +1,4 @@
-"""Minimal intrinsic-gated `lzma` subset for Molt."""
+"""Fully intrinsic-backed `lzma` module for Molt."""
 
 from __future__ import annotations
 
@@ -67,6 +67,13 @@ _MOLT_LZMA_DECOMPRESSOR_DROP = _require_intrinsic(
     "molt_lzma_decompressor_drop", globals()
 )
 
+# --- File handle intrinsics ---
+_MOLT_LZMA_FILE_OPEN = _require_intrinsic("molt_lzma_file_open", globals())
+_MOLT_LZMA_FILE_READ = _require_intrinsic("molt_lzma_file_read", globals())
+_MOLT_LZMA_FILE_WRITE = _require_intrinsic("molt_lzma_file_write", globals())
+_MOLT_LZMA_FILE_CLOSE = _require_intrinsic("molt_lzma_file_close", globals())
+_MOLT_LZMA_FILE_DROP = _require_intrinsic("molt_lzma_file_drop", globals())
+
 
 class LZMAError(Exception):
     """Exception raised for LZMA-related errors."""
@@ -75,7 +82,7 @@ class LZMAError(Exception):
 
 
 class LZMACompressor:
-    """Incremental LZMA compressor."""
+    """Incremental LZMA compressor backed by Rust intrinsics."""
 
     def __init__(
         self,
@@ -112,7 +119,7 @@ class LZMACompressor:
 
 
 class LZMADecompressor:
-    """Incremental LZMA decompressor."""
+    """Incremental LZMA decompressor backed by Rust intrinsics."""
 
     def __init__(
         self,
@@ -147,6 +154,78 @@ class LZMADecompressor:
                 _MOLT_LZMA_DECOMPRESSOR_DROP(handle)
             except Exception:
                 pass
+
+
+class LZMAFile:
+    """LZMA file object backed entirely by Rust intrinsics."""
+
+    def __init__(
+        self,
+        filename: str,
+        mode: str = "rb",
+        *,
+        format: int = FORMAT_XZ,
+        check: int = -1,
+        preset: int | None = None,
+    ) -> None:
+        if mode not in ("rb", "wb", "ab", "r", "w", "a"):
+            raise ValueError(f"Invalid mode: {mode!r}")
+        if check == -1:
+            check = CHECK_CRC64 if format == FORMAT_XZ else CHECK_NONE
+        if preset is None:
+            preset = PRESET_DEFAULT
+        self._handle = _MOLT_LZMA_FILE_OPEN(filename, mode, format, check, preset)
+        self._mode = mode
+        self._closed = False
+        self._writing = "w" in mode or "a" in mode
+        self._reading = "r" in mode
+
+    def write(self, data: bytes) -> int:
+        if self._closed:
+            raise ValueError("I/O operation on closed file.")
+        if not self._writing:
+            raise OSError("File not open for writing")
+        return int(_MOLT_LZMA_FILE_WRITE(self._handle, data))
+
+    def read(self, size: int = -1) -> bytes:
+        if self._closed:
+            raise ValueError("I/O operation on closed file.")
+        if not self._reading:
+            raise OSError("File not open for reading")
+        return bytes(_MOLT_LZMA_FILE_READ(self._handle, size))
+
+    def readable(self) -> bool:
+        return self._reading
+
+    def writable(self) -> bool:
+        return self._writing
+
+    def seekable(self) -> bool:
+        return False
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        _MOLT_LZMA_FILE_CLOSE(self._handle)
+        _MOLT_LZMA_FILE_DROP(self._handle)
+        self._handle = None
+        self._closed = True
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def __enter__(self) -> "LZMAFile":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 def compress(
@@ -192,106 +271,18 @@ def open(
     encoding: str | None = None,
     errors: str | None = None,
     newline: str | None = None,
-) -> "_LZMAFile":
+) -> LZMAFile:
     """Open an LZMA-compressed file in binary mode."""
     if format is None:
         format = FORMAT_XZ
-    return _LZMAFile(filename, mode, format=format, check=check, preset=preset)
-
-
-class _LZMAFile:
-    """Minimal LZMA file wrapper backed by one-shot compress/decompress."""
-
-    def __init__(
-        self,
-        filename: str,
-        mode: str = "rb",
-        *,
-        format: int = FORMAT_XZ,
-        check: int = -1,
-        preset: int | None = None,
-    ) -> None:
-        if mode not in ("rb", "wb", "ab", "r", "w", "a"):
-            raise ValueError(f"Invalid mode: {mode!r}")
-        self._name = filename
-        self._mode = mode
-        self._format = format
-        self._check = check
-        self._preset = preset
-        self._closed = False
-        self._write_buf = bytearray()
-        self._read_buf: bytes | None = None
-        self._read_pos = 0
-        self._writing = "w" in mode or "a" in mode
-        self._reading = "r" in mode
-
-    def write(self, data: bytes) -> int:
-        if self._closed:
-            raise ValueError("I/O operation on closed file.")
-        if not self._writing:
-            raise OSError("File not open for writing")
-        self._write_buf.extend(data)
-        return len(data)
-
-    def read(self, size: int = -1) -> bytes:
-        if self._closed:
-            raise ValueError("I/O operation on closed file.")
-        if not self._reading:
-            raise OSError("File not open for reading")
-        if self._read_buf is None:
-            _open = (
-                __builtins__["open"]  # type: ignore[index]
-                if isinstance(__builtins__, dict)
-                else __builtins__.open  # type: ignore[union-attr]
-            )
-            with _open(self._name, "rb") as f:
-                raw = f.read()
-            self._read_buf = decompress(raw, format=self._format)
-            self._read_pos = 0
-        if size < 0:
-            result = self._read_buf[self._read_pos :]
-            self._read_pos = len(self._read_buf)
-            return result
-        result = self._read_buf[self._read_pos : self._read_pos + size]
-        self._read_pos += len(result)
-        return result
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        if self._writing and self._write_buf:
-            compressed = compress(
-                bytes(self._write_buf),
-                format=self._format,
-                check=self._check,
-                preset=self._preset,
-            )
-            _open = (
-                __builtins__["open"]  # type: ignore[index]
-                if isinstance(__builtins__, dict)
-                else __builtins__.open  # type: ignore[union-attr]
-            )
-            with _open(self._name, "wb") as f:
-                f.write(compressed)
-        self._closed = True
-
-    def __enter__(self) -> "_LZMAFile":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        self.close()
-
-    def __del__(self) -> None:
-        try:
-            self.close()
-        except Exception:
-            pass
+    return LZMAFile(filename, mode, format=format, check=check, preset=preset)
 
 
 __all__ = [
     "compress",
     "decompress",
     "open",
+    "LZMAFile",
     "LZMACompressor",
     "LZMADecompressor",
     "LZMAError",

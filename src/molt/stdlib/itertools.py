@@ -1,6 +1,8 @@
+# Shim churn audit: 6 intrinsic-direct / 20 total exports
 """Iterator helpers for Molt.
 
 Iterator helpers are backed by runtime intrinsics; missing intrinsics are a hard error.
+Pure-forwarding shims eliminated per MOL-215 where argument signatures permit.
 """
 
 from __future__ import annotations
@@ -47,26 +49,36 @@ _MOLT_CHAIN_FROM_ITERABLE = _require_intrinsic(
 _MOLT_ISLICE = _require_intrinsic("molt_itertools_islice", globals())
 _MOLT_REPEAT = _require_intrinsic("molt_itertools_repeat", globals())
 _MOLT_COUNT = _require_intrinsic("molt_itertools_count", globals())
-_MOLT_CYCLE = _require_intrinsic("molt_itertools_cycle", globals())
 _MOLT_ACCUMULATE = _require_intrinsic("molt_itertools_accumulate", globals())
 _MOLT_BATCHED = _require_intrinsic("molt_itertools_batched", globals())
-_MOLT_COMPRESS = _require_intrinsic("molt_itertools_compress", globals())
-_MOLT_COMBINATIONS_WITH_REPLACEMENT = _require_intrinsic(
-    "molt_itertools_combinations_with_replacement", globals()
-)
-_MOLT_DROPWHILE = _require_intrinsic("molt_itertools_dropwhile", globals())
-_MOLT_FILTERFALSE = _require_intrinsic("molt_itertools_filterfalse", globals())
-_MOLT_PAIRWISE = _require_intrinsic("molt_itertools_pairwise", globals())
 _MOLT_PRODUCT = _require_intrinsic("molt_itertools_product", globals())
 _MOLT_PERMUTATIONS = _require_intrinsic("molt_itertools_permutations", globals())
-_MOLT_COMBINATIONS = _require_intrinsic("molt_itertools_combinations", globals())
 _MOLT_GROUPBY = _require_intrinsic("molt_itertools_groupby", globals())
-_MOLT_STARMAP = _require_intrinsic("molt_itertools_starmap", globals())
-_MOLT_TAKEWHILE = _require_intrinsic("molt_itertools_takewhile", globals())
 _MOLT_TEE = _require_intrinsic("molt_itertools_tee", globals())
 _MOLT_ZIP_LONGEST = _require_intrinsic("molt_itertools_zip_longest", globals())
 
 _MISSING = _MOLT_KWD_MARK()
+
+# --- Direct intrinsic bindings (no Python wrapper overhead) ---
+
+cycle = _require_intrinsic("molt_itertools_cycle", globals())
+pairwise = _require_intrinsic("molt_itertools_pairwise", globals())
+combinations = _require_intrinsic("molt_itertools_combinations", globals())
+combinations_with_replacement = _require_intrinsic(
+    "molt_itertools_combinations_with_replacement", globals()
+)
+
+# Classes whose __new__ is a pure forwarding shim — bind intrinsic directly.
+# CPython exposes these as types, but Molt callers use them as callables;
+# the intrinsic returns an iterator, preserving the call-site contract.
+compress = _require_intrinsic("molt_itertools_compress", globals())
+dropwhile = _require_intrinsic("molt_itertools_dropwhile", globals())
+filterfalse = _require_intrinsic("molt_itertools_filterfalse", globals())
+starmap = _require_intrinsic("molt_itertools_starmap", globals())
+takewhile = _require_intrinsic("molt_itertools_takewhile", globals())
+
+
+# --- Retained wrappers (argument adaptation or Python logic required) ---
 
 
 def chain(*iterables: Iterable[T]) -> Iterator[T]:
@@ -104,10 +116,6 @@ def count(start: Any = 0, step: Any = 1) -> Iterator[Any]:
     return _MOLT_COUNT(start, step)
 
 
-def cycle(iterable: Iterable[T]) -> Iterator[T]:
-    return _MOLT_CYCLE(iterable)
-
-
 def accumulate(
     iterable: Iterable[T], func: Any = None, *, initial: Any = _MISSING
 ) -> Iterator[Any]:
@@ -120,25 +128,6 @@ def batched(
     return _MOLT_BATCHED(iterable, n, strict)
 
 
-def pairwise(iterable: Iterable[T]) -> Iterator[tuple[T, T]]:
-    return _MOLT_PAIRWISE(iterable)
-
-
-class compress:
-    def __new__(cls, data: Iterable[T], selectors: Iterable[Any]) -> Iterator[T]:
-        return _MOLT_COMPRESS(data, selectors)
-
-
-class dropwhile:
-    def __new__(cls, predicate: Any, iterable: Iterable[T]) -> Iterator[T]:
-        return _MOLT_DROPWHILE(predicate, iterable)
-
-
-class filterfalse:
-    def __new__(cls, predicate: Any, iterable: Iterable[T]) -> Iterator[T]:
-        return _MOLT_FILTERFALSE(predicate, iterable)
-
-
 def product(*iterables: Iterable[T], repeat: Any = 1) -> Iterator[tuple[Any, ...]]:
     return _MOLT_PRODUCT(iterables, repeat)
 
@@ -149,28 +138,8 @@ def permutations(
     return _MOLT_PERMUTATIONS(iterable, r)
 
 
-def combinations(iterable: Iterable[T], r: Any) -> Iterator[tuple[T, ...]]:
-    return _MOLT_COMBINATIONS(iterable, r)
-
-
-def combinations_with_replacement(
-    iterable: Iterable[T], r: Any
-) -> Iterator[tuple[T, ...]]:
-    return _MOLT_COMBINATIONS_WITH_REPLACEMENT(iterable, r)
-
-
 def groupby(iterable: Iterable[T], key: Any | None = None) -> Any:
     return _MOLT_GROUPBY(iterable, key)
-
-
-class starmap:
-    def __new__(cls, function: Any, iterable: Iterable[Any]) -> Iterator[Any]:
-        return _MOLT_STARMAP(function, iterable)
-
-
-class takewhile:
-    def __new__(cls, predicate: Any, iterable: Iterable[T]) -> Iterator[T]:
-        return _MOLT_TAKEWHILE(predicate, iterable)
 
 
 def tee(iterable: Iterable[T], n: Any = 2):

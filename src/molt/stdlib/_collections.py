@@ -1,3 +1,4 @@
+# Shim churn audit: 0 intrinsic-direct / 1 total exports (class-based, no pure-forwarding shims)
 """Intrinsic-backed ``_collections`` helpers for Molt.
 
 The module mirrors CPython's public `_collections` surface:

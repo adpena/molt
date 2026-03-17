@@ -7019,6 +7019,11 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(src));
                         if let Some(out_name) = op.out.as_ref() {
                             if out_name != "none" {
+                                // Output aliases input bits — inc_ref to prevent
+                                // use-after-free when the input name is dec_ref'd
+                                // independently by tracking/check_exception cleanup.
+                                emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+                                func.instruction(&Instruction::LocalGet(src));
                                 let out = locals[out_name];
                                 func.instruction(&Instruction::LocalSet(out));
                             } else {
@@ -7037,6 +7042,9 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(src));
                         if let Some(out_name) = op.out.as_ref() {
                             if out_name != "none" {
+                                // Same aliasing hazard as box/unbox/cast/widen above.
+                                emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+                                func.instruction(&Instruction::LocalGet(src));
                                 let out = locals[out_name];
                                 func.instruction(&Instruction::LocalSet(out));
                             } else {

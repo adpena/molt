@@ -1325,9 +1325,12 @@ pub extern "C" fn molt_deque_getitem(handle_bits: u64, index_bits: u64) -> u64 {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let idx_obj = obj_from_bits(index_bits);
-        let Some(index) = to_i64(idx_obj) else {
-            return raise_exception::<_>(_py, "TypeError", "integer argument expected");
+        let type_err = format!(
+            "sequence index must be integer, not '{}'",
+            type_name(_py, obj_from_bits(index_bits))
+        );
+        let Some(index) = index_i64_with_overflow(_py, index_bits, &type_err, None) else {
+            return MoltObject::none().bits();
         };
         let result = {
             let map = DEQUE_REGISTRY.lock().unwrap();
@@ -1352,9 +1355,12 @@ pub extern "C" fn molt_deque_setitem(handle_bits: u64, index_bits: u64, value_bi
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let idx_obj = obj_from_bits(index_bits);
-        let Some(index) = to_i64(idx_obj) else {
-            return raise_exception::<_>(_py, "TypeError", "integer argument expected");
+        let type_err = format!(
+            "sequence index must be integer, not '{}'",
+            type_name(_py, obj_from_bits(index_bits))
+        );
+        let Some(index) = index_i64_with_overflow(_py, index_bits, &type_err, None) else {
+            return MoltObject::none().bits();
         };
         let ok = {
             let mut map = DEQUE_REGISTRY.lock().unwrap();
@@ -1386,9 +1392,12 @@ pub extern "C" fn molt_deque_delitem(handle_bits: u64, index_bits: u64) -> u64 {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let idx_obj = obj_from_bits(index_bits);
-        let Some(index) = to_i64(idx_obj) else {
-            return raise_exception::<_>(_py, "TypeError", "integer argument expected");
+        let type_err = format!(
+            "sequence index must be integer, not '{}'",
+            type_name(_py, obj_from_bits(index_bits))
+        );
+        let Some(index) = index_i64_with_overflow(_py, index_bits, &type_err, None) else {
+            return MoltObject::none().bits();
         };
         let ok = {
             let mut map = DEQUE_REGISTRY.lock().unwrap();
@@ -2642,5 +2651,143 @@ pub extern "C" fn molt_defaultdict_drop(handle_bits: u64) -> u64 {
         };
         DEFAULTDICT_REGISTRY.lock().unwrap().remove(&id);
         MoltObject::none().bits()
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// namedtuple field validation intrinsic
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn is_python_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "False" | "None" | "True" | "and" | "as" | "assert" | "async" | "await"
+        | "break" | "class" | "continue" | "def" | "del" | "elif" | "else"
+        | "except" | "finally" | "for" | "from" | "global" | "if" | "import"
+        | "in" | "is" | "lambda" | "nonlocal" | "not" | "or" | "pass" | "raise"
+        | "return" | "try" | "while" | "with" | "yield"
+    )
+}
+
+fn is_valid_identifier(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !first.is_alphabetic() && first != '_' {
+        return false;
+    }
+    chars.all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// `molt_namedtuple_validate_fields(typename, field_names_list, rename)`
+///
+/// Validates and normalizes namedtuple field names. Returns a tuple of
+/// (normalized_field_names_tuple,) on success, or raises ValueError/TypeError.
+///
+/// - typename_bits: str — the typename to validate
+/// - fields_bits: list[str] — the field names (already split from string)
+/// - rename_bits: bool — whether to auto-rename invalid names
+///
+/// Returns: tuple[str, ...] of validated/normalized field names.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_namedtuple_validate_fields(
+    typename_bits: u64,
+    fields_bits: u64,
+    rename_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        // Validate typename
+        let Some(typename) = string_obj_to_owned(obj_from_bits(typename_bits)) else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "typename must be a string",
+            );
+        };
+        if !is_valid_identifier(&typename) || is_python_keyword(&typename) {
+            let msg = format!(
+                "Type names and field names must be valid identifiers: {typename:?}"
+            );
+            return raise_exception::<_>(_py, "ValueError", &msg);
+        }
+
+        // Get rename flag
+        let rename = is_truthy(_py, obj_from_bits(rename_bits));
+
+        // Get field names list
+        let Some(fields_ptr) = obj_from_bits(fields_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "field_names must be a sequence");
+        };
+        let field_type = unsafe { object_type_id(fields_ptr) };
+        if field_type != TYPE_ID_LIST && field_type != TYPE_ID_TUPLE {
+            return raise_exception::<_>(_py, "TypeError", "field_names must be a sequence");
+        }
+        let elems = unsafe { seq_vec_ref(fields_ptr) };
+
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut normalized: Vec<u64> = Vec::new();
+
+        for (idx, &elem_bits) in elems.iter().enumerate() {
+            let Some(name) = string_obj_to_owned(obj_from_bits(elem_bits)) else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "field names must be strings",
+                );
+            };
+
+            let invalid = !is_valid_identifier(&name)
+                || is_python_keyword(&name)
+                || name.starts_with('_')
+                || seen.contains(&name);
+
+            let final_name = if invalid {
+                if rename {
+                    format!("_{idx}")
+                } else {
+                    if seen.contains(&name) {
+                        let msg = format!("Encountered duplicate field name: {name:?}");
+                        return raise_exception::<_>(_py, "ValueError", &msg);
+                    }
+                    if name.starts_with('_') {
+                        let msg = format!(
+                            "Field names cannot start with an underscore: {name:?}"
+                        );
+                        return raise_exception::<_>(_py, "ValueError", &msg);
+                    }
+                    let msg = format!(
+                        "Type names and field names must be valid identifiers: {name:?}"
+                    );
+                    return raise_exception::<_>(_py, "ValueError", &msg);
+                }
+            } else {
+                name
+            };
+
+            // After rename, check for duplicates again
+            if seen.contains(&final_name) {
+                let msg = format!("Encountered duplicate field name: {final_name:?}");
+                return raise_exception::<_>(_py, "ValueError", &msg);
+            }
+            seen.insert(final_name.clone());
+
+            let name_ptr = alloc_string(_py, final_name.as_bytes());
+            if name_ptr.is_null() {
+                return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
+            }
+            normalized.push(MoltObject::from_ptr(name_ptr).bits());
+        }
+
+        let result_ptr = alloc_tuple(_py, &normalized);
+        // Decref the individual name strings (tuple took ownership via ref)
+        for bits in &normalized {
+            dec_ref_bits(_py, *bits);
+        }
+        if result_ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "failed to allocate tuple");
+        }
+        MoltObject::from_ptr(result_ptr).bits()
     })
 }

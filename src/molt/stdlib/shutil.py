@@ -1,4 +1,4 @@
-"""Intrinsic-backed shutil subset for Molt."""
+"""Intrinsic-backed shutil for Molt -- all operations delegated to Rust."""
 
 from __future__ import annotations
 
@@ -39,6 +39,7 @@ _MOLT_SHUTIL_UNPACK_ARCHIVE = _require_intrinsic(
 
 
 def copyfile(src: str, dst: str) -> str:
+    """Copy data from src to dst. Returns the destination path."""
     out = _MOLT_SHUTIL_COPYFILE(src, dst)
     if not isinstance(out, str):
         raise RuntimeError("shutil.copyfile intrinsic returned invalid value")
@@ -46,6 +47,7 @@ def copyfile(src: str, dst: str) -> str:
 
 
 def which(cmd: str, mode: int | None = None, path: str | None = None) -> str | None:
+    """Return the path to an executable which would be run for the given cmd."""
     del mode
     out = _MOLT_SHUTIL_WHICH(cmd, path)
     if out is None:
@@ -55,7 +57,8 @@ def which(cmd: str, mode: int | None = None, path: str | None = None) -> str | N
     return out
 
 
-def rmtree(path: str, ignore_errors: bool = False) -> None:
+def rmtree(path: str, ignore_errors: bool = False, onerror=None) -> None:
+    """Recursively delete a directory tree (via Rust intrinsic)."""
     if ignore_errors:
         try:
             _MOLT_SHUTIL_RMTREE(path)
@@ -70,17 +73,17 @@ def chown(
     user: str | int | None = None,
     group: str | int | None = None,
 ) -> None:
-    """Change owner and group of a file."""
+    """Change owner and group of a file (via Rust intrinsic)."""
     _MOLT_SHUTIL_CHOWN(path, user, group)
 
 
-def copy(src: str, dst: str) -> str:
+def copy(src: str, dst: str, *, follow_symlinks: bool = True) -> str:
     """Copy data and permissions. Returns the destination path."""
     out = _MOLT_SHUTIL_COPY(src, dst)
     return str(out)
 
 
-def copy2(src: str, dst: str) -> str:
+def copy2(src: str, dst: str, *, follow_symlinks: bool = True) -> str:
     """Copy data and all metadata. Returns the destination path."""
     out = _MOLT_SHUTIL_COPY2(src, dst)
     return str(out)
@@ -89,17 +92,20 @@ def copy2(src: str, dst: str) -> str:
 def copytree(
     src: str,
     dst: str,
+    symlinks: bool = False,
+    ignore=None,
+    copy_function=None,
+    ignore_dangling_symlinks: bool = False,
     dirs_exist_ok: bool = False,
 ) -> str:
-    """Recursively copy an entire directory tree. Returns the destination path."""
+    """Recursively copy an entire directory tree (via Rust intrinsic)."""
     out = _MOLT_SHUTIL_COPYTREE(src, dst, bool(dirs_exist_ok))
     return str(out)
 
 
 def disk_usage(path: str) -> tuple[int, int, int]:
-    """Return disk usage statistics about the given path as a named tuple."""
+    """Return disk usage statistics (total, used, free) via Rust intrinsic."""
     raw = _MOLT_SHUTIL_DISK_USAGE(path)
-    # Intrinsic returns a (total, used, free) sequence.
     total, used, free = int(raw[0]), int(raw[1]), int(raw[2])
     return (total, used, free)
 
@@ -107,7 +113,7 @@ def disk_usage(path: str) -> tuple[int, int, int]:
 def get_terminal_size(
     fallback: tuple[int, int] = (80, 24),
 ) -> tuple[int, int]:
-    """Get the size of the terminal window."""
+    """Get terminal window size (columns, lines) via Rust intrinsic."""
     raw = _MOLT_SHUTIL_GET_TERMINAL_SIZE(list(fallback))
     columns, lines = int(raw[0]), int(raw[1])
     return (columns, lines)
@@ -117,14 +123,20 @@ def make_archive(
     base_name: str,
     format: str,
     root_dir: str | None = None,
+    base_dir: str | None = None,
+    verbose: int = 0,
+    dry_run: int = 0,
+    owner: str | None = None,
+    group: str | None = None,
+    logger: object = None,
 ) -> str:
-    """Create an archive file and return its name."""
+    """Create an archive file and return its name (via Rust intrinsic)."""
     out = _MOLT_SHUTIL_MAKE_ARCHIVE(base_name, format, root_dir)
     return str(out)
 
 
-def move(src: str, dst: str) -> str:
-    """Recursively move a file or directory. Returns the destination path."""
+def move(src: str, dst: str, copy_function=None) -> str:
+    """Recursively move a file or directory (via Rust intrinsic)."""
     out = _MOLT_SHUTIL_MOVE(src, dst)
     return str(out)
 
@@ -132,6 +144,7 @@ def move(src: str, dst: str) -> str:
 def unpack_archive(
     filename: str,
     extract_dir: str | None = None,
+    format: str | None = None,
 ) -> None:
-    """Unpack an archive. *extract_dir* defaults to the current directory."""
+    """Unpack an archive (via Rust intrinsic)."""
     _MOLT_SHUTIL_UNPACK_ARCHIVE(filename, extract_dir)

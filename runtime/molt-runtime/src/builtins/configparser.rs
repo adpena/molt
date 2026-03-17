@@ -978,6 +978,245 @@ pub extern "C" fn molt_configparser_drop(handle_bits: u64) -> u64 {
     })
 }
 
+// ---------------------------------------------------------------------------
+// New intrinsics for full intrinsic-backing of configparser.py
+// ---------------------------------------------------------------------------
+
+/// Serialize the config to an INI-format string and return it (instead of writing to file).
+/// This allows the Python side to write to any file-like object.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_configparser_write_string(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
+        };
+        let content = CONFIG_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|state| state.write());
+        let Some(content) = content else {
+            return raise_exception::<u64>(_py, "ValueError", "configparser handle not found");
+        };
+        let ptr = alloc_string(_py, content.as_bytes());
+        if ptr.is_null() {
+            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+/// Get a raw (uninterpolated) value for ConfigParser.get(raw=True).
+/// Returns the raw string value, or None if not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_configparser_get_raw(
+    handle_bits: u64,
+    section_bits: u64,
+    option_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
+        };
+        let Some(section) = string_obj_to_owned(obj_from_bits(section_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "section must be str");
+        };
+        let Some(option) = string_obj_to_owned(obj_from_bits(option_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "option must be str");
+        };
+        let key = option.to_ascii_lowercase();
+        let result = CONFIG_REGISTRY.lock().unwrap().get(&id).and_then(|state| {
+            state.sections.get(&section).and_then(|sec| {
+                sec.get(&key).or_else(|| state.defaults.get(&key)).cloned()
+            })
+        });
+        match result {
+            Some(val) => {
+                let ptr = alloc_string(_py, val.as_bytes());
+                if ptr.is_null() {
+                    raise_exception::<u64>(_py, "MemoryError", "out of memory")
+                } else {
+                    MoltObject::from_ptr(ptr).bits()
+                }
+            }
+            None => MoltObject::none().bits(),
+        }
+    })
+}
+
+/// Perform basic %(key)s interpolation on a value string within a section context.
+/// Returns the interpolated string.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_configparser_interpolate_basic(
+    handle_bits: u64,
+    section_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
+        };
+        let Some(section) = string_obj_to_owned(obj_from_bits(section_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "section must be str");
+        };
+        let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "value must be str");
+        };
+        let result = CONFIG_REGISTRY.lock().unwrap().get(&id).map(|state| {
+            state.interpolate(value.clone(), &section)
+        });
+        let Some(interpolated) = result else {
+            return raise_exception::<u64>(_py, "ValueError", "configparser handle not found");
+        };
+        let ptr = alloc_string(_py, interpolated.as_bytes());
+        if ptr.is_null() {
+            raise_exception::<u64>(_py, "MemoryError", "out of memory")
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+/// Perform extended ${section:option} interpolation on a value string.
+/// Returns the interpolated string.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_configparser_interpolate_extended(
+    handle_bits: u64,
+    section_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
+        };
+        let Some(section) = string_obj_to_owned(obj_from_bits(section_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "section must be str");
+        };
+        let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "value must be str");
+        };
+        let result = CONFIG_REGISTRY.lock().unwrap().get(&id).map(|state| {
+            interpolate_extended(state, &value, &section)
+        });
+        let Some(interpolated) = result else {
+            return raise_exception::<u64>(_py, "ValueError", "configparser handle not found");
+        };
+        let ptr = alloc_string(_py, interpolated.as_bytes());
+        if ptr.is_null() {
+            raise_exception::<u64>(_py, "MemoryError", "out of memory")
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+/// Perform extended ${section:option} interpolation.
+fn interpolate_extended(state: &ConfigState, value: &str, section: &str) -> String {
+    let mut current = value.to_string();
+    for _ in 0..10 {
+        if !current.contains('$') {
+            break;
+        }
+        let mut result = String::with_capacity(current.len());
+        let chars: Vec<char> = current.chars().collect();
+        let len = chars.len();
+        let mut i = 0usize;
+        while i < len {
+            if chars[i] == '$' && i + 1 < len {
+                let c = chars[i + 1];
+                if c == '$' {
+                    result.push('$');
+                    i += 2;
+                    continue;
+                }
+                if c == '{' {
+                    // Find closing brace
+                    let start = i + 2;
+                    let mut j = start;
+                    while j < len && chars[j] != '}' {
+                        j += 1;
+                    }
+                    if j < len {
+                        let path: String = chars[start..j].iter().collect();
+                        i = j + 1;
+                        let (sect, opt) = if let Some(colon_idx) = path.find(':') {
+                            let s = path[..colon_idx].trim().to_string();
+                            let o = path[colon_idx + 1..].trim().to_ascii_lowercase();
+                            (s, o)
+                        } else {
+                            (section.to_string(), path.trim().to_ascii_lowercase())
+                        };
+                        // Look up the raw value
+                        let resolved = state
+                            .sections
+                            .get(&sect)
+                            .and_then(|sec| sec.get(&opt))
+                            .or_else(|| state.defaults.get(&opt))
+                            .map(|s| s.as_str())
+                            .unwrap_or("");
+                        result.push_str(resolved);
+                        continue;
+                    }
+                }
+            }
+            result.push(chars[i]);
+            i += 1;
+        }
+        if result == current {
+            break;
+        }
+        current = result;
+    }
+    current
+}
+
+/// Read from a file-like object (string content) into the configparser.
+/// This wraps read_string but accepts an explicit source name for error messages.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_configparser_read_file(
+    handle_bits: u64,
+    content_bits: u64,
+    source_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
+        };
+        let Some(text) = string_obj_to_owned(obj_from_bits(content_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "content must be str");
+        };
+        let _source = string_obj_to_owned(obj_from_bits(source_bits));
+        let ok = CONFIG_REGISTRY.lock().unwrap().get_mut(&id).map(|state| {
+            state.read_string(&text);
+        });
+        if ok.is_none() {
+            return raise_exception::<u64>(_py, "ValueError", "configparser handle not found");
+        }
+        MoltObject::none().bits()
+    })
+}
+
+/// Get the defaults dict as a list of (key, value) pairs.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_configparser_defaults(handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
+        };
+        let result = CONFIG_REGISTRY.lock().unwrap().get(&id).map(|state| {
+            let mut pairs: Vec<(String, String)> = state.defaults.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            pairs.sort_by(|a, b| a.0.cmp(&b.0));
+            pairs
+        });
+        let Some(pairs) = result else {
+            return raise_exception::<u64>(_py, "ValueError", "configparser handle not found");
+        };
+        string_pairs_to_list(_py, &pairs)
+    })
+}
+
 // Suppress unused import warnings.
 #[allow(dead_code)]
 fn _suppress(_py: &PyToken<'_>, b: u64) {

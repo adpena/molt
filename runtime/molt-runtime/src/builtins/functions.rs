@@ -10855,6 +10855,248 @@ fn textwrap_indent_with_predicate(
     }
 }
 
+// ─── textwrap.dedent ────────────────────────────────────────────────────────
+
+fn textwrap_dedent_impl(text: &str) -> String {
+    // CPython textwrap.dedent: remove common leading whitespace from all lines.
+    let mut margin: Option<&str> = None;
+    let lines: Vec<&str> = text.split('\n').collect();
+    for &line in &lines {
+        let stripped = line.trim_start();
+        if stripped.is_empty() {
+            continue;
+        }
+        let indent = &line[..line.len() - stripped.len()];
+        if let Some(m) = margin {
+            // Find common prefix between margin and indent
+            let common_len = m
+                .chars()
+                .zip(indent.chars())
+                .take_while(|(a, b)| a == b)
+                .count();
+            // Need byte length of common prefix
+            let byte_len = m
+                .char_indices()
+                .nth(common_len)
+                .map(|(i, _)| i)
+                .unwrap_or(m.len());
+            margin = Some(&m[..byte_len]);
+        } else {
+            margin = Some(indent);
+        }
+    }
+    let margin = margin.unwrap_or("");
+    if margin.is_empty() {
+        return text.to_string();
+    }
+    let margin_len = margin.len();
+    let mut result = String::with_capacity(text.len());
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            result.push('\n');
+        }
+        if line.trim_start().is_empty() {
+            // Whitespace-only line: strip all leading whitespace
+            result.push_str(line.trim_start());
+        } else if line.len() >= margin_len && &line[..margin_len] == margin {
+            result.push_str(&line[margin_len..]);
+        } else {
+            result.push_str(line);
+        }
+    }
+    result
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_textwrap_dedent(text_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let result = textwrap_dedent_impl(&text);
+        let out_ptr = alloc_string(_py, result.as_bytes());
+        if out_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_textwrap_shorten(
+    text_bits: u64,
+    width_bits: u64,
+    placeholder_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(width) = to_i64(obj_from_bits(width_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "width must be int");
+        };
+        let placeholder = if obj_from_bits(placeholder_bits).is_none() {
+            " [...]".to_string()
+        } else {
+            string_obj_to_owned(obj_from_bits(placeholder_bits))
+                .unwrap_or_else(|| " [...]".to_string())
+        };
+        // Collapse whitespace and truncate
+        let collapsed: String = text.split_whitespace().collect::<Vec<&str>>().join(" ");
+        if (collapsed.len() as i64) <= width {
+            let out_ptr = alloc_string(_py, collapsed.as_bytes());
+            if out_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(out_ptr).bits();
+        }
+        let ph_len = placeholder.len() as i64;
+        let max_text = width - ph_len;
+        if max_text < 0 {
+            let out_ptr = alloc_string(_py, placeholder.as_bytes());
+            if out_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(out_ptr).bits();
+        }
+        // Find last space before max_text
+        let mut truncate_at = max_text as usize;
+        if truncate_at < collapsed.len() {
+            // Find last space at or before truncate_at
+            if let Some(pos) = collapsed[..truncate_at].rfind(' ') {
+                truncate_at = pos;
+            }
+        }
+        let result = format!("{}{}", &collapsed[..truncate_at].trim_end(), placeholder);
+        let out_ptr = alloc_string(_py, result.as_bytes());
+        if out_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
+
+// ─── logging filter intrinsics ──────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_logging_filter_check(
+    filter_name_bits: u64,
+    record_name_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let filter_name = string_obj_to_owned(obj_from_bits(filter_name_bits))
+            .unwrap_or_default();
+        let record_name = string_obj_to_owned(obj_from_bits(record_name_bits))
+            .unwrap_or_default();
+        let result = if filter_name.is_empty() {
+            true
+        } else if record_name == filter_name {
+            true
+        } else {
+            record_name.starts_with(&format!("{}.", filter_name))
+        };
+        MoltObject::from_int(if result { 1 } else { 0 }).bits()
+    })
+}
+
+// ─── logging file handler intrinsics ────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_logging_file_handler_emit(
+    msg_bits: u64,
+    filename_bits: u64,
+    mode_bits: u64,
+    encoding_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(msg) = string_obj_to_owned(obj_from_bits(msg_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "msg must be str");
+        };
+        let Some(filename) = string_obj_to_owned(obj_from_bits(filename_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "filename must be str");
+        };
+        let mode = string_obj_to_owned(obj_from_bits(mode_bits))
+            .unwrap_or_else(|| "a".to_string());
+        let _encoding = string_obj_to_owned(obj_from_bits(encoding_bits));
+
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        let open_result = if mode.contains('w') {
+            OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&filename)
+        } else {
+            OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&filename)
+        };
+        match open_result {
+            Ok(mut f) => {
+                let _ = f.write_all(msg.as_bytes());
+                let _ = f.write_all(b"\n");
+            }
+            Err(e) => {
+                return raise_exception::<_>(
+                    _py,
+                    "IOError",
+                    &format!("cannot open {}: {}", filename, e),
+                );
+            }
+        }
+        MoltObject::none().bits()
+    })
+}
+
+// ─── copy.replace intrinsic ─────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_copy_replace(obj_bits: u64, changes_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        // copy.replace creates a modified shallow copy.
+        // For Molt's supported types, apply changes dict on top of a shallow copy.
+        let _ = changes_bits; // changes are applied Python-side
+        crate::builtins::copy_mod::molt_copy_copy(obj_bits)
+    })
+}
+
+// ─── pprint format/isreadable/isrecursive with context ──────────────────────
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_pprint_format_object(
+    obj_bits: u64,
+    max_depth_bits: u64,
+    level_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        use std::collections::HashSet;
+        let max_depth = crate::builtins::pprint_ext::i64_from_bits_default(max_depth_bits, -1);
+        let level = crate::builtins::pprint_ext::i64_from_bits_default(level_bits, 0);
+        let mut seen = HashSet::new();
+        let (repr, readable, recursive) =
+            crate::builtins::pprint_ext::safe_repr_inner(
+                _py, obj_bits, &mut seen, level, max_depth, -1,
+            );
+        // Return a tuple (repr_str, readable_bool, recursive_bool)
+        let repr_ptr = alloc_string(_py, repr.as_bytes());
+        if repr_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let repr_bits = MoltObject::from_ptr(repr_ptr).bits();
+        let readable_bits = MoltObject::from_int(if readable { 1 } else { 0 }).bits();
+        let recursive_bits = MoltObject::from_int(if recursive { 1 } else { 0 }).bits();
+        let tup_ptr = crate::alloc_tuple(_py, &[repr_bits, readable_bits, recursive_bits]);
+        if tup_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(tup_ptr).bits()
+    })
+}
+
 #[derive(Clone)]
 struct PkgutilModuleInfo {
     module_finder: String,

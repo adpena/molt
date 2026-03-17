@@ -71,6 +71,16 @@ _MOLT_TIMEDELTA_FLOORDIV_SCALAR = _require_intrinsic(
 _MOLT_TIMEDELTA_MOD_TD = _require_intrinsic("molt_timedelta_mod_td", globals())
 _MOLT_DATE_FROMISOCALENDAR = _require_intrinsic("molt_date_fromisocalendar", globals())
 _MOLT_DATETIME_COMBINE = _require_intrinsic("molt_datetime_combine", globals())
+_MOLT_DT_AS_INT = _require_intrinsic("molt_datetime_as_int", globals())
+_MOLT_DT_FORMAT_TIME = _require_intrinsic("molt_datetime_format_time", globals())
+_MOLT_TIMEDELTA_REPR = _require_intrinsic("molt_timedelta_repr", globals())
+_MOLT_TIMEDELTA_STR = _require_intrinsic("molt_timedelta_str", globals())
+_MOLT_TIMEZONE_VALIDATE = _require_intrinsic("molt_timezone_validate", globals())
+_MOLT_TIMEZONE_TZNAME = _require_intrinsic("molt_timezone_tzname", globals())
+_MOLT_DT_DATE_REPR = _require_intrinsic("molt_datetime_date_repr", globals())
+_MOLT_DT_TIME_REPR = _require_intrinsic("molt_datetime_time_repr", globals())
+_MOLT_DT_DATETIME_REPR = _require_intrinsic("molt_datetime_datetime_repr", globals())
+_MOLT_DT_TIMETUPLE = _require_intrinsic("molt_datetime_timetuple", globals())
 
 __all__ = [
     "MINYEAR",
@@ -90,11 +100,7 @@ _EPOCH_ORDINAL_OFFSET = 719_468
 
 
 def _as_int(value: Any) -> int:
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    raise TypeError(f"integer argument expected, got {type(value).__name__}")
+    return int(_MOLT_DT_AS_INT(value))
 
 
 def _is_leap(year: int) -> bool:
@@ -138,16 +144,7 @@ _SENTINEL = object()
 def _format_time(
     hour: int, minute: int, second: int, microsecond: int, timespec: str
 ) -> str:
-    base = f"{hour:02d}:{minute:02d}:{second:02d}"
-    if timespec == "auto":
-        return f"{base}.{microsecond:06d}" if microsecond else base
-    if timespec == "seconds":
-        return base
-    if timespec == "milliseconds":
-        return f"{base}.{microsecond // 1000:03d}"
-    if timespec == "microseconds":
-        return f"{base}.{microsecond:06d}"
-    raise ValueError("Unknown timespec value")
+    return str(_MOLT_DT_FORMAT_TIME(hour, minute, second, microsecond, timespec))
 
 
 class timedelta:
@@ -278,29 +275,11 @@ class timedelta:
             and self.microseconds == other.microseconds
         )
 
-    def _format_positive(self) -> str:
-        days = self.days
-        hours, rem = divmod(self.seconds, 3600)
-        minutes, seconds = divmod(rem, 60)
-        if days:
-            day_word = "day" if abs(days) == 1 else "days"
-            prefix = f"{days} {day_word}, "
-        else:
-            prefix = ""
-        if self.microseconds:
-            return (
-                f"{prefix}{hours}:{minutes:02d}:{seconds:02d}.{self.microseconds:06d}"
-            )
-        return f"{prefix}{hours}:{minutes:02d}:{seconds:02d}"
-
     def __str__(self) -> str:
-        return self._format_positive()
+        return str(_MOLT_TIMEDELTA_STR(self.days, self.seconds, self.microseconds))
 
     def __repr__(self) -> str:
-        return (
-            "timedelta("
-            f"days={self.days}, seconds={self.seconds}, microseconds={self.microseconds})"
-        )
+        return str(_MOLT_TIMEDELTA_REPR(self.days, self.seconds, self.microseconds))
 
 
 class tzinfo:
@@ -320,9 +299,7 @@ class timezone(tzinfo):
     def __init__(self, offset: timedelta, name: str | None = None) -> None:
         if not isinstance(offset, timedelta):
             raise TypeError("offset must be a timedelta")
-        total = offset.days * _DAY_SECONDS + offset.seconds
-        if not (-_DAY_SECONDS < total < _DAY_SECONDS):
-            raise ValueError("offset must be strictly between -24h and +24h")
+        _MOLT_TIMEZONE_VALIDATE(offset.days, offset.seconds)
         self._offset = offset
         self._name = name
 
@@ -335,14 +312,9 @@ class timezone(tzinfo):
     def tzname(self, dt: datetime | None) -> str:  # noqa: ARG002
         if self._name is not None:
             return self._name
-        total = self._offset.days * _DAY_SECONDS + self._offset.seconds
-        sign = "+" if total >= 0 else "-"
-        total = abs(total)
-        hh, rem = divmod(total, 3600)
-        mm, _ = divmod(rem, 60)
-        if hh == 0 and mm == 0:
-            return "UTC"
-        return f"UTC{sign}{hh:02d}:{mm:02d}"
+        return str(
+            _MOLT_TIMEZONE_TZNAME(self._offset.days, self._offset.seconds)
+        )
 
 
 timezone.utc = timezone(timedelta())  # type: ignore[attr-defined]
@@ -367,7 +339,7 @@ class date:
         return self.isoformat()
 
     def __repr__(self) -> str:
-        return f"datetime.date({self.year}, {self.month}, {self.day})"
+        return str(_MOLT_DT_DATE_REPR(self.year, self.month, self.day))
 
     def __hash__(self) -> int:
         return int(_MOLT_DT_HASH_DATE(self.year, self.month, self.day))
@@ -498,11 +470,9 @@ class time:
         return self.isoformat()
 
     def __repr__(self) -> str:
-        if self.microsecond:
-            return f"datetime.time({self.hour}, {self.minute}, {self.second}, {self.microsecond})"
-        if self.second:
-            return f"datetime.time({self.hour}, {self.minute}, {self.second})"
-        return f"datetime.time({self.hour}, {self.minute})"
+        return str(
+            _MOLT_DT_TIME_REPR(self.hour, self.minute, self.second, self.microsecond)
+        )
 
     def __hash__(self) -> int:
         return int(
@@ -1023,7 +993,7 @@ class datetime:
         d = self.dst()
         if d is not None:
             dst_flag = 1 if d.total_seconds() > 0 else 0
-        return (
+        return _MOLT_DT_TIMETUPLE(
             self.year,
             self.month,
             self.day,

@@ -36,6 +36,11 @@ _molt_random_gammavariate = _require_intrinsic("molt_random_gammavariate", globa
 _molt_random_betavariate = _require_intrinsic("molt_random_betavariate", globals())
 _molt_random_choices = _require_intrinsic("molt_random_choices", globals())
 _molt_random_sample = _require_intrinsic("molt_random_sample", globals())
+_molt_random_binomialvariate = _require_intrinsic(
+    "molt_random_binomialvariate", globals()
+)
+_molt_random_randrange = _require_intrinsic("molt_random_randrange", globals())
+_molt_random_randbytes = _require_intrinsic("molt_random_randbytes", globals())
 
 _molt_math_log2 = _require_intrinsic("molt_math_log2", globals())
 _molt_math_floor = _require_intrinsic("molt_math_floor", globals())
@@ -82,6 +87,7 @@ _ONE = 1
 
 
 def _index(value) -> int:
+    """Coerce value to int via __index__ protocol."""
     if isinstance(value, int):
         return int(value)
     index = getattr(value, "__index__", None)
@@ -146,37 +152,16 @@ class Random:
         return _molt_random_getrandbits(self._handle, k)
 
     def randbytes(self, n: int) -> bytes:
-        return self.getrandbits(n * 8).to_bytes(n, "little")
+        return _molt_random_randbytes(self._handle, n)
 
     def _randbelow(self, n: int) -> int:
         return _molt_random_randbelow(self._handle, n)
 
     def randrange(self, start, stop=None, step=_ONE) -> int:
         istart = _index(start)
-        if stop is None:
-            if step is not _ONE:
-                raise TypeError("Missing a non-None stop argument")
-            if istart > 0:
-                return self._randbelow(istart)
-            raise ValueError("empty range for randrange()")
-
-        istop = _index(stop)
-        width = istop - istart
-        istep = _index(step)
-        if istep == 1:
-            if width > 0:
-                return istart + self._randbelow(width)
-            raise ValueError(f"empty range in randrange({start}, {stop})")
-
-        if istep > 0:
-            n = (width + istep - 1) // istep
-        elif istep < 0:
-            n = (width + istep + 1) // istep
-        else:
-            raise ValueError("zero step for randrange()")
-        if n <= 0:
-            raise ValueError(f"empty range in randrange({start}, {stop}, {step})")
-        return istart + istep * self._randbelow(n)
+        istop = _index(stop) if stop is not None else None
+        istep = _index(step) if step is not _ONE else 1
+        return _molt_random_randrange(self._handle, istart, istop, istep)
 
     def randint(self, a: int, b: int) -> int:
         return self.randrange(a, b + 1)
@@ -245,66 +230,7 @@ class Random:
         _molt_random_setstate(self._handle, state)
 
     def binomialvariate(self, n=1, p=0.5):
-        if n < 0:
-            raise ValueError("n must be non-negative")
-        if p <= 0.0 or p >= 1.0:
-            if p == 0.0:
-                return 0
-            if p == 1.0:
-                return n
-            raise ValueError("p must be in the range 0.0 <= p <= 1.0")
-
-        if n == 1:
-            return _index(self.random() < p)
-
-        if p > 0.5:
-            return n - self.binomialvariate(n, 1.0 - p)
-
-        if n * p < 10.0:
-            x = y = 0
-            c = _molt_math_log2(1.0 - p)
-            if not c:
-                return x
-            while True:
-                y += _molt_math_floor(_molt_math_log2(self.random()) / c) + 1
-                if y > n:
-                    return x
-                x += 1
-
-        setup_complete = False
-        spq = _molt_math_sqrt(n * p * (1.0 - p))
-        b = 1.15 + 2.53 * spq
-        a = -0.0873 + 0.0248 * b + 0.01 * p
-        c = n * p + 0.5
-        vr = 0.92 - 4.2 / b
-
-        while True:
-            u = self.random()
-            u -= 0.5
-            us = 0.5 - _molt_math_fabs(u)
-            k = _molt_math_floor((2.0 * a / us + b) * u + c)
-            if k < 0 or k > n:
-                continue
-
-            v = self.random()
-            if us >= 0.07 and v <= vr:
-                return k
-
-            if not setup_complete:
-                alpha = (2.83 + 5.1 / b) * spq
-                lpq = _molt_math_log(p / (1.0 - p))
-                m = _molt_math_floor((n + 1) * p)
-                h = _molt_math_lgamma(m + 1) + _molt_math_lgamma(n - m + 1)
-                setup_complete = True
-            v *= alpha / (a / (us * us) + b)
-            if (
-                _molt_math_log(v)
-                <= h
-                - _molt_math_lgamma(k + 1)
-                - _molt_math_lgamma(n - k + 1)
-                + (k - m) * lpq
-            ):
-                return k
+        return _molt_random_binomialvariate(self._handle, n, p)
 
     def __getstate__(self):
         return self.getstate()

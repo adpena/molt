@@ -4,7 +4,7 @@ use crate::*;
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-fn i64_from_bits_default(bits: u64, default: i64) -> i64 {
+pub(crate) fn i64_from_bits_default(bits: u64, default: i64) -> i64 {
     let obj = obj_from_bits(bits);
     if obj.is_none() {
         return default;
@@ -38,7 +38,7 @@ fn alloc_string_result(_py: &PyToken<'_>, s: &str) -> u64 {
 
 /// Internal recursive repr generator that tracks object IDs to detect cycles
 /// and respects max_depth and max_width constraints.
-fn safe_repr_inner(
+pub(crate) fn safe_repr_inner(
     _py: &PyToken<'_>,
     bits: u64,
     seen: &mut HashSet<u64>,

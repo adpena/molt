@@ -1759,3 +1759,196 @@ pub extern "C" fn molt_csv_has_header(sample_bits: u64) -> u64 {
         MoltObject::from_bool(has_header_score > 0).bits()
     })
 }
+
+// ---------------------------------------------------------------------------
+// New intrinsics for full intrinsic-backing of csv.py
+// ---------------------------------------------------------------------------
+
+/// Validate that all fmtparam keys are valid Dialect attribute names.
+/// Returns None on success, raises TypeError on invalid key.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_csv_validate_fmtparams(keys_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        static VALID_KEYS: &[&str] = &[
+            "delimiter", "quotechar", "escapechar", "doublequote",
+            "skipinitialspace", "lineterminator", "quoting", "strict",
+        ];
+        let obj = obj_from_bits(keys_bits);
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                let tid = object_type_id(ptr);
+                if tid == TYPE_ID_LIST || tid == crate::TYPE_ID_TUPLE {
+                    let items = seq_vec_ref(ptr);
+                    for &item_bits in items.iter() {
+                        if let Some(key) = string_obj_to_owned(obj_from_bits(item_bits)) {
+                            if !VALID_KEYS.contains(&key.as_str()) {
+                                return raise_exception::<u64>(
+                                    _py,
+                                    "TypeError",
+                                    &format!("this function got an unexpected keyword argument {key:?}"),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        MoltObject::none().bits()
+    })
+}
+
+/// Validate a dialect's field values. Returns None on success, raises TypeError on error.
+/// Args: delimiter, quotechar, escapechar, lineterminator, quoting (as int)
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_csv_validate_dialect(
+    delimiter_bits: u64,
+    quotechar_bits: u64,
+    escapechar_bits: u64,
+    lineterminator_bits: u64,
+    quoting_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        // Validate delimiter
+        let delimiter_obj = obj_from_bits(delimiter_bits);
+        if let Some(d) = string_obj_to_owned(delimiter_obj) {
+            if d.chars().count() != 1 {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    &format!("\"delimiter\" must be a unicode character, not a string of length {}", d.chars().count()),
+                );
+            }
+        } else {
+            let tname = type_name(_py, delimiter_obj);
+            return raise_exception::<u64>(
+                _py,
+                "TypeError",
+                &format!("\"delimiter\" must be a unicode character, not {tname}"),
+            );
+        }
+
+        // Validate quotechar (can be None)
+        let qc_obj = obj_from_bits(quotechar_bits);
+        let qc_is_none = qc_obj.is_none();
+        if !qc_is_none {
+            if let Some(q) = string_obj_to_owned(qc_obj) {
+                if q.chars().count() != 1 {
+                    return raise_exception::<u64>(
+                        _py,
+                        "TypeError",
+                        &format!("\"quotechar\" must be a unicode character or None, not a string of length {}", q.chars().count()),
+                    );
+                }
+            } else {
+                let tname = type_name(_py, qc_obj);
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    &format!("\"quotechar\" must be a unicode character or None, not {tname}"),
+                );
+            }
+        }
+
+        // Validate escapechar (can be None)
+        let ec_obj = obj_from_bits(escapechar_bits);
+        if !ec_obj.is_none() {
+            if let Some(e) = string_obj_to_owned(ec_obj) {
+                if e.chars().count() != 1 {
+                    return raise_exception::<u64>(
+                        _py,
+                        "TypeError",
+                        &format!("\"escapechar\" must be a unicode character or None, not a string of length {}", e.chars().count()),
+                    );
+                }
+            } else {
+                let tname = type_name(_py, ec_obj);
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    &format!("\"escapechar\" must be a unicode character or None, not {tname}"),
+                );
+            }
+        }
+
+        // Validate lineterminator
+        let lt_obj = obj_from_bits(lineterminator_bits);
+        if string_obj_to_owned(lt_obj).is_none() {
+            let tname = type_name(_py, lt_obj);
+            return raise_exception::<u64>(
+                _py,
+                "TypeError",
+                &format!("\"lineterminator\" must be a string, not {tname}"),
+            );
+        }
+
+        // Validate quoting
+        let Some(quoting) = to_i64(obj_from_bits(quoting_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "bad \"quoting\" value");
+        };
+        if ![QUOTE_MINIMAL, QUOTE_ALL, QUOTE_NONNUMERIC, QUOTE_NONE, QUOTE_STRINGS, QUOTE_NOTNULL].contains(&quoting) {
+            return raise_exception::<u64>(_py, "TypeError", "bad \"quoting\" value");
+        }
+
+        // quotechar must be set if quoting enabled
+        if qc_is_none && quoting != QUOTE_NONE {
+            return raise_exception::<u64>(_py, "TypeError", "quotechar must be set if quoting enabled");
+        }
+
+        MoltObject::none().bits()
+    })
+}
+
+/// Normalize a row into a list. If already a list/tuple, return as-is.
+/// Otherwise try to iterate and collect into a list.
+/// Raises csv.Error if not iterable.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_csv_normalize_row(row_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(row_bits);
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                let tid = object_type_id(ptr);
+                if tid == TYPE_ID_LIST || tid == crate::TYPE_ID_TUPLE {
+                    // Already a list or tuple; return directly.
+                    return row_bits;
+                }
+            }
+        }
+        // For other iterables, the Python side will handle via list().
+        // Return None to signal "needs Python-side list() conversion".
+        MoltObject::none().bits()
+    })
+}
+
+/// Look up a dialect name, validating it's a string.
+/// Returns the string on success.
+/// Raises Error("unknown dialect") for non-string hashable values.
+/// Raises TypeError for unhashable values.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_csv_dialect_lookup_name(name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(name_bits);
+        if let Some(s) = string_obj_to_owned(obj) {
+            let ptr = alloc_string(_py, s.as_bytes());
+            if ptr.is_null() {
+                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        // For non-string types, check hashability (simplified: lists/dicts are unhashable)
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                let tid = object_type_id(ptr);
+                if tid == TYPE_ID_LIST || tid == TYPE_ID_DICT || tid == crate::TYPE_ID_SET {
+                    let tname = type_name(_py, obj);
+                    return raise_exception::<u64>(
+                        _py,
+                        "TypeError",
+                        &format!("cannot use '{tname}' as a dict key (unhashable type: '{tname}')"),
+                    );
+                }
+            }
+        }
+        raise_exception::<u64>(_py, "csv.Error", "unknown dialect")
+    })
+}

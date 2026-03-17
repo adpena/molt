@@ -4057,7 +4057,7 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
             if debug_attr {
                 let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
                     .unwrap_or_else(|| "<attr>".to_string());
-                eprintln!("molt module_get_attr invalid module for attr={}", attr_name);
+                eprintln!("molt module_get_attr invalid module (bits=0x{:x}) for attr={}", module_bits, attr_name);
             }
             return raise_exception::<_>(
                 _py,
@@ -4070,7 +4070,8 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
                 if debug_attr {
                     let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
                         .unwrap_or_else(|| "<attr>".to_string());
-                    eprintln!("molt module_get_attr non-module for attr={}", attr_name);
+                    let type_id = object_type_id(module_ptr);
+                    eprintln!("molt module_get_attr non-module (bits=0x{:x}, type_id={}) for attr={}", module_bits, type_id, attr_name);
                 }
                 return raise_exception::<_>(
                     _py,

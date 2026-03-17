@@ -2368,3 +2368,240 @@ pub extern "C" fn molt_json_raw_decode_ex(
         }
     })
 }
+
+// ---------------------------------------------------------------------------
+// New intrinsics for full intrinsic-backing of json/__init__.py
+// ---------------------------------------------------------------------------
+
+/// Compute (lineno, colno) for a given position in a JSON document string.
+/// Returns a 2-tuple (lineno, colno).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_json_calc_lineno_col(doc_bits: u64, pos_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(doc) = string_obj_to_owned(obj_from_bits(doc_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "doc must be str");
+        };
+        let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "pos must be int");
+        };
+        let pos = pos.max(0) as usize;
+        let prefix = if pos <= doc.len() { &doc[..pos] } else { &doc[..] };
+        let lineno = prefix.matches('\n').count() as i64 + 1;
+        let line_start = prefix.rfind('\n').map(|i| i as i64).unwrap_or(-1);
+        let colno = if line_start < 0 {
+            pos as i64 + 1
+        } else {
+            pos as i64 - line_start
+        };
+        let tuple_ptr = alloc_tuple(
+            _py,
+            &[
+                MoltObject::from_int(lineno).bits(),
+                MoltObject::from_int(colno).bits(),
+            ],
+        );
+        if tuple_ptr.is_null() {
+            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
+    })
+}
+
+/// Coerce a JSON payload (str, bytes, bytearray) to str.
+/// If the input is already a string, returns it directly.
+/// If bytes/bytearray, detects encoding and decodes.
+/// Raises TypeError for other types.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_json_coerce_text(payload_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(payload_bits);
+        // Try string first
+        if let Some(s) = string_obj_to_owned(obj) {
+            let ptr = alloc_string(_py, s.as_bytes());
+            if ptr.is_null() {
+                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        // Try bytes/bytearray
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                let tid = object_type_id(ptr);
+                if tid == crate::TYPE_ID_BYTES || tid == crate::TYPE_ID_BYTEARRAY {
+                    let len = crate::bytes_len(ptr);
+                    if len == 0 {
+                        let s_ptr = alloc_string(_py, b"");
+                        if s_ptr.is_null() {
+                            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                        }
+                        return MoltObject::from_ptr(s_ptr).bits();
+                    }
+                    let data_ptr = crate::bytes_data(ptr);
+                    let data = std::slice::from_raw_parts(data_ptr, len);
+                    let encoding = detect_json_encoding(data, len);
+                    let decoded = if encoding == "utf-8" && data.starts_with(&[0xEF, 0xBB, 0xBF]) {
+                        String::from_utf8_lossy(&data[3..]).into_owned()
+                    } else if encoding == "utf-8" {
+                        String::from_utf8_lossy(data).into_owned()
+                    } else if encoding == "utf-16-be" {
+                        json_decode_utf16_be(data)
+                    } else if encoding == "utf-16-le" {
+                        json_decode_utf16_le(data)
+                    } else if encoding == "utf-32-be" {
+                        json_decode_utf32_be(data)
+                    } else if encoding == "utf-32-le" {
+                        json_decode_utf32_le(data)
+                    } else {
+                        String::from_utf8_lossy(data).into_owned()
+                    };
+                    let s_ptr = alloc_string(_py, decoded.as_bytes());
+                    if s_ptr.is_null() {
+                        return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                    }
+                    return MoltObject::from_ptr(s_ptr).bits();
+                }
+            }
+        }
+        let tname = type_name(_py, obj);
+        raise_exception::<u64>(
+            _py,
+            "TypeError",
+            &format!("the JSON object must be str, bytes or bytearray, not {tname}"),
+        )
+    })
+}
+
+/// Return default separators based on indent value.
+/// If indent is None -> (", ", ": "), otherwise -> (",", ": ").
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_json_default_separators(indent_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let is_none = obj_from_bits(indent_bits).is_none();
+        let (item_sep, key_sep) = if is_none {
+            (", ", ": ")
+        } else {
+            (",", ": ")
+        };
+        let item_ptr = alloc_string(_py, item_sep.as_bytes());
+        let key_ptr = alloc_string(_py, key_sep.as_bytes());
+        if item_ptr.is_null() || key_ptr.is_null() {
+            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        }
+        let item_bits = MoltObject::from_ptr(item_ptr).bits();
+        let key_bits = MoltObject::from_ptr(key_ptr).bits();
+        let tuple_ptr = alloc_tuple(_py, &[item_bits, key_bits]);
+        dec_ref_bits(_py, item_bits);
+        dec_ref_bits(_py, key_bits);
+        if tuple_ptr.is_null() {
+            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
+    })
+}
+
+/// Format a JSONDecodeError message string: "{msg}: line {lineno} column {colno} (char {pos})"
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_json_format_decode_error(
+    msg_bits: u64,
+    doc_bits: u64,
+    pos_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(msg) = string_obj_to_owned(obj_from_bits(msg_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "msg must be str");
+        };
+        let Some(doc) = string_obj_to_owned(obj_from_bits(doc_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "doc must be str");
+        };
+        let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "pos must be int");
+        };
+        let pos = pos.max(0) as usize;
+        let prefix = if pos <= doc.len() { &doc[..pos] } else { &doc[..] };
+        let lineno = prefix.matches('\n').count() + 1;
+        let line_start = prefix.rfind('\n').map(|i| i as i64).unwrap_or(-1);
+        let colno = if line_start < 0 {
+            pos as i64 + 1
+        } else {
+            pos as i64 - line_start
+        };
+        let formatted = format!("{msg}: line {lineno} column {colno} (char {pos})");
+        let ptr = alloc_string(_py, formatted.as_bytes());
+        if ptr.is_null() {
+            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+/// Parse a ValueError message to extract (msg, pos) for JSONDecodeError construction.
+/// Returns (msg, pos) tuple if the message matches the pattern, or None if not.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_json_parse_error_msg(exc_msg_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(exc_msg_bits)) else {
+            return MoltObject::none().bits();
+        };
+        // Pattern: "{msg}: line {line} column {col} (char {pos})"
+        if let Some(idx) = text.rfind(": line ") {
+            let msg = &text[..idx];
+            let rest = &text[idx + 7..]; // after ": line "
+            let parts: Vec<&str> = rest.splitn(2, " column ").collect();
+            if parts.len() == 2 {
+                if parts[0].parse::<i64>().is_ok() {
+                    let col_rest: Vec<&str> = parts[1].splitn(2, " (char ").collect();
+                    if col_rest.len() == 2 {
+                        let pos_str = col_rest[1].trim_end_matches(')');
+                        if let Ok(pos) = pos_str.parse::<i64>() {
+                            let msg_ptr = alloc_string(_py, msg.as_bytes());
+                            if msg_ptr.is_null() {
+                                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                            }
+                            let msg_bits = MoltObject::from_ptr(msg_ptr).bits();
+                            let pos_bits = MoltObject::from_int(pos).bits();
+                            let tuple_ptr = alloc_tuple(_py, &[msg_bits, pos_bits]);
+                            dec_ref_bits(_py, msg_bits);
+                            if tuple_ptr.is_null() {
+                                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                            }
+                            return MoltObject::from_ptr(tuple_ptr).bits();
+                        }
+                    }
+                }
+            }
+        }
+        MoltObject::none().bits()
+    })
+}
+
+fn json_decode_utf16_be(data: &[u8]) -> String {
+    let units: Vec<u16> = data.chunks(2).filter_map(|c| {
+        if c.len() == 2 { Some(u16::from_be_bytes([c[0], c[1]])) } else { None }
+    }).collect();
+    String::from_utf16_lossy(&units)
+}
+
+fn json_decode_utf16_le(data: &[u8]) -> String {
+    let units: Vec<u16> = data.chunks(2).filter_map(|c| {
+        if c.len() == 2 { Some(u16::from_le_bytes([c[0], c[1]])) } else { None }
+    }).collect();
+    String::from_utf16_lossy(&units)
+}
+
+fn json_decode_utf32_be(data: &[u8]) -> String {
+    data.chunks(4).filter_map(|c| {
+        if c.len() == 4 {
+            let code = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
+            char::from_u32(code)
+        } else { None }
+    }).collect()
+}
+
+fn json_decode_utf32_le(data: &[u8]) -> String {
+    data.chunks(4).filter_map(|c| {
+        if c.len() == 4 {
+            let code = u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+            char::from_u32(code)
+        } else { None }
+    }).collect()
+}

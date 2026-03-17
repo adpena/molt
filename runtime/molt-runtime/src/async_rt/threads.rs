@@ -421,3 +421,101 @@ pub unsafe extern "C" fn molt_asyncio_to_thread(
         })
     }
 }
+
+// ---------------------------------------------------------------------------
+// Threading capability check – returns 1 if real threads are available, 0
+// otherwise.  On WASM this always returns 0.
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_threading_available() -> u64 {
+    MoltObject::from_bool(true).bits()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_threading_available() -> u64 {
+    MoltObject::from_bool(false).bits()
+}
+
+// ---------------------------------------------------------------------------
+// WASM module gate – checks whether a threading-dependent module can be used
+// on the current platform.  On non-WASM this is always a no-op.  On WASM it
+// raises RuntimeError for modules that require real threads.
+// ---------------------------------------------------------------------------
+
+/// List of modules that require real OS threads and cannot function under the
+/// single-threaded WASM runtime.
+#[cfg(target_arch = "wasm32")]
+const WASM_THREAD_BLOCKED_MODULES: &[&str] = &[
+    "smtplib",
+    "socketserver",
+    "xmlrpc.server",
+    "http.server",
+    "concurrent.futures",
+    "multiprocessing",
+];
+
+/// # Safety
+/// `name_bits` must be a valid NaN-boxed string object.
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_wasm_check_module_gate(name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let name_obj = obj_from_bits(name_bits);
+        let Some(name) = crate::string_obj_to_owned(name_obj) else {
+            return MoltObject::none().bits();
+        };
+        for blocked in WASM_THREAD_BLOCKED_MODULES {
+            if name == *blocked || name.starts_with(&format!("{blocked}.")) {
+                return raise_exception::<u64>(
+                    _py,
+                    "RuntimeError",
+                    &format!(
+                        "module '{name}' requires threading support which is unavailable in the \
+                         WASM runtime. This is a known promotion blocker – see MOL-184."
+                    ),
+                );
+            }
+        }
+        MoltObject::none().bits()
+    })
+}
+
+/// # Safety
+/// `name_bits` must be a valid NaN-boxed string object.
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_wasm_check_module_gate(_name_bits: u64) -> u64 {
+    MoltObject::none().bits()
+}
+
+// ---------------------------------------------------------------------------
+// Explicit WASM gate for threading.Thread, threading.Lock, etc.
+// On WASM, attempting to create a Thread raises RuntimeError.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_thread_start(_callable_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        raise_exception::<u64>(
+            _py,
+            "RuntimeError",
+            "threading.Thread is not available in the WASM runtime: WASM is \
+             single-threaded. Server-heavy workloads using threading (smtplib, \
+             socketserver) are promotion blockers – see MOL-184.",
+        )
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// `callable_bits` must be a valid runtime callable object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_thread_start(callable_bits: u64) -> u64 {
+    // On native, this is a simple alias for molt_thread_submit with no
+    // args/kwargs.
+    unsafe { molt_thread_submit(callable_bits, MoltObject::none().bits(), MoltObject::none().bits()) }
+}

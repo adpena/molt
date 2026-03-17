@@ -229,6 +229,45 @@ _MOLT_SYS_COPYRIGHT = _as_callable(_require_intrinsic("molt_sys_copyright", glob
 _MOLT_TRACEBACK_FORMAT_EXCEPTION = _as_callable(
     _require_intrinsic("molt_traceback_format_exception", globals())
 )
+_MOLT_SYS_GETDEFAULTENCODING = _as_callable(
+    _require_intrinsic("molt_sys_getdefaultencoding", globals())
+)
+_MOLT_SYS_GETFILESYSTEMENCODING = _as_callable(
+    _require_intrinsic("molt_sys_getfilesystemencoding", globals())
+)
+_MOLT_SYS_GETSWITCHINTERVAL = _as_callable(
+    _require_intrinsic("molt_sys_getswitchinterval", globals())
+)
+_MOLT_SYS_SETSWITCHINTERVAL = _as_callable(
+    _require_intrinsic("molt_sys_setswitchinterval", globals())
+)
+_MOLT_SYS_GET_INT_MAX_STR_DIGITS = _as_callable(
+    _require_intrinsic("molt_sys_get_int_max_str_digits", globals())
+)
+_MOLT_SYS_SET_INT_MAX_STR_DIGITS = _as_callable(
+    _require_intrinsic("molt_sys_set_int_max_str_digits", globals())
+)
+_MOLT_SYS_CALL_TRACING_VALIDATE = _as_callable(
+    _require_intrinsic("molt_sys_call_tracing_validate", globals())
+)
+_MOLT_SYS_ADDAUDITHOOK = _as_callable(
+    _require_intrinsic("molt_sys_addaudithook", globals())
+)
+_MOLT_SYS_AUDIT_HOOK_COUNT = _as_callable(
+    _require_intrinsic("molt_sys_audit_hook_count", globals())
+)
+_MOLT_SYS_AUDIT_GET_HOOKS = _as_callable(
+    _require_intrinsic("molt_sys_audit_get_hooks", globals())
+)
+_MOLT_SYS_EXIT = _as_callable(
+    _require_intrinsic("molt_sys_exit", globals())
+)
+_MOLT_SYS_DISPLAYHOOK_WRITE = _as_callable(
+    _require_intrinsic("molt_sys_displayhook_write", globals())
+)
+_MOLT_SYS_EXCEPTHOOK_WRITE = _as_callable(
+    _require_intrinsic("molt_sys_excepthook_write", globals())
+)
 
 raw_argv = _MOLT_GETARGV()
 if raw_argv is None:
@@ -253,6 +292,7 @@ def _resolve_platform(_getter: object = _MOLT_SYS_PLATFORM) -> str:
 
 
 def exit(code: object = None) -> None:
+    _MOLT_SYS_EXIT(code)
     raise SystemExit(code)
 
 
@@ -832,11 +872,11 @@ def _getframe(depth: int = 0) -> object | None:
 
 
 def getdefaultencoding() -> str:
-    return _default_encoding
+    return cast(str, _MOLT_SYS_GETDEFAULTENCODING())
 
 
 def getfilesystemencoding() -> str:
-    return _fs_encoding
+    return cast(str, _MOLT_SYS_GETFILESYSTEMENCODING())
 
 
 def getfilesystemencodeerrors() -> str:
@@ -875,8 +915,8 @@ def displayhook(value: object) -> None:
         return
     _builtins = modules.get("builtins")
     text = repr(value)
-    stdout.write(text)
-    stdout.write("\n")
+    _MOLT_SYS_DISPLAYHOOK_WRITE(text)
+    _MOLT_SYS_DISPLAYHOOK_WRITE("\n")
     if _builtins is not None:
         _builtins._ = value  # type: ignore[attr-defined]
 
@@ -889,7 +929,7 @@ def excepthook(exc_type: object, exc_value: object, exc_tb: object) -> None:
     except BaseException:  # noqa: BLE001
         lines = None
     if isinstance(lines, list) and all(isinstance(line, str) for line in lines):
-        stderr.write("".join(lines))
+        _MOLT_SYS_EXCEPTHOOK_WRITE("".join(lines))
         return
 
     type_name = getattr(exc_type, "__name__", None)
@@ -897,9 +937,9 @@ def excepthook(exc_type: object, exc_value: object, exc_tb: object) -> None:
         type_name = str(exc_type)
     detail = str(exc_value) if exc_value is not None else ""
     if detail:
-        stderr.write(f"{type_name}: {detail}\n")
+        _MOLT_SYS_EXCEPTHOOK_WRITE(f"{type_name}: {detail}\n")
         return
-    stderr.write(f"{type_name}\n")
+    _MOLT_SYS_EXCEPTHOOK_WRITE(f"{type_name}\n")
 
 
 def unraisablehook(unraisable: object) -> None:
@@ -917,9 +957,9 @@ def unraisablehook(unraisable: object) -> None:
     if err_msg is None:
         err_msg = "Exception ignored in"
     if obj is not None:
-        stderr.write(f"{err_msg}: {obj!r}\n")
+        _MOLT_SYS_EXCEPTHOOK_WRITE(f"{err_msg}: {obj!r}\n")
     else:
-        stderr.write(f"{err_msg}\n")
+        _MOLT_SYS_EXCEPTHOOK_WRITE(f"{err_msg}\n")
 
     if exc_value is not None:
         try:
@@ -929,16 +969,16 @@ def unraisablehook(unraisable: object) -> None:
         except BaseException:  # noqa: BLE001
             lines = None
         if isinstance(lines, list) and all(isinstance(line, str) for line in lines):
-            stderr.write("".join(lines))
+            _MOLT_SYS_EXCEPTHOOK_WRITE("".join(lines))
             return
         type_name = getattr(exc_type, "__name__", None)
         if not isinstance(type_name, str):
             type_name = str(exc_type)
         detail = str(exc_value) if exc_value is not None else ""
         if detail:
-            stderr.write(f"{type_name}: {detail}\n")
+            _MOLT_SYS_EXCEPTHOOK_WRITE(f"{type_name}: {detail}\n")
         else:
-            stderr.write(f"{type_name}\n")
+            _MOLT_SYS_EXCEPTHOOK_WRITE(f"{type_name}\n")
 
 
 # --- Save original hooks (CPython 3.12 parity) ---
@@ -967,13 +1007,9 @@ _xoptions: dict[str, object] = {}
 
 # --- Integer string conversion length limitation (CPython 3.11+) ---
 
-# Pull defaults from int_info; int_info is already materialised above.
-_int_max_str_digits: int = int_info.default_max_str_digits  # type: ignore[assignment]
-
-
 def get_int_max_str_digits() -> int:
     """Return the current integer string conversion length limit."""
-    return _int_max_str_digits
+    return int(cast(int, _MOLT_SYS_GET_INT_MAX_STR_DIGITS()))
 
 
 def set_int_max_str_digits(maxdigits: int) -> None:
@@ -981,15 +1017,7 @@ def set_int_max_str_digits(maxdigits: int) -> None:
 
     *maxdigits* must be 0 (unlimited) or >= str_digits_check_threshold.
     """
-    global _int_max_str_digits  # noqa: PLW0603
-    if not isinstance(maxdigits, int) or isinstance(maxdigits, bool):
-        raise TypeError(
-            "set_int_max_str_digits() argument must be a positive integer or zero"
-        )
-    threshold = int_info.str_digits_check_threshold  # type: ignore[attr-defined]
-    if maxdigits != 0 and maxdigits < threshold:
-        raise ValueError(f"maxdigits must be 0 or larger than {threshold}")
-    _int_max_str_digits = maxdigits
+    _MOLT_SYS_SET_INT_MAX_STR_DIGITS(maxdigits)
 
 
 # --- Interpreter state queries ---
@@ -1013,12 +1041,9 @@ def getrefcount(obj: object) -> int:
 
 # --- Thread switch interval (CPython GIL timeslice) ---
 
-_switch_interval: float = 0.005  # CPython default: 5 ms
-
-
 def getswitchinterval() -> float:
     """Return the interpreter's thread switch interval in seconds."""
-    return _switch_interval
+    return float(cast(float, _MOLT_SYS_GETSWITCHINTERVAL()))
 
 
 def setswitchinterval(interval: float) -> None:
@@ -1027,12 +1052,7 @@ def setswitchinterval(interval: float) -> None:
     Molt does not have a GIL; this is a compatibility stub that stores
     the value for callers that read it back.
     """
-    global _switch_interval  # noqa: PLW0603
-    if not isinstance(interval, (int, float)):
-        raise TypeError("a float is required")
-    if interval <= 0:
-        raise ValueError("switch interval must be strictly positive")
-    _switch_interval = float(interval)
+    _MOLT_SYS_SETSWITCHINTERVAL(interval)
 
 
 def settrace(tracefunc: object) -> None:
@@ -1060,11 +1080,8 @@ def call_tracing(func: object, args: object) -> object:
 
     Molt does not support tracing; this simply calls func(*args).
     """
-    if not callable(func):
-        raise TypeError("call_tracing() argument 1 must be callable")
-    if not isinstance(args, tuple):
-        raise TypeError("call_tracing() argument 2 must be a tuple")
-    return func(*args)
+    _MOLT_SYS_CALL_TRACING_VALIDATE(func, args)
+    return func(*args)  # type: ignore[operator]
 
 
 # --- Active exception accessor (CPython 3.11+) ---
@@ -1082,18 +1099,13 @@ def exception() -> BaseException | None:
 
 # --- Audit hooks (CPython 3.8+, PEP 578) ---
 
-_audit_hooks: list[object] = []
-
-
 def addaudithook(hook: object) -> None:
     """Append the callable *hook* to the list of active auditing hooks.
 
     Molt does not raise audit events internally; hooks are stored for
     compatibility with libraries that register them.
     """
-    if not callable(hook):
-        raise TypeError("expected a callable object")
-    _audit_hooks.append(hook)
+    _MOLT_SYS_ADDAUDITHOOK(hook)
 
 
 def audit(event: str, *args: object) -> None:
@@ -1102,9 +1114,14 @@ def audit(event: str, *args: object) -> None:
     Molt invokes registered hooks with (event, args) for compatibility,
     but the runtime does not raise its own internal audit events.
     """
-    for hook in _audit_hooks:
-        if callable(hook):
-            hook(event, args)
+    count = _MOLT_SYS_AUDIT_HOOK_COUNT()
+    if not count:
+        return
+    hooks = _MOLT_SYS_AUDIT_GET_HOOKS()
+    if isinstance(hooks, list):
+        for hook in hooks:
+            if callable(hook):
+                hook(event, args)
 
 
 # ---------------------------------------------------------------------------

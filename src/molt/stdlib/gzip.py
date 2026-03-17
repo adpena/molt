@@ -1,4 +1,4 @@
-"""Minimal intrinsic-gated `gzip` subset for Molt."""
+"""Fully intrinsic-backed `gzip` module for Molt."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ _MOLT_GZIP_DECOMPRESS = _require_intrinsic("molt_gzip_decompress", globals())
 _MOLT_GZIP_OPEN = _require_intrinsic("molt_gzip_open", globals())
 _MOLT_GZIP_READ = _require_intrinsic("molt_gzip_read", globals())
 _MOLT_GZIP_WRITE = _require_intrinsic("molt_gzip_write", globals())
+_MOLT_GZIP_FLUSH = _require_intrinsic("molt_gzip_flush", globals())
 _MOLT_GZIP_CLOSE = _require_intrinsic("molt_gzip_close", globals())
 _MOLT_GZIP_DROP = _require_intrinsic("molt_gzip_drop", globals())
 
@@ -20,7 +21,7 @@ class BadGzipFile(OSError):
 
 
 class GzipFile:
-    """Minimal gzip file object backed by intrinsics."""
+    """Gzip file object backed entirely by Rust intrinsics."""
 
     def __init__(
         self,
@@ -70,6 +71,25 @@ class GzipFile:
             self._write_buf.extend(data)
             return len(data)
         return int(_MOLT_GZIP_WRITE(self._handle, data))
+
+    def flush(self) -> None:
+        if self._closed:
+            raise ValueError("I/O operation on closed file.")
+        if self._handle is not None:
+            _MOLT_GZIP_FLUSH(self._handle)
+
+    def readable(self) -> bool:
+        return "r" in self._mode
+
+    def writable(self) -> bool:
+        return "w" in self._mode or "a" in self._mode
+
+    def seekable(self) -> bool:
+        return False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     def close(self) -> None:
         if self._closed:

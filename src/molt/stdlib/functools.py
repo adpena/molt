@@ -1,6 +1,8 @@
+# Shim churn audit: 2 intrinsic-direct / 11 total exports
 """Deterministic functools shim for Molt.
 
 Functools helpers are backed by runtime intrinsics; missing intrinsics are a hard error.
+Pure-forwarding shims eliminated per MOL-215 where argument signatures permit.
 """
 
 from __future__ import annotations
@@ -42,8 +44,6 @@ WRAPPER_UPDATES = ("__dict__",)
 _MOLT_KWD_MARK = _require_intrinsic("molt_functools_kwd_mark", globals())
 _MOLT_UPDATE_WRAPPER = _require_intrinsic("molt_functools_update_wrapper", globals())
 _MOLT_WRAPS = _require_intrinsic("molt_functools_wraps", globals())
-_MOLT_CMP_TO_KEY = _require_intrinsic("molt_functools_cmp_to_key", globals())
-_MOLT_TOTAL_ORDERING = _require_intrinsic("molt_functools_total_ordering", globals())
 _MOLT_PARTIAL = _require_intrinsic("molt_functools_partial", globals())
 _MOLT_REDUCE = _require_intrinsic("molt_functools_reduce", globals())
 _MOLT_LRU_CACHE = _require_intrinsic("molt_functools_lru_cache", globals())
@@ -62,6 +62,14 @@ _MOLT_SD_DROP = _require_intrinsic("molt_functools_singledispatch_drop", globals
 
 _MISSING = _MOLT_KWD_MARK()
 
+# --- Direct intrinsic bindings (no Python wrapper overhead) ---
+
+cmp_to_key = _require_intrinsic("molt_functools_cmp_to_key", globals())
+total_ordering = _require_intrinsic("molt_functools_total_ordering", globals())
+
+
+# --- Retained wrappers (default args, arg repacking, or Python logic) ---
+
 
 def update_wrapper(
     wrapper: Callable[..., Any],
@@ -78,14 +86,6 @@ def wraps(
     updated: Iterable[str] = WRAPPER_UPDATES,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     return _MOLT_WRAPS(wrapped, assigned, updated)
-
-
-def cmp_to_key(mycmp: Callable[[Any, Any], Any]) -> Any:
-    return _MOLT_CMP_TO_KEY(mycmp)
-
-
-def total_ordering(cls: type[Any]) -> type[Any]:
-    return _MOLT_TOTAL_ORDERING(cls)
 
 
 def partial(func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:

@@ -1,4 +1,4 @@
-"""CSV reader/writer implementation for Molt."""
+"""CSV reader/writer implementation for Molt — fully intrinsic-backed."""
 
 from __future__ import annotations
 from typing import Iterable, Iterator, cast
@@ -55,6 +55,16 @@ _MOLT_CSV_WRITER_WRITEROWS = _require_intrinsic("molt_csv_writer_writerows", glo
 _MOLT_CSV_WRITER_DROP = _require_intrinsic("molt_csv_writer_drop", globals())
 _MOLT_CSV_SNIFF = _require_intrinsic("molt_csv_sniff", globals())
 _MOLT_CSV_HAS_HEADER = _require_intrinsic("molt_csv_has_header", globals())
+_MOLT_CSV_VALIDATE_FMTPARAMS = _require_intrinsic(
+    "molt_csv_validate_fmtparams", globals()
+)
+_MOLT_CSV_VALIDATE_DIALECT = _require_intrinsic(
+    "molt_csv_validate_dialect", globals()
+)
+_MOLT_CSV_NORMALIZE_ROW = _require_intrinsic("molt_csv_normalize_row", globals())
+_MOLT_CSV_DIALECT_LOOKUP_NAME = _require_intrinsic(
+    "molt_csv_dialect_lookup_name", globals()
+)
 
 _MOLT_CSV_RUNTIME_READY()
 
@@ -150,9 +160,7 @@ _DIALECT_FMTPARAM_KEYS = frozenset(Dialect.__slots__)
 
 
 def _validate_fmtparams(fmtparams: dict[str, object]) -> None:
-    for key in fmtparams:
-        if key not in _DIALECT_FMTPARAM_KEYS:
-            raise TypeError(f"this function got an unexpected keyword argument {key!r}")
+    _MOLT_CSV_VALIDATE_FMTPARAMS(list(fmtparams.keys()))
 
 
 def _dialect_from_obj(obj: object) -> Dialect:
@@ -171,52 +179,13 @@ def _dialect_from_obj(obj: object) -> Dialect:
 
 
 def _validate_dialect(dialect: Dialect) -> None:
-    if not isinstance(dialect.delimiter, str):
-        raise TypeError(
-            f'"delimiter" must be a unicode character, not {type(dialect.delimiter).__name__}'
-        )
-    if len(dialect.delimiter) != 1:
-        raise TypeError(
-            '"delimiter" must be a unicode character, '
-            f"not a string of length {len(dialect.delimiter)}"
-        )
-    if dialect.quotechar is not None:
-        if not isinstance(dialect.quotechar, str):
-            raise TypeError(
-                '"quotechar" must be a unicode character or None, '
-                f"not {type(dialect.quotechar).__name__}"
-            )
-        if len(dialect.quotechar) != 1:
-            raise TypeError(
-                '"quotechar" must be a unicode character or None, '
-                f"not a string of length {len(dialect.quotechar)}"
-            )
-    if dialect.escapechar is not None:
-        if not isinstance(dialect.escapechar, str):
-            raise TypeError(
-                '"escapechar" must be a unicode character or None, '
-                f"not {type(dialect.escapechar).__name__}"
-            )
-        if len(dialect.escapechar) != 1:
-            raise TypeError(
-                '"escapechar" must be a unicode character or None, '
-                f"not a string of length {len(dialect.escapechar)}"
-            )
-    if not isinstance(dialect.lineterminator, str):
-        raise TypeError(
-            f'"lineterminator" must be a string, not {type(dialect.lineterminator).__name__}'
-        )
-    if dialect.quoting not in {
-        QUOTE_MINIMAL,
-        QUOTE_ALL,
-        QUOTE_NONNUMERIC,
-        QUOTE_NONE,
-        QUOTE_STRINGS,
-        QUOTE_NOTNULL,
-    }:
-        raise TypeError('bad "quoting" value')
-    if dialect.quotechar is None and dialect.quoting != QUOTE_NONE:
-        raise TypeError("quotechar must be set if quoting enabled")
+    _MOLT_CSV_VALIDATE_DIALECT(
+        dialect.delimiter,
+        dialect.quotechar,
+        dialect.escapechar,
+        dialect.lineterminator,
+        dialect.quoting,
+    )
 
 
 def _resolve_dialect(dialect: object, fmtparams: dict[str, object]) -> Dialect:
@@ -258,16 +227,7 @@ def _dialect_from_intrinsic(raw: object) -> Dialect:
 
 
 def _dialect_lookup_name(name: object) -> str:
-    if isinstance(name, str):
-        return name
-    try:
-        hash(name)
-    except TypeError:
-        typename = type(name).__name__
-        raise TypeError(
-            f"cannot use '{typename}' as a dict key (unhashable type: '{typename}')"
-        ) from None
-    raise Error("unknown dialect")
+    return str(_MOLT_CSV_DIALECT_LOOKUP_NAME(name))
 
 
 def register_dialect(
@@ -341,8 +301,10 @@ def _iter_csvfile(csvfile: object) -> Iterator[str]:
 
 
 def _normalize_row(row: Iterable[object]) -> list[object] | tuple[object, ...]:
-    if isinstance(row, (list, tuple)):
-        return row
+    result = _MOLT_CSV_NORMALIZE_ROW(row)
+    if result is not None:
+        return row  # type: ignore[return-value]
+    # Fallback: try to convert to list
     try:
         return list(row)
     except TypeError:

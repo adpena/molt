@@ -555,6 +555,31 @@ pub extern "C" fn molt_array_setitem(handle_bits: u64, index_bits: u64, value_bi
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_array_delitem(handle_bits: u64, index_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = array_handle_from_bits(handle_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
+        };
+        let Some(idx_raw) = to_i64(obj_from_bits(index_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "array indices must be integers");
+        };
+        let len = handle.len() as i64;
+        let idx = if idx_raw < 0 { len + idx_raw } else { idx_raw };
+        if idx < 0 || idx >= len {
+            return raise_exception::<u64>(
+                _py,
+                "IndexError",
+                "array assignment index out of range",
+            );
+        }
+        if let Err(msg) = handle.remove_at(idx as usize) {
+            return raise_exception::<u64>(_py, "IndexError", msg);
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_array_len(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(handle) = array_handle_from_bits(handle_bits) else {

@@ -19,6 +19,15 @@ _MOLT_DATACLASSES_FIELDS = _require_intrinsic("molt_dataclasses_fields", globals
 _MOLT_DATACLASSES_ASDICT = _require_intrinsic("molt_dataclasses_asdict", globals())
 _MOLT_DATACLASSES_ASTUPLE = _require_intrinsic("molt_dataclasses_astuple", globals())
 _MOLT_DATACLASSES_REPLACE = _require_intrinsic("molt_dataclasses_replace", globals())
+_MOLT_DATACLASSES_REPR = _require_intrinsic("molt_dataclasses_repr", globals())
+_MOLT_DATACLASSES_EQ = _require_intrinsic("molt_dataclasses_eq", globals())
+_MOLT_DATACLASSES_HASH_FN = _require_intrinsic("molt_dataclasses_hash_fn", globals())
+_MOLT_DATACLASSES_CHECK_DEFAULT_ORDER = _require_intrinsic(
+    "molt_dataclasses_check_default_order", globals()
+)
+_MOLT_DATACLASSES_FIELD_FLAGS = _require_intrinsic(
+    "molt_dataclasses_field_flags", globals()
+)
 
 
 class _MISSING_TYPE:
@@ -234,45 +243,12 @@ def _is_kw_only(annotation) -> bool:
     return annotation is KW_ONLY or isinstance(annotation, _KW_ONLY_TYPE)
 
 
-def _has_default(field_obj: Field) -> bool:
-    return field_obj.default is not MISSING or field_obj.default_factory is not MISSING
-
-
 def _check_default_order(fields: dict[str, Field]) -> None:
-    seen_default = None
-    for field_obj in fields.values():
-        if field_obj._field_type not in (_FIELD, _FIELD_INITVAR):
-            continue
-        if not field_obj.init or field_obj.kw_only:
-            continue
-        if _has_default(field_obj):
-            seen_default = field_obj
-            continue
-        if seen_default is not None:
-            raise TypeError(
-                "non-default argument "
-                f"{field_obj.name!r} follows default argument "
-                f"{seen_default.name!r}"
-            )
+    _MOLT_DATACLASSES_CHECK_DEFAULT_ORDER(fields)
 
 
 def _dataclass_field_flags(fields: dict[str, Field]) -> tuple[int, ...]:
-    flags: list[int] = []
-    for field_obj in fields.values():
-        if field_obj._field_type is not _FIELD:
-            continue
-        flag = 0
-        if field_obj.repr:
-            flag |= 0x1
-        if field_obj.compare:
-            flag |= 0x2
-        hash_flag = field_obj.hash
-        if hash_flag is None:
-            hash_flag = field_obj.compare
-        if hash_flag:
-            flag |= 0x4
-        flags.append(flag)
-    return tuple(flags)
+    return _MOLT_DATACLASSES_FIELD_FLAGS(fields)
 
 
 def _should_set_hash(
@@ -411,28 +387,14 @@ def _dataclass_init(self, *args, **kwargs):
 
 @recursive_repr()
 def _dataclass_repr(self) -> str:
-    cls = self.__class__
-    fields_map = getattr(cls, "__dataclass_fields__", None)
-    if not fields_map:
-        return "<dataclass>"
-    parts = []
-    for field_obj in fields_map.values():
-        if field_obj._field_type is not _FIELD or not field_obj.repr:
-            continue
-        parts.append(f"{field_obj.name}={getattr(self, field_obj.name)!r}")
-    name = getattr(cls, "__qualname__", cls.__name__)
-    return f"{name}({', '.join(parts)})"
+    return _MOLT_DATACLASSES_REPR(self)
 
 
 def _dataclass_eq(self, other: object):
-    if other.__class__ is self.__class__:
-        fields_map = self.__class__.__dataclass_fields__
-        return all(
-            getattr(self, field_obj.name) == getattr(other, field_obj.name)
-            for field_obj in fields_map.values()
-            if field_obj._field_type is _FIELD and field_obj.compare
-        )
-    return NotImplemented
+    result = _MOLT_DATACLASSES_EQ(self, other)
+    if result is None:
+        return NotImplemented
+    return result
 
 
 def _dataclass_order(self, other: object, op):
@@ -453,17 +415,7 @@ def _dataclass_order(self, other: object, op):
 
 
 def _dataclass_hash(self) -> int:
-    fields_map = self.__class__.__dataclass_fields__
-    values = []
-    for field_obj in fields_map.values():
-        if field_obj._field_type is not _FIELD:
-            continue
-        hash_flag = field_obj.hash
-        if hash_flag is None:
-            hash_flag = field_obj.compare
-        if hash_flag:
-            values.append(getattr(self, field_obj.name))
-    return hash(tuple(values))
+    return int(_MOLT_DATACLASSES_HASH_FN(self))
 
 
 def _molt_apply_dataclass(

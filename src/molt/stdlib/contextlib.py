@@ -1,4 +1,8 @@
-"""Intrinsic-backed context manager helpers for Molt."""
+# Shim churn audit: 1 intrinsic-direct / 14 total exports
+"""Intrinsic-backed context manager helpers for Molt.
+
+Pure-forwarding shims eliminated per MOL-215 where argument signatures permit.
+"""
 
 from __future__ import annotations
 
@@ -148,12 +152,16 @@ def _copy_wrapper_metadata(
         pass
 
 
+# --- Direct intrinsic bindings (no Python wrapper overhead) ---
+
+closing = _MOLT_CONTEXTLIB_CLOSING
+
+
+# --- Retained wrappers ---
+
+
 def nullcontext(value: Any = None) -> Any:
     return _MOLT_CONTEXT_NULL(value)
-
-
-def closing(thing: Any) -> Any:
-    return _MOLT_CONTEXTLIB_CLOSING(thing)
 
 
 class _AClosing:

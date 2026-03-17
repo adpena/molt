@@ -3134,6 +3134,442 @@ pub extern "C" fn molt_re_finditer_collect(
 }
 
 // ---------------------------------------------------------------------------
+// molt_re_split — Rust-accelerated re.split()
+// ---------------------------------------------------------------------------
+
+/// `molt_re_split(handle, text, maxsplit) -> list[str]`
+///
+/// Split `text` by occurrences of the compiled regex pattern.  If the pattern
+/// contains capturing groups, the captured text is included in the result list
+/// (matching CPython semantics).
+///
+/// `maxsplit` of 0 means unlimited splits.
+///
+/// Zero-length matches are handled per CPython 3.7+ semantics: they split at
+/// every position but do not split at the same position twice.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_split(
+    handle_bits: u64,
+    text_bits: u64,
+    maxsplit_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "handle must be int");
+        };
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(maxsplit) = to_i64(obj_from_bits(maxsplit_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "maxsplit must be int");
+        };
+
+        // Look up compiled pattern.
+        let guard = RE_PATTERNS.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(compiled) = guard.get(&handle) else {
+            return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
+        };
+        let root = compiled.root.clone();
+        let group_count = compiled.group_count;
+        let flags = compiled.flags;
+        drop(guard);
+
+        let local_compiled = CompiledPattern {
+            root,
+            group_count,
+            group_names: HashMap::new(),
+            flags,
+            warn_pos: None,
+        };
+
+        let chars: Vec<char> = text.chars().collect();
+        let text_len = chars.len();
+        let limit = if maxsplit <= 0 { None } else { Some(maxsplit as usize) };
+
+        let mut result_parts: Vec<u64> = Vec::new();
+        let mut last: usize = 0;
+        let mut splits: usize = 0;
+        let mut cur: usize = 0;
+        let mut prev_empty_at: Option<usize> = None;
+
+        while cur <= text_len {
+            if let Some(lim) = limit {
+                if splits >= lim {
+                    break;
+                }
+            }
+
+            match execute_match(&local_compiled, &text, cur, text_len, "search") {
+                Some(result) => {
+                    let m_start = result.start;
+                    let m_end = result.end;
+
+                    // Zero-length match handling (CPython 3.7+):
+                    // Skip zero-length matches at the same position as a previous
+                    // zero-length match, and skip zero-length matches at the start
+                    // of the string that would produce an empty leading element.
+                    if m_start == m_end {
+                        if prev_empty_at == Some(m_start) {
+                            if cur < text_len {
+                                cur += 1;
+                            } else {
+                                break;
+                            }
+                            continue;
+                        }
+                        prev_empty_at = Some(m_start);
+                    } else {
+                        prev_empty_at = None;
+                    }
+
+                    // Append text[last..m_start]
+                    let segment: String = chars[last..m_start].iter().collect();
+                    let seg_ptr = alloc_string(_py, segment.as_bytes());
+                    if !seg_ptr.is_null() {
+                        result_parts.push(MoltObject::from_ptr(seg_ptr).bits());
+                    }
+
+                    // Append capturing group values (CPython includes them in split output).
+                    for i in 1..=(group_count as usize) {
+                        if i < result.groups.len() {
+                            match result.groups[i] {
+                                Some((gs, ge)) => {
+                                    let group_text: String = chars[gs..ge].iter().collect();
+                                    let gptr = alloc_string(_py, group_text.as_bytes());
+                                    if !gptr.is_null() {
+                                        result_parts.push(MoltObject::from_ptr(gptr).bits());
+                                    } else {
+                                        result_parts.push(MoltObject::none().bits());
+                                    }
+                                }
+                                None => {
+                                    result_parts.push(MoltObject::none().bits());
+                                }
+                            }
+                        } else {
+                            result_parts.push(MoltObject::none().bits());
+                        }
+                    }
+
+                    last = m_end;
+                    splits += 1;
+
+                    if m_end == m_start {
+                        if cur < text_len {
+                            cur = m_start + 1;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        cur = m_end;
+                    }
+                }
+                None => break,
+            }
+        }
+
+        // Append the remaining text.
+        let tail: String = chars[last..].iter().collect();
+        let tail_ptr = alloc_string(_py, tail.as_bytes());
+        if !tail_ptr.is_null() {
+            result_parts.push(MoltObject::from_ptr(tail_ptr).bits());
+        }
+
+        let list_ptr = alloc_list(_py, &result_parts);
+        if list_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(list_ptr).bits()
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// molt_re_sub — Rust-accelerated re.sub() / re.subn()
+// ---------------------------------------------------------------------------
+
+/// `molt_re_sub(handle, repl, text, count) -> (result_string, num_subs)`
+///
+/// Replace occurrences of the compiled pattern in `text` with `repl`.
+///
+/// `repl` is a string with backreference support (\1, \g<name>, etc.) handled
+/// by `molt_re_expand_replacement`.  Callable replacements are NOT handled here
+/// — the Python side detects callable repls and falls back to the Python loop.
+///
+/// `count` of 0 means replace all occurrences.
+///
+/// Returns a tuple `(result_string, num_replacements)`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_sub(
+    handle_bits: u64,
+    repl_bits: u64,
+    text_bits: u64,
+    count_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "handle must be int");
+        };
+        let Some(repl) = string_obj_to_owned(obj_from_bits(repl_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "repl must be str");
+        };
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(count) = to_i64(obj_from_bits(count_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "count must be int");
+        };
+
+        // Look up compiled pattern.
+        let guard = RE_PATTERNS.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(compiled) = guard.get(&handle) else {
+            return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
+        };
+        let root = compiled.root.clone();
+        let group_count = compiled.group_count;
+        let flags = compiled.flags;
+        let group_names = compiled.group_names.clone();
+        drop(guard);
+
+        let local_compiled = CompiledPattern {
+            root,
+            group_count,
+            group_names,
+            flags,
+            warn_pos: None,
+        };
+
+        let chars: Vec<char> = text.chars().collect();
+        let text_len = chars.len();
+        let limit = if count <= 0 { None } else { Some(count as usize) };
+
+        // Check if repl contains backreferences (backslash).
+        let repl_has_backref = repl.contains('\\');
+
+        let mut out = String::with_capacity(text.len());
+        let mut last: usize = 0;
+        let mut replaced: usize = 0;
+        let mut cur: usize = 0;
+        let mut prev_empty_at: Option<usize> = None;
+
+        while cur <= text_len {
+            if let Some(lim) = limit {
+                if replaced >= lim {
+                    break;
+                }
+            }
+
+            match execute_match(&local_compiled, &text, cur, text_len, "search") {
+                Some(result) => {
+                    let m_start = result.start;
+                    let m_end = result.end;
+
+                    // Zero-length match handling.
+                    if m_start == m_end {
+                        if prev_empty_at == Some(m_start) {
+                            if cur < text_len {
+                                cur += 1;
+                            } else {
+                                break;
+                            }
+                            continue;
+                        }
+                        prev_empty_at = Some(m_start);
+                    } else {
+                        prev_empty_at = None;
+                    }
+
+                    // Append text[last..m_start].
+                    let segment: String = chars[last..m_start].iter().collect();
+                    out.push_str(&segment);
+
+                    // Expand the replacement template.
+                    if repl_has_backref {
+                        // Build group values for expand_replacement.
+                        let expanded = expand_repl_with_groups(&repl, &text, &chars, &result, group_count, &local_compiled.group_names);
+                        out.push_str(&expanded);
+                    } else {
+                        out.push_str(&repl);
+                    }
+
+                    last = m_end;
+                    replaced += 1;
+
+                    if m_end == m_start {
+                        if cur < text_len {
+                            // Advance past the current position and include the character.
+                            cur = m_start + 1;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        cur = m_end;
+                    }
+                }
+                None => break,
+            }
+        }
+
+        // Append the remaining text.
+        let tail: String = chars[last..].iter().collect();
+        out.push_str(&tail);
+
+        // Build result tuple: (result_string, num_replacements).
+        let result_str_ptr = alloc_string(_py, out.as_bytes());
+        let result_str_bits = if result_str_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(result_str_ptr).bits()
+        };
+        let count_bits_out = MoltObject::from_int(replaced as i64).bits();
+
+        let tuple_ptr = alloc_tuple(_py, &[result_str_bits, count_bits_out]);
+        if tuple_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+    })
+}
+
+/// Expand a replacement template string with group references.
+///
+/// Handles:
+/// - `\1` through `\99` — numbered group references
+/// - `\g<N>` — numbered group references
+/// - `\g<name>` — named group references
+/// - `\0` — not supported (same as CPython: treated as octal)
+/// - `\\` — literal backslash
+fn expand_repl_with_groups(
+    repl: &str,
+    _text: &str,
+    chars: &[char],
+    result: &MatchResult,
+    group_count: u32,
+    group_names: &HashMap<String, u32>,
+) -> String {
+    let repl_chars: Vec<char> = repl.chars().collect();
+    let rlen = repl_chars.len();
+    let mut out = String::with_capacity(repl.len());
+    let mut i = 0;
+
+    while i < rlen {
+        if repl_chars[i] == '\\' && i + 1 < rlen {
+            let next = repl_chars[i + 1];
+            match next {
+                '\\' => {
+                    out.push('\\');
+                    i += 2;
+                }
+                '0' => {
+                    // \0 is a NUL byte in CPython
+                    out.push('\0');
+                    i += 2;
+                }
+                '1'..='9' => {
+                    // Numeric backreference: \1 through \99
+                    let mut num_str = String::new();
+                    num_str.push(next);
+                    if i + 2 < rlen && repl_chars[i + 2].is_ascii_digit() {
+                        let two_digit = format!("{}{}", next, repl_chars[i + 2]);
+                        if let Ok(n) = two_digit.parse::<u32>() {
+                            if n <= group_count {
+                                num_str.push(repl_chars[i + 2]);
+                            }
+                        }
+                    }
+                    let idx = num_str.parse::<u32>().unwrap_or(0) as usize;
+                    if idx > 0 && idx <= group_count as usize && idx < result.groups.len() {
+                        if let Some((gs, ge)) = result.groups[idx] {
+                            let group_text: String = chars[gs..ge].iter().collect();
+                            out.push_str(&group_text);
+                        }
+                    }
+                    i += 1 + num_str.len();
+                }
+                'g' => {
+                    // \g<...> — named or numbered group reference
+                    if i + 2 < rlen && repl_chars[i + 2] == '<' {
+                        // Find closing >
+                        let start = i + 3;
+                        let mut end_idx = start;
+                        while end_idx < rlen && repl_chars[end_idx] != '>' {
+                            end_idx += 1;
+                        }
+                        if end_idx < rlen {
+                            let ref_name: String = repl_chars[start..end_idx].iter().collect();
+                            // Try as number first, then as name.
+                            let group_idx = if let Ok(n) = ref_name.parse::<u32>() {
+                                Some(n as usize)
+                            } else {
+                                group_names.get(&ref_name).map(|&n| n as usize)
+                            };
+                            if let Some(idx) = group_idx {
+                                if idx == 0 {
+                                    // \g<0> is the whole match
+                                    let group_text: String = chars[result.start..result.end].iter().collect();
+                                    out.push_str(&group_text);
+                                } else if idx <= group_count as usize && idx < result.groups.len() {
+                                    if let Some((gs, ge)) = result.groups[idx] {
+                                        let group_text: String = chars[gs..ge].iter().collect();
+                                        out.push_str(&group_text);
+                                    }
+                                }
+                            }
+                            i = end_idx + 1;
+                        } else {
+                            // Malformed \g<...>, pass through
+                            out.push('\\');
+                            out.push('g');
+                            i += 2;
+                        }
+                    } else {
+                        out.push('\\');
+                        out.push('g');
+                        i += 2;
+                    }
+                }
+                'n' => {
+                    out.push('\n');
+                    i += 2;
+                }
+                'r' => {
+                    out.push('\r');
+                    i += 2;
+                }
+                't' => {
+                    out.push('\t');
+                    i += 2;
+                }
+                'a' => {
+                    out.push('\x07');
+                    i += 2;
+                }
+                'f' => {
+                    out.push('\x0C');
+                    i += 2;
+                }
+                'v' => {
+                    out.push('\x0B');
+                    i += 2;
+                }
+                _ => {
+                    // Unknown escape — pass through as-is (CPython behavior)
+                    out.push('\\');
+                    out.push(next);
+                    i += 2;
+                }
+            }
+        } else {
+            out.push(repl_chars[i]);
+            i += 1;
+        }
+    }
+
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 
@@ -4246,5 +4682,266 @@ mod tests {
         let compiled = parse_pattern("a", 0).unwrap();
         let m = execute_match(&compiled, "a", 5, 5, "match");
         assert!(m.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // split / sub helper tests (internal logic)
+    // -----------------------------------------------------------------------
+
+    /// Helper: split a string by a compiled pattern.
+    fn do_split(pattern: &str, text: &str, maxsplit: usize) -> Vec<String> {
+        let compiled = parse_pattern(pattern, 0).unwrap();
+        let chars: Vec<char> = text.chars().collect();
+        let text_len = chars.len();
+        let limit = if maxsplit == 0 { None } else { Some(maxsplit) };
+
+        let mut result_parts: Vec<String> = Vec::new();
+        let mut last: usize = 0;
+        let mut splits: usize = 0;
+        let mut cur: usize = 0;
+        let mut prev_empty_at: Option<usize> = None;
+
+        while cur <= text_len {
+            if let Some(lim) = limit {
+                if splits >= lim {
+                    break;
+                }
+            }
+
+            match execute_match(&compiled, text, cur, text_len, "search") {
+                Some(result) => {
+                    let m_start = result.start;
+                    let m_end = result.end;
+
+                    if m_start == m_end {
+                        if prev_empty_at == Some(m_start) {
+                            if cur < text_len {
+                                cur += 1;
+                            } else {
+                                break;
+                            }
+                            continue;
+                        }
+                        prev_empty_at = Some(m_start);
+                    } else {
+                        prev_empty_at = None;
+                    }
+
+                    let segment: String = chars[last..m_start].iter().collect();
+                    result_parts.push(segment);
+
+                    // Include capturing groups.
+                    for i in 1..=(compiled.group_count as usize) {
+                        if i < result.groups.len() {
+                            match result.groups[i] {
+                                Some((gs, ge)) => {
+                                    let group_text: String = chars[gs..ge].iter().collect();
+                                    result_parts.push(group_text);
+                                }
+                                None => {
+                                    result_parts.push(String::new());
+                                }
+                            }
+                        } else {
+                            result_parts.push(String::new());
+                        }
+                    }
+
+                    last = m_end;
+                    splits += 1;
+
+                    if m_end == m_start {
+                        if cur < text_len {
+                            cur = m_start + 1;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        cur = m_end;
+                    }
+                }
+                None => break,
+            }
+        }
+
+        let tail: String = chars[last..].iter().collect();
+        result_parts.push(tail);
+        result_parts
+    }
+
+    /// Helper: sub with string replacement.
+    fn do_sub(pattern: &str, repl: &str, text: &str, count: usize) -> (String, usize) {
+        let compiled = parse_pattern(pattern, 0).unwrap();
+        let chars: Vec<char> = text.chars().collect();
+        let text_len = chars.len();
+        let limit = if count == 0 { None } else { Some(count) };
+        let repl_has_backref = repl.contains('\\');
+
+        let mut out = String::with_capacity(text.len());
+        let mut last: usize = 0;
+        let mut replaced: usize = 0;
+        let mut cur: usize = 0;
+        let mut prev_empty_at: Option<usize> = None;
+
+        while cur <= text_len {
+            if let Some(lim) = limit {
+                if replaced >= lim {
+                    break;
+                }
+            }
+
+            match execute_match(&compiled, text, cur, text_len, "search") {
+                Some(result) => {
+                    let m_start = result.start;
+                    let m_end = result.end;
+
+                    if m_start == m_end {
+                        if prev_empty_at == Some(m_start) {
+                            if cur < text_len {
+                                cur += 1;
+                            } else {
+                                break;
+                            }
+                            continue;
+                        }
+                        prev_empty_at = Some(m_start);
+                    } else {
+                        prev_empty_at = None;
+                    }
+
+                    let segment: String = chars[last..m_start].iter().collect();
+                    out.push_str(&segment);
+
+                    if repl_has_backref {
+                        let expanded = expand_repl_with_groups(repl, text, &chars, &result, compiled.group_count, &compiled.group_names);
+                        out.push_str(&expanded);
+                    } else {
+                        out.push_str(repl);
+                    }
+
+                    last = m_end;
+                    replaced += 1;
+
+                    if m_end == m_start {
+                        if cur < text_len {
+                            cur = m_start + 1;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        cur = m_end;
+                    }
+                }
+                None => break,
+            }
+        }
+
+        let tail: String = chars[last..].iter().collect();
+        out.push_str(&tail);
+        (out, replaced)
+    }
+
+    #[test]
+    fn test_split_basic() {
+        let result = do_split("\\s+", "foo bar  baz", 0);
+        assert_eq!(result, vec!["foo", "bar", "baz"]);
+    }
+
+    #[test]
+    fn test_split_with_maxsplit() {
+        let result = do_split("\\s+", "foo bar  baz qux", 2);
+        assert_eq!(result, vec!["foo", "bar", "baz qux"]);
+    }
+
+    #[test]
+    fn test_split_with_groups() {
+        let result = do_split("(\\s+)", "foo bar", 0);
+        assert_eq!(result, vec!["foo", " ", "bar"]);
+    }
+
+    #[test]
+    fn test_split_no_match() {
+        let result = do_split("x", "abc", 0);
+        assert_eq!(result, vec!["abc"]);
+    }
+
+    #[test]
+    fn test_sub_basic() {
+        let (result, count) = do_sub("\\d+", "NUM", "abc123def456", 0);
+        assert_eq!(result, "abcNUMdefNUM");
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_sub_with_count() {
+        let (result, count) = do_sub("\\d+", "NUM", "abc123def456ghi789", 2);
+        assert_eq!(result, "abcNUMdefNUMghi789");
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_sub_with_backref() {
+        let (result, _count) = do_sub("(\\w+)", "[\\1]", "hello world", 0);
+        assert_eq!(result, "[hello] [world]");
+    }
+
+    #[test]
+    fn test_sub_no_match() {
+        let (result, count) = do_sub("xyz", "ABC", "hello world", 0);
+        assert_eq!(result, "hello world");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_expand_repl_numbered_group() {
+        let result = MatchResult {
+            start: 0,
+            end: 5,
+            groups: vec![None, Some((0, 5))],
+        };
+        let chars: Vec<char> = "hello".chars().collect();
+        let names = HashMap::new();
+        let expanded = expand_repl_with_groups("<<\\1>>", "hello", &chars, &result, 1, &names);
+        assert_eq!(expanded, "<<hello>>");
+    }
+
+    #[test]
+    fn test_expand_repl_named_group() {
+        let result = MatchResult {
+            start: 0,
+            end: 5,
+            groups: vec![None, Some((0, 5))],
+        };
+        let chars: Vec<char> = "hello".chars().collect();
+        let mut names = HashMap::new();
+        names.insert("word".to_string(), 1u32);
+        let expanded = expand_repl_with_groups("<<\\g<word>>>", "hello", &chars, &result, 1, &names);
+        assert_eq!(expanded, "<<hello>>");
+    }
+
+    #[test]
+    fn test_expand_repl_group_zero() {
+        let result = MatchResult {
+            start: 0,
+            end: 5,
+            groups: vec![None],
+        };
+        let chars: Vec<char> = "hello".chars().collect();
+        let names = HashMap::new();
+        let expanded = expand_repl_with_groups("<<\\g<0>>>", "hello", &chars, &result, 0, &names);
+        assert_eq!(expanded, "<<hello>>");
+    }
+
+    #[test]
+    fn test_expand_repl_escape_sequences() {
+        let result = MatchResult {
+            start: 0,
+            end: 0,
+            groups: vec![None],
+        };
+        let chars: Vec<char> = "".chars().collect();
+        let names = HashMap::new();
+        let expanded = expand_repl_with_groups("a\\nb\\tc\\\\d", "", &chars, &result, 0, &names);
+        assert_eq!(expanded, "a\nb\tc\\d");
     }
 }

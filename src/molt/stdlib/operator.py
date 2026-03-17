@@ -1,6 +1,8 @@
+# Shim churn audit: 41 intrinsic-direct / 41 total exports (via _operator)
 """Operator helpers for Molt.
 
 Operator helpers are backed by runtime intrinsics; missing intrinsics are a hard error.
+All exports are intrinsic-direct bindings from _operator (MOL-215).
 """
 
 from __future__ import annotations
