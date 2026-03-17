@@ -916,6 +916,281 @@ pub extern "C" fn molt_codecs_bom_utf32_be() -> u64 {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// charmap_build / charmap_decode / charmap_encode / make_identity_dict
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build an encoding map from a decoding table string.
+/// Maps each character in the decoding table to its index (skipping U+FFFE).
+/// Returns a dict (int ordinal → int index).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_codecs_charmap_build(table_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let table_obj = obj_from_bits(table_bits);
+        let Some(table) = string_obj_to_owned(table_obj) else {
+            return raise_exception::<_>(_py, "TypeError", "charmap_build argument must be str");
+        };
+        // alloc_dict_with_pairs expects a flat &[u64] with alternating key, value
+        let mut flat_pairs: Vec<u64> = Vec::new();
+        for (i, ch) in table.chars().enumerate() {
+            if ch == '\u{FFFE}' {
+                continue;
+            }
+            flat_pairs.push(MoltObject::from_int(ch as i64).bits());
+            flat_pairs.push(MoltObject::from_int(i as i64).bits());
+        }
+        let dict_ptr = crate::alloc_dict_with_pairs(_py, &flat_pairs);
+        if dict_ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(dict_ptr).bits()
+    })
+}
+
+/// Decode bytes using a character mapping.
+/// `input_bits`: bytes to decode
+/// `errors_bits`: error mode string ("strict", "ignore", "replace")
+/// `mapping_bits`: dict or None (None = latin-1 identity)
+/// Returns a (str, int) tuple of (decoded_text, bytes_consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_codecs_charmap_decode(
+    input_bits: u64,
+    errors_bits: u64,
+    mapping_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let input_obj = obj_from_bits(input_bits);
+        let Some(input_ptr) = input_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "input must be bytes");
+        };
+        let Some(input_bytes) = (unsafe { bytes_like_slice(input_ptr) }) else {
+            return raise_exception::<_>(_py, "TypeError", "input must be bytes");
+        };
+        let input_vec = input_bytes.to_vec();
+        let errors = string_obj_to_owned(obj_from_bits(errors_bits))
+            .unwrap_or_else(|| "strict".to_owned());
+        let mapping_obj = obj_from_bits(mapping_bits);
+
+        // None mapping = latin-1 identity decode
+        if mapping_obj.is_none() {
+            let decoded: String = input_vec.iter().map(|&b| b as char).collect();
+            let str_ptr = alloc_string(_py, decoded.as_bytes());
+            if str_ptr.is_null() {
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            let str_bits = MoltObject::from_ptr(str_ptr).bits();
+            let len_bits = MoltObject::from_int(input_vec.len() as i64).bits();
+            let elems = [str_bits, len_bits];
+            let tuple_ptr = crate::alloc_tuple(_py, &elems);
+            if tuple_ptr.is_null() {
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            return MoltObject::from_ptr(tuple_ptr).bits();
+        }
+
+        let map_ptr = match mapping_obj.as_ptr() {
+            Some(p) => p,
+            None => {
+                return raise_exception::<_>(_py, "TypeError", "mapping must be a dict or None");
+            }
+        };
+
+        let mut out = String::new();
+        for (pos, &b) in input_vec.iter().enumerate() {
+            let key_bits = MoltObject::from_int(b as i64).bits();
+            let mapped = unsafe { crate::dict_get_in_place(_py, map_ptr, key_bits) };
+            match mapped {
+                Some(val) => {
+                    let val_obj = obj_from_bits(val);
+                    if let Some(s) = string_obj_to_owned(val_obj) {
+                        out.push_str(&s);
+                    } else if let Some(i) = crate::to_i64(val_obj) {
+                        if let Some(ch) = char::from_u32(i as u32) {
+                            out.push(ch);
+                        }
+                    }
+                }
+                None => {
+                    match errors.as_str() {
+                        "ignore" => continue,
+                        "replace" => out.push('\u{FFFD}'),
+                        _ => {
+                            let msg = format!(
+                                "'charmap' codec can't decode byte 0x{b:02x} in position {pos}: character maps to <undefined>"
+                            );
+                            return raise_exception::<_>(_py, "UnicodeDecodeError", &msg);
+                        }
+                    }
+                }
+            }
+        }
+        let str_ptr = alloc_string(_py, out.as_bytes());
+        if str_ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        let str_bits = MoltObject::from_ptr(str_ptr).bits();
+        let len_bits = MoltObject::from_int(input_vec.len() as i64).bits();
+        let elems = [str_bits, len_bits];
+        let tuple_ptr = crate::alloc_tuple(_py, &elems);
+        if tuple_ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
+    })
+}
+
+/// Encode a string using a character mapping.
+/// `input_bits`: str to encode
+/// `errors_bits`: error mode string
+/// `mapping_bits`: dict or None (None = latin-1 identity)
+/// Returns a (bytes, int) tuple of (encoded_bytes, chars_consumed).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_codecs_charmap_encode(
+    input_bits: u64,
+    errors_bits: u64,
+    mapping_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let input_obj = obj_from_bits(input_bits);
+        let Some(input_str) = string_obj_to_owned(input_obj) else {
+            return raise_exception::<_>(_py, "TypeError", "input must be str");
+        };
+        let errors = string_obj_to_owned(obj_from_bits(errors_bits))
+            .unwrap_or_else(|| "strict".to_owned());
+        let mapping_obj = obj_from_bits(mapping_bits);
+
+        // None mapping = latin-1 identity encode
+        if mapping_obj.is_none() {
+            match encode_string_with_errors(input_str.as_bytes(), "latin-1", Some(&errors)) {
+                Ok(encoded) => {
+                    let bytes_ptr = alloc_bytes(_py, &encoded);
+                    if bytes_ptr.is_null() {
+                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    }
+                    let bytes_bits = MoltObject::from_ptr(bytes_ptr).bits();
+                    let len_bits = MoltObject::from_int(input_str.len() as i64).bits();
+                    let elems = [bytes_bits, len_bits];
+                    let tuple_ptr = crate::alloc_tuple(_py, &elems);
+                    if tuple_ptr.is_null() {
+                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    }
+                    return MoltObject::from_ptr(tuple_ptr).bits();
+                }
+                Err(_) => {
+                    return raise_exception::<_>(
+                        _py,
+                        "UnicodeEncodeError",
+                        "charmap encode failed with latin-1 fallback",
+                    );
+                }
+            }
+        }
+
+        let mut out: Vec<u8> = Vec::new();
+        let map_ptr = mapping_obj.as_ptr();
+        for (idx, ch) in input_str.chars().enumerate() {
+            let mut found = false;
+            if let Some(mp) = map_ptr {
+                // Try character key first
+                let ch_key_ptr = alloc_string(_py, ch.encode_utf8(&mut [0u8; 4]).as_bytes());
+                if !ch_key_ptr.is_null() {
+                    let ch_key_bits = MoltObject::from_ptr(ch_key_ptr).bits();
+                    let val = unsafe { crate::dict_get_in_place(_py, mp, ch_key_bits) };
+                    crate::dec_ref_bits(_py, ch_key_bits);
+                    if let Some(v) = val {
+                        let v_obj = obj_from_bits(v);
+                        if let Some(b_ptr) = v_obj.as_ptr() {
+                            if let Some(b_slice) = unsafe { bytes_like_slice(b_ptr) } {
+                                out.extend_from_slice(b_slice);
+                                found = true;
+                            }
+                        }
+                        if !found {
+                            if let Some(i) = crate::to_i64(v_obj) {
+                                out.push((i & 0xFF) as u8);
+                                found = true;
+                            } else if let Some(s) = string_obj_to_owned(v_obj) {
+                                out.extend_from_slice(
+                                    s.as_bytes().get(..1).unwrap_or(b"?"),
+                                );
+                                found = true;
+                            }
+                        }
+                    }
+                }
+                // Try ordinal key
+                if !found {
+                    let ord_key = MoltObject::from_int(ch as i64).bits();
+                    let val = unsafe { crate::dict_get_in_place(_py, mp, ord_key) };
+                    if let Some(v) = val {
+                        let v_obj = obj_from_bits(v);
+                        if let Some(b_ptr) = v_obj.as_ptr() {
+                            if let Some(b_slice) = unsafe { bytes_like_slice(b_ptr) } {
+                                out.extend_from_slice(b_slice);
+                                found = true;
+                            }
+                        }
+                        if !found {
+                            if let Some(i) = crate::to_i64(v_obj) {
+                                out.push((i & 0xFF) as u8);
+                                found = true;
+                            }
+                        }
+                    }
+                }
+            }
+            if !found {
+                match errors.as_str() {
+                    "ignore" => continue,
+                    "replace" => out.push(b'?'),
+                    _ => {
+                        let msg = format!(
+                            "'charmap' codec can't encode character '\\u{:04x}' in position {}: character maps to <undefined>",
+                            ch as u32, idx
+                        );
+                        return raise_exception::<_>(_py, "UnicodeEncodeError", &msg);
+                    }
+                }
+            }
+        }
+        let bytes_ptr = alloc_bytes(_py, &out);
+        if bytes_ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        let bytes_bits = MoltObject::from_ptr(bytes_ptr).bits();
+        let len_bits = MoltObject::from_int(input_str.len() as i64).bits();
+        let elems = [bytes_bits, len_bits];
+        let tuple_ptr = crate::alloc_tuple(_py, &elems);
+        if tuple_ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
+    })
+}
+
+/// Build an identity dict mapping each integer in `range_bits` to itself.
+/// Returns a dict.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_codecs_make_identity_dict(range_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let range_obj = obj_from_bits(range_bits);
+        let Some(items) = crate::decode_value_list(range_obj) else {
+            return raise_exception::<_>(_py, "TypeError", "argument must be iterable of ints");
+        };
+        // flat pairs: [key, val, key, val, ...]
+        let mut flat_pairs: Vec<u64> = Vec::with_capacity(items.len() * 2);
+        for item_bits in &items {
+            flat_pairs.push(*item_bits);
+            flat_pairs.push(*item_bits);
+        }
+        let dict_ptr = crate::alloc_dict_with_pairs(_py, &flat_pairs);
+        if dict_ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(dict_ptr).bits()
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Encoding name normalization
 // ─────────────────────────────────────────────────────────────────────────────
 

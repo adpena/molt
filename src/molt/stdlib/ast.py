@@ -162,6 +162,8 @@ class BinOp(AST):
 _MOLT_AST_PARSE = _require_intrinsic("molt_ast_parse", globals())
 _MOLT_AST_WALK = _require_intrinsic("molt_ast_walk", globals())
 _MOLT_AST_GET_DOCSTRING = _require_intrinsic("molt_ast_get_docstring", globals())
+_MOLT_AST_ITER_FIELDS = _require_intrinsic("molt_ast_iter_fields", globals())
+_MOLT_AST_ITER_CHILD_NODES = _require_intrinsic("molt_ast_iter_child_nodes", globals())
 
 _AST_PARSE_CTORS = (
     Module,
@@ -182,22 +184,11 @@ _AST_PARSE_CTORS = (
 
 
 def iter_fields(node: AST) -> Iterable[tuple[str, Any]]:
-    fields = getattr(type(node), "_fields", ())
-    if not isinstance(fields, (list, tuple)):
-        return
-    for name in fields:
-        yield name, getattr(node, name)
+    return iter(_MOLT_AST_ITER_FIELDS(node))
 
 
 def iter_child_nodes(node: AST) -> Iterator[AST]:
-    for _field_name, value in iter_fields(node):
-        if isinstance(value, AST):
-            yield value
-            continue
-        if isinstance(value, (list, tuple)):
-            for item in value:
-                if isinstance(item, AST):
-                    yield item
+    return iter(_MOLT_AST_ITER_CHILD_NODES(node))
 
 
 def walk(node: AST) -> Iterator[AST]:
