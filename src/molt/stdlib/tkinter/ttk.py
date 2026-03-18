@@ -3,17 +3,9 @@ import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic
 from ._support import require_gui_capability as _require_gui_capability
 
-
-def _lazy_intrinsic(name):
-    def _call(*args, **kwargs):
-        return _require_intrinsic(name, globals())(*args, **kwargs)
-
-    return _call
-
-
-_MOLT_CAPABILITIES_HAS = _lazy_intrinsic("molt_capabilities_has")
-_MOLT_TK_EVENT_SUBST_PARSE = _lazy_intrinsic("molt_tk_event_subst_parse")
-_molt_tk_convert_stringval = _lazy_intrinsic("molt_tk_convert_stringval")
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_TK_EVENT_SUBST_PARSE = _require_intrinsic("molt_tk_event_subst_parse", globals())
+_molt_tk_convert_stringval = _require_intrinsic("molt_tk_convert_stringval", globals())
 tkinter = _tkinter
 _SUBST_FORMAT = (
     "%#",

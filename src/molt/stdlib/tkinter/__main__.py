@@ -5,16 +5,8 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 from ._support import tk_unavailable_message as _tk_unavailable_message
 
-
-def _lazy_intrinsic(name):
-    def _call(*args, **kwargs):
-        return _require_intrinsic(name, globals())(*args, **kwargs)
-
-    return _call
-
-
-_MOLT_CAPABILITIES_HAS = _lazy_intrinsic("molt_capabilities_has")
-_MOLT_TK_AVAILABLE = _lazy_intrinsic("molt_tk_available")
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available", globals())
 
 
 def _has_gui_capability():

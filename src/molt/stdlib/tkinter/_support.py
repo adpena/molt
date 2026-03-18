@@ -2,17 +2,9 @@
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-
-def _lazy_intrinsic(name):
-    def _call(*args, **kwargs):
-        return _require_intrinsic(name, globals())(*args, **kwargs)
-
-    return _call
-
-
-_MOLT_CAPABILITIES_HAS = _lazy_intrinsic("molt_capabilities_has")
-_MOLT_TK_AVAILABLE = _lazy_intrinsic("molt_tk_available")
-_MOLT_TK_LAST_ERROR = _lazy_intrinsic("molt_tk_last_error")
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available", globals())
+_MOLT_TK_LAST_ERROR = _require_intrinsic("molt_tk_last_error", globals())
 
 
 def has_gui_capability():

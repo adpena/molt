@@ -186,6 +186,7 @@ builtins._molt_intrinsics = {"molt_capabilities_has": lambda _name=None: True,
     "molt_tk_cnfmerge": _tk_cnfmerge,
     "molt_tk_normalize_option": _tk_normalize_option,
     "molt_tk_normalize_delay_ms": _tk_normalize_delay_ms,
+    "molt_tk_hex_to_rgb": lambda _color=None: (0, 0, 0),
     "molt_tk_commondialog_show": lambda _app=None, _master=None, _command=None, _options=None: _runtime_unavailable("molt_tk_commondialog_show"),
     "molt_tk_messagebox_show": lambda _app=None, _master=None, _options=None: _runtime_unavailable("molt_tk_messagebox_show"),
     "molt_tk_filedialog_show": lambda _app=None, _master=None, _command=None, _options=None: _runtime_unavailable("molt_tk_filedialog_show"),
@@ -841,6 +842,28 @@ def _tk_normalize_delay_ms(value):
     return int(value)
 
 
+def _tk_convert_stringval(value):
+    text = str(value)
+    lowered = text.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    try:
+        return int(text)
+    except ValueError:
+        return text
+
+
+def _tk_hex_to_rgb(color):
+    text = str(color).lstrip("#")
+    if len(text) == 3:
+        text = "".join(ch * 2 for ch in text)
+    if len(text) != 6:
+        raise ValueError("expected #RRGGBB color")
+    return tuple(int(text[idx : idx + 2], 16) * 257 for idx in (0, 2, 4))
+
+
 builtins._molt_intrinsics = {
     "molt_stdlib_probe": lambda: True,
     "molt_fnmatch": lambda name, pat: _host_fnmatch.fnmatch(name, pat),
@@ -894,6 +917,8 @@ builtins._molt_intrinsics = {
     "molt_tk_cnfmerge": _tk_cnfmerge,
     "molt_tk_normalize_option": _tk_normalize_option,
     "molt_tk_normalize_delay_ms": _tk_normalize_delay_ms,
+    "molt_tk_convert_stringval": _tk_convert_stringval,
+    "molt_tk_hex_to_rgb": _tk_hex_to_rgb,
     "molt_tk_commondialog_show": _tk_commondialog_show,
     "molt_tk_messagebox_show": _tk_messagebox_show,
     "molt_tk_filedialog_show": _tk_filedialog_show,
