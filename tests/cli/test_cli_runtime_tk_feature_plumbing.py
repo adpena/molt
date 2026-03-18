@@ -122,6 +122,30 @@ def test_backend_fingerprint_reuses_stored_hash_when_inputs_unchanged(
     assert calls == 0
 
 
+def test_rustc_version_is_cached(monkeypatch) -> None:
+    cli._rustc_version.cache_clear()
+    calls = 0
+
+    def fake_run(*args, **kwargs) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        return subprocess.CompletedProcess(
+            ["rustc", "-Vv"],
+            0,
+            "release: 1.0.0\n",
+            "",
+        )
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run, raising=True)
+    first = cli._rustc_version()
+    second = cli._rustc_version()
+    assert first == "release: 1.0.0"
+    assert second == first
+    assert calls == 1
+    cli._rustc_version.cache_clear()
+
+
 def test_ensure_runtime_lib_passes_tk_feature_to_native_build(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -6,6 +6,7 @@ import contextlib
 from concurrent.futures import ProcessPoolExecutor
 import errno
 import datetime as dt
+import functools
 import hashlib
 import http.client
 import io
@@ -3990,6 +3991,7 @@ def _latest_mtime(paths: list[Path]) -> float:
     return latest
 
 
+@functools.lru_cache(maxsize=1)
 def _rustc_version() -> str | None:
     try:
         result = subprocess.run(
