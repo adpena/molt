@@ -140,6 +140,7 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
         roots,
         module_roots,
         stdlib_root,
+        ROOT,
         stdlib_allowlist,
         skip_modules=cli.STUB_MODULES,
         stub_parents=cli.STUB_PARENT_MODULES,
@@ -164,6 +165,7 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
             roots,
             module_roots,
             stdlib_root,
+            ROOT,
             stdlib_allowlist,
             skip_modules=cli.STUB_MODULES,
             stub_parents=cli.STUB_PARENT_MODULES,
@@ -344,6 +346,7 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
         roots,
         module_roots,
         stdlib_root,
+        tmp_path,
         stdlib_allowlist,
         resolver_cache=shared_cache,
     )
@@ -353,6 +356,7 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
         roots,
         module_roots,
         stdlib_root,
+        tmp_path,
         stdlib_allowlist,
         resolver_cache=shared_cache,
     )
@@ -364,6 +368,7 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
         roots,
         module_roots,
         stdlib_root,
+        tmp_path,
         stdlib_allowlist,
     )
     unshared_first = resolve_calls
@@ -380,6 +385,7 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
         roots,
         module_roots,
         stdlib_root,
+        tmp_path,
         stdlib_allowlist,
     )
     cli._collect_package_parents(graph, roots, stdlib_root, stdlib_allowlist)
@@ -447,6 +453,7 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
         roots,
         module_roots,
         stdlib_root,
+        tmp_path,
         stdlib_allowlist,
         resolver_cache=shared_cache,
     )
@@ -467,6 +474,7 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
         roots,
         module_roots,
         stdlib_root,
+        tmp_path,
         stdlib_allowlist,
     )
     for module_path in unshared_graph.values():
@@ -574,6 +582,7 @@ def test_shared_module_resolution_cache_reuses_import_scans(
         roots,
         module_roots,
         stdlib_root,
+        tmp_path,
         stdlib_allowlist,
         resolver_cache=cache,
     )
@@ -595,6 +604,48 @@ def test_shared_module_resolution_cache_reuses_import_scans(
         )
 
     assert collect_calls == first_collect_calls
+
+
+def test_discover_module_graph_reuses_persisted_import_scan_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry = tmp_path / "pkg" / "__init__.py"
+    entry.parent.mkdir()
+    entry.write_text("import pkg.helper\n")
+    helper = entry.parent / "helper.py"
+    helper.write_text("import warnings\n")
+
+    stdlib_root = cli._stdlib_root_path()
+    module_roots = [tmp_path.resolve()]
+    roots = module_roots + [stdlib_root]
+    stdlib_allowlist = cli._stdlib_allowlist()
+
+    graph, explicit_imports = cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        tmp_path,
+        stdlib_allowlist,
+    )
+    assert "pkg.helper" in explicit_imports
+    assert "pkg" in graph
+
+    def fail_read(path: Path) -> str:
+        raise AssertionError(f"unexpected source read for {path}")
+
+    monkeypatch.setattr(cli, "_read_module_source", fail_read)
+
+    graph, explicit_imports = cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        tmp_path,
+        stdlib_allowlist,
+    )
+    assert "pkg.helper" in explicit_imports
+    assert "pkg" in graph
 
 
 def test_read_module_source_uses_utf8_fast_path(
@@ -652,6 +703,7 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
         roots,
         module_roots,
         stdlib_root,
+        ROOT,
         stdlib_allowlist,
         skip_modules=cli.STUB_MODULES,
         stub_parents=cli.STUB_PARENT_MODULES,
@@ -676,6 +728,7 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
             roots,
             module_roots,
             stdlib_root,
+            ROOT,
             stdlib_allowlist,
             skip_modules=cli.STUB_MODULES,
             stub_parents=cli.STUB_PARENT_MODULES,
@@ -698,6 +751,7 @@ def test_spawn_entry_override_required_for_multiprocessing(tmp_path: Path) -> No
         roots,
         module_roots,
         stdlib_root,
+        ROOT,
         stdlib_allowlist,
         skip_modules=cli.STUB_MODULES,
         stub_parents=cli.STUB_PARENT_MODULES,
@@ -1404,12 +1458,97 @@ def test_compile_with_backend_daemon_surfaces_cache_telemetry(
         cache_key="module-cache",
         function_cache_key="function-cache",
         config_digest="digest123",
+        skip_module_output_if_synced=False,
+        skip_function_output_if_synced=False,
         timeout=0.1,
     )
     assert result.ok is True
     assert result.cached is True
     assert result.cache_tier == "function"
+    assert result.output_written is True
     assert captured_payload.get("config_digest") == "digest123"
+
+
+def test_compile_with_backend_daemon_allows_cached_hit_without_output_write(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend_output = tmp_path / "output.o"
+    captured_payload: dict[str, object] = {}
+
+    def _fake_request(
+        socket_path: Path,
+        data: bytes,
+        *,
+        timeout: float | None,
+    ) -> tuple[dict[str, object], None]:
+        del socket_path, timeout
+        captured_payload.update(json.loads(data))
+        return (
+            {
+                "ok": True,
+                "jobs": [
+                    {
+                        "id": "job0",
+                        "ok": True,
+                        "cached": True,
+                        "cache_tier": "module",
+                        "output_written": False,
+                    }
+                ],
+                "health": {"pid": 42, "cache_hits": 1, "cache_misses": 0},
+            },
+            None,
+        )
+
+    monkeypatch.setattr(cli, "_backend_daemon_request_bytes", _fake_request)
+    result = cli._compile_with_backend_daemon(
+        Path("/tmp/fake.sock"),
+        ir={"functions": []},
+        backend_output=backend_output,
+        is_wasm=False,
+        target_triple=None,
+        cache_key="module-cache",
+        function_cache_key="function-cache",
+        config_digest="digest123",
+        skip_module_output_if_synced=True,
+        skip_function_output_if_synced=False,
+        timeout=0.1,
+    )
+
+    assert result.ok is True
+    assert result.cached is True
+    assert result.cache_tier == "module"
+    assert result.output_written is False
+    assert not backend_output.exists()
+    assert captured_payload["jobs"][0]["skip_module_output_if_synced"] is True
+    assert captured_payload["jobs"][0]["skip_function_output_if_synced"] is False
+
+
+def test_backend_daemon_skip_output_sync_flags_track_artifact_state(
+    tmp_path: Path,
+) -> None:
+    output_artifact = tmp_path / "dist" / "output.o"
+    output_artifact.parent.mkdir(parents=True)
+    output_artifact.write_bytes(b"artifact")
+    state_path = cli._artifact_sync_state_path(tmp_path, output_artifact)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    cli._write_artifact_sync_state(
+        state_path,
+        source_key="module-key",
+        tier="module",
+        artifact=output_artifact,
+    )
+
+    skip_module, skip_function = cli._backend_daemon_skip_output_sync_flags(
+        tmp_path,
+        output_artifact,
+        cache_key="module-key",
+        function_cache_key="function-key",
+    )
+
+    assert skip_module is True
+    assert skip_function is False
 
 
 def test_stage_backend_output_and_caches_promotes_module_cache(
