@@ -346,7 +346,7 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
         roots,
         module_roots,
         stdlib_root,
-        tmp_path,
+        None,
         stdlib_allowlist,
         resolver_cache=shared_cache,
     )
@@ -356,7 +356,7 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
         roots,
         module_roots,
         stdlib_root,
-        tmp_path,
+        None,
         stdlib_allowlist,
         resolver_cache=shared_cache,
     )
@@ -368,7 +368,7 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
         roots,
         module_roots,
         stdlib_root,
-        tmp_path,
+        None,
         stdlib_allowlist,
     )
     unshared_first = resolve_calls
@@ -385,7 +385,7 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
         roots,
         module_roots,
         stdlib_root,
-        tmp_path,
+        None,
         stdlib_allowlist,
     )
     cli._collect_package_parents(graph, roots, stdlib_root, stdlib_allowlist)
@@ -695,6 +695,42 @@ def test_discover_module_graph_reuses_persisted_graph_cache(
     )
     assert "pkg.helper" in explicit_imports
     assert "pkg" in graph
+
+
+def test_load_module_imports_reuses_persisted_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "pkg.py"
+    module_path.write_text("import warnings\n")
+    source = cli._read_module_source(module_path)
+    cache = cli._ModuleResolutionCache()
+    tree = cache.parse_module_ast(module_path, source, filename=str(module_path))
+
+    imports = cli._load_module_imports(
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        include_nested=True,
+        tree=tree,
+        resolution_cache=cache,
+        project_root=tmp_path,
+    )
+    assert imports == ("warnings",)
+
+    def fail_collect(*args: object, **kwargs: object) -> tuple[str, ...]:
+        raise AssertionError("unexpected import scan")
+
+    monkeypatch.setattr(cache, "collect_imports", fail_collect)
+    cached_imports = cli._load_module_imports(
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        include_nested=True,
+        tree=tree,
+        resolution_cache=cache,
+        project_root=tmp_path,
+    )
+    assert cached_imports == ("warnings",)
 
 
 def test_read_module_source_uses_utf8_fast_path(
