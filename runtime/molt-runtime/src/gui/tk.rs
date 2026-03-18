@@ -69,14 +69,19 @@ fn tcl_library_candidates() -> Vec<PathBuf> {
     let mut preferred_names: Vec<&'static str> = Vec::new();
     if cfg!(target_os = "macos") {
         preferred_names.extend(["libtcl8.7.dylib", "libtcl8.6.dylib", "libtcl.dylib"]);
+        // Prefer Homebrew Tcl over system framework (system Tcl may have
+        // macOS version compatibility issues on newer releases).
         candidates.push(PathBuf::from(
-            "/System/Library/Frameworks/Tcl.framework/Tcl",
+            "/opt/homebrew/opt/tcl-tk@8/lib/libtcl8.6.dylib",
         ));
         candidates.push(PathBuf::from(
             "/opt/homebrew/opt/tcl-tk/lib/libtcl8.7.dylib",
         ));
         candidates.push(PathBuf::from(
             "/opt/homebrew/opt/tcl-tk/lib/libtcl8.6.dylib",
+        ));
+        candidates.push(PathBuf::from(
+            "/System/Library/Frameworks/Tcl.framework/Tcl",
         ));
         candidates.push(PathBuf::from("/usr/local/opt/tcl-tk/lib/libtcl8.7.dylib"));
         candidates.push(PathBuf::from("/usr/local/opt/tcl-tk/lib/libtcl8.6.dylib"));

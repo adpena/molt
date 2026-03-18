@@ -13,56 +13,43 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_SITE_HELP0 = _require_intrinsic("molt_site_help0", globals())
-_MOLT_SITE_HELP1 = _require_intrinsic("molt_site_help1", globals())
-_MOLT_SITE_CREDITS = _require_intrinsic("molt_site_credits", globals())
-_MOLT_SITE_LICENSE = _require_intrinsic("molt_site_license", globals())
-_MOLT_SITE_COPYRIGHT = _require_intrinsic("molt_site_copyright", globals())
-_MOLT_SITE_QUITTER_CALL = _require_intrinsic("molt_site_quitter_call", globals())
-
-
 class _Helper:
-    # CPython: callable object, not a plain function.
     def __call__(self, *args: object, **kwds: object) -> None:
-        # Keep output short and deterministic. Differential tests normalize this
-        # to "nonempty output" rather than byte-for-byte pydoc parity.
         del kwds
         if not args:
-            _MOLT_SITE_HELP0()
+            _require_intrinsic("molt_site_help0")()
             return None
-        _MOLT_SITE_HELP1(args[0])
+        _require_intrinsic("molt_site_help1")(args[0])
         return None
 
 
 class _Printer:
-    def __init__(self, intrinsic) -> None:  # type: ignore[no-untyped-def]
-        self._intrinsic = intrinsic
+    def __init__(self, name: str) -> None:
+        self._name = name
 
     def __call__(self) -> None:
-        self._intrinsic()
+        _require_intrinsic(self._name)()
         return None
 
 
 help = _Helper()
 
-credits = _Printer(_MOLT_SITE_CREDITS)
+credits = _Printer("molt_site_credits")
 
-copyright = _Printer(_MOLT_SITE_COPYRIGHT)
+copyright = _Printer("molt_site_copyright")
 
-license = _Printer(_MOLT_SITE_LICENSE)
+license = _Printer("molt_site_license")
 
 
 class Quitter:
-    # CPython: `quit` / `exit` are instances of this type.
     def __init__(self, name: str) -> None:
         self._name = name
 
     def __repr__(self) -> str:
-        # Keep this deterministic and CPython-shaped enough for tooling.
         return f"Use {self._name}() or Ctrl-D (i.e. EOF) to exit"
 
     def __call__(self, code: object = None) -> None:
-        _MOLT_SITE_QUITTER_CALL(code)
+        _require_intrinsic("molt_site_quitter_call")(code)
         return None
 
 

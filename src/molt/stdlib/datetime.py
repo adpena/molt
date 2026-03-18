@@ -152,7 +152,6 @@ class timedelta:
 
     def __init__(
         self,
-        *,
         days: int = 0,
         seconds: int = 0,
         microseconds: int = 0,

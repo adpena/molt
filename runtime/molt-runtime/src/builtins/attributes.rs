@@ -9,8 +9,8 @@ use std::sync::{Mutex, OnceLock};
 use crate::async_rt::generators::{generator_locals_dict, generator_yieldfrom_bits};
 use crate::builtins::annotations::pep649_enabled;
 use crate::builtins::attr::{
-    awaitable_await_func_bits, class_slots_info, exception_is_attribute_error,
-    object_attr_lookup_raw,
+    awaitable_await_func_bits, class_slots_info, clear_attribute_error_if_pending,
+    exception_is_attribute_error, object_attr_lookup_raw,
 };
 use crate::builtins::containers::tuple_method_bits;
 use crate::builtins::methods::{
@@ -2597,6 +2597,10 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 inc_ref_bits(_py, val);
                 return Some(val);
             }
+            // Clear any exception left pending by the tentative dict lookup above.
+            // dict_get_in_place may leave exceptions from key comparison that would
+            // poison subsequent dict lookups in the class MRO search below.
+            clear_attribute_error_if_pending(_py);
             if class_bits != 0
                 && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                 && object_type_id(class_ptr) == TYPE_ID_TYPE

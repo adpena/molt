@@ -657,6 +657,8 @@ pub(crate) unsafe fn class_attr_lookup_raw_mro(
                     }
                     return Some(val_bits);
                 }
+                // Clear any exception left by the failed dict lookup
+                clear_attribute_error_if_pending(_py);
                 if let Some(name) = attr_name.as_deref()
                     && is_builtin_class_bits(_py, *class_bits)
                     && let Some(func_bits) = builtin_class_method_bits(_py, *class_bits, name)
@@ -678,6 +680,8 @@ pub(crate) unsafe fn class_attr_lookup_raw_mro(
             if let Some(val_bits) = dict_get_in_place(_py, dict_ptr, attr_bits) {
                 return Some(val_bits);
             }
+            // Clear any exception left by the failed dict lookup
+            clear_attribute_error_if_pending(_py);
             if let Some(name) = attr_name.as_deref() {
                 let current_bits = MoltObject::from_ptr(current_ptr).bits();
                 if is_builtin_class_bits(_py, current_bits)
