@@ -2776,6 +2776,23 @@ fn tcl_obj_from_bits(py: &PyToken<'_>, bits: u64) -> TclObj {
     if let Some(s) = string_obj_to_owned(obj) {
         return TclObj::from(s);
     }
+    // Handle tuples/lists as Tcl lists (e.g., font tuples like ("SF Pro Display", 18, "bold"))
+    if let Some(elements) = decode_value_list(obj) {
+        let tcl_elements: Vec<TclObj> = elements
+            .iter()
+            .map(|&elem_bits| tcl_obj_from_bits(py, elem_bits))
+            .collect();
+        return TclObj::new_list(tcl_elements.into_iter());
+    }
+    // Use str() instead of repr() for widget objects and other types.
+    // Widget.__str__ returns the Tcl widget path (e.g., ".!frame24"),
+    // while repr() returns "<tkinter.Frame object .!frame24>" which Tcl rejects.
+    let str_bits = crate::molt_str_from_obj(bits);
+    if let Some(s) = string_obj_to_owned(obj_from_bits(str_bits)) {
+        dec_ref_bits(py, str_bits);
+        return TclObj::from(s);
+    }
+    dec_ref_bits(py, str_bits);
     TclObj::from(format_obj_str(py, obj))
 }
 

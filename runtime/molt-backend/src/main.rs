@@ -13,7 +13,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const BACKEND_DAEMON_PROTOCOL_VERSION: u32 = 1;
 const BACKEND_DAEMON_DEFAULT_CACHE_MB: usize = 512;
-const BACKEND_DAEMON_DEFAULT_REQUEST_LIMIT_BYTES: usize = 32 * 1024 * 1024;
+const BACKEND_DAEMON_DEFAULT_REQUEST_LIMIT_BYTES: usize = 256 * 1024 * 1024;
 const BACKEND_DAEMON_DEFAULT_MAX_JOBS: usize = 8;
 
 #[derive(Debug, Deserialize)]

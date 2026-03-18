@@ -705,13 +705,26 @@ def _intrinsic_arity(runtime_name: str) -> int:
                     if not params_str:
                         cache.setdefault(name, 0)
                     else:
-                        count = len(
-                            [
-                                p
-                                for p in params_str.split(",")
-                                if p.strip() and not p.strip().startswith("*")
-                            ]
-                        )
+                        # Split params on commas, but ignore commas inside brackets
+                        # (e.g., tuple[Any, ...] should not be split).
+                        depth = 0
+                        parts = []
+                        current = ""
+                        for ch in params_str:
+                            if ch in "([{":
+                                depth += 1
+                                current += ch
+                            elif ch in ")]}":
+                                depth -= 1
+                                current += ch
+                            elif ch == "," and depth == 0:
+                                parts.append(current.strip())
+                                current = ""
+                            else:
+                                current += ch
+                        if current.strip():
+                            parts.append(current.strip())
+                        count = len([p for p in parts if p and not p.startswith("*")])
                         cache.setdefault(name, count)
         _INTRINSIC_ARITY_CACHE = cache
     return _INTRINSIC_ARITY_CACHE.get(runtime_name, 0)
