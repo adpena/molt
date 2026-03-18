@@ -6003,15 +6003,15 @@ def _backend_daemon_request_bytes(
             sock.connect(str(socket_path))
             sock.sendall(data)
             sock.shutdown(socket.SHUT_WR)
-            chunks: list[bytes] = []
+            raw = bytearray()
             while True:
                 chunk = sock.recv(65536)
                 if not chunk:
                     break
-                chunks.append(chunk)
+                raw.extend(chunk)
     except OSError as exc:
         return None, f"backend daemon connection failed: {exc}"
-    raw = b"".join(chunks).strip()
+    raw = bytes(raw).strip()
     if not raw:
         return None, "backend daemon returned empty response"
     try:
