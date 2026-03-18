@@ -368,16 +368,16 @@ MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run --python 3.12 python3 -u t
 - **Daemon socket placement**: sockets default to a local temp dir (`MOLT_BACKEND_DAEMON_SOCKET_DIR`, or explicit `MOLT_BACKEND_DAEMON_SOCKET`) so shared/external volumes that do not support Unix sockets do not break daemon startup.
 - **Daemon lifecycle**: daemon logs/pid/fingerprints live under `<CARGO_TARGET_DIR>/.molt_state/backend_daemon/` (or `MOLT_BUILD_STATE_DIR`). If an agent sees daemon protocol/connectivity errors, the CLI restarts daemon once under lock before falling back to one-shot compile.
 - **Bootstrap command**: `tools/throughput_env.sh --apply` (or `eval "$(tools/throughput_env.sh --print)"`) configures:
-  - `MOLT_EXT_ROOT=/Volumes/APDataStore/Molt` (or caller-provided external root)
-  - `MOLT_CACHE=$MOLT_EXT_ROOT/molt_cache`
-  - `CARGO_TARGET_DIR=$MOLT_EXT_ROOT/cargo-target`
+  - `MOLT_EXT_ROOT=<artifact-root>` (repo-local by default, or caller-provided external root)
+  - `MOLT_CACHE=$MOLT_EXT_ROOT/.molt_cache`
+  - `CARGO_TARGET_DIR=$MOLT_EXT_ROOT/target`
   - `MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR` so differential runs reuse the same shared Cargo artifacts by default
-  - `MOLT_DIFF_ROOT=$MOLT_EXT_ROOT/diff` and `MOLT_DIFF_TMPDIR=$MOLT_EXT_ROOT/tmp`
-  - `UV_CACHE_DIR=$MOLT_EXT_ROOT/uv-cache` and `TMPDIR=$MOLT_EXT_ROOT/tmp`
-  - `SCCACHE_DIR=$MOLT_EXT_ROOT/sccache` and `SCCACHE_CACHE_SIZE=20G`
+  - `MOLT_DIFF_ROOT=$MOLT_EXT_ROOT/tmp/diff` and `MOLT_DIFF_TMPDIR=$MOLT_EXT_ROOT/tmp`
+  - `UV_CACHE_DIR=$MOLT_EXT_ROOT/.uv-cache` and `TMPDIR=$MOLT_EXT_ROOT/tmp`
+  - `SCCACHE_DIR=$MOLT_EXT_ROOT/.sccache` and `SCCACHE_CACHE_SIZE=<policy default>`
   - `MOLT_USE_SCCACHE=1`, `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1`, and `CARGO_INCREMENTAL=0` for better cross-agent cacheability
-- **External root gate**: throughput bootstrap now fails fast when `MOLT_EXT_ROOT` is not mounted; pass `MOLT_EXT_ROOT=<mounted_external_path>` before running if not using `/Volumes/APDataStore/Molt`.
-- **Cache retention**: `tools/throughput_env.sh --apply` runs `tools/molt_cache_prune.py` using defaults (`200G` + `30` days). Override with `MOLT_CACHE_MAX_GB`, `MOLT_CACHE_MAX_AGE_DAYS`, or disable via `MOLT_CACHE_PRUNE=0`.
+- **Artifact root policy**: throughput bootstrap now prefers `MOLT_EXT_ROOT` when set and otherwise uses canonical repo-local roots. Use an external root when you want shared artifacts across machines or larger local capacity.
+- **Cache retention**: `tools/throughput_env.sh --apply` runs `tools/molt_cache_prune.py` using policy defaults. Override with `MOLT_CACHE_MAX_GB`, `MOLT_CACHE_MAX_AGE_DAYS`, or disable via `MOLT_CACHE_PRUNE=0`.
 - **Diff run coordination lock**: `tests/molt_diff.py` acquires `<CARGO_TARGET_DIR>/.molt_state/diff_run.lock` so concurrent agents queue instead of running overlapping diff sweeps. Tune with `MOLT_DIFF_RUN_LOCK_WAIT_SEC` (default 900) and `MOLT_DIFF_RUN_LOCK_POLL_SEC`.
 - **Matrix harness**: use `tools/throughput_matrix.py` for reproducible single-vs-concurrent build throughput checks (profiles + wrapper modes), with optional differential mini-matrix.
   - Example: `uv run --python 3.12 python3 tools/throughput_matrix.py --concurrency 2 --timeout-sec 75 --shared-target-dir /Volumes/APDataStore/Molt/cargo-target --run-diff --diff-jobs 2 --diff-timeout-sec 180`

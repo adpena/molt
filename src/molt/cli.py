@@ -6355,7 +6355,12 @@ def _wasm_runtime_root(project_root: Path) -> Path:
     env_root = os.environ.get("MOLT_WASM_RUNTIME_DIR")
     if env_root:
         return Path(env_root).expanduser()
-    external_root = Path("/Volumes/APDataStore/Molt")
+    configured = os.environ.get("MOLT_EXT_ROOT")
+    external_root = (
+        Path(configured).expanduser()
+        if configured
+        else Path.cwd()
+    )
     if external_root.is_dir():
         return external_root / "wasm"
     return project_root / "wasm"
@@ -11390,8 +11395,13 @@ def doctor(
     else:
         record("molt-diff-target-dir", True, str(diff_target_dir))
 
-    ext_root = Path("/Volumes/APDataStore/Molt")
-    if ext_root.is_dir():
+    configured_ext_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
+    ext_root = (
+        Path(configured_ext_root).expanduser().resolve()
+        if configured_ext_root
+        else None
+    )
+    if ext_root is not None and ext_root.is_dir():
         routed_paths: list[Path] = []
         if cargo_target_dir is not None:
             routed_paths.append(cargo_target_dir)
@@ -11401,32 +11411,31 @@ def doctor(
             _is_within(path, ext_root) for path in routed_paths
         )
         detail = (
-            "CARGO_TARGET_DIR and MOLT_CACHE routed to external volume"
+            "CARGO_TARGET_DIR and MOLT_CACHE routed to configured artifact root"
             if ext_ok
-            else "Set CARGO_TARGET_DIR and MOLT_CACHE under /Volumes/APDataStore/Molt"
+            else "Set CARGO_TARGET_DIR and MOLT_CACHE under the configured artifact root"
         )
         record(
-            "external-volume-routing",
+            "artifact-root-routing",
             ext_ok,
             detail,
             level="warning",
             advice=[
-                "export MOLT_EXT_ROOT=/Volumes/APDataStore/Molt",
-                "export CARGO_TARGET_DIR=$MOLT_EXT_ROOT/cargo-target",
-                "export MOLT_CACHE=$MOLT_EXT_ROOT/molt_cache",
+                "export MOLT_EXT_ROOT=<artifact-root>",
+                "export CARGO_TARGET_DIR=$MOLT_EXT_ROOT/target",
+                "export MOLT_CACHE=$MOLT_EXT_ROOT/.molt_cache",
             ]
             if not ext_ok
             else None,
         )
     else:
         record(
-            "external-volume",
-            False,
-            "/Volumes/APDataStore/Molt not mounted",
-            level="warning",
+            "artifact-root",
+            True,
+            "Using repo-local canonical artifact roots",
             advice=[
-                "Mount /Volumes/APDataStore/Molt for heavy workflows",
-                "or configure equivalent external paths via env vars",
+                "Set MOLT_EXT_ROOT=<external-root> if you want shared external artifacts",
+                "or keep repo-local target/tmp/log/cache roots for local development",
             ],
         )
 

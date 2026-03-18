@@ -120,8 +120,12 @@ def _git_rev() -> str | None:
 
 
 def _external_root() -> Path | None:
-    root = Path("/Volumes/APDataStore/Molt")
-    return root if root.is_dir() else None
+    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
+    if configured:
+        root = Path(configured).expanduser().resolve()
+        if root.is_dir():
+            return root
+    return None
 
 
 def _default_output_root() -> Path:

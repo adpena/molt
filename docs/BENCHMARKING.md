@@ -258,8 +258,8 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
 - Bootstrap a consistent throughput environment first:
   - `eval "$(tools/throughput_env.sh --print)"`
   - or `tools/throughput_env.sh --apply` (configures `sccache` size and runs cache prune policy)
-- Defaults require a mounted external artifact root (`MOLT_EXT_ROOT`,
-  default `/Volumes/APDataStore/Molt`).
+- Defaults use `MOLT_EXT_ROOT` when set; otherwise the tooling falls back to
+  canonical repo-local artifact roots.
 - Throughput bootstrap defaults `CARGO_INCREMENTAL=0` to maximize cacheability/shared throughput under multi-agent contention. Set `CARGO_INCREMENTAL=1` only for local incremental-debug sessions.
 - Prefer `--profile dev` for iteration loops (`molt build/run/compare/diff/test --suite diff`); reserve `--profile release` for release gates and perf publication.
 - `--profile dev` routes to Cargo `dev-fast` by default; override with `MOLT_DEV_CARGO_PROFILE` when profiling alternative dev profiles.
@@ -268,10 +268,10 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
   - `MOLT_USE_SCCACHE=1` (or leave default `auto` when `sccache` is installed)
   - `sccache -s` to inspect hit rates
 - Keep backend daemon enabled for native compile loops (`MOLT_BACKEND_DAEMON=1`; default) so Cranelift initialization is amortized across builds.
-- In multi-agent runs, share cache/target roots on the external volume to improve reuse:
-  - `MOLT_EXT_ROOT=/Volumes/APDataStore/Molt`
-  - `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache`
-  - `CARGO_TARGET_DIR=/Volumes/APDataStore/Molt/cargo-target`
+- In multi-agent runs, share cache/target roots under one artifact root to improve reuse:
+  - `MOLT_EXT_ROOT=/path/to/artifacts`
+  - `MOLT_CACHE=$MOLT_EXT_ROOT/.molt_cache`
+  - `CARGO_TARGET_DIR=$MOLT_EXT_ROOT/target`
 - Keep diff runs on the same shared target:
   - `MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR` (set automatically by `tools/throughput_env.sh --apply`)
 - For differential throughput, wrappers are disabled by default for portability; opt in only on stable hosts:
@@ -280,8 +280,8 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
 ### Suggested Throughput Baseline Command
 
 ```bash
-MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache \
-CARGO_TARGET_DIR=/Volumes/APDataStore/Molt/cargo-target \
+MOLT_CACHE=$PWD/.molt_cache \
+CARGO_TARGET_DIR=$PWD/target \
 MOLT_USE_SCCACHE=1 \
 uv run --python 3.12 python3 -m molt.cli build examples/hello.py --profile dev --cache-report
 ```
@@ -295,7 +295,7 @@ across profile and wrapper modes:
 uv run --python 3.12 python3 tools/throughput_matrix.py \
   --concurrency 2 \
   --timeout-sec 75 \
-  --shared-target-dir /Volumes/APDataStore/Molt/cargo-target \
+  --shared-target-dir "$PWD/target" \
   --run-diff \
   --diff-jobs 2 \
   --diff-timeout-sec 180
@@ -305,9 +305,7 @@ uv run --python 3.12 python3 tools/throughput_matrix.py \
 - Results include a machine-readable `gate_status` block (thresholds, observed
   counts, violations, pass/fail).
 - Use `--fail-on-gate` to return exit code `2` when `gate_status.passed=false`.
-- Default output root uses `MOLT_EXT_ROOT` (`/Volumes/APDataStore/Molt` if unset).
-- If external root is unavailable, pass `--output-root` explicitly only for an
-  approved emergency override.
+- Default output root uses `MOLT_EXT_ROOT` when set, otherwise canonical repo-local roots.
 - Diff matrix runs always set `MOLT_DIFF_MEASURE_RSS=1` and enforce `MOLT_DIFF_RLIMIT_GB=10`.
 - Prefer `--shared-target-dir` on a hard-link-friendly filesystem (APFS/ext4). If Cargo reports incremental hard-link fallback, move the target dir off filesystems like exFAT.
 

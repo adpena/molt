@@ -82,8 +82,9 @@ def _wasm_runtime_root() -> Path:
     env_root = os.environ.get("MOLT_WASM_RUNTIME_DIR")
     if env_root:
         return Path(env_root).expanduser()
-    external_root = Path("/Volumes/APDataStore/Molt")
-    if external_root.is_dir():
+    ext_root = os.environ.get("MOLT_EXT_ROOT")
+    external_root = Path(ext_root).expanduser() if ext_root else None
+    if external_root is not None and external_root.is_dir():
         return external_root / "wasm"
     return Path("wasm")
 
@@ -138,8 +139,12 @@ def _is_valid_wasm(path: Path) -> bool:
 
 
 def _external_root() -> Path | None:
-    root = Path("/Volumes/APDataStore/Molt")
-    return root if root.is_dir() else None
+    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
+    if configured:
+        root = Path(configured).expanduser().resolve()
+        if root.is_dir():
+            return root
+    return None
 
 
 def _repo_root() -> Path:
