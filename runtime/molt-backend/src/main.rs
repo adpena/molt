@@ -101,19 +101,13 @@ impl DaemonCache {
         }
     }
 
-    fn touch(&mut self, key: &str) -> Option<u64> {
-        let entry = self.entries.get_mut(key)?;
+    fn get_bytes(&mut self, key: &str) -> Option<&[u8]> {
         self.clock = self.clock.wrapping_add(1);
         let stamp = self.clock;
-        entry.stamp = stamp;
         self.order.push(Reverse((stamp, key.to_string())));
-        Some(stamp)
-    }
-
-    fn get_cloned(&mut self, key: &str) -> Option<Vec<u8>> {
-        let value = self.entries.get(key).map(|entry| entry.bytes.clone())?;
-        let _ = self.touch(key);
-        Some(value)
+        let entry = self.entries.get_mut(key)?;
+        entry.stamp = stamp;
+        Some(entry.bytes.as_slice())
     }
 
     fn insert(&mut self, key: String, value: Vec<u8>) {
@@ -202,7 +196,7 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
         .unwrap_or("")
         .to_string();
     if !cache_key.is_empty()
-        && let Some(bytes) = cache.get_cloned(&cache_key)
+        && let Some(bytes) = cache.get_bytes(&cache_key)
     {
         match write_output(&job.output, &bytes) {
             Ok(()) => {
@@ -227,7 +221,7 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
     }
     if !function_cache_key.is_empty()
         && function_cache_key != cache_key
-        && let Some(bytes) = cache.get_cloned(&function_cache_key)
+        && let Some(bytes) = cache.get_bytes(&function_cache_key)
     {
         match write_output(&job.output, &bytes) {
             Ok(()) => {
@@ -269,11 +263,14 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
         };
     }
 
-    if !cache_key.is_empty() {
-        cache.insert(cache_key.clone(), output_bytes.clone());
-    }
-    if !function_cache_key.is_empty() && function_cache_key != cache_key {
-        cache.insert(function_cache_key, output_bytes.clone());
+    if !cache_key.is_empty() && !function_cache_key.is_empty() && function_cache_key != cache_key
+    {
+        cache.insert(cache_key, output_bytes.clone());
+        cache.insert(function_cache_key, output_bytes);
+    } else if !cache_key.is_empty() {
+        cache.insert(cache_key, output_bytes);
+    } else if !function_cache_key.is_empty() {
+        cache.insert(function_cache_key, output_bytes);
     }
 
     DaemonJobResponse {
@@ -568,4 +565,22 @@ fn main() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DaemonCache;
+
+    #[test]
+    fn daemon_cache_get_bytes_updates_lru_without_cloning() {
+        let mut cache = DaemonCache::new(None);
+        cache.insert("module".to_string(), vec![1, 2, 3, 4]);
+
+        let bytes = cache.get_bytes("module").expect("cache hit");
+        assert_eq!(bytes, &[1, 2, 3, 4]);
+
+        let entry = cache.entries.get("module").expect("entry retained");
+        assert_eq!(entry.bytes, vec![1, 2, 3, 4]);
+        assert_eq!(entry.stamp, cache.clock);
+    }
 }
