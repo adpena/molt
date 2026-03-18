@@ -15,7 +15,11 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_EXTERNAL_ROOT = Path("/Volumes/APDataStore/Molt")
+DEFAULT_EXTERNAL_ROOT = None
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -145,25 +149,18 @@ def _resolved_external_root(*, fallback: Path | None = None) -> Path:
         root = Path(configured).expanduser().resolve()
         if root.is_dir():
             return root
-        raise SystemExit(
-            f"MOLT_EXT_ROOT is not a mounted directory: {root}. "
-            "Mount the external volume or pass --output-root explicitly."
-        )
-    if DEFAULT_EXTERNAL_ROOT.is_dir():
+        raise SystemExit(f"MOLT_EXT_ROOT is not a directory: {root}.")
+    if DEFAULT_EXTERNAL_ROOT is not None and DEFAULT_EXTERNAL_ROOT.is_dir():
         return DEFAULT_EXTERNAL_ROOT
     if fallback is not None:
         return fallback
-    raise SystemExit(
-        "External volume is required for compile progress defaults: "
-        f"{DEFAULT_EXTERNAL_ROOT} is not mounted. "
-        "Mount it or pass --output-root explicitly for an approved override."
-    )
+    return _repo_root()
 
 
 def _default_output_root() -> Path:
     external_root = _resolved_external_root()
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return external_root / f"compile_progress_{stamp}"
+    return external_root / "tmp" / f"compile_progress_{stamp}"
 
 
 def _tail(text: str, lines: int = 20) -> str:

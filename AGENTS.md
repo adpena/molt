@@ -16,22 +16,31 @@
 - Provenance and licensing hygiene are mandatory for generated/translated code: avoid uncertain lineage, document source inspiration when material, and prefer clean re-derivation over risky copying.
 - If any required quality bar above cannot be met in the current turn, stop immediately and raise a blocker with: specific missing guarantees, risk impact, and a concrete closure plan.
 
-## Hard Gate: External Volume Only (Non-Negotiable, Urgent)
-- We are disk-space constrained on the local/internal drive. Local development MUST place all build artifacts, logs, caches, tmp files, debugging outputs, and `target/`-style directories on the external volume rooted at `/Volumes/APDataStore/Molt`.
-- This is not advisory. If `/Volumes/APDataStore/Molt` is not mounted, do not run heavy workflows (build, run, diff, test, bench, regrtest). Mount the volume first (or explicitly choose a different external root and plumb it through the env vars below).
-- Hard prohibition: do not generate large artifacts under the repo on the local drive (examples: `target/`, `dist/`, `build/`, `wasm/`, `logs/`, `bench/results/`, `runtime/**/target/`). Those are emergency-only fallbacks when the external volume is unavailable and the task is explicitly approved as local-disk-impacting.
-- Canonical env defaults (use these in your shell before any build/test/bench work):
-  - `export MOLT_EXT_ROOT=/Volumes/APDataStore/Molt`
-  - `export CARGO_TARGET_DIR=$MOLT_EXT_ROOT/cargo-target`
+## Hard Gate: Canonical Artifact Locations And Cleanup (Non-Negotiable, Urgent)
+- Local development may use repo-local storage, but build artifacts, caches, tmp files, logs, benchmark outputs, and debugging outputs MUST live in canonical locations rather than ad hoc paths scattered across the tree.
+- Default canonical roots:
+  - `target/` for Cargo artifacts and shared build state.
+  - `bench/results/` for benchmark JSON/results/report artifacts.
+  - `logs/` for run logs, profiling logs, regrtest logs, and audit output.
+  - `tmp/` for ephemeral temp files, scratch outputs, local quarantine dirs, and one-off debugging artifacts.
+  - `dist/`, `build/`, and `wasm/` only when a specific tool or workflow intentionally writes there.
+- Do not create new top-level artifact directories without documenting them in the same change. If a workflow needs a new artifact class, give it one canonical location and update the repo instructions accordingly.
+- Keep the repo clean during active development:
+  - reuse canonical directories instead of creating per-command ad hoc output roots;
+  - prune stale artifacts regularly, especially large logs, old benchmark bundles, scratch tmp trees, and abandoned debug outputs;
+  - remove no-longer-needed artifacts at the end of a task unless they are required for reproducible evidence or are part of the intended checked-in output.
+- Canonical env defaults (use these in your shell before build/test/bench work unless a tool requires something else):
+  - `export MOLT_EXT_ROOT=$PWD`
+  - `export CARGO_TARGET_DIR=$PWD/target`
   - `export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR`
-  - `export MOLT_CACHE=$MOLT_EXT_ROOT/molt_cache`
-  - `export MOLT_DIFF_ROOT=$MOLT_EXT_ROOT/diff`
-  - `export MOLT_DIFF_TMPDIR=$MOLT_EXT_ROOT/tmp`
-  - `export UV_CACHE_DIR=$MOLT_EXT_ROOT/uv-cache`
-  - `export TMPDIR=$MOLT_EXT_ROOT/tmp`
+  - `export MOLT_CACHE=$PWD/.molt_cache`
+  - `export MOLT_DIFF_ROOT=$PWD/tmp/diff`
+  - `export MOLT_DIFF_TMPDIR=$PWD/tmp`
+  - `export UV_CACHE_DIR=$PWD/.uv-cache`
+  - `export TMPDIR=$PWD/tmp`
 - Notes:
-  - `CARGO_TARGET_DIR` also relocates Molt’s shared build state under `<CARGO_TARGET_DIR>/.molt_state/` (locks, fingerprints, daemon state). This is mandatory to prevent local `target/` growth.
-  - If you hit Unix-socket filesystem limitations on the external volume, keep artifacts on external but place only daemon sockets on local temp: `export MOLT_BACKEND_DAEMON_SOCKET_DIR=/tmp/molt_backend_sockets` (small/allowed exception).
+  - `CARGO_TARGET_DIR` also relocates Molt’s shared build state under `<CARGO_TARGET_DIR>/.molt_state/` (locks, fingerprints, daemon state). Keep that state in the canonical target root rather than inventing parallel targets.
+  - If a workflow would generate unusually large artifacts, put them under the canonical root for that class and clean them up once the evidence is no longer needed.
 
 ## Git Workflow Policy (Non-Negotiable)
 - Always develop on `main` and keep all local work based directly on `main`.
@@ -283,7 +292,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
   - Keep `tests/test_molt_diff_expected_failures.py` green so manifest coverage and `XFAIL`/`XPASS` behavior stay enforced.
 - Run the core-lane lowering gate with the current manifest path:
   - `python3 tools/check_core_lane_lowering.py --manifest tests/differential/basic/CORE_TESTS.txt`
-- NON-NEGOTIABLE: Differential work MUST use the external volume root `/Volumes/APDataStore/Molt` (see “Hard Gate: External Volume Only”). If it is not available, abort the run rather than filling the internal drive.
+- NON-NEGOTIABLE: Differential work MUST use canonical artifact roots (`CARGO_TARGET_DIR`, `MOLT_DIFF_ROOT`, `MOLT_DIFF_TMPDIR`, `MOLT_CACHE`) and must not spill ad hoc artifacts elsewhere in the repo.
 - NON-NEGOTIABLE: Always run the differential testing suite with memory profiling enabled (`MOLT_DIFF_MEASURE_RSS=1`).
 - NON-NEGOTIABLE: Treat memory blowups as failures; if RSS climbs rapidly or threatens system stability, terminate the diff run early (kill the harness) and record the abort plus last-known RSS metrics in [tests/differential/INDEX.md](tests/differential/INDEX.md).
 - NON-NEGOTIABLE: Enforce a 10 GB per-process memory cap for diff runs when possible.

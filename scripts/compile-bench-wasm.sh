@@ -15,7 +15,7 @@
 #   - Rust wasm32-wasip1 target (rustup target add wasm32-wasip1)
 #   - wasm-ld (llvm, via `brew install llvm`)
 #   - Python 3.12+ with molt-lang installed (uv run)
-#   - CARGO_TARGET_DIR pointing to cargo target (defaults to external volume)
+#   - CARGO_TARGET_DIR pointing to cargo target (defaults to <repo>/target)
 
 set -euo pipefail
 
@@ -24,7 +24,7 @@ BENCH_DIR="$REPO_ROOT/tests/benchmarks"
 OUT_DIR="$REPO_ROOT/wasm/bench"
 RUNTIME_WASM="$REPO_ROOT/wasm/molt_runtime.wasm"
 WASM_LINK="$REPO_ROOT/tools/wasm_link.py"
-CARGO_TARGET="${CARGO_TARGET_DIR:-/Volumes/APDataStore/Molt/cargo-target}"
+CARGO_TARGET="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 
 mkdir -p "$OUT_DIR"
 
