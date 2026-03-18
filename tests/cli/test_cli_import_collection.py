@@ -1445,6 +1445,30 @@ def test_stage_backend_output_and_caches_warns_on_function_cache_failure(
     assert warnings == ["Function cache write failed: link failed"]
 
 
+def test_materialize_cached_backend_artifact_promotes_module_cache_from_function_hit(
+    tmp_path: Path,
+) -> None:
+    candidate = tmp_path / "cache" / "function.o"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"artifact")
+    output_artifact = tmp_path / "dist" / "output.o"
+    cache_path = tmp_path / "cache" / "module.o"
+    warnings: list[str] = []
+
+    ok = cli._materialize_cached_backend_artifact(
+        candidate,
+        output_artifact,
+        tier="function",
+        cache_path=cache_path,
+        warnings=warnings,
+    )
+
+    assert ok is True
+    assert warnings == []
+    assert output_artifact.read_bytes() == b"artifact"
+    assert cache_path.read_bytes() == b"artifact"
+
+
 def test_cached_backend_artifact_validity_guard(tmp_path: Path) -> None:
     wasm_bad = tmp_path / "bad.wasm"
     wasm_bad.write_bytes(b"not-wasm")
