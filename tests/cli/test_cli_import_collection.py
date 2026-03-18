@@ -1423,9 +1423,11 @@ def test_stage_backend_output_and_caches_promotes_module_cache(
     warnings: list[str] = []
 
     err = cli._stage_backend_output_and_caches(
+        tmp_path,
         backend_output,
         output_artifact,
         cache_path=cache_path,
+        cache_key="module-key",
         function_cache_path=function_cache_path,
         warnings=warnings,
     )
@@ -1447,9 +1449,11 @@ def test_stage_backend_output_and_caches_without_cache_moves_output(
     warnings: list[str] = []
 
     err = cli._stage_backend_output_and_caches(
+        tmp_path,
         backend_output,
         output_artifact,
         cache_path=None,
+        cache_key=None,
         function_cache_path=None,
         warnings=warnings,
     )
@@ -1479,9 +1483,11 @@ def test_stage_backend_output_and_caches_warns_on_function_cache_failure(
     monkeypatch.setattr(cli, "_atomic_link_or_copy_file", wrapped)
 
     err = cli._stage_backend_output_and_caches(
+        tmp_path,
         backend_output,
         output_artifact,
         cache_path=cache_path,
+        cache_key="module-key",
         function_cache_path=function_cache_path,
         warnings=warnings,
     )
@@ -1503,9 +1509,11 @@ def test_materialize_cached_backend_artifact_promotes_module_cache_from_function
     warnings: list[str] = []
 
     ok = cli._materialize_cached_backend_artifact(
+        tmp_path,
         candidate,
         output_artifact,
         tier="function",
+        source_key="function-key",
         cache_path=cache_path,
         warnings=warnings,
     )
@@ -1514,6 +1522,44 @@ def test_materialize_cached_backend_artifact_promotes_module_cache_from_function
     assert warnings == []
     assert output_artifact.read_bytes() == b"artifact"
     assert cache_path.read_bytes() == b"artifact"
+
+
+def test_materialize_cached_backend_artifact_skips_recopy_when_synced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = tmp_path / "cache" / "module.o"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"artifact")
+    output_artifact = tmp_path / "dist" / "output.o"
+    warnings: list[str] = []
+
+    first = cli._materialize_cached_backend_artifact(
+        tmp_path,
+        candidate,
+        output_artifact,
+        tier="module",
+        source_key="module-key",
+        cache_path=candidate,
+        warnings=warnings,
+    )
+    assert first is True
+
+    def fail_copy(src: Path, dst: Path) -> None:
+        raise AssertionError(f"unexpected copy {src} -> {dst}")
+
+    monkeypatch.setattr(cli, "_atomic_copy_file", fail_copy)
+
+    second = cli._materialize_cached_backend_artifact(
+        tmp_path,
+        candidate,
+        output_artifact,
+        tier="module",
+        source_key="module-key",
+        cache_path=candidate,
+        warnings=warnings,
+    )
+    assert second is True
+    assert warnings == []
 
 
 def test_temporary_backend_output_path_uses_expected_suffix_and_cleans_up(
