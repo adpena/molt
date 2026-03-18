@@ -122,6 +122,48 @@ def _write_pgo_profile(tmp_path: Path, entrypoint: str = "script.py") -> Path:
     return profile_path
 
 
+def _write_runtime_feedback(tmp_path: Path) -> Path:
+    feedback_path = tmp_path / "molt_runtime_feedback.json"
+    payload = {
+        "schema_version": 1,
+        "kind": "runtime_feedback",
+        "profile": {
+            "call_dispatch": 0,
+            "attr_lookup": 0,
+            "layout_guard": 0,
+            "layout_guard_fail": 0,
+            "alloc_count": 0,
+            "async_polls": 0,
+        },
+        "hot_paths": {
+            "call_bind_ic_hit": 0,
+            "call_bind_ic_miss": 0,
+            "split_ws_ascii": 0,
+            "split_ws_unicode": 0,
+            "dict_str_int_prehash_deopt": 0,
+            "taq_ingest_calls": 0,
+        },
+        "deopt_reasons": {
+            "call_indirect_noncallable": 0,
+            "invoke_ffi_bridge_capability_denied": 0,
+            "guard_tag_type_mismatch": 0,
+            "guard_dict_shape_layout_mismatch": 0,
+            "guard_dict_shape_layout_fail_null_obj": 0,
+            "guard_dict_shape_layout_fail_non_object": 0,
+            "guard_dict_shape_layout_fail_class_mismatch": 0,
+            "guard_dict_shape_layout_fail_non_type_class": 0,
+            "guard_dict_shape_layout_fail_expected_version_invalid": 0,
+            "guard_dict_shape_layout_fail_version_mismatch": 0,
+        },
+        "hot_functions": [
+            {"symbol": "molt_init___main__", "count": 11},
+            {"symbol": "helper", "count": 3},
+        ],
+    }
+    feedback_path.write_text(json.dumps(payload))
+    return feedback_path
+
+
 def _inject_signature_metadata(package_path: Path, key_sha: str) -> None:
     signature_meta: dict[str, object] = {}
     with zipfile.ZipFile(package_path) as zf:
@@ -1123,6 +1165,41 @@ def test_cli_build_sysroot_json(tmp_path: Path) -> None:
     assert payload["data"]["pgo_profile"]["path"] == str(profile_path)
     assert payload["data"]["pgo_profile"]["version"] == "0.1"
     assert "molt_init___main__" in payload["data"]["pgo_profile"]["hot_functions"]
+    assert Path(payload["data"]["output"]).exists()
+
+
+def test_cli_build_runtime_feedback_json(tmp_path: Path) -> None:
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required for backend compilation.")
+
+    script = tmp_path / "hello.py"
+    script.write_text("def helper():\n    return 1\n\nprint(helper())\n")
+    sysroot = tmp_path / "sysroot"
+    sysroot.mkdir()
+    feedback_path = _write_runtime_feedback(tmp_path)
+
+    res = _run_cli(
+        [
+            "build",
+            "--emit",
+            "obj",
+            "--out-dir",
+            str(tmp_path),
+            "--sysroot",
+            str(sysroot),
+            "--runtime-feedback",
+            str(feedback_path),
+            "--json",
+            str(script),
+        ]
+    )
+    assert res.returncode == 0
+    payload = json.loads(res.stdout)
+    assert payload["status"] == "ok"
+    assert payload["data"]["sysroot"] == str(sysroot)
+    assert payload["data"]["runtime_feedback"]["path"] == str(feedback_path)
+    assert payload["data"]["runtime_feedback"]["schema_version"] == 1
+    assert "molt_init___main__" in payload["data"]["runtime_feedback"]["hot_functions"]
     assert Path(payload["data"]["output"]).exists()
 
 

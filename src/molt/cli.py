@@ -165,6 +165,13 @@ class PgoProfileSummary:
 
 
 @dataclass(frozen=True)
+class RuntimeFeedbackSummary:
+    schema_version: int
+    hash: str
+    hot_functions: list[str]
+
+
+@dataclass(frozen=True)
 class ExtensionManifestValidation:
     errors: list[str]
     warnings: list[str]
@@ -6487,6 +6494,30 @@ def _extract_hot_functions(profile: dict[str, Any], warnings: list[str]) -> list
     return hot
 
 
+def _extract_runtime_feedback_hot_functions(
+    payload: dict[str, Any], warnings: list[str]
+) -> list[str]:
+    raw = payload.get("hot_functions")
+    if raw is None:
+        return []
+    entries = _pgo_hotspot_entries(raw, warnings)
+    if not entries:
+        return []
+    has_score = any(score is not None for _, score in entries)
+    if has_score:
+        entries = sorted(entries, key=lambda item: (-(item[1] or 0.0), item[0]))
+    else:
+        entries = sorted(entries, key=lambda item: item[0])
+    seen: set[str] = set()
+    hot: list[str] = []
+    for name, _score in entries:
+        if name in seen:
+            continue
+        seen.add(name)
+        hot.append(name)
+    return hot
+
+
 def _load_pgo_profile(
     project_root: Path,
     profile_path: str,
@@ -6587,6 +6618,93 @@ def _load_pgo_profile(
     digest = hashlib.sha256(raw).hexdigest()
     summary = PgoProfileSummary(
         version=version, hash=digest, hot_functions=hot_functions
+    )
+    return summary, path, None
+
+
+def _load_runtime_feedback(
+    project_root: Path,
+    feedback_path: str,
+    warnings: list[str],
+    json_output: bool,
+    command: str,
+) -> tuple[RuntimeFeedbackSummary | None, Path | None, int | None]:
+    path = Path(feedback_path).expanduser()
+    if not path.is_absolute():
+        path = (project_root / path).absolute()
+    if not path.exists():
+        return (
+            None,
+            None,
+            _fail(
+                f"Runtime feedback artifact not found: {path}",
+                json_output,
+                command=command,
+            ),
+        )
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        return (
+            None,
+            None,
+            _fail(
+                f"Failed to read runtime feedback artifact {path}: {exc}",
+                json_output,
+                command=command,
+            ),
+        )
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return (
+            None,
+            None,
+            _fail(
+                "Invalid runtime feedback JSON at "
+                f"{path}:{exc.lineno}:{exc.colno}: {exc.msg}",
+                json_output,
+                command=command,
+            ),
+        )
+    if not isinstance(payload, dict):
+        return (
+            None,
+            None,
+            _fail(
+                f"Invalid runtime feedback artifact {path}: expected a JSON object.",
+                json_output,
+                command=command,
+            ),
+        )
+    errors: list[str] = []
+    schema_version = payload.get("schema_version")
+    if not isinstance(schema_version, int):
+        errors.append("missing schema_version")
+    if payload.get("kind") != "runtime_feedback":
+        errors.append(f"unexpected kind {payload.get('kind')!r}")
+    if not isinstance(payload.get("profile"), dict):
+        errors.append("missing profile")
+    if not isinstance(payload.get("hot_paths"), dict):
+        errors.append("missing hot_paths")
+    if not isinstance(payload.get("deopt_reasons"), dict):
+        errors.append("missing deopt_reasons")
+    if errors:
+        return (
+            None,
+            None,
+            _fail(
+                f"Invalid runtime feedback artifact {path}: " + "; ".join(errors),
+                json_output,
+                command=command,
+            ),
+        )
+    hot_functions = _extract_runtime_feedback_hot_functions(payload, warnings)
+    digest = hashlib.sha256(raw).hexdigest()
+    summary = RuntimeFeedbackSummary(
+        schema_version=schema_version,
+        hash=digest,
+        hot_functions=hot_functions,
     )
     return summary, path, None
 
@@ -7178,6 +7296,7 @@ def build(
     fallback_policy: FallbackPolicy = "error",
     type_facts_path: str | None = None,
     pgo_profile: str | None = None,
+    runtime_feedback: str | None = None,
     output: str | None = None,
     json_output: bool = False,
     verbose: bool = False,
@@ -7318,6 +7437,8 @@ def build(
         )
     pgo_profile_summary: PgoProfileSummary | None = None
     pgo_profile_path: Path | None = None
+    runtime_feedback_summary: RuntimeFeedbackSummary | None = None
+    runtime_feedback_path: Path | None = None
     pgo_hot_function_names: set[str] = set()
     if pgo_profile:
         summary, resolved, err = _load_pgo_profile(
@@ -7337,6 +7458,24 @@ def build(
             for symbol in pgo_profile_summary.hot_functions
             if isinstance(symbol, str) and symbol.strip()
         }
+    if runtime_feedback:
+        summary, resolved, err = _load_runtime_feedback(
+            project_root,
+            runtime_feedback,
+            warnings,
+            json_output,
+            command="build",
+        )
+        if err is not None:
+            return err
+        runtime_feedback_summary = summary
+        runtime_feedback_path = resolved
+    if runtime_feedback_summary is not None:
+        pgo_hot_function_names.update(
+            symbol.strip()
+            for symbol in runtime_feedback_summary.hot_functions
+            if isinstance(symbol, str) and symbol.strip()
+        )
     pgo_profile_payload: dict[str, Any] | None = None
     if pgo_profile_summary is not None and pgo_profile_path is not None:
         pgo_profile_payload = {
@@ -7344,6 +7483,14 @@ def build(
             "version": pgo_profile_summary.version,
             "hash": pgo_profile_summary.hash,
             "hot_functions": pgo_profile_summary.hot_functions,
+        }
+    runtime_feedback_payload: dict[str, Any] | None = None
+    if runtime_feedback_summary is not None and runtime_feedback_path is not None:
+        runtime_feedback_payload = {
+            "path": str(runtime_feedback_path),
+            "schema_version": runtime_feedback_summary.schema_version,
+            "hash": runtime_feedback_summary.hash,
+            "hot_functions": runtime_feedback_summary.hot_functions,
         }
     cargo_timeout, timeout_err = _resolve_timeout_env("MOLT_CARGO_TIMEOUT")
     if timeout_err:
@@ -9203,6 +9350,12 @@ def build(
             "hash": pgo_profile_summary.hash,
             "hot_functions": pgo_profile_summary.hot_functions,
         }
+    if runtime_feedback_summary is not None:
+        ir["runtime_feedback"] = {
+            "schema_version": runtime_feedback_summary.schema_version,
+            "hash": runtime_feedback_summary.hash,
+            "hot_functions": runtime_feedback_summary.hot_functions,
+        }
     if diagnostics_enabled:
         phase_starts["runtime_setup"] = time.perf_counter()
     if emit_ir_path is not None:
@@ -9806,6 +9959,8 @@ def build(
                 data["compile_diagnostics"] = diagnostics_payload
             if pgo_profile_payload is not None:
                 data["pgo_profile"] = pgo_profile_payload
+            if runtime_feedback_payload is not None:
+                data["runtime_feedback"] = runtime_feedback_payload
             if linked_output_path is not None:
                 data["linked_output"] = str(linked_output_path)
             if emit_ir_path is not None:
@@ -9869,6 +10024,8 @@ def build(
                 data["compile_diagnostics"] = diagnostics_payload
             if pgo_profile_payload is not None:
                 data["pgo_profile"] = pgo_profile_payload
+            if runtime_feedback_payload is not None:
+                data["runtime_feedback"] = runtime_feedback_payload
             if emit_ir_path is not None:
                 data["emit_ir"] = str(emit_ir_path)
             payload = _json_payload(
@@ -10265,6 +10422,8 @@ int main(int argc, char** argv) {
                 data["compile_diagnostics"] = diagnostics_payload
             if pgo_profile_payload is not None:
                 data["pgo_profile"] = pgo_profile_payload
+            if runtime_feedback_payload is not None:
+                data["runtime_feedback"] = runtime_feedback_payload
             if emit_ir_path is not None:
                 data["emit_ir"] = str(emit_ir_path)
             if link_process.stdout:
@@ -10298,6 +10457,8 @@ int main(int argc, char** argv) {
             }
             if pgo_profile_payload is not None:
                 data["pgo_profile"] = pgo_profile_payload
+            if runtime_feedback_payload is not None:
+                data["runtime_feedback"] = runtime_feedback_payload
             data["cache"] = {
                 "enabled": cache,
                 "hit": cache_hit,
@@ -11038,6 +11199,7 @@ def _internal_batch_build_server(
                         ),
                         type_facts_path=params.get("type_facts"),
                         pgo_profile=params.get("pgo_profile"),
+                        runtime_feedback=params.get("runtime_feedback"),
                         output=params.get("output"),
                         json_output=False,
                         verbose=bool(params.get("verbose", False)),
@@ -14771,6 +14933,13 @@ def main() -> int:
         help="Path to a Molt profile artifact (molt_profile.json) for PGO hints.",
     )
     build_parser.add_argument(
+        "--runtime-feedback",
+        help=(
+            "Path to a Molt runtime feedback artifact "
+            "(molt_runtime_feedback.json) for measured hot-function promotion hints."
+        ),
+    )
+    build_parser.add_argument(
         "--output",
         help=(
             "Output path for the native binary or wasm artifact "
@@ -15744,6 +15913,11 @@ def main() -> int:
             or build_cfg.get("pgo_profile")
             or build_cfg.get("pgo-profile")
         )
+        runtime_feedback = (
+            args.runtime_feedback
+            or build_cfg.get("runtime_feedback")
+            or build_cfg.get("runtime-feedback")
+        )
         build_profile = (
             args.profile
             or build_cfg.get("profile")
@@ -15840,6 +16014,7 @@ def main() -> int:
             fallback,
             type_facts,
             pgo_profile,
+            runtime_feedback,
             output,
             args.json,
             args.verbose,

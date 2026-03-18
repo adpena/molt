@@ -569,6 +569,25 @@ def test_expand_module_chain_ignores_invalid_module_names() -> None:
     assert cli._expand_module_chain("/.Volumes.bad.mod") == []
 
 
+def test_extract_runtime_feedback_hot_functions_sorts_and_dedupes() -> None:
+    warnings: list[str] = []
+    payload = {
+        "hot_functions": [
+            {"symbol": "pkg.mod::warm_fn", "count": 3},
+            {"symbol": "pkg.mod::hot_fn", "count": 9},
+            "pkg.mod::hot_fn",
+            ["pkg.mod::cold_fn", 1],
+        ]
+    }
+
+    assert cli._extract_runtime_feedback_hot_functions(payload, warnings) == [
+        "pkg.mod::hot_fn",
+        "pkg.mod::warm_fn",
+        "pkg.mod::cold_fn",
+    ]
+    assert warnings == []
+
+
 def test_resolve_backend_profile_defaults_to_selected_build_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

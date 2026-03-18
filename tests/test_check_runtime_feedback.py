@@ -93,3 +93,31 @@ def test_runtime_feedback_validator_requires_guard_deopt_keys(tmp_path: Path) ->
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     assert module._validate(path) == 1
+
+
+def test_runtime_feedback_validator_accepts_hot_function_entries(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    payload = _base_payload()
+    payload["hot_functions"] = [
+        {"symbol": "pkg.mod::hot_fn", "count": 9},
+        ["pkg.mod::warm_fn", 4],
+        "pkg.mod::cold_fn",
+    ]
+    path = tmp_path / "molt_runtime_feedback.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert module._validate(path) == 0
+
+
+def test_runtime_feedback_validator_rejects_invalid_hot_function_entries(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    payload = _base_payload()
+    payload["hot_functions"] = [{"score": "bad"}]
+    path = tmp_path / "molt_runtime_feedback.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert module._validate(path) == 1
