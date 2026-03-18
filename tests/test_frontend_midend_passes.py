@@ -1811,6 +1811,22 @@ def test_midend_hot_function_promotion_applies_one_step_only() -> None:
     assert light_policy.promotion_signal == "pkg.mod::light_hot"
 
 
+def test_midend_oversized_entry_functions_do_not_force_tier_a() -> None:
+    ops = [
+        MoltOp(kind="CONST", args=[idx], result=MoltValue(f"v{idx}"))
+        for idx in range(2000)
+    ]
+    gen = SimpleTIRGenerator(optimization_profile="release", module_name="pkg.mod")
+    policy = gen._resolve_midend_function_policy(
+        ops,
+        function_name="molt_main",
+        block_count=8,
+    )
+    assert policy.tier_base == "C"
+    assert policy.tier == "C"
+    assert policy.tier_source == "module_entry_oversized"
+
+
 def test_midend_hot_function_promotion_respects_explicit_tier_overrides() -> None:
     with _temp_env("MOLT_MIDEND_TIER_C_FUNCTIONS", "pinned_hot"):
         gen = SimpleTIRGenerator(
