@@ -2561,8 +2561,12 @@ def _collect_imports(
                     if resolved is not None:
                         imports.append(resolved)
 
-    if include_nested:
-        scan_nodes: Iterable[ast.AST] = tuple(ast.walk(tree))
+    if include_nested and isinstance(tree, ast.Module):
+        scan_nodes = (
+            node for _, stmt_nodes in stmt_walks for node in stmt_nodes
+        )
+    elif include_nested:
+        scan_nodes = tuple(ast.walk(tree))
     elif isinstance(tree, ast.Module):
         scan_nodes = module_body
     else:
