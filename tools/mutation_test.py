@@ -71,6 +71,11 @@ MutationOperatorName = Literal[
     "const_replace",
     "stmt_delete",
     "return_mutate",
+    "loop_bound",
+    "exception_swallow",
+    "slice_modify",
+    "string_method_swap",
+    "container_method_swap",
 ]
 
 COMPILER_OPERATORS: list[MutationOperatorName] = [
@@ -80,6 +85,11 @@ COMPILER_OPERATORS: list[MutationOperatorName] = [
     "const_replace",
     "stmt_delete",
     "return_mutate",
+    "loop_bound",
+    "exception_swallow",
+    "slice_modify",
+    "string_method_swap",
+    "container_method_swap",
 ]
 
 # Mapping for arithmetic operator replacement
@@ -110,6 +120,22 @@ _CMP_SWAPS: dict[type, type] = {
     ast.IsNot: ast.Is,
     ast.In: ast.NotIn,
     ast.NotIn: ast.In,
+}
+
+_STRING_METHOD_SWAPS: dict[str, str] = {
+    "strip": "rstrip",
+    "rstrip": "strip",
+    "upper": "lower",
+    "lower": "upper",
+    "startswith": "endswith",
+    "endswith": "startswith",
+    "title": "lower",
+}
+
+_CONTAINER_METHOD_SWAPS: dict[str, str] = {
+    "add": "discard",
+    "discard": "add",
+    "extend": "append",
 }
 
 
@@ -412,6 +438,115 @@ class MutationFinder(ast.NodeVisitor):
             )
         self.generic_visit(node)
 
+    # --- Loop bound mutation ---
+    def visit_For(self, node: ast.For) -> None:
+        self._check_loop_bound(node)
+        self.generic_visit(node)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        self._check_loop_bound(node)
+        self.generic_visit(node)
+
+    def _check_loop_bound(self, node: ast.For | ast.AsyncFor) -> None:
+        if "loop_bound" not in self.operators:
+            return
+        iter_call = node.iter
+        if (
+            isinstance(iter_call, ast.Call)
+            and isinstance(iter_call.func, ast.Name)
+            and iter_call.func.id == "range"
+            and iter_call.args
+        ):
+            bound_index = 0 if len(iter_call.args) == 1 else 1
+            self.sites.append(
+                MutationSite(
+                    file=self.file_path,
+                    lineno=node.lineno,
+                    col_offset=node.col_offset,
+                    operator="loop_bound",
+                    description=f"range arg[{bound_index}] -> arg[{bound_index}] - 1",
+                    node_index=self._next_index(),
+                )
+            )
+
+    # --- Exception handler mutation ---
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if "exception_swallow" in self.operators and node.body:
+            self.sites.append(
+                MutationSite(
+                    file=self.file_path,
+                    lineno=node.lineno,
+                    col_offset=node.col_offset,
+                    operator="exception_swallow",
+                    description="replace except body with pass",
+                    node_index=self._next_index(),
+                )
+            )
+        self.generic_visit(node)
+
+    # --- Slice mutation ---
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        if "slice_modify" in self.operators and isinstance(node.slice, ast.Slice):
+            slice_node = node.slice
+            desc: str | None = None
+            if slice_node.lower is not None:
+                desc = "slice lower -> lower + 1"
+            elif slice_node.upper is not None:
+                desc = "slice upper -> upper - 1"
+            if desc is not None:
+                self.sites.append(
+                    MutationSite(
+                        file=self.file_path,
+                        lineno=node.lineno,
+                        col_offset=node.col_offset,
+                        operator="slice_modify",
+                        description=desc,
+                        node_index=self._next_index(),
+                    )
+                )
+        self.generic_visit(node)
+
+    # --- Method swaps ---
+    def visit_Call(self, node: ast.Call) -> None:
+        if isinstance(node.func, ast.Attribute):
+            if "string_method_swap" in self.operators:
+                replacement = _STRING_METHOD_SWAPS.get(node.func.attr)
+                if replacement is not None:
+                    self.sites.append(
+                        MutationSite(
+                            file=self.file_path,
+                            lineno=node.lineno,
+                            col_offset=node.col_offset,
+                            operator="string_method_swap",
+                            description=f"{node.func.attr} -> {replacement}",
+                            node_index=self._next_index(),
+                        )
+                    )
+            if "container_method_swap" in self.operators:
+                self._check_container_method_swap(node)
+        self.generic_visit(node)
+
+    def _check_container_method_swap(self, node: ast.Call) -> None:
+        func = node.func
+        assert isinstance(func, ast.Attribute)
+        if func.attr == "append" and len(node.args) == 1 and not node.keywords:
+            desc = "append(x) -> extend([x])"
+        else:
+            replacement = _CONTAINER_METHOD_SWAPS.get(func.attr)
+            if replacement is None:
+                return
+            desc = f"{func.attr} -> {replacement}"
+        self.sites.append(
+            MutationSite(
+                file=self.file_path,
+                lineno=node.lineno,
+                col_offset=node.col_offset,
+                operator="container_method_swap",
+                description=desc,
+                node_index=self._next_index(),
+            )
+        )
+
 
 def discover_mutations(
     file_path: str,
@@ -560,6 +695,97 @@ class _MutationApplier(ast.NodeTransformer):
             )
             self._applied = True
             return node
+        return self.generic_visit(node)
+
+    # --- Loop bound mutation ---
+    def visit_For(self, node: ast.For) -> ast.AST:
+        self._maybe_mutate_loop_bound(node)
+        return self.generic_visit(node)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> ast.AST:
+        self._maybe_mutate_loop_bound(node)
+        return self.generic_visit(node)
+
+    def _maybe_mutate_loop_bound(self, node: ast.For | ast.AsyncFor) -> None:
+        if self.site.operator != "loop_bound" or not self._match(node):
+            return
+        iter_call = node.iter
+        if (
+            not isinstance(iter_call, ast.Call)
+            or not isinstance(iter_call.func, ast.Name)
+            or iter_call.func.id != "range"
+            or not iter_call.args
+        ):
+            return
+        bound_index = 0 if len(iter_call.args) == 1 else 1
+        iter_call.args[bound_index] = ast.BinOp(
+            left=copy.deepcopy(iter_call.args[bound_index]),
+            op=ast.Sub(),
+            right=ast.Constant(value=1),
+        )
+        self._applied = True
+
+    # --- Exception handler mutation ---
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> ast.AST:
+        if self.site.operator == "exception_swallow" and self._match(node):
+            node.body = [ast.Pass()]
+            self._applied = True
+            return node
+        return self.generic_visit(node)
+
+    # --- Slice mutation ---
+    def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+        if (
+            self.site.operator == "slice_modify"
+            and self._match(node)
+            and isinstance(node.slice, ast.Slice)
+        ):
+            if node.slice.lower is not None and "lower" in self.site.description:
+                node.slice.lower = ast.BinOp(
+                    left=copy.deepcopy(node.slice.lower),
+                    op=ast.Add(),
+                    right=ast.Constant(value=1),
+                )
+                self._applied = True
+                return node
+            if node.slice.upper is not None and "upper" in self.site.description:
+                node.slice.upper = ast.BinOp(
+                    left=copy.deepcopy(node.slice.upper),
+                    op=ast.Sub(),
+                    right=ast.Constant(value=1),
+                )
+                self._applied = True
+                return node
+        return self.generic_visit(node)
+
+    # --- Method swaps ---
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        if not isinstance(node.func, ast.Attribute):
+            return self.generic_visit(node)
+        if self.site.operator == "string_method_swap" and self._match(node):
+            replacement = _STRING_METHOD_SWAPS.get(node.func.attr)
+            expected = (
+                None if replacement is None else f"{node.func.attr} -> {replacement}"
+            )
+            if expected == self.site.description:
+                node.func.attr = replacement
+                self._applied = True
+                return node
+        if self.site.operator == "container_method_swap" and self._match(node):
+            if self.site.description == "append(x) -> extend([x])":
+                if len(node.args) == 1 and not node.keywords and node.func.attr == "append":
+                    node.func.attr = "extend"
+                    node.args = [ast.List(elts=[copy.deepcopy(node.args[0])], ctx=ast.Load())]
+                    self._applied = True
+                    return node
+            replacement = _CONTAINER_METHOD_SWAPS.get(node.func.attr)
+            expected = (
+                None if replacement is None else f"{node.func.attr} -> {replacement}"
+            )
+            if expected == self.site.description:
+                node.func.attr = replacement
+                self._applied = True
+                return node
         return self.generic_visit(node)
 
 
