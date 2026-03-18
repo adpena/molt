@@ -745,7 +745,7 @@ def test_load_module_analysis_reuses_persisted_cache(
     source = cli._read_module_source(module_path)
     cache = cli._ModuleResolutionCache()
 
-    tree, imports, func_defaults = cli._load_module_analysis(
+    tree, imports, func_defaults, cached_source = cli._load_module_analysis(
         module_path,
         module_name="pkg",
         is_package=False,
@@ -758,17 +758,18 @@ def test_load_module_analysis_reuses_persisted_cache(
     assert tree is not None
     assert imports == ("warnings",)
     assert "f" in func_defaults
+    assert cached_source == source
 
     def fail_parse(*args: object, **kwargs: object) -> ast.AST:
         raise AssertionError("unexpected parse")
 
     monkeypatch.setattr(cache, "parse_module_ast", fail_parse)
-    cached_tree, cached_imports, cached_defaults = cli._load_module_analysis(
+    cached_tree, cached_imports, cached_defaults, cached_source = cli._load_module_analysis(
         module_path,
         module_name="pkg",
         is_package=False,
         include_nested=True,
-        source=source,
+        source=None,
         logical_source_path=str(module_path),
         resolution_cache=cache,
         project_root=tmp_path,
@@ -777,6 +778,7 @@ def test_load_module_analysis_reuses_persisted_cache(
     assert cached_tree is None
     assert cached_imports == ("warnings",)
     assert cached_defaults == func_defaults
+    assert cached_source is None
 
 
 def test_read_module_source_uses_utf8_fast_path(
