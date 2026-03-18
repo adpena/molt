@@ -40,7 +40,7 @@ from typing import Any, ContextManager, Iterable, Iterator, Literal, Mapping, Mu
 from packaging.markers import InvalidMarker, Marker
 from packaging.requirements import InvalidRequirement, Requirement
 from molt.compat import CompatibilityError
-from molt.frontend import SimpleTIRGenerator
+from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import (
     collect_type_facts_from_paths,
     load_type_facts,
@@ -6743,6 +6743,18 @@ def _decode_cached_json_value(value: Any) -> Any:
             real_imag = value["__complex__"]
             if len(real_imag) == 2:
                 return complex(real_imag[0], real_imag[1])
+        if "__tuple__" in value and isinstance(value["__tuple__"], list):
+            return tuple(_decode_cached_json_value(item) for item in value["__tuple__"])
+        if "__ast__" in value and isinstance(value["__ast__"], str):
+            return value["__ast__"]
+        if "__set__" in value and isinstance(value["__set__"], list):
+            return set(_decode_cached_json_value(item) for item in value["__set__"])
+        if "__molt_value__" in value and isinstance(value["__molt_value__"], dict):
+            payload = value["__molt_value__"]
+            name = payload.get("name")
+            type_hint = payload.get("type_hint", "Unknown")
+            if isinstance(name, str) and isinstance(type_hint, str):
+                return MoltValue(name=name, type_hint=type_hint)
         return {
             str(key): _decode_cached_json_value(item) for key, item in value.items()
         }
@@ -8412,6 +8424,23 @@ def _json_ir_default(value: Any) -> Any:
         return {"__complex__": [value.real, value.imag]}
     if value is Ellipsis:
         return {"__ellipsis__": True}
+    if isinstance(value, tuple):
+        return {"__tuple__": [_json_ir_default(item) if not isinstance(item, (str, int, float, bool, type(None), list, dict)) else item for item in value]}
+    if isinstance(value, ast.AST):
+        return {"__ast__": ast.dump(value, include_attributes=False)}
+    if isinstance(value, (set, frozenset)):
+        try:
+            items = sorted(value)
+        except TypeError:
+            items = sorted((repr(item) for item in value))
+        return {"__set__": items}
+    if isinstance(value, MoltValue):
+        return {
+            "__molt_value__": {
+                "name": value.name,
+                "type_hint": value.type_hint,
+            }
+        }
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
@@ -9824,6 +9853,72 @@ def build(
                 return f"Failed to read module {module_path}: {exc}"
         return None
 
+    def _module_lowering_context_payload(
+        module_name: str,
+        module_path: Path,
+        *,
+        logical_source_path: str,
+        entry_override: str | None,
+        known_classes_snapshot: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        try:
+            stat = module_path.stat()
+        except OSError:
+            return None
+        return {
+            "version": 1,
+            "module_name": module_name,
+            "logical_source_path": logical_source_path,
+            "is_package": module_path.name == "__init__.py",
+            "module_is_namespace": module_name in namespace_module_names,
+            "entry_module": entry_override,
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "parse_codec": parse_codec,
+            "type_hint_policy": type_hint_policy,
+            "fallback_policy": fallback_policy,
+            "type_facts": type_facts,
+            "enable_phi": enable_phi,
+            "known_modules": sorted(known_modules),
+            "known_classes": known_classes_snapshot,
+            "stdlib_allowlist": sorted(stdlib_allowlist),
+            "known_func_defaults": known_func_defaults,
+            "module_chunking": is_wasm and module_chunk_max_ops > 0,
+            "module_chunk_max_ops": module_chunk_max_ops,
+            "optimization_profile": profile,
+            "pgo_hot_functions": sorted(pgo_hot_function_names),
+        }
+
+    def _load_cached_module_lowering_result(
+        module_name: str,
+        module_path: Path,
+        *,
+        logical_source_path: str,
+        entry_override: str | None,
+        known_classes_snapshot: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if project_root is None:
+            return None
+        context_payload = _module_lowering_context_payload(
+            module_name,
+            module_path,
+            logical_source_path=logical_source_path,
+            entry_override=entry_override,
+            known_classes_snapshot=known_classes_snapshot,
+        )
+        if context_payload is None:
+            return None
+        context_digest = _module_lowering_context_digest(context_payload)
+        if context_digest is None:
+            return None
+        return _read_persisted_module_lowering(
+            project_root,
+            module_path,
+            module_name=module_name,
+            is_package=module_path.name == "__init__.py",
+            context_digest=context_digest,
+        )
+
     def _lower_module_serial(
         module_name: str,
         module_path: Path,
@@ -9837,36 +9932,15 @@ def build(
         is_package = module_path.name == "__init__.py"
         context_digest: str | None = None
         if project_root is not None:
-            try:
-                stat = module_path.stat()
-            except OSError:
-                stat = None
-            if stat is not None:
-                context_digest = _module_lowering_context_digest(
-                    {
-                        "version": 1,
-                        "module_name": module_name,
-                        "logical_source_path": logical_source_path,
-                        "is_package": is_package,
-                        "module_is_namespace": module_name in namespace_module_names,
-                        "entry_module": entry_override,
-                        "size": stat.st_size,
-                        "mtime_ns": stat.st_mtime_ns,
-                        "parse_codec": parse_codec,
-                        "type_hint_policy": type_hint_policy,
-                        "fallback_policy": fallback_policy,
-                        "type_facts": type_facts,
-                        "enable_phi": enable_phi,
-                        "known_modules": sorted(known_modules),
-                        "known_classes": known_classes,
-                        "stdlib_allowlist": sorted(stdlib_allowlist),
-                        "known_func_defaults": known_func_defaults,
-                        "module_chunking": is_wasm and module_chunk_max_ops > 0,
-                        "module_chunk_max_ops": module_chunk_max_ops,
-                        "optimization_profile": profile,
-                        "pgo_hot_functions": sorted(pgo_hot_function_names),
-                    }
-                )
+            context_payload = _module_lowering_context_payload(
+                module_name,
+                module_path,
+                logical_source_path=logical_source_path,
+                entry_override=entry_override,
+                known_classes_snapshot=known_classes,
+            )
+            if context_payload is not None:
+                context_digest = _module_lowering_context_digest(context_payload)
             if context_digest is not None:
                 cached_payload = _read_persisted_module_lowering(
                     project_root,
