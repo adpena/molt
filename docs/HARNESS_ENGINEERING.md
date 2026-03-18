@@ -1,9 +1,9 @@
-# Harness Engineering Alignment (Molt + Orchestration)
+# Harness Engineering Alignment
 
 Last updated: 2026-03-05
 
 This document translates OpenAI's Harness Engineering guidance into Molt's
-Orchestration operating model.
+current repository operating model.
 
 Primary source:
 - [Harness Engineering](https://openai.com/index/harness-engineering/)
@@ -22,17 +22,17 @@ time while preserving Molt's non-negotiable requirements:
 
 The harness requires agent-first repository legibility:
 - canonical map: `docs/INDEX.md`, `docs/CANONICALS.md`
-- orchestration map: `docs/ORCHESTRATION.md`
-- human authority contract: `docs/SYMPHONY_HUMAN_ROLE.md`
-- execution playbook: `docs/SYMPHONY_OPERATOR_PLAYBOOK.md`
+- developer guide: `docs/DEVELOPER_GUIDE.md`
+- contribution workflow: `CONTRIBUTING.md`
+- active plan registry: `docs/exec-plans/`
 
 Readiness enforcement:
-- `tools/symphony_readiness_audit.py` (`docs_and_tools` + `harness_engineering`)
+- `tools/linear_hygiene.py docs-audit`
 
 ### 2) Executable quality gates
 
 Quality gate enforcement is deterministic and reproducible:
-- readiness + strict autonomy: `tools/symphony_readiness_audit.py`
+- doc + issue hygiene: `tools/linear_hygiene.py docs-audit`
 - policy/matrix gates:
   - `docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md`
   - `docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md`
@@ -47,21 +47,16 @@ Execution plan artifacts are first-class harness inputs:
 
 ### 4) Observability and intervention
 
-Orchestration keeps observability and intervention surfaces always-on:
-- dashboard + APIs in `src/molt/orchestration/http_server.py`
-- operator actions:
-  - `POST /api/v1/refresh`
-  - `POST /api/v1/interventions/retry-now`
-  - `POST /api/v1/tools/run`
-- durable telemetry:
-  - `/Volumes/APDataStore/orchestration/molt/state/durable_memory/`
+Observability and intervention remain explicit and reviewable:
+- issue/state synchronization: `tools/linear_hygiene.py`
+- formal verification status: `tools/check_formal_methods.py`
+- benchmark and throughput artifacts under canonical artifact roots
+- execution evidence captured in docs, benchmark JSON, and CI outputs
 
 ### 5) Entropy cleanup loop
 
 Harness health requires recurring doc gardening and entropy cleanup:
 - Linear hygiene loop: `uv run --group dev --python 3.12 python3 tools/linear_hygiene.py full-pass --apply`
-- readiness loop: `tools/symphony_readiness_audit.py`
-- recursive bundle loop: `tools/symphony_recursive_loop.py`
 - doc sync loop: update `docs/spec/STATUS.md` + `ROADMAP.md` when behavior/scope move
 
 ### 6) Recursive continual learning loop
@@ -69,24 +64,16 @@ Harness health requires recurring doc gardening and entropy cleanup:
 The recursive and continual learning loop is:
 1. Seed/refresh backlog from canonical docs and TODO contracts.
 2. Normalize and route issues with `tools/linear_hygiene.py`.
-3. Execute with Orchestration (`tools/symphony_run.py`).
+3. Execute changes through normal repo workflows and execution plans.
 4. Gather evidence (tests/perf/formal/docs updates).
-5. Score and triage via readiness audit and quality score rubric.
-6. Run `tools/symphony_recursive_loop.py` to bundle deterministic artifacts,
-   execute optional `next_tranche.actions`, and capture hook decisions.
-7. Persist failures into DLQ and replay them deterministically with
-   `tools/symphony_dlq.py`.
-8. Distill recurring preferences/failures/tools into taste memory with
-   `tools/symphony_taste_memory.py`.
-9. Distill recurring successful actions into tool-promotion candidates with
-   `tools/symphony_tool_promotion.py`.
-10. Generate reviewable promotion manifests for ready candidates.
-11. Feed learnings back into docs/manifests/workflows and repeat.
+5. Score and triage via this quality score rubric plus deterministic evidence.
+6. Bundle deterministic artifacts in canonical locations for review.
+7. Feed learnings back into docs, manifests, and workflows and repeat.
 
 Readiness keeps this loop measurable:
-- `sections.dlq_health` tracks unresolved failures, recurring fingerprints, and replay success/failure counts
-- `sections.tool_promotion` tracks when recurring successful actions are ready to graduate into explicit tools or hooks
-- `improvement_issue_sync` turns those findings into a dry-run/apply Linear issue sync plan so the loop can externalize its own improvement backlog
+- execution plans track tranche state and blockers
+- quality gates track deterministic proof, test, and performance evidence
+- Linear hygiene sync keeps the external backlog aligned with canonical docs
 
 ## Canonical Score Target
 
@@ -97,10 +84,7 @@ Current target:
 
 ## Autonomy Boundary
 
-Orchestration maximizes execution autonomy, but the human remains accountable for:
+Automation can maximize execution autonomy, but the human remains accountable for:
 - prioritization and scope tradeoffs
 - policy/risk acceptance
 - final completion and release decisions
-
-Reference:
-- `docs/SYMPHONY_HUMAN_ROLE.md`
