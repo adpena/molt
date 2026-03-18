@@ -516,6 +516,27 @@ def test_shared_module_resolution_cache_reuses_import_scans(
     assert collect_calls == first_collect_calls
 
 
+def test_read_module_source_uses_utf8_fast_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_path = tmp_path / "fast_utf8.py"
+    source_path.write_text("value = 'hello'\n", encoding="utf-8")
+
+    def fail_open(path: Path):  # type: ignore[no-untyped-def]
+        raise AssertionError(f"tokenize.open should not run for {path}")
+
+    monkeypatch.setattr(cli.tokenize, "open", fail_open)
+    assert cli._read_module_source(source_path) == "value = 'hello'\n"
+
+
+def test_read_module_source_falls_back_for_encoding_cookie(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "latin1_source.py"
+    source_path.write_bytes("# -*- coding: latin-1 -*-\nname = 'caf\xe9'\n".encode("latin-1"))
+    assert cli._read_module_source(source_path) == "# -*- coding: latin-1 -*-\nname = 'café'\n"
+
+
 def test_stdlib_graph_ignores_nested_imports_for_core_scan(tmp_path: Path) -> None:
     entry = tmp_path / "main.py"
     entry.write_text("print(1)\n")
