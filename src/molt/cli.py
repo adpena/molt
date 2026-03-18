@@ -1821,9 +1821,11 @@ class _ModuleResolutionCache:
     ] = field(default_factory=dict)
     stdlib_path_cache: dict[tuple[Path, Path], bool] = field(default_factory=dict)
     import_scan_cache: dict[
-        tuple[Path, str | None, bool, bool], list[str]
+        tuple[Path, str | None, bool, bool], tuple[str, ...]
     ] = field(default_factory=dict)
     module_parts_cache: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    cpython_test_root_cache: Path | None = None
+    cpython_test_root_cache_populated: bool = False
 
     def roots_for_module(
         self,
@@ -1911,10 +1913,7 @@ class _ModuleResolutionCache:
     ) -> str:
         resolved = self.resolved_path(path)
         resolved_stdlib_root = self.resolved_path(stdlib_root)
-        cpython_test_root: Path | None = None
-        cpython_dir = os.environ.get("MOLT_REGRTEST_CPYTHON_DIR")
-        if cpython_dir:
-            cpython_test_root = self.resolved_path(Path(cpython_dir) / "Lib" / "test")
+        cpython_test_root = self.cpython_test_root()
         cache_key = (
             resolved,
             self.resolved_roots(roots),
@@ -1932,6 +1931,16 @@ class _ModuleResolutionCache:
         )
         self.module_name_cache[cache_key] = module_name
         return module_name
+
+    def cpython_test_root(self) -> Path | None:
+        if not self.cpython_test_root_cache_populated:
+            cpython_dir = os.environ.get("MOLT_REGRTEST_CPYTHON_DIR")
+            if cpython_dir:
+                self.cpython_test_root_cache = self.resolved_path(
+                    Path(cpython_dir) / "Lib" / "test"
+                )
+            self.cpython_test_root_cache_populated = True
+        return self.cpython_test_root_cache
 
     def is_stdlib_path(self, path: Path, stdlib_root: Path) -> bool:
         resolved_path = self.resolved_path(path)
@@ -1983,7 +1992,7 @@ class _ModuleResolutionCache:
         module_name: str | None = None,
         is_package: bool = False,
         include_nested: bool = True,
-    ) -> list[str]:
+    ) -> tuple[str, ...]:
         cache_key = (
             self.resolved_path(path),
             module_name,
@@ -1992,15 +2001,16 @@ class _ModuleResolutionCache:
         )
         cached = self.import_scan_cache.get(cache_key)
         if cached is not None:
-            return list(cached)
+            return cached
         imports = _collect_imports(
             tree,
             module_name,
             is_package,
             include_nested=include_nested,
         )
-        self.import_scan_cache[cache_key] = list(imports)
-        return imports
+        cached_imports = tuple(imports)
+        self.import_scan_cache[cache_key] = cached_imports
+        return cached_imports
 
 
 def _resolve_entry_module(
@@ -2371,9 +2381,9 @@ def _collect_imports(
         spec_override_is_package,
     ) = _infer_module_overrides(tree)
     module_body = list(getattr(tree, "body", []))
-    stmt_walks: list[tuple[ast.AST, tuple[ast.AST, ...]]] = [
-        (stmt, tuple(ast.walk(stmt))) for stmt in module_body
-    ]
+    function_walks: list[
+        tuple[ast.FunctionDef | ast.AsyncFunctionDef, tuple[ast.AST, ...]]
+    ] = []
 
     def _importlib_target(func: ast.expr) -> str | None:
         if isinstance(func, ast.Attribute):
@@ -2464,7 +2474,7 @@ def _collect_imports(
         return None
 
     if include_nested and isinstance(tree, ast.Module):
-        for stmt, _ in stmt_walks:
+        for stmt in module_body:
             if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
                 target = stmt.targets[0]
                 if isinstance(target, ast.Name):
@@ -2476,6 +2486,8 @@ def _collect_imports(
                 if value is not None:
                     module_string_constants[stmt.target.id] = value
             elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                stmt_nodes = tuple(ast.walk(stmt))
+                function_walks.append((stmt, stmt_nodes))
                 if len(stmt.body) != 1 or not isinstance(stmt.body[0], ast.Return):
                     continue
                 ret_expr = stmt.body[0].value
@@ -2493,9 +2505,7 @@ def _collect_imports(
                     continue
                 helper_string_functions[stmt.name] = (params, ret_expr)
 
-        for stmt, stmt_nodes in stmt_walks:
-            if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
+        for stmt, stmt_nodes in function_walks:
             params = [
                 arg.arg
                 for arg in (
@@ -2531,45 +2541,42 @@ def _collect_imports(
                     pos = param_positions[first.id]
                     helper_param_import_positions.setdefault(stmt.name, set()).add(pos)
 
-        for _, stmt_nodes in stmt_walks:
-            for node in stmt_nodes:
-                if not isinstance(node, ast.Call):
-                    continue
-                if not isinstance(node.func, ast.Name):
-                    continue
-                positions = helper_param_import_positions.get(node.func.id)
-                if not positions:
-                    positions = set()
-                for pos in positions:
-                    if pos < len(node.args):
-                        resolved = _resolve_string_constant(node.args[pos])
-                        if resolved is not None:
-                            imports.append(resolved)
-                helper_expr_entry = helper_import_arg_exprs.get(node.func.id)
-                if helper_expr_entry is None:
-                    continue
-                params, exprs = helper_expr_entry
-                if len(node.args) < len(params):
-                    continue
-                call_bindings: dict[str, object] = {}
-                for idx, param in enumerate(params):
-                    arg = node.args[idx]
-                    scalar = _resolve_string_constant(arg)
-                    if scalar is not None:
-                        call_bindings[param] = scalar
-                        continue
-                    seq = _resolve_string_sequence(arg, {}, set())
-                    if seq is not None:
-                        call_bindings[param] = seq
-                for expr in exprs:
-                    resolved = _resolve_string_constant(expr, call_bindings, set())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Name):
+                continue
+            positions = helper_param_import_positions.get(node.func.id)
+            if not positions:
+                positions = set()
+            for pos in positions:
+                if pos < len(node.args):
+                    resolved = _resolve_string_constant(node.args[pos])
                     if resolved is not None:
                         imports.append(resolved)
+            helper_expr_entry = helper_import_arg_exprs.get(node.func.id)
+            if helper_expr_entry is None:
+                continue
+            params, exprs = helper_expr_entry
+            if len(node.args) < len(params):
+                continue
+            call_bindings: dict[str, object] = {}
+            for idx, param in enumerate(params):
+                arg = node.args[idx]
+                scalar = _resolve_string_constant(arg)
+                if scalar is not None:
+                    call_bindings[param] = scalar
+                    continue
+                seq = _resolve_string_sequence(arg, {}, set())
+                if seq is not None:
+                    call_bindings[param] = seq
+            for expr in exprs:
+                resolved = _resolve_string_constant(expr, call_bindings, set())
+                if resolved is not None:
+                    imports.append(resolved)
 
     if include_nested and isinstance(tree, ast.Module):
-        scan_nodes = (
-            node for _, stmt_nodes in stmt_walks for node in stmt_nodes
-        )
+        scan_nodes = ast.walk(tree)
     elif include_nested:
         scan_nodes = tuple(ast.walk(tree))
     elif isinstance(tree, ast.Module):
