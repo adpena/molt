@@ -1575,7 +1575,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_dbm` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_decimal` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_elementtree` top-level stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_functools` top-level stub with full intrinsic-backed lowering.
+- Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_functools` now exposes an intrinsic-backed compatibility surface for `Placeholder`, `cmp_to_key`, `partial`, and `reduce` over Molt's `functools` runtime.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_gdbm` top-level stub with full intrinsic-backed lowering.
 - DONE(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:done): `_hashlib` now exposes intrinsic-backed hash/HMAC compatibility helpers, OpenSSL-style constructor aliases, and key derivation entrypoints through Molt `hashlib`/`hmac`.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_heapq` top-level stub with full intrinsic-backed lowering.
