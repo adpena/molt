@@ -206,6 +206,9 @@ def _should_suppress(
 
 def _resolve_showwarning() -> Any:
     try:
+        candidate = globals().get("showwarning")
+        if callable(candidate):
+            return candidate
         module = _sys.modules.get(__name__)
         if module is not None:
             candidate = getattr(module, "showwarning", None)
@@ -214,6 +217,11 @@ def _resolve_showwarning() -> Any:
     except Exception:
         pass
     return showwarning
+
+
+def _has_custom_showwarning() -> bool:
+    resolved = _resolve_showwarning()
+    return resolved is not _DEFAULT_SHOWWARNING
 
 
 def _capture_streams() -> list[tuple[Any, str]]:
@@ -293,6 +301,9 @@ def showwarning(
     )
 
 
+_DEFAULT_SHOWWARNING = showwarning
+
+
 def warn(
     message: Any,
     category: Any = None,
@@ -301,7 +312,7 @@ def warn(
 ) -> None:
     _ = source
     # Fast path: delegate entirely to Rust when no record/capture hooks.
-    if not _record_stack and not _capture_streams():
+    if not _record_stack and not _capture_streams() and not _has_custom_showwarning():
         _molt_warnings_warn(message, _normalize_category(category), stacklevel)
         return None
     # Slow path: Python-level record capture.
@@ -371,7 +382,7 @@ def warn_explicit(
 ) -> None:
     _ = source
     # Fast path: delegate to Rust when no record/capture hooks.
-    if not _record_stack and not _capture_streams():
+    if not _record_stack and not _capture_streams() and not _has_custom_showwarning():
         _molt_warnings_warn_explicit(
             message,
             _normalize_category(category),
