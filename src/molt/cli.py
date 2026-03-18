@@ -1,6 +1,7 @@
 import argparse
 import ast
 import base64
+import codecs
 from collections import deque
 import contextlib
 from concurrent.futures import ProcessPoolExecutor
@@ -2655,6 +2656,15 @@ class ModuleSyntaxErrorInfo:
 
 
 def _read_module_source(path: Path) -> str:
+    raw = path.read_bytes()
+    first_two_lines = raw.splitlines(keepends=True)[:2]
+    has_utf8_bom = raw.startswith(codecs.BOM_UTF8)
+    has_encoding_cookie = any(
+        tokenize.cookie_re.match(line.decode("latin-1", errors="ignore"))
+        for line in first_two_lines
+    )
+    if not has_utf8_bom and not has_encoding_cookie:
+        return raw.decode("utf-8")
     with tokenize.open(path) as handle:
         return handle.read()
 
