@@ -1649,7 +1649,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_thread` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_tokenize` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_tracemalloc` top-level stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_types` top-level stub with full intrinsic-backed lowering.
+- Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_types` now re-exports Molt's intrinsic-backed runtime type objects for CPython-compatible private-module imports.
 - Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_uuid` now exposes intrinsic-backed `generate_time_safe()` plus CPython-shaped capability constants over Molt's UUID runtime surface.
 - Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_warnings` now re-exports Molt's intrinsic-backed warning filters and top-level warn helpers for CPython-compatible private-module imports.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_winapi` top-level stub with full intrinsic-backed lowering.
