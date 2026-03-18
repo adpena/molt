@@ -1152,7 +1152,7 @@ complete. M-GPU-1 is the earliest actionable item and has no GPU hardware depend
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_contextvars` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_crypt` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_csv` top-level stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_ctypes` top-level stub with full intrinsic-backed lowering.
+- Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_ctypes` now re-exports Molt's intrinsic-backed scalar/structure/pointer ctypes subset for CPython-compatible private-module imports.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_curses_panel` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_curses` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_datetime` top-level stub with full intrinsic-backed lowering.
