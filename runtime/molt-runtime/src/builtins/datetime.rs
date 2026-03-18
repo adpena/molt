@@ -22,8 +22,9 @@ use crate::{
 /// Proleptic Gregorian ordinal where day 1 = 0001-01-01.
 type Ordinal = i64;
 
-/// Parsed datetime components: (year, month, day, hour, minute, second, microsecond).
-type DateTimeParts = (i32, i32, i32, i32, i32, i32, i32);
+/// Parsed datetime components:
+/// (year, month, day, hour, minute, second, microsecond, utc_offset_seconds).
+type DateTimeParts = (i32, i32, i32, i32, i32, i32, i32, Option<i64>);
 
 /// Local time components: (year, month, day, hour, minute, second, utc_offset_secs).
 type LocalTimeParts = (i32, i32, i32, i32, i32, i32, i64);
@@ -739,7 +740,7 @@ pub extern "C" fn molt_datetime_strptime(text_bits: u64, fmt_bits: u64) -> u64 {
         let fmt = unpack_str!(_py, fmt_bits, "format");
 
         match strptime_impl(&text, &fmt) {
-            Ok((y, m, d, h, mi, s, us)) => {
+            Ok((y, m, d, h, mi, s, us, utc_offset_secs)) => {
                 let elems = [
                     MoltObject::from_int(y as i64).bits(),
                     MoltObject::from_int(m as i64).bits(),
@@ -748,6 +749,10 @@ pub extern "C" fn molt_datetime_strptime(text_bits: u64, fmt_bits: u64) -> u64 {
                     MoltObject::from_int(mi as i64).bits(),
                     MoltObject::from_int(s as i64).bits(),
                     MoltObject::from_int(us as i64).bits(),
+                    utc_offset_secs
+                        .map(MoltObject::from_int)
+                        .unwrap_or_else(MoltObject::none)
+                        .bits(),
                 ];
                 tuple_bits(_py, &elems)
             }
@@ -769,6 +774,7 @@ fn strptime_impl(text: &str, fmt: &str) -> Result<DateTimeParts, String> {
     let mut minute: i32 = 0;
     let mut second: i32 = 0;
     let mut us: i32 = 0;
+    let mut utc_offset_secs: Option<i64> = None;
 
     while fi < fb.len() {
         if fb[fi] != b'%' {
@@ -835,21 +841,36 @@ fn strptime_impl(text: &str, fmt: &str) -> Result<DateTimeParts, String> {
                 us = acc;
             }
             b'z' => {
-                // Parse UTC offset, skip it (we return naive)
+                // Parse UTC offset and preserve it so Python can build an aware datetime.
                 if ti < tb.len() && (tb[ti] == b'+' || tb[ti] == b'-' || tb[ti] == b'Z') {
                     let start = ti;
                     ti += 1;
                     while ti < tb.len() && (tb[ti].is_ascii_digit() || tb[ti] == b':') {
                         ti += 1;
                     }
-                    // We parsed the offset for syntax validation; discard value.
-                    let _off = parse_utc_offset(&tb[start..ti]);
+                    utc_offset_secs = Some(parse_utc_offset(&tb[start..ti])?);
+                } else {
+                    return Err(format!(
+                        "time data {:?} does not match format {:?}",
+                        text, fmt
+                    ));
                 }
             }
             b'Z' => {
-                // Skip timezone name (letters + /)
+                // Accept a narrow CPython-compatible subset. Unknown names should
+                // fail rather than silently producing a naive datetime.
+                let start = ti;
                 while ti < tb.len() && (tb[ti].is_ascii_alphabetic() || tb[ti] == b'/') {
                     ti += 1;
+                }
+                let zone = std::str::from_utf8(&tb[start..ti]).unwrap_or("");
+                if zone.eq_ignore_ascii_case("UTC") || zone.eq_ignore_ascii_case("GMT") {
+                    utc_offset_secs = Some(0);
+                } else {
+                    return Err(format!(
+                        "time data {:?} does not match format {:?}",
+                        text, fmt
+                    ));
                 }
             }
             b'j' => {
@@ -982,7 +1003,7 @@ fn strptime_impl(text: &str, fmt: &str) -> Result<DateTimeParts, String> {
         ));
     }
 
-    Ok((year, month, day, hour, minute, second, us))
+    Ok((year, month, day, hour, minute, second, us, utc_offset_secs))
 }
 
 /// Read up to `max_digits` decimal digits from `b[*pos..]`, advancing `*pos`.
