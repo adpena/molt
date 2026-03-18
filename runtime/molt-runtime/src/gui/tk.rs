@@ -48,6 +48,10 @@ type TclIncrRefCountFn = unsafe extern "C" fn(*mut c_void);
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 type TclDecrRefCountFn = unsafe extern "C" fn(*mut c_void);
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+type TclDbIncrRefCountFn = unsafe extern "C" fn(*mut c_void, *const c_char, c_int);
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+type TclDbDecrRefCountFn = unsafe extern "C" fn(*mut c_void, *const c_char, c_int);
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 type TclDoOneEventFn = unsafe extern "C" fn(c_int) -> c_int;
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 type TclSplitListFn =
@@ -70,12 +74,48 @@ struct TclApi {
     new_string_obj: TclNewStringObjFn,
     new_list_obj: TclNewListObjFn,
     list_obj_append_element: TclListObjAppendElementFn,
-    incr_ref_count: TclIncrRefCountFn,
-    decr_ref_count: TclDecrRefCountFn,
+    incr_ref_count: Option<TclIncrRefCountFn>,
+    decr_ref_count: Option<TclDecrRefCountFn>,
+    db_incr_ref_count: Option<TclDbIncrRefCountFn>,
+    db_decr_ref_count: Option<TclDbDecrRefCountFn>,
     do_one_event: TclDoOneEventFn,
     split_list: TclSplitListFn,
     merge: TclMergeFn,
     free: TclFreeFn,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+const TCL_REFCOUNT_FILE: &[u8] = b"molt-runtime/tk.rs\0";
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+impl TclApi {
+    unsafe fn incr_ref_count_obj(&self, obj: *mut c_void) {
+        if let Some(incr) = self.incr_ref_count {
+            unsafe {
+                incr(obj);
+            }
+            return;
+        }
+        if let Some(incr) = self.db_incr_ref_count {
+            unsafe {
+                incr(obj, TCL_REFCOUNT_FILE.as_ptr().cast::<c_char>(), line!() as c_int);
+            }
+        }
+    }
+
+    unsafe fn decr_ref_count_obj(&self, obj: *mut c_void) {
+        if let Some(decr) = self.decr_ref_count {
+            unsafe {
+                decr(obj);
+            }
+            return;
+        }
+        if let Some(decr) = self.db_decr_ref_count {
+            unsafe {
+                decr(obj, TCL_REFCOUNT_FILE.as_ptr().cast::<c_char>(), line!() as c_int);
+            }
+        }
+    }
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
@@ -257,6 +297,9 @@ fn load_tcl_api() -> Result<&'static TclApi, String> {
                             )
                         })
                 };
+                let load_optional = |symbol: &[u8]| -> Option<*const ()> {
+                    leaked.get::<*const ()>(symbol).ok().map(|sym| *sym)
+                };
                 let api = TclApi {
                     find_executable: std::mem::transmute(load(b"Tcl_FindExecutable\0")?),
                     create_interp: std::mem::transmute(load(b"Tcl_CreateInterp\0")?),
@@ -270,8 +313,14 @@ fn load_tcl_api() -> Result<&'static TclApi, String> {
                     list_obj_append_element: std::mem::transmute(
                         load(b"Tcl_ListObjAppendElement\0")?,
                     ),
-                    incr_ref_count: std::mem::transmute(load(b"Tcl_IncrRefCount\0")?),
-                    decr_ref_count: std::mem::transmute(load(b"Tcl_DecrRefCount\0")?),
+                    incr_ref_count: load_optional(b"Tcl_IncrRefCount\0")
+                        .map(|sym| unsafe { std::mem::transmute(sym) }),
+                    decr_ref_count: load_optional(b"Tcl_DecrRefCount\0")
+                        .map(|sym| unsafe { std::mem::transmute(sym) }),
+                    db_incr_ref_count: load_optional(b"Tcl_DbIncrRefCount\0")
+                        .map(|sym| unsafe { std::mem::transmute(sym) }),
+                    db_decr_ref_count: load_optional(b"Tcl_DbDecrRefCount\0")
+                        .map(|sym| unsafe { std::mem::transmute(sym) }),
                     do_one_event: std::mem::transmute(load(b"Tcl_DoOneEvent\0")?),
                     split_list: std::mem::transmute(load(b"Tcl_SplitList\0")?),
                     merge: std::mem::transmute(load(b"Tcl_Merge\0")?),
@@ -552,7 +601,7 @@ impl TclInterpreter {
         }
         let rc = unsafe {
             for &obj in &objv {
-                (self.api.incr_ref_count)(obj);
+                self.api.incr_ref_count_obj(obj);
             }
             let call_rc = (self.api.eval_objv)(
                 self.interp_ptr(),
@@ -561,7 +610,7 @@ impl TclInterpreter {
                 0,
             );
             for &obj in &objv {
-                (self.api.decr_ref_count)(obj);
+                self.api.decr_ref_count_obj(obj);
             }
             call_rc
         };
@@ -622,8 +671,8 @@ impl TclInterpreter {
                     };
                     if rc != TCL_OK {
                         unsafe {
-                            (self.api.decr_ref_count)(nested_obj);
-                            (self.api.decr_ref_count)(list_obj);
+                            self.api.decr_ref_count_obj(nested_obj);
+                            self.api.decr_ref_count_obj(list_obj);
                         }
                         let err = tcl_result_string(self.api, self.interp_ptr());
                         return Err(if err.is_empty() {
