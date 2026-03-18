@@ -2097,6 +2097,53 @@ def test_stage_backend_output_and_caches_reuses_cache_path_as_backend_output(
     assert function_cache_path.read_bytes() == b"artifact"
 
 
+def test_stage_backend_output_and_caches_skips_output_recopy_when_module_key_is_synced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend_output = tmp_path / "backend.o"
+    backend_output.write_bytes(b"artifact")
+    output_artifact = tmp_path / "dist" / "output.o"
+    output_artifact.parent.mkdir(parents=True)
+    output_artifact.write_bytes(b"artifact")
+    cache_path = tmp_path / "cache" / "module.o"
+    function_cache_path = tmp_path / "cache" / "function.o"
+    warnings: list[str] = []
+
+    state_path = cli._artifact_sync_state_path(tmp_path, output_artifact)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    cli._write_artifact_sync_state(
+        state_path,
+        source_key="module-key",
+        tier="module",
+        artifact=output_artifact,
+    )
+    original_copy = cli._atomic_copy_file
+
+    def fail_copy(src: Path, dst: Path) -> None:
+        if dst == output_artifact:
+            raise AssertionError(f"unexpected output sync {src} -> {dst}")
+        original_copy(src, dst)
+
+    monkeypatch.setattr(cli, "_atomic_copy_file", fail_copy)
+
+    err = cli._stage_backend_output_and_caches(
+        tmp_path,
+        backend_output,
+        output_artifact,
+        cache_path=cache_path,
+        cache_key="module-key",
+        function_cache_path=function_cache_path,
+        warnings=warnings,
+    )
+
+    assert err is None
+    assert warnings == []
+    assert output_artifact.read_bytes() == b"artifact"
+    assert cache_path.read_bytes() == b"artifact"
+    assert function_cache_path.read_bytes() == b"artifact"
+    assert not backend_output.exists()
+
+
 def test_stage_backend_output_and_caches_without_cache_moves_output(
     tmp_path: Path,
 ) -> None:
