@@ -4257,6 +4257,20 @@ def _discover_module_graph(
     queued_paths = {entry_path}
     resolution_cache = resolver_cache or _ModuleResolutionCache()
 
+    if project_root is not None:
+        persisted_graph = _read_persisted_module_graph(
+            project_root,
+            entry_path,
+            roots=roots,
+            module_roots=module_roots,
+            stdlib_root=stdlib_root,
+            skip_modules=skip_modules,
+            stub_parents=stub_parents,
+            nested_stdlib_scan_modules=nested_stdlib_scan_modules,
+        )
+        if persisted_graph is not None:
+            return persisted_graph
+
     def resolve_candidate(candidate: str) -> Path | None:
         return resolution_cache.resolve_module(
             candidate, roots, stdlib_root, stdlib_allowlist
@@ -4324,6 +4338,20 @@ def _discover_module_graph(
                 if resolved is not None and resolved not in queued_paths:
                     queued_paths.add(resolved)
                     queue.append(resolved)
+    if project_root is not None:
+        with contextlib.suppress(OSError):
+            _write_persisted_module_graph(
+                project_root,
+                entry_path,
+                roots=roots,
+                module_roots=module_roots,
+                stdlib_root=stdlib_root,
+                skip_modules=skip_modules,
+                stub_parents=stub_parents,
+                nested_stdlib_scan_modules=nested_stdlib_scan_modules,
+                graph=graph,
+                explicit_imports=explicit_imports,
+            )
     return graph, explicit_imports
 
 
@@ -6417,6 +6445,141 @@ def _import_scan_cache_path(
         ).encode("utf-8")
     ).hexdigest()[:24]
     return root / f"{path.stem}.{cache_key}.json"
+
+
+def _module_graph_cache_path(
+    project_root: Path,
+    entry_path: Path,
+    *,
+    roots: list[Path],
+    module_roots: list[Path],
+    stdlib_root: Path,
+    skip_modules: set[str],
+    stub_parents: set[str],
+    nested_stdlib_scan_modules: set[str],
+) -> Path:
+    root = _build_state_root(project_root) / "module_graph_cache"
+    cache_key = hashlib.sha256(
+        json.dumps(
+            {
+                "version": 1,
+                "entry_path": str(entry_path.resolve()),
+                "roots": [str(path.resolve()) for path in roots],
+                "module_roots": [str(path.resolve()) for path in module_roots],
+                "stdlib_root": str(stdlib_root.resolve()),
+                "skip_modules": sorted(skip_modules),
+                "stub_parents": sorted(stub_parents),
+                "nested_stdlib_scan_modules": sorted(nested_stdlib_scan_modules),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    return root / f"{entry_path.stem}.{cache_key}.json"
+
+
+def _read_persisted_module_graph(
+    project_root: Path,
+    entry_path: Path,
+    *,
+    roots: list[Path],
+    module_roots: list[Path],
+    stdlib_root: Path,
+    skip_modules: set[str],
+    stub_parents: set[str],
+    nested_stdlib_scan_modules: set[str],
+) -> tuple[dict[str, Path], set[str]] | None:
+    cache_path = _module_graph_cache_path(
+        project_root,
+        entry_path,
+        roots=roots,
+        module_roots=module_roots,
+        stdlib_root=stdlib_root,
+        skip_modules=skip_modules,
+        stub_parents=stub_parents,
+        nested_stdlib_scan_modules=nested_stdlib_scan_modules,
+    )
+    try:
+        payload = json.loads(cache_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        return None
+    raw_modules = payload.get("modules")
+    if not isinstance(raw_modules, list):
+        return None
+    graph: dict[str, Path] = {}
+    for item in raw_modules:
+        if not isinstance(item, dict):
+            return None
+        module_name = item.get("module")
+        path_text = item.get("path")
+        size = item.get("size")
+        mtime_ns = item.get("mtime_ns")
+        if (
+            not isinstance(module_name, str)
+            or not isinstance(path_text, str)
+            or not isinstance(size, int)
+            or not isinstance(mtime_ns, int)
+        ):
+            return None
+        path = Path(path_text)
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        if stat.st_size != size or stat.st_mtime_ns != mtime_ns:
+            return None
+        graph[module_name] = path
+    raw_explicit_imports = payload.get("explicit_imports", [])
+    if not isinstance(raw_explicit_imports, list) or not all(
+        isinstance(name, str) for name in raw_explicit_imports
+    ):
+        return None
+    return graph, set(cast(list[str], raw_explicit_imports))
+
+
+def _write_persisted_module_graph(
+    project_root: Path,
+    entry_path: Path,
+    *,
+    roots: list[Path],
+    module_roots: list[Path],
+    stdlib_root: Path,
+    skip_modules: set[str],
+    stub_parents: set[str],
+    nested_stdlib_scan_modules: set[str],
+    graph: dict[str, Path],
+    explicit_imports: set[str],
+) -> None:
+    modules: list[dict[str, Any]] = []
+    for module_name, path in sorted(graph.items()):
+        stat = path.stat()
+        modules.append(
+            {
+                "module": module_name,
+                "path": str(path),
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+            }
+        )
+    payload = {
+        "version": 1,
+        "modules": modules,
+        "explicit_imports": sorted(explicit_imports),
+    }
+    cache_path = _module_graph_cache_path(
+        project_root,
+        entry_path,
+        roots=roots,
+        module_roots=module_roots,
+        stdlib_root=stdlib_root,
+        skip_modules=skip_modules,
+        stub_parents=stub_parents,
+        nested_stdlib_scan_modules=nested_stdlib_scan_modules,
+    )
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
 def _read_persisted_import_scan(
