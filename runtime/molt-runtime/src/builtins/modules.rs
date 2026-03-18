@@ -392,9 +392,7 @@ pub extern "C" fn molt_module_new(name_bits: u64) -> u64 {
                 }
             }
         }
-        if name == "builtins" || name == "_intrinsics" {
-            crate::intrinsics::install_into_builtins(_py, ptr);
-        }
+        crate::intrinsics::install_into_builtins(_py, ptr);
         MoltObject::from_ptr(ptr).bits()
     })
 }
