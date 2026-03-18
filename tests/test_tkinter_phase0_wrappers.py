@@ -1066,8 +1066,15 @@ checks["tkinter_widget_wrappers_emit_commands"] = (
 checks["tkinter_widget_wrapper_paths_deterministic"] = (
     button._w == ".!button1"
     and frame._w == ".!frame2"
-    and label._w == ".!label3"
+    and label._w == ".!frame2.!label3"
     and message._w == ".!message4"
+)
+checks["tkinter_widget_wrapper_children_are_parent_relative"] = (
+    getattr(button, "_name", "") == "!button1"
+    and getattr(frame, "_name", "") == "!frame2"
+    and getattr(label, "_name", "") == "!label3"
+    and frame.children.get(label._name) is label
+    and root.children.get(frame._name) is frame
 )
 
 callback_option_call_start = len(root._tk_app._handle["calls"])
@@ -2326,6 +2333,7 @@ def test_tkinter_phase0_wrappers_support_headless_intrinsic_stubs() -> None:
         "tkinter_variable_names_deterministic",
         "tkinter_variable_roundtrip",
         "tkinter_variable_set_uses_tk_call",
+        "tkinter_widget_wrapper_children_are_parent_relative",
         "tkinter_widget_wrapper_paths_deterministic",
         "tkinter_widget_wrappers_emit_commands",
         "ttk_all_includes_new_surfaces",

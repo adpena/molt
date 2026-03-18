@@ -1893,12 +1893,15 @@ class Tk(Wm):
 
         _traceback.print_exception(exc, val, tb, file=sys.stderr)
 
-    def _next_widget_path(self, widget_command):
+    def _next_widget_path(self, parent_path, widget_command):
         base = widget_command.replace("::", "_").replace("-", "_")
         if not base:
             base = "widget"
         self._widget_serial += 1
-        return f".!{base}{self._widget_serial}"
+        child_name = f"!{base}{self._widget_serial}"
+        if parent_path in ("", "."):
+            return child_name, f".{child_name}"
+        return child_name, f"{parent_path}.{child_name}"
 
     def _wm_call(self, command, *args):
         return self.call("wm", command, self._w, *args)
@@ -2072,10 +2075,10 @@ class Widget(Misc):
         self.master = parent
         self.tk = root
         self._tk_app = root._tk_app
-        self._w = root._next_widget_path(widget_command)
+        self._name, self._w = root._next_widget_path(parent._w, widget_command)
         self.children = {}
         if hasattr(parent, "children"):
-            parent.children[self._w] = self
+            parent.children[self._name] = self
         argv = [widget_command, self._w]
         argv.extend(_normalize_tk_options(cnf, owner=self, **kw))
         self.tk.call(*argv)
@@ -2090,7 +2093,7 @@ class Widget(Misc):
             super().destroy()
         finally:
             if hasattr(self.master, "children"):
-                self.master.children.pop(self._w, None)
+                self.master.children.pop(getattr(self, "_name", self._w), None)
 
     def __str__(self):
         return self._w
