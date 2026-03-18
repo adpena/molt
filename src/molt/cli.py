@@ -4308,23 +4308,15 @@ def _discover_module_graph(
                 tree = resolution_cache.parse_module_ast(path, source, filename=str(path))
             except SyntaxError:
                 continue
-            imports = resolution_cache.collect_imports(
+            imports = _load_module_imports(
                 path,
-                tree,
                 module_name=module_name,
                 is_package=is_package,
                 include_nested=include_nested_imports,
+                tree=tree,
+                resolution_cache=resolution_cache,
+                project_root=project_root,
             )
-            if project_root is not None:
-                with contextlib.suppress(OSError):
-                    _write_persisted_import_scan(
-                        project_root,
-                        path,
-                        module_name=module_name,
-                        is_package=is_package,
-                        include_nested=include_nested_imports,
-                        imports=imports,
-                    )
         else:
             imports = persisted_imports
         for name in imports:
@@ -6640,6 +6632,46 @@ def _write_persisted_import_scan(
     }
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def _load_module_imports(
+    path: Path,
+    *,
+    module_name: str,
+    is_package: bool,
+    include_nested: bool,
+    tree: ast.AST,
+    resolution_cache: _ModuleResolutionCache,
+    project_root: Path | None,
+) -> tuple[str, ...]:
+    if project_root is not None:
+        persisted_imports = _read_persisted_import_scan(
+            project_root,
+            path,
+            module_name=module_name,
+            is_package=is_package,
+            include_nested=include_nested,
+        )
+        if persisted_imports is not None:
+            return persisted_imports
+    imports = resolution_cache.collect_imports(
+        path,
+        tree,
+        module_name=module_name,
+        is_package=is_package,
+        include_nested=include_nested,
+    )
+    if project_root is not None:
+        with contextlib.suppress(OSError):
+            _write_persisted_import_scan(
+                project_root,
+                path,
+                module_name=module_name,
+                is_package=is_package,
+                include_nested=include_nested,
+                imports=imports,
+            )
+    return imports
 
 
 def _link_fingerprint(
@@ -9286,17 +9318,20 @@ def build(
             known_func_defaults[module_name] = {}
             continue
         module_trees[module_name] = tree
+        module_imports = _load_module_imports(
+            module_path,
+            module_name=module_name,
+            is_package=module_path.name == "__init__.py",
+            include_nested=True,
+            tree=tree,
+            resolution_cache=module_resolution_cache,
+            project_root=project_root,
+        )
         module_deps[module_name] = _module_dependencies(
             tree,
             module_name,
             module_graph,
-            imports=module_resolution_cache.collect_imports(
-                module_path,
-                tree,
-                module_name=module_name,
-                is_package=module_path.name == "__init__.py",
-                include_nested=True,
-            ),
+            imports=module_imports,
         )
         known_func_defaults[module_name] = _collect_func_defaults(tree)
     module_order = _topo_sort_modules(module_graph, module_deps)
