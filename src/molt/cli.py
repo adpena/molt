@@ -78,6 +78,7 @@ ENTRY_OVERRIDE_SPAWN = "multiprocessing.spawn"
 IMPORTER_MODULE_NAME = "_molt_importer"
 JSON_SCHEMA_VERSION = "1.0"
 REMOTE_REGISTRY_SCHEMES = {"http", "https"}
+_ARTIFACT_SYNC_STATE_CACHE: dict[Path, tuple[int, int, dict[str, Any] | None]] = {}
 _LOCK_CHECK_CACHE_VERSION = 1
 _HASH_SEED_SENTINEL_ENV = "MOLT_HASH_SEED_APPLIED"
 _HASH_SEED_OVERRIDE_ENV = "MOLT_HASH_SEED"
@@ -6422,16 +6423,32 @@ def _artifact_sync_state_path(project_root: Path, artifact: Path) -> Path:
 
 def _read_artifact_sync_state(path: Path) -> dict[str, Any] | None:
     try:
+        stat = path.stat()
+    except OSError:
+        _ARTIFACT_SYNC_STATE_CACHE.pop(path, None)
+        return None
+    cached = _ARTIFACT_SYNC_STATE_CACHE.get(path)
+    if cached is not None:
+        cached_size, cached_mtime_ns, cached_payload = cached
+        if cached_size == stat.st_size and cached_mtime_ns == stat.st_mtime_ns:
+            return dict(cached_payload) if cached_payload is not None else None
+    try:
         text = path.read_text().strip()
     except OSError:
+        _ARTIFACT_SYNC_STATE_CACHE.pop(path, None)
         return None
     if not text:
+        _ARTIFACT_SYNC_STATE_CACHE[path] = (stat.st_size, stat.st_mtime_ns, None)
         return None
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
+        _ARTIFACT_SYNC_STATE_CACHE[path] = (stat.st_size, stat.st_mtime_ns, None)
         return None
-    return data if isinstance(data, dict) else None
+    payload = data if isinstance(data, dict) else None
+    payload_copy = dict(payload) if payload is not None else None
+    _ARTIFACT_SYNC_STATE_CACHE[path] = (stat.st_size, stat.st_mtime_ns, payload_copy)
+    return dict(payload_copy) if payload_copy is not None else None
 
 
 def _write_artifact_sync_state(
@@ -6450,6 +6467,16 @@ def _write_artifact_sync_state(
         "mtime_ns": stat.st_mtime_ns,
     }
     path.write_text(json.dumps(payload, indent=2) + "\n")
+    try:
+        written_stat = path.stat()
+    except OSError:
+        _ARTIFACT_SYNC_STATE_CACHE.pop(path, None)
+    else:
+        _ARTIFACT_SYNC_STATE_CACHE[path] = (
+            written_stat.st_size,
+            written_stat.st_mtime_ns,
+            dict(payload),
+        )
 
 
 def _artifact_sync_state_matches(

@@ -2057,6 +2057,35 @@ def test_backend_daemon_skip_output_sync_flags_track_artifact_state(
     assert skip_function is False
 
 
+def test_read_artifact_sync_state_reuses_process_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_artifact = tmp_path / "dist" / "output.o"
+    output_artifact.parent.mkdir(parents=True)
+    output_artifact.write_bytes(b"artifact")
+    state_path = cli._artifact_sync_state_path(tmp_path, output_artifact)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    cli._ARTIFACT_SYNC_STATE_CACHE.clear()
+    cli._write_artifact_sync_state(
+        state_path,
+        source_key="module-key",
+        tier="module",
+        artifact=output_artifact,
+    )
+
+    first = cli._read_artifact_sync_state(state_path)
+
+    def fail_read_text(*args: object, **kwargs: object) -> str:
+        raise AssertionError("unexpected sync-state file read")
+
+    monkeypatch.setattr(Path, "read_text", fail_read_text)
+    second = cli._read_artifact_sync_state(state_path)
+
+    assert first == second
+    assert second is not None
+    assert second["source_key"] == "module-key"
+
+
 def test_stage_backend_output_and_caches_promotes_module_cache(
     tmp_path: Path,
 ) -> None:
