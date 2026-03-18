@@ -677,6 +677,10 @@ def _tk_after_cancel(_app, _token):
     return None
 
 
+def _tk_after_info(_app=None, _identifier=None):
+    return ()
+
+
 def _tk_trace_add(app, _name, _mode, callback):
     command_name = _next_command_name("::__molt_trace_")
     app["commands"][command_name] = callback
@@ -685,6 +689,10 @@ def _tk_trace_add(app, _name, _mode, callback):
 
 def _tk_trace_remove(app, _name, _mode, callback_name):
     app["commands"].pop(str(callback_name), None)
+    return None
+
+
+def _tk_trace_clear(_app=None, _name=None):
     return None
 
 
@@ -1035,6 +1043,40 @@ checks["tkinter_widget_wrapper_paths_deterministic"] = (
     and frame._w == ".!frame2"
     and label._w == ".!label3"
     and message._w == ".!message4"
+)
+
+callback_option_call_start = len(root._tk_app._handle["calls"])
+button_with_command = tkinter.Button(root, text="button-command", command=lambda: None)
+canvas_with_scroll = tkinter.Canvas(root, yscrollcommand=lambda first, last: None)
+scrollbar_with_command = tkinter.Scrollbar(root, command=lambda *args: None)
+menu = tkinter.Menu(root)
+menu.add_command(label="Refresh", command=lambda: None)
+callback_option_calls = root._tk_app._handle["calls"][callback_option_call_start:]
+
+def _command_option_value(call, option_name):
+    values = list(call)
+    for index, value in enumerate(values[:-1]):
+        if value == option_name:
+            return values[index + 1]
+    return None
+
+button_command_name = _command_option_value(callback_option_calls[0], "-command")
+canvas_scroll_name = _command_option_value(callback_option_calls[1], "-yscrollcommand")
+scrollbar_command_name = _command_option_value(callback_option_calls[2], "-command")
+menu_command_name = _command_option_value(callback_option_calls[4], "-command")
+
+checks["tkinter_callable_widget_options_register_commands"] = (
+    isinstance(button_command_name, str)
+    and isinstance(canvas_scroll_name, str)
+    and isinstance(scrollbar_command_name, str)
+    and isinstance(menu_command_name, str)
+    and button_command_name in root._tk_app._handle["commands"]
+    and canvas_scroll_name in root._tk_app._handle["commands"]
+    and scrollbar_command_name in root._tk_app._handle["commands"]
+    and menu_command_name in root._tk_app._handle["commands"]
+    and button_command_name != str(button_with_command)
+    and canvas_scroll_name != str(canvas_with_scroll)
+    and scrollbar_command_name != str(scrollbar_with_command)
 )
 
 var0 = tkinter.StringVar(root, value="string-probe")
@@ -1813,6 +1855,10 @@ def _tk_after_cancel(_app, _token):
     return None
 
 
+def _tk_after_info(_app=None, _identifier=None):
+    return ()
+
+
 def _tk_trace_add(app, _name, _mode, callback):
     command_name = _next_command_name("::__molt_trace_")
     app["commands"][command_name] = callback
@@ -1821,6 +1867,10 @@ def _tk_trace_add(app, _name, _mode, callback):
 
 def _tk_trace_remove(app, _name, _mode, callback_name):
     app["commands"].pop(str(callback_name), None)
+    return None
+
+
+def _tk_trace_clear(_app=None, _name=None):
     return None
 
 
@@ -1904,6 +1954,86 @@ def _tk_event_subst_parse(_widget_path, event_args):
     return tuple(event_args)
 
 
+def _tk_convert_stringval(value):
+    if isinstance(value, (int, float)) or not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return value
+    try:
+        return int(text, 10)
+    except ValueError:
+        pass
+    try:
+        return float(text)
+    except ValueError:
+        return value
+
+
+def _tk_hex_to_rgb(color):
+    text = str(color).lstrip("#")
+    if len(text) != 6:
+        return color
+    return tuple(int(text[index : index + 2], 16) for index in (0, 2, 4))
+
+
+def _tk_event_int(value):
+    return int(value)
+
+
+def _tk_event_build_from_args(widget_path, event_args):
+    values = list(event_args)
+    event = {"widget": widget_path}
+    if len(values) > 8:
+        event["x"] = int(values[8])
+    if len(values) > 9:
+        event["y"] = int(values[9])
+    if len(values) > 18:
+        event["delta"] = int(values[18])
+    return event
+
+
+def _tk_event_state_decode(value):
+    return () if int(value) == 0 else (str(int(value)),)
+
+
+def _tk_splitdict(value, _cut_minus=True):
+    if isinstance(value, dict):
+        return list(value.items())
+    items = list(value)
+    return [(items[idx], items[idx + 1]) for idx in range(0, len(items) - 1, 2)]
+
+
+def _tk_flatten_args(seq):
+    out = []
+    for item in seq:
+        if isinstance(item, (list, tuple)):
+            out.extend(_tk_flatten_args(item))
+        else:
+            out.append(item)
+    return out
+
+
+def _tk_cnfmerge(cnfs, _fallback=None):
+    merged = {}
+    for cnf in cnfs or ():
+        if isinstance(cnf, dict):
+            merged.update(cnf)
+    return merged
+
+
+def _tk_normalize_option(name):
+    text = str(name)
+    if text.endswith("_"):
+        text = text[:-1]
+    text = text.replace("_", "-")
+    return text if text.startswith("-") else f"-{text}"
+
+
+def _tk_normalize_delay_ms(value):
+    return int(value)
+
+
 builtins._molt_intrinsics = {
     "molt_stdlib_probe": lambda: True,
     "molt_fnmatch": lambda name, pat: _host_fnmatch.fnmatch(name, pat),
@@ -1920,15 +2050,21 @@ builtins._molt_intrinsics = {
     "molt_tk_after": _tk_after,
     "molt_tk_after_idle": _tk_after_idle,
     "molt_tk_after_cancel": _tk_after_cancel,
+    "molt_tk_after_info": _tk_after_info,
     "molt_tk_call": _tk_call,
     "molt_tk_trace_add": _tk_trace_add,
     "molt_tk_trace_remove": _tk_trace_remove,
+    "molt_tk_trace_clear": _tk_trace_clear,
     "molt_tk_trace_info": _tk_trace_info,
     "molt_tk_tkwait_variable": _tk_tkwait_variable,
     "molt_tk_tkwait_window": _tk_tkwait_window,
     "molt_tk_tkwait_visibility": _tk_tkwait_visibility,
     "molt_tk_bind_callback_register": _tk_bind_callback_register,
     "molt_tk_bind_callback_unregister": _tk_bind_callback_unregister,
+    "molt_tk_widget_bind_callback_register": _tk_bind_callback_register,
+    "molt_tk_widget_bind_callback_unregister": _tk_bind_callback_unregister,
+    "molt_tk_text_tag_bind_callback_register": _tk_bind_callback_register,
+    "molt_tk_text_tag_bind_callback_unregister": _tk_bind_callback_unregister,
     "molt_tk_treeview_tag_bind_callback_register": _tk_treeview_tag_bind_callback_register,
     "molt_tk_treeview_tag_bind_callback_unregister": _tk_treeview_tag_bind_callback_unregister,
     "molt_tk_bind_command": _tk_bind_command,
@@ -1943,6 +2079,16 @@ builtins._molt_intrinsics = {
     "molt_tk_errorinfo_append": _tk_errorinfo_append,
     "molt_tk_bind_script_remove_command": lambda _script=None, _command_name=None: _script,
     "molt_tk_event_subst_parse": _tk_event_subst_parse,
+    "molt_tk_event_int": _tk_event_int,
+    "molt_tk_event_build_from_args": _tk_event_build_from_args,
+    "molt_tk_event_state_decode": _tk_event_state_decode,
+    "molt_tk_splitdict": _tk_splitdict,
+    "molt_tk_flatten_args": _tk_flatten_args,
+    "molt_tk_cnfmerge": _tk_cnfmerge,
+    "molt_tk_normalize_option": _tk_normalize_option,
+    "molt_tk_normalize_delay_ms": _tk_normalize_delay_ms,
+    "molt_tk_convert_stringval": _tk_convert_stringval,
+    "molt_tk_hex_to_rgb": _tk_hex_to_rgb,
     "molt_tk_commondialog_show": lambda _app=None, _master=None, _command=None, _options=None: "",
     "molt_tk_messagebox_show": lambda _app=None, _master=None, _options=None: "",
     "molt_tk_filedialog_show": lambda _app=None, _master=None, _command=None, _options=None: "",
@@ -2137,6 +2283,7 @@ def test_tkinter_phase0_wrappers_support_headless_intrinsic_stubs() -> None:
         "tkinter_all_exports_include_widget_and_var_wrappers",
         "tkinter_after_callback_invoked",
         "tkinter_call_roundtrip",
+        "tkinter_callable_widget_options_register_commands",
         "tkinter_commondialog_supported_commands_dispatch_to_tk_call",
         "tkinter_commondialog_unsupported_command_error_shape",
         "tkinter_create_use_tk_false_forwarded",

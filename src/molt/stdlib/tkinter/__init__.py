@@ -148,7 +148,29 @@ def _normalize_option_name(name):
     return name if name.startswith("-") else f"-{name}"
 
 
-def _normalize_tk_options(cnf=None, **kw):
+def _normalize_tk_option_value(owner, value):
+    if callable(value):
+        if owner is not None and hasattr(owner, "_register"):
+            return owner._register(value)
+        return value
+    if isinstance(value, (list, tuple)):
+        normalized_items = []
+        changed = False
+        for item in value:
+            if callable(item):
+                if owner is not None and hasattr(owner, "_register"):
+                    normalized_items.append(owner._register(item))
+                    changed = True
+                else:
+                    normalized_items.append(item)
+            else:
+                normalized_items.append(item)
+        if changed:
+            return type(value)(normalized_items)
+    return value
+
+
+def _normalize_tk_options(cnf=None, *, owner=None, **kw):
     if cnf is not None and not isinstance(cnf, dict):
         raise TypeError("tkinter config must be a dict or None")
     merged = {}
@@ -161,7 +183,7 @@ def _normalize_tk_options(cnf=None, **kw):
         if value is None:
             continue
         normalized.append(_normalize_option_name(str(key)))
-        normalized.append(value)
+        normalized.append(_normalize_tk_option_value(owner, value))
     return normalized
 
 
@@ -552,7 +574,9 @@ class Misc:
             return self._call_widget("configure", _normalize_option_name(cnf))
         if cnf is None and not kw:
             return self._call_widget("configure")
-        return self._call_widget("configure", *_normalize_tk_options(cnf, **kw))
+        return self._call_widget(
+            "configure", *_normalize_tk_options(cnf, owner=self, **kw)
+        )
 
     config = configure
 
@@ -1034,7 +1058,7 @@ class Misc:
                 )
             return self.call("pack", "configure", self._w, _normalize_option_name(cnf))
         return self.call(
-            "pack", "configure", self._w, *_normalize_tk_options(cnf, **kw)
+            "pack", "configure", self._w, *_normalize_tk_options(cnf, owner=self, **kw)
         )
 
     pack = pack_configure
@@ -1065,7 +1089,7 @@ class Misc:
                 )
             return self.call("grid", "configure", self._w, _normalize_option_name(cnf))
         return self.call(
-            "grid", "configure", self._w, *_normalize_tk_options(cnf, **kw)
+            "grid", "configure", self._w, *_normalize_tk_options(cnf, owner=self, **kw)
         )
 
     grid = grid_configure
@@ -1125,7 +1149,7 @@ class Misc:
             "columnconfigure",
             self._w,
             index,
-            *_normalize_tk_options(cnf, **kw),
+            *_normalize_tk_options(cnf, owner=self, **kw),
         )
 
     def grid_rowconfigure(self, index, cnf=None, **kw):
@@ -1146,7 +1170,7 @@ class Misc:
             "rowconfigure",
             self._w,
             index,
-            *_normalize_tk_options(cnf, **kw),
+            *_normalize_tk_options(cnf, owner=self, **kw),
         )
 
     columnconfigure = grid_columnconfigure
@@ -1170,7 +1194,7 @@ class Misc:
                 )
             return self.call("place", "configure", self._w, _normalize_option_name(cnf))
         return self.call(
-            "place", "configure", self._w, *_normalize_tk_options(cnf, **kw)
+            "place", "configure", self._w, *_normalize_tk_options(cnf, owner=self, **kw)
         )
 
     place = place_configure
@@ -2053,7 +2077,7 @@ class Widget(Misc):
         if hasattr(parent, "children"):
             parent.children[self._w] = self
         argv = [widget_command, self._w]
-        argv.extend(_normalize_tk_options(cnf, **kw))
+        argv.extend(_normalize_tk_options(cnf, owner=self, **kw))
         self.tk.call(*argv)
 
     def _root(self):
@@ -2283,7 +2307,7 @@ class Canvas(_CoreWidget):
 
     def _create(self, item_type, args, kw):
         flat_args = list(_flatten(args))
-        flat_args.extend(_normalize_tk_options(None, **kw))
+        flat_args.extend(_normalize_tk_options(None, owner=self, **kw))
         return self.getint(self._call_widget("create", item_type, *flat_args))
 
     def create_arc(self, *args, **kw):
@@ -2389,7 +2413,7 @@ class Canvas(_CoreWidget):
         if cnf is None and not kw:
             return self._call_widget("itemconfigure", tag_or_id)
         return self._call_widget(
-            "itemconfigure", tag_or_id, *_normalize_tk_options(cnf, **kw)
+            "itemconfigure", tag_or_id, *_normalize_tk_options(cnf, owner=self, **kw)
         )
 
     def tag_lower(self, *args):
@@ -2402,7 +2426,9 @@ class Canvas(_CoreWidget):
         return self._call_widget("moveto", tag_or_id, x, y)
 
     def postscript(self, cnf=None, **kw):
-        return self._call_widget("postscript", *_normalize_tk_options(cnf, **kw))
+        return self._call_widget(
+            "postscript", *_normalize_tk_options(cnf, owner=self, **kw)
+        )
 
     def tag_raise(self, *args):
         return self._call_widget("raise", *args)
@@ -2553,12 +2579,12 @@ class Text(_CoreWidget):
         if cnf is None and not kw:
             return self._call_widget("image", "configure", index)
         return self._call_widget(
-            "image", "configure", index, *_normalize_tk_options(cnf, **kw)
+            "image", "configure", index, *_normalize_tk_options(cnf, owner=self, **kw)
         )
 
     def image_create(self, index, cnf=None, **kw):
         return self._call_widget(
-            "image", "create", index, *_normalize_tk_options(cnf, **kw)
+            "image", "create", index, *_normalize_tk_options(cnf, owner=self, **kw)
         )
 
     def image_names(self):
@@ -2594,7 +2620,7 @@ class Text(_CoreWidget):
 
     def peer_create(self, new_path_name, cnf=None, **kw):
         return self._call_widget(
-            "peer", "create", new_path_name, *_normalize_tk_options(cnf, **kw)
+            "peer", "create", new_path_name, *_normalize_tk_options(cnf, owner=self, **kw)
         )
 
     def peer_names(self):
@@ -2720,7 +2746,7 @@ class Text(_CoreWidget):
         if cnf is None and not kw:
             return self._call_widget("tag", "configure", tag_name)
         return self._call_widget(
-            "tag", "configure", tag_name, *_normalize_tk_options(cnf, **kw)
+            "tag", "configure", tag_name, *_normalize_tk_options(cnf, owner=self, **kw)
         )
 
     def tag_delete(self, *tag_names):
@@ -2784,12 +2810,12 @@ class Text(_CoreWidget):
         if cnf is None and not kw:
             return self._call_widget("window", "configure", index)
         return self._call_widget(
-            "window", "configure", index, *_normalize_tk_options(cnf, **kw)
+            "window", "configure", index, *_normalize_tk_options(cnf, owner=self, **kw)
         )
 
     def window_create(self, index, cnf=None, **kw):
         return self._call_widget(
-            "window", "create", index, *_normalize_tk_options(cnf, **kw)
+            "window", "create", index, *_normalize_tk_options(cnf, owner=self, **kw)
         )
 
     def window_names(self):
@@ -2908,7 +2934,7 @@ class Listbox(_CoreWidget):
         if cnf is None and not kw:
             return self._call_widget("itemconfigure", index)
         return self._call_widget(
-            "itemconfigure", index, *_normalize_tk_options(cnf, **kw)
+            "itemconfigure", index, *_normalize_tk_options(cnf, owner=self, **kw)
         )
 
     select_anchor = selection_anchor
@@ -2930,7 +2956,9 @@ class Menu(_CoreWidget):
         return self._call_widget("activate", index)
 
     def add(self, item_type, cnf=None, **kw):
-        return self._call_widget("add", item_type, *_normalize_tk_options(cnf, **kw))
+        return self._call_widget(
+            "add", item_type, *_normalize_tk_options(cnf, owner=self, **kw)
+        )
 
     def add_cascade(self, cnf=None, **kw):
         return self.add("cascade", cnf, **kw)
@@ -2939,7 +2967,9 @@ class Menu(_CoreWidget):
         return self.add("checkbutton", cnf, **kw)
 
     def add_command(self, cnf=None, **kw):
-        return self._call_widget("add", "command", *_normalize_tk_options(cnf, **kw))
+        return self._call_widget(
+            "add", "command", *_normalize_tk_options(cnf, owner=self, **kw)
+        )
 
     def add_radiobutton(self, cnf=None, **kw):
         return self.add("radiobutton", cnf, **kw)
@@ -2949,7 +2979,7 @@ class Menu(_CoreWidget):
 
     def insert(self, index, item_type, cnf=None, **kw):
         return self._call_widget(
-            "insert", index, item_type, *_normalize_tk_options(cnf, **kw)
+            "insert", index, item_type, *_normalize_tk_options(cnf, owner=self, **kw)
         )
 
     def insert_cascade(self, index, cnf=None, **kw):
@@ -2987,7 +3017,7 @@ class Menu(_CoreWidget):
         if cnf is None and not kw:
             return self._call_widget("entryconfigure", index)
         return self._call_widget(
-            "entryconfigure", index, *_normalize_tk_options(cnf, **kw)
+            "entryconfigure", index, *_normalize_tk_options(cnf, owner=self, **kw)
         )
 
     def index(self, index):
@@ -3181,7 +3211,9 @@ class PanedWindow(_CoreWidget):
 
     def add(self, child, **kw):
         return self._call_widget(
-            "add", _normalize_bind_target(child), *_normalize_tk_options(None, **kw)
+            "add",
+            _normalize_bind_target(child),
+            *_normalize_tk_options(None, owner=self, **kw),
         )
 
     def remove(self, child):
@@ -3240,7 +3272,7 @@ class PanedWindow(_CoreWidget):
         if cnf is None and not kw:
             return self._call_widget("paneconfigure", target)
         return self._call_widget(
-            "paneconfigure", target, *_normalize_tk_options(cnf, **kw)
+            "paneconfigure", target, *_normalize_tk_options(cnf, owner=self, **kw)
         )
 
     paneconfig = paneconfigure
@@ -3322,7 +3354,7 @@ class Image:
         if not name:
             Image._last_id += 1
             name = f"pyimage{Image._last_id}"
-        options = _normalize_tk_options(cnf, **kw)
+        options = _normalize_tk_options(cnf, owner=self, **kw)
         self.tk.call("image", "create", imgtype, name, *options)
         self.name = name
 
@@ -3344,7 +3376,9 @@ class Image:
         return self.tk.call(self.name, "cget", _normalize_option_name(key))
 
     def configure(self, cnf=None, **kw):
-        return self.tk.call(self.name, "configure", *_normalize_tk_options(cnf, **kw))
+        return self.tk.call(
+            self.name, "configure", *_normalize_tk_options(cnf, owner=self, **kw)
+        )
 
     config = configure
 
