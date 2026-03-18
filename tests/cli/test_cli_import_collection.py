@@ -463,6 +463,55 @@ def test_shared_module_resolution_cache_reuses_resolved_paths(
     assert resolve_calls == first_resolve_calls
 
 
+def test_shared_module_resolution_cache_reuses_import_scans(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry = tmp_path / "pkg" / "__init__.py"
+    entry.parent.mkdir()
+    entry.write_text("import pkg.helper\n")
+    helper = entry.parent / "helper.py"
+    helper.write_text("import warnings\n")
+
+    stdlib_root = cli._stdlib_root_path()
+    module_roots = [tmp_path.resolve()]
+    roots = module_roots + [stdlib_root]
+    stdlib_allowlist = cli._stdlib_allowlist()
+
+    collect_calls = 0
+    original_collect = cli._collect_imports
+
+    def wrapped_collect(*args: object, **kwargs: object) -> list[str]:
+        nonlocal collect_calls
+        collect_calls += 1
+        return original_collect(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "_collect_imports", wrapped_collect)
+
+    cache = cli._ModuleResolutionCache()
+    graph, _ = cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        stdlib_allowlist,
+        resolver_cache=cache,
+    )
+    first_collect_calls = collect_calls
+
+    for module_name, module_path in graph.items():
+        source = cache.read_module_source(module_path)
+        tree = cache.parse_module_ast(module_path, source, filename=str(module_path))
+        cache.collect_imports(
+            module_path,
+            tree,
+            module_name=module_name,
+            is_package=module_path.name == "__init__.py",
+            include_nested=True,
+        )
+
+    assert collect_calls == first_collect_calls
+
+
 def test_stdlib_graph_ignores_nested_imports_for_core_scan(tmp_path: Path) -> None:
     entry = tmp_path / "main.py"
     entry.write_text("print(1)\n")
@@ -1146,6 +1195,8 @@ def test_backend_daemon_request_payload_bytes_is_unbounded() -> None:
     data, err = cli._backend_daemon_request_payload_bytes(payload)
     assert isinstance(data, bytes)
     assert data.endswith(b"\n")
+    assert b": " not in data
+    assert b", " not in data
     assert err is None
 
 
@@ -1214,12 +1265,12 @@ def test_compile_with_backend_daemon_surfaces_cache_telemetry(
 
     def _fake_request(
         socket_path: Path,
-        payload: dict[str, object],
+        data: bytes,
         *,
         timeout: float | None,
     ) -> tuple[dict[str, object], None]:
         del socket_path, timeout
-        captured_payload.update(payload)
+        captured_payload.update(json.loads(data))
         backend_output.write_bytes(b"\x7fELF")
         return (
             {
@@ -1237,7 +1288,7 @@ def test_compile_with_backend_daemon_surfaces_cache_telemetry(
             None,
         )
 
-    monkeypatch.setattr(cli, "_backend_daemon_request", _fake_request)
+    monkeypatch.setattr(cli, "_backend_daemon_request_bytes", _fake_request)
     result = cli._compile_with_backend_daemon(
         Path("/tmp/fake.sock"),
         ir={"functions": []},
