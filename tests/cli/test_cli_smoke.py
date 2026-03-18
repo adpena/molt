@@ -1234,6 +1234,49 @@ def test_cli_build_diagnostics_summary_verbosity_trims_stderr(tmp_path: Path) ->
     assert "midend.hotspot.1:" not in res.stderr
 
 
+def test_cli_build_json_diagnostics_include_midend_policy_config(tmp_path: Path) -> None:
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required for backend compilation.")
+
+    script = tmp_path / "hello.py"
+    script.write_text("def helper(x=1):\n    return x\n\nprint(helper())\n")
+    sysroot = tmp_path / "sysroot"
+    sysroot.mkdir()
+
+    env = _base_env()
+    env["MOLT_BUILD_DIAGNOSTICS"] = "1"
+    env["MOLT_MIDEND_BUDGET_SCALE"] = "1.5"
+    res = subprocess.run(
+        [
+            _python_executable(),
+            "-m",
+            "molt.cli",
+            "build",
+            "--emit",
+            "obj",
+            "--out-dir",
+            str(tmp_path),
+            "--sysroot",
+            str(sysroot),
+            "--json",
+            str(script),
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=_cli_timeout(),
+    )
+    assert res.returncode == 0
+    payload = json.loads(res.stdout)
+    diagnostics = payload["data"]["compile_diagnostics"]["midend"]
+    policy = diagnostics["policy_config"]
+    assert policy["hot_tier_promotion_enabled"] is True
+    assert policy["budget_alpha"] == 0.03
+    assert policy["budget_beta"] == 0.75
+    assert policy["budget_scale"] == 1.5
+
+
 def test_cli_completion_bash_json() -> None:
     res = _run_cli(["completion", "--shell", "bash", "--json"])
     assert res.returncode == 0
