@@ -2010,6 +2010,13 @@ def _write_namespace_module(name: str, paths: list[str], output_dir: Path) -> Pa
     return stub_path
 
 
+def _logical_generated_module_path(module_name: str) -> str:
+    safe = re.sub(r"[^0-9A-Za-z_]+", "_", module_name).strip("_")
+    if not safe:
+        safe = "module"
+    return f"/__molt_generated__/{safe}.py"
+
+
 def _collect_package_parents(
     module_graph: dict[str, Path],
     roots: list[Path],
@@ -3622,6 +3629,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     worker_pid = os.getpid()
     module_name = str(payload["module_name"])
     module_path = str(payload["module_path"])
+    logical_source_path = str(payload.get("logical_source_path") or module_path)
     source = str(payload["source"])
     parse_codec = cast(ParseCodec, payload["parse_codec"])
     type_hint_policy = cast(TypeHintPolicy, payload["type_hint_policy"])
@@ -3648,7 +3656,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     visit_s = 0.0
     lower_s = 0.0
     try:
-        tree = ast.parse(source, filename=module_path)
+        tree = ast.parse(source, filename=logical_source_path)
     except SyntaxError as exc:
         worker_finished_ns = time.time_ns()
         return {
@@ -3669,7 +3677,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
         fallback_policy=fallback_policy,
-        source_path=module_path,
+        source_path=logical_source_path,
         module_name=module_name,
         module_is_namespace=module_is_namespace,
         entry_module=entry_module,
@@ -7732,6 +7740,9 @@ def build(
                 for name in namespace_modules:
                     _record_module_reason(module_reasons, name, "namespace_stub")
     namespace_module_names = set(namespace_modules)
+    generated_module_source_paths: dict[str, str] = {
+        name: _logical_generated_module_path(name) for name in namespace_modules
+    }
     is_wasm = target == "wasm"
     is_rust_transpile = target == "rust"
     if trusted and is_wasm:
@@ -7866,6 +7877,10 @@ def build(
             _record_module_reason(
                 module_reasons, IMPORTER_MODULE_NAME, "importer_generated"
             )
+    if IMPORTER_MODULE_NAME in module_graph:
+        generated_module_source_paths.setdefault(
+            IMPORTER_MODULE_NAME, _logical_generated_module_path(IMPORTER_MODULE_NAME)
+        )
     machinery_path = _resolve_module_path("importlib.machinery", [stdlib_root])
     if machinery_path is not None:
         module_graph.setdefault("importlib.machinery", machinery_path)
@@ -8123,8 +8138,11 @@ def build(
                 raise _ModuleLowerError(
                     f"Failed to read module {module_path}: {exc}"
                 ) from exc
+        logical_source_path = generated_module_source_paths.get(
+            module_name, str(module_path)
+        )
         try:
-            return ast.parse(source, filename=str(module_path))
+            return ast.parse(source, filename=logical_source_path)
         except SyntaxError as exc:
             raise _ModuleLowerError(f"Syntax error in {module_path}: {exc}") from exc
 
@@ -8133,6 +8151,9 @@ def build(
         module_path: Path,
     ) -> tuple[SimpleTIRGenerator, dict[str, Any], float, float, float]:
         tree = _resolve_tree_for_module(module_name, module_path)
+        logical_source_path = generated_module_source_paths.get(
+            module_name, str(module_path)
+        )
         entry_override = entry_module
         if module_name == entry_module and entry_module != "__main__":
             entry_override = None
@@ -8140,7 +8161,7 @@ def build(
             parse_codec=parse_codec,
             type_hint_policy=type_hint_policy,
             fallback_policy=fallback_policy,
-            source_path=str(module_path),
+            source_path=logical_source_path,
             type_facts=type_facts,
             module_name=module_name,
             module_is_namespace=module_name in namespace_module_names,
@@ -8340,6 +8361,9 @@ def build(
                             payload = {
                                 "module_name": module_name,
                                 "module_path": str(module_path),
+                                "logical_source_path": generated_module_source_paths.get(
+                                    module_name, str(module_path)
+                                ),
                                 "source": source,
                                 "parse_codec": parse_codec,
                                 "type_hint_policy": type_hint_policy,
@@ -8928,6 +8952,9 @@ def build(
     module_code_ops: list[dict[str, Any]] = []
     for module_name in module_order:
         module_path = module_graph[module_name]
+        logical_source_path = generated_module_source_paths.get(
+            module_name, module_path.as_posix()
+        )
         init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
         code_id = _register_global_code_id(init_symbol)
         file_var = f"v{next_var}"
@@ -8952,7 +8979,7 @@ def build(
             [
                 {
                     "kind": "const_str",
-                    "s_value": module_path.as_posix(),
+                    "s_value": logical_source_path,
                     "out": file_var,
                 },
                 {"kind": "const_str", "s_value": "<module>", "out": name_var},
