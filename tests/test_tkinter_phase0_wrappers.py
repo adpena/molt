@@ -1086,6 +1086,39 @@ checks["tkinter_winfo_children_returns_widgets"] = (
     and message in root_children
     and label in frame_children
 )
+configure_event = tkinter._event_from_subst_args(
+    button,
+    (
+        "1",
+        "0",
+        "0",
+        "148",
+        "0",
+        "0",
+        "123",
+        "320",
+        "17",
+        "19",
+        "c",
+        "0",
+        "K",
+        "0",
+        button._w,
+        "22",
+        "17",
+        "19",
+        "0",
+    ),
+)
+checks["tkinter_event_subst_payload_maps_width_height"] = (
+    configure_event is not None
+    and configure_event.widget is button
+    and configure_event.width == 320
+    and configure_event.height == 148
+    and configure_event.x == 17
+    and configure_event.y == 19
+    and configure_event.delta == 0
+)
 
 callback_option_call_start = len(root._tk_app._handle["calls"])
 button_with_command = tkinter.Button(root, text="button-command", command=lambda: None)
@@ -2332,6 +2365,7 @@ def test_tkinter_phase0_wrappers_support_headless_intrinsic_stubs() -> None:
         "tkinter_deletecommand_runtime_notified",
         "tkinter_dialog_alias_exports_present",
         "tkinter_dialog_module_compat_symbols_present",
+        "tkinter_event_subst_payload_maps_width_height",
         "tkinter_filedialog_compat_cancel_returns_none",
         "tkinter_filedialog_compat_classes_route_to_wrappers",
         "tkinter_filedialog_compat_symbols_present",

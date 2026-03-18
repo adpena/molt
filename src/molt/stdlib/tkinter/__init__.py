@@ -424,16 +424,73 @@ def _event_int(widget, value):
 
 def _event_from_subst_args(widget, event_args):
     widget_path = getattr(widget, "_w", "")
+
+    def _coerce_fallback_event(fields):
+        if len(fields) != len(_SUBST_FORMAT):
+            return None
+        return {
+            "serial": _event_int(widget, fields[0]),
+            "num": _event_int(widget, fields[1]),
+            "focus": bool(_event_int(widget, fields[2])),
+            "height": _event_int(widget, fields[3]),
+            "keycode": _event_int(widget, fields[4]),
+            "state": _event_int(widget, fields[5]),
+            "time": _event_int(widget, fields[6]),
+            "width": _event_int(widget, fields[7]),
+            "x": _event_int(widget, fields[8]),
+            "y": _event_int(widget, fields[9]),
+            "char": fields[10],
+            "send_event": bool(_event_int(widget, fields[11])),
+            "keysym": fields[12],
+            "keysym_num": _event_int(widget, fields[13]),
+            "widget": fields[14],
+            "type": fields[15],
+            "x_root": _event_int(widget, fields[16]),
+            "y_root": _event_int(widget, fields[17]),
+            "delta": _event_int(widget, fields[18]),
+        }
+
     result = _molt_tk_event_build_from_args(widget_path, event_args)
+    fallback_result = _coerce_fallback_event(event_args)
     if result is None:
-        return None
+        result = fallback_result
+        if result is None:
+            return None
+    if isinstance(result, (list, tuple)) and len(result) == len(_SUBST_FORMAT):
+        result = {
+            "serial": result[0],
+            "num": result[1],
+            "focus": result[2],
+            "height": result[3],
+            "keycode": result[4],
+            "state": result[5],
+            "time": result[6],
+            "width": result[7],
+            "x": result[8],
+            "y": result[9],
+            "char": result[10],
+            "send_event": result[11],
+            "keysym": result[12],
+            "keysym_num": result[13],
+            "widget": result[14],
+            "type": result[15],
+            "x_root": result[16],
+            "y_root": result[17],
+            "delta": result[18],
+        }
     if isinstance(result, list):
         if len(result) == 1 and isinstance(result[0], dict):
             result = result[0]
         elif all(isinstance(item, (list, tuple)) and len(item) == 2 for item in result):
             result = {key: value for key, value in result}
         else:
-            return None
+            result = fallback_result
+            if result is None:
+                return None
+    if isinstance(result, dict) and isinstance(fallback_result, dict):
+        merged = dict(fallback_result)
+        merged.update(result)
+        result = merged
     event = Event()
     for key, value in result.items():
         setattr(event, key, value)
