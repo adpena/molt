@@ -24,6 +24,7 @@ DEFAULT_EXTERNAL_ROOT = Path("/Volumes/APDataStore/Molt")
 TARGET_CHOICES = ("rust", "luau")
 PROFILE_CHOICES = ("dev", "release")
 TARGET_EXTENSION = {"rust": "rs", "luau": "luau"}
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 @dataclass
@@ -160,7 +161,13 @@ def _case_env(
         path.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
-    env["PYTHONPATH"] = "src"
+    repo_src = str(REPO_ROOT / "src")
+    current_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        repo_src + os.pathsep + current_pythonpath
+        if current_pythonpath
+        else repo_src
+    )
     env["PYTHONHASHSEED"] = "0"
     env["MOLT_HASH_SEED"] = "0"
     env["MOLT_EXT_ROOT"] = str(molt_ext_root)
