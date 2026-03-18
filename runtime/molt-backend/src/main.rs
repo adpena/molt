@@ -94,7 +94,7 @@ struct DaemonCache {
 }
 
 struct CacheEntry {
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
     stamp: u64,
 }
 
@@ -116,10 +116,10 @@ impl DaemonCache {
         let stamp = self.clock;
         entry.stamp = stamp;
         self.order.push(Reverse((stamp, key_ref)));
-        Some(entry.bytes.as_slice())
+        Some(entry.bytes.as_ref())
     }
 
-    fn insert(&mut self, key: String, value: Vec<u8>) {
+    fn insert(&mut self, key: String, value: Arc<[u8]>) {
         if key.is_empty() {
             return;
         }
@@ -258,15 +258,15 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
         }
     }
 
-    let output_bytes = if job.is_wasm {
+    let output_bytes: Arc<[u8]> = if job.is_wasm {
         let backend = WasmBackend::new();
-        backend.compile(job.ir)
+        Arc::from(backend.compile(job.ir))
     } else {
         let backend = SimpleBackend::new_with_target(job.target_triple.as_deref());
-        backend.compile(job.ir)
+        Arc::from(backend.compile(job.ir))
     };
 
-    if let Err(err) = write_output(&job.output, &output_bytes) {
+    if let Err(err) = write_output(&job.output, output_bytes.as_ref()) {
         return DaemonJobResponse {
             id: job.id,
             ok: false,
@@ -279,7 +279,7 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
 
     if !cache_key.is_empty() && !function_cache_key.is_empty() && function_cache_key != cache_key
     {
-        cache.insert(cache_key.to_string(), output_bytes.clone());
+        cache.insert(cache_key.to_string(), Arc::clone(&output_bytes));
         cache.insert(function_cache_key.to_string(), output_bytes);
     } else if !cache_key.is_empty() {
         cache.insert(cache_key.to_string(), output_bytes);
@@ -601,20 +601,33 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{read_daemon_request_bytes, write_cached_output, DaemonCache};
+    use std::sync::Arc;
     use std::io::Cursor;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn daemon_cache_get_bytes_updates_lru_without_cloning() {
         let mut cache = DaemonCache::new(None);
-        cache.insert("module".to_string(), vec![1, 2, 3, 4]);
+        cache.insert("module".to_string(), Arc::from(vec![1, 2, 3, 4]));
 
         let bytes = cache.get_bytes("module").expect("cache hit");
         assert_eq!(bytes, &[1, 2, 3, 4]);
 
         let entry = cache.entries.get("module").expect("entry retained");
-        assert_eq!(entry.bytes, vec![1, 2, 3, 4]);
+        assert_eq!(entry.bytes.as_ref(), &[1, 2, 3, 4]);
         assert_eq!(entry.stamp, cache.clock);
+    }
+
+    #[test]
+    fn daemon_cache_can_share_bytes_across_keys() {
+        let mut cache = DaemonCache::new(None);
+        let shared = Arc::<[u8]>::from(vec![9, 8, 7, 6]);
+        cache.insert("module".to_string(), Arc::clone(&shared));
+        cache.insert("function".to_string(), shared);
+
+        let module = cache.entries.get("module").expect("module entry");
+        let function = cache.entries.get("function").expect("function entry");
+        assert!(Arc::ptr_eq(&module.bytes, &function.bytes));
     }
 
     #[test]
