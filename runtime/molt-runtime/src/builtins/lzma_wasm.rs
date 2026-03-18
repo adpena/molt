@@ -149,3 +149,34 @@ pub extern "C" fn molt_lzma_decompressor_unused_data(_handle_bits: u64) -> u64 {
 pub extern "C" fn molt_lzma_decompressor_drop(_handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, { MoltObject::none().bits() })
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_lzma_file_open(
+    _filename_bits: u64,
+    _mode_bits: u64,
+    _format_bits: u64,
+    _check_bits: u64,
+    _preset_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, { lzma_unavailable(_py) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_lzma_file_read(_handle_bits: u64, _size_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { lzma_unavailable(_py) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_lzma_file_write(_handle_bits: u64, _data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { lzma_unavailable(_py) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_lzma_file_close(_handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_lzma_file_drop(_handle_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+}
