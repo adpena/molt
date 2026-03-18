@@ -7,6 +7,7 @@ from contextlib import contextmanager
 
 import pytest
 
+import molt.frontend as frontend_module
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
 from molt.frontend.cfg_analysis import build_cfg
 
@@ -1876,6 +1877,38 @@ def test_midend_budget_degrade_preserves_correctness() -> None:
     assert "budget_exceeded" in reasons
     cse_stats = gen.midend_pass_stats_by_function["<direct>"]["cse"]
     assert int(cse_stats["degraded"]) >= 1
+
+
+def test_midend_uses_policy_budget_without_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ops = _build_sccp_growth_ops(depth=32, constant_cond=True)
+    cfg = build_cfg(ops)
+    gen = SimpleTIRGenerator(optimization_profile="release", module_name="pkg.mod")
+    policy = gen._resolve_midend_function_policy(
+        ops,
+        function_name="slow_func",
+        block_count=len(cfg.blocks),
+    )
+
+    monkeypatch.delenv("MOLT_MIDEND_BUDGET_MS", raising=False)
+    tick = {"value": 0.0}
+
+    def fake_perf_counter() -> float:
+        tick["value"] += 0.05
+        return tick["value"]
+
+    monkeypatch.setattr(frontend_module.time, "perf_counter", fake_perf_counter)
+
+    out = gen.map_ops_to_json(ops, function_name="slow_func")
+
+    assert out
+    outcome = gen.midend_policy_outcomes_by_function["slow_func"]
+    assert outcome["budget_ms"] == round(policy.budget_ms, 3)
+    assert float(outcome["budget_ms"]) < 5000.0
+    assert outcome["degraded"] is True
+    reasons = {event.get("reason") for event in outcome.get("degrade_events", [])}
+    assert "budget_exceeded" in reasons or "budget_preemptive" in reasons
 
 
 # ---------------------------------------------------------------------------

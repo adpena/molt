@@ -34805,9 +34805,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         cse_iter_cap = max(1, policy.cse_iter_cap)
 
         # --- Per-function wall-time budget with 3-level degrade ladder (MOL-27) ---
-        per_func_budget_ms: float = self._midend_float_env(
-            "MOLT_MIDEND_BUDGET_MS", 5000.0,
-        )
+        per_func_budget_ms = max(0.0, float(policy.budget_ms))
         degrade_level: int = 0
         degrade_level_reasons: list[str] = []
 
