@@ -6455,6 +6455,26 @@ def _module_analysis_cache_path(
     return root / f"{path.stem}.{cache_key}.json"
 
 
+def _module_lowering_cache_path(
+    project_root: Path,
+    path: Path,
+    *,
+    module_name: str,
+    is_package: bool,
+) -> Path:
+    root = _build_state_root(project_root) / "module_lowering_cache"
+    cache_key = hashlib.sha256(
+        "|".join(
+            (
+                str(path.resolve()),
+                module_name,
+                "pkg" if is_package else "mod",
+            )
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    return root / f"{path.stem}.{cache_key}.json"
+
+
 def _module_graph_cache_path(
     project_root: Path,
     entry_path: Path,
@@ -6676,22 +6696,13 @@ def _read_persisted_module_analysis(
     if payload.get("size") != stat.st_size or payload.get("mtime_ns") != stat.st_mtime_ns:
         return None
 
-    def _decode_cached_value(value: Any) -> Any:
-        if isinstance(value, list):
-            return [_decode_cached_value(item) for item in value]
-        if isinstance(value, dict):
-            if value.get("__ellipsis__") is True and len(value) == 1:
-                return Ellipsis
-            return {
-                str(key): _decode_cached_value(item) for key, item in value.items()
-            }
-        return value
-
     normalized: dict[str, dict[str, Any]] = {}
     for func_name, func_payload in raw_defaults.items():
         if not isinstance(func_name, str) or not isinstance(func_payload, dict):
             return None
-        normalized[func_name] = cast(dict[str, Any], _decode_cached_value(func_payload))
+        normalized[func_name] = cast(
+            dict[str, Any], _decode_cached_json_value(func_payload)
+        )
     return normalized
 
 
@@ -6720,6 +6731,22 @@ def _write_persisted_module_analysis(
     }
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(json.dumps(payload, indent=2, default=_json_ir_default) + "\n")
+
+
+def _decode_cached_json_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_decode_cached_json_value(item) for item in value]
+    if isinstance(value, dict):
+        if value.get("__ellipsis__") is True and len(value) == 1:
+            return Ellipsis
+        if "__complex__" in value and isinstance(value["__complex__"], list):
+            real_imag = value["__complex__"]
+            if len(real_imag) == 2:
+                return complex(real_imag[0], real_imag[1])
+        return {
+            str(key): _decode_cached_json_value(item) for key, item in value.items()
+        }
+    return value
 
 
 def _load_module_imports(
@@ -6825,6 +6852,108 @@ def _load_module_analysis(
                     func_defaults=func_defaults,
                 )
     return tree, imports, func_defaults, source
+
+
+def _module_frontend_payload(
+    gen: SimpleTIRGenerator,
+    ir: dict[str, Any],
+    *,
+    visit_s: float,
+    lower_s: float,
+    total_s: float,
+) -> dict[str, Any]:
+    return {
+        "functions": ir["functions"],
+        "func_code_ids": dict(gen.func_code_ids),
+        "local_class_names": sorted(gen.local_class_names),
+        "local_classes": {
+            class_name: gen.classes[class_name]
+            for class_name in sorted(gen.local_class_names)
+        },
+        "midend_policy_outcomes_by_function": dict(
+            gen.midend_policy_outcomes_by_function
+        ),
+        "midend_pass_stats_by_function": dict(gen.midend_pass_stats_by_function),
+        "timings": {
+            "visit_s": visit_s,
+            "lower_s": lower_s,
+            "total_s": total_s,
+        },
+    }
+
+
+def _module_lowering_context_digest(payload: dict[str, Any]) -> str | None:
+    try:
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=_json_ir_default,
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        return None
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _read_persisted_module_lowering(
+    project_root: Path,
+    path: Path,
+    *,
+    module_name: str,
+    is_package: bool,
+    context_digest: str,
+) -> dict[str, Any] | None:
+    cache_path = _module_lowering_cache_path(
+        project_root,
+        path,
+        module_name=module_name,
+        is_package=is_package,
+    )
+    try:
+        payload = json.loads(cache_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        return None
+    if payload.get("context_digest") != context_digest:
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    if payload.get("size") != stat.st_size or payload.get("mtime_ns") != stat.st_mtime_ns:
+        return None
+    raw_result = payload.get("result")
+    if not isinstance(raw_result, dict):
+        return None
+    return cast(dict[str, Any], _decode_cached_json_value(raw_result))
+
+
+def _write_persisted_module_lowering(
+    project_root: Path,
+    path: Path,
+    *,
+    module_name: str,
+    is_package: bool,
+    context_digest: str,
+    result: dict[str, Any],
+) -> None:
+    cache_path = _module_lowering_cache_path(
+        project_root,
+        path,
+        module_name=module_name,
+        is_package=is_package,
+    )
+    stat = path.stat()
+    payload = {
+        "version": 1,
+        "context_digest": context_digest,
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "result": result,
+    }
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(payload, indent=2, default=_json_ir_default) + "\n")
 
 
 def _link_fingerprint(
@@ -9698,14 +9827,58 @@ def build(
     def _lower_module_serial(
         module_name: str,
         module_path: Path,
-    ) -> tuple[SimpleTIRGenerator, dict[str, Any], float, float, float]:
-        tree = _resolve_tree_for_module(module_name, module_path)
+    ) -> tuple[dict[str, Any], float, float, float]:
         logical_source_path = generated_module_source_paths.get(
             module_name, str(module_path)
         )
         entry_override = entry_module
         if module_name == entry_module and entry_module != "__main__":
             entry_override = None
+        is_package = module_path.name == "__init__.py"
+        context_digest: str | None = None
+        if project_root is not None:
+            try:
+                stat = module_path.stat()
+            except OSError:
+                stat = None
+            if stat is not None:
+                context_digest = _module_lowering_context_digest(
+                    {
+                        "version": 1,
+                        "module_name": module_name,
+                        "logical_source_path": logical_source_path,
+                        "is_package": is_package,
+                        "module_is_namespace": module_name in namespace_module_names,
+                        "entry_module": entry_override,
+                        "size": stat.st_size,
+                        "mtime_ns": stat.st_mtime_ns,
+                        "parse_codec": parse_codec,
+                        "type_hint_policy": type_hint_policy,
+                        "fallback_policy": fallback_policy,
+                        "type_facts": type_facts,
+                        "enable_phi": enable_phi,
+                        "known_modules": sorted(known_modules),
+                        "known_classes": known_classes,
+                        "stdlib_allowlist": sorted(stdlib_allowlist),
+                        "known_func_defaults": known_func_defaults,
+                        "module_chunking": is_wasm and module_chunk_max_ops > 0,
+                        "module_chunk_max_ops": module_chunk_max_ops,
+                        "optimization_profile": profile,
+                        "pgo_hot_functions": sorted(pgo_hot_function_names),
+                    }
+                )
+            if context_digest is not None:
+                cached_payload = _read_persisted_module_lowering(
+                    project_root,
+                    module_path,
+                    module_name=module_name,
+                    is_package=is_package,
+                    context_digest=context_digest,
+                )
+                if cached_payload is not None:
+                    return cached_payload, 0.0, 0.0, 0.0
+
+        tree = _resolve_tree_for_module(module_name, module_path)
         gen = SimpleTIRGenerator(
             parse_codec=parse_codec,
             type_hint_policy=type_hint_policy,
@@ -9748,7 +9921,24 @@ def build(
         except CompatibilityError as exc:
             raise _ModuleLowerError(str(exc)) from exc
         total_s = time.perf_counter() - module_frontend_start
-        return gen, ir, visit_s, lower_s, total_s
+        payload = _module_frontend_payload(
+            gen,
+            ir,
+            visit_s=visit_s,
+            lower_s=lower_s,
+            total_s=total_s,
+        )
+        if project_root is not None and context_digest is not None:
+            with contextlib.suppress(OSError):
+                _write_persisted_module_lowering(
+                    project_root,
+                    module_path,
+                    module_name=module_name,
+                    is_package=is_package,
+                    context_digest=context_digest,
+                    result=payload,
+                )
+        return payload, visit_s, lower_s, total_s
 
     frontend_parallel_workers = _resolve_frontend_parallel_module_workers()
     frontend_parallel_min_modules = _resolve_frontend_parallel_min_modules()
@@ -10086,7 +10276,7 @@ def build(
                         )
                         continue
                     try:
-                        gen, ir, visit_s, lower_s, total_s = _lower_module_serial(
+                        result, visit_s, lower_s, total_s = _lower_module_serial(
                             module_name, module_path
                         )
                     except _ModuleLowerError as exc:
@@ -10127,10 +10317,12 @@ def build(
                     )
                     integration_error = _integrate_module_frontend_result(
                         module_name,
-                        ir_functions=ir["functions"],
-                        func_code_ids=dict(gen.func_code_ids),
-                        local_class_names=sorted(gen.local_class_names),
-                        local_classes=gen.classes,
+                        ir_functions=cast(list[dict[str, Any]], result["functions"]),
+                        func_code_ids=cast(dict[str, int], result["func_code_ids"]),
+                        local_class_names=cast(
+                            list[str], result["local_class_names"]
+                        ),
+                        local_classes=cast(dict[str, Any], result["local_classes"]),
                     )
                     if integration_error is not None:
                         return _fail(
@@ -10140,10 +10332,14 @@ def build(
                         )
                     _accumulate_midend_diagnostics(
                         module_name,
-                        policy_outcomes_by_func=dict(
-                            gen.midend_policy_outcomes_by_function
+                        policy_outcomes_by_func=cast(
+                            dict[str, dict[str, Any]],
+                            result.get("midend_policy_outcomes_by_function", {}),
                         ),
-                        pass_stats_by_func=dict(gen.midend_pass_stats_by_function),
+                        pass_stats_by_func=cast(
+                            dict[str, dict[str, dict[str, Any]]],
+                            result.get("midend_pass_stats_by_function", {}),
+                        ),
                     )
                 queue_samples = [
                     float(item.get("queue_ms", 0.0)) for item in layer_worker_timings
@@ -10195,7 +10391,7 @@ def build(
         for module_name in module_order:
             module_path = module_graph[module_name]
             try:
-                gen, ir, visit_s, lower_s, total_s = _lower_module_serial(
+                result, visit_s, lower_s, total_s = _lower_module_serial(
                     module_name, module_path
                 )
             except _ModuleLowerError as exc:
@@ -10231,10 +10427,10 @@ def build(
             )
             integration_error = _integrate_module_frontend_result(
                 module_name,
-                ir_functions=ir["functions"],
-                func_code_ids=dict(gen.func_code_ids),
-                local_class_names=sorted(gen.local_class_names),
-                local_classes=gen.classes,
+                ir_functions=cast(list[dict[str, Any]], result["functions"]),
+                func_code_ids=cast(dict[str, int], result["func_code_ids"]),
+                local_class_names=cast(list[str], result["local_class_names"]),
+                local_classes=cast(dict[str, Any], result["local_classes"]),
             )
             if integration_error is not None:
                 return _fail(
@@ -10244,8 +10440,14 @@ def build(
                 )
             _accumulate_midend_diagnostics(
                 module_name,
-                policy_outcomes_by_func=dict(gen.midend_policy_outcomes_by_function),
-                pass_stats_by_func=dict(gen.midend_pass_stats_by_function),
+                policy_outcomes_by_func=cast(
+                    dict[str, dict[str, Any]],
+                    result.get("midend_policy_outcomes_by_function", {}),
+                ),
+                pass_stats_by_func=cast(
+                    dict[str, dict[str, dict[str, Any]]],
+                    result.get("midend_pass_stats_by_function", {}),
+                ),
             )
         queue_samples = [
             float(item.get("queue_ms", 0.0)) for item in serial_layer_worker_timings
