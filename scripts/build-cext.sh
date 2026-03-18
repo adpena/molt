@@ -7,7 +7,7 @@
 #
 # Requirements:
 #   - cargo build --release -p molt-lang-cpython-abi must have been run first
-#   - CARGO_TARGET_DIR must be set or defaults to /Volumes/APDataStore/Molt/cargo-target
+#   - CARGO_TARGET_DIR must be set or defaults to <repo>/target
 #
 # The script selects the correct CPython suffix for the current platform:
 #   macOS:   .cpython-312-darwin.so  (x86_64 or arm64)
@@ -21,7 +21,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SOURCE="${1:-}"
 OUTPUT_DIR="${2:-$(pwd)}"
-CARGO_TARGET="${CARGO_TARGET_DIR:-/Volumes/APDataStore/Molt/cargo-target}"
+CARGO_TARGET="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 PROFILE="${BUILD_PROFILE:-release}"
 ABI_INCLUDE="$REPO_ROOT/runtime/molt-cpython-abi/include"
 LIB_DIR="$CARGO_TARGET/$PROFILE"

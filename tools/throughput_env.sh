@@ -2,39 +2,31 @@
 set -euo pipefail
 
 # throughput_env.sh
-# External-volume-only build throughput bootstrap.
+# Throughput bootstrap using canonical artifact roots.
 #
 # Usage:
 #   eval "$(tools/throughput_env.sh --print)"
 #   tools/throughput_env.sh --apply
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEFAULT_EXTERNAL_ROOT="/Volumes/APDataStore/Molt"
-
-_resolve_external_root() {
-  local candidate="${MOLT_EXT_ROOT:-$DEFAULT_EXTERNAL_ROOT}"
-  if [[ ! -d "$candidate" ]]; then
-    cat >&2 <<EOF
-error: external artifact root is unavailable: $candidate
-mount $DEFAULT_EXTERNAL_ROOT or export MOLT_EXT_ROOT to another mounted external path.
-EOF
-    exit 2
-  fi
-  RESOLVED_EXTERNAL_ROOT="$candidate"
+_resolve_root() {
+  local candidate="${MOLT_EXT_ROOT:-$ROOT}"
+  mkdir -p "$candidate"
+  RESOLVED_ROOT="$(cd "$candidate" && pwd)"
 }
 
 _choose_defaults() {
-  DEFAULT_MOLT_EXT_ROOT="$RESOLVED_EXTERNAL_ROOT"
-  DEFAULT_CARGO_TARGET_DIR="$DEFAULT_MOLT_EXT_ROOT/cargo-target"
+  DEFAULT_MOLT_EXT_ROOT="$RESOLVED_ROOT"
+  DEFAULT_CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$DEFAULT_MOLT_EXT_ROOT/target}"
   DEFAULT_MOLT_DIFF_CARGO_TARGET_DIR="$DEFAULT_CARGO_TARGET_DIR"
-  DEFAULT_MOLT_CACHE="$DEFAULT_MOLT_EXT_ROOT/molt_cache"
-  DEFAULT_MOLT_DIFF_ROOT="$DEFAULT_MOLT_EXT_ROOT/diff"
-  DEFAULT_MOLT_DIFF_TMPDIR="$DEFAULT_MOLT_EXT_ROOT/tmp"
-  DEFAULT_UV_CACHE_DIR="$DEFAULT_MOLT_EXT_ROOT/uv-cache"
-  DEFAULT_TMPDIR="$DEFAULT_MOLT_EXT_ROOT/tmp"
-  DEFAULT_SCCACHE_DIR="$DEFAULT_MOLT_EXT_ROOT/sccache"
-  DEFAULT_SCCACHE_SIZE="20G"
-  DEFAULT_CACHE_MAX_GB="200"
+  DEFAULT_MOLT_CACHE="${MOLT_CACHE:-$DEFAULT_MOLT_EXT_ROOT/.molt_cache}"
+  DEFAULT_MOLT_DIFF_ROOT="${MOLT_DIFF_ROOT:-$DEFAULT_MOLT_EXT_ROOT/tmp/diff}"
+  DEFAULT_MOLT_DIFF_TMPDIR="${MOLT_DIFF_TMPDIR:-$DEFAULT_MOLT_EXT_ROOT/tmp}"
+  DEFAULT_UV_CACHE_DIR="${UV_CACHE_DIR:-$DEFAULT_MOLT_EXT_ROOT/.uv-cache}"
+  DEFAULT_TMPDIR="${TMPDIR:-$DEFAULT_MOLT_EXT_ROOT/tmp}"
+  DEFAULT_SCCACHE_DIR="${SCCACHE_DIR:-$DEFAULT_MOLT_EXT_ROOT/.sccache}"
+  DEFAULT_SCCACHE_SIZE="${SCCACHE_CACHE_SIZE:-10G}"
+  DEFAULT_CACHE_MAX_GB="${MOLT_CACHE_MAX_GB:-30}"
 }
 
 _emit_exports() {
@@ -96,7 +88,7 @@ _apply() {
 }
 
 main() {
-  _resolve_external_root
+  _resolve_root
   _choose_defaults
   case "${1:---apply}" in
     --print)

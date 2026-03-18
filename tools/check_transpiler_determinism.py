@@ -26,7 +26,6 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_EXTERNAL_ROOT = Path("/Volumes/APDataStore/Molt")
 TARGET_CHOICES = ("rust", "luau")
 
 
@@ -34,18 +33,14 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _external_root() -> Path:
+def _artifact_root() -> Path:
     configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
     if configured:
         root = Path(configured).expanduser().resolve()
         if root.is_dir():
             return root
-        raise SystemExit(f"MOLT_EXT_ROOT is not mounted: {root}")
-    if DEFAULT_EXTERNAL_ROOT.is_dir():
-        return DEFAULT_EXTERNAL_ROOT
-    raise SystemExit(
-        "External volume is required and /Volumes/APDataStore/Molt is not mounted."
-    )
+        raise SystemExit(f"MOLT_EXT_ROOT is not a directory: {root}")
+    return _repo_root()
 
 
 def _tmp_root() -> Path:
@@ -55,7 +50,7 @@ def _tmp_root() -> Path:
             path = Path(raw).expanduser().resolve()
             path.mkdir(parents=True, exist_ok=True)
             return path
-    root = _external_root() / "tmp"
+    root = _artifact_root() / "tmp"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -63,14 +58,14 @@ def _tmp_root() -> Path:
 def _build_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONHASHSEED"] = "0"
-    env.setdefault("MOLT_EXT_ROOT", str(_external_root()))
-    env.setdefault("CARGO_TARGET_DIR", str(_external_root() / "cargo-target"))
+    env.setdefault("MOLT_EXT_ROOT", str(_artifact_root()))
+    env.setdefault("CARGO_TARGET_DIR", str(_artifact_root() / "target"))
     env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
-    env.setdefault("MOLT_CACHE", str(_external_root() / "molt_cache"))
-    env.setdefault("MOLT_DIFF_ROOT", str(_external_root() / "diff"))
+    env.setdefault("MOLT_CACHE", str(_artifact_root() / ".molt_cache"))
+    env.setdefault("MOLT_DIFF_ROOT", str(_artifact_root() / "tmp" / "diff"))
     env.setdefault("MOLT_DIFF_TMPDIR", str(_tmp_root()))
     env.setdefault("TMPDIR", str(_tmp_root()))
-    env.setdefault("UV_CACHE_DIR", str(_external_root() / "uv-cache"))
+    env.setdefault("UV_CACHE_DIR", str(_artifact_root() / ".uv-cache"))
     env.setdefault("MOLT_DEV_CARGO_PROFILE", "release-fast")
     env.setdefault("UV_NO_SYNC", "1")
     env.setdefault("UV_LINK_MODE", "copy")

@@ -112,21 +112,18 @@ def _with_repo_pythonpath(env: dict[str, str], repo_root: Path) -> dict[str, str
 
 
 def make_build_env() -> dict[str, str]:
-    """Build child-process env with external-volume defaults."""
+    """Build child-process env with canonical artifact-root defaults."""
     env = os.environ.copy()
-    ext_root = Path(env.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt")).expanduser().resolve()
+    ext_root = Path(env.get("MOLT_EXT_ROOT", str(_repo_root()))).expanduser().resolve()
     if not ext_root.is_dir():
-        raise RuntimeError(
-            "External volume is required for Luau static checks. "
-            f"Set MOLT_EXT_ROOT to a mounted external path (current: {ext_root})."
-        )
+        raise RuntimeError(f"MOLT_EXT_ROOT is not a directory: {ext_root}.")
     env.setdefault("MOLT_EXT_ROOT", str(ext_root))
-    env.setdefault("CARGO_TARGET_DIR", str(ext_root / "cargo-target"))
+    env.setdefault("CARGO_TARGET_DIR", str(ext_root / "target"))
     env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
-    env.setdefault("MOLT_CACHE", str(ext_root / "molt_cache"))
-    env.setdefault("MOLT_DIFF_ROOT", str(ext_root / "diff"))
+    env.setdefault("MOLT_CACHE", str(ext_root / ".molt_cache"))
+    env.setdefault("MOLT_DIFF_ROOT", str(ext_root / "tmp" / "diff"))
     env.setdefault("MOLT_DIFF_TMPDIR", str(ext_root / "tmp"))
-    env.setdefault("UV_CACHE_DIR", str(ext_root / "uv-cache"))
+    env.setdefault("UV_CACHE_DIR", str(ext_root / ".uv-cache"))
     env.setdefault("TMPDIR", env["MOLT_DIFF_TMPDIR"])
     env.setdefault("PYTHONHASHSEED", "0")
     return _with_repo_pythonpath(env, _repo_root())
