@@ -5871,13 +5871,8 @@ def _temporary_backend_output_path(
     is_wasm: bool,
 ) -> Iterator[Path]:
     suffix = ".wasm" if is_wasm else ".o"
-    fd, temp_path = tempfile.mkstemp(
-        dir=artifacts_root,
-        prefix="backend_",
-        suffix=suffix,
-    )
-    os.close(fd)
-    path = Path(temp_path)
+    artifacts_root.mkdir(parents=True, exist_ok=True)
+    path = artifacts_root / f"backend_{os.getpid()}_{uuid.uuid4().hex}{suffix}"
     try:
         yield path
     finally:
