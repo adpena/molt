@@ -1621,49 +1621,41 @@ def _module_name_from_resolved_path(
     resolved_stdlib_root: Path,
     cpython_test_root: Path | None,
 ) -> str:
-    rel = None
-    try:
-        rel = resolved.relative_to(resolved_stdlib_root)
-    except ValueError:
-        rel = None
-    if rel is not None:
-        if rel.name == "__init__.py":
-            rel = rel.parent
-            if not rel.parts:
-                return resolved.parent.name
-        else:
-            rel = rel.with_suffix("")
-        if rel.parts:
-            return ".".join(rel.parts)
-        rel = None
-    if rel is None:
-        best_rel = None
-        best_len = -1
-        for root_resolved in resolved_roots:
-            try:
-                if cpython_test_root is not None and root_resolved == cpython_test_root:
-                    continue
-                candidate = resolved.relative_to(root_resolved)
-            except ValueError:
-                continue
-            root_len = len(root_resolved.parts)
-            if root_len > best_len:
-                best_len = root_len
-                best_rel = candidate
-        rel = best_rel
-    if rel is None:
+    resolved_parts = resolved.parts
+    rel_parts = _relative_parts_if_within(resolved_parts, resolved_stdlib_root.parts)
+    if rel_parts is not None:
+        module_name = _module_name_from_relative_parts(
+            rel_parts, fallback_parent=resolved.parent.name
+        )
+        if module_name is not None:
+            return module_name
+
+    best_rel_parts: tuple[str, ...] | None = None
+    best_len = -1
+    for root_resolved in resolved_roots:
+        if cpython_test_root is not None and root_resolved == cpython_test_root:
+            continue
+        candidate_parts = _relative_parts_if_within(
+            resolved_parts, root_resolved.parts
+        )
+        if candidate_parts is None:
+            continue
+        root_len = len(root_resolved.parts)
+        if root_len > best_len:
+            best_len = root_len
+            best_rel_parts = candidate_parts
+    if best_rel_parts is None:
         # Paths outside known module roots should still compile deterministically as
         # top-level modules instead of leaking absolute-path segments into module ids.
         if resolved.name == "__init__.py":
             return resolved.parent.name or "__init__"
         return resolved.stem
-    if rel.name == "__init__.py":
-        rel = rel.parent
-    else:
-        rel = rel.with_suffix("")
-    if not rel.parts:
-        return resolved.parent.name
-    return ".".join(rel.parts)
+    module_name = _module_name_from_relative_parts(
+        best_rel_parts, fallback_parent=resolved.parent.name
+    )
+    if module_name is not None:
+        return module_name
+    return resolved.parent.name or resolved.stem
 
 
 def _expand_module_chain(name: str) -> list[str]:
@@ -2613,11 +2605,36 @@ def _is_stdlib_path(path: Path, stdlib_root: Path) -> bool:
 
 
 def _is_stdlib_resolved_path(resolved: Path, resolved_stdlib_root: Path) -> bool:
-    try:
-        resolved.relative_to(resolved_stdlib_root)
-        return True
-    except ValueError:
-        return False
+    return _relative_parts_if_within(resolved.parts, resolved_stdlib_root.parts) is not None
+
+
+def _relative_parts_if_within(
+    candidate_parts: tuple[str, ...], root_parts: tuple[str, ...]
+) -> tuple[str, ...] | None:
+    if len(candidate_parts) < len(root_parts):
+        return None
+    if candidate_parts[: len(root_parts)] != root_parts:
+        return None
+    return candidate_parts[len(root_parts) :]
+
+
+def _module_name_from_relative_parts(
+    rel_parts: tuple[str, ...], *, fallback_parent: str
+) -> str | None:
+    if not rel_parts:
+        return None
+    if rel_parts[-1] == "__init__.py":
+        package_parts = rel_parts[:-1]
+        if package_parts:
+            return ".".join(package_parts)
+        return fallback_parent or None
+    last = rel_parts[-1]
+    if last.endswith(".py"):
+        rel_parts = (*rel_parts[:-1], last[:-3])
+    filtered = tuple(part for part in rel_parts if part)
+    if not filtered:
+        return fallback_parent or None
+    return ".".join(filtered)
 
 
 def _module_dependencies(
