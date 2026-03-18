@@ -13,7 +13,7 @@ This is the executable gate for the Month 1 "must-pass" roadmap item.
 - Use `uv run --python ...`; do not call `.venv` interpreters directly.
 - Differential runs must include `MOLT_DIFF_MEASURE_RSS=1`.
 - Use a 10 GB per-process memory cap for diff runs when supported.
-- Use external outdir/cache roots when available (`/Volumes/APDataStore/Molt`).
+- Use canonical artifact/cache roots; prefer `MOLT_EXT_ROOT` when set and otherwise use repo-local canonical paths.
 
 ## Gate Matrix
 
@@ -36,8 +36,8 @@ Required hardening gate details for IR dedicated probes (part of G3):
   - `MOLT_DIFF_MEASURE_RSS=1`
   - `MOLT_DIFF_TIMEOUT=180`
   - `MOLT_DIFF_RLIMIT_GB=10`
-  - `MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt` when external volume exists
-  - `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache` when external volume exists
+  - `MOLT_DIFF_ROOT=$MOLT_EXT_ROOT/diff` when `MOLT_EXT_ROOT` is set
+  - `MOLT_CACHE=$MOLT_EXT_ROOT/molt_cache` when `MOLT_EXT_ROOT` is set
 - If RSS grows rapidly, terminate the run, record abort details and last RSS in [tests/differential/INDEX.md](tests/differential/INDEX.md), then rerun with lower parallelism.
 
 ## Minimal Sign-off Checklist
