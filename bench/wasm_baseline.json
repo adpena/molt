@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-03-16T17:44:22+00:00",
+  "git_rev": "f3cbae1e45fe529f2753752b719147921cd65530",
+  "system": {
+    "platform": "macOS-26.3-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.14.3"
+  },
+  "benchmarks": {
+    "hello": {
+      "wasm_compile_s_median": 3.052,
+      "wasm_compile_s_samples": [
+        3.0,
+        3.052,
+        3.118
+      ],
+      "wasm_size_bytes": 7219883,
+      "wasm_size_kb": 7050.7,
+      "wasm_ok": true,
+      "native_compile_s": 7.654,
+      "native_size_bytes": 28360264,
+      "native_size_kb": 27695.6,
+      "native_ok": true,
+      "size_ratio_wasm_native": 0.255,
+      "compile_speedup_wasm_over_native": 2.51
+    },
+    "simple_ret": {
+      "wasm_compile_s_median": 2.893,
+      "wasm_compile_s_samples": [
+        2.887,
+        2.909,
+        2.893
+      ],
+      "wasm_size_bytes": 7194643,
+      "wasm_size_kb": 7026.0,
+      "wasm_ok": true,
+      "native_compile_s": 7.26,
+      "native_size_bytes": 28323392,
+      "native_size_kb": 27659.6,
+      "native_ok": true,
+      "size_ratio_wasm_native": 0.254,
+      "compile_speedup_wasm_over_native": 2.51
+    },
+    "bench_fib": {
+      "wasm_compile_s_median": 3.307,
+      "wasm_compile_s_samples": [
+        3.32,
+        3.261,
+        3.307
+      ],
+      "wasm_size_bytes": 7243878,
+      "wasm_size_kb": 7074.1,
+      "wasm_ok": true,
+      "native_compile_s": 8.292,
+      "native_size_bytes": 28403344,
+      "native_size_kb": 27737.6,
+      "native_ok": true,
+      "size_ratio_wasm_native": 0.255,
+      "compile_speedup_wasm_over_native": 2.51
+    },
+    "bench_sum": {
+      "wasm_compile_s_median": 3.066,
+      "wasm_compile_s_samples": [
+        3.092,
+        3.064,
+        3.066
+      ],
+      "wasm_size_bytes": 7229064,
+      "wasm_size_kb": 7059.6,
+      "wasm_ok": true,
+      "native_compile_s": 7.647,
+      "native_size_bytes": 28381216,
+      "native_size_kb": 27716.0,
+      "native_ok": true,
+      "size_ratio_wasm_native": 0.255,
+      "compile_speedup_wasm_over_native": 2.49
+    },
+    "bench_deeply_nested_loop": {
+      "wasm_compile_s_median": 4.692,
+      "wasm_compile_s_samples": [
+        4.698,
+        4.692,
+        4.683
+      ],
+      "wasm_size_bytes": 7300478,
+      "wasm_size_kb": 7129.4,
+      "wasm_ok": true,
+      "native_compile_s": 9.811,
+      "native_size_bytes": 28432880,
+      "native_size_kb": 27766.5,
+      "native_ok": true,
+      "size_ratio_wasm_native": 0.257,
+      "compile_speedup_wasm_over_native": 2.09
+    },
+    "bench_matrix_math": {
+      "wasm_compile_s_median": 5.623,
+      "wasm_compile_s_samples": [
+        5.62,
+        5.629,
+        5.623
+      ],
+      "wasm_size_bytes": 7423281,
+      "wasm_size_kb": 7249.3,
+      "wasm_ok": true,
+      "native_compile_s": 11.408,
+      "native_size_bytes": 28606296,
+      "native_size_kb": 27935.8,
+      "native_ok": true,
+      "size_ratio_wasm_native": 0.259,
+      "compile_speedup_wasm_over_native": 2.03
+    },
+    "bench_str_find": {
+      "wasm_compile_s_median": 3.557,
+      "wasm_compile_s_samples": [
+        3.539,
+        3.564,
+        3.557
+      ],
+      "wasm_size_bytes": 7254792,
+      "wasm_size_kb": 7084.8,
+      "wasm_ok": true,
+      "native_compile_s": 8.355,
+      "native_size_bytes": 28404720,
+      "native_size_kb": 27739.0,
+      "native_ok": true,
+      "size_ratio_wasm_native": 0.255,
+      "compile_speedup_wasm_over_native": 2.35
+    }
+  },
+  "notes": {
+    "wasm_mode": "unlinked (MOLT_WASM_LINKED=0)",
+    "native_mode": "default (Cranelift AOT)",
+    "wasm_compile_s_median": "median of 3 samples",
+    "size_ratio_wasm_native": "wasm_size / native_size (lower = smaller wasm)",
+    "compile_speedup_wasm_over_native": "native_time / wasm_time (higher = wasm compiles faster)"
+  }
+}
