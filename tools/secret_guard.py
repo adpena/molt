@@ -10,9 +10,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from molt.orchestration_removed.paths import symphony_security_events_file
-
-
 ALLOW_MARKER = "secret-guard: allow"
 PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
 SENSITIVE_ASSIGN_RE = re.compile(
@@ -169,11 +166,11 @@ def _staged_diff_text() -> str:
 
 
 def _security_events_file() -> Path:
-    configured = str(os.environ.get("MOLT_REMOVED_SECURITY_EVENTS_FILE") or "").strip()
+    configured = str(os.environ.get("MOLT_SECURITY_EVENTS_FILE") or "").strip()
     if configured:
         path = Path(configured).expanduser()
     else:
-        path = symphony_security_events_file()
+        path = Path("logs") / "security" / "events.jsonl"
     if not path.is_absolute():
         path = (Path.cwd() / path).resolve()
     return path

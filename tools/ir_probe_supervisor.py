@@ -30,9 +30,9 @@ def _now_utc() -> str:
 
 
 def _default_run_root_base() -> Path:
-    preferred = Path("/Volumes/APDataStore/Molt")
-    if preferred.exists():
-        return preferred / "ir_probe_supervisor"
+    preferred = os.environ.get("MOLT_EXT_ROOT", "").strip()
+    if preferred:
+        return Path(preferred).expanduser() / "ir_probe_supervisor"
     return ROOT / "target" / "ir_probe_supervisor"
 
 
@@ -267,7 +267,7 @@ def main() -> int:
     parser.add_argument(
         "--cache-root",
         type=Path,
-        default=Path("/Volumes/APDataStore/Molt/molt_cache"),
+        default=Path(os.environ.get("MOLT_CACHE", str(ROOT / ".molt_cache"))),
         help="MOLT_CACHE path",
     )
     parser.add_argument(

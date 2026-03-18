@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 MOLT_DIR = Path(__file__).resolve().parents[3]
+ARTIFACT_ROOT = Path(os.environ.get("MOLT_EXT_ROOT", str(MOLT_DIR))).expanduser()
 
 
 def _compile_and_run(python_source: str) -> str:
@@ -24,8 +25,8 @@ def _compile_and_run(python_source: str) -> str:
 
         env = {
             **os.environ,
-            "MOLT_EXT_ROOT": "/Volumes/APDataStore/Molt",
-            "CARGO_TARGET_DIR": "/Volumes/APDataStore/Molt/cargo-target",
+            "MOLT_EXT_ROOT": str(ARTIFACT_ROOT),
+            "CARGO_TARGET_DIR": os.environ.get("CARGO_TARGET_DIR", str(ARTIFACT_ROOT / "target")),
             "RUSTC_WRAPPER": "",
             "PYTHONPATH": str(MOLT_DIR / "src"),
         }

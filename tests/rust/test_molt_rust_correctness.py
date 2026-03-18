@@ -76,10 +76,10 @@ def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> s
         with open(py_path, "w") as f:
             f.write(python_source)
 
-        ext_root = os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt")
+        ext_root = os.environ.get("MOLT_EXT_ROOT", MOLT_DIR)
         cargo_target = os.environ.get(
             "CARGO_TARGET_DIR",
-            os.path.join(ext_root, "cargo-target"),
+            os.path.join(ext_root, "target"),
         )
         env = {
             **os.environ,
@@ -90,7 +90,7 @@ def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> s
             "MOLT_DEV_CARGO_PROFILE": os.environ.get("MOLT_DEV_CARGO_PROFILE", "release-fast"),
             "MOLT_BUILD_STATE_DIR": os.environ.get(
                 "MOLT_BUILD_STATE_DIR",
-                os.path.join(ext_root, f"rust-tests-build-state-{os.getpid()}"),
+                os.path.join(ext_root, "tmp", f"rust-tests-build-state-{os.getpid()}"),
             ),
             "RUSTC_WRAPPER": "",
             "PYTHONPATH": os.path.join(MOLT_DIR, "src"),

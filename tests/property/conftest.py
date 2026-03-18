@@ -19,6 +19,13 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SRC_DIR = _REPO_ROOT / "src"
 
+
+def _artifact_root() -> Path:
+    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return _REPO_ROOT
+
 # ---------------------------------------------------------------------------
 # Molt availability detection
 # ---------------------------------------------------------------------------
@@ -37,8 +44,7 @@ def _molt_cli_available() -> bool:
         env["PYTHONPATH"] = str(_SRC_DIR)
         cargo_target = os.environ.get(
             "CARGO_TARGET_DIR",
-            os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt")
-            + "/cargo-target",
+            str(_artifact_root() / "target"),
         )
         env.setdefault("CARGO_TARGET_DIR", cargo_target)
 
@@ -118,8 +124,7 @@ def run_via_molt(code: str, *, timeout: float = 60.0) -> str:
         env["PYTHONPATH"] = str(_SRC_DIR)
         cargo_target = os.environ.get(
             "CARGO_TARGET_DIR",
-            os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt")
-            + "/cargo-target",
+            str(_artifact_root() / "target"),
         )
         env.setdefault("CARGO_TARGET_DIR", cargo_target)
 

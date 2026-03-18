@@ -516,8 +516,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         help=(
-            "Output root for artifacts/results. Defaults under mounted "
-            "MOLT_EXT_ROOT (or /Volumes/APDataStore/Molt)."
+            "Output root for artifacts/results. Defaults under the configured "
+            "artifact root (`MOLT_EXT_ROOT` when set, otherwise repo-local `tmp/`)."
         ),
     )
     parser.add_argument(

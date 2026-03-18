@@ -58,7 +58,7 @@ def test_secret_guard_writes_security_event_on_block(
 ) -> None:
     linear_token = "lin_api_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
     events_file = tmp_path / "events.jsonl"
-    monkeypatch.setenv("MOLT_REMOVED_SECURITY_EVENTS_FILE", str(events_file))
+    monkeypatch.setenv("MOLT_SECURITY_EVENTS_FILE", str(events_file))
     diff_file = tmp_path / "diff.patch"
     diff_file.write_text(
         textwrap.dedent(

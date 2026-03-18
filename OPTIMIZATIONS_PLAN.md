@@ -268,7 +268,7 @@ Execution style: correctness-first, measurable, rollback-safe, no benchmark-only
 - Freshness note: benchmark summary artifacts are historical snapshots; Wave 0 refresh is required before promotion/rollback decisions on new optimization slices.
 
 ### Lowering Coverage Signals
-- Stdlib audit source: `/Users/adpena/PycharmProjects/molt/docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`
+- Stdlib audit source: `docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`
 - Canonical snapshot source: `docs/spec/STATUS.md` (current checker mode for CPython 3.12/3.13/3.14 union coverage).
 - Current checker snapshot:
   - `intrinsic-backed`: 0
@@ -279,7 +279,7 @@ Execution style: correctness-first, measurable, rollback-safe, no benchmark-only
   - `missing_submodules`: 0
 - Metric mode note: historical "112 modules" counts are no longer canonical for program gating; use checker snapshot + ratchet gates from `tools/check_stdlib_intrinsics.py`.
 
-- Core lowering program source: `/Users/adpena/PycharmProjects/molt/docs/spec/areas/compat/plans/stdlib_lowering_plan.md`
+- Core lowering program source: `docs/spec/areas/compat/plans/stdlib_lowering_plan.md`
 - Phase 2 (concurrency substrate) is active: `socket` -> `threading` -> `asyncio`.
 
 - Backend call density (current implementation signal):
@@ -322,12 +322,12 @@ engineer can execute the recovery plan without prior chat context.
 ### Reproduction Baseline (As Of 2026-02-12)
 - Deterministic wasm bench probe:
   - Command:
-    `PYTHONHASHSEED=0 MOLT_FRONTEND_TIMINGS=5 TMPDIR=/Volumes/APDataStore/Molt/tmp_rust UV_NO_SYNC=1 CARGO_TARGET_DIR=/Volumes/APDataStore/Molt/target_shared uv run --python 3.12 python3 -u tools/bench_wasm.py --bench bench_async_await --samples 1 --warmup 0 --runner node --control-runner none --keep-artifacts --log-file /Volumes/APDataStore/Molt/bench_wasm_async_hash0_keep.log --json-out /Volumes/APDataStore/Molt/bench/results/bench_wasm_async_hash0_keep.json`
+    `ARTIFACT_ROOT=<artifact-root> PYTHONHASHSEED=0 MOLT_FRONTEND_TIMINGS=5 TMPDIR=$ARTIFACT_ROOT/tmp_rust UV_NO_SYNC=1 CARGO_TARGET_DIR=$ARTIFACT_ROOT/target_shared uv run --python 3.12 python3 -u tools/bench_wasm.py --bench bench_async_await --samples 1 --warmup 0 --runner node --control-runner none --keep-artifacts --log-file $ARTIFACT_ROOT/bench_wasm_async_hash0_keep.log --json-out $ARTIFACT_ROOT/bench/results/bench_wasm_async_hash0_keep.json`
   - Signal:
     repeated `WASM build timed out ... after 90.0s` with retry timeout.
 - Native frontend hotspot probe:
   - Command:
-    `PYTHONPATH=src PYTHONHASHSEED=0 UV_NO_SYNC=1 CARGO_TARGET_DIR=/Volumes/APDataStore/Molt/target_shared MOLT_FRONTEND_TIMINGS=5 uv run --python 3.12 python3 -m molt.cli build --no-cache --out-dir /Volumes/APDataStore/Molt/tmp_rust/native_async_profile tests/benchmarks/bench_async_await.py`
+    `ARTIFACT_ROOT=<artifact-root> PYTHONPATH=src PYTHONHASHSEED=0 UV_NO_SYNC=1 CARGO_TARGET_DIR=$ARTIFACT_ROOT/target_shared MOLT_FRONTEND_TIMINGS=5 uv run --python 3.12 python3 -m molt.cli build --no-cache --out-dir $ARTIFACT_ROOT/tmp_rust/native_async_profile tests/benchmarks/bench_async_await.py`
   - Signal:
     representative module tails included `_intrinsics ~67.5s`,
     `__future__ ~244.5s`, and `keyword ~48.8s`.

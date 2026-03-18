@@ -312,8 +312,8 @@ def main():
         print(f"ERROR: Molt binary not found at {molt_binary}", file=sys.stderr)
         print("Build it first with:", file=sys.stderr)
         print(
-            f"  cd {REPO_ROOT} && MOLT_EXT_ROOT=/Volumes/APDataStore/Molt "
-            f"CARGO_TARGET_DIR=/Volumes/APDataStore/Molt/cargo-target "
+            f"  cd {REPO_ROOT} && ARTIFACT_ROOT=${{MOLT_EXT_ROOT:-$PWD}} "
+            f"MOLT_EXT_ROOT=$ARTIFACT_ROOT CARGO_TARGET_DIR=$ARTIFACT_ROOT/target "
             f"RUSTC_WRAPPER='' PYTHONPATH=src uv run python -m molt.cli build "
             f"{generator} --output {molt_binary}",
             file=sys.stderr,

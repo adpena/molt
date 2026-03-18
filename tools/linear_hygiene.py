@@ -130,10 +130,10 @@ AREA_ROLE_MAP = {
 
 FORMAL_REQUIRED_AREAS = {"compiler", "runtime", "wasm", "security", "stdlib", "c-api"}
 FORMAL_SUITE_MODES = ("off", "inventory", "lean", "quint", "all")
-DSPY_ENABLE_ENV = "MOLT_REMOVED_DSPY_ENABLE"
-DSPY_MODEL_ENV = "MOLT_REMOVED_DSPY_MODEL"
-DSPY_API_KEY_ENV_ENV = "MOLT_REMOVED_DSPY_API_KEY_ENV"
-DSPY_API_KEY_INLINE_ENV = "MOLT_REMOVED_DSPY_API_KEY"
+DSPY_ENABLE_ENV = "MOLT_LINEAR_HYGIENE_DSPY_ENABLE"
+DSPY_MODEL_ENV = "MOLT_LINEAR_HYGIENE_DSPY_MODEL"
+DSPY_API_KEY_ENV_ENV = "MOLT_LINEAR_HYGIENE_DSPY_API_KEY_ENV"
+DSPY_API_KEY_INLINE_ENV = "MOLT_LINEAR_HYGIENE_DSPY_API_KEY"
 DSPY_DEFAULT_API_KEY_ENV = "OPENAI_API_KEY"
 
 LABEL_TAXONOMY = (
@@ -458,7 +458,7 @@ def _project_name_for_issue(issue: dict[str, Any], metadata: dict[str, str]) -> 
     area_hint = _infer_area_hint(issue, metadata).lower()
     if area_hint in {"formal", "proof", "verification"}:
         return "Testing & Differential"
-    if area_hint in {"orchestration", "agent", "orchestration"}:
+    if area_hint in {"agent", "orchestration", "swarm"}:
         return "Tooling & DevEx"
     if area_hint in {"moltlib"}:
         return "Offload & Data Ecosystem"

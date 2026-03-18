@@ -9,8 +9,8 @@ Usage:
     uv run python tools/benchmark_luau_vs_cpython.py --cpython-only
 
 Environment:
-    MOLT_EXT_ROOT=/Volumes/APDataStore/Molt
-    CARGO_TARGET_DIR=/Volumes/APDataStore/Molt/cargo-target
+    MOLT_EXT_ROOT=<artifact-root>   # optional; defaults repo-local
+    CARGO_TARGET_DIR=<artifact-root>/target
     RUSTC_WRAPPER=""
     PYTHONPATH=src
 """
@@ -22,6 +22,16 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _artifact_root() -> Path:
+    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return REPO_ROOT
 
 GENERATOR_SOURCE = """\
 def hash_float(x, y, z, seed):
@@ -98,12 +108,11 @@ def run_cpython_bench(source_path: str, iterations: int) -> dict:
 
 def compile_to_luau(source_path: str, output_path: str) -> bool:
     """Compile Python source to Luau via Molt."""
+    artifact_root = _artifact_root()
     env = {
         **os.environ,
-        "MOLT_EXT_ROOT": os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt"),
-        "CARGO_TARGET_DIR": os.environ.get(
-            "CARGO_TARGET_DIR", "/Volumes/APDataStore/Molt/cargo-target"
-        ),
+        "MOLT_EXT_ROOT": str(artifact_root),
+        "CARGO_TARGET_DIR": os.environ.get("CARGO_TARGET_DIR", str(artifact_root / "target")),
         "RUSTC_WRAPPER": "",
         "PYTHONPATH": "src",
     }
@@ -125,7 +134,7 @@ def compile_to_luau(source_path: str, output_path: str) -> bool:
         text=True,
         timeout=120,
         env=env,
-        cwd=os.path.expanduser("~/PycharmProjects/molt"),
+        cwd=str(REPO_ROOT),
     )
     if proc.returncode != 0:
         print(f"  Molt compile error: {proc.stderr.strip()}", file=sys.stderr)

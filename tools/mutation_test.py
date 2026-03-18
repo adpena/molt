@@ -916,9 +916,6 @@ def collect_compiler_files(target: Path) -> list[Path]:
         parts = p.parts
         if "__pycache__" in parts:
             continue
-        # Orchestration orchestration is out of scope for compiler mutations.
-        if "orchestration" in parts:
-            continue
         name = p.name
         if name.startswith("_intrinsics") or name.endswith(".generated.py"):
             continue

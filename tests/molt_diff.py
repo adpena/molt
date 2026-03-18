@@ -473,9 +473,9 @@ def _diff_root() -> Path:
     if raw:
         root = Path(raw).expanduser()
     else:
-        external_root = Path("/Volumes/APDataStore/Molt")
-        if external_root.exists():
-            root = external_root
+        artifact_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
+        if artifact_root:
+            root = Path(artifact_root).expanduser() / "diff"
         else:
             root = Path("logs") / "molt_diff"
     root.mkdir(parents=True, exist_ok=True)
@@ -487,11 +487,7 @@ def _diff_tmp_root() -> Path:
     if raw:
         root = Path(raw).expanduser()
     else:
-        diff_root = _diff_root()
-        if diff_root.as_posix().startswith("/Volumes/APDataStore/Molt"):
-            root = diff_root / "tmp"
-        else:
-            root = diff_root
+        root = _diff_root() / "tmp"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
