@@ -1997,11 +1997,13 @@ def test_backend_daemon_request_bytes_accumulates_partial_chunks(
         def shutdown(self, how: int) -> None:
             assert how == cli.socket.SHUT_WR
 
-        def recv(self, size: int) -> bytes:
-            assert size == 65536
+        def recv_into(self, buffer: memoryview) -> int:
+            assert len(buffer) == 65536
             if not hasattr(self, "_chunks"):
                 self._chunks = [b'{"ok":', b'true,"pong":false}', b""]
-            return self._chunks.pop(0)
+            chunk = self._chunks.pop(0)
+            buffer[: len(chunk)] = chunk
+            return len(chunk)
 
     monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
 
