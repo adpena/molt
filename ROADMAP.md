@@ -1174,7 +1174,7 @@ complete. M-GPU-1 is the earliest actionable item and has no GPU hardware depend
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_lsprof` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_lzma` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_markupbase` top-level stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_md5` top-level stub with full intrinsic-backed lowering.
+- DONE(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:done): `_md5` now exposes an intrinsic-backed `md5` constructor and `MD5Type` via Molt `hashlib`.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_msi` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_osx_support` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_overlapped` top-level stub with full intrinsic-backed lowering.
@@ -1214,9 +1214,9 @@ complete. M-GPU-1 is the earliest actionable item and has no GPU hardware depend
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_random` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_remote_debugging` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_scproxy` top-level stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_sha1` top-level stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_sha2` top-level stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_sha3` top-level stub with full intrinsic-backed lowering.
+- DONE(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:done): `_sha1` now exposes an intrinsic-backed `sha1` constructor and `SHA1Type` via Molt `hashlib`.
+- DONE(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:done): `_sha2` now exposes intrinsic-backed `sha224`/`sha256`/`sha384`/`sha512` constructors and CPython-style type aliases via Molt `hashlib`.
+- DONE(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:done): `_sha3` now exposes intrinsic-backed SHA-3 and SHAKE constructors, `implementation`, and CPython-shaped module constants via Molt `hashlib`.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_signal` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_sqlite3` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_sre` top-level stub with full intrinsic-backed lowering.
