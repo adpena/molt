@@ -3,15 +3,7 @@
 import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-
-def _lazy_intrinsic(name):
-    def _call(*args, **kwargs):
-        return _require_intrinsic(name, globals())(*args, **kwargs)
-
-    return _call
-
-
-_MOLT_TK_CALL = _lazy_intrinsic("molt_tk_call")
+_MOLT_TK_CALL = _require_intrinsic("molt_tk_call", globals())
 
 NORMAL = "normal"
 ROMAN = "roman"

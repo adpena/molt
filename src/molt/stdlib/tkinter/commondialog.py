@@ -3,15 +3,7 @@
 import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-
-def _lazy_intrinsic(name):
-    def _call(*args, **kwargs):
-        return _require_intrinsic(name, globals())(*args, **kwargs)
-
-    return _call
-
-
-_MOLT_TK_COMMONDIALOG_SHOW = _lazy_intrinsic("molt_tk_commondialog_show")
+_MOLT_TK_COMMONDIALOG_SHOW = _require_intrinsic("molt_tk_commondialog_show", globals())
 
 
 def _prepare_intrinsic_options(options):

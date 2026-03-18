@@ -4,15 +4,7 @@ import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic
 from tkinter import commondialog as _commondialog
 
-
-def _lazy_intrinsic(name):
-    def _call(*args, **kwargs):
-        return _require_intrinsic(name, globals())(*args, **kwargs)
-
-    return _call
-
-
-_MOLT_TK_DIALOG_SHOW = _lazy_intrinsic("molt_tk_dialog_show")
+_MOLT_TK_DIALOG_SHOW = _require_intrinsic("molt_tk_dialog_show", globals())
 
 TclError = _tkinter.TclError
 Widget = getattr(_tkinter, "Widget", object)

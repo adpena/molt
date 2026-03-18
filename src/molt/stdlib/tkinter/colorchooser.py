@@ -3,16 +3,8 @@
 from _intrinsics import require_intrinsic as _require_intrinsic
 from tkinter import commondialog as _commondialog
 
-
-def _lazy_intrinsic(name):
-    def _call(*args, **kwargs):
-        return _require_intrinsic(name, globals())(*args, **kwargs)
-
-    return _call
-
-
-_MOLT_TK_COMMONDIALOG_SHOW = _lazy_intrinsic("molt_tk_commondialog_show")
-_molt_tk_hex_to_rgb = _lazy_intrinsic("molt_tk_hex_to_rgb")
+_MOLT_TK_COMMONDIALOG_SHOW = _require_intrinsic("molt_tk_commondialog_show", globals())
+_molt_tk_hex_to_rgb = _require_intrinsic("molt_tk_hex_to_rgb", globals())
 
 Dialog = _commondialog.Dialog
 
