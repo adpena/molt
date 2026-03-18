@@ -9,6 +9,7 @@ import sys
 
 import molt.cli as cli
 import pytest
+from molt.frontend import MoltValue
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -219,6 +220,19 @@ def test_collect_imports_resolves_name_argument_for_import_module() -> None:
     )
     imports = cli._collect_imports(tree)
     assert "pathlib" in imports
+
+
+def test_cached_json_round_trips_molt_value_and_set() -> None:
+    payload = {
+        "value": MoltValue(name="v1", type_hint="int"),
+        "names": {"alpha", "beta"},
+    }
+
+    encoded = json.dumps(payload, default=cli._json_ir_default)
+    decoded = cli._decode_cached_json_value(json.loads(encoded))
+
+    assert decoded["value"] == MoltValue(name="v1", type_hint="int")
+    assert decoded["names"] == {"alpha", "beta"}
 
 
 def test_collect_imports_resolves_helper_join_dynamic_module_name() -> None:
