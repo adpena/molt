@@ -1927,6 +1927,23 @@ def test_midend_uses_policy_budget_without_env_override(
     assert "budget_exceeded" in reasons or "budget_preemptive" in reasons
 
 
+def test_midend_skips_oversized_functions_by_default() -> None:
+    ops = [
+        MoltOp(kind="CONST", args=[idx], result=MoltValue(f"v{idx}"))
+        for idx in range(1300)
+    ]
+    gen = SimpleTIRGenerator(optimization_profile="release", module_name="pkg.mod")
+
+    lowered = gen.map_ops_to_json(ops, function_name="huge_render")
+
+    assert len(lowered) == len(ops) + 1
+    outcome = gen.midend_policy_outcomes_by_function["huge_render"]
+    assert outcome["degraded"] is True
+    reasons = {event.get("reason") for event in outcome.get("degrade_events", [])}
+    assert "oversized_function_skip" in reasons
+    assert gen.midend_stats["midend_oversized_function_skips"] >= 1
+
+
 # ---------------------------------------------------------------------------
 # MOL-37: MISSING values must not leak into CALL/CALL_INDIRECT arg positions
 # ---------------------------------------------------------------------------
