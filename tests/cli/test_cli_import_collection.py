@@ -860,6 +860,54 @@ def test_persisted_module_lowering_roundtrip_respects_context_digest(
     assert miss is None
 
 
+def test_persisted_module_lowering_reuses_process_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "pkg.py"
+    module_path.write_text("x = 1\n")
+    context_digest = cli._module_lowering_context_digest({"module": "pkg", "v": 1})
+    assert context_digest is not None
+    cli._PERSISTED_JSON_OBJECT_CACHE.clear()
+    cli._write_persisted_module_lowering(
+        tmp_path,
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        context_digest=context_digest,
+        result={
+            "functions": [],
+            "func_code_ids": {},
+            "local_class_names": [],
+            "local_classes": {},
+            "midend_policy_outcomes_by_function": {},
+            "midend_pass_stats_by_function": {},
+            "timings": {"visit_s": 0.0, "lower_s": 0.0, "total_s": 0.0},
+        },
+    )
+
+    first = cli._read_persisted_module_lowering(
+        tmp_path,
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        context_digest=context_digest,
+    )
+
+    def fail_read_text(*args: object, **kwargs: object) -> str:
+        raise AssertionError("unexpected persisted-lowering file read")
+
+    monkeypatch.setattr(Path, "read_text", fail_read_text)
+    second = cli._read_persisted_module_lowering(
+        tmp_path,
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        context_digest=context_digest,
+    )
+
+    assert first == second
+
+
 def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

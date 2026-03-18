@@ -79,6 +79,7 @@ IMPORTER_MODULE_NAME = "_molt_importer"
 JSON_SCHEMA_VERSION = "1.0"
 REMOTE_REGISTRY_SCHEMES = {"http", "https"}
 _ARTIFACT_SYNC_STATE_CACHE: dict[Path, tuple[int, int, dict[str, Any] | None]] = {}
+_PERSISTED_JSON_OBJECT_CACHE: dict[Path, tuple[int, int, dict[str, Any] | None]] = {}
 _LOCK_CHECK_CACHE_VERSION = 1
 _HASH_SEED_SENTINEL_ENV = "MOLT_HASH_SEED_APPLIED"
 _HASH_SEED_OVERRIDE_ENV = "MOLT_HASH_SEED"
@@ -6451,6 +6452,32 @@ def _read_artifact_sync_state(path: Path) -> dict[str, Any] | None:
     return dict(payload_copy) if payload_copy is not None else None
 
 
+def _read_cached_json_object(path: Path) -> dict[str, Any] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        _PERSISTED_JSON_OBJECT_CACHE.pop(path, None)
+        return None
+    cached = _PERSISTED_JSON_OBJECT_CACHE.get(path)
+    if cached is not None:
+        cached_size, cached_mtime_ns, cached_payload = cached
+        if cached_size == stat.st_size and cached_mtime_ns == stat.st_mtime_ns:
+            return dict(cached_payload) if cached_payload is not None else None
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        _PERSISTED_JSON_OBJECT_CACHE[path] = (stat.st_size, stat.st_mtime_ns, None)
+        return None
+    payload = data if isinstance(data, dict) else None
+    payload_copy = dict(payload) if payload is not None else None
+    _PERSISTED_JSON_OBJECT_CACHE[path] = (
+        stat.st_size,
+        stat.st_mtime_ns,
+        payload_copy,
+    )
+    return dict(payload_copy) if payload_copy is not None else None
+
+
 def _write_artifact_sync_state(
     path: Path,
     *,
@@ -6467,6 +6494,46 @@ def _write_artifact_sync_state(
         "mtime_ns": stat.st_mtime_ns,
     }
     path.write_text(json.dumps(payload, indent=2) + "\n")
+    try:
+        written_stat = path.stat()
+    except OSError:
+        _ARTIFACT_SYNC_STATE_CACHE.pop(path, None)
+    else:
+        _ARTIFACT_SYNC_STATE_CACHE[path] = (
+            written_stat.st_size,
+            written_stat.st_mtime_ns,
+            dict(payload),
+        )
+
+
+def _write_cached_json_object(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    default: Any | None = None,
+) -> None:
+    text = json.dumps(payload, indent=2, default=default) + "\n"
+    path.write_text(text)
+    try:
+        written_stat = path.stat()
+    except OSError:
+        _PERSISTED_JSON_OBJECT_CACHE.pop(path, None)
+    else:
+        _PERSISTED_JSON_OBJECT_CACHE[path] = (
+            written_stat.st_size,
+            written_stat.st_mtime_ns,
+            dict(payload),
+        )
+
+
+def _write_artifact_sync_payload(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    default: Any | None = None,
+) -> None:
+    text = json.dumps(payload, indent=2, default=default) + "\n"
+    path.write_text(text)
     try:
         written_stat = path.stat()
     except OSError:
@@ -6689,7 +6756,7 @@ def _write_persisted_module_graph(
         nested_stdlib_scan_modules=nested_stdlib_scan_modules,
     )
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(json.dumps(payload, indent=2) + "\n")
+    _write_cached_json_object(cache_path, payload)
 
 
 def _read_persisted_import_scan(
@@ -6754,7 +6821,7 @@ def _write_persisted_import_scan(
         "imports": list(imports),
     }
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(json.dumps(payload, indent=2) + "\n")
+    _write_artifact_sync_payload(cache_path, payload)
 
 
 def _read_persisted_module_analysis(
@@ -6820,9 +6887,7 @@ def _write_persisted_module_analysis(
         "func_defaults": func_defaults,
     }
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(
-        json.dumps(payload, indent=2, default=_json_ir_default) + "\n"
-    )
+    _write_artifact_sync_payload(cache_path, payload, default=_json_ir_default)
 
 
 def _decode_cached_json_value(value: Any) -> Any:
@@ -7072,9 +7137,8 @@ def _read_persisted_module_lowering(
         module_name=module_name,
         is_package=is_package,
     )
-    try:
-        payload = json.loads(cache_path.read_text())
-    except (OSError, json.JSONDecodeError):
+    payload = _read_cached_json_object(cache_path)
+    if payload is None:
         return None
     if not isinstance(payload, dict) or payload.get("version") != 1:
         return None
@@ -7119,9 +7183,7 @@ def _write_persisted_module_lowering(
         "result": result,
     }
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(
-        json.dumps(payload, indent=2, default=_json_ir_default) + "\n"
-    )
+    _write_cached_json_object(cache_path, payload, default=_json_ir_default)
 
 
 def _load_cached_module_lowering_result(
