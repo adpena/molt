@@ -9,7 +9,7 @@
       "milestone": "RT2",
       "priority": "P0",
       "status": "partial",
-      "source": "/Users/adpena/PycharmProjects/molt/docs/spec/STATUS.md:1134"
+      "source": "docs/spec/STATUS.md:1134"
     }
   },
   {
@@ -22,7 +22,7 @@
       "milestone": "RT2",
       "priority": "P0",
       "status": "partial",
-      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1599"
+      "source": "ROADMAP.md:1599"
     }
   },
   {
@@ -35,7 +35,7 @@
       "milestone": "RT2",
       "priority": "P0",
       "status": "partial",
-      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1600"
+      "source": "ROADMAP.md:1600"
     }
   },
   {
@@ -48,7 +48,7 @@
       "milestone": "SL2",
       "priority": "P0",
       "status": "partial",
-      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1603"
+      "source": "ROADMAP.md:1603"
     }
   },
   {
@@ -61,7 +61,7 @@
       "milestone": "DB2",
       "priority": "P1",
       "status": "partial",
-      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1593"
+      "source": "ROADMAP.md:1593"
     }
   },
   {
@@ -74,7 +74,7 @@
       "milestone": "DB2",
       "priority": "P1",
       "status": "partial",
-      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1594"
+      "source": "ROADMAP.md:1594"
     }
   },
   {
@@ -87,7 +87,7 @@
       "milestone": "DB2",
       "priority": "P1",
       "status": "partial",
-      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1595"
+      "source": "ROADMAP.md:1595"
     }
   },
   {
@@ -100,7 +100,7 @@
       "milestone": "RT2",
       "priority": "P1",
       "status": "partial",
-      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:675"
+      "source": "ROADMAP.md:675"
     }
   },
   {
@@ -113,7 +113,7 @@
       "milestone": "RT2",
       "priority": "P1",
       "status": "partial",
-      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:1601"
+      "source": "ROADMAP.md:1601"
     }
   },
   {
@@ -126,7 +126,7 @@
       "milestone": "RT3",
       "priority": "P1",
       "status": "planned",
-      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:472"
+      "source": "ROADMAP.md:472"
     }
   }
 ]

@@ -192,16 +192,16 @@ Gate:
 
 ## Required Validation Commands
 
-Always run with external-volume env defaults.
+Always run with canonical artifact roots (`MOLT_EXT_ROOT` when set, otherwise repo-local canonical paths).
 
 - Rust targeted correctness:
-  - `/Users/adpena/PycharmProjects/molt/.venv/bin/python -m pytest -q tests/rust/test_molt_rust_correctness.py -k "bubble_sort or matrix_multiply or collatz"`
+  - `uv run --python 3.12 python3 -m pytest -q tests/rust/test_molt_rust_correctness.py -k "bubble_sort or matrix_multiply or collatz"`
 - Luau targeted correctness:
-  - `/Users/adpena/PycharmProjects/molt/.venv/bin/python -m pytest -q tests/luau/test_molt_luau_correctness.py -k "bubble_sort or matrix_multiply or collatz"`
+  - `uv run --python 3.12 python3 -m pytest -q tests/luau/test_molt_luau_correctness.py -k "bubble_sort or matrix_multiply or collatz"`
 - Rust full suite:
-  - `/Users/adpena/PycharmProjects/molt/.venv/bin/python -m pytest -q tests/rust/test_molt_rust_correctness.py`
+  - `uv run --python 3.12 python3 -m pytest -q tests/rust/test_molt_rust_correctness.py`
 - Luau full suite:
-  - `/Users/adpena/PycharmProjects/molt/.venv/bin/python -m pytest -q tests/luau/test_molt_luau_correctness.py`
+  - `uv run --python 3.12 python3 -m pytest -q tests/luau/test_molt_luau_correctness.py`
 
 ## Risk Register
 
@@ -223,16 +223,16 @@ Always run with external-volume env defaults.
 Baseline command results captured in this turn:
 
 - Rust targeted correctness:
-  - `/Users/adpena/PycharmProjects/molt/.venv/bin/python -m pytest -q tests/rust/test_molt_rust_correctness.py -k \"bubble_sort or matrix_multiply or collatz\"`
+  - `uv run --python 3.12 python3 -m pytest -q tests/rust/test_molt_rust_correctness.py -k \"bubble_sort or matrix_multiply or collatz\"`
   - Result: `3 passed, 61 deselected in 254.25s`
 - Rust full correctness:
-  - `/Users/adpena/PycharmProjects/molt/.venv/bin/python -m pytest -q tests/rust/test_molt_rust_correctness.py`
+  - `uv run --python 3.12 python3 -m pytest -q tests/rust/test_molt_rust_correctness.py`
   - Result: `64 passed, 0 failed, 0 skipped in 1899.39s`
 - Luau targeted correctness:
-  - `/Users/adpena/PycharmProjects/molt/.venv/bin/python -m pytest -q tests/luau/test_molt_luau_correctness.py -k \"bubble_sort or matrix_multiply or collatz\"`
+  - `uv run --python 3.12 python3 -m pytest -q tests/luau/test_molt_luau_correctness.py -k \"bubble_sort or matrix_multiply or collatz\"`
   - Result: `2 passed, 57 deselected in 82.16s`
 - Luau full correctness:
-  - `/Users/adpena/PycharmProjects/molt/.venv/bin/python -m pytest -q tests/luau/test_molt_luau_correctness.py`
+  - `uv run --python 3.12 python3 -m pytest -q tests/luau/test_molt_luau_correctness.py`
   - Result: `59 passed in 1146.83s`
 
 Execution notes:

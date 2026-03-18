@@ -9,7 +9,7 @@
       "milestone": "DB1",
       "priority": "P1",
       "status": "planned",
-      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:808"
+      "source": "ROADMAP.md:808"
     }
   },
   {
@@ -22,7 +22,7 @@
       "milestone": "DF1",
       "priority": "P1",
       "status": "planned",
-      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:801"
+      "source": "ROADMAP.md:801"
     }
   },
   {
@@ -35,7 +35,7 @@
       "milestone": "SL1",
       "priority": "P1",
       "status": "partial",
-      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:835"
+      "source": "ROADMAP.md:835"
     }
   },
   {
@@ -48,7 +48,7 @@
       "milestone": "SL1",
       "priority": "P1",
       "status": "partial",
-      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:836"
+      "source": "ROADMAP.md:836"
     }
   },
   {
@@ -61,7 +61,7 @@
       "milestone": "SL1",
       "priority": "P1",
       "status": "partial",
-      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:837"
+      "source": "ROADMAP.md:837"
     }
   },
   {
@@ -74,7 +74,7 @@
       "milestone": "SL1",
       "priority": "P1",
       "status": "partial",
-      "source": "/Users/adpena/PycharmProjects/molt/docs/spec/STATUS.md:1304"
+      "source": "docs/spec/STATUS.md:1304"
     }
   },
   {
@@ -87,7 +87,7 @@
       "milestone": "SL1",
       "priority": "P1",
       "status": "partial",
-      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:705"
+      "source": "ROADMAP.md:705"
     }
   },
   {
@@ -100,7 +100,7 @@
       "milestone": "SL2",
       "priority": "P1",
       "status": "planned",
-      "source": "/Users/adpena/PycharmProjects/molt/ROADMAP.md:706"
+      "source": "ROADMAP.md:706"
     }
   }
 ]

@@ -353,8 +353,8 @@ payloads automatically.
   - add `--resume` for persistent-shell reruns so interrupted sweeps continue
     from already completed cases
 - Default output root:
-  - `$MOLT_EXT_ROOT/compile_progress_<timestamp>` (default `MOLT_EXT_ROOT=/Volumes/APDataStore/Molt`)
-  - if external root is unavailable, pass `--output-root` explicitly for an approved emergency override
+  - `$MOLT_EXT_ROOT/compile_progress_<timestamp>` when `MOLT_EXT_ROOT` is set
+  - otherwise use a canonical repo-local output root via `--output-root`
 - Progress board and KPI targets live in
   `docs/benchmarks/compile_progress.md`.
 

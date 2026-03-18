@@ -236,9 +236,9 @@ Default stance:
 4. Memory and determinism checks under differential harness constraints.
 
 ### Required execution environment
-Use external-volume artifacts for all heavy runs:
+Use canonical artifact roots for all heavy runs:
 ```bash
-export MOLT_EXT_ROOT=/Volumes/APDataStore/Molt
+export MOLT_EXT_ROOT=/path/to/artifact-root  # optional external root
 export CARGO_TARGET_DIR=$MOLT_EXT_ROOT/cargo-target
 export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR
 export MOLT_CACHE=$MOLT_EXT_ROOT/molt_cache
