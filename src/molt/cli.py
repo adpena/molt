@@ -1785,15 +1785,16 @@ def _resolve_module_path_parts(parts: tuple[str, ...], roots: list[Path]) -> Pat
         return None
     module_filename = f"{parts[-1]}.py"
     for root in roots:
-        pkg_path = root.joinpath(*parts, "__init__.py")
-        if pkg_path.exists():
-            return pkg_path
+        root_text = os.fspath(root)
+        pkg_text = os.path.join(root_text, *parts, "__init__.py")
+        if os.path.isfile(pkg_text):
+            return Path(pkg_text)
         if len(parts) == 1:
-            mod_path = root / module_filename
+            mod_text = os.path.join(root_text, module_filename)
         else:
-            mod_path = root.joinpath(*parts[:-1], module_filename)
-        if mod_path.exists():
-            return mod_path
+            mod_text = os.path.join(root_text, *parts[:-1], module_filename)
+        if os.path.isfile(mod_text):
+            return Path(mod_text)
     return None
 
 
