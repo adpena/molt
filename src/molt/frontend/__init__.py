@@ -669,11 +669,20 @@ def _intrinsic_arity(runtime_name: str) -> int:
         # Augment with _intrinsics.pyi signatures.
         import re as _re
 
-        pyi_path = Path(__file__).resolve().parent.parent / "_intrinsics.pyi"
-        if pyi_path.exists():
-            # Join multi-line signatures into single lines for parsing
+        # Parse both _intrinsics.pyi and the manifest for comprehensive coverage.
+        for pyi_path in [
+            Path(__file__).resolve().parent.parent / "_intrinsics.pyi",
+            Path(__file__).resolve().parents[2]
+            / "runtime"
+            / "molt-runtime"
+            / "src"
+            / "intrinsics"
+            / "manifest.pyi",
+        ]:
+            if not pyi_path.exists():
+                continue
             text = pyi_path.read_text()
-            # Collapse multi-line defs: join lines until we see ") ->"
+            # Collapse multi-line defs into single lines
             collapsed = []
             buf = ""
             for line in text.splitlines():
