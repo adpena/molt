@@ -1169,6 +1169,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "expanded_accepted": 0,
             "expanded_fallbacks": 0,
             "midend_module_skips": 0,
+            "midend_oversized_function_skips": 0,
             "invalid_unbound_rollback": 0,
             "invalid_unbound_uses": 0,
             "fixed_point_fail_fast": 0,
@@ -29799,6 +29800,36 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return ops
             raise
         self.midend_stats["cfg_structural_canonicalizations"] += structural_rewrites
+        oversized_skip_threshold = self._midend_positive_int_env(
+            "MOLT_MIDEND_SKIP_OP_THRESHOLD", 1200, minimum=1
+        )
+        if len(ops) >= oversized_skip_threshold:
+            self.midend_stats["midend_oversized_function_skips"] += 1
+            cfg = build_cfg(ops)
+            policy = self._resolve_midend_function_policy(
+                ops,
+                function_name=self._active_midend_function_name,
+                block_count=max(1, len(cfg.blocks)),
+            )
+            self._record_midend_policy_outcome(
+                policy=policy,
+                spent_ms=0.0,
+                degraded=True,
+                degrade_events=[
+                    {
+                        "reason": "oversized_function_skip",
+                        "stage": "midend_entry",
+                        "action": "emit_unoptimized_ir",
+                        "spent_ms": 0.0,
+                        "value": {
+                            "op_count": len(ops),
+                            "threshold": oversized_skip_threshold,
+                        },
+                    }
+                ],
+                round_snapshots=[],
+            )
+            return ops
         skip_prefixes_raw = os.getenv("MOLT_MIDEND_SKIP_MODULE_PREFIXES", "").strip()
         if skip_prefixes_raw:
             skip_prefixes = [
@@ -30270,6 +30301,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "expanded_accepted",
             "expanded_fallbacks",
             "midend_module_skips",
+            "midend_oversized_function_skips",
             "invalid_unbound_rollback",
             "invalid_unbound_uses",
             "fixed_point_fail_fast",
