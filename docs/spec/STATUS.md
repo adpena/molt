@@ -1638,7 +1638,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_signal` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_sqlite3` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_sre` top-level stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_ssl` top-level stub with full intrinsic-backed lowering.
+- Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_ssl` now re-exports Molt's intrinsic-backed TLS context/socket surface for CPython-compatible private-module imports.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_stat` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_string` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_strptime` top-level stub with full intrinsic-backed lowering.
