@@ -234,6 +234,18 @@ def test_collect_imports_resolves_helper_join_dynamic_module_name() -> None:
     assert "sys" in imports
 
 
+def test_backend_ir_text_is_compact() -> None:
+    text = cli._backend_ir_text(
+        {
+            "functions": [{"name": "main", "ops": [{"kind": "ret", "args": []}]}],
+            "profile": {"hash": "abc"},
+        }
+    )
+    assert "\n" not in text
+    assert ": " not in text
+    assert '"functions"' in text
+
+
 def test_shared_module_resolution_cache_reduces_repeated_resolution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
