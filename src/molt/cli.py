@@ -6094,6 +6094,7 @@ def _backend_daemon_compile_request_bytes(
     config_digest: str | None,
     skip_module_output_if_synced: bool,
     skip_function_output_if_synced: bool,
+    include_health: bool = False,
 ) -> tuple[bytes | None, str | None]:
     jobs: list[dict[str, Any]] = [
         {
@@ -6114,6 +6115,8 @@ def _backend_daemon_compile_request_bytes(
     }
     if config_digest:
         payload["config_digest"] = config_digest
+    if include_health:
+        payload["include_health"] = True
     return _backend_daemon_request_payload_bytes(payload)
 
 
@@ -6309,6 +6312,7 @@ def _compile_with_backend_daemon(
             config_digest=config_digest,
             skip_module_output_if_synced=skip_module_output_if_synced,
             skip_function_output_if_synced=skip_function_output_if_synced,
+            include_health=False,
         )
         if encode_err is not None:
             return _BackendDaemonCompileResult(

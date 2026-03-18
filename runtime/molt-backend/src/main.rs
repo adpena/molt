@@ -33,6 +33,7 @@ struct DaemonJobRequest {
 struct DaemonRequest {
     version: Option<u32>,
     ping: Option<bool>,
+    include_health: Option<bool>,
     config_digest: Option<String>,
     jobs: Option<Vec<DaemonJobRequest>>,
 }
@@ -401,7 +402,7 @@ fn handle_daemon_connection(
             pong: false,
             jobs: Vec::new(),
             error: Some("empty request".to_string()),
-            health: Some(daemon_health(cache, stats, started_at)),
+            health: None,
         };
         write_daemon_response(stream, &response)?;
         return Ok(());
@@ -414,12 +415,13 @@ fn handle_daemon_connection(
                 pong: false,
                 jobs: Vec::new(),
                 error: Some(format!("invalid request JSON: {err}")),
-                health: Some(daemon_health(cache, stats, started_at)),
+                health: None,
             };
             write_daemon_response(stream, &response)?;
             return Ok(());
         }
     };
+    let include_health = req.include_health.unwrap_or(req.ping.unwrap_or(false));
     let version = req.version.unwrap_or(0);
     if version != BACKEND_DAEMON_PROTOCOL_VERSION {
         let response = DaemonResponse {
@@ -429,7 +431,7 @@ fn handle_daemon_connection(
             error: Some(format!(
                 "unsupported protocol version {version}; expected {BACKEND_DAEMON_PROTOCOL_VERSION}"
             )),
-            health: Some(daemon_health(cache, stats, started_at)),
+            health: include_health.then(|| daemon_health(cache, stats, started_at)),
         };
         write_daemon_response(stream, &response)?;
         return Ok(());
@@ -463,7 +465,7 @@ fn handle_daemon_connection(
             pong: false,
             jobs: Vec::new(),
             error: Some("missing jobs in request".to_string()),
-            health: Some(daemon_health(cache, stats, started_at)),
+            health: include_health.then(|| daemon_health(cache, stats, started_at)),
         };
         write_daemon_response(stream, &response)?;
         return Ok(());
@@ -474,7 +476,7 @@ fn handle_daemon_connection(
             pong: false,
             jobs: Vec::new(),
             error: Some("empty jobs in request".to_string()),
-            health: Some(daemon_health(cache, stats, started_at)),
+            health: include_health.then(|| daemon_health(cache, stats, started_at)),
         };
         write_daemon_response(stream, &response)?;
         return Ok(());
@@ -496,7 +498,7 @@ fn handle_daemon_connection(
         pong: false,
         jobs: results,
         error: None,
-        health: Some(daemon_health(cache, stats, started_at)),
+        health: include_health.then(|| daemon_health(cache, stats, started_at)),
     };
     write_daemon_response(stream, &response)?;
     Ok(())
