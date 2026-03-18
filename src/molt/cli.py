@@ -4522,6 +4522,16 @@ def _write_runtime_fingerprint(path: Path, fingerprint: dict[str, str | None]) -
     path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
+def _write_text_if_changed(path: Path, content: str) -> None:
+    try:
+        existing = path.read_text()
+    except OSError:
+        existing = None
+    if existing == content:
+        return
+    path.write_text(content)
+
+
 def _check_lockfiles(
     project_root: Path,
     json_output: bool,
@@ -6195,6 +6205,54 @@ def _backend_fingerprint_path(
         :16
     ]
     return root / f"{artifact.name}.{cargo_profile}.{artifact_key}.fingerprint"
+
+
+def _link_fingerprint_path(
+    project_root: Path,
+    artifact: Path,
+    profile: BuildProfile,
+    target_triple: str | None,
+) -> Path:
+    target = (target_triple or "native").replace(os.sep, "_").replace(":", "_")
+    root = _build_state_root(project_root) / "link_fingerprints"
+    artifact_key = hashlib.sha256(str(artifact.resolve()).encode("utf-8")).hexdigest()[
+        :16
+    ]
+    return root / f"{artifact.name}.{profile}.{target}.{artifact_key}.fingerprint"
+
+
+def _link_fingerprint(
+    *,
+    project_root: Path,
+    inputs: list[Path],
+    link_cmd: list[str],
+    stored_fingerprint: dict[str, Any] | None = None,
+) -> dict[str, str | None] | None:
+    inputs_meta = _hash_source_tree_metadata(inputs, project_root)
+    inputs_digest = inputs_meta[0] if inputs_meta is not None else None
+    if _stored_fingerprint_matches_source_metadata(
+        stored_fingerprint,
+        inputs_digest=inputs_digest,
+        rustc=None,
+    ):
+        return {
+            "hash": cast(str, stored_fingerprint.get("hash")),
+            "rustc": None,
+            "inputs_digest": inputs_digest,
+        }
+    hasher = hashlib.sha256()
+    hasher.update("\0".join(link_cmd).encode("utf-8"))
+    hasher.update(b"\0")
+    try:
+        for path in inputs:
+            _hash_runtime_file(path, project_root, hasher)
+    except OSError:
+        return None
+    return {
+        "hash": hasher.hexdigest(),
+        "rustc": None,
+        "inputs_digest": inputs_digest,
+    }
 
 
 def _backend_fingerprint(
@@ -10879,7 +10937,7 @@ int main(int argc, char** argv) {
         "/* MOLT_CAPABILITIES_CALL */", capabilities_call
     )
     stub_path = artifacts_root / "main_stub.c"
-    stub_path.write_text(main_c_content)
+    _write_text_if_changed(stub_path, main_c_content)
 
     if output_binary is None:
         return _fail("Binary output unavailable", json_output, command="build")
@@ -10969,19 +11027,46 @@ int main(int argc, char** argv) {
             link_cmd.append("-lstdc++")
             link_cmd.append("-lm")
 
-    if diagnostics_enabled and "link" not in phase_starts:
-        phase_starts["link"] = time.perf_counter()
-    try:
-        link_process = subprocess.run(
-            link_cmd,
-            capture_output=json_output,
-            text=True,
-            timeout=link_timeout,
+    link_fingerprint_path = _link_fingerprint_path(
+        project_root, output_binary, profile, target_triple
+    )
+    stored_link_fingerprint = (
+        _read_runtime_fingerprint(link_fingerprint_path)
+        if link_fingerprint_path.exists()
+        else None
+    )
+    link_fingerprint = _link_fingerprint(
+        project_root=project_root,
+        inputs=[stub_path, output_obj, runtime_lib],
+        link_cmd=link_cmd,
+        stored_fingerprint=stored_link_fingerprint,
+    )
+    link_skipped = not _artifact_needs_rebuild(
+        output_binary,
+        link_fingerprint,
+        stored_link_fingerprint,
+    )
+    if link_skipped:
+        link_process = subprocess.CompletedProcess(
+            args=link_cmd,
+            returncode=0,
+            stdout="",
+            stderr="",
         )
-    except subprocess.TimeoutExpired:
-        return _fail("Linker timed out", json_output, command="build")
+    else:
+        if diagnostics_enabled and "link" not in phase_starts:
+            phase_starts["link"] = time.perf_counter()
+        try:
+            link_process = subprocess.run(
+                link_cmd,
+                capture_output=json_output,
+                text=True,
+                timeout=link_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return _fail("Linker timed out", json_output, command="build")
 
-    if link_process.returncode != 0 and linker_hint is not None:
+    if not link_skipped and link_process.returncode != 0 and linker_hint is not None:
         retry_cmd = [arg for arg in link_cmd if arg != f"-fuse-ld={linker_hint}"]
         if retry_cmd != link_cmd:
             try:
@@ -10999,7 +11084,12 @@ int main(int argc, char** argv) {
                 )
                 link_process = retry_process
 
-    if link_process.returncode == 0 and sys.platform == "darwin" and not target_triple:
+    if (
+        not link_skipped
+        and link_process.returncode == 0
+        and sys.platform == "darwin"
+        and not target_triple
+    ):
         magic_error = _darwin_binary_magic_error(output_binary)
         if (
             magic_error is not None
@@ -11046,7 +11136,12 @@ int main(int argc, char** argv) {
                 stderr=failure_stderr,
             )
 
-    if link_process.returncode == 0 and sys.platform == "darwin" and not target_triple:
+    if (
+        not link_skipped
+        and link_process.returncode == 0
+        and sys.platform == "darwin"
+        and not target_triple
+    ):
         dyld_validation_error = _darwin_binary_imports_validation_error(output_binary)
         if (
             dyld_validation_error is not None
@@ -11097,6 +11192,16 @@ int main(int argc, char** argv) {
 
     diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
     if link_process.returncode == 0:
+        if not link_skipped and link_fingerprint is not None:
+            try:
+                link_fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+                _write_runtime_fingerprint(link_fingerprint_path, link_fingerprint)
+            except OSError:
+                if not json_output:
+                    print(
+                        "Warning: failed to write link fingerprint metadata.",
+                        file=sys.stderr,
+                    )
         if json_output:
             cache_info = _attach_daemon_cache_info({"enabled": cache, "hit": cache_hit})
             if cache_key:
@@ -11126,6 +11231,7 @@ int main(int argc, char** argv) {
                 "capabilities_source": capabilities_source,
                 "sysroot": str(sysroot_path) if sysroot_path is not None else None,
                 "cache": cache_info,
+                "link": {"skipped": link_skipped},
                 "emit": emit_mode,
                 "profile": profile,
                 "native_arch_perf": native_arch_perf_enabled,
