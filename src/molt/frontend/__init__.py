@@ -29990,20 +29990,32 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     allow_hot_promotion=False,
                 )
 
+        op_count = len(ops)
         if module_name == "__main__":
+            if op_count >= 1800:
+                return MidendTierClassification(
+                    tier="C",
+                    source="entry_module_oversized",
+                    allow_hot_promotion=True,
+                )
             return MidendTierClassification(
                 tier="A",
                 source="entry_module_default",
                 allow_hot_promotion=True,
             )
         if function_name == "molt_main":
+            if op_count >= 1800:
+                return MidendTierClassification(
+                    tier="C",
+                    source="module_entry_oversized",
+                    allow_hot_promotion=True,
+                )
             return MidendTierClassification(
                 tier="A",
                 source="module_entry_default",
                 allow_hot_promotion=True,
             )
 
-        op_count = len(ops)
         chunk_prefix = f"{self.module_prefix}{_MOLT_MODULE_CHUNK_PREFIX}_"
         if self._source_is_stdlib_module:
             # Stdlib defaults to the lightest tier unless explicitly elevated
