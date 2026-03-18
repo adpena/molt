@@ -5858,7 +5858,7 @@ def _materialize_cached_backend_artifact(
     ):
         return True
     try:
-        _atomic_copy_file(candidate, output_artifact)
+        _atomic_link_or_copy_file(candidate, output_artifact)
         if (
             tier == "function"
             and cache_path is not None
@@ -5973,7 +5973,7 @@ def _stage_backend_output_and_caches(
         elif staged_source == backend_output and cache_path is None:
             backend_output.replace(output_artifact)
         else:
-            _atomic_copy_file(staged_source, output_artifact)
+            _atomic_link_or_copy_file(staged_source, output_artifact)
     except OSError as exc:
         return f"Failed to move backend output: {exc}"
 
@@ -5985,7 +5985,7 @@ def _stage_backend_output_and_caches(
             _atomic_link_or_copy_file(cache_path, function_cache_path)
         except OSError as exc:
             warnings.append(f"Function cache write failed: {exc}")
-    if cache_key:
+    if cache_key and not output_already_synced:
         try:
             state_path.parent.mkdir(parents=True, exist_ok=True)
             _write_artifact_sync_state(
