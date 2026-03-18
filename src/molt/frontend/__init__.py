@@ -29804,7 +29804,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             raise
         self.midend_stats["cfg_structural_canonicalizations"] += structural_rewrites
         oversized_skip_threshold = self._midend_positive_int_env(
-            "MOLT_MIDEND_SKIP_OP_THRESHOLD", 1200, minimum=1
+            "MOLT_MIDEND_SKIP_OP_THRESHOLD", 800, minimum=1
         )
         if len(ops) >= oversized_skip_threshold:
             self.midend_stats["midend_oversized_function_skips"] += 1
