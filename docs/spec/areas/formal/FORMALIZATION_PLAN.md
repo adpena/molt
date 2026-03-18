@@ -1,36 +1,32 @@
 # Molt Full Formalization & Verification Plan
 
-## Status: 14 sorry-using declarations remain (down from 44 this session)
+## Status: 9 sorry-using declarations remain (down from 44 this session)
 
 **Codebase**: 66K Python, 150K Rust, 25K Lean across 1,228 files
 **Verified**: Compilation correctness, NaN-boxing, WASM ABI, RC elision, 5/6 midend passes, dominator theory
 
+NOTE: the historical 14-to-0 breakdown below is stale. The live inventory is
+the 9-sorry snapshot in `CERTIFICATION_STATUS.md` and the checker output.
+
 ---
 
-## Phase 1: Complete Core Formalization (Current — 14 sorrys to 0)
+## Phase 1: Complete Core Formalization (Current — 9 sorrys to 0)
 
-### 1.1 Midend Passes (3 sorrys)
-- guardHoistSim: proven-set soundness model (M)
-- CSE use_dom_def: AvailMap intra-block dominance (S)
-- LICM use_dom_def: Loop validity predicate (L)
+### 1.1 Abstract Interpretation (1 sorry)
+- `SCCPCorrect.absEvalExpr_sound` var case: needs a definedness invariant or a
+  theorem restatement.
 
-### 1.2 Lowering (3 sorrys)
-- lowerEnv_corr: NameMap injectivity hypothesis (S)
-- lowering_preserves_eval: PyExpr nested inductive eliminator (M)
-- lowering_reflects_eval: Backward simulation fuel witness (L)
+### 1.2 Lowering (2 sorrys)
+- `lowerEnv_corr`
+- `lowering_reflects_eval`
 
-### 1.3 Pipeline (2 sorrys)
-- PhaseSimulation.compose: Receptiveness condition (L)
-- fullPipelineFunc_behavioral_equiv: Inherits guardHoist (M)
+### 1.3 SSA Invariants (5 sorrys)
+- `ssa_implies_wellformed` (2 sorrys)
+- `cse_preserves_ssa` (1 sorry)
+- `licm_preserves_ssa` (2 sorrys)
 
-### 1.4 Infrastructure (3 sorrys)
-- ssa_implies_wellformed: Boolean reflection (M)
-- sccpWorklist_env_sound: FALSE as stated, needs spec fix (S)
-- absEvalExpr_sound var: Known gap, strong version proven (N/A)
-
-### 1.5 Backend & Runtime (3 sorrys)
-- fused_xor_implies_isInt + fused_xor_unbox: BitVec, Lean 4.28 bv_decide (S)
-- LuauCorrect abs to neg: Intentional approximation (N/A)
+### 1.4 Validation (1 sorry)
+- `SCCPValid.sccp_valid_transform` / worklist soundness chain
 
 ---
 
@@ -140,7 +136,7 @@ Property Testing / Fuzzing (Phase 3)
 
 | Phase | Scope | Priority |
 |-------|-------|----------|
-| 1 | Close 14 sorrys | P0 |
+| 1 | Close 9 sorrys | P0 |
 | 2.1 | Intrinsic Lean specs (30) | P0 |
 | 2.2 | Kani proofs (30 intrinsics) | P1 |
 | 3.1 | Stdlib Kani (critical modules) | P1 |
