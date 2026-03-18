@@ -146,6 +146,31 @@ def test_rustc_version_is_cached(monkeypatch) -> None:
     cli._rustc_version.cache_clear()
 
 
+def test_runtime_fingerprint_read_reuses_process_cache(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fingerprint_path = tmp_path / "runtime.fingerprint.json"
+    cli._PERSISTED_JSON_OBJECT_CACHE.clear()
+    cli._write_runtime_fingerprint(
+        fingerprint_path,
+        {"hash": "abc", "rustc": "rustc-test", "inputs_digest": "digest"},
+    )
+
+    first = cli._read_runtime_fingerprint(fingerprint_path)
+
+    def fail_read_text(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("unexpected runtime fingerprint reread")
+
+    monkeypatch.setattr(Path, "read_text", fail_read_text)
+    second = cli._read_runtime_fingerprint(fingerprint_path)
+
+    assert first == second == {
+        "hash": "abc",
+        "rustc": "rustc-test",
+        "inputs_digest": "digest",
+    }
+
+
 def test_ensure_runtime_lib_passes_tk_feature_to_native_build(
     tmp_path: Path, monkeypatch
 ) -> None:

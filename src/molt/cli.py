@@ -4547,17 +4547,20 @@ def _runtime_cargo_features(target_triple: str | None) -> tuple[str, ...]:
 
 
 def _read_runtime_fingerprint(path: Path) -> dict[str, Any] | None:
-    try:
-        text = path.read_text().strip()
-    except OSError:
-        return None
-    if not text:
-        return None
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return {"hash": text, "rustc": None, "inputs_digest": None}
-    if not isinstance(data, dict):
+    payload = _read_cached_json_object(path)
+    if payload is not None:
+        data = payload
+    else:
+        try:
+            text = path.read_text().strip()
+        except OSError:
+            return None
+        if not text:
+            return None
+        try:
+            json.loads(text)
+        except json.JSONDecodeError:
+            return {"hash": text, "rustc": None, "inputs_digest": None}
         return None
     hash_value = data.get("hash")
     if not isinstance(hash_value, str) or not hash_value:
@@ -4582,7 +4585,7 @@ def _write_runtime_fingerprint(path: Path, fingerprint: dict[str, str | None]) -
         "rustc": fingerprint.get("rustc"),
         "inputs_digest": fingerprint.get("inputs_digest"),
     }
-    path.write_text(json.dumps(payload, indent=2) + "\n")
+    _write_cached_json_object(path, payload)
 
 
 def _write_text_if_changed(path: Path, content: str) -> None:
