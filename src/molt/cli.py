@@ -6050,6 +6050,40 @@ def _backend_daemon_request_payload_bytes(
     return encoded + b"\n", None
 
 
+def _backend_daemon_compile_request_bytes(
+    *,
+    ir: dict[str, Any],
+    backend_output: Path,
+    is_wasm: bool,
+    target_triple: str | None,
+    cache_key: str | None,
+    function_cache_key: str | None,
+    config_digest: str | None,
+    skip_module_output_if_synced: bool,
+    skip_function_output_if_synced: bool,
+) -> tuple[bytes | None, str | None]:
+    jobs: list[dict[str, Any]] = [
+        {
+            "id": "job0",
+            "is_wasm": is_wasm,
+            "target_triple": target_triple,
+            "output": str(backend_output),
+            "cache_key": cache_key or "",
+            "function_cache_key": function_cache_key or "",
+            "skip_module_output_if_synced": skip_module_output_if_synced,
+            "skip_function_output_if_synced": skip_function_output_if_synced,
+            "ir": ir,
+        }
+    ]
+    payload: dict[str, Any] = {
+        "version": _BACKEND_DAEMON_PROTOCOL_VERSION,
+        "jobs": jobs,
+    }
+    if config_digest:
+        payload["config_digest"] = config_digest
+    return _backend_daemon_request_payload_bytes(payload)
+
+
 def _backend_daemon_health_from_response(
     response: dict[str, Any],
 ) -> dict[str, Any] | None:
@@ -6229,30 +6263,25 @@ def _compile_with_backend_daemon(
     skip_module_output_if_synced: bool = False,
     skip_function_output_if_synced: bool = False,
     timeout: float | None,
+    request_bytes: bytes | None = None,
 ) -> _BackendDaemonCompileResult:
-    jobs: list[dict[str, Any]] = [
-        {
-            "id": "job0",
-            "is_wasm": is_wasm,
-            "target_triple": target_triple,
-            "output": str(backend_output),
-            "cache_key": cache_key or "",
-            "function_cache_key": function_cache_key or "",
-            "skip_module_output_if_synced": skip_module_output_if_synced,
-            "skip_function_output_if_synced": skip_function_output_if_synced,
-            "ir": ir,
-        }
-    ]
-    payload: dict[str, Any] = {
-        "version": _BACKEND_DAEMON_PROTOCOL_VERSION,
-        "jobs": jobs,
-    }
-    if config_digest:
-        payload["config_digest"] = config_digest
-    request_bytes, encode_err = _backend_daemon_request_payload_bytes(payload)
-    if encode_err is not None:
-        return _BackendDaemonCompileResult(False, encode_err, None, None, None, True)
-    assert request_bytes is not None
+    if request_bytes is None:
+        request_bytes, encode_err = _backend_daemon_compile_request_bytes(
+            ir=ir,
+            backend_output=backend_output,
+            is_wasm=is_wasm,
+            target_triple=target_triple,
+            cache_key=cache_key,
+            function_cache_key=function_cache_key,
+            config_digest=config_digest,
+            skip_module_output_if_synced=skip_module_output_if_synced,
+            skip_function_output_if_synced=skip_function_output_if_synced,
+        )
+        if encode_err is not None:
+            return _BackendDaemonCompileResult(
+                False, encode_err, None, None, None, True
+            )
+        assert request_bytes is not None
     response, err = _backend_daemon_request_bytes(
         socket_path, request_bytes, timeout=timeout
     )
@@ -7080,37 +7109,39 @@ def _load_cached_module_lowering_result(
     known_modules_sorted: tuple[str, ...] | None = None,
     stdlib_allowlist_sorted: tuple[str, ...] | None = None,
     pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
+    context_digest: str | None = None,
 ) -> dict[str, Any] | None:
     if project_root is None:
         return None
-    context_payload = _module_lowering_context_payload(
-        module_name,
-        module_path,
-        logical_source_path=logical_source_path,
-        entry_override=entry_override,
-        known_classes_snapshot=known_classes_snapshot,
-        parse_codec=parse_codec,
-        type_hint_policy=type_hint_policy,
-        fallback_policy=fallback_policy,
-        type_facts=type_facts,
-        enable_phi=enable_phi,
-        known_modules=known_modules,
-        stdlib_allowlist=stdlib_allowlist,
-        known_func_defaults=known_func_defaults,
-        module_is_namespace=module_is_namespace,
-        module_chunking=module_chunking,
-        module_chunk_max_ops=module_chunk_max_ops,
-        optimization_profile=optimization_profile,
-        pgo_hot_function_names=pgo_hot_function_names,
-        known_modules_sorted=known_modules_sorted,
-        stdlib_allowlist_sorted=stdlib_allowlist_sorted,
-        pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
-    )
-    if context_payload is None:
-        return None
-    context_digest = _module_lowering_context_digest(context_payload)
     if context_digest is None:
-        return None
+        context_payload = _module_lowering_context_payload(
+            module_name,
+            module_path,
+            logical_source_path=logical_source_path,
+            entry_override=entry_override,
+            known_classes_snapshot=known_classes_snapshot,
+            parse_codec=parse_codec,
+            type_hint_policy=type_hint_policy,
+            fallback_policy=fallback_policy,
+            type_facts=type_facts,
+            enable_phi=enable_phi,
+            known_modules=known_modules,
+            stdlib_allowlist=stdlib_allowlist,
+            known_func_defaults=known_func_defaults,
+            module_is_namespace=module_is_namespace,
+            module_chunking=module_chunking,
+            module_chunk_max_ops=module_chunk_max_ops,
+            optimization_profile=optimization_profile,
+            pgo_hot_function_names=pgo_hot_function_names,
+            known_modules_sorted=known_modules_sorted,
+            stdlib_allowlist_sorted=stdlib_allowlist_sorted,
+            pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+        )
+        if context_payload is None:
+            return None
+        context_digest = _module_lowering_context_digest(context_payload)
+        if context_digest is None:
+            return None
     return _read_persisted_module_lowering(
         project_root,
         module_path,
@@ -11660,6 +11691,7 @@ def build(
                 backend_compiled = False
                 backend_output_written = True
                 daemon_error: str | None = None
+                backend_daemon_request_bytes_cached: bytes | None = None
                 if daemon_ready and daemon_socket is not None:
                     (
                         skip_module_output_if_synced,
@@ -11674,6 +11706,25 @@ def build(
                             else None
                         ),
                     )
+                    backend_daemon_request_bytes_cached, request_encode_err = (
+                        _backend_daemon_compile_request_bytes(
+                            ir=ir,
+                            backend_output=backend_output,
+                            is_wasm=is_wasm,
+                            target_triple=target_triple,
+                            cache_key=cache_key,
+                            function_cache_key=function_cache_key,
+                            config_digest=backend_daemon_config_digest,
+                            skip_module_output_if_synced=skip_module_output_if_synced,
+                            skip_function_output_if_synced=skip_function_output_if_synced,
+                        )
+                    )
+                    if request_encode_err is not None:
+                        return _fail(
+                            request_encode_err,
+                            json_output,
+                            command="build",
+                        )
                     if (
                         diagnostics_enabled
                         and "backend_daemon_compile" not in phase_starts
@@ -11691,6 +11742,7 @@ def build(
                         skip_module_output_if_synced=skip_module_output_if_synced,
                         skip_function_output_if_synced=skip_function_output_if_synced,
                         timeout=None,
+                        request_bytes=backend_daemon_request_bytes_cached,
                     )
                     backend_compiled = daemon_compile.ok
                     backend_output_written = daemon_compile.output_written
@@ -11747,6 +11799,7 @@ def build(
                                     skip_function_output_if_synced
                                 ),
                                 timeout=None,
+                                request_bytes=backend_daemon_request_bytes_cached,
                             )
                             backend_compiled = daemon_compile.ok
                             backend_output_written = daemon_compile.output_written
