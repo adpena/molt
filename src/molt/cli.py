@@ -1658,14 +1658,19 @@ def _module_name_from_resolved_path(
     return resolved.parent.name or resolved.stem
 
 
-def _expand_module_chain(name: str) -> list[str]:
+@functools.lru_cache(maxsize=4096)
+def _expand_module_chain_cached(name: str) -> tuple[str, ...]:
     name = name.strip()
     if not name:
-        return []
+        return ()
     parts = name.split(".")
     if any(not part or not part.isidentifier() for part in parts):
-        return []
-    return [".".join(parts[:idx]) for idx in range(1, len(parts) + 1)]
+        return ()
+    return tuple(".".join(parts[:idx]) for idx in range(1, len(parts) + 1))
+
+
+def _expand_module_chain(name: str) -> list[str]:
+    return list(_expand_module_chain_cached(name))
 
 
 def _resolve_root_override(var: str) -> Path | None:
@@ -2104,7 +2109,7 @@ def _collect_namespace_parents(
 
     if explicit_imports:
         for name in explicit_imports:
-            for candidate in _expand_module_chain(name):
+            for candidate in _expand_module_chain_cached(name):
                 maybe_add(candidate)
     return namespace_parents
 
@@ -2675,7 +2680,7 @@ def _module_dependencies(
         imports if imports is not None else _collect_imports(tree, module_name, is_package)
     )
     for name in collected_imports:
-        for candidate in _expand_module_chain(name):
+        for candidate in _expand_module_chain_cached(name):
             if candidate == "molt" and module_name.startswith("molt."):
                 continue
             if candidate in module_graph and candidate != module_name:
@@ -4264,7 +4269,7 @@ def _discover_module_graph(
             include_nested=include_nested_imports,
         ):
             explicit_imports.add(name)
-            for candidate in _expand_module_chain(name):
+            for candidate in _expand_module_chain_cached(name):
                 if candidate in stub_parents:
                     continue
                 if candidate.split(".", 1)[0] in skip_modules:
