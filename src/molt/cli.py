@@ -35,7 +35,7 @@ import zipfile
 from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Literal, Mapping, MutableMapping, NamedTuple, cast
+from typing import Any, ContextManager, Iterable, Iterator, Literal, Mapping, MutableMapping, NamedTuple, cast
 
 from packaging.markers import InvalidMarker, Marker
 from packaging.requirements import InvalidRequirement, Requirement
@@ -5781,10 +5781,22 @@ def _atomic_link_or_copy_file(src: Path, dst: Path) -> None:
     try:
         try:
             os.link(src, tmp_path)
+            try:
+                tmp_path.replace(dst)
+                return
+            except OSError as exc:
+                if exc.errno != errno.ENOENT:
+                    raise
         except OSError as exc:
-            if exc.errno not in {errno.EXDEV, errno.EPERM, errno.EACCES, errno.ENOTSUP}:
+            if exc.errno not in {
+                errno.EXDEV,
+                errno.EPERM,
+                errno.EACCES,
+                errno.ENOTSUP,
+                errno.ENOENT,
+            }:
                 raise
-            shutil.copyfile(src, tmp_path)
+        shutil.copyfile(src, tmp_path)
         tmp_path.replace(dst)
     finally:
         try:
@@ -5899,21 +5911,24 @@ def _stage_backend_output_and_caches(
     staged_source = backend_output
     if cache_path is not None:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            backend_output.replace(cache_path)
-            staged_source = cache_path
-        except OSError as exc:
-            if exc.errno != errno.EXDEV:
-                return f"Failed to move backend output: {exc}"
+        if backend_output != cache_path:
             try:
-                _atomic_copy_file(backend_output, cache_path)
-                backend_output.unlink()
+                backend_output.replace(cache_path)
                 staged_source = cache_path
-            except OSError as copy_exc:
-                return f"Failed to move backend output: {copy_exc}"
+            except OSError as exc:
+                if exc.errno != errno.EXDEV:
+                    return f"Failed to move backend output: {exc}"
+                try:
+                    _atomic_copy_file(backend_output, cache_path)
+                    backend_output.unlink()
+                    staged_source = cache_path
+                except OSError as copy_exc:
+                    return f"Failed to move backend output: {copy_exc}"
+        else:
+            staged_source = cache_path
 
     try:
-        if staged_source == backend_output:
+        if staged_source == backend_output and cache_path is None:
             backend_output.replace(output_artifact)
         else:
             _atomic_copy_file(staged_source, output_artifact)
@@ -10728,10 +10743,15 @@ def build(
             if diagnostics_enabled and "backend_dispatch" not in phase_starts:
                 phase_starts["backend_dispatch"] = time.perf_counter()
 
-            with _temporary_backend_output_path(
-                artifacts_root,
-                is_wasm=is_wasm,
-            ) as backend_output:
+            backend_output_ctx: ContextManager[Path]
+            if cache and cache_path is not None:
+                backend_output_ctx = nullcontext(cache_path)
+            else:
+                backend_output_ctx = _temporary_backend_output_path(
+                    artifacts_root,
+                    is_wasm=is_wasm,
+                )
+            with backend_output_ctx as backend_output:
                 backend_compiled = False
                 backend_output_written = True
                 daemon_error: str | None = None
