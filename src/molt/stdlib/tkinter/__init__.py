@@ -23,17 +23,25 @@ def _lazy_intrinsic(name):
     return _call
 
 
-_MOLT_CAPABILITIES_HAS = _lazy_intrinsic("molt_capabilities_has")
-_MOLT_TK_AVAILABLE = _lazy_intrinsic("molt_tk_available")
-_MOLT_TK_EVENT_SUBST_PARSE = _lazy_intrinsic("molt_tk_event_subst_parse")
-_molt_tk_event_int = _lazy_intrinsic("molt_tk_event_int")
-_molt_tk_event_build_from_args = _lazy_intrinsic("molt_tk_event_build_from_args")
-_molt_tk_event_state_decode = _lazy_intrinsic("molt_tk_event_state_decode")
-_molt_tk_splitdict = _lazy_intrinsic("molt_tk_splitdict")
-_molt_tk_flatten_args = _lazy_intrinsic("molt_tk_flatten_args")
-_molt_tk_cnfmerge = _lazy_intrinsic("molt_tk_cnfmerge")
-_molt_tk_normalize_option = _lazy_intrinsic("molt_tk_normalize_option")
-_molt_tk_normalize_delay_ms = _lazy_intrinsic("molt_tk_normalize_delay_ms")
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available", globals())
+_MOLT_TK_EVENT_SUBST_PARSE = _require_intrinsic("molt_tk_event_subst_parse", globals())
+_molt_tk_event_int = _require_intrinsic("molt_tk_event_int", globals())
+_molt_tk_event_build_from_args = _require_intrinsic(
+    "molt_tk_event_build_from_args", globals()
+)
+_molt_tk_event_state_decode = _require_intrinsic(
+    "molt_tk_event_state_decode", globals()
+)
+_molt_tk_splitdict = _require_intrinsic("molt_tk_splitdict", globals())
+_molt_tk_flatten_args = _require_intrinsic("molt_tk_flatten_args", globals())
+_molt_tk_cnfmerge = _require_intrinsic("molt_tk_cnfmerge", globals())
+_molt_tk_normalize_option = _require_intrinsic(
+    "molt_tk_normalize_option", globals()
+)
+_molt_tk_normalize_delay_ms = _require_intrinsic(
+    "molt_tk_normalize_delay_ms", globals()
+)
 
 
 NO_VALUE = object()

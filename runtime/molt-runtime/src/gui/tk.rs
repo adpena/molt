@@ -13,7 +13,7 @@ use std::time::Duration;
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},
-    path::PathBuf,
+    path::{Path, PathBuf},
     ptr,
     thread::{self, ThreadId},
 };
@@ -32,7 +32,21 @@ type TclInitFn = unsafe extern "C" fn(*mut c_void) -> c_int;
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 type TclEvalExFn = unsafe extern "C" fn(*mut c_void, *const c_char, c_int, c_int) -> c_int;
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+type TclEvalObjvFn =
+    unsafe extern "C" fn(*mut c_void, c_int, *const *mut c_void, c_int) -> c_int;
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 type TclGetStringResultFn = unsafe extern "C" fn(*mut c_void) -> *const c_char;
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+type TclNewStringObjFn = unsafe extern "C" fn(*const c_char, c_int) -> *mut c_void;
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+type TclNewListObjFn = unsafe extern "C" fn(c_int, *const *mut c_void) -> *mut c_void;
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+type TclListObjAppendElementFn =
+    unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> c_int;
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+type TclIncrRefCountFn = unsafe extern "C" fn(*mut c_void);
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+type TclDecrRefCountFn = unsafe extern "C" fn(*mut c_void);
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 type TclDoOneEventFn = unsafe extern "C" fn(c_int) -> c_int;
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
@@ -51,11 +65,64 @@ struct TclApi {
     delete_interp: TclDeleteInterpFn,
     init: TclInitFn,
     eval_ex: TclEvalExFn,
+    eval_objv: TclEvalObjvFn,
     get_string_result: TclGetStringResultFn,
+    new_string_obj: TclNewStringObjFn,
+    new_list_obj: TclNewListObjFn,
+    list_obj_append_element: TclListObjAppendElementFn,
+    incr_ref_count: TclIncrRefCountFn,
+    decr_ref_count: TclDecrRefCountFn,
     do_one_event: TclDoOneEventFn,
     split_list: TclSplitListFn,
     merge: TclMergeFn,
     free: TclFreeFn,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+fn bundled_tcl_runtime_lib_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+    let mut candidates = vec![
+        exe_dir.join("../Resources/tcl-tk/lib"),
+        exe_dir.join("tcl-tk/lib"),
+        exe_dir.join("../lib/tcl-tk"),
+        exe_dir.join("lib"),
+    ];
+    candidates.retain(|path| path.exists());
+    candidates.into_iter().next()
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+fn runtime_version_dir(root: &Path, stem: &str) -> Option<PathBuf> {
+    ["9.0", "8.7", "8.6"]
+        .into_iter()
+        .map(|version| root.join(format!("{stem}{version}")))
+        .find(|path| path.is_dir())
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+fn configured_tcl_runtime_lib_dir() -> Option<PathBuf> {
+    static CONFIGURED: OnceLock<Option<PathBuf>> = OnceLock::new();
+    CONFIGURED
+        .get_or_init(|| {
+            let Some(root) = bundled_tcl_runtime_lib_dir() else {
+                return None;
+            };
+            if let Some(tcl_library) = runtime_version_dir(&root, "tcl") {
+                // Process-global env mutation is serialized behind OnceLock init.
+                unsafe {
+                    std::env::set_var("TCL_LIBRARY", &tcl_library);
+                }
+            }
+            if let Some(tk_library) = runtime_version_dir(&root, "tk") {
+                // Process-global env mutation is serialized behind OnceLock init.
+                unsafe {
+                    std::env::set_var("TK_LIBRARY", &tk_library);
+                }
+            }
+            Some(root)
+        })
+        .clone()
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
@@ -64,6 +131,26 @@ fn tcl_library_candidates() -> Vec<PathBuf> {
     if let Ok(path) = std::env::var("MOLT_TCL_LIB") {
         if !path.trim().is_empty() {
             candidates.push(PathBuf::from(path));
+        }
+    }
+    if let Some(root) = configured_tcl_runtime_lib_dir() {
+        if cfg!(target_os = "macos") {
+            candidates.push(root.join("libtcl9.0.dylib"));
+            candidates.push(root.join("libtcl8.7.dylib"));
+            candidates.push(root.join("libtcl8.6.dylib"));
+            candidates.push(root.join("libtcl.dylib"));
+        } else if cfg!(target_os = "windows") {
+            candidates.push(root.join("tcl87t.dll"));
+            candidates.push(root.join("tcl86t.dll"));
+            candidates.push(root.join("tcl87.dll"));
+            candidates.push(root.join("tcl86.dll"));
+        } else {
+            candidates.push(root.join("libtcl9.0.so"));
+            candidates.push(root.join("libtcl8.7.so.0"));
+            candidates.push(root.join("libtcl8.6.so.0"));
+            candidates.push(root.join("libtcl8.7.so"));
+            candidates.push(root.join("libtcl8.6.so"));
+            candidates.push(root.join("libtcl.so"));
         }
     }
     let mut preferred_names: Vec<&'static str> = Vec::new();
@@ -176,7 +263,15 @@ fn load_tcl_api() -> Result<&'static TclApi, String> {
                     delete_interp: std::mem::transmute(load(b"Tcl_DeleteInterp\0")?),
                     init: std::mem::transmute(load(b"Tcl_Init\0")?),
                     eval_ex: std::mem::transmute(load(b"Tcl_EvalEx\0")?),
+                    eval_objv: std::mem::transmute(load(b"Tcl_EvalObjv\0")?),
                     get_string_result: std::mem::transmute(load(b"Tcl_GetStringResult\0")?),
+                    new_string_obj: std::mem::transmute(load(b"Tcl_NewStringObj\0")?),
+                    new_list_obj: std::mem::transmute(load(b"Tcl_NewListObj\0")?),
+                    list_obj_append_element: std::mem::transmute(
+                        load(b"Tcl_ListObjAppendElement\0")?,
+                    ),
+                    incr_ref_count: std::mem::transmute(load(b"Tcl_IncrRefCount\0")?),
+                    decr_ref_count: std::mem::transmute(load(b"Tcl_DecrRefCount\0")?),
                     do_one_event: std::mem::transmute(load(b"Tcl_DoOneEvent\0")?),
                     split_list: std::mem::transmute(load(b"Tcl_SplitList\0")?),
                     merge: std::mem::transmute(load(b"Tcl_Merge\0")?),
@@ -410,6 +505,7 @@ impl TclInterpreter {
     fn new() -> Result<Self, String> {
         static FIND_EXECUTABLE_ONCE: OnceLock<()> = OnceLock::new();
         static FIND_EXECUTABLE_ARG: OnceLock<CString> = OnceLock::new();
+        let _ = configured_tcl_runtime_lib_dir();
         let api = load_tcl_api()?;
         let executable_arg = FIND_EXECUTABLE_ARG.get_or_init(tcl_find_executable_arg);
         FIND_EXECUTABLE_ONCE.get_or_init(|| unsafe {
@@ -450,23 +546,29 @@ impl TclInterpreter {
     fn eval<C: IntoTclCommand>(&self, command: C) -> Result<TclObj, String> {
         self.ensure_owner_thread()?;
         let parts = command.into_command();
-        let mut rendered = Vec::with_capacity(parts.len());
-        for part in parts {
-            rendered.push(self.render_part(&part)?);
+        let mut objv = Vec::with_capacity(parts.len());
+        for part in &parts {
+            objv.push(self.alloc_obj(part)?);
         }
-        let script = tcl_merge_args(self.api, &rendered)?;
         let rc = unsafe {
-            (self.api.eval_ex)(
+            for &obj in &objv {
+                (self.api.incr_ref_count)(obj);
+            }
+            let call_rc = (self.api.eval_objv)(
                 self.interp_ptr(),
-                script.as_ptr() as *const c_char,
-                script.len() as c_int,
+                objv.len() as c_int,
+                objv.as_ptr(),
                 0,
-            )
+            );
+            for &obj in &objv {
+                (self.api.decr_ref_count)(obj);
+            }
+            call_rc
         };
         let result = tcl_result_string(self.api, self.interp_ptr());
         if rc != TCL_OK {
             return Err(if result.is_empty() {
-                "Tcl_EvalEx failed".to_string()
+                "Tcl_EvalObjv failed".to_string()
             } else {
                 result
             });
@@ -493,6 +595,45 @@ impl TclInterpreter {
                 }
                 let merged = tcl_merge_args(self.api, &rendered)?;
                 Ok(String::from_utf8_lossy(&merged).into_owned())
+            }
+        }
+    }
+
+    fn alloc_obj(&self, part: &TclObj) -> Result<*mut c_void, String> {
+        match &part.kind {
+            TclObjKind::Scalar(text) => {
+                let bytes = CString::new(text.as_bytes())
+                    .map_err(|_| "Tcl string contained interior NUL byte".to_string())?;
+                let obj = unsafe { (self.api.new_string_obj)(bytes.as_ptr(), text.len() as c_int) };
+                if obj.is_null() {
+                    return Err("Tcl_NewStringObj returned null".to_string());
+                }
+                Ok(obj)
+            }
+            TclObjKind::List(list) => {
+                let list_obj = unsafe { (self.api.new_list_obj)(0, ptr::null()) };
+                if list_obj.is_null() {
+                    return Err("Tcl_NewListObj returned null".to_string());
+                }
+                for nested in list {
+                    let nested_obj = self.alloc_obj(nested)?;
+                    let rc = unsafe {
+                        (self.api.list_obj_append_element)(self.interp_ptr(), list_obj, nested_obj)
+                    };
+                    if rc != TCL_OK {
+                        unsafe {
+                            (self.api.decr_ref_count)(nested_obj);
+                            (self.api.decr_ref_count)(list_obj);
+                        }
+                        let err = tcl_result_string(self.api, self.interp_ptr());
+                        return Err(if err.is_empty() {
+                            "Tcl_ListObjAppendElement failed".to_string()
+                        } else {
+                            err
+                        });
+                    }
+                }
+                Ok(list_obj)
             }
         }
     }

@@ -232,7 +232,8 @@ pub extern "C" fn molt_datetime_days_in_month(year_bits: u64, month_bits: u64) -
             Err(e) => return e,
         };
         if !(1..=12).contains(&month) {
-            return raise_exception::<u64>(_py, "ValueError", "month must be in 1..12");
+            let msg = format!("month must be in 1..12, not {month}");
+            return raise_exception::<u64>(_py, "ValueError", &msg);
         }
         MoltObject::from_int(days_in_month_impl(year, month) as i64).bits()
     })
@@ -2310,7 +2311,8 @@ pub extern "C" fn molt_datetime_validate_date(y_bits: u64, m_bits: u64, d_bits: 
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
         if !(1..=12).contains(&m) {
-            return raise_exception::<_>(_py, "ValueError", "month must be in 1..12");
+            let msg = format!("month must be in 1..12, not {m}");
+            return raise_exception::<_>(_py, "ValueError", &msg);
         }
         let max_day = days_in_month_impl(y as i32, m as i32) as i64;
         if !(1..=max_day).contains(&d) {
@@ -2369,7 +2371,8 @@ pub extern "C" fn molt_datetime_validate_time(
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
         if !(0..=1).contains(&fold) {
-            return raise_exception::<_>(_py, "ValueError", "fold must be either 0 or 1");
+            let msg = format!("fold must be either 0 or 1, not {fold}");
+            return raise_exception::<_>(_py, "ValueError", &msg);
         }
         MoltObject::from_bool(true).bits()
     })

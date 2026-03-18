@@ -79,6 +79,61 @@ def _types_bootstrap():
     )
     return {name: getattr(_host_types, name) for name in keys}
 
+def _tk_after_info(_app=None, _identifier=None):
+    return ()
+
+def _tk_trace_clear(_app=None, _name=None):
+    return None
+
+def _tk_event_int(value):
+    return int(value)
+
+def _tk_event_build_from_args(widget_path, event_args):
+    values = list(event_args)
+    event = {"widget": widget_path}
+    if len(values) > 8:
+        event["x"] = int(values[8])
+    if len(values) > 9:
+        event["y"] = int(values[9])
+    if len(values) > 18:
+        event["delta"] = int(values[18])
+    return event
+
+def _tk_event_state_decode(value):
+    return () if int(value) == 0 else (str(int(value)),)
+
+def _tk_splitdict(value, _cut_minus=True):
+    if isinstance(value, dict):
+        return list(value.items())
+    items = list(value)
+    return [(items[idx], items[idx + 1]) for idx in range(0, len(items) - 1, 2)]
+
+def _tk_flatten_args(seq):
+    out = []
+    for item in seq:
+        if isinstance(item, (list, tuple)):
+            out.extend(_tk_flatten_args(item))
+        else:
+            out.append(item)
+    return out
+
+def _tk_cnfmerge(cnfs, _fallback=None):
+    merged = {}
+    for cnf in cnfs or ():
+        if isinstance(cnf, dict):
+            merged.update(cnf)
+    return merged
+
+def _tk_normalize_option(name):
+    text = str(name)
+    if text.endswith("_"):
+        text = text[:-1]
+    text = text.replace("_", "-")
+    return text if text.startswith("-") else f"-{text}"
+
+def _tk_normalize_delay_ms(value):
+    return int(value)
+
 builtins._molt_intrinsics = {"molt_capabilities_has": lambda _name=None: True,
     "molt_stdlib_probe": lambda: True,
     "molt_fnmatch": lambda name, pat: _host_fnmatch.fnmatch(name, pat),
@@ -94,15 +149,21 @@ builtins._molt_intrinsics = {"molt_capabilities_has": lambda _name=None: True,
     "molt_tk_after": lambda _app=None, _delay=None, _fn=None: _runtime_unavailable("molt_tk_after"),
     "molt_tk_after_idle": lambda _app=None, _fn=None: _runtime_unavailable("molt_tk_after_idle"),
     "molt_tk_after_cancel": lambda _app=None, _token=None: None,
+    "molt_tk_after_info": _tk_after_info,
     "molt_tk_call": lambda _app=None, _argv=None: _runtime_unavailable("molt_tk_call"),
     "molt_tk_trace_add": lambda _app=None, _name=None, _mode=None, _fn=None: _runtime_unavailable("molt_tk_trace_add"),
     "molt_tk_trace_remove": lambda _app=None, _name=None, _mode=None, _cb=None: None,
+    "molt_tk_trace_clear": _tk_trace_clear,
     "molt_tk_trace_info": lambda _app=None, _name=None: (),
     "molt_tk_tkwait_variable": lambda _app=None, _name=None: _runtime_unavailable("molt_tk_tkwait_variable"),
     "molt_tk_tkwait_window": lambda _app=None, _target=None: _runtime_unavailable("molt_tk_tkwait_window"),
     "molt_tk_tkwait_visibility": lambda _app=None, _target=None: _runtime_unavailable("molt_tk_tkwait_visibility"),
     "molt_tk_bind_callback_register": lambda _app=None, _target=None, _sequence=None, _fn=None, _add=None: _runtime_unavailable("molt_tk_bind_callback_register"),
     "molt_tk_bind_callback_unregister": lambda _app=None, _target=None, _sequence=None, _command=None: None,
+    "molt_tk_widget_bind_callback_register": lambda _app=None, _target=None, _sequence=None, _fn=None, _add=None: _runtime_unavailable("molt_tk_widget_bind_callback_register"),
+    "molt_tk_widget_bind_callback_unregister": lambda _app=None, _target=None, _sequence=None, _command=None: None,
+    "molt_tk_text_tag_bind_callback_register": lambda _app=None, _target=None, _tag=None, _sequence=None, _fn=None: _runtime_unavailable("molt_tk_text_tag_bind_callback_register"),
+    "molt_tk_text_tag_bind_callback_unregister": lambda _app=None, _target=None, _tag=None, _sequence=None, _command=None: None,
     "molt_tk_treeview_tag_bind_callback_register": lambda _app=None, _path=None, _tag=None, _sequence=None, _fn=None: _runtime_unavailable("molt_tk_treeview_tag_bind_callback_register"),
     "molt_tk_treeview_tag_bind_callback_unregister": lambda _app=None, _path=None, _tag=None, _sequence=None, _command=None: None,
     "molt_tk_bind_command": lambda _app=None, _name=None, _fn=None: _runtime_unavailable("molt_tk_bind_command"),
@@ -117,6 +178,14 @@ builtins._molt_intrinsics = {"molt_capabilities_has": lambda _name=None: True,
     "molt_tk_errorinfo_append": lambda _app=None, _text=None: None,
     "molt_tk_bind_script_remove_command": lambda _script=None, _command_name=None: _script,
     "molt_tk_event_subst_parse": lambda _widget=None, event_args=(): tuple(event_args),
+    "molt_tk_event_int": _tk_event_int,
+    "molt_tk_event_build_from_args": _tk_event_build_from_args,
+    "molt_tk_event_state_decode": _tk_event_state_decode,
+    "molt_tk_splitdict": _tk_splitdict,
+    "molt_tk_flatten_args": _tk_flatten_args,
+    "molt_tk_cnfmerge": _tk_cnfmerge,
+    "molt_tk_normalize_option": _tk_normalize_option,
+    "molt_tk_normalize_delay_ms": _tk_normalize_delay_ms,
     "molt_tk_commondialog_show": lambda _app=None, _master=None, _command=None, _options=None: _runtime_unavailable("molt_tk_commondialog_show"),
     "molt_tk_messagebox_show": lambda _app=None, _master=None, _options=None: _runtime_unavailable("molt_tk_messagebox_show"),
     "molt_tk_filedialog_show": lambda _app=None, _master=None, _command=None, _options=None: _runtime_unavailable("molt_tk_filedialog_show"),
@@ -699,6 +768,71 @@ def _tk_event_subst_parse(_widget_path, event_args):
     return tuple(event_args)
 
 
+def _tk_after_info(_app=None, _identifier=None):
+    return ()
+
+
+def _tk_trace_clear(_app=None, _name=None):
+    return None
+
+
+def _tk_event_int(value):
+    return int(value)
+
+
+def _tk_event_build_from_args(widget_path, event_args):
+    values = list(event_args)
+    event = {"widget": widget_path}
+    if len(values) > 8:
+        event["x"] = int(values[8])
+    if len(values) > 9:
+        event["y"] = int(values[9])
+    if len(values) > 18:
+        event["delta"] = int(values[18])
+    return event
+
+
+def _tk_event_state_decode(value):
+    return () if int(value) == 0 else (str(int(value)),)
+
+
+def _tk_splitdict(value, _cut_minus=True):
+    if isinstance(value, dict):
+        return list(value.items())
+    items = list(value)
+    return [(items[idx], items[idx + 1]) for idx in range(0, len(items) - 1, 2)]
+
+
+def _tk_flatten_args(seq):
+    out = []
+    for item in seq:
+        if isinstance(item, (list, tuple)):
+            out.extend(_tk_flatten_args(item))
+        else:
+            out.append(item)
+    return out
+
+
+def _tk_cnfmerge(cnfs, _fallback=None):
+    merged = {}
+    for cnf in cnfs or ():
+        if isinstance(cnf, dict):
+            merged.update(cnf)
+    return merged
+
+
+def _tk_normalize_option(name):
+    text = str(name)
+    if text.endswith("_"):
+        text = text[:-1]
+    text = text.replace("_", "-")
+    return text if text.startswith("-") else f"-{text}"
+
+
+def _tk_normalize_delay_ms(value):
+    return int(value)
+
+
 builtins._molt_intrinsics = {
     "molt_stdlib_probe": lambda: True,
     "molt_fnmatch": lambda name, pat: _host_fnmatch.fnmatch(name, pat),
@@ -715,15 +849,21 @@ builtins._molt_intrinsics = {
     "molt_tk_after": _tk_after,
     "molt_tk_after_idle": _tk_after_idle,
     "molt_tk_after_cancel": _tk_after_cancel,
+    "molt_tk_after_info": _tk_after_info,
     "molt_tk_call": _tk_call,
     "molt_tk_trace_add": _tk_trace_add,
     "molt_tk_trace_remove": _tk_trace_remove,
+    "molt_tk_trace_clear": _tk_trace_clear,
     "molt_tk_trace_info": _tk_trace_info,
     "molt_tk_tkwait_variable": _tk_tkwait_variable,
     "molt_tk_tkwait_window": _tk_tkwait_window,
     "molt_tk_tkwait_visibility": _tk_tkwait_visibility,
     "molt_tk_bind_callback_register": _tk_bind_callback_register,
     "molt_tk_bind_callback_unregister": _tk_bind_callback_unregister,
+    "molt_tk_widget_bind_callback_register": _tk_bind_callback_register,
+    "molt_tk_widget_bind_callback_unregister": _tk_bind_callback_unregister,
+    "molt_tk_text_tag_bind_callback_register": _tk_bind_callback_register,
+    "molt_tk_text_tag_bind_callback_unregister": _tk_bind_callback_unregister,
     "molt_tk_treeview_tag_bind_callback_register": _tk_treeview_tag_bind_callback_register,
     "molt_tk_treeview_tag_bind_callback_unregister": _tk_treeview_tag_bind_callback_unregister,
     "molt_tk_bind_command": _tk_bind_command,
@@ -738,6 +878,14 @@ builtins._molt_intrinsics = {
     "molt_tk_errorinfo_append": _tk_errorinfo_append,
     "molt_tk_bind_script_remove_command": lambda _script=None, _command_name=None: _script,
     "molt_tk_event_subst_parse": _tk_event_subst_parse,
+    "molt_tk_event_int": _tk_event_int,
+    "molt_tk_event_build_from_args": _tk_event_build_from_args,
+    "molt_tk_event_state_decode": _tk_event_state_decode,
+    "molt_tk_splitdict": _tk_splitdict,
+    "molt_tk_flatten_args": _tk_flatten_args,
+    "molt_tk_cnfmerge": _tk_cnfmerge,
+    "molt_tk_normalize_option": _tk_normalize_option,
+    "molt_tk_normalize_delay_ms": _tk_normalize_delay_ms,
     "molt_tk_commondialog_show": _tk_commondialog_show,
     "molt_tk_messagebox_show": _tk_messagebox_show,
     "molt_tk_filedialog_show": _tk_filedialog_show,
