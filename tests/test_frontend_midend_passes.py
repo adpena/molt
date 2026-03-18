@@ -1694,6 +1694,25 @@ def test_midend_fixed_point_round_cap_hard_fail_opt_in() -> None:
             )
 
 
+def test_canonicalization_state_signature_reuses_cached_tuple() -> None:
+    gen = SimpleTIRGenerator()
+    state = gen._empty_canonicalization_state()
+
+    first = gen._canonicalization_state_signature(state)
+    second = gen._canonicalization_state_signature(state)
+
+    assert first is second
+
+    clone = gen._clone_canonicalization_state(state)
+    cloned = gen._canonicalization_state_signature(clone)
+    assert cloned is first
+
+    state["aliases"]["x"] = MoltValue("y")
+    gen._invalidate_canonicalization_state_signature(state)
+    updated = gen._canonicalization_state_signature(state)
+    assert updated != first
+
+
 def test_sccp_worklist_solver_handles_large_cfg_without_cap_hit() -> None:
     gen = SimpleTIRGenerator()
     ops = _build_sccp_growth_ops(depth=160, constant_cond=None)

@@ -1073,6 +1073,9 @@ class CanonicalizationState(TypedDict):
     memory_epoch: int
 
 
+_CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY = "__signature_cache"
+
+
 class SimpleTIRGenerator(ast.NodeVisitor):
     def __init__(
         self,
@@ -30800,7 +30803,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _clone_canonicalization_state(
         self, state: CanonicalizationState
     ) -> CanonicalizationState:
-        return {
+        cloned: CanonicalizationState = {
             "aliases": state["aliases"].copy(),
             "const_int_values": state["const_int_values"].copy(),
             "value_type_tags": state["value_type_tags"].copy(),
@@ -30810,6 +30813,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "object_epochs": state["object_epochs"].copy(),
             "memory_epoch": state["memory_epoch"],
         }
+        cached_signature = cast(
+            Any, state
+        ).get(_CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY)
+        if cached_signature is not None:
+            cast(Any, cloned)[_CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY] = (
+                cached_signature
+            )
+        return cloned
+
+    def _invalidate_canonicalization_state_signature(
+        self, state: CanonicalizationState
+    ) -> None:
+        cast(Any, state).pop(_CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY, None)
 
     def _const_cache_key_for_op(self, op: MoltOp) -> tuple[Any, ...] | None:
         if op.kind in {"CONST_NONE", "CONST_NOT_IMPLEMENTED", "CONST_ELLIPSIS"}:
@@ -31764,6 +31780,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             guard_dict_shapes.pop(key, None)
         object_epochs: dict[str, int] = state["object_epochs"]
         object_epochs.pop(name, None)
+        self._invalidate_canonicalization_state_signature(state)
 
     def _intersect_canonicalization_state(
         self, left: CanonicalizationState, right: CanonicalizationState
@@ -31859,6 +31876,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         tuple[tuple[str, int], ...],
         int,
     ]:
+        cached_signature = cast(Any, state).get(
+            _CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY
+        )
+        if cached_signature is not None:
+            return cast(
+                tuple[
+                    tuple[tuple[str, str], ...],
+                    tuple[tuple[str, int], ...],
+                    tuple[tuple[str, int], ...],
+                    tuple[tuple[tuple[Any, ...], str], ...],
+                    tuple[tuple[str, tuple[str, str]], ...],
+                    tuple[tuple[str, int], ...],
+                    tuple[tuple[str, int], ...],
+                    int,
+                ],
+                cached_signature,
+            )
         alias_items = tuple(
             sorted((key, value.name) for key, value in state["aliases"].items())
         )
@@ -31873,7 +31907,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         alias_epoch_items = tuple(sorted(state["alias_epochs"].items()))
         object_epoch_items = tuple(sorted(state["object_epochs"].items()))
         memory_epoch = state["memory_epoch"]
-        return (
+        signature = (
             alias_items,
             const_items,
             tag_items,
@@ -31883,6 +31917,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             object_epoch_items,
             memory_epoch,
         )
+        cast(Any, state)[_CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY] = signature
+        return signature
 
     def _canonicalize_block_with_state(
         self,
@@ -31901,6 +31937,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         alias_epochs: dict[str, int] = state["alias_epochs"]
         object_epochs: dict[str, int] = state["object_epochs"]
         memory_epoch = state["memory_epoch"]
+        state_dirty = False
 
         out: list[MoltOp] = []
         for op in ops:
@@ -31926,6 +31963,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 ):
                     shared = self._resolve_alias_value(phi_args[0], aliases)
                     aliases[result_name] = shared
+                    state_dirty = True
                     if shared.name in const_int_values:
                         const_int_values[result_name] = const_int_values[shared.name]
                     if shared.name in value_type_tags:
@@ -31992,6 +32030,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 value = canonical_op.args[0]
                 if isinstance(value, int) and not isinstance(value, bool):
                     const_int_values[result_name] = value
+                    state_dirty = True
             elif (
                 canonical_op.kind in {"ADD", "SUB", "MUL"}
                 and len(canonical_op.args) == 2
@@ -32007,18 +32046,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             const_int_values[result_name] = lhs_const - rhs_const
                         elif canonical_op.kind == "MUL":
                             const_int_values[result_name] = lhs_const * rhs_const
+                        state_dirty = True
             elif canonical_op.kind == "ABS" and len(canonical_op.args) == 1:
                 arg = canonical_op.args[0]
                 if isinstance(arg, MoltValue):
                     arg_const = const_int_values.get(arg.name)
                     if arg_const is not None:
                         const_int_values[result_name] = abs(arg_const)
+                        state_dirty = True
             elif canonical_op.kind == "GUARD_TAG" and len(canonical_op.args) == 2:
                 guarded, expected = canonical_op.args
                 if isinstance(guarded, MoltValue) and isinstance(expected, MoltValue):
                     expected_tag = const_int_values.get(expected.name)
                     if expected_tag is not None:
                         value_type_tags[guarded.name] = expected_tag
+                        state_dirty = True
             elif (
                 canonical_op.kind == "GUARD_DICT_SHAPE" and len(canonical_op.args) == 3
             ):
@@ -32029,6 +32071,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     and isinstance(version, MoltValue)
                 ):
                     guard_dict_shapes[guarded_obj.name] = (dict_type.name, version.name)
+                    state_dirty = True
             type_tag = self._const_type_tag(canonical_op)
             if type_tag is None and result_name != "none":
                 if canonical_op.kind in {
@@ -32071,10 +32114,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     type_tag = BUILTIN_TYPE_TAGS["range"]
             if type_tag is not None and result_name != "none":
                 value_type_tags[result_name] = type_tag
+                state_dirty = True
             if canonical_op.kind == "IS" and result_name != "none":
                 value_type_tags[result_name] = BUILTIN_TYPE_TAGS["bool"]
+                state_dirty = True
             if value_key is not None and result_name != "none":
                 available_values[value_key] = canonical_op.result
+                state_dirty = True
 
             if self._is_canonicalization_barrier_op(canonical_op.kind):
                 aliases.clear()
@@ -32082,6 +32128,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 value_type_tags.clear()
                 available_values.clear()
                 guard_dict_shapes.clear()
+                state_dirty = True
 
             if effect_class == "writes_heap":
                 write_alias_classes = self._heap_alias_classes_for_write_op(
@@ -32089,6 +32136,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
                 if self._is_uncertain_heap_boundary(canonical_op.kind):
                     memory_epoch += 1
+                    state_dirty = True
                     stale_read_keys = [
                         key
                         for key in list(available_values.keys())
@@ -32099,13 +32147,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     for alias_class in sorted(alias_epochs):
                         alias_epochs[alias_class] = alias_epochs.get(alias_class, 0) + 1
                     guard_dict_shapes.clear()
+                    state_dirty = True
                     continue
                 if canonical_op.args and isinstance(canonical_op.args[0], MoltValue):
                     obj_name = canonical_op.args[0].name
                     object_epochs[obj_name] = object_epochs.get(obj_name, 0) + 1
+                    state_dirty = True
                 if write_alias_classes:
                     for alias_class in sorted(write_alias_classes):
                         alias_epochs[alias_class] = alias_epochs.get(alias_class, 0) + 1
+                    state_dirty = True
                     stale_read_keys = [
                         key
                         for key in list(available_values.keys())
@@ -32117,6 +32168,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         available_values.pop(key, None)
                 else:
                     memory_epoch += 1
+                    state_dirty = True
                     stale_read_keys = [
                         key
                         for key in list(available_values.keys())
@@ -32125,10 +32177,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     for key in stale_read_keys:
                         available_values.pop(key, None)
                 guard_dict_shapes.clear()
+                state_dirty = True
 
         state["alias_epochs"] = alias_epochs
         state["object_epochs"] = object_epochs
         state["memory_epoch"] = memory_epoch
+        if state_dirty:
+            self._invalidate_canonicalization_state_signature(state)
         return out, state
 
     def _collect_arg_value_names(self, value: Any, out: set[str]) -> None:
