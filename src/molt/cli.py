@@ -7246,6 +7246,7 @@ def _prepare_frontend_parallel_batch(
             known_modules_sorted=known_modules_sorted,
             stdlib_allowlist_sorted=stdlib_allowlist_sorted,
             pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+            context_digest=context_digest_by_module.get(module_name),
         )
         if cached_result is not None:
             cached_results[module_name] = cached_result
