@@ -10074,7 +10074,13 @@ def build(
             )
         except OSError as exc:
             return _fail(f"Failed to write IR: {exc}", json_output, command="build")
-    backend_ir_text = _backend_ir_text(ir)
+    backend_ir_text: str | None = None
+
+    def _ensure_backend_ir_text() -> str:
+        nonlocal backend_ir_text
+        if backend_ir_text is None:
+            backend_ir_text = _backend_ir_text(ir)
+        return backend_ir_text
     runtime_lib: Path | None = None
     runtime_wasm: Path | None = None
     runtime_reloc_wasm: Path | None = None
@@ -10505,7 +10511,7 @@ def build(
                     try:
                         backend_process = subprocess.run(
                             cmd_with_output,
-                            input=backend_ir_text,
+                            input=_ensure_backend_ir_text(),
                             text=True,
                             capture_output=True,
                             env=backend_env,
