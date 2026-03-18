@@ -1579,6 +1579,33 @@ def test_stage_backend_output_and_caches_promotes_module_cache(
     assert not backend_output.exists()
 
 
+def test_stage_backend_output_and_caches_reuses_cache_path_as_backend_output(
+    tmp_path: Path,
+) -> None:
+    cache_path = tmp_path / "cache" / "module.o"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_bytes(b"artifact")
+    output_artifact = tmp_path / "dist" / "output.o"
+    function_cache_path = tmp_path / "cache" / "function.o"
+    warnings: list[str] = []
+
+    err = cli._stage_backend_output_and_caches(
+        tmp_path,
+        cache_path,
+        output_artifact,
+        cache_path=cache_path,
+        cache_key="module-key",
+        function_cache_path=function_cache_path,
+        warnings=warnings,
+    )
+
+    assert err is None
+    assert warnings == []
+    assert cache_path.read_bytes() == b"artifact"
+    assert output_artifact.read_bytes() == b"artifact"
+    assert function_cache_path.read_bytes() == b"artifact"
+
+
 def test_stage_backend_output_and_caches_without_cache_moves_output(
     tmp_path: Path,
 ) -> None:
