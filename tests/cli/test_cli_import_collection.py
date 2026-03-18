@@ -718,6 +718,19 @@ def test_discover_module_graph_reuses_persisted_graph_cache(
     assert "pkg" in graph
 
 
+def test_resolved_artifact_hash_key_is_cached(tmp_path: Path) -> None:
+    artifact = tmp_path / "dist" / "output.o"
+    cli._resolved_artifact_hash_key.cache_clear()
+
+    first = cli._resolved_artifact_hash_key(str(artifact))
+    second = cli._resolved_artifact_hash_key(str(artifact))
+
+    info = cli._resolved_artifact_hash_key.cache_info()
+    assert first == second
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
 def test_load_module_imports_reuses_persisted_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

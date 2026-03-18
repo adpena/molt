@@ -4384,6 +4384,11 @@ def _rustc_version() -> str | None:
     return result.stdout.strip()
 
 
+@functools.lru_cache(maxsize=512)
+def _resolved_artifact_hash_key(path_str: str) -> str:
+    return hashlib.sha256(str(Path(path_str).resolve()).encode("utf-8")).hexdigest()[:16]
+
+
 def _runtime_fingerprint_path(
     project_root: Path,
     artifact: Path,
@@ -4392,9 +4397,7 @@ def _runtime_fingerprint_path(
 ) -> Path:
     target = (target_triple or "native").replace(os.sep, "_").replace(":", "_")
     root = _build_state_root(project_root) / "runtime_fingerprints"
-    artifact_key = hashlib.sha256(str(artifact.resolve()).encode("utf-8")).hexdigest()[
-        :16
-    ]
+    artifact_key = _resolved_artifact_hash_key(os.fspath(artifact))
     return root / f"{artifact.name}.{cargo_profile}.{target}.{artifact_key}.fingerprint"
 
 
@@ -6407,17 +6410,13 @@ def _link_fingerprint_path(
 ) -> Path:
     target = (target_triple or "native").replace(os.sep, "_").replace(":", "_")
     root = _build_state_root(project_root) / "link_fingerprints"
-    artifact_key = hashlib.sha256(str(artifact.resolve()).encode("utf-8")).hexdigest()[
-        :16
-    ]
+    artifact_key = _resolved_artifact_hash_key(os.fspath(artifact))
     return root / f"{artifact.name}.{profile}.{target}.{artifact_key}.fingerprint"
 
 
 def _artifact_sync_state_path(project_root: Path, artifact: Path) -> Path:
     root = _build_state_root(project_root) / "artifact_sync"
-    artifact_key = hashlib.sha256(str(artifact.resolve()).encode("utf-8")).hexdigest()[
-        :16
-    ]
+    artifact_key = _resolved_artifact_hash_key(os.fspath(artifact))
     return root / f"{artifact.name}.{artifact_key}.json"
 
 
