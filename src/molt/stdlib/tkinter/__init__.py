@@ -157,10 +157,6 @@ def _normalize_tk_options(cnf=None, **kw):
     return normalized
 
 
-def _is_protocol_registration_runtime_bug(exc):
-    return isinstance(exc, TypeError) and "object is not iterable" in str(exc)
-
-
 def _flatten(seq):
     return _molt_tk_flatten_args(seq)
 
@@ -1731,10 +1727,6 @@ class Wm(Misc):
         try:
             self._wm_call("protocol", name, command_name)
         except Exception:
-            if _is_protocol_registration_runtime_bug(sys.exc_info()[1]):
-                if commands is not None:
-                    commands[name] = command_name
-                return command_name
             self._release_command(command_name)
             raise
         if commands is not None:
@@ -1958,9 +1950,6 @@ class Tk(Wm):
         try:
             self._wm_call("protocol", name, command_name)
         except Exception:
-            if _is_protocol_registration_runtime_bug(sys.exc_info()[1]):
-                self._protocol_commands[name] = command_name
-                return command_name
             self._release_command(command_name)
             raise
         self._protocol_commands[name] = command_name

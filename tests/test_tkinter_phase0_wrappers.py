@@ -288,6 +288,7 @@ def _app_new(_opts=None):
         "vars": {},
         "commands": {},
         "fileevents": {},
+        "wm_protocols": {},
         "tree_tag_bindings": {},
         "calls": [],
         "last_error": None,
@@ -367,6 +368,19 @@ def _tk_call(app, argv):
         return ""
     if op == "after":
         return "after#stub"
+    if op == "wm" and len(argv) >= 4:
+        wm_subcommand = str(argv[1])
+        target = str(argv[2])
+        if wm_subcommand == "protocol":
+            key = (target, str(argv[3]))
+            if len(argv) == 4:
+                return app["wm_protocols"].get(key, "")
+            handler = str(argv[4])
+            if handler:
+                app["wm_protocols"][key] = handler
+            else:
+                app["wm_protocols"].pop(key, None)
+            return ""
     if op == "tkwait" and len(argv) >= 3 and str(argv[1]) == "window":
         for command_name, callback in tuple(app["commands"].items()):
             if "simpledialog_ok" in str(command_name):
@@ -844,6 +858,16 @@ tk_after_events = []
 tk_after_token = root.after(9, lambda: tk_after_events.append("root-fired"))
 checks["tkinter_after_callback_invoked"] = (
     tk_after_token == "after#9" and tk_after_events == ["root-fired"]
+)
+protocol_id = root.protocol("WM_DELETE_WINDOW", lambda: None)
+protocol_query_before = root.protocol("WM_DELETE_WINDOW")
+root.protocol("WM_DELETE_WINDOW", "")
+protocol_query_after = root.protocol("WM_DELETE_WINDOW")
+checks["tkinter_protocol_registration_roundtrip"] = (
+    isinstance(protocol_id, str)
+    and protocol_query_before == protocol_id
+    and protocol_query_after == ""
+    and root._tk_app._handle["wm_protocols"].get((root._w, "WM_DELETE_WINDOW")) is None
 )
 
 widget_call_start = len(root._tk_app._handle["calls"])
