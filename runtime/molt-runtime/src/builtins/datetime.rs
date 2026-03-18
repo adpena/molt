@@ -49,9 +49,10 @@ struct StrftimeArgs<'a> {
 /// ordinal) to (year, month, day).  Accepts the Python convention where ordinal
 /// 1 → 0001-01-01.
 fn ordinal_to_ymd(ordinal: i64) -> (i32, i32, i32) {
-    // Hinnant uses days since 0000-03-01 as epoch.  Ordinal 1 = 1-01-01.
-    // days_from_civil(1, 1, 1) = -719162 in Hinnant's epoch, so we shift.
-    let z = ordinal - 1 + 719_468; // shift to Hinnant epoch (0000-03-01)
+    // This formulation uses Hinnant's March-based day index where
+    // 0001-01-01 corresponds to day 306. CPython ordinals are 1-based, so the
+    // conversion is a fixed +305 shift.
+    let z = ordinal + 305;
     let era: i64 = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = z - era * 146_097; // [0, 146096]
     let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
@@ -74,7 +75,7 @@ fn ymd_to_ordinal(y: i32, m: i32, d: i32) -> i64 {
     let yoe = y - era * 400; // [0, 399]
     let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d as i64 - 1; // [0, 365]
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
-    era * 146_097 + doe - 719_468 + 1 // shift back to 0001-01-01 = 1
+    era * 146_097 + doe - 305
 }
 
 fn is_leap(year: i32) -> bool {
