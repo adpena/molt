@@ -61,6 +61,8 @@ def _build_luau(src_path: Path, out_dir: Path) -> str | None:
                 "molt.cli",
                 "build",
                 str(src_path),
+                "--profile",
+                "dev",
                 "--target",
                 "luau",
                 "--out-dir",
