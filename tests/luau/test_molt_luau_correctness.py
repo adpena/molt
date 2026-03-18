@@ -19,6 +19,7 @@ import time
 import pytest
 
 MOLT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ARTIFACT_ROOT = os.environ.get("MOLT_EXT_ROOT", MOLT_DIR)
 
 
 def _compile_and_run(python_source: str, *, expect_fail: bool = False) -> str:
@@ -31,13 +32,10 @@ def _compile_and_run(python_source: str, *, expect_fail: bool = False) -> str:
     try:
         env = {
             **os.environ,
-            "MOLT_EXT_ROOT": os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt"),
+            "MOLT_EXT_ROOT": ARTIFACT_ROOT,
             "CARGO_TARGET_DIR": os.environ.get(
                 "CARGO_TARGET_DIR",
-                os.path.join(
-                    os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt"),
-                    "cargo-target",
-                ),
+                os.path.join(ARTIFACT_ROOT, "target"),
             ),
             "MOLT_USE_SCCACHE": "0",
             "RUSTC_WRAPPER": "",
@@ -615,8 +613,11 @@ class TestPerformance:
         try:
             env = {
                 **os.environ,
-                "MOLT_EXT_ROOT": "/Volumes/APDataStore/Molt",
-                "CARGO_TARGET_DIR": "/Volumes/APDataStore/Molt/cargo-target",
+                "MOLT_EXT_ROOT": ARTIFACT_ROOT,
+                "CARGO_TARGET_DIR": os.environ.get(
+                    "CARGO_TARGET_DIR",
+                    os.path.join(ARTIFACT_ROOT, "target"),
+                ),
                 "RUSTC_WRAPPER": "",
                 "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
             }

@@ -20,7 +20,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-DEFAULT_EXTERNAL_ROOT = Path("/Volumes/APDataStore/Molt")
 TARGET_CHOICES = ("rust", "luau")
 PROFILE_CHOICES = ("dev", "release")
 TARGET_EXTENSION = {"rust": "rs", "luau": "luau"}
@@ -56,20 +55,22 @@ def _tail(text: str, lines: int = 12) -> str:
     return "\n".join(text.splitlines()[-lines:])
 
 
+def _default_artifact_root() -> Path:
+    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return REPO_ROOT
+
+
 def _resolve_output_root(output_root: str | None) -> tuple[Path, Path]:
     if output_root:
         root = Path(output_root).expanduser().resolve()
         return root, root
-    if not DEFAULT_EXTERNAL_ROOT.is_dir():
-        raise SystemExit(
-            "External volume is required by default: "
-            f"{DEFAULT_EXTERNAL_ROOT} is not mounted. "
-            "Mount it or pass --output-root explicitly."
-        )
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    artifact_root = _default_artifact_root()
     return (
-        DEFAULT_EXTERNAL_ROOT / f"bench_backend_incremental_{stamp}",
-        DEFAULT_EXTERNAL_ROOT,
+        artifact_root / "tmp" / f"bench_backend_incremental_{stamp}",
+        artifact_root,
     )
 
 
@@ -343,8 +344,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         help=(
-            "Output directory root. If omitted, defaults to "
-            "/Volumes/APDataStore/Molt and fails fast when unavailable."
+            "Output directory root. If omitted, defaults under the configured "
+            "artifact root (`MOLT_EXT_ROOT` when set, otherwise repo-local `tmp/`)."
         ),
     )
     parser.add_argument(

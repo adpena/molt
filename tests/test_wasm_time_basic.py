@@ -1,5 +1,6 @@
 import tempfile
 from contextlib import contextmanager
+import os
 from pathlib import Path
 
 from tests.wasm_linked_runner import (
@@ -11,9 +12,9 @@ from tests.wasm_linked_runner import (
 
 @contextmanager
 def _work_dir(root: Path):
-    ext_root = Path("/Volumes/APDataStore/Molt")
-    if ext_root.exists():
-        base = ext_root / "tmp"
+    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
+    if configured:
+        base = Path(configured).expanduser() / "tmp"
         base.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=base, prefix="molt_wasm_time_") as td:
             yield Path(td)

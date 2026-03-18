@@ -8,17 +8,19 @@ import os
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 MOLT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def pytest_configure(config):
     """Pre-warm the molt backend daemon before any tests run."""
-    ext_root = os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt")
+    ext_root = os.environ.get("MOLT_EXT_ROOT", MOLT_DIR)
     cargo_target = os.environ.get(
         "CARGO_TARGET_DIR",
-        os.path.join(ext_root, "cargo-target"),
+        os.path.join(ext_root, "target"),
     )
+    Path(cargo_target).mkdir(parents=True, exist_ok=True)
     env = {
         **os.environ,
         "MOLT_EXT_ROOT": ext_root,

@@ -20,10 +20,10 @@ index 1111111..2222222 100644
 
 def test_scan_diff_detects_linear_api_key() -> None:
     token = "lin_api_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCD"
-    diff = """diff --git a/ops/linear/runtime/orchestration.env b/ops/linear/runtime/orchestration.env
+    diff = """diff --git a/ops/linear/runtime/local.env b/ops/linear/runtime/local.env
 index 1111111..2222222 100644
---- a/ops/linear/runtime/orchestration.env
-+++ b/ops/linear/runtime/orchestration.env
+--- a/ops/linear/runtime/local.env
++++ b/ops/linear/runtime/local.env
 @@ -1,0 +1 @@
 +LINEAR_API_KEY={token}
 """.format(token=token)
@@ -33,10 +33,10 @@ index 1111111..2222222 100644
 
 
 def test_scan_diff_ignores_placeholder_values_and_allow_marker() -> None:
-    diff = """diff --git a/ops/linear/runtime/orchestration.env.example b/ops/linear/runtime/orchestration.env.example
+    diff = """diff --git a/ops/linear/runtime/local.env.example b/ops/linear/runtime/local.env.example
 index 1111111..2222222 100644
---- a/ops/linear/runtime/orchestration.env.example
-+++ b/ops/linear/runtime/orchestration.env.example
+--- a/ops/linear/runtime/local.env.example
++++ b/ops/linear/runtime/local.env.example
 @@ -1,0 +1,2 @@
 +LINEAR_API_KEY=<your-token>
 +AUTH_TOKEN=not-real-fixture # secret-guard: allow

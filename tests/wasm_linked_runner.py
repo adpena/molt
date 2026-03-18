@@ -16,19 +16,26 @@ _MIN_NODE_MAJOR = 18
 _NODE_BIN_CACHE: str | None = None
 
 
+def _artifact_root(root: Path) -> Path:
+    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return root
+
+
 def _select_out_dir(default: Path, root: Path) -> Path:
-    external_root = Path("/Volumes/APDataStore/Molt")
+    artifact_root = _artifact_root(root)
     use_external = os.environ.get("MOLT_WASM_TEST_USE_EXTERNAL", "").strip().lower()
     allow_external = use_external not in {"0", "false", "no", "off"}
-    if allow_external and external_root.exists():
+    if allow_external and artifact_root != root:
         try:
-            if default.is_relative_to(external_root):
+            if default.is_relative_to(artifact_root):
                 return default
         except AttributeError:
             # Python <3.9 fallback; not expected but keep safe.
-            if str(default).startswith(str(external_root)):
+            if str(default).startswith(str(artifact_root)):
                 return default
-        base = external_root / "tmp"
+        base = artifact_root / "tmp"
         try:
             base.mkdir(parents=True, exist_ok=True)
             return Path(tempfile.mkdtemp(prefix="molt_wasm_", dir=base))
@@ -43,7 +50,6 @@ def _select_out_dir(default: Path, root: Path) -> Path:
     base = root / "build" / "wasm"
     base.mkdir(parents=True, exist_ok=True)
     return Path(tempfile.mkdtemp(prefix="molt_wasm_", dir=base))
-    return default
 
 
 def _read_timeout_seconds(env_name: str, default: float) -> float:
@@ -124,7 +130,7 @@ def _select_node_binary() -> str | None:
     return best_path
 
 
-def _wasm_test_target_dir(root: Path, out_dir: Path, external_root: Path) -> Path:
+def _wasm_test_target_dir(root: Path, out_dir: Path, artifact_root: Path) -> Path:
     override = os.environ.get("MOLT_WASM_TEST_CARGO_TARGET_DIR", "").strip()
     if override:
         target = Path(override).expanduser()
@@ -134,8 +140,8 @@ def _wasm_test_target_dir(root: Path, out_dir: Path, external_root: Path) -> Pat
     # hold long-lived build locks under CARGO_TARGET_DIR.
     use_external = os.environ.get("MOLT_WASM_TEST_USE_EXTERNAL", "").strip().lower()
     allow_external = use_external not in {"0", "false", "no", "off"}
-    if allow_external and external_root.exists():
-        target = external_root / "target"
+    if allow_external and artifact_root != root:
+        target = artifact_root / "target"
     else:
         target = root / "target" / "pytest_wasm" / _WASM_TEST_LANE
     target.mkdir(parents=True, exist_ok=True)
@@ -163,11 +169,11 @@ def build_wasm_linked(
 ) -> Path:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(root / "src")
-    external_root = Path("/Volumes/APDataStore/Molt")
+    artifact_root = _artifact_root(root)
     use_external = os.environ.get("MOLT_WASM_TEST_USE_EXTERNAL", "").strip().lower()
     allow_external = use_external not in {"0", "false", "no", "off"}
     out_dir = _select_out_dir(out_dir, root)
-    env["CARGO_TARGET_DIR"] = str(_wasm_test_target_dir(root, out_dir, external_root))
+    env["CARGO_TARGET_DIR"] = str(_wasm_test_target_dir(root, out_dir, artifact_root))
     env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "2")
@@ -175,13 +181,21 @@ def build_wasm_linked(
     env.setdefault("MOLT_MIDEND_IDEMPOTENCE_CHECK", "0")
     env.setdefault("MOLT_MIDEND_FAIL_OPEN", "1")
     env.setdefault("MOLT_MIDEND_DISABLE", "1")
-    if allow_external and external_root.exists():
-        tmp_root = external_root / "tmp"
+    if allow_external and artifact_root != root:
+        tmp_root = artifact_root / "tmp"
         tmp_root.mkdir(parents=True, exist_ok=True)
         env.setdefault("TMPDIR", str(tmp_root))
-        env.setdefault("MOLT_HOME", str(external_root))
-        env.setdefault("MOLT_CACHE", str(external_root / "molt_cache"))
-        env.setdefault("MOLT_WASM_RUNTIME_DIR", str(external_root / "wasm"))
+        env.setdefault("MOLT_HOME", str(artifact_root))
+        env.setdefault("MOLT_CACHE", str(artifact_root / ".molt_cache"))
+        env.setdefault("MOLT_WASM_RUNTIME_DIR", str(artifact_root / "wasm"))
+    else:
+        tmp_root = root / "tmp"
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        env.setdefault("TMPDIR", str(tmp_root))
+        env.setdefault("MOLT_HOME", str(root))
+        env.setdefault("MOLT_CACHE", str(root / ".molt_cache"))
+        env.setdefault("MOLT_WASM_RUNTIME_DIR", str(root / "wasm"))
+    env.setdefault("MOLT_EXT_ROOT", str(artifact_root))
     args = [
         sys.executable,
         "-m",

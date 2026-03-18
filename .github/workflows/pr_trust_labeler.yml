@@ -28,7 +28,7 @@ jobs:
                 .map((entry) => entry.trim().toLowerCase())
                 .filter((entry) => entry.length > 0);
 
-            const allow = normalize(process.env.TRUSTED_LOGINS || "adpena,orchestration");
+            const allow = normalize(process.env.TRUSTED_LOGINS || "adpena");
             const trustedLabel = String(process.env.TRUSTED_LABEL || "trusted-pr").trim();
             const untrustedLabel = String(process.env.UNTRUSTED_LABEL || "untrusted-pr").trim();
             const matches = (candidate) =>

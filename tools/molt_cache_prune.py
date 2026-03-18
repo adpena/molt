@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import shutil
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,24 +11,17 @@ from pathlib import Path
 def _default_cache_root() -> Path:
     import os
 
+    repo_root = Path(__file__).resolve().parent.parent
     raw = os.environ.get("MOLT_CACHE")
     if raw:
         path = Path(raw).expanduser()
         if not path.is_absolute():
             return (Path.cwd() / path).resolve()
         return path
-    external = Path("/Volumes/APDataStore/Molt")
-    if external.is_dir():
-        return external / "molt_cache"
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Caches" / "molt"
-    xdg = os.environ.get("XDG_CACHE_HOME")
-    if xdg:
-        path = Path(xdg).expanduser()
-        if not path.is_absolute():
-            path = (Path.cwd() / path).resolve()
-        return path / "molt"
-    return Path.home() / ".cache" / "molt"
+    configured_root = os.environ.get("MOLT_EXT_ROOT")
+    if configured_root:
+        return Path(configured_root).expanduser() / ".molt_cache"
+    return repo_root / ".molt_cache"
 
 
 def _is_external_volume(path: Path) -> bool:
