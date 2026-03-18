@@ -1536,7 +1536,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_datetime_days_in_month", symbol: "molt_datetime_days_in_month", arity: 2 },
     IntrinsicSpec { name: "molt_datetime_format_isodate", symbol: "molt_datetime_format_isodate", arity: 3 },
     IntrinsicSpec { name: "molt_datetime_format_isodatetime", symbol: "molt_datetime_format_isodatetime", arity: 10 },
-    IntrinsicSpec { name: "molt_datetime_format_isotime", symbol: "molt_datetime_format_isotime", arity: 6 },
+    IntrinsicSpec { name: "molt_datetime_format_isotime", symbol: "molt_datetime_format_isotime", arity: 5 },
     IntrinsicSpec { name: "molt_datetime_fromtimestamp_local", symbol: "molt_datetime_fromtimestamp_local", arity: 1 },
     IntrinsicSpec { name: "molt_datetime_fromtimestamp_utc", symbol: "molt_datetime_fromtimestamp_utc", arity: 1 },
     IntrinsicSpec { name: "molt_datetime_hash_date", symbol: "molt_datetime_hash_date", arity: 3 },

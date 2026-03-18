@@ -2483,16 +2483,15 @@ def molt_datetime_format_isodatetime(
     min_bits: Any,
     s_bits: Any,
     us_bits: Any,
-    utcoff_bits: Any,
     sep_bits: Any,
     timespec_bits: Any,
+    tz_str_bits: Any,
 ) -> Any: ...
 def molt_datetime_format_isotime(
     h_bits: Any,
     min_bits: Any,
     s_bits: Any,
     us_bits: Any,
-    utcoff_bits: Any,
     timespec_bits: Any,
 ) -> Any: ...
 def molt_datetime_fromtimestamp_local(ts_bits: Any) -> Any: ...

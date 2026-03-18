@@ -161,13 +161,13 @@ class timedelta:
         weeks: int = 0,
     ) -> None:
         result = _MOLT_DT_TD_NORMALIZE(
-            _as_int(days),
-            _as_int(seconds),
-            _as_int(microseconds),
-            _as_int(milliseconds),
-            _as_int(minutes),
-            _as_int(hours),
-            _as_int(weeks),
+            days,
+            seconds,
+            microseconds,
+            milliseconds,
+            minutes,
+            hours,
+            weeks,
         )
         self.days = int(result[0])
         self.seconds = int(result[1])
@@ -317,6 +317,7 @@ class timezone(tzinfo):
 
 
 timezone.utc = timezone(timedelta())  # type: ignore[attr-defined]
+_TZINFO_TYPE = tzinfo
 
 
 class date:
@@ -449,7 +450,7 @@ class time:
         microsecond = _as_int(microsecond)
         fold = _as_int(fold)
         _validate_time(hour, minute, second, microsecond, fold)
-        if tzinfo is not None and not isinstance(tzinfo, globals()["tzinfo"]):
+        if tzinfo is not None and not isinstance(tzinfo, _TZINFO_TYPE):
             raise TypeError("tzinfo argument must be None or of a tzinfo subclass")
         self.hour = hour
         self.minute = minute
@@ -558,7 +559,7 @@ class datetime:
         fold = _as_int(fold)
         _validate_date(year, month, day)
         _validate_time(hour, minute, second, microsecond, fold)
-        if tzinfo is not None and not isinstance(tzinfo, globals()["tzinfo"]):
+        if tzinfo is not None and not isinstance(tzinfo, _TZINFO_TYPE):
             raise TypeError("tzinfo argument must be None or of a tzinfo subclass")
         self.year = year
         self.month = month
@@ -682,7 +683,7 @@ class datetime:
     def astimezone(self, tz: tzinfo | None = None) -> datetime:
         if tz is None:
             tz = timezone.utc
-        if not isinstance(tz, globals()["tzinfo"]):
+        if not isinstance(tz, _TZINFO_TYPE):
             raise TypeError("tz argument must be an instance of tzinfo")
         if self.tzinfo is None:
             return datetime(
