@@ -1469,6 +1469,21 @@ def test_materialize_cached_backend_artifact_promotes_module_cache_from_function
     assert cache_path.read_bytes() == b"artifact"
 
 
+def test_temporary_backend_output_path_uses_expected_suffix_and_cleans_up(
+    tmp_path: Path,
+) -> None:
+    with cli._temporary_backend_output_path(tmp_path, is_wasm=False) as path:
+        assert path.suffix == ".o"
+        assert path.exists()
+        path.write_bytes(b"artifact")
+    assert not path.exists()
+
+    with cli._temporary_backend_output_path(tmp_path, is_wasm=True) as path:
+        assert path.suffix == ".wasm"
+        assert path.exists()
+    assert not path.exists()
+
+
 def test_cached_backend_artifact_validity_guard(tmp_path: Path) -> None:
     wasm_bad = tmp_path / "bad.wasm"
     wasm_bad.write_bytes(b"not-wasm")

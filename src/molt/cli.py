@@ -35,7 +35,7 @@ import zipfile
 from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Literal, Mapping, MutableMapping, NamedTuple, cast
+from typing import Any, Iterable, Iterator, Literal, Mapping, MutableMapping, NamedTuple, cast
 
 from packaging.markers import InvalidMarker, Marker
 from packaging.requirements import InvalidRequirement, Requirement
@@ -5782,6 +5782,27 @@ def _materialize_cached_backend_artifact(
         return False
 
 
+@contextmanager
+def _temporary_backend_output_path(
+    artifacts_root: Path,
+    *,
+    is_wasm: bool,
+) -> Iterator[Path]:
+    suffix = ".wasm" if is_wasm else ".o"
+    fd, temp_path = tempfile.mkstemp(
+        dir=artifacts_root,
+        prefix="backend_",
+        suffix=suffix,
+    )
+    os.close(fd)
+    path = Path(temp_path)
+    try:
+        yield path
+    finally:
+        with contextlib.suppress(OSError):
+            path.unlink()
+
+
 def _stage_backend_output_and_caches(
     backend_output: Path,
     output_artifact: Path,
@@ -10399,13 +10420,10 @@ def build(
             if diagnostics_enabled and "backend_dispatch" not in phase_starts:
                 phase_starts["backend_dispatch"] = time.perf_counter()
 
-            with tempfile.TemporaryDirectory(
-                dir=artifacts_root, prefix="backend_"
-            ) as backend_dir:
-                backend_dir_path = Path(backend_dir)
-                backend_output = backend_dir_path / (
-                    "output.wasm" if is_wasm else "output.o"
-                )
+            with _temporary_backend_output_path(
+                artifacts_root,
+                is_wasm=is_wasm,
+            ) as backend_output:
                 backend_compiled = False
                 daemon_error: str | None = None
                 if daemon_ready and daemon_socket is not None:
