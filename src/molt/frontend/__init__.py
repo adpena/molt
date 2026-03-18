@@ -30287,18 +30287,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
 
         op_count = len(ops)
-        if module_name == "__main__":
-            if op_count >= 1800:
-                return MidendTierClassification(
-                    tier="C",
-                    source="entry_module_oversized",
-                    allow_hot_promotion=True,
-                )
-            return MidendTierClassification(
-                tier="A",
-                source="entry_module_default",
-                allow_hot_promotion=True,
-            )
         if function_name == "molt_main":
             if op_count >= 1800:
                 return MidendTierClassification(
