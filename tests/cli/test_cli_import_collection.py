@@ -1365,6 +1365,86 @@ def test_compile_with_backend_daemon_surfaces_cache_telemetry(
     assert captured_payload.get("config_digest") == "digest123"
 
 
+def test_stage_backend_output_and_caches_promotes_module_cache(
+    tmp_path: Path,
+) -> None:
+    backend_output = tmp_path / "backend.o"
+    backend_output.write_bytes(b"artifact")
+    output_artifact = tmp_path / "dist" / "output.o"
+    cache_path = tmp_path / "cache" / "module.o"
+    function_cache_path = tmp_path / "cache" / "function.o"
+    warnings: list[str] = []
+
+    err = cli._stage_backend_output_and_caches(
+        backend_output,
+        output_artifact,
+        cache_path=cache_path,
+        function_cache_path=function_cache_path,
+        warnings=warnings,
+    )
+
+    assert err is None
+    assert warnings == []
+    assert output_artifact.read_bytes() == b"artifact"
+    assert cache_path.read_bytes() == b"artifact"
+    assert function_cache_path.read_bytes() == b"artifact"
+    assert not backend_output.exists()
+
+
+def test_stage_backend_output_and_caches_without_cache_moves_output(
+    tmp_path: Path,
+) -> None:
+    backend_output = tmp_path / "backend.o"
+    backend_output.write_bytes(b"artifact")
+    output_artifact = tmp_path / "dist" / "output.o"
+    warnings: list[str] = []
+
+    err = cli._stage_backend_output_and_caches(
+        backend_output,
+        output_artifact,
+        cache_path=None,
+        function_cache_path=None,
+        warnings=warnings,
+    )
+
+    assert err is None
+    assert warnings == []
+    assert output_artifact.read_bytes() == b"artifact"
+    assert not backend_output.exists()
+
+
+def test_stage_backend_output_and_caches_warns_on_function_cache_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend_output = tmp_path / "backend.o"
+    backend_output.write_bytes(b"artifact")
+    output_artifact = tmp_path / "dist" / "output.o"
+    cache_path = tmp_path / "cache" / "module.o"
+    function_cache_path = tmp_path / "cache" / "function.o"
+    warnings: list[str] = []
+    original = cli._atomic_link_or_copy_file
+
+    def wrapped(src: Path, dst: Path) -> None:
+        if dst == function_cache_path:
+            raise OSError("link failed")
+        original(src, dst)
+
+    monkeypatch.setattr(cli, "_atomic_link_or_copy_file", wrapped)
+
+    err = cli._stage_backend_output_and_caches(
+        backend_output,
+        output_artifact,
+        cache_path=cache_path,
+        function_cache_path=function_cache_path,
+        warnings=warnings,
+    )
+
+    assert err is None
+    assert output_artifact.read_bytes() == b"artifact"
+    assert cache_path.read_bytes() == b"artifact"
+    assert warnings == ["Function cache write failed: link failed"]
+
+
 def test_cached_backend_artifact_validity_guard(tmp_path: Path) -> None:
     wasm_bad = tmp_path / "bad.wasm"
     wasm_bad.write_bytes(b"not-wasm")
