@@ -1819,6 +1819,8 @@ class _ModuleResolutionCache:
     module_name_cache: dict[
         tuple[Path, tuple[Path, ...], Path, Path | None], str
     ] = field(default_factory=dict)
+    module_name_context_key: tuple[tuple[Path, ...], Path, Path | None] | None = None
+    module_name_context_cache: dict[Path, str] = field(default_factory=dict)
     stdlib_path_cache: dict[tuple[Path, Path], bool] = field(default_factory=dict)
     import_scan_cache: dict[
         tuple[Path, str | None, bool, bool], tuple[str, ...]
@@ -1912,24 +1914,35 @@ class _ModuleResolutionCache:
         self, path: Path, roots: list[Path], stdlib_root: Path
     ) -> str:
         resolved = self.resolved_path(path)
+        resolved_roots = self.resolved_roots(roots)
         resolved_stdlib_root = self.resolved_path(stdlib_root)
         cpython_test_root = self.cpython_test_root()
+        context_key = (resolved_roots, resolved_stdlib_root, cpython_test_root)
+        if self.module_name_context_key == context_key:
+            cached = self.module_name_context_cache.get(resolved)
+            if cached is not None:
+                return cached
+        else:
+            self.module_name_context_key = context_key
+            self.module_name_context_cache.clear()
         cache_key = (
             resolved,
-            self.resolved_roots(roots),
+            resolved_roots,
             resolved_stdlib_root,
             cpython_test_root,
         )
         cached = self.module_name_cache.get(cache_key)
         if cached is not None:
+            self.module_name_context_cache[resolved] = cached
             return cached
         module_name = _module_name_from_resolved_path(
             resolved,
-            resolved_roots=cache_key[1],
+            resolved_roots=resolved_roots,
             resolved_stdlib_root=resolved_stdlib_root,
             cpython_test_root=cpython_test_root,
         )
         self.module_name_cache[cache_key] = module_name
+        self.module_name_context_cache[resolved] = module_name
         return module_name
 
     def cpython_test_root(self) -> Path | None:
