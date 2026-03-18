@@ -355,6 +355,10 @@ def test_build_midend_diagnostics_payload_summarizes_policy_and_passes() -> None
     assert payload["promoted_functions"] == 1
     assert payload["promotion_source_summary"] == {"pgo_hot_functions": 1}
     assert payload["degrade_reason_summary"] == {"budget_exceeded": 1}
+    assert payload["policy_config"]["hot_tier_promotion_enabled"] is True
+    assert payload["policy_config"]["budget_alpha"] == 0.03
+    assert payload["policy_config"]["budget_beta"] == 0.75
+    assert payload["policy_config"]["budget_scale"] == 1.0
     assert payload["function_count"] == 1
     hotspots = payload["pass_hotspots_top"]
     assert hotspots
@@ -534,6 +538,14 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
                 },
             },
             "midend": {
+                "policy_config": {
+                    "profile_override": None,
+                    "hot_tier_promotion_enabled": True,
+                    "budget_override_ms": None,
+                    "budget_alpha": 0.03,
+                    "budget_beta": 0.75,
+                    "budget_scale": 1.0,
+                },
                 "promoted_functions": 2,
                 "promotion_source_summary": {"pgo_hot_functions": 2},
                 "promotion_hotspots_top": [
@@ -557,9 +569,31 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
     assert "- frontend_parallel.layers: 1" in stderr
     assert "frontend_parallel.layer.1: mode=parallel" in stderr
     assert "frontend_parallel.worker_ms: count=3" in stderr
+    assert "- midend.policy.hot_tier_promotion_enabled: True" in stderr
+    assert "- midend.policy.budget_formula: alpha=0.0300 beta=0.7500 scale=1.0000" in stderr
     assert "- midend.promoted_functions: 2" in stderr
     assert "- midend.promotion_source.pgo_hot_functions: 2" in stderr
     assert "midend.promotion_hotspot.1: pkg.mod::hot_fn B->A" in stderr
+
+
+def test_midend_policy_config_snapshot_honors_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_MIDEND_PROFILE", "release")
+    monkeypatch.setenv("MOLT_MIDEND_HOT_TIER_PROMOTION", "0")
+    monkeypatch.setenv("MOLT_MIDEND_BUDGET_MS", "42")
+    monkeypatch.setenv("MOLT_MIDEND_BUDGET_ALPHA", "0.5")
+    monkeypatch.setenv("MOLT_MIDEND_BUDGET_BETA", "2.0")
+    monkeypatch.setenv("MOLT_MIDEND_BUDGET_SCALE", "1.5")
+
+    assert cli._midend_policy_config_snapshot() == {
+        "profile_override": "release",
+        "hot_tier_promotion_enabled": False,
+        "budget_override_ms": 42.0,
+        "budget_alpha": 0.5,
+        "budget_beta": 2.0,
+        "budget_scale": 1.5,
+    }
 
 
 def test_emit_build_diagnostics_summary_omits_hotspot_details(
