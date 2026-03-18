@@ -648,6 +648,55 @@ def test_discover_module_graph_reuses_persisted_import_scan_cache(
     assert "pkg" in graph
 
 
+def test_discover_module_graph_reuses_persisted_graph_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry = tmp_path / "pkg" / "__init__.py"
+    entry.parent.mkdir()
+    entry.write_text("import pkg.helper\n")
+    helper = entry.parent / "helper.py"
+    helper.write_text("import warnings\n")
+
+    stdlib_root = cli._stdlib_root_path()
+    module_roots = [tmp_path.resolve()]
+    roots = module_roots + [stdlib_root]
+    stdlib_allowlist = cli._stdlib_allowlist()
+
+    graph, explicit_imports = cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        tmp_path,
+        stdlib_allowlist,
+    )
+    assert "pkg.helper" in explicit_imports
+    assert "pkg" in graph
+
+    cache = cli._ModuleResolutionCache()
+
+    def fail_resolve(*args: object, **kwargs: object) -> Path | None:
+        raise AssertionError("unexpected module resolution")
+
+    def fail_read(path: Path) -> str:
+        raise AssertionError(f"unexpected source read for {path}")
+
+    monkeypatch.setattr(cache, "resolve_module", fail_resolve)
+    monkeypatch.setattr(cache, "read_module_source", fail_read)
+
+    graph, explicit_imports = cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        tmp_path,
+        stdlib_allowlist,
+        resolver_cache=cache,
+    )
+    assert "pkg.helper" in explicit_imports
+    assert "pkg" in graph
+
+
 def test_read_module_source_uses_utf8_fast_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
