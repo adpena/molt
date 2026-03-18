@@ -57,6 +57,7 @@ STUB_MODULES = {"molt_buffer", "molt_cbor", "molt_json", "molt_msgpack"}
 STUB_PARENT_MODULES = {"molt"}
 # Stdlib modules that rely on nested imports for required runtime semantics.
 STDLIB_NESTED_IMPORT_SCAN_MODULES = {
+    "collections",
     "typing",
     # EmailMessage lazily imports email.policy inside __init__.
     "email.message",
@@ -5769,13 +5770,24 @@ def _atomic_link_or_copy_file(src: Path, dst: Path) -> None:
 
 
 def _materialize_cached_backend_artifact(
+    project_root: Path,
     candidate: Path,
     output_artifact: Path,
     *,
     tier: str,
+    source_key: str,
     cache_path: Path | None,
     warnings: list[str],
 ) -> bool:
+    state_path = _artifact_sync_state_path(project_root, output_artifact)
+    state = _read_artifact_sync_state(state_path)
+    if _artifact_sync_state_matches(
+        state,
+        source_key=source_key,
+        tier=tier,
+        artifact=output_artifact,
+    ):
+        return True
     try:
         _atomic_copy_file(candidate, output_artifact)
         if (
@@ -5786,6 +5798,16 @@ def _materialize_cached_backend_artifact(
         ):
             with contextlib.suppress(OSError):
                 _atomic_link_or_copy_file(candidate, cache_path)
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            _write_artifact_sync_state(
+                state_path,
+                source_key=source_key,
+                tier=tier,
+                artifact=output_artifact,
+            )
+        except OSError:
+            pass
         return True
     except OSError as exc:
         warnings.append(f"Cache copy failed: {exc}")
@@ -5814,10 +5836,12 @@ def _temporary_backend_output_path(
 
 
 def _stage_backend_output_and_caches(
+    project_root: Path,
     backend_output: Path,
     output_artifact: Path,
     *,
     cache_path: Path | None,
+    cache_key: str | None,
     function_cache_path: Path | None,
     warnings: list[str],
 ) -> str | None:
@@ -5859,6 +5883,18 @@ def _stage_backend_output_and_caches(
             _atomic_link_or_copy_file(cache_path, function_cache_path)
         except OSError as exc:
             warnings.append(f"Function cache write failed: {exc}")
+    if cache_key:
+        state_path = _artifact_sync_state_path(project_root, output_artifact)
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            _write_artifact_sync_state(
+                state_path,
+                source_key=cache_key,
+                tier="module",
+                artifact=output_artifact,
+            )
+        except OSError:
+            pass
     return None
 
 
@@ -6219,6 +6255,64 @@ def _link_fingerprint_path(
         :16
     ]
     return root / f"{artifact.name}.{profile}.{target}.{artifact_key}.fingerprint"
+
+
+def _artifact_sync_state_path(project_root: Path, artifact: Path) -> Path:
+    root = _build_state_root(project_root) / "artifact_sync"
+    artifact_key = hashlib.sha256(str(artifact.resolve()).encode("utf-8")).hexdigest()[
+        :16
+    ]
+    return root / f"{artifact.name}.{artifact_key}.json"
+
+
+def _read_artifact_sync_state(path: Path) -> dict[str, Any] | None:
+    try:
+        text = path.read_text().strip()
+    except OSError:
+        return None
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_artifact_sync_state(
+    path: Path,
+    *,
+    source_key: str,
+    tier: str,
+    artifact: Path,
+) -> None:
+    stat = artifact.stat()
+    payload = {
+        "version": 1,
+        "source_key": source_key,
+        "tier": tier,
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def _artifact_sync_state_matches(
+    state: dict[str, Any] | None,
+    *,
+    source_key: str,
+    tier: str,
+    artifact: Path,
+) -> bool:
+    if state is None or not artifact.exists():
+        return False
+    if state.get("source_key") != source_key or state.get("tier") != tier:
+        return False
+    try:
+        stat = artifact.stat()
+    except OSError:
+        return False
+    return state.get("size") == stat.st_size and state.get("mtime_ns") == stat.st_mtime_ns
 
 
 def _link_fingerprint(
@@ -10304,9 +10398,11 @@ def build(
                             candidate.unlink()
                         continue
                     if _materialize_cached_backend_artifact(
+                        project_root,
                         candidate,
                         output_artifact,
                         tier=tier,
+                        source_key=cache_key if tier == "module" else (function_cache_key or cache_key or ""),
                         cache_path=cache_path,
                         warnings=warnings,
                     ):
@@ -10325,9 +10421,11 @@ def build(
                     candidate.unlink()
                 continue
             if _materialize_cached_backend_artifact(
+                project_root,
                 candidate,
                 output_artifact,
                 tier=tier,
+                source_key=cache_key if tier == "module" else (function_cache_key or cache_key or ""),
                 cache_path=cache_path,
                 warnings=warnings,
             ):
@@ -10627,9 +10725,11 @@ def build(
                     ):
                         phase_starts["backend_cache_write"] = time.perf_counter()
                 stage_error = _stage_backend_output_and_caches(
+                    project_root,
                     backend_output,
                     output_artifact,
                     cache_path=cache_path if cache else None,
+                    cache_key=cache_key if cache else None,
                     function_cache_path=function_cache_path if cache else None,
                     warnings=warnings,
                 )
