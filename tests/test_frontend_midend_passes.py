@@ -1944,6 +1944,32 @@ def test_midend_skips_oversized_functions_by_default() -> None:
     assert gen.midend_stats["midend_oversized_function_skips"] >= 1
 
 
+def test_midend_default_skip_threshold_catches_mid_sized_functions() -> None:
+    ops = [
+        MoltOp(kind="CONST", args=[idx], result=MoltValue(f"v{idx}"))
+        for idx in range(900)
+    ]
+    gen = SimpleTIRGenerator(optimization_profile="release", module_name="pkg.mod")
+
+    lowered = gen.map_ops_to_json(ops, function_name="mid_sized_render")
+
+    assert len(lowered) == len(ops) + 1
+    outcome = gen.midend_policy_outcomes_by_function["mid_sized_render"]
+    assert outcome["degraded"] is True
+    reasons = {event.get("reason") for event in outcome.get("degrade_events", [])}
+    assert "oversized_function_skip" in reasons
+    events = [
+        event
+        for event in outcome.get("degrade_events", [])
+        if event.get("reason") == "oversized_function_skip"
+    ]
+    assert events
+    value = events[0].get("value")
+    assert isinstance(value, dict)
+    assert value.get("threshold") == 800
+    assert value.get("op_count") == 900
+
+
 def test_midend_monolith_pressure_trims_cold_function_policy() -> None:
     baseline_gen = SimpleTIRGenerator(
         optimization_profile="release",
