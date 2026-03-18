@@ -25,6 +25,7 @@ import sys
 import tomllib
 import time
 import threading
+import tracemalloc
 import tokenize
 import urllib.parse
 import urllib.request
@@ -1784,6 +1785,10 @@ class _ModuleResolutionCache:
     roots_cache: dict[str, list[Path]] = field(default_factory=dict)
     resolve_cache: dict[str, Path | None] = field(default_factory=dict)
     namespace_dir_cache: dict[str, bool] = field(default_factory=dict)
+    source_cache: dict[Path, str] = field(default_factory=dict)
+    source_error_cache: dict[Path, Exception] = field(default_factory=dict)
+    ast_cache: dict[tuple[Path, str], ast.AST] = field(default_factory=dict)
+    ast_error_cache: dict[tuple[Path, str], SyntaxError] = field(default_factory=dict)
 
     def roots_for_module(
         self,
@@ -1840,6 +1845,38 @@ class _ModuleResolutionCache:
             has_namespace_dir = _has_namespace_dir(module_name, candidate_roots)
             self.namespace_dir_cache[module_name] = has_namespace_dir
         return has_namespace_dir
+
+    def read_module_source(self, path: Path) -> str:
+        cache_key = path.resolve()
+        source = self.source_cache.get(cache_key)
+        if source is not None:
+            return source
+        cached_error = self.source_error_cache.get(cache_key)
+        if cached_error is not None:
+            raise cached_error
+        try:
+            source = _read_module_source(path)
+        except (OSError, SyntaxError, UnicodeDecodeError) as exc:
+            self.source_error_cache[cache_key] = exc
+            raise
+        self.source_cache[cache_key] = source
+        return source
+
+    def parse_module_ast(self, path: Path, source: str, *, filename: str) -> ast.AST:
+        cache_key = (path.resolve(), filename)
+        tree = self.ast_cache.get(cache_key)
+        if tree is not None:
+            return tree
+        cached_error = self.ast_error_cache.get(cache_key)
+        if cached_error is not None:
+            raise cached_error
+        try:
+            tree = ast.parse(source, filename=filename)
+        except SyntaxError as exc:
+            self.ast_error_cache[cache_key] = exc
+            raise
+        self.ast_cache[cache_key] = tree
+        return tree
 
 
 def _resolve_entry_module(
@@ -2870,6 +2907,10 @@ def _build_diagnostics_enabled() -> bool:
     return _coerce_bool(os.environ.get("MOLT_BUILD_DIAGNOSTICS", ""), False)
 
 
+def _build_allocation_diagnostics_enabled() -> bool:
+    return _coerce_bool(os.environ.get("MOLT_BUILD_ALLOCATIONS", ""), False)
+
+
 def _resolve_build_diagnostics_verbosity(raw: str | None) -> str:
     value = (raw or "").strip().lower()
     if value in {"", "default", "normal", "standard"}:
@@ -2905,6 +2946,31 @@ def _resolve_build_diagnostics_path(
     return path
 
 
+def _capture_build_allocation_diagnostics(
+    *, top_n: int = 10
+) -> dict[str, Any] | None:
+    if not tracemalloc.is_tracing():
+        return None
+    current_bytes, peak_bytes = tracemalloc.get_traced_memory()
+    snapshot = tracemalloc.take_snapshot()
+    top_allocations: list[dict[str, Any]] = []
+    for stat in snapshot.statistics("lineno")[: max(0, top_n)]:
+        frame = stat.traceback[0]
+        top_allocations.append(
+            {
+                "file": frame.filename,
+                "line": frame.lineno,
+                "size_bytes": stat.size,
+                "count": stat.count,
+            }
+        )
+    return {
+        "current_bytes": current_bytes,
+        "peak_bytes": peak_bytes,
+        "top": top_allocations,
+    }
+
+
 def _emit_build_diagnostics(
     *,
     diagnostics: dict[str, Any] | None,
@@ -2929,6 +2995,7 @@ def _emit_build_diagnostics(
     midend = diagnostics.get("midend", {})
     frontend_parallel = diagnostics.get("frontend_parallel", {})
     frontend_modules_top = diagnostics.get("frontend_module_timings_top", [])
+    allocations = diagnostics.get("allocations", {})
     print("Build diagnostics:", file=sys.stderr)
     if isinstance(total_sec, (int, float)):
         print(f"- total_sec: {total_sec:.6f}", file=sys.stderr)
@@ -2944,6 +3011,28 @@ def _emit_build_diagnostics(
             value = reason_summary[name]
             if isinstance(value, int):
                 print(f"- reason.{name}: {value}", file=sys.stderr)
+    if isinstance(allocations, dict):
+        current_bytes = allocations.get("current_bytes")
+        peak_bytes = allocations.get("peak_bytes")
+        if isinstance(current_bytes, int):
+            print(f"- alloc.current_bytes: {current_bytes}", file=sys.stderr)
+        if isinstance(peak_bytes, int):
+            print(f"- alloc.peak_bytes: {peak_bytes}", file=sys.stderr)
+        top_allocations = allocations.get("top")
+        if not summary_only and isinstance(top_allocations, list):
+            limit = 20 if full_details else 10
+            for idx, item in enumerate(top_allocations[:limit], start=1):
+                if not isinstance(item, dict):
+                    continue
+                file_name = str(item.get("file", ""))
+                line_no = int(item.get("line", 0))
+                size_bytes = int(item.get("size_bytes", 0))
+                count = int(item.get("count", 0))
+                print(
+                    "- alloc.top."
+                    f"{idx}: {file_name}:{line_no} size_bytes={size_bytes} count={count}",
+                    file=sys.stderr,
+                )
     if isinstance(frontend_modules_top, list):
         limit = 20 if full_details else 10
         for idx, item in enumerate(frontend_modules_top[:limit], start=1):
@@ -3977,11 +4066,11 @@ def _discover_module_graph(
             continue
         graph[module_name] = path
         try:
-            source = _read_module_source(path)
+            source = resolution_cache.read_module_source(path)
         except (OSError, SyntaxError, UnicodeDecodeError):
             continue
         try:
-            tree = ast.parse(source, filename=str(path))
+            tree = resolution_cache.parse_module_ast(path, source, filename=str(path))
         except SyntaxError:
             continue
         is_package = path.name == "__init__.py"
@@ -7196,24 +7285,53 @@ def _json_ir_default(value: Any) -> Any:
 
 
 def _cache_ir_payload(ir: dict[str, Any]) -> bytes:
-    normalized: dict[str, Any] = ir
     funcs = ir.get("functions")
-    if isinstance(funcs, list) and funcs:
-
-        def _func_sort_key(entry: Any) -> str:
-            if isinstance(entry, dict):
-                name = entry.get("name")
-                if isinstance(name, str):
-                    return name
-            return ""
-
-        sorted_funcs = sorted(funcs, key=_func_sort_key)
-        if sorted_funcs != funcs:
-            normalized = dict(ir)
-            normalized["functions"] = sorted_funcs
+    normalized: dict[str, Any] = dict(ir)
+    if isinstance(funcs, list):
+        normalized["functions"] = _sorted_ir_functions(funcs)
     return json.dumps(
         normalized, sort_keys=True, separators=(",", ":"), default=_json_ir_default
     ).encode("utf-8")
+
+
+def _sorted_ir_functions(functions: list[Any]) -> list[Any]:
+    def _func_sort_key(entry: Any) -> str:
+        if isinstance(entry, dict):
+            name = entry.get("name")
+            if isinstance(name, str):
+                return name
+        return ""
+
+    return sorted(functions, key=_func_sort_key)
+
+
+def _cache_payloads_for_ir(ir: dict[str, Any]) -> tuple[bytes, bytes]:
+    functions = ir.get("functions")
+    sorted_funcs: list[Any] = []
+    if isinstance(functions, list):
+        sorted_funcs = _sorted_ir_functions(functions)
+
+    module_payload_ir: dict[str, Any] = dict(ir)
+    module_payload_ir["functions"] = sorted_funcs
+    module_payload = json.dumps(
+        module_payload_ir,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=_json_ir_default,
+    ).encode("utf-8")
+
+    backend_payload_ir: dict[str, Any] = {
+        "functions": sorted_funcs,
+        "profile": ir.get("profile"),
+        "top_level_extras_digest": _ir_top_level_extras_digest(ir),
+    }
+    backend_payload = json.dumps(
+        backend_payload_ir,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=_json_ir_default,
+    ).encode("utf-8")
+    return module_payload, backend_payload
 
 
 def _cache_key(
@@ -7221,8 +7339,10 @@ def _cache_key(
     target: str,
     target_triple: str | None,
     variant: str = "",
+    payload: bytes | None = None,
 ) -> str:
-    payload = _cache_ir_payload(ir)
+    if payload is None:
+        payload = _cache_ir_payload(ir)
     suffix = target_triple or target
     if variant:
         suffix = f"{suffix}:{variant}"
@@ -7253,28 +7373,8 @@ def _ir_top_level_extras_digest(ir: dict[str, Any]) -> str:
 
 
 def _cache_backend_ir_payload(ir: dict[str, Any]) -> bytes:
-    functions = ir.get("functions")
-    profile = ir.get("profile")
-    normalized: dict[str, Any] = {
-        "functions": [],
-        "profile": None,
-        "top_level_extras_digest": _ir_top_level_extras_digest(ir),
-    }
-    if isinstance(functions, list):
-
-        def _func_sort_key(entry: Any) -> str:
-            if isinstance(entry, dict):
-                name = entry.get("name")
-                if isinstance(name, str):
-                    return name
-            return ""
-
-        normalized["functions"] = sorted(functions, key=_func_sort_key)
-    if profile is not None:
-        normalized["profile"] = profile
-    return json.dumps(
-        normalized, sort_keys=True, separators=(",", ":"), default=_json_ir_default
-    ).encode("utf-8")
+    _, backend_payload = _cache_payloads_for_ir(ir)
+    return backend_payload
 
 
 def _backend_ir_text(ir: dict[str, Any]) -> str:
@@ -7286,8 +7386,10 @@ def _function_cache_key(
     target: str,
     target_triple: str | None,
     variant: str = "",
+    payload: bytes | None = None,
 ) -> str:
-    payload = _cache_backend_ir_payload(ir)
+    if payload is None:
+        payload = _cache_backend_ir_payload(ir)
     suffix = target_triple or target
     if variant:
         suffix = f"{suffix}:{variant}"
@@ -7603,6 +7705,9 @@ def build(
     resolved_diagnostics_verbosity = _resolve_build_diagnostics_verbosity(
         diagnostics_verbosity or os.environ.get("MOLT_BUILD_DIAGNOSTICS_VERBOSITY")
     )
+    allocation_diagnostics_enabled = _build_allocation_diagnostics_enabled()
+    if allocation_diagnostics_enabled and not tracemalloc.is_tracing():
+        tracemalloc.start(25)
     frontend_timing_raw = os.environ.get("MOLT_FRONTEND_TIMINGS", "").strip()
     frontend_timing_enabled = diagnostics_enabled or bool(frontend_timing_raw)
     frontend_timing_threshold = 0.0
@@ -8109,6 +8214,10 @@ def build(
                 key=lambda item: float(item.get("total_s", 0.0)),
                 reverse=True,
             )[:20]
+        if allocation_diagnostics_enabled:
+            allocations_payload = _capture_build_allocation_diagnostics()
+            if allocations_payload is not None:
+                payload["allocations"] = allocations_payload
         payload["frontend_parallel"] = dict(frontend_parallel_details)
         midend_payload = _build_midend_diagnostics_payload(
             requested_profile=profile,
@@ -8320,7 +8429,7 @@ def build(
     syntax_error_modules: dict[str, ModuleSyntaxErrorInfo] = {}
     for module_name, module_path in module_graph.items():
         try:
-            source = _read_module_source(module_path)
+            source = module_resolution_cache.read_module_source(module_path)
             module_sources[module_name] = source
         except (SyntaxError, UnicodeDecodeError) as exc:
             if module_name == entry_module:
@@ -8342,7 +8451,9 @@ def build(
                 command="build",
             )
         try:
-            tree = ast.parse(source, filename=str(module_path))
+            tree = module_resolution_cache.parse_module_ast(
+                module_path, source, filename=str(module_path)
+            )
         except SyntaxError as exc:
             if module_name == entry_module:
                 return _fail(
@@ -8546,7 +8657,7 @@ def build(
         source = module_sources.get(module_name)
         if source is None:
             try:
-                source = _read_module_source(module_path)
+                source = module_resolution_cache.read_module_source(module_path)
             except (SyntaxError, UnicodeDecodeError) as exc:
                 raise _ModuleLowerError(
                     f"Syntax error in {module_path}: {exc}"
@@ -8559,7 +8670,9 @@ def build(
             module_name, str(module_path)
         )
         try:
-            return ast.parse(source, filename=logical_source_path)
+            return module_resolution_cache.parse_module_ast(
+                module_path, source, filename=logical_source_path
+            )
         except SyntaxError as exc:
             raise _ModuleLowerError(f"Syntax error in {module_path}: {exc}") from exc
 
@@ -9735,9 +9848,20 @@ def build(
         if linked:
             cache_variant_parts.append("linked=1")
         cache_variant = ";".join(cache_variant_parts)
-        cache_key = _cache_key(ir, target, target_triple, cache_variant)
+        module_cache_payload, backend_cache_payload = _cache_payloads_for_ir(ir)
+        cache_key = _cache_key(
+            ir,
+            target,
+            target_triple,
+            cache_variant,
+            payload=module_cache_payload,
+        )
         function_cache_key = _function_cache_key(
-            ir, target, target_triple, cache_variant
+            ir,
+            target,
+            target_triple,
+            cache_variant,
+            payload=backend_cache_payload,
         )
         cache_root = _resolve_cache_root(project_root, cache_dir)
         try:

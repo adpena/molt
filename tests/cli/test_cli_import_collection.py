@@ -246,6 +246,23 @@ def test_backend_ir_text_is_compact() -> None:
     assert '"functions"' in text
 
 
+def test_cache_payloads_for_ir_share_sorted_function_order() -> None:
+    ir = {
+        "functions": [
+            {"name": "zeta", "ops": []},
+            {"name": "alpha", "ops": []},
+        ],
+        "profile": {"hash": "abc"},
+        "runtime_feedback": {"hot_functions": ["alpha"]},
+    }
+    module_payload, backend_payload = cli._cache_payloads_for_ir(ir)
+    module_text = module_payload.decode("utf-8")
+    backend_text = backend_payload.decode("utf-8")
+    assert module_text.index('"name":"alpha"') < module_text.index('"name":"zeta"')
+    assert backend_text.index('"name":"alpha"') < backend_text.index('"name":"zeta"')
+    assert '"top_level_extras_digest"' in backend_text
+
+
 def test_shared_module_resolution_cache_reduces_repeated_resolution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -330,6 +347,86 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
 
     assert shared_second == 0
     assert unshared_second > 0
+
+
+def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("from . import helper\n")
+    entry = pkg / "helper.py"
+    entry.write_text("VALUE = 1\n")
+
+    stdlib_root = cli._stdlib_root_path()
+    module_roots = [tmp_path.resolve()]
+    roots = module_roots + [stdlib_root]
+    stdlib_allowlist = cli._stdlib_allowlist()
+
+    read_calls = 0
+    parse_calls = 0
+    original_read = cli._read_module_source
+    original_parse = cli.ast.parse
+
+    def wrapped_read(path: Path) -> str:
+        nonlocal read_calls
+        read_calls += 1
+        return original_read(path)
+
+    def wrapped_parse(
+        source: str,
+        filename: str = "<unknown>",
+        mode: str = "exec",
+        *,
+        type_comments: bool = False,
+        feature_version: int | None = None,
+    ) -> ast.AST:
+        nonlocal parse_calls
+        parse_calls += 1
+        return original_parse(
+            source,
+            filename=filename,
+            mode=mode,
+            type_comments=type_comments,
+            feature_version=feature_version,
+        )
+
+    monkeypatch.setattr(cli, "_read_module_source", wrapped_read)
+    monkeypatch.setattr(cli.ast, "parse", wrapped_parse)
+
+    shared_cache = cli._ModuleResolutionCache()
+    graph, _ = cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        stdlib_allowlist,
+        resolver_cache=shared_cache,
+    )
+    first_read_calls = read_calls
+    first_parse_calls = parse_calls
+    for module_path in graph.values():
+        source = shared_cache.read_module_source(module_path)
+        shared_cache.parse_module_ast(
+            module_path, source, filename=str(module_path)
+        )
+    assert read_calls == first_read_calls
+    assert parse_calls == first_parse_calls
+
+    read_calls = 0
+    parse_calls = 0
+    unshared_graph, _ = cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        stdlib_allowlist,
+    )
+    for module_path in unshared_graph.values():
+        source = cli._read_module_source(module_path)
+        cli.ast.parse(source, filename=str(module_path))
+    assert read_calls > 0
+    assert parse_calls > 0
 
 
 def test_stdlib_graph_ignores_nested_imports_for_core_scan(tmp_path: Path) -> None:
@@ -461,6 +558,15 @@ def test_build_diagnostics_enabled_from_env(
     assert cli._build_diagnostics_enabled()
     monkeypatch.setenv("MOLT_BUILD_DIAGNOSTICS", "0")
     assert not cli._build_diagnostics_enabled()
+
+
+def test_build_allocation_diagnostics_enabled_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_BUILD_ALLOCATIONS", "1")
+    assert cli._build_allocation_diagnostics_enabled()
+    monkeypatch.setenv("MOLT_BUILD_ALLOCATIONS", "0")
+    assert not cli._build_allocation_diagnostics_enabled()
 
 
 def test_resolve_build_diagnostics_verbosity_aliases() -> None:
@@ -761,6 +867,47 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
     assert "- midend.promoted_functions: 2" in stderr
     assert "- midend.promotion_source.pgo_hot_functions: 2" in stderr
     assert "midend.promotion_hotspot.1: pkg.mod::hot_fn B->A" in stderr
+
+
+def test_capture_build_allocation_diagnostics_returns_top_sites() -> None:
+    cli.tracemalloc.start(5)
+    try:
+        payload = cli._capture_build_allocation_diagnostics(top_n=3)
+    finally:
+        cli.tracemalloc.stop()
+    assert payload is not None
+    assert isinstance(payload["current_bytes"], int)
+    assert isinstance(payload["peak_bytes"], int)
+    assert len(payload["top"]) <= 3
+
+
+def test_emit_build_diagnostics_prints_allocation_summary(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli._emit_build_diagnostics(
+        diagnostics={
+            "total_sec": 1.0,
+            "allocations": {
+                "current_bytes": 1024,
+                "peak_bytes": 4096,
+                "top": [
+                    {
+                        "file": "src/molt/cli.py",
+                        "line": 123,
+                        "size_bytes": 2048,
+                        "count": 7,
+                    }
+                ],
+            },
+        },
+        diagnostics_path=None,
+        json_output=False,
+        verbosity="full",
+    )
+    stderr = capsys.readouterr().err
+    assert "- alloc.current_bytes: 1024" in stderr
+    assert "- alloc.peak_bytes: 4096" in stderr
+    assert "alloc.top.1: src/molt/cli.py:123 size_bytes=2048 count=7" in stderr
 
 
 def test_midend_policy_config_snapshot_honors_env(
