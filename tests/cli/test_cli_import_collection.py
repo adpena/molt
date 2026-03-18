@@ -501,12 +501,16 @@ def test_shared_module_resolution_cache_reuses_import_scans(
     for module_name, module_path in graph.items():
         source = cache.read_module_source(module_path)
         tree = cache.parse_module_ast(module_path, source, filename=str(module_path))
+        include_nested = (
+            not cache.is_stdlib_path(module_path, stdlib_root)
+            or module_name in cli.STDLIB_NESTED_IMPORT_SCAN_MODULES
+        )
         cache.collect_imports(
             module_path,
             tree,
             module_name=module_name,
             is_package=module_path.name == "__init__.py",
-            include_nested=True,
+            include_nested=include_nested,
         )
 
     assert collect_calls == first_collect_calls
