@@ -1147,7 +1147,7 @@ complete. M-GPU-1 is the earliest actionable item and has no GPU hardware depend
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_ast` top-level stub with full intrinsic-backed lowering.
 - DONE(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:done): `_blake2` now exposes intrinsic-backed `blake2b`/`blake2s` constructors and CPython-compatible BLAKE2 constants via Molt `hashlib`.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_colorize` top-level stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_compat_pickle` top-level stub with full intrinsic-backed lowering.
+- Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_compat_pickle` now ships the canonical CPython compatibility mapping tables in-repo for private-module imports without host dependencies.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_compression` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_contextvars` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_crypt` top-level stub with full intrinsic-backed lowering.
