@@ -5729,7 +5729,7 @@ def _atomic_copy_file(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = dst.with_name(f".{dst.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
-        shutil.copy2(src, tmp_path)
+        shutil.copyfile(src, tmp_path)
         tmp_path.replace(dst)
     finally:
         try:
@@ -5748,7 +5748,7 @@ def _atomic_link_or_copy_file(src: Path, dst: Path) -> None:
         except OSError as exc:
             if exc.errno not in {errno.EXDEV, errno.EPERM, errno.EACCES, errno.ENOTSUP}:
                 raise
-            shutil.copy2(src, tmp_path)
+            shutil.copyfile(src, tmp_path)
         tmp_path.replace(dst)
     finally:
         try:
@@ -5756,6 +5756,30 @@ def _atomic_link_or_copy_file(src: Path, dst: Path) -> None:
                 tmp_path.unlink()
         except OSError:
             pass
+
+
+def _materialize_cached_backend_artifact(
+    candidate: Path,
+    output_artifact: Path,
+    *,
+    tier: str,
+    cache_path: Path | None,
+    warnings: list[str],
+) -> bool:
+    try:
+        _atomic_copy_file(candidate, output_artifact)
+        if (
+            tier == "function"
+            and cache_path is not None
+            and candidate != cache_path
+            and not cache_path.exists()
+        ):
+            with contextlib.suppress(OSError):
+                _atomic_link_or_copy_file(candidate, cache_path)
+        return True
+    except OSError as exc:
+        warnings.append(f"Cache copy failed: {exc}")
+        return False
 
 
 def _stage_backend_output_and_caches(
@@ -10194,19 +10218,14 @@ def build(
                         with contextlib.suppress(OSError):
                             candidate.unlink()
                         continue
-                    try:
-                        shutil.copy2(candidate, output_artifact)
-                        if (
-                            tier == "function"
-                            and cache_path is not None
-                            and candidate != cache_path
-                            and not cache_path.exists()
-                        ):
-                            with contextlib.suppress(OSError):
-                                _atomic_copy_file(candidate, cache_path)
+                    if _materialize_cached_backend_artifact(
+                        candidate,
+                        output_artifact,
+                        tier=tier,
+                        cache_path=cache_path,
+                        warnings=warnings,
+                    ):
                         return True, tier
-                    except OSError as exc:
-                        warnings.append(f"Cache copy failed: {exc}")
                 return False, None
 
             cache_hit, cache_hit_tier = _try_cache_candidates()
@@ -10220,19 +10239,14 @@ def build(
                 with contextlib.suppress(OSError):
                     candidate.unlink()
                 continue
-            try:
-                shutil.copy2(candidate, output_artifact)
-                if (
-                    tier == "function"
-                    and cache_path is not None
-                    and candidate != cache_path
-                    and not cache_path.exists()
-                ):
-                    with contextlib.suppress(OSError):
-                        _atomic_copy_file(candidate, cache_path)
+            if _materialize_cached_backend_artifact(
+                candidate,
+                output_artifact,
+                tier=tier,
+                cache_path=cache_path,
+                warnings=warnings,
+            ):
                 return True, tier
-            except OSError as exc:
-                warnings.append(f"Cache copy failed: {exc}")
         return False, None
 
     if (verbose or cache_report) and not json_output:
