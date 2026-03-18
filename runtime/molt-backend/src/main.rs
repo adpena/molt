@@ -197,15 +197,14 @@ fn daemon_health(
 }
 
 fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJobResponse {
-    let cache_key = job.cache_key.trim().to_string();
+    let cache_key = job.cache_key.trim();
     let function_cache_key = job
         .function_cache_key
         .as_deref()
         .map(str::trim)
-        .unwrap_or("")
-        .to_string();
+        .unwrap_or("");
     if !cache_key.is_empty()
-        && let Some(bytes) = cache.get_bytes(&cache_key)
+        && let Some(bytes) = cache.get_bytes(cache_key)
     {
         match write_cached_output(&job.output, bytes, job.skip_module_output_if_synced) {
             Ok(output_written) => {
@@ -232,7 +231,7 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
     }
     if !function_cache_key.is_empty()
         && function_cache_key != cache_key
-        && let Some(bytes) = cache.get_bytes(&function_cache_key)
+        && let Some(bytes) = cache.get_bytes(function_cache_key)
     {
         match write_cached_output(&job.output, bytes, job.skip_function_output_if_synced) {
             Ok(output_written) => {
@@ -279,12 +278,12 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
 
     if !cache_key.is_empty() && !function_cache_key.is_empty() && function_cache_key != cache_key
     {
-        cache.insert(cache_key, output_bytes.clone());
-        cache.insert(function_cache_key, output_bytes);
+        cache.insert(cache_key.to_string(), output_bytes.clone());
+        cache.insert(function_cache_key.to_string(), output_bytes);
     } else if !cache_key.is_empty() {
-        cache.insert(cache_key, output_bytes);
+        cache.insert(cache_key.to_string(), output_bytes);
     } else if !function_cache_key.is_empty() {
-        cache.insert(function_cache_key, output_bytes);
+        cache.insert(function_cache_key.to_string(), output_bytes);
     }
 
     DaemonJobResponse {
