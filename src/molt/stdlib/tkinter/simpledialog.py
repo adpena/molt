@@ -5,9 +5,15 @@ from tkinter import commondialog as _commondialog
 from tkinter import dialog as _dialog
 from tkinter import messagebox as messagebox
 
-_MOLT_TK_SIMPLEDIALOG_QUERY = _require_intrinsic(
-    "molt_tk_simpledialog_query", globals()
-)
+
+def _lazy_intrinsic(name):
+    def _call(*args, **kwargs):
+        return _require_intrinsic(name, globals())(*args, **kwargs)
+
+    return _call
+
+
+_MOLT_TK_SIMPLEDIALOG_QUERY = _lazy_intrinsic("molt_tk_simpledialog_query")
 
 
 def _place_window(w, parent=None):

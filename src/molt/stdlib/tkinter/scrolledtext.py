@@ -13,7 +13,15 @@ Place methods are redirected to the Frame widget however.
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_tk_call", globals())
+
+def _lazy_intrinsic(name):
+    def _call(*args, **kwargs):
+        return _require_intrinsic(name, globals())(*args, **kwargs)
+
+    return _call
+
+
+_MOLT_TK_CALL = _lazy_intrinsic("molt_tk_call")
 
 from tkinter import Frame, Text, Scrollbar, Pack, Grid, Place
 from tkinter.constants import RIGHT, LEFT, Y, BOTH

@@ -3,7 +3,15 @@
 from _intrinsics import require_intrinsic as _require_intrinsic
 from tkinter import commondialog as _commondialog
 
-_MOLT_TK_MESSAGEBOX_SHOW = _require_intrinsic("molt_tk_messagebox_show", globals())
+
+def _lazy_intrinsic(name):
+    def _call(*args, **kwargs):
+        return _require_intrinsic(name, globals())(*args, **kwargs)
+
+    return _call
+
+
+_MOLT_TK_MESSAGEBOX_SHOW = _lazy_intrinsic("molt_tk_messagebox_show")
 
 Dialog = _commondialog.Dialog
 

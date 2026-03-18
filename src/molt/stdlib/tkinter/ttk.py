@@ -1,12 +1,19 @@
 """Intrinsic-backed `tkinter.ttk` wrappers."""
-
 import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic
 from ._support import require_gui_capability as _require_gui_capability
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
-_MOLT_TK_EVENT_SUBST_PARSE = _require_intrinsic("molt_tk_event_subst_parse", globals())
-_molt_tk_convert_stringval = _require_intrinsic("molt_tk_convert_stringval", globals())
+
+def _lazy_intrinsic(name):
+    def _call(*args, **kwargs):
+        return _require_intrinsic(name, globals())(*args, **kwargs)
+
+    return _call
+
+
+_MOLT_CAPABILITIES_HAS = _lazy_intrinsic("molt_capabilities_has")
+_MOLT_TK_EVENT_SUBST_PARSE = _lazy_intrinsic("molt_tk_event_subst_parse")
+_molt_tk_convert_stringval = _lazy_intrinsic("molt_tk_convert_stringval")
 tkinter = _tkinter
 _SUBST_FORMAT = (
     "%#",
@@ -392,7 +399,36 @@ def _split_pairs_to_dict(tk, value):
 
 
 def _convert_stringval(value):
-    return _molt_tk_convert_stringval(value)
+    if isinstance(value, (int, float)):
+        return value
+    if not isinstance(value, str):
+        return value
+    trimmed = value.strip()
+    if not trimmed:
+        return value
+    try:
+        if trimmed.startswith(("+0x", "-0x", "+0X", "-0X")):
+            return int(trimmed, 16)
+        if trimmed.startswith(("0x", "0X")):
+            return int(trimmed, 16)
+        if trimmed.startswith(("+0o", "-0o", "+0O", "-0O")):
+            return int(trimmed, 8)
+        if trimmed.startswith(("0o", "0O")):
+            return int(trimmed, 8)
+        if trimmed.startswith(("+0b", "-0b", "+0B", "-0B")):
+            return int(trimmed, 2)
+        if trimmed.startswith(("0b", "0B")):
+            return int(trimmed, 2)
+        return int(trimmed, 10)
+    except ValueError:
+        pass
+    try:
+        as_float = float(trimmed)
+    except ValueError:
+        return value
+    if as_float == as_float and as_float not in (float("inf"), float("-inf")):
+        return as_float
+    return value
 
 
 def _tclobj_to_py(value):
