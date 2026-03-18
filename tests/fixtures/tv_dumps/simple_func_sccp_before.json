@@ -1,0 +1,13 @@
+{
+  "function": "simple_func",
+  "pass": "sccp",
+  "phase": "before",
+  "op_count": 5,
+  "ops": [
+    {"kind": "CONST", "args": [10], "result": {"name": "v0", "type_hint": "int"}, "metadata": null},
+    {"kind": "CONST", "args": [20], "result": {"name": "v1", "type_hint": "int"}, "metadata": null},
+    {"kind": "ADD", "args": [{"name": "v0", "type_hint": "int"}, {"name": "v1", "type_hint": "int"}], "result": {"name": "v2", "type_hint": "int"}, "metadata": null},
+    {"kind": "MUL", "args": [{"name": "v2", "type_hint": "int"}, {"name": "v0", "type_hint": "int"}], "result": {"name": "v3", "type_hint": "int"}, "metadata": null},
+    {"kind": "RETURN", "args": [{"name": "v3", "type_hint": "int"}], "result": {"name": "none", "type_hint": "Unknown"}, "metadata": null}
+  ]
+}
