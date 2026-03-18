@@ -322,6 +322,16 @@ def _normalize_bind_target(target):
     return str(target)
 
 
+def _resolve_widget_names(owner, names):
+    resolved = []
+    for name in names:
+        try:
+            resolved.append(owner.nametowidget(name))
+        except Exception:
+            resolved.append(name)
+    return tuple(resolved)
+
+
 def _normalize_trace_mode(mode):
     if isinstance(mode, (tuple, list)):
         return " ".join(str(part) for part in mode)
@@ -1077,7 +1087,9 @@ class Misc:
         return self.call("pack", "propagate", self._w, int(bool(flag)))
 
     def pack_slaves(self):
-        return self.splitlist(self.call("pack", "slaves", self._w))
+        return _resolve_widget_names(
+            self, self.splitlist(self.call("pack", "slaves", self._w))
+        )
 
     pack_children = pack_slaves
 
@@ -1182,7 +1194,9 @@ class Misc:
             args.extend(("-row", row))
         if column is not None:
             args.extend(("-column", column))
-        return self.splitlist(self.call("grid", "slaves", *args))
+        return _resolve_widget_names(
+            self, self.splitlist(self.call("grid", "slaves", *args))
+        )
 
     grid_children = grid_slaves
 
@@ -1206,7 +1220,9 @@ class Misc:
         return self.call("place", "info", self._w)
 
     def place_slaves(self):
-        return self.splitlist(self.call("place", "slaves", self._w))
+        return _resolve_widget_names(
+            self, self.splitlist(self.call("place", "slaves", self._w))
+        )
 
     place_children = place_slaves
 
@@ -1224,7 +1240,12 @@ class Misc:
         return self.call("lower", self._w, _normalize_bind_target(below_this))
 
     def winfo_children(self):
-        return self.splitlist(self.call("winfo", "children", self._w))
+        local_children = tuple(getattr(self, "children", {}).values())
+        if local_children:
+            return local_children
+        return _resolve_widget_names(
+            self, self.splitlist(self.call("winfo", "children", self._w))
+        )
 
     def winfo_exists(self):
         return bool(self.getint(self.call("winfo", "exists", self._w)))

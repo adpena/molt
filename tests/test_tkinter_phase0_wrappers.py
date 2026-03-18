@@ -1056,6 +1056,8 @@ button = tkinter.Button(root, text="button-probe")
 frame = tkinter.Frame(root)
 label = tkinter.Label(frame, text="label-probe")
 message = tkinter.Message(root, text="message-probe")
+root_children = root.winfo_children()
+frame_children = frame.winfo_children()
 widget_calls = root._tk_app._handle["calls"][widget_call_start:]
 checks["tkinter_widget_wrappers_emit_commands"] = (
     ("button", button._w, "-text", "button-probe") in widget_calls
@@ -1075,6 +1077,14 @@ checks["tkinter_widget_wrapper_children_are_parent_relative"] = (
     and getattr(label, "_name", "") == "!label3"
     and frame.children.get(label._name) is label
     and root.children.get(frame._name) is frame
+)
+checks["tkinter_winfo_children_returns_widgets"] = (
+    isinstance(root_children, tuple)
+    and isinstance(frame_children, tuple)
+    and button in root_children
+    and frame in root_children
+    and message in root_children
+    and label in frame_children
 )
 
 callback_option_call_start = len(root._tk_app._handle["calls"])
@@ -2333,6 +2343,7 @@ def test_tkinter_phase0_wrappers_support_headless_intrinsic_stubs() -> None:
         "tkinter_variable_names_deterministic",
         "tkinter_variable_roundtrip",
         "tkinter_variable_set_uses_tk_call",
+        "tkinter_winfo_children_returns_widgets",
         "tkinter_widget_wrapper_children_are_parent_relative",
         "tkinter_widget_wrapper_paths_deterministic",
         "tkinter_widget_wrappers_emit_commands",
