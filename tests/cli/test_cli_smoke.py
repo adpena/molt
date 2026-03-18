@@ -1203,6 +1203,37 @@ def test_cli_build_runtime_feedback_json(tmp_path: Path) -> None:
     assert Path(payload["data"]["output"]).exists()
 
 
+def test_cli_build_diagnostics_summary_verbosity_trims_stderr(tmp_path: Path) -> None:
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required for backend compilation.")
+
+    script = tmp_path / "hello.py"
+    script.write_text("def helper():\n    return 1\n\nprint(helper())\n")
+    sysroot = tmp_path / "sysroot"
+    sysroot.mkdir()
+
+    res = _run_cli(
+        [
+            "build",
+            "--emit",
+            "obj",
+            "--out-dir",
+            str(tmp_path),
+            "--sysroot",
+            str(sysroot),
+            "--diagnostics",
+            "--diagnostics-verbosity",
+            "summary",
+            str(script),
+        ]
+    )
+    assert res.returncode == 0
+    assert "Build diagnostics:" in res.stderr
+    assert "frontend_parallel:" in res.stderr
+    assert "frontend_parallel.layer.1:" not in res.stderr
+    assert "midend.hotspot.1:" not in res.stderr
+
+
 def test_cli_completion_bash_json() -> None:
     res = _run_cli(["completion", "--shell", "bash", "--json"])
     assert res.returncode == 0
