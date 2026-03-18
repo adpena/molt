@@ -276,6 +276,13 @@ def test_build_diagnostics_enabled_from_env(
     assert not cli._build_diagnostics_enabled()
 
 
+def test_resolve_build_diagnostics_verbosity_aliases() -> None:
+    assert cli._resolve_build_diagnostics_verbosity(None) == "default"
+    assert cli._resolve_build_diagnostics_verbosity("brief") == "summary"
+    assert cli._resolve_build_diagnostics_verbosity("verbose") == "full"
+    assert cli._resolve_build_diagnostics_verbosity("unknown") == "default"
+
+
 def test_phase_duration_map_orders_by_start(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli.time, "perf_counter", lambda: 10.0)
     durations = cli._phase_duration_map({"module_graph": 2.0, "resolve_entry": 1.0})
@@ -553,6 +560,97 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
     assert "- midend.promoted_functions: 2" in stderr
     assert "- midend.promotion_source.pgo_hot_functions: 2" in stderr
     assert "midend.promotion_hotspot.1: pkg.mod::hot_fn B->A" in stderr
+
+
+def test_emit_build_diagnostics_summary_omits_hotspot_details(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli._emit_build_diagnostics(
+        diagnostics={
+            "total_sec": 1.25,
+            "frontend_parallel": {
+                "enabled": True,
+                "workers": 4,
+                "mode": "process_pool",
+                "reason": "enabled",
+                "policy": {
+                    "min_modules": 2,
+                    "min_predicted_cost": 32768.0,
+                    "target_cost_per_worker": 65536.0,
+                },
+                "layers": [
+                    {
+                        "index": 0,
+                        "mode": "parallel",
+                        "module_count": 3,
+                        "candidate_count": 3,
+                        "workers": 3,
+                        "queue_ms_total": 4.5,
+                        "wait_ms_total": 2.0,
+                        "exec_ms_total": 9.0,
+                    }
+                ],
+                "worker_summary": {
+                    "count": 3,
+                    "queue_ms_total": 4.5,
+                    "queue_ms_max": 2.5,
+                    "wait_ms_total": 2.0,
+                    "wait_ms_max": 1.0,
+                    "exec_ms_total": 9.0,
+                    "exec_ms_max": 4.0,
+                },
+            },
+            "midend": {
+                "promoted_functions": 2,
+                "promotion_source_summary": {"pgo_hot_functions": 2},
+                "promotion_hotspots_top": [
+                    {
+                        "module": "pkg.mod",
+                        "function": "hot_fn",
+                        "tier_base": "B",
+                        "tier_effective": "A",
+                        "source": "pgo_hot_functions",
+                        "signal": "pkg.mod::hot_fn",
+                        "spent_ms": 12.5,
+                    }
+                ],
+            },
+        },
+        diagnostics_path=None,
+        json_output=False,
+        verbosity="summary",
+    )
+    stderr = capsys.readouterr().err
+    assert "Build diagnostics:" in stderr
+    assert "- frontend_parallel: enabled=True workers=4 mode=process_pool" in stderr
+    assert "- midend.promoted_functions: 2" in stderr
+    assert "frontend_parallel.layer.1:" not in stderr
+    assert "frontend_parallel.worker_ms:" not in stderr
+    assert "midend.promotion_hotspot.1:" not in stderr
+
+
+def test_emit_build_diagnostics_full_prints_extended_hotspots(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli._emit_build_diagnostics(
+        diagnostics={
+            "frontend_module_timings_top": [
+                {
+                    "module": f"pkg.mod_{idx}",
+                    "total_s": float(idx),
+                    "visit_s": 0.1,
+                    "lower_s": 0.2,
+                }
+                for idx in range(12)
+            ]
+        },
+        diagnostics_path=None,
+        json_output=False,
+        verbosity="full",
+    )
+    stderr = capsys.readouterr().err
+    assert "frontend.hotspot.10: pkg.mod_9" in stderr
+    assert "frontend.hotspot.12: pkg.mod_11" in stderr
 
 
 def test_module_name_from_path_outside_module_roots_uses_stem(tmp_path: Path) -> None:
