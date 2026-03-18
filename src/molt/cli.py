@@ -6439,6 +6439,22 @@ def _import_scan_cache_path(
     return root / f"{path.stem}.{cache_key}.json"
 
 
+def _module_analysis_cache_path(
+    project_root: Path,
+    path: Path,
+    *,
+    kind: str = "module_analysis_cache",
+    module_name: str,
+    is_package: bool | None = None,
+) -> Path:
+    root = _build_state_root(project_root) / kind
+    package_kind = "pkg" if is_package else "mod" if is_package is not None else "-"
+    cache_key = hashlib.sha256(
+        "|".join((str(path.resolve()), module_name, package_kind, kind)).encode("utf-8")
+    ).hexdigest()[:24]
+    return root / f"{path.stem}.{cache_key}.json"
+
+
 def _module_graph_cache_path(
     project_root: Path,
     entry_path: Path,
@@ -6634,6 +6650,78 @@ def _write_persisted_import_scan(
     cache_path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
+def _read_persisted_module_analysis(
+    project_root: Path,
+    path: Path,
+    *,
+    module_name: str,
+    is_package: bool,
+) -> dict[str, dict[str, Any]] | None:
+    cache_path = _module_analysis_cache_path(
+        project_root,
+        path,
+        module_name=module_name,
+        is_package=is_package,
+    )
+    payload = _read_artifact_sync_state(cache_path)
+    if payload is None:
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    raw_defaults = payload.get("func_defaults")
+    if not isinstance(raw_defaults, dict):
+        return None
+    if payload.get("size") != stat.st_size or payload.get("mtime_ns") != stat.st_mtime_ns:
+        return None
+
+    def _decode_cached_value(value: Any) -> Any:
+        if isinstance(value, list):
+            return [_decode_cached_value(item) for item in value]
+        if isinstance(value, dict):
+            if value.get("__ellipsis__") is True and len(value) == 1:
+                return Ellipsis
+            return {
+                str(key): _decode_cached_value(item) for key, item in value.items()
+            }
+        return value
+
+    normalized: dict[str, dict[str, Any]] = {}
+    for func_name, func_payload in raw_defaults.items():
+        if not isinstance(func_name, str) or not isinstance(func_payload, dict):
+            return None
+        normalized[func_name] = cast(dict[str, Any], _decode_cached_value(func_payload))
+    return normalized
+
+
+def _write_persisted_module_analysis(
+    project_root: Path,
+    path: Path,
+    *,
+    module_name: str,
+    is_package: bool,
+    func_defaults: dict[str, dict[str, Any]],
+) -> None:
+    cache_path = _module_analysis_cache_path(
+        project_root,
+        path,
+        module_name=module_name,
+        is_package=is_package,
+    )
+    stat = path.stat()
+    payload = {
+        "version": 1,
+        "module_name": module_name,
+        "is_package": is_package,
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "func_defaults": func_defaults,
+    }
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(payload, indent=2, default=_json_ir_default) + "\n")
+
+
 def _load_module_imports(
     path: Path,
     *,
@@ -6670,8 +6758,70 @@ def _load_module_imports(
                 is_package=is_package,
                 include_nested=include_nested,
                 imports=imports,
-            )
+    )
     return imports
+
+
+def _load_module_analysis(
+    path: Path,
+    *,
+    module_name: str,
+    is_package: bool,
+    include_nested: bool,
+    source: str,
+    logical_source_path: str,
+    resolution_cache: _ModuleResolutionCache,
+    project_root: Path | None,
+) -> tuple[ast.AST | None, tuple[str, ...], dict[str, dict[str, Any]]]:
+    persisted_imports = (
+        _read_persisted_import_scan(
+            project_root,
+            path,
+            module_name=module_name,
+            is_package=is_package,
+            include_nested=include_nested,
+        )
+        if project_root is not None
+        else None
+    )
+    persisted_defaults = (
+        _read_persisted_module_analysis(
+            project_root,
+            path,
+            module_name=module_name,
+            is_package=is_package,
+        )
+        if project_root is not None
+        else None
+    )
+    if persisted_imports is not None and persisted_defaults is not None:
+        return None, persisted_imports, persisted_defaults
+
+    tree = resolution_cache.parse_module_ast(path, source, filename=logical_source_path)
+    imports = persisted_imports
+    if imports is None:
+        imports = _load_module_imports(
+            path,
+            module_name=module_name,
+            is_package=is_package,
+            include_nested=include_nested,
+            tree=tree,
+            resolution_cache=resolution_cache,
+            project_root=project_root,
+        )
+    func_defaults = persisted_defaults
+    if func_defaults is None:
+        func_defaults = _collect_func_defaults(tree)
+        if project_root is not None:
+            with contextlib.suppress(OSError):
+                _write_persisted_module_analysis(
+                    project_root,
+                    path,
+                    module_name=module_name,
+                    is_package=is_package,
+                    func_defaults=func_defaults,
+                )
+    return tree, imports, func_defaults
 
 
 def _link_fingerprint(
@@ -8128,6 +8278,8 @@ def _cache_tooling_fingerprint() -> str:
 def _json_ir_default(value: Any) -> Any:
     if isinstance(value, complex):
         return {"__complex__": [value.real, value.imag]}
+    if value is Ellipsis:
+        return {"__ellipsis__": True}
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
@@ -9301,8 +9453,15 @@ def build(
                 command="build",
             )
         try:
-            tree = module_resolution_cache.parse_module_ast(
-                module_path, source, filename=str(module_path)
+            tree, module_imports, func_defaults = _load_module_analysis(
+                module_path,
+                module_name=module_name,
+                is_package=module_path.name == "__init__.py",
+                include_nested=True,
+                source=source,
+                logical_source_path=str(module_path),
+                resolution_cache=module_resolution_cache,
+                project_root=project_root,
             )
         except SyntaxError as exc:
             if module_name == entry_module:
@@ -9317,23 +9476,15 @@ def build(
             module_deps[module_name] = set()
             known_func_defaults[module_name] = {}
             continue
-        module_trees[module_name] = tree
-        module_imports = _load_module_imports(
-            module_path,
-            module_name=module_name,
-            is_package=module_path.name == "__init__.py",
-            include_nested=True,
-            tree=tree,
-            resolution_cache=module_resolution_cache,
-            project_root=project_root,
-        )
+        if tree is not None:
+            module_trees[module_name] = tree
         module_deps[module_name] = _module_dependencies(
-            tree,
+            tree if tree is not None else ast.Module(body=[], type_ignores=[]),
             module_name,
             module_graph,
             imports=module_imports,
         )
-        known_func_defaults[module_name] = _collect_func_defaults(tree)
+        known_func_defaults[module_name] = func_defaults
     module_order = _topo_sort_modules(module_graph, module_deps)
     if diagnostics_enabled:
         phase_starts["ir_lowering"] = time.perf_counter()

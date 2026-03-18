@@ -733,6 +733,52 @@ def test_load_module_imports_reuses_persisted_cache(
     assert cached_imports == ("warnings",)
 
 
+def test_load_module_analysis_reuses_persisted_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "pkg.py"
+    module_path.write_text(
+        "import warnings\n\n"
+        "def f(a, *, b=1):\n"
+        "    return a + b\n"
+    )
+    source = cli._read_module_source(module_path)
+    cache = cli._ModuleResolutionCache()
+
+    tree, imports, func_defaults = cli._load_module_analysis(
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        include_nested=True,
+        source=source,
+        logical_source_path=str(module_path),
+        resolution_cache=cache,
+        project_root=tmp_path,
+    )
+    assert tree is not None
+    assert imports == ("warnings",)
+    assert "f" in func_defaults
+
+    def fail_parse(*args: object, **kwargs: object) -> ast.AST:
+        raise AssertionError("unexpected parse")
+
+    monkeypatch.setattr(cache, "parse_module_ast", fail_parse)
+    cached_tree, cached_imports, cached_defaults = cli._load_module_analysis(
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        include_nested=True,
+        source=source,
+        logical_source_path=str(module_path),
+        resolution_cache=cache,
+        project_root=tmp_path,
+    )
+
+    assert cached_tree is None
+    assert cached_imports == ("warnings",)
+    assert cached_defaults == func_defaults
+
+
 def test_read_module_source_uses_utf8_fast_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
