@@ -781,6 +781,53 @@ def test_load_module_analysis_reuses_persisted_cache(
     assert cached_source is None
 
 
+def test_persisted_module_lowering_roundtrip_respects_context_digest(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg.py"
+    module_path.write_text("x = ...\n")
+    context_digest = cli._module_lowering_context_digest({"module": "pkg", "v": 1})
+    assert context_digest is not None
+    result = {
+        "functions": [],
+        "func_code_ids": {},
+        "local_class_names": [],
+        "local_classes": {},
+        "midend_policy_outcomes_by_function": {},
+        "midend_pass_stats_by_function": {},
+        "timings": {"visit_s": 1.0, "lower_s": 2.0, "total_s": 3.0},
+        "default_marker": Ellipsis,
+    }
+
+    cli._write_persisted_module_lowering(
+        tmp_path,
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        context_digest=context_digest,
+        result=result,
+    )
+
+    cached = cli._read_persisted_module_lowering(
+        tmp_path,
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        context_digest=context_digest,
+    )
+    assert cached is not None
+    assert cached["default_marker"] is Ellipsis
+
+    miss = cli._read_persisted_module_lowering(
+        tmp_path,
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        context_digest="other",
+    )
+    assert miss is None
+
+
 def test_read_module_source_uses_utf8_fast_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
