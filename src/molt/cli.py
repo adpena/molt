@@ -1676,10 +1676,13 @@ def _has_molt_repo_markers(path: Path) -> bool:
     ).exists()
 
 
-def _find_project_root(start: Path) -> Path:
-    override = _resolve_root_override("MOLT_PROJECT_ROOT")
-    if override:
-        return override
+@functools.lru_cache(maxsize=64)
+def _find_project_root_cached(start_text: str, override_text: str | None) -> Path:
+    if override_text:
+        override = Path(override_text)
+        if override.exists():
+            return override
+    start = Path(start_text)
     for parent in [start] + list(start.parents):
         if _has_project_markers(parent):
             return parent
@@ -1694,10 +1697,22 @@ def _has_project_markers(path: Path) -> bool:
     )
 
 
-def _find_molt_root(*candidates: Path) -> Path:
+def _find_project_root(start: Path) -> Path:
     override = _resolve_root_override("MOLT_PROJECT_ROOT")
-    if override:
-        return override
+    override_text = str(override) if override is not None else None
+    return _find_project_root_cached(str(start), override_text)
+
+
+@functools.lru_cache(maxsize=64)
+def _find_molt_root_cached(
+    candidate_texts: tuple[str, ...],
+    override_text: str | None,
+) -> Path:
+    if override_text:
+        override = Path(override_text)
+        if override.exists():
+            return override
+    candidates = tuple(Path(text) for text in candidate_texts)
     for candidate in candidates:
         for parent in [candidate] + list(candidate.parents):
             if _has_molt_repo_markers(parent):
@@ -1709,6 +1724,15 @@ def _find_molt_root(*candidates: Path) -> Path:
     if candidates:
         return candidates[0]
     return Path.cwd()
+
+
+def _find_molt_root(*candidates: Path) -> Path:
+    override = _resolve_root_override("MOLT_PROJECT_ROOT")
+    override_text = str(override) if override is not None else None
+    return _find_molt_root_cached(
+        tuple(str(candidate) for candidate in candidates),
+        override_text,
+    )
 
 
 def _require_molt_root(
@@ -2621,14 +2645,14 @@ def _topo_sort_modules(
     return order
 
 
-def _stdlib_allowlist() -> set[str]:
+@functools.lru_cache(maxsize=8)
+def _stdlib_allowlist_cached(project_root_text: str | None) -> frozenset[str]:
     allowlist: set[str] = set()
     spec_path = Path("docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md")
     if not spec_path.exists():
-        project_root = os.environ.get("MOLT_PROJECT_ROOT")
-        if project_root:
+        if project_root_text:
             spec_path = (
-                Path(project_root)
+                Path(project_root_text)
                 / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
             )
         else:
@@ -2653,7 +2677,12 @@ def _stdlib_allowlist() -> set[str]:
             entry = entry.strip()
             if entry:
                 allowlist.add(entry)
-    return allowlist
+    return frozenset(allowlist)
+
+
+def _stdlib_allowlist() -> set[str]:
+    project_root = os.environ.get("MOLT_PROJECT_ROOT")
+    return set(_stdlib_allowlist_cached(project_root))
 
 
 _INTRINSIC_CALL_NAMES = {

@@ -52,6 +52,84 @@ def test_write_importer_module_uses_constant_time_membership(tmp_path: Path) -> 
     assert "_TOP_LEVEL_BY_MODULE.get(resolved, resolved)" in text
 
 
+def test_find_project_root_is_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli._find_project_root_cached.cache_clear()
+    start = tmp_path / "a" / "b" / "c.py"
+    calls = 0
+
+    def fake_has_project_markers(path: Path) -> bool:
+        nonlocal calls
+        calls += 1
+        return path == tmp_path
+
+    monkeypatch.delenv("MOLT_PROJECT_ROOT", raising=False)
+    monkeypatch.setattr(cli, "_has_project_markers", fake_has_project_markers)
+    first = cli._find_project_root(start)
+    first_calls = calls
+    second = cli._find_project_root(start)
+    assert first == tmp_path
+    assert second == first
+    assert calls == first_calls
+    cli._find_project_root_cached.cache_clear()
+
+
+def test_find_molt_root_is_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli._find_molt_root_cached.cache_clear()
+    candidate = tmp_path / "repo" / "src"
+    repo_root = tmp_path / "repo"
+    calls = 0
+
+    def fake_has_molt_repo_markers(path: Path) -> bool:
+        nonlocal calls
+        calls += 1
+        return path == repo_root
+
+    monkeypatch.delenv("MOLT_PROJECT_ROOT", raising=False)
+    monkeypatch.setattr(cli, "_has_molt_repo_markers", fake_has_molt_repo_markers)
+    first = cli._find_molt_root(candidate)
+    first_calls = calls
+    second = cli._find_molt_root(candidate)
+    assert first == repo_root
+    assert second == first
+    assert calls == first_calls
+    cli._find_molt_root_cached.cache_clear()
+
+
+def test_stdlib_allowlist_is_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli._stdlib_allowlist_cached.cache_clear()
+    spec_path = (
+        tmp_path
+        / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
+    )
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_path.write_text("| Module |\n| --- |\n| json / pathlib |\n")
+    calls = 0
+    original_read_text = Path.read_text
+    expected_spec_path = spec_path.resolve()
+
+    def wrapped(self: Path, *args: object, **kwargs: object) -> str:
+        nonlocal calls
+        if self.resolve() == expected_spec_path:
+            calls += 1
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setenv("MOLT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(Path, "read_text", wrapped)
+    first = cli._stdlib_allowlist()
+    second = cli._stdlib_allowlist()
+    assert {"json", "pathlib"} <= first
+    assert second == first
+    assert calls == 1
+    cli._stdlib_allowlist_cached.cache_clear()
+
+
 def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
     stdlib_root = cli._stdlib_root_path()
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve(), entry.parent.resolve()]
