@@ -5959,8 +5959,18 @@ def _stage_backend_output_and_caches(
         else:
             staged_source = cache_path
 
+    state_path = _artifact_sync_state_path(project_root, output_artifact)
+    output_already_synced = bool(cache_key) and _artifact_sync_state_matches(
+        _read_artifact_sync_state(state_path),
+        source_key=cache_key or "",
+        tier="module",
+        artifact=output_artifact,
+    )
+
     try:
-        if staged_source == backend_output and cache_path is None:
+        if output_already_synced:
+            pass
+        elif staged_source == backend_output and cache_path is None:
             backend_output.replace(output_artifact)
         else:
             _atomic_copy_file(staged_source, output_artifact)
@@ -5976,7 +5986,6 @@ def _stage_backend_output_and_caches(
         except OSError as exc:
             warnings.append(f"Function cache write failed: {exc}")
     if cache_key:
-        state_path = _artifact_sync_state_path(project_root, output_artifact)
         try:
             state_path.parent.mkdir(parents=True, exist_ok=True)
             _write_artifact_sync_state(
