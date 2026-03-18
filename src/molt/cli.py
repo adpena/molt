@@ -6417,9 +6417,7 @@ def _backend_fingerprint_path(
     cargo_profile: str,
 ) -> Path:
     root = _build_state_root(project_root) / "backend_fingerprints"
-    artifact_key = hashlib.sha256(str(artifact.resolve()).encode("utf-8")).hexdigest()[
-        :16
-    ]
+    artifact_key = _resolved_artifact_hash_key(os.fspath(artifact))
     return root / f"{artifact.name}.{cargo_profile}.{artifact_key}.fingerprint"
 
 

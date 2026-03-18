@@ -731,6 +731,31 @@ def test_resolved_artifact_hash_key_is_cached(tmp_path: Path) -> None:
     assert info.currsize >= 1
 
 
+def test_backend_fingerprint_path_uses_cached_artifact_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = tmp_path / "dist" / "backend"
+    cli._resolved_artifact_hash_key.cache_clear()
+
+    calls = 0
+    original = cli._resolved_artifact_hash_key
+
+    def wrapped(path_str: str) -> str:
+        nonlocal calls
+        calls += 1
+        return original(path_str)
+
+    monkeypatch.setattr(cli, "_resolved_artifact_hash_key", wrapped, raising=True)
+
+    first = cli._backend_fingerprint_path(tmp_path, artifact, "dev-fast")
+    second = cli._backend_fingerprint_path(tmp_path, artifact, "dev-fast")
+
+    info = original.cache_info()
+    assert first == second
+    assert calls == 2
+    assert info.hits >= 1
+
+
 def test_load_module_imports_reuses_persisted_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
