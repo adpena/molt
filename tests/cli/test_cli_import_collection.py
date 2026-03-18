@@ -41,6 +41,17 @@ def test_stdlib_test_support_layout_resolves_like_cpython() -> None:
     assert warnings_helper == stdlib_root / "test" / "support" / "warnings_helper.py"
 
 
+def test_write_importer_module_uses_constant_time_membership(tmp_path: Path) -> None:
+    importer = cli._write_importer_module(
+        ["pkg.alpha", "pkg.beta", "solo"],
+        tmp_path,
+    )
+    text = importer.read_text()
+    assert "_KNOWN_MODULES = frozenset(" in text
+    assert "_TOP_LEVEL_BY_MODULE = {'pkg.alpha': 'pkg', 'pkg.beta': 'pkg'}" in text
+    assert "_TOP_LEVEL_BY_MODULE.get(resolved, resolved)" in text
+
+
 def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
     stdlib_root = cli._stdlib_root_path()
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve(), entry.parent.resolve()]
@@ -143,6 +154,91 @@ def test_collect_imports_resolves_helper_join_dynamic_module_name() -> None:
     imports = cli._collect_imports(tree)
     assert "math" in imports
     assert "sys" in imports
+
+
+def test_shared_module_resolution_cache_reduces_repeated_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pkg = tmp_path / "pkg"
+    subpkg = pkg / "subpkg"
+    subpkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("from .subpkg import mod\n")
+    (subpkg / "__init__.py").write_text("from . import mod\n")
+    entry = subpkg / "mod.py"
+    entry.write_text("import pkg.subpkg.helper\n")
+    helper = subpkg / "helper.py"
+    helper.write_text("VALUE = 1\n")
+
+    stdlib_root = cli._stdlib_root_path()
+    module_roots = [tmp_path.resolve()]
+    roots = module_roots + [stdlib_root]
+    stdlib_allowlist = cli._stdlib_allowlist()
+
+    resolve_calls = 0
+    original = cli._resolve_module_path
+
+    def wrapped(module_name: str, roots_arg: list[Path]) -> Path | None:
+        nonlocal resolve_calls
+        resolve_calls += 1
+        return original(module_name, roots_arg)
+
+    monkeypatch.setattr(cli, "_resolve_module_path", wrapped)
+
+    shared_cache = cli._ModuleResolutionCache()
+    cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        stdlib_allowlist,
+        resolver_cache=shared_cache,
+    )
+    shared_first = resolve_calls
+    cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        stdlib_allowlist,
+        resolver_cache=shared_cache,
+    )
+    shared_second = resolve_calls - shared_first
+
+    resolve_calls = 0
+    graph, explicit_imports = cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        stdlib_allowlist,
+    )
+    unshared_first = resolve_calls
+    cli._collect_package_parents(graph, roots, stdlib_root, stdlib_allowlist)
+    cli._collect_namespace_parents(
+        graph,
+        roots,
+        stdlib_root,
+        stdlib_allowlist,
+        explicit_imports,
+    )
+    graph, explicit_imports = cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        stdlib_allowlist,
+    )
+    cli._collect_package_parents(graph, roots, stdlib_root, stdlib_allowlist)
+    cli._collect_namespace_parents(
+        graph,
+        roots,
+        stdlib_root,
+        stdlib_allowlist,
+        explicit_imports,
+    )
+    unshared_second = resolve_calls - unshared_first
+
+    assert shared_second < unshared_second
 
 
 def test_stdlib_graph_ignores_nested_imports_for_core_scan(tmp_path: Path) -> None:
