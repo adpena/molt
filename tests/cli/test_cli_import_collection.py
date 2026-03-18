@@ -847,6 +847,76 @@ def test_persisted_module_lowering_roundtrip_respects_context_digest(
     assert miss is None
 
 
+def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "alpha.py"
+    module_path.write_text("VALUE = 1\n")
+    project_root = tmp_path
+    context_payload_calls = 0
+
+    def fake_context_payload(*args: object, **kwargs: object) -> dict[str, object] | None:
+        del args, kwargs
+        nonlocal context_payload_calls
+        context_payload_calls += 1
+        return {"module": "alpha"}
+
+    monkeypatch.setattr(cli, "_module_lowering_context_payload", fake_context_payload)
+    monkeypatch.setattr(cli, "_module_lowering_context_digest", lambda payload: "digest")
+
+    def fake_read(
+        root: Path,
+        path: Path,
+        *,
+        module_name: str,
+        is_package: bool,
+        context_digest: str,
+    ) -> dict[str, object] | None:
+        assert root == project_root
+        assert path == module_path
+        assert module_name == "alpha"
+        assert is_package is False
+        assert context_digest == "digest"
+        return {"module": module_name, "kind": "cached"}
+
+    monkeypatch.setattr(cli, "_read_persisted_module_lowering", fake_read)
+
+    cached_results, worker_payloads, context_digest_by_module, batch_error = (
+        cli._prepare_frontend_parallel_batch(
+            ["alpha"],
+            module_graph={"alpha": module_path},
+            module_sources={},
+            generated_module_source_paths={},
+            project_root=project_root,
+            entry_module="__main__",
+            known_classes_snapshot={},
+            module_resolution_cache=cli._ModuleResolutionCache(),
+            parse_codec="json",
+            type_hint_policy="ignore",
+            fallback_policy="error",
+            type_facts=None,
+            enable_phi=True,
+            known_modules={"alpha"},
+            stdlib_allowlist=set(),
+            known_func_defaults={},
+            namespace_module_names=set(),
+            is_wasm=False,
+            module_chunk_max_ops=0,
+            optimization_profile="dev",
+            pgo_hot_function_names=set(),
+            known_modules_sorted=("alpha",),
+            stdlib_allowlist_sorted=(),
+            pgo_hot_function_names_sorted=(),
+        )
+    )
+
+    assert batch_error is None
+    assert worker_payloads == []
+    assert cached_results == {"alpha": {"module": "alpha", "kind": "cached"}}
+    assert context_digest_by_module == {"alpha": "digest"}
+    assert context_payload_calls == 1
+
+
 def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
