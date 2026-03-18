@@ -11,27 +11,13 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 _PROBE = f"""
 import builtins
 import importlib.util
-import json as _host_json
 import sys
 import types
 
+_UUID1 = bytes.fromhex("12345678123412348123abcdef123456")
+
 builtins._molt_intrinsics = {{
-    "molt_json_dumps_ex": lambda obj, skipkeys, ensure_ascii, check_circular, allow_nan, sort_keys, indent, item_sep, key_sep, default: _host_json.dumps(
-        obj,
-        skipkeys=skipkeys,
-        ensure_ascii=ensure_ascii,
-        check_circular=check_circular,
-        allow_nan=allow_nan,
-        sort_keys=sort_keys,
-        indent=indent,
-        separators=(item_sep, key_sep),
-        default=default,
-    ),
-    "molt_json_default_separators": lambda indent: (",", ": ") if indent is not None else (", ", ": "),
-    "molt_json_parse_scalar_obj": lambda data: _host_json.loads(data),
-    "molt_json_encode_basestring_obj": _host_json.encoder.encode_basestring,
-    "molt_json_encode_basestring_ascii_obj": _host_json.encoder.encode_basestring_ascii,
-    "molt_json_scanstring_obj": _host_json.decoder.scanstring,
+    "molt_uuid_uuid1_bytes": lambda node, clock_seq: _UUID1,
 }}
 
 _intrinsics_mod = types.ModuleType("_intrinsics")
@@ -60,7 +46,7 @@ def _load_module(name, path_text):
     return module
 
 
-_private = _load_module("_json", {str(STDLIB_ROOT / "_json.py")!r})
+_private = _load_module("_uuid", {str(STDLIB_ROOT / "_uuid.py")!r})
 
 rows = [
     (name, type(value).__name__, bool(callable(value)))
@@ -70,12 +56,14 @@ rows = [
 for name, type_name, is_callable in rows:
     print(f"ROW|{{name}}|{{type_name}}|{{is_callable}}")
 
-enc = _private.make_encoder({{}}, None, _private.encode_basestring_ascii, None, ':', ',', False, False, True)
-sc = _private.make_scanner(_host_json.JSONDecoder())
-
+result = _private.generate_time_safe()
 checks = {{
-    "encoder": type(enc).__name__ == "make_encoder" and enc({{"a": 1}}, 0) == ('{{"a":1}}',),
-    "scanner": type(sc).__name__ == "make_scanner" and sc('{{"a":1}}', 0) == ({{"a": 1}}, 7),
+    "behavior": (
+        isinstance(result, tuple)
+        and result == (_UUID1, None)
+        and _private.has_stable_extractable_node == 0
+        and _private.has_uuid_generate_time_safe == 0
+    ),
 }}
 for key in sorted(checks):
     print(f"CHECK|{{key}}|{{checks[key]}}")
@@ -101,13 +89,11 @@ def _run_probe() -> tuple[list[tuple[str, str, str]], dict[str, str]]:
     return rows, checks
 
 
-def test__json_public_surface_matches_expected_shape() -> None:
+def test__uuid_public_surface_matches_expected_shape() -> None:
     rows, checks = _run_probe()
     assert rows == [
-        ("encode_basestring", "builtin_function_or_method", "True"),
-        ("encode_basestring_ascii", "builtin_function_or_method", "True"),
-        ("make_encoder", "type", "True"),
-        ("make_scanner", "type", "True"),
-        ("scanstring", "builtin_function_or_method", "True"),
+        ("generate_time_safe", "function", "True"),
+        ("has_stable_extractable_node", "int", "False"),
+        ("has_uuid_generate_time_safe", "int", "False"),
     ]
-    assert checks == {"encoder": "True", "scanner": "True"}
+    assert checks == {"behavior": "True"}
