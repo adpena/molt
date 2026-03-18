@@ -1571,7 +1571,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_ctypes` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_curses_panel` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_curses` top-level stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_datetime` top-level stub with full intrinsic-backed lowering.
+- Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_datetime` now re-exports the intrinsic-backed `datetime` surface with the expected CPython public compatibility names (`UTC`, `datetime_CAPI`, core temporal types). |
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_dbm` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_decimal` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_elementtree` top-level stub with full intrinsic-backed lowering.
@@ -1596,7 +1596,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_overlapped` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_posixshmem` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_py_warnings` top-level stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pydatetime` top-level stub with full intrinsic-backed lowering.
+- Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_pydatetime` now re-exports the intrinsic-backed `datetime` surface with CPython-compatible public names, including `sys`. |
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pydecimal` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyio` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pylong` top-level stub with full intrinsic-backed lowering.
