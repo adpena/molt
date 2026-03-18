@@ -1003,33 +1003,32 @@ class _TrackedOpsList(list[MoltOp]):
         super().__init__(initial or [])
         self._owner = owner
 
-    def _invalidate(self) -> None:
-        return None
-
     def append(self, item: MoltOp) -> None:
-        self._owner._adjust_module_pressure_counts(ops_delta=1)
         super().append(item)
+        self._owner._adjust_module_pressure_counts(ops_delta=1)
 
     def extend(self, items: Iterable[MoltOp]) -> None:
         items_list = list(items)
-        self._owner._adjust_module_pressure_counts(ops_delta=len(items_list))
         super().extend(items_list)
+        self._owner._adjust_module_pressure_counts(ops_delta=len(items_list))
 
     def insert(self, index: int, item: MoltOp) -> None:
-        self._owner._adjust_module_pressure_counts(ops_delta=1)
         super().insert(index, item)
+        self._owner._adjust_module_pressure_counts(ops_delta=1)
 
     def pop(self, index: int = -1) -> MoltOp:
+        item = super().pop(index)
         self._owner._adjust_module_pressure_counts(ops_delta=-1)
-        return super().pop(index)
+        return item
 
     def remove(self, item: MoltOp) -> None:
-        self._owner._adjust_module_pressure_counts(ops_delta=-1)
         super().remove(item)
+        self._owner._adjust_module_pressure_counts(ops_delta=-1)
 
     def clear(self) -> None:
-        self._owner._adjust_module_pressure_counts(ops_delta=-len(self))
+        old_len = len(self)
         super().clear()
+        self._owner._adjust_module_pressure_counts(ops_delta=-old_len)
 
     def __setitem__(
         self,
@@ -1039,25 +1038,28 @@ class _TrackedOpsList(list[MoltOp]):
         if isinstance(index, slice):
             replacement = list(cast(Iterable[MoltOp], value))
             current = list(self[index])
+            super().__setitem__(index, replacement)
             self._owner._adjust_module_pressure_counts(
                 ops_delta=len(replacement) - len(current)
             )
-            super().__setitem__(index, replacement)
             return
         super().__setitem__(index, value)
 
     def __delitem__(self, index: int | slice) -> None:
         if isinstance(index, slice):
             removed = list(self[index])
-            self._owner._adjust_module_pressure_counts(ops_delta=-len(removed))
         else:
-            self._owner._adjust_module_pressure_counts(ops_delta=-1)
+            removed = None
         super().__delitem__(index)
+        self._owner._adjust_module_pressure_counts(
+            ops_delta=-len(removed) if removed is not None else -1
+        )
 
     def __iadd__(self, items: Iterable[MoltOp]) -> "_TrackedOpsList":
         items_list = list(items)
+        result = cast("_TrackedOpsList", super().__iadd__(items_list))
         self._owner._adjust_module_pressure_counts(ops_delta=len(items_list))
-        return cast("_TrackedOpsList", super().__iadd__(items_list))
+        return result
 
 
 class CanonicalizationState(TypedDict):
@@ -1099,6 +1101,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.funcs_map: dict[str, FuncInfo] = {
             "molt_main": {"params": [], "ops": self._new_tracked_ops()}
         }
+        self._module_pressure_funcs_map_ref = self.funcs_map
         self.current_func_name: str = "molt_main"
         self.current_ops: list[MoltOp] = self.funcs_map["molt_main"]["ops"]
         self.func_code_ids: dict[str, int] = {}
@@ -30125,6 +30128,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self._module_pressure_function_count += function_delta
         self._module_pressure_total_ops += ops_delta
 
+    def _sync_module_pressure_counts_from_funcs_map(self) -> None:
+        function_count = 0
+        total_ops = 0
+        for name, info in self.funcs_map.items():
+            if not isinstance(info, dict):
+                continue
+            if name != "molt_main" and "ops" in info:
+                function_count += 1
+            total_ops += len(cast(list[MoltOp], info.get("ops", [])))
+        self._module_pressure_function_count = function_count
+        self._module_pressure_total_ops = total_ops
+        self._module_pressure_funcs_map_ref = self.funcs_map
+
     def _new_tracked_ops(
         self,
         initial: list[MoltOp] | None = None,
@@ -30305,6 +30321,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self._refresh_midend_env_config_if_needed()
 
         def module_pressure() -> tuple[int, int, int]:
+            if self._module_pressure_funcs_map_ref is not self.funcs_map:
+                self._sync_module_pressure_counts_from_funcs_map()
             function_count = self._module_pressure_function_count
             total_ops = self._module_pressure_total_ops
             func_threshold = self.midend_env.monolith_function_threshold
