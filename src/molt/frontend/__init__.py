@@ -5522,13 +5522,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         eval_ok = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="IS", args=[eval_exc, none_val], result=eval_ok))
         self.emit(MoltOp(kind="IF", args=[eval_ok], result=MoltValue("none")))
-        self.emit(
-            MoltOp(
-                kind="EXCEPTION_SET_LAST",
-                args=[exc_val],
-                result=MoltValue("none"),
-            )
-        )
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="RAISE", args=[eval_exc], result=MoltValue("none")))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
@@ -20486,13 +20479,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self._emit_module_global_del(name)
             return
         if name in self.nonlocal_decls or name in self.free_vars:
-            _ = self._emit_free_var_load(name)
+            if not allow_missing:
+                _ = self._emit_free_var_load(name)
             missing = self._emit_missing_value()
             if not self._emit_free_var_store(name, missing):
                 raise NotImplementedError("nonlocal binding not found")
             return
         self._box_local(name)
-        _ = self._load_local_value(name)
+        if not allow_missing:
+            _ = self._load_local_value(name)
         missing = self._emit_missing_value()
         self._store_local_value(name, missing)
         self.unbound_check_names.add(name)
@@ -22934,9 +22929,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             exc_entry = ActiveException(value=exc_val, slot=exc_slot_offset)
             self.active_exceptions.append(exc_entry)
             self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
-            if handler.name and self.current_func_name == "molt_main":
-                self._emit_module_attr_set(handler.name, exc_val, defer=False)
-                self.globals[handler.name] = exc_val
             self.emit(
                 MoltOp(
                     kind="EXCEPTION_CONTEXT_SET",
@@ -22945,6 +22937,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
             self._emit_guarded_body(handler.body, exc_entry)
+            cleared_ctx = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared_ctx))
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_CONTEXT_SET",
+                    args=[cleared_ctx],
+                    result=MoltValue("none"),
+                )
+            )
             if handler.name:
                 self._emit_delete_name(handler.name, allow_missing=True)
             self.active_exceptions.pop()
@@ -23304,9 +23305,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 if handler.name:
                     self._store_local_value(handler.name, match_val)
-                    if self.current_func_name == "molt_main":
-                        self._emit_module_attr_set(handler.name, match_val)
-                        self.globals[handler.name] = match_val
                 exc_entry = ActiveException(value=match_val, slot=exc_slot_offset)
                 self.active_exceptions.append(exc_entry)
                 self.emit(
@@ -23320,6 +23318,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 )
                 self._emit_guarded_body(handler.body, exc_entry)
+                cleared_ctx = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared_ctx))
+                self.emit(
+                    MoltOp(
+                        kind="EXCEPTION_CONTEXT_SET",
+                        args=[cleared_ctx],
+                        result=MoltValue("none"),
+                    )
+                )
                 if handler.name:
                     self._emit_delete_name(handler.name, allow_missing=True)
                 self.active_exceptions.pop()

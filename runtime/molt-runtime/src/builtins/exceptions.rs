@@ -822,14 +822,18 @@ pub(crate) fn exception_context_active_bits() -> Option<u64> {
 
 pub(crate) fn exception_context_set(_py: &PyToken<'_>, bits: u64) {
     crate::gil_assert();
-    if obj_from_bits(bits).is_none() {
-        return;
-    }
     ACTIVE_EXCEPTION_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
         let Some(slot) = stack.last_mut() else {
             return;
         };
+        if obj_from_bits(bits).is_none() {
+            if !obj_from_bits(*slot).is_none() {
+                dec_ref_bits(_py, *slot);
+            }
+            *slot = MoltObject::none().bits();
+            return;
+        }
         if *slot == bits {
             return;
         }
