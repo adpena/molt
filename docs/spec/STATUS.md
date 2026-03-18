@@ -1607,6 +1607,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl._threading_handler` module stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.base_eventqueue` module stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.commands` module stub with full intrinsic-backed lowering.
+- Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_random` now re-exports Molt's intrinsic-backed `random.Random` type for CPython-compatible private-module imports.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.completing_reader` module stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.console` module stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_pyrepl.curses` module stub with full intrinsic-backed lowering.
