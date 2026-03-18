@@ -994,6 +994,72 @@ class FuncInfo(TypedDict):
     ops: list[MoltOp]
 
 
+class _TrackedOpsList(list[MoltOp]):
+    def __init__(
+        self,
+        owner: "SimpleTIRGenerator",
+        initial: list[MoltOp] | None = None,
+    ) -> None:
+        super().__init__(initial or [])
+        self._owner = owner
+
+    def _invalidate(self) -> None:
+        return None
+
+    def append(self, item: MoltOp) -> None:
+        self._owner._adjust_module_pressure_counts(ops_delta=1)
+        super().append(item)
+
+    def extend(self, items: Iterable[MoltOp]) -> None:
+        items_list = list(items)
+        self._owner._adjust_module_pressure_counts(ops_delta=len(items_list))
+        super().extend(items_list)
+
+    def insert(self, index: int, item: MoltOp) -> None:
+        self._owner._adjust_module_pressure_counts(ops_delta=1)
+        super().insert(index, item)
+
+    def pop(self, index: int = -1) -> MoltOp:
+        self._owner._adjust_module_pressure_counts(ops_delta=-1)
+        return super().pop(index)
+
+    def remove(self, item: MoltOp) -> None:
+        self._owner._adjust_module_pressure_counts(ops_delta=-1)
+        super().remove(item)
+
+    def clear(self) -> None:
+        self._owner._adjust_module_pressure_counts(ops_delta=-len(self))
+        super().clear()
+
+    def __setitem__(
+        self,
+        index: int | slice,
+        value: MoltOp | Iterable[MoltOp],
+    ) -> None:
+        if isinstance(index, slice):
+            replacement = list(cast(Iterable[MoltOp], value))
+            current = list(self[index])
+            self._owner._adjust_module_pressure_counts(
+                ops_delta=len(replacement) - len(current)
+            )
+            super().__setitem__(index, replacement)
+            return
+        super().__setitem__(index, value)
+
+    def __delitem__(self, index: int | slice) -> None:
+        if isinstance(index, slice):
+            removed = list(self[index])
+            self._owner._adjust_module_pressure_counts(ops_delta=-len(removed))
+        else:
+            self._owner._adjust_module_pressure_counts(ops_delta=-1)
+        super().__delitem__(index)
+
+    def __iadd__(self, items: Iterable[MoltOp]) -> "_TrackedOpsList":
+        items_list = list(items)
+        self._owner._adjust_module_pressure_counts(ops_delta=len(items_list))
+        return cast("_TrackedOpsList", super().__iadd__(items_list))
+
+
 class CanonicalizationState(TypedDict):
     aliases: dict[str, MoltValue]
     const_int_values: dict[str, int]
@@ -1028,7 +1094,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         optimization_profile: MidendProfile = "release",
         pgo_hot_functions: set[str] | None = None,
     ) -> None:
-        self.funcs_map: dict[str, FuncInfo] = {"molt_main": {"params": [], "ops": []}}
+        self._module_pressure_function_count = 0
+        self._module_pressure_total_ops = 0
+        self.funcs_map: dict[str, FuncInfo] = {
+            "molt_main": {"params": [], "ops": self._new_tracked_ops()}
+        }
         self.current_func_name: str = "molt_main"
         self.current_ops: list[MoltOp] = self.funcs_map["molt_main"]["ops"]
         self.func_code_ids: dict[str, int] = {}
@@ -1489,7 +1559,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             symbol = f"{self.module_prefix}{_MOLT_MODULE_CHUNK_PREFIX}_{self.module_chunk_counter}"
         self.func_symbol_names[symbol] = "<module_chunk>"
         self._register_code_symbol(symbol)
-        self.funcs_map[symbol] = FuncInfo(params=[_MOLT_MODULE_CHUNK_PARAM], ops=[])
+        self.funcs_map[symbol] = FuncInfo(
+            params=[_MOLT_MODULE_CHUNK_PARAM],
+            ops=self._new_tracked_ops(count_function=True),
+        )
         self.module_chunk_symbols.append(symbol)
         return symbol
 
@@ -2275,7 +2348,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         needs_return_slot: bool = False,
     ) -> None:
         if name not in self.funcs_map:
-            self.funcs_map[name] = FuncInfo(params=params or [], ops=[])
+            self.funcs_map[name] = FuncInfo(
+                params=params or [],
+                ops=self._new_tracked_ops(count_function=True),
+            )
         self.current_func_name = name
         self.current_ops = self.funcs_map[name]["ops"]
         self.locals = {}
@@ -3023,7 +3099,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             def start_chunk() -> str:
                 symbol = self._new_module_chunk_symbol()
                 chunk_ops = self.funcs_map[symbol]["ops"]
+                old_ops = self.funcs_map["molt_main"]["ops"]
                 self.funcs_map["molt_main"]["ops"] = chunk_ops
+                self._adjust_module_pressure_counts(
+                    ops_delta=len(chunk_ops) - len(old_ops)
+                )
                 self.current_ops = chunk_ops
                 self.function_exception_label = self.next_label()
                 self.module_obj = module_param
@@ -3045,7 +3125,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     and len(self.current_ops) >= self.module_chunk_max_ops
                 ):
                     self._emit_function_exception_handler(clear_handlers=True)
+                    old_ops = self.funcs_map["molt_main"]["ops"]
                     self.funcs_map["molt_main"]["ops"] = wrapper_ops
+                    self._adjust_module_pressure_counts(
+                        ops_delta=len(wrapper_ops) - len(old_ops)
+                    )
                     call_out = MoltValue(self.next_var(), type_hint="Any")
                     emit_wrapper(
                         MoltOp(
@@ -3058,7 +3142,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
             if current_chunk is not None:
                 self._emit_function_exception_handler(clear_handlers=True)
+                old_ops = self.funcs_map["molt_main"]["ops"]
                 self.funcs_map["molt_main"]["ops"] = wrapper_ops
+                self._adjust_module_pressure_counts(
+                    ops_delta=len(wrapper_ops) - len(old_ops)
+                )
                 call_out = MoltValue(self.next_var(), type_hint="Any")
                 emit_wrapper(
                     MoltOp(
@@ -3068,7 +3156,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 )
 
+            old_ops = self.funcs_map["molt_main"]["ops"]
             self.funcs_map["molt_main"]["ops"] = wrapper_ops
+            self._adjust_module_pressure_counts(
+                ops_delta=len(wrapper_ops) - len(old_ops)
+            )
             self.current_ops = wrapper_ops
             self.function_exception_label = wrapper_exception_label
             self.module_obj = wrapper_module_obj
@@ -30024,6 +30116,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _capture_midend_env_snapshot() -> tuple[str | None, ...]:
         return tuple(os.environ.get(name) for name in _MIDEND_ENV_KEYS)
 
+    def _adjust_module_pressure_counts(
+        self,
+        *,
+        function_delta: int = 0,
+        ops_delta: int = 0,
+    ) -> None:
+        self._module_pressure_function_count += function_delta
+        self._module_pressure_total_ops += ops_delta
+
+    def _new_tracked_ops(
+        self,
+        initial: list[MoltOp] | None = None,
+        *,
+        count_function: bool = False,
+    ) -> _TrackedOpsList:
+        if count_function:
+            self._module_pressure_function_count += 1
+        tracked = _TrackedOpsList(self, initial)
+        self._module_pressure_total_ops += len(tracked)
+        return tracked
+
     def _refresh_midend_env_config_if_needed(self) -> None:
         snapshot = self._capture_midend_env_snapshot()
         if snapshot == self._midend_env_snapshot:
@@ -30192,20 +30305,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self._refresh_midend_env_config_if_needed()
 
         def module_pressure() -> tuple[int, int, int]:
+            function_count = self._module_pressure_function_count
+            total_ops = self._module_pressure_total_ops
             func_threshold = self.midend_env.monolith_function_threshold
             ops_threshold = self.midend_env.monolith_total_ops_threshold
             hard_func_threshold = max(func_threshold + 1, func_threshold * 2)
             hard_ops_threshold = max(ops_threshold + 1, ops_threshold * 2)
-            function_count = sum(
-                1
-                for name, info in self.funcs_map.items()
-                if name != "molt_main" and isinstance(info, dict) and "ops" in info
-            )
-            total_ops = sum(
-                len(cast(list[MoltOp], info.get("ops", [])))
-                for info in self.funcs_map.values()
-                if isinstance(info, dict)
-            )
             level = 0
             if function_count >= func_threshold or total_ops >= ops_threshold:
                 level = 1
