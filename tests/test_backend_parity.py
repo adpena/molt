@@ -81,12 +81,15 @@ def _run_molt_build(
         # These tests compare pre-backend IR. Skip optional linked wasm output
         # so the parity lane measures frontend/midend behavior, not linker cost.
         env.setdefault("MOLT_WASM_LINKED", "0")
+        env.setdefault("MOLT_WASM_MODULE_CHUNK_OPS", "0")
     args = [
         sys.executable,
         "-m",
         "molt.cli",
         "build",
         str(src_path),
+        "--profile",
+        "dev",
         "--target",
         target,
         "--out-dir",
@@ -127,6 +130,35 @@ def _collect_ir_json(out_dir: Path) -> dict | None:
         except (json.JSONDecodeError, OSError):
             continue
     return None
+
+
+def _entry_ir_function_names(module_name: str) -> set[str]:
+    return {
+        f"{module_name}____molt_globals_builtin__",
+        f"molt_init_{module_name}",
+        "__main______molt_globals_builtin__",
+        "molt_init___main__",
+        "molt_main",
+    }
+
+
+def _filter_entry_ir(ir_json: dict, module_name: str) -> dict:
+    """Keep only the entry-module IR surface that should be backend-independent.
+
+    Full emitted IR includes target-specific stdlib/module initialization
+    functions (for example capability-gated ``sys`` wiring). The frontend
+    guarantee we want here is that the user module and ``__main__`` wrapper
+    lower identically before backend-specific runtime integration.
+    """
+
+    keep_names = _entry_ir_function_names(module_name)
+    filtered_functions = [
+        function
+        for function in ir_json.get("functions", [])
+        if function.get("name") in keep_names
+        or function.get("name", "").startswith(f"{module_name}__")
+    ]
+    return {"functions": filtered_functions}
 
 
 # ------------------------------------------------------------------
@@ -170,7 +202,10 @@ class TestBackendIRParity:
             if result.returncode != 0:
                 # Backend may not be available (e.g., no wasm-ld), skip.
                 continue
-            ir_outputs[backend] = _collect_ir_json(out_dir)
+            ir_output = _collect_ir_json(out_dir)
+            if ir_output is not None:
+                ir_output = _filter_entry_ir(ir_output, src_file.stem)
+            ir_outputs[backend] = ir_output
 
         available = {k: v for k, v in ir_outputs.items() if v is not None}
         if len(available) < 2:
@@ -231,6 +266,9 @@ class TestBackendOptimizationParity:
                 env.update(env_override)
                 env.setdefault("MOLT_BACKEND_DAEMON", "0")
                 env.setdefault("MOLT_MIDEND_FAIL_OPEN", "1")
+                if backend == "wasm":
+                    env.setdefault("MOLT_WASM_LINKED", "0")
+                    env.setdefault("MOLT_WASM_MODULE_CHUNK_OPS", "0")
                 result = subprocess.run(
                     [
                         sys.executable,
@@ -238,6 +276,8 @@ class TestBackendOptimizationParity:
                         "molt.cli",
                         "build",
                         str(src_file),
+                        "--profile",
+                        "dev",
                         "--target",
                         backend,
                         "--out-dir",
@@ -255,7 +295,10 @@ class TestBackendOptimizationParity:
                 continue
             if result.returncode != 0:
                 continue
-            ir_outputs[backend] = _collect_ir_json(out_dir)
+            ir_output = _collect_ir_json(out_dir)
+            if ir_output is not None:
+                ir_output = _filter_entry_ir(ir_output, src_file.stem)
+            ir_outputs[backend] = ir_output
 
         available = {k: v for k, v in ir_outputs.items() if v is not None}
         if len(available) < 2:
