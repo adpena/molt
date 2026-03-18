@@ -11666,7 +11666,6 @@ def _internal_batch_build_server(
 ) -> int:
     del json_output
     del verbose
-    request_limit = _backend_daemon_max_request_bytes()
 
     def _emit_response(payload: dict[str, Any]) -> None:
         sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
@@ -11676,19 +11675,6 @@ def _internal_batch_build_server(
         if not raw_line.strip():
             continue
         req_id: Any = None
-        raw_len = len(raw_line.encode("utf-8", "replace"))
-        if raw_len > request_limit:
-            _emit_response(
-                {
-                    "id": None,
-                    "ok": False,
-                    "error": (
-                        "batch build request too large: "
-                        f"{raw_len} bytes > limit {request_limit}"
-                    ),
-                }
-            )
-            continue
         try:
             request = json.loads(raw_line)
         except json.JSONDecodeError as exc:
