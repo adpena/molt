@@ -238,7 +238,8 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
     )
     unshared_second = resolve_calls - unshared_first
 
-    assert shared_second < unshared_second
+    assert shared_second == 0
+    assert unshared_second > 0
 
 
 def test_stdlib_graph_ignores_nested_imports_for_core_scan(tmp_path: Path) -> None:
