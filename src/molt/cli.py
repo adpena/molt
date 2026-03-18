@@ -5933,6 +5933,7 @@ def _stage_backend_output_and_caches(
     cache_key: str | None,
     function_cache_path: Path | None,
     warnings: list[str],
+    output_already_synced: bool | None = None,
 ) -> str | None:
     try:
         if output_artifact.parent != Path("."):
@@ -5960,12 +5961,13 @@ def _stage_backend_output_and_caches(
             staged_source = cache_path
 
     state_path = _artifact_sync_state_path(project_root, output_artifact)
-    output_already_synced = bool(cache_key) and _artifact_sync_state_matches(
-        _read_artifact_sync_state(state_path),
-        source_key=cache_key or "",
-        tier="module",
-        artifact=output_artifact,
-    )
+    if output_already_synced is None:
+        output_already_synced = bool(cache_key) and _artifact_sync_state_matches(
+            _read_artifact_sync_state(state_path),
+            source_key=cache_key or "",
+            tier="module",
+            artifact=output_artifact,
+        )
 
     try:
         if output_already_synced:
@@ -11901,6 +11903,11 @@ def build(
                         cache_key=cache_key if cache else None,
                         function_cache_path=function_cache_path if cache else None,
                         warnings=warnings,
+                        output_already_synced=(
+                            skip_module_output_if_synced
+                            if daemon_ready and cache and cache_key
+                            else None
+                        ),
                     )
                     if stage_error is not None:
                         return _fail(stage_error, json_output, command="build")
