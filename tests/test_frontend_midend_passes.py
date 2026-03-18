@@ -1827,6 +1827,22 @@ def test_midend_oversized_entry_functions_do_not_force_tier_a() -> None:
     assert policy.tier_source == "module_entry_oversized"
 
 
+def test_midend___main___helpers_do_not_inherit_entry_tier() -> None:
+    ops = [
+        MoltOp(kind="CONST", args=[idx], result=MoltValue(f"v{idx}"))
+        for idx in range(64)
+    ]
+    gen = SimpleTIRGenerator(optimization_profile="release", module_name="__main__")
+    policy = gen._resolve_midend_function_policy(
+        ops,
+        function_name="helper_func",
+        block_count=4,
+    )
+    assert policy.tier_base == "B"
+    assert policy.tier == "B"
+    assert policy.tier_source == "default"
+
+
 def test_midend_hot_function_promotion_respects_explicit_tier_overrides() -> None:
     with _temp_env("MOLT_MIDEND_TIER_C_FUNCTIONS", "pinned_hot"):
         gen = SimpleTIRGenerator(
