@@ -368,42 +368,44 @@ pub extern "C" fn molt_datetime_td_normalize(
     weeks_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let days = match unpack_i64(_py, days_bits, "days") {
+        let days = match unpack_f64(_py, days_bits, "days") {
             Ok(v) => v,
             Err(e) => return e,
         };
-        let secs = match unpack_i64(_py, seconds_bits, "seconds") {
+        let secs = match unpack_f64(_py, seconds_bits, "seconds") {
             Ok(v) => v,
             Err(e) => return e,
         };
-        let us = match unpack_i64(_py, us_bits, "microseconds") {
+        let us = match unpack_f64(_py, us_bits, "microseconds") {
             Ok(v) => v,
             Err(e) => return e,
         };
-        let ms = match unpack_i64(_py, ms_bits, "milliseconds") {
+        let ms = match unpack_f64(_py, ms_bits, "milliseconds") {
             Ok(v) => v,
             Err(e) => return e,
         };
-        let minutes = match unpack_i64(_py, minutes_bits, "minutes") {
+        let minutes = match unpack_f64(_py, minutes_bits, "minutes") {
             Ok(v) => v,
             Err(e) => return e,
         };
-        let hours = match unpack_i64(_py, hours_bits, "hours") {
+        let hours = match unpack_f64(_py, hours_bits, "hours") {
             Ok(v) => v,
             Err(e) => return e,
         };
-        let weeks = match unpack_i64(_py, weeks_bits, "weeks") {
+        let weeks = match unpack_f64(_py, weeks_bits, "weeks") {
             Ok(v) => v,
             Err(e) => return e,
         };
 
-        // Accumulate everything into microseconds, then normalize.
-        let mut total_us: i128 = us as i128
-            + ms as i128 * 1_000
-            + secs as i128 * 1_000_000
-            + minutes as i128 * 60 * 1_000_000
-            + hours as i128 * 3_600 * 1_000_000
-            + (days as i128 + weeks as i128 * 7) * 86_400 * 1_000_000;
+        // Match CPython timedelta construction by accepting ints/floats and
+        // rounding the aggregate duration to the nearest microsecond.
+        let total_us_f = us
+            + ms * 1_000.0
+            + secs * 1_000_000.0
+            + minutes * 60.0 * 1_000_000.0
+            + hours * 3_600.0 * 1_000_000.0
+            + (days + weeks * 7.0) * 86_400.0 * 1_000_000.0;
+        let mut total_us = total_us_f.round() as i128;
 
         let us_per_day: i128 = 86_400 * 1_000_000;
         let us_per_sec: i128 = 1_000_000;
@@ -1051,7 +1053,7 @@ pub extern "C" fn molt_datetime_format_isodate(y_bits: u64, m_bits: u64, d_bits:
     })
 }
 
-/// Format ISO time string.  `utcoff_bits` is int seconds or None (naive).
+/// Format ISO time string.
 /// `timespec_bits` is a string: "auto", "hours", "minutes", "seconds",
 /// "milliseconds", "microseconds".
 #[unsafe(no_mangle)]
@@ -1060,7 +1062,6 @@ pub extern "C" fn molt_datetime_format_isotime(
     min_bits: u64,
     s_bits: u64,
     us_bits: u64,
-    utcoff_bits: u64,
     timespec_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -1084,14 +1085,7 @@ pub extern "C" fn molt_datetime_format_isotime(
         let timespec =
             string_obj_to_owned(obj_from_bits(timespec_bits)).unwrap_or_else(|| "auto".to_string());
 
-        let utcoff_obj = obj_from_bits(utcoff_bits);
-        let utcoff: Option<i64> = if utcoff_obj.is_none() {
-            None
-        } else {
-            to_i64(utcoff_obj)
-        };
-
-        let s = format_isotime_impl(h, mi, sec, us, utcoff, &timespec);
+        let s = format_isotime_impl(h, mi, sec, us, None, &timespec);
         match s {
             Ok(text) => string_bits(_py, &text),
             Err(msg) => raise_exception::<u64>(_py, "ValueError", &msg),
@@ -1154,7 +1148,7 @@ fn format_isotime_impl(
 }
 
 /// Format a full ISO datetime string.
-/// Parameters: y, m, d, h, min, s, us, utcoff (int|None), sep (str), timespec (str)
+/// Parameters: y, m, d, h, min, s, us, sep (str), timespec (str), tz_str (str)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_format_isodatetime(
     y_bits: u64,
@@ -1164,9 +1158,9 @@ pub extern "C" fn molt_datetime_format_isodatetime(
     min_bits: u64,
     s_bits: u64,
     us_bits: u64,
-    utcoff_bits: u64,
     sep_bits: u64,
     timespec_bits: u64,
+    tz_str_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let y = match unpack_i64(_py, y_bits, "year") {
@@ -1198,15 +1192,15 @@ pub extern "C" fn molt_datetime_format_isodatetime(
             Err(e) => return e,
         };
 
-        let sep = string_obj_to_owned(obj_from_bits(sep_bits)).unwrap_or_else(|| "T".to_string());
-        let timespec =
-            string_obj_to_owned(obj_from_bits(timespec_bits)).unwrap_or_else(|| "auto".to_string());
-
-        let utcoff_obj = obj_from_bits(utcoff_bits);
-        let utcoff: Option<i64> = if utcoff_obj.is_none() {
-            None
-        } else {
-            to_i64(utcoff_obj)
+        let sep =
+            string_obj_to_owned(obj_from_bits(sep_bits)).unwrap_or_else(|| "T".to_string());
+        let timespec = string_obj_to_owned(obj_from_bits(timespec_bits))
+            .unwrap_or_else(|| "auto".to_string());
+        let tz_str =
+            string_obj_to_owned(obj_from_bits(tz_str_bits)).unwrap_or_else(|| "".to_string());
+        let utcoff = match parse_iso_offset_str(&tz_str) {
+            Ok(value) => value,
+            Err(msg) => return raise_exception::<u64>(_py, "ValueError", &msg),
         };
 
         let date_str = format!("{y:04}-{m:02}-{d:02}");
@@ -1219,6 +1213,40 @@ pub extern "C" fn molt_datetime_format_isodatetime(
         let result = format!("{date_str}{sep_char}{time_str}");
         string_bits(_py, &result)
     })
+}
+
+fn parse_iso_offset_str(value: &str) -> Result<Option<i64>, String> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let sign = match value.as_bytes().first().copied() {
+        Some(b'+') => 1_i64,
+        Some(b'-') => -1_i64,
+        _ => return Err(format!("Invalid UTC offset: {:?}", value)),
+    };
+    let body = &value[1..];
+    let parts: Vec<&str> = body.split(':').collect();
+    if parts.len() < 2 || parts.len() > 3 {
+        return Err(format!("Invalid UTC offset: {:?}", value));
+    }
+    let hours = parts[0]
+        .parse::<i64>()
+        .map_err(|_| format!("Invalid UTC offset: {:?}", value))?;
+    let minutes = parts[1]
+        .parse::<i64>()
+        .map_err(|_| format!("Invalid UTC offset: {:?}", value))?;
+    let seconds = if parts.len() == 3 {
+        parts[2]
+            .parse::<i64>()
+            .map_err(|_| format!("Invalid UTC offset: {:?}", value))?
+    } else {
+        0
+    };
+    if !(0..=23).contains(&hours) || !(0..=59).contains(&minutes) || !(0..=59).contains(&seconds)
+    {
+        return Err(format!("Invalid UTC offset: {:?}", value));
+    }
+    Ok(Some(sign * (hours * 3600 + minutes * 60 + seconds)))
 }
 
 // ---------------------------------------------------------------------------
@@ -2260,8 +2288,7 @@ pub extern "C" fn molt_datetime_validate_date(y_bits: u64, m_bits: u64, d_bits: 
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
         if !(1..=12).contains(&m) {
-            let msg = format!("month must be in 1..12, not {m}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, "ValueError", "month must be in 1..12");
         }
         let max_day = days_in_month_impl(y as i32, m as i32) as i64;
         if !(1..=max_day).contains(&d) {
@@ -2320,8 +2347,7 @@ pub extern "C" fn molt_datetime_validate_time(
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
         if !(0..=1).contains(&fold) {
-            let msg = format!("fold must be either 0 or 1, not {fold}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, "ValueError", "fold must be either 0 or 1");
         }
         MoltObject::from_bool(true).bits()
     })
