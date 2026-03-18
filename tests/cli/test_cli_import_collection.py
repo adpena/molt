@@ -282,14 +282,14 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
     stdlib_allowlist = cli._stdlib_allowlist()
 
     resolve_calls = 0
-    original = cli._resolve_module_path
+    original = cli._resolve_module_path_parts
 
-    def wrapped(module_name: str, roots_arg: list[Path]) -> Path | None:
+    def wrapped(parts: tuple[str, ...], roots_arg: list[Path]) -> Path | None:
         nonlocal resolve_calls
         resolve_calls += 1
-        return original(module_name, roots_arg)
+        return original(parts, roots_arg)
 
-    monkeypatch.setattr(cli, "_resolve_module_path", wrapped)
+    monkeypatch.setattr(cli, "_resolve_module_path_parts", wrapped)
 
     shared_cache = cli._ModuleResolutionCache()
     cli._discover_module_graph(
@@ -461,6 +461,40 @@ def test_shared_module_resolution_cache_reuses_resolved_paths(
     assert not first_is_stdlib
     assert second_is_stdlib is first_is_stdlib
     assert resolve_calls == first_resolve_calls
+
+
+def test_shared_module_resolution_cache_skips_resolve_for_normalized_absolute_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = cli._ModuleResolutionCache()
+    path = (tmp_path / "module.py").resolve()
+
+    def fail_resolve(self: Path, *args: object, **kwargs: object) -> Path:
+        raise AssertionError(f"resolve() should not run for {self}")
+
+    monkeypatch.setattr(Path, "resolve", fail_resolve)
+    assert cache.resolved_path(path) == path
+
+
+def test_shared_module_resolution_cache_resolves_relative_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = cli._ModuleResolutionCache()
+    rel_path = Path("pkg") / "module.py"
+    resolved_path = (tmp_path / rel_path).resolve()
+    calls = 0
+    original_resolve = Path.resolve
+
+    def wrapped_resolve(self: Path, *args: object, **kwargs: object) -> Path:
+        nonlocal calls
+        calls += 1
+        if self == rel_path:
+            return resolved_path
+        return original_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", wrapped_resolve)
+    assert cache.resolved_path(rel_path) == resolved_path
+    assert calls == 1
 
 
 def test_shared_module_resolution_cache_reuses_import_scans(
