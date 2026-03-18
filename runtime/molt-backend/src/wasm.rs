@@ -834,6 +834,20 @@ impl WasmBackend {
             ids.insert(name.to_string(), import_idx);
             import_idx += 1;
         };
+        let simple_i64_import_type = |arity: usize| -> u32 {
+            match arity {
+                0 => 0,
+                1 => 2,
+                2 => 3,
+                3 => 5,
+                4 => 7,
+                5 => 12,
+                6 => 9,
+                7 => 10,
+                8 => 28,
+                _ => panic!("unsupported simple i64 import arity {arity}"),
+            }
+        };
 
         // Host Imports (aligned with wit/molt-runtime.wit)
         add_import("runtime_init", 0, &mut self.import_ids);
@@ -1312,6 +1326,182 @@ impl WasmBackend {
         add_import("env_get", 3, &mut self.import_ids);
         add_import("env_snapshot", 0, &mut self.import_ids);
         add_import("os_name", 0, &mut self.import_ids);
+        for (import_name, arity) in [
+            ("importlib_bootstrap_payload", 2usize),
+            ("importlib_cache_from_source", 1),
+            ("importlib_coerce_module_name", 3),
+            ("importlib_decode_source", 1),
+            ("importlib_ensure_default_meta_path", 1),
+            ("importlib_exec_extension", 3),
+            ("importlib_exec_restricted_source", 3),
+            ("importlib_exec_sourceless", 3),
+            ("importlib_extension_loader_payload", 3),
+            ("importlib_filefinder_find_spec", 3),
+            ("importlib_filefinder_invalidate", 1),
+            ("importlib_find_in_path", 2),
+            ("importlib_find_in_path_package_context", 2),
+            ("importlib_find_spec", 8),
+            ("importlib_find_spec_orchestrate", 5),
+            ("importlib_frozen_external_payload", 2),
+            ("importlib_frozen_payload", 2),
+            ("importlib_import_module", 3),
+            ("importlib_import_optional", 1),
+            ("importlib_import_or_fallback", 2),
+            ("importlib_import_required", 1),
+            ("importlib_invalidate_caches", 0),
+            ("importlib_known_absent_missing_name", 1),
+            ("importlib_load_module_shim", 3),
+            ("importlib_metadata_dist_paths", 2),
+            ("importlib_metadata_distributions_payload", 2),
+            ("importlib_metadata_entry_points_filter_payload", 5),
+            ("importlib_metadata_entry_points_select_payload", 4),
+            ("importlib_metadata_normalize_name", 1),
+            ("importlib_metadata_packages_distributions_payload", 2),
+            ("importlib_metadata_payload", 1),
+            ("importlib_metadata_record_payload", 1),
+            ("importlib_metadata_types_payload", 4),
+            ("importlib_module_from_spec", 1),
+            ("importlib_module_spec_is_package", 1),
+            ("importlib_package_root_from_origin", 1),
+            ("importlib_path_is_archive_member", 1),
+            ("importlib_pathfinder_find_spec", 3),
+            ("importlib_read_file", 1),
+            ("importlib_reload", 4),
+            ("importlib_resolve_name", 2),
+            ("importlib_resources_as_file_enter", 2),
+            ("importlib_resources_as_file_exit", 3),
+            ("importlib_resources_contents_from_package", 3),
+            ("importlib_resources_contents_from_package_parts", 4),
+            ("importlib_resources_files_payload", 4),
+            ("importlib_resources_is_resource_from_package", 4),
+            ("importlib_resources_is_resource_from_package_parts", 4),
+            ("importlib_resources_joinpath", 2),
+            ("importlib_resources_loader_reader", 2),
+            ("importlib_resources_module_name", 2),
+            ("importlib_resources_normalize_path", 1),
+            ("importlib_resources_only", 3),
+            ("importlib_resources_open_mode_is_text", 1),
+            ("importlib_resources_open_resource_bytes_from_package", 4),
+            (
+                "importlib_resources_open_resource_bytes_from_package_parts",
+                4,
+            ),
+            ("importlib_resources_package_info", 3),
+            ("importlib_resources_package_leaf_name", 1),
+            ("importlib_resources_path_payload", 1),
+            ("importlib_resources_read_text_from_package", 6),
+            ("importlib_resources_read_text_from_package_parts", 6),
+            ("importlib_resources_reader_child_names", 2),
+            ("importlib_resources_reader_contents", 1),
+            ("importlib_resources_reader_contents_from_roots", 1),
+            ("importlib_resources_reader_exists", 2),
+            ("importlib_resources_reader_files_traversable", 1),
+            ("importlib_resources_reader_is_dir", 2),
+            ("importlib_resources_reader_is_resource", 2),
+            ("importlib_resources_reader_is_resource_from_roots", 2),
+            ("importlib_resources_reader_open_resource_bytes", 2),
+            (
+                "importlib_resources_reader_open_resource_bytes_from_roots",
+                2,
+            ),
+            ("importlib_resources_reader_resource_path", 2),
+            ("importlib_resources_reader_resource_path_from_roots", 2),
+            ("importlib_resources_reader_roots", 1),
+            ("importlib_resources_resource_path_from_package", 4),
+            ("importlib_resources_resource_path_from_package_parts", 4),
+            ("importlib_runtime_modules", 0),
+            ("importlib_set_module_state", 8),
+            ("importlib_source_exec_payload", 3),
+            ("importlib_source_from_cache", 1),
+            ("importlib_source_hash", 1),
+            ("importlib_sourceless_loader_payload", 3),
+            ("importlib_spec_from_file_location", 5),
+            ("importlib_spec_from_loader", 5),
+            ("importlib_stabilize_module_state", 6),
+            ("importlib_validate_resource_name", 1),
+            ("importlib_zip_read_entry", 2),
+            ("importlib_zip_source_exec_payload", 4),
+            ("os_access", 2usize),
+            ("os_altsep", 0),
+            ("os_chdir", 1),
+            ("os_chmod", 2),
+            ("os_cpu_count", 0),
+            ("os_curdir", 0),
+            ("os_devnull", 0),
+            ("os_dup2", 2),
+            ("os_extsep", 0),
+            ("os_fdopen", 3),
+            ("os_fsencode", 1),
+            ("os_fspath", 1),
+            ("os_fstat", 1),
+            ("os_ftruncate", 2),
+            ("os_get_terminal_size", 1),
+            ("os_getcwd", 0),
+            ("os_getegid", 0),
+            ("os_geteuid", 0),
+            ("os_getgid", 0),
+            ("os_getloadavg", 0),
+            ("os_getlogin", 0),
+            ("os_getpgrp", 0),
+            ("os_getpid", 0),
+            ("os_getppid", 0),
+            ("os_getuid", 0),
+            ("os_isatty", 1),
+            ("os_kill", 2),
+            ("os_linesep", 0),
+            ("os_link", 2),
+            ("os_listdir", 1),
+            ("os_lseek", 3),
+            ("os_lstat", 1),
+            ("os_mkdir", 2),
+            ("os_open", 3),
+            ("os_open_flags", 0),
+            ("os_pardir", 0),
+            ("os_path_commonpath", 1),
+            ("os_path_commonprefix", 1),
+            ("os_path_getatime", 1),
+            ("os_path_getctime", 1),
+            ("os_path_getmtime", 1),
+            ("os_path_getsize", 1),
+            ("os_path_realpath", 1),
+            ("os_path_samefile", 2),
+            ("os_pathsep", 0),
+            ("os_pipe", 0),
+            ("os_read", 2),
+            ("os_readlink", 1),
+            ("os_removedirs", 1),
+            ("os_rename", 2),
+            ("os_replace", 2),
+            ("os_rmdir", 1),
+            ("os_scandir", 1),
+            ("os_sendfile", 4),
+            ("os_sep", 0),
+            ("os_setpgrp", 0),
+            ("os_setsid", 0),
+            ("os_stat", 1),
+            ("os_symlink", 2),
+            ("os_sysconf", 1),
+            ("os_sysconf_names", 0),
+            ("os_truncate", 2),
+            ("os_umask", 1),
+            ("os_uname", 0),
+            ("os_utime", 3),
+            ("os_waitpid", 2),
+            ("os_walk", 3),
+            ("os_wexitstatus", 1),
+            ("os_wifexited", 1),
+            ("os_wifsignaled", 1),
+            ("os_wifstopped", 1),
+            ("os_write", 2),
+            ("os_wstopsig", 1),
+            ("os_wtermsig", 1),
+        ] {
+            add_import(
+                import_name,
+                simple_i64_import_type(arity),
+                &mut self.import_ids,
+            );
+        }
         add_import("sys_platform", 0, &mut self.import_ids);
         add_import("errno_constants", 0, &mut self.import_ids);
         add_import("getpid", 0, &mut self.import_ids);
@@ -1459,7 +1649,6 @@ impl WasmBackend {
         add_import("file_detach", 2, &mut self.import_ids);
         add_import("file_reconfigure", 9, &mut self.import_ids);
 
-        self.func_count = import_idx;
         let reloc_enabled = should_emit_relocs();
 
         let mut max_func_arity = 0usize;
@@ -1494,6 +1683,28 @@ impl WasmBackend {
                 }
             }
         }
+        let mut auto_import_names: Vec<(String, usize)> = builtin_trampoline_specs
+            .iter()
+            .map(|(runtime_name, arity)| {
+                (
+                    runtime_name
+                        .strip_prefix("molt_")
+                        .unwrap_or(runtime_name.as_str())
+                        .to_string(),
+                    *arity,
+                )
+            })
+            .filter(|(import_name, _)| !self.import_ids.contains_key(import_name))
+            .collect();
+        auto_import_names.sort_by(|a, b| a.0.cmp(&b.0));
+        for (import_name, arity) in auto_import_names {
+            add_import(
+                import_name.as_str(),
+                simple_i64_import_type(arity),
+                &mut self.import_ids,
+            );
+        }
+        self.func_count = import_idx;
 
         let mut user_type_map: HashMap<usize, u32> = HashMap::new();
         // Types 0-30 are defined above; start new signatures after them.
@@ -1571,7 +1782,7 @@ impl WasmBackend {
 
         // Memory & Table (imported for shared-instance linking)
 
-        let builtin_table_funcs: Vec<(&str, &str, usize)> = vec![
+        let mut builtin_table_funcs: Vec<(&str, &str, usize)> = vec![
             ("molt_missing", "missing", 0),
             ("molt_pending", "pending", 0),
             ("molt_repr_builtin", "repr_builtin", 1),
@@ -1805,14 +2016,529 @@ impl WasmBackend {
             ("molt_weakref_get", "weakref_get", 1),
             ("molt_weakref_drop", "weakref_drop", 1),
         ];
+        builtin_table_funcs.extend([
+            (
+                "molt_importlib_bootstrap_payload",
+                "importlib_bootstrap_payload",
+                2,
+            ),
+            (
+                "molt_importlib_cache_from_source",
+                "importlib_cache_from_source",
+                1,
+            ),
+            (
+                "molt_importlib_coerce_module_name",
+                "importlib_coerce_module_name",
+                3,
+            ),
+            ("molt_importlib_decode_source", "importlib_decode_source", 1),
+            (
+                "molt_importlib_ensure_default_meta_path",
+                "importlib_ensure_default_meta_path",
+                1,
+            ),
+            (
+                "molt_importlib_exec_extension",
+                "importlib_exec_extension",
+                3,
+            ),
+            (
+                "molt_importlib_exec_restricted_source",
+                "importlib_exec_restricted_source",
+                3,
+            ),
+            (
+                "molt_importlib_exec_sourceless",
+                "importlib_exec_sourceless",
+                3,
+            ),
+            (
+                "molt_importlib_extension_loader_payload",
+                "importlib_extension_loader_payload",
+                3,
+            ),
+            (
+                "molt_importlib_filefinder_find_spec",
+                "importlib_filefinder_find_spec",
+                3,
+            ),
+            (
+                "molt_importlib_filefinder_invalidate",
+                "importlib_filefinder_invalidate",
+                1,
+            ),
+            ("molt_importlib_find_in_path", "importlib_find_in_path", 2),
+            (
+                "molt_importlib_find_in_path_package_context",
+                "importlib_find_in_path_package_context",
+                2,
+            ),
+            ("molt_importlib_find_spec", "importlib_find_spec", 8),
+            (
+                "molt_importlib_find_spec_orchestrate",
+                "importlib_find_spec_orchestrate",
+                5,
+            ),
+            (
+                "molt_importlib_frozen_external_payload",
+                "importlib_frozen_external_payload",
+                2,
+            ),
+            (
+                "molt_importlib_frozen_payload",
+                "importlib_frozen_payload",
+                2,
+            ),
+            ("molt_importlib_import_module", "importlib_import_module", 3),
+            (
+                "molt_importlib_import_optional",
+                "importlib_import_optional",
+                1,
+            ),
+            (
+                "molt_importlib_import_or_fallback",
+                "importlib_import_or_fallback",
+                2,
+            ),
+            (
+                "molt_importlib_import_required",
+                "importlib_import_required",
+                1,
+            ),
+            (
+                "molt_importlib_invalidate_caches",
+                "importlib_invalidate_caches",
+                0,
+            ),
+            (
+                "molt_importlib_known_absent_missing_name",
+                "importlib_known_absent_missing_name",
+                1,
+            ),
+            (
+                "molt_importlib_load_module_shim",
+                "importlib_load_module_shim",
+                3,
+            ),
+            (
+                "molt_importlib_metadata_dist_paths",
+                "importlib_metadata_dist_paths",
+                2,
+            ),
+            (
+                "molt_importlib_metadata_distributions_payload",
+                "importlib_metadata_distributions_payload",
+                2,
+            ),
+            (
+                "molt_importlib_metadata_entry_points_filter_payload",
+                "importlib_metadata_entry_points_filter_payload",
+                5,
+            ),
+            (
+                "molt_importlib_metadata_entry_points_select_payload",
+                "importlib_metadata_entry_points_select_payload",
+                4,
+            ),
+            (
+                "molt_importlib_metadata_normalize_name",
+                "importlib_metadata_normalize_name",
+                1,
+            ),
+            (
+                "molt_importlib_metadata_packages_distributions_payload",
+                "importlib_metadata_packages_distributions_payload",
+                2,
+            ),
+            (
+                "molt_importlib_metadata_payload",
+                "importlib_metadata_payload",
+                1,
+            ),
+            (
+                "molt_importlib_metadata_record_payload",
+                "importlib_metadata_record_payload",
+                1,
+            ),
+            (
+                "molt_importlib_metadata_types_payload",
+                "importlib_metadata_types_payload",
+                4,
+            ),
+            (
+                "molt_importlib_module_from_spec",
+                "importlib_module_from_spec",
+                1,
+            ),
+            (
+                "molt_importlib_module_spec_is_package",
+                "importlib_module_spec_is_package",
+                1,
+            ),
+            (
+                "molt_importlib_package_root_from_origin",
+                "importlib_package_root_from_origin",
+                1,
+            ),
+            (
+                "molt_importlib_path_is_archive_member",
+                "importlib_path_is_archive_member",
+                1,
+            ),
+            (
+                "molt_importlib_pathfinder_find_spec",
+                "importlib_pathfinder_find_spec",
+                3,
+            ),
+            ("molt_importlib_read_file", "importlib_read_file", 1),
+            ("molt_importlib_reload", "importlib_reload", 4),
+            ("molt_importlib_resolve_name", "importlib_resolve_name", 2),
+            (
+                "molt_importlib_resources_as_file_enter",
+                "importlib_resources_as_file_enter",
+                2,
+            ),
+            (
+                "molt_importlib_resources_as_file_exit",
+                "importlib_resources_as_file_exit",
+                3,
+            ),
+            (
+                "molt_importlib_resources_contents_from_package",
+                "importlib_resources_contents_from_package",
+                3,
+            ),
+            (
+                "molt_importlib_resources_contents_from_package_parts",
+                "importlib_resources_contents_from_package_parts",
+                4,
+            ),
+            (
+                "molt_importlib_resources_files_payload",
+                "importlib_resources_files_payload",
+                4,
+            ),
+            (
+                "molt_importlib_resources_is_resource_from_package",
+                "importlib_resources_is_resource_from_package",
+                4,
+            ),
+            (
+                "molt_importlib_resources_is_resource_from_package_parts",
+                "importlib_resources_is_resource_from_package_parts",
+                4,
+            ),
+            (
+                "molt_importlib_resources_joinpath",
+                "importlib_resources_joinpath",
+                2,
+            ),
+            (
+                "molt_importlib_resources_loader_reader",
+                "importlib_resources_loader_reader",
+                2,
+            ),
+            (
+                "molt_importlib_resources_module_name",
+                "importlib_resources_module_name",
+                2,
+            ),
+            (
+                "molt_importlib_resources_normalize_path",
+                "importlib_resources_normalize_path",
+                1,
+            ),
+            (
+                "molt_importlib_resources_only",
+                "importlib_resources_only",
+                3,
+            ),
+            (
+                "molt_importlib_resources_open_mode_is_text",
+                "importlib_resources_open_mode_is_text",
+                1,
+            ),
+            (
+                "molt_importlib_resources_open_resource_bytes_from_package",
+                "importlib_resources_open_resource_bytes_from_package",
+                4,
+            ),
+            (
+                "molt_importlib_resources_open_resource_bytes_from_package_parts",
+                "importlib_resources_open_resource_bytes_from_package_parts",
+                4,
+            ),
+            (
+                "molt_importlib_resources_package_info",
+                "importlib_resources_package_info",
+                3,
+            ),
+            (
+                "molt_importlib_resources_package_leaf_name",
+                "importlib_resources_package_leaf_name",
+                1,
+            ),
+            (
+                "molt_importlib_resources_path_payload",
+                "importlib_resources_path_payload",
+                1,
+            ),
+            (
+                "molt_importlib_resources_read_text_from_package",
+                "importlib_resources_read_text_from_package",
+                6,
+            ),
+            (
+                "molt_importlib_resources_read_text_from_package_parts",
+                "importlib_resources_read_text_from_package_parts",
+                6,
+            ),
+            (
+                "molt_importlib_resources_reader_child_names",
+                "importlib_resources_reader_child_names",
+                2,
+            ),
+            (
+                "molt_importlib_resources_reader_contents",
+                "importlib_resources_reader_contents",
+                1,
+            ),
+            (
+                "molt_importlib_resources_reader_contents_from_roots",
+                "importlib_resources_reader_contents_from_roots",
+                1,
+            ),
+            (
+                "molt_importlib_resources_reader_exists",
+                "importlib_resources_reader_exists",
+                2,
+            ),
+            (
+                "molt_importlib_resources_reader_files_traversable",
+                "importlib_resources_reader_files_traversable",
+                1,
+            ),
+            (
+                "molt_importlib_resources_reader_is_dir",
+                "importlib_resources_reader_is_dir",
+                2,
+            ),
+            (
+                "molt_importlib_resources_reader_is_resource",
+                "importlib_resources_reader_is_resource",
+                2,
+            ),
+            (
+                "molt_importlib_resources_reader_is_resource_from_roots",
+                "importlib_resources_reader_is_resource_from_roots",
+                2,
+            ),
+            (
+                "molt_importlib_resources_reader_open_resource_bytes",
+                "importlib_resources_reader_open_resource_bytes",
+                2,
+            ),
+            (
+                "molt_importlib_resources_reader_open_resource_bytes_from_roots",
+                "importlib_resources_reader_open_resource_bytes_from_roots",
+                2,
+            ),
+            (
+                "molt_importlib_resources_reader_resource_path",
+                "importlib_resources_reader_resource_path",
+                2,
+            ),
+            (
+                "molt_importlib_resources_reader_resource_path_from_roots",
+                "importlib_resources_reader_resource_path_from_roots",
+                2,
+            ),
+            (
+                "molt_importlib_resources_reader_roots",
+                "importlib_resources_reader_roots",
+                1,
+            ),
+            (
+                "molt_importlib_resources_resource_path_from_package",
+                "importlib_resources_resource_path_from_package",
+                4,
+            ),
+            (
+                "molt_importlib_resources_resource_path_from_package_parts",
+                "importlib_resources_resource_path_from_package_parts",
+                4,
+            ),
+            (
+                "molt_importlib_runtime_modules",
+                "importlib_runtime_modules",
+                0,
+            ),
+            (
+                "molt_importlib_set_module_state",
+                "importlib_set_module_state",
+                8,
+            ),
+            (
+                "molt_importlib_source_exec_payload",
+                "importlib_source_exec_payload",
+                3,
+            ),
+            (
+                "molt_importlib_source_from_cache",
+                "importlib_source_from_cache",
+                1,
+            ),
+            ("molt_importlib_source_hash", "importlib_source_hash", 1),
+            (
+                "molt_importlib_sourceless_loader_payload",
+                "importlib_sourceless_loader_payload",
+                3,
+            ),
+            (
+                "molt_importlib_spec_from_file_location",
+                "importlib_spec_from_file_location",
+                5,
+            ),
+            (
+                "molt_importlib_spec_from_loader",
+                "importlib_spec_from_loader",
+                5,
+            ),
+            (
+                "molt_importlib_stabilize_module_state",
+                "importlib_stabilize_module_state",
+                6,
+            ),
+            (
+                "molt_importlib_validate_resource_name",
+                "importlib_validate_resource_name",
+                1,
+            ),
+            (
+                "molt_importlib_zip_read_entry",
+                "importlib_zip_read_entry",
+                2,
+            ),
+            (
+                "molt_importlib_zip_source_exec_payload",
+                "importlib_zip_source_exec_payload",
+                4,
+            ),
+            ("molt_os_access", "os_access", 2),
+            ("molt_os_altsep", "os_altsep", 0),
+            ("molt_os_chdir", "os_chdir", 1),
+            ("molt_os_chmod", "os_chmod", 2),
+            ("molt_os_cpu_count", "os_cpu_count", 0),
+            ("molt_os_curdir", "os_curdir", 0),
+            ("molt_os_devnull", "os_devnull", 0),
+            ("molt_os_dup2", "os_dup2", 2),
+            ("molt_os_extsep", "os_extsep", 0),
+            ("molt_os_fdopen", "os_fdopen", 3),
+            ("molt_os_fsencode", "os_fsencode", 1),
+            ("molt_os_fspath", "os_fspath", 1),
+            ("molt_os_fstat", "os_fstat", 1),
+            ("molt_os_ftruncate", "os_ftruncate", 2),
+            ("molt_os_get_terminal_size", "os_get_terminal_size", 1),
+            ("molt_os_getcwd", "os_getcwd", 0),
+            ("molt_os_getegid", "os_getegid", 0),
+            ("molt_os_geteuid", "os_geteuid", 0),
+            ("molt_os_getgid", "os_getgid", 0),
+            ("molt_os_getloadavg", "os_getloadavg", 0),
+            ("molt_os_getlogin", "os_getlogin", 0),
+            ("molt_os_getpgrp", "os_getpgrp", 0),
+            ("molt_os_getpid", "os_getpid", 0),
+            ("molt_os_getppid", "os_getppid", 0),
+            ("molt_os_getuid", "os_getuid", 0),
+            ("molt_os_isatty", "os_isatty", 1),
+            ("molt_os_kill", "os_kill", 2),
+            ("molt_os_linesep", "os_linesep", 0),
+            ("molt_os_link", "os_link", 2),
+            ("molt_os_listdir", "os_listdir", 1),
+            ("molt_os_lseek", "os_lseek", 3),
+            ("molt_os_lstat", "os_lstat", 1),
+            ("molt_os_mkdir", "os_mkdir", 2),
+            ("molt_os_open", "os_open", 3),
+            ("molt_os_open_flags", "os_open_flags", 0),
+            ("molt_os_pardir", "os_pardir", 0),
+            ("molt_os_path_commonpath", "os_path_commonpath", 1),
+            ("molt_os_path_commonprefix", "os_path_commonprefix", 1),
+            ("molt_os_path_getatime", "os_path_getatime", 1),
+            ("molt_os_path_getctime", "os_path_getctime", 1),
+            ("molt_os_path_getmtime", "os_path_getmtime", 1),
+            ("molt_os_path_getsize", "os_path_getsize", 1),
+            ("molt_os_path_realpath", "os_path_realpath", 1),
+            ("molt_os_path_samefile", "os_path_samefile", 2),
+            ("molt_os_pathsep", "os_pathsep", 0),
+            ("molt_os_pipe", "os_pipe", 0),
+            ("molt_os_read", "os_read", 2),
+            ("molt_os_readlink", "os_readlink", 1),
+            ("molt_os_removedirs", "os_removedirs", 1),
+            ("molt_os_rename", "os_rename", 2),
+            ("molt_os_replace", "os_replace", 2),
+            ("molt_os_rmdir", "os_rmdir", 1),
+            ("molt_os_scandir", "os_scandir", 1),
+            ("molt_os_sendfile", "os_sendfile", 4),
+            ("molt_os_sep", "os_sep", 0),
+            ("molt_os_setpgrp", "os_setpgrp", 0),
+            ("molt_os_setsid", "os_setsid", 0),
+            ("molt_os_stat", "os_stat", 1),
+            ("molt_os_symlink", "os_symlink", 2),
+            ("molt_os_sysconf", "os_sysconf", 1),
+            ("molt_os_sysconf_names", "os_sysconf_names", 0),
+            ("molt_os_truncate", "os_truncate", 2),
+            ("molt_os_umask", "os_umask", 1),
+            ("molt_os_uname", "os_uname", 0),
+            ("molt_os_utime", "os_utime", 3),
+            ("molt_os_waitpid", "os_waitpid", 2),
+            ("molt_os_walk", "os_walk", 3),
+            ("molt_os_wexitstatus", "os_wexitstatus", 1),
+            ("molt_os_wifexited", "os_wifexited", 1),
+            ("molt_os_wifsignaled", "os_wifsignaled", 1),
+            ("molt_os_wifstopped", "os_wifstopped", 1),
+            ("molt_os_write", "os_write", 2),
+            ("molt_os_wstopsig", "os_wstopsig", 1),
+            ("molt_os_wtermsig", "os_wtermsig", 1),
+        ]);
+        let hardcoded_builtin_runtime_names: HashSet<&str> = builtin_table_funcs
+            .iter()
+            .map(|(runtime_name, _, _)| *runtime_name)
+            .collect();
+        let mut auto_builtin_table_funcs: Vec<(String, String, usize)> = builtin_trampoline_specs
+            .iter()
+            .filter(|(runtime_name, _)| {
+                !hardcoded_builtin_runtime_names.contains(runtime_name.as_str())
+            })
+            .map(|(runtime_name, arity)| {
+                let import_name = runtime_name
+                    .strip_prefix("molt_")
+                    .unwrap_or(runtime_name.as_str())
+                    .to_string();
+                (runtime_name.clone(), import_name, *arity)
+            })
+            .collect();
+        auto_builtin_table_funcs.sort_by(|a, b| a.0.cmp(&b.0));
         let mut builtin_trampoline_funcs: Vec<(String, usize)> = Vec::new();
         let builtin_runtime_names: HashSet<&str> = builtin_table_funcs
             .iter()
             .map(|(runtime_name, _, _)| *runtime_name)
+            .chain(
+                auto_builtin_table_funcs
+                    .iter()
+                    .map(|(runtime_name, _, _)| runtime_name.as_str()),
+            )
             .collect();
-        for (runtime_name, _, _) in builtin_table_funcs.iter() {
-            if let Some(arity) = builtin_trampoline_specs.get(*runtime_name) {
-                builtin_trampoline_funcs.push(((*runtime_name).to_string(), *arity));
+        for runtime_name in builtin_table_funcs
+            .iter()
+            .map(|(runtime_name, _, _)| *runtime_name)
+            .chain(
+                auto_builtin_table_funcs
+                    .iter()
+                    .map(|(runtime_name, _, _)| runtime_name.as_str()),
+            )
+        {
+            if let Some(arity) = builtin_trampoline_specs.get(runtime_name) {
+                builtin_trampoline_funcs.push((runtime_name.to_string(), *arity));
             }
         }
         // Intrinsic ABIs are canonicalized to i64/u64 for dynamic function-object dispatch.
@@ -1829,16 +2555,26 @@ impl WasmBackend {
         ]
         .into_iter()
         .collect();
-        let mut builtin_wrapper_funcs: Vec<(String, &str, usize)> = Vec::new();
+        let mut builtin_wrapper_funcs: Vec<(String, String, usize)> = Vec::new();
         let wrap_all_builtins = reloc_enabled;
-        for (runtime_name, import_name, arity) in builtin_table_funcs.iter() {
+        for (runtime_name, import_name, arity) in builtin_table_funcs
+            .iter()
+            .map(|(runtime_name, import_name, arity)| {
+                (
+                    (*runtime_name).to_string(),
+                    (*import_name).to_string(),
+                    *arity,
+                )
+            })
+            .chain(auto_builtin_table_funcs.iter().cloned())
+        {
             if wrap_all_builtins
-                || builtin_trampoline_specs.contains_key(*runtime_name)
-                || void_builtin_imports.contains(*import_name)
-                || builtin_i32_arg0_imports.contains(*import_name)
-                || builtin_i32_return_imports.contains(*import_name)
+                || builtin_trampoline_specs.contains_key(runtime_name.as_str())
+                || void_builtin_imports.contains(import_name.as_str())
+                || builtin_i32_arg0_imports.contains(import_name.as_str())
+                || builtin_i32_return_imports.contains(import_name.as_str())
             {
-                builtin_wrapper_funcs.push(((*runtime_name).to_string(), *import_name, *arity));
+                builtin_wrapper_funcs.push((runtime_name, import_name, arity));
             }
         }
         if builtin_trampoline_specs.len() != builtin_trampoline_funcs.len() {
@@ -1848,10 +2584,11 @@ impl WasmBackend {
                 }
             }
         }
+        let builtin_table_len = builtin_table_funcs.len() + auto_builtin_table_funcs.len();
         let table_base: u32 = table_base_for_wasm();
         let poll_table_prefix = 33u32;
         let table_len = (poll_table_prefix as usize
-            + builtin_table_funcs.len()
+            + builtin_table_len
             + builtin_trampoline_funcs.len()
             + ir.functions.len() * 2) as u32;
         let table_min = table_base + table_len;
@@ -1876,7 +2613,7 @@ impl WasmBackend {
                 .unwrap_or_else(|| panic!("missing builtin wrapper signature for arity {arity}"));
             let import_idx = *self
                 .import_ids
-                .get(*import_name)
+                .get(import_name.as_str())
                 .unwrap_or_else(|| panic!("missing builtin import for {import_name}"));
             self.funcs.function(type_idx);
             let func_index = self.func_count;
@@ -1884,15 +2621,15 @@ impl WasmBackend {
             let mut func = Function::new_with_locals_types(Vec::new());
             for idx in 0..*arity {
                 func.instruction(&Instruction::LocalGet(idx as u32));
-                if idx == 0 && builtin_i32_arg0_imports.contains(*import_name) {
+                if idx == 0 && builtin_i32_arg0_imports.contains(import_name.as_str()) {
                     func.instruction(&Instruction::I32WrapI64);
                 }
             }
             emit_call(&mut func, reloc_enabled, import_idx);
-            if builtin_i32_return_imports.contains(*import_name) {
+            if builtin_i32_return_imports.contains(import_name.as_str()) {
                 func.instruction(&Instruction::I64ExtendI32U);
             }
-            if void_builtin_imports.contains(*import_name) {
+            if void_builtin_imports.contains(import_name.as_str()) {
                 func.instruction(&Instruction::I64Const(box_none()));
             }
             func.instruction(&Instruction::End);
@@ -2139,9 +2876,20 @@ impl WasmBackend {
             32,
         );
 
-        for (offset, (runtime_name, import_name, _)) in builtin_table_funcs.iter().enumerate() {
+        for (offset, (runtime_name, import_name, _)) in builtin_table_funcs
+            .iter()
+            .map(|(runtime_name, import_name, arity)| {
+                (
+                    (*runtime_name).to_string(),
+                    (*import_name).to_string(),
+                    *arity,
+                )
+            })
+            .chain(auto_builtin_table_funcs.iter().cloned())
+            .enumerate()
+        {
             let idx = (offset as u32) + poll_table_prefix;
-            let runtime_key = (*runtime_name).to_string();
+            let runtime_key = runtime_name;
             func_to_table_idx.insert(runtime_key.clone(), idx);
             if let Some(wrapper_idx) = builtin_wrapper_indices.get(&runtime_key) {
                 func_to_index.insert(runtime_key, *wrapper_idx);
@@ -2149,7 +2897,7 @@ impl WasmBackend {
             } else {
                 let import_idx = self
                     .import_ids
-                    .get(*import_name)
+                    .get(&import_name)
                     .copied()
                     // Avoid panicking on malformed/partial import tables; route missing entries
                     // to the sentinel so lowering remains total and callers can surface errors.
@@ -2165,7 +2913,7 @@ impl WasmBackend {
         let builtin_trampoline_start = user_func_start + user_func_count;
         let user_trampoline_start = builtin_trampoline_start + builtin_trampoline_count;
         for (i, func_ir) in ir.functions.iter().enumerate() {
-            let idx = (i as u32) + poll_table_prefix + builtin_table_funcs.len() as u32;
+            let idx = (i as u32) + poll_table_prefix + builtin_table_len as u32;
             func_to_table_idx.insert(func_ir.name.clone(), idx);
             func_to_index.insert(func_ir.name.clone(), user_func_start + i as u32);
             table_indices.push(user_func_start + i as u32);
@@ -2174,7 +2922,7 @@ impl WasmBackend {
         for (i, (name, _)) in builtin_trampoline_funcs.iter().enumerate() {
             let idx = (i as u32)
                 + poll_table_prefix
-                + builtin_table_funcs.len() as u32
+                + builtin_table_len as u32
                 + ir.functions.len() as u32;
             func_to_trampoline_idx.insert(name.clone(), idx);
             table_indices.push(builtin_trampoline_start + i as u32);
@@ -2182,7 +2930,7 @@ impl WasmBackend {
         for (i, func_ir) in ir.functions.iter().enumerate() {
             let idx = (i
                 + poll_table_prefix as usize
-                + builtin_table_funcs.len()
+                + builtin_table_len
                 + ir.functions.len()
                 + builtin_trampoline_funcs.len()) as u32;
             func_to_trampoline_idx.insert(func_ir.name.clone(), idx);
