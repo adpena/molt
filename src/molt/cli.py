@@ -30,7 +30,7 @@ import urllib.request
 import uuid
 import zipfile
 from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Literal, Mapping, MutableMapping, NamedTuple, cast
 
@@ -227,6 +227,10 @@ def _fail(
 
 def _write_importer_module(module_names: list[str], output_dir: Path) -> Path:
     filtered_names = [name for name in module_names if name]
+    known_modules = sorted(filtered_names)
+    top_level_by_module = {
+        name: name.split(".", 1)[0] for name in known_modules if "." in name
+    }
     lines = [
         '"""Auto-generated import dispatcher for Molt-compiled modules."""',
         "",
@@ -238,7 +242,8 @@ def _write_importer_module(module_names: list[str], output_dir: Path) -> Path:
             "import sys as _sys",
             "from _intrinsics import require_intrinsic as _require_intrinsic",
             "",
-            f"_KNOWN_MODULES = {sorted(filtered_names)!r}",
+            f"_KNOWN_MODULES = frozenset({known_modules!r})",
+            f"_TOP_LEVEL_BY_MODULE = {top_level_by_module!r}",
             "_MODULE_IMPORT = _require_intrinsic('molt_module_import', globals())",
             "",
             "def _resolve_name(name: str, package: str | None, level: int) -> str:",
@@ -271,7 +276,7 @@ def _write_importer_module(module_names: list[str], output_dir: Path) -> Path:
             '            raise ImportError(f"import of {resolved} halted; None in sys.modules")',
             "        if fromlist:",
             "            return mod",
-            '        top = resolved.split(".", 1)[0]',
+            "        top = _TOP_LEVEL_BY_MODULE.get(resolved, resolved)",
             "        return modules.get(top, mod)",
             "    if resolved not in _KNOWN_MODULES:",
             "        raise ImportError(f\"No module named '{resolved}'\")",
@@ -280,7 +285,7 @@ def _write_importer_module(module_names: list[str], output_dir: Path) -> Path:
             "        raise ImportError(f\"No module named '{resolved}'\")",
             "    if fromlist:",
             "        return mod",
-            '    top = resolved.split(".", 1)[0]',
+            "    top = _TOP_LEVEL_BY_MODULE.get(resolved, resolved)",
             "    return modules.get(top, mod)",
         ]
     )
@@ -1751,6 +1756,69 @@ def _resolve_module_path(module_name: str, roots: list[Path]) -> Path | None:
     return None
 
 
+@dataclass
+class _ModuleResolutionCache:
+    roots_cache: dict[str, list[Path]] = field(default_factory=dict)
+    resolve_cache: dict[str, Path | None] = field(default_factory=dict)
+    namespace_dir_cache: dict[str, bool] = field(default_factory=dict)
+
+    def roots_for_module(
+        self,
+        module_name: str,
+        roots: list[Path],
+        stdlib_root: Path,
+        stdlib_allowlist: set[str],
+    ) -> list[Path]:
+        candidate_roots = self.roots_cache.get(module_name)
+        if candidate_roots is None:
+            candidate_roots = _roots_for_module(
+                module_name, roots, stdlib_root, stdlib_allowlist
+            )
+            self.roots_cache[module_name] = candidate_roots
+        return candidate_roots
+
+    def resolve_module(
+        self,
+        module_name: str,
+        roots: list[Path],
+        stdlib_root: Path,
+        stdlib_allowlist: set[str],
+    ) -> Path | None:
+        cache_key = module_name
+        if module_name.startswith("molt.stdlib."):
+            cache_key = f"stdlib:{module_name}"
+        if cache_key not in self.resolve_cache:
+            if cache_key.startswith("stdlib:"):
+                stdlib_candidate = module_name[len("molt.stdlib.") :]
+                self.resolve_cache[cache_key] = _resolve_module_path(
+                    stdlib_candidate, [stdlib_root]
+                )
+            else:
+                candidate_roots = self.roots_for_module(
+                    module_name, roots, stdlib_root, stdlib_allowlist
+                )
+                self.resolve_cache[cache_key] = _resolve_module_path(
+                    module_name, candidate_roots
+                )
+        return self.resolve_cache[cache_key]
+
+    def has_namespace_dir(
+        self,
+        module_name: str,
+        roots: list[Path],
+        stdlib_root: Path,
+        stdlib_allowlist: set[str],
+    ) -> bool:
+        has_namespace_dir = self.namespace_dir_cache.get(module_name)
+        if has_namespace_dir is None:
+            candidate_roots = self.roots_for_module(
+                module_name, roots, stdlib_root, stdlib_allowlist
+            )
+            has_namespace_dir = _has_namespace_dir(module_name, candidate_roots)
+            self.namespace_dir_cache[module_name] = has_namespace_dir
+        return has_namespace_dir
+
+
 def _resolve_entry_module(
     module_name: str, roots: list[Path]
 ) -> tuple[str, Path] | None:
@@ -1829,30 +1897,25 @@ def _collect_namespace_parents(
     stdlib_root: Path,
     stdlib_allowlist: set[str],
     explicit_imports: set[str] | None = None,
+    *,
+    resolver_cache: _ModuleResolutionCache | None = None,
 ) -> set[str]:
     namespace_parents: set[str] = set()
-    roots_cache: dict[str, list[Path]] = {}
-    resolve_cache: dict[str, Path | None] = {}
-    namespace_dir_cache: dict[str, bool] = {}
+    resolution_cache = resolver_cache or _ModuleResolutionCache()
 
     def maybe_add(name: str) -> None:
         if name in module_graph:
             return
-        candidate_roots = roots_cache.get(name)
-        if candidate_roots is None:
-            candidate_roots = _roots_for_module(
+        if (
+            resolution_cache.resolve_module(
                 name, roots, stdlib_root, stdlib_allowlist
             )
-            roots_cache[name] = candidate_roots
-        if name not in resolve_cache:
-            resolve_cache[name] = _resolve_module_path(name, candidate_roots)
-        if resolve_cache[name] is not None:
+            is not None
+        ):
             return
-        has_namespace_dir = namespace_dir_cache.get(name)
-        if has_namespace_dir is None:
-            has_namespace_dir = _has_namespace_dir(name, candidate_roots)
-            namespace_dir_cache[name] = has_namespace_dir
-        if has_namespace_dir:
+        if resolution_cache.has_namespace_dir(
+            name, roots, stdlib_root, stdlib_allowlist
+        ):
             namespace_parents.add(name)
 
     for module_name in module_graph:
@@ -2029,9 +2092,10 @@ def _collect_package_parents(
     roots: list[Path],
     stdlib_root: Path,
     stdlib_allowlist: set[str],
+    *,
+    resolver_cache: _ModuleResolutionCache | None = None,
 ) -> None:
-    roots_cache: dict[str, list[Path]] = {}
-    resolve_cache: dict[str, Path | None] = {}
+    resolution_cache = resolver_cache or _ModuleResolutionCache()
     pending: set[str] = set()
     for module_name in list(module_graph):
         parts = module_name.split(".")
@@ -2042,15 +2106,9 @@ def _collect_package_parents(
         parent = pending.pop()
         if parent in module_graph:
             continue
-        candidate_roots = roots_cache.get(parent)
-        if candidate_roots is None:
-            candidate_roots = _roots_for_module(
-                parent, roots, stdlib_root, stdlib_allowlist
-            )
-            roots_cache[parent] = candidate_roots
-        if parent not in resolve_cache:
-            resolve_cache[parent] = _resolve_module_path(parent, candidate_roots)
-        resolved = resolve_cache[parent]
+        resolved = resolution_cache.resolve_module(
+            parent, roots, stdlib_root, stdlib_allowlist
+        )
         if resolved is None or resolved.name != "__init__.py":
             continue
         module_graph[parent] = resolved
@@ -3863,6 +3921,7 @@ def _discover_module_graph(
     skip_modules: set[str] | None = None,
     stub_parents: set[str] | None = None,
     nested_stdlib_scan_modules: set[str] | None = None,
+    resolver_cache: _ModuleResolutionCache | None = None,
 ) -> tuple[dict[str, Path], set[str]]:
     graph: dict[str, Path] = {}
     skip_modules = skip_modules or set()
@@ -3875,27 +3934,12 @@ def _discover_module_graph(
     explicit_imports: set[str] = set()
     queue = [entry_path]
     queued_paths = {entry_path}
-    roots_cache: dict[str, list[Path]] = {}
-    resolve_cache: dict[str, Path | None] = {}
+    resolution_cache = resolver_cache or _ModuleResolutionCache()
 
     def resolve_candidate(candidate: str) -> Path | None:
-        if candidate.startswith("molt.stdlib."):
-            key = f"stdlib:{candidate}"
-            if key not in resolve_cache:
-                stdlib_candidate = candidate[len("molt.stdlib.") :]
-                resolve_cache[key] = _resolve_module_path(
-                    stdlib_candidate, [stdlib_root]
-                )
-            return resolve_cache[key]
-        if candidate not in resolve_cache:
-            candidate_roots = roots_cache.get(candidate)
-            if candidate_roots is None:
-                candidate_roots = _roots_for_module(
-                    candidate, roots, stdlib_root, stdlib_allowlist
-                )
-                roots_cache[candidate] = candidate_roots
-            resolve_cache[candidate] = _resolve_module_path(candidate, candidate_roots)
-        return resolve_cache[candidate]
+        return resolution_cache.resolve_module(
+            candidate, roots, stdlib_root, stdlib_allowlist
+        )
 
     while queue:
         path = queue.pop()
@@ -7753,6 +7797,7 @@ def build(
     stub_parents = STUB_PARENT_MODULES - entry_imports
     stdlib_allowlist = _stdlib_allowlist()
     roots = module_roots + [stdlib_root]
+    module_resolution_cache = _ModuleResolutionCache()
     module_graph, explicit_imports = _discover_module_graph(
         source_path,
         roots,
@@ -7761,6 +7806,7 @@ def build(
         stdlib_allowlist,
         skip_modules=stub_skip_modules,
         stub_parents=stub_parents,
+        resolver_cache=module_resolution_cache,
     )
     if diagnostics_enabled:
         for name in module_graph:
@@ -7776,7 +7822,13 @@ def build(
                 module_reasons, entry_module_import_alias, "entry_alias"
             )
     package_before = set(module_graph)
-    _collect_package_parents(module_graph, roots, stdlib_root, stdlib_allowlist)
+    _collect_package_parents(
+        module_graph,
+        roots,
+        stdlib_root,
+        stdlib_allowlist,
+        resolver_cache=module_resolution_cache,
+    )
     if diagnostics_enabled:
         _record_new_module_reasons(
             module_graph,
@@ -7820,6 +7872,7 @@ def build(
             skip_modules=stub_skip_modules,
             stub_parents=stub_parents,
             nested_stdlib_scan_modules=set(),
+            resolver_cache=module_resolution_cache,
         )
         if diagnostics_enabled:
             _merge_module_graph_with_reason(
@@ -7836,7 +7889,12 @@ def build(
         module_graph, explicit_imports
     )
     if spawn_required:
-        spawn_path = _resolve_module_path(ENTRY_OVERRIDE_SPAWN, [stdlib_root])
+        spawn_path = module_resolution_cache.resolve_module(
+            ENTRY_OVERRIDE_SPAWN,
+            roots,
+            stdlib_root,
+            stdlib_allowlist,
+        )
         if spawn_path is None:
             return _fail(
                 (
@@ -7855,6 +7913,7 @@ def build(
             stdlib_allowlist,
             skip_modules=stub_skip_modules,
             stub_parents=stub_parents,
+            resolver_cache=module_resolution_cache,
         )
         if diagnostics_enabled:
             _merge_module_graph_with_reason(
@@ -7867,7 +7926,12 @@ def build(
             for name, path in spawn_graph.items():
                 module_graph.setdefault(name, path)
     namespace_parents = _collect_namespace_parents(
-        module_graph, roots, stdlib_root, stdlib_allowlist, explicit_imports
+        module_graph,
+        roots,
+        stdlib_root,
+        stdlib_allowlist,
+        explicit_imports,
+        resolver_cache=module_resolution_cache,
     )
     if verbose and not json_output:
         print(f"Project root: {project_root}")
