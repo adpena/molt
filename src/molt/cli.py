@@ -1599,13 +1599,30 @@ def _verify_codesign_signature(artifact_path: Path) -> None:
 
 def _module_name_from_path(path: Path, roots: list[Path], stdlib_root: Path) -> str:
     resolved = path.resolve()
+    resolved_roots = tuple(root.resolve() for root in roots)
+    resolved_stdlib_root = stdlib_root.resolve()
     cpython_test_root: Path | None = None
     cpython_dir = os.environ.get("MOLT_REGRTEST_CPYTHON_DIR")
     if cpython_dir:
         cpython_test_root = (Path(cpython_dir) / "Lib" / "test").resolve()
+    return _module_name_from_resolved_path(
+        resolved,
+        resolved_roots=resolved_roots,
+        resolved_stdlib_root=resolved_stdlib_root,
+        cpython_test_root=cpython_test_root,
+    )
+
+
+def _module_name_from_resolved_path(
+    resolved: Path,
+    *,
+    resolved_roots: tuple[Path, ...],
+    resolved_stdlib_root: Path,
+    cpython_test_root: Path | None,
+) -> str:
     rel = None
     try:
-        rel = resolved.relative_to(stdlib_root.resolve())
+        rel = resolved.relative_to(resolved_stdlib_root)
     except ValueError:
         rel = None
     if rel is not None:
@@ -1621,9 +1638,8 @@ def _module_name_from_path(path: Path, roots: list[Path], stdlib_root: Path) -> 
     if rel is None:
         best_rel = None
         best_len = -1
-        for root in roots:
+        for root_resolved in resolved_roots:
             try:
-                root_resolved = root.resolve()
                 if cpython_test_root is not None and root_resolved == cpython_test_root:
                     continue
                 candidate = resolved.relative_to(root_resolved)
@@ -1785,10 +1801,18 @@ class _ModuleResolutionCache:
     roots_cache: dict[str, list[Path]] = field(default_factory=dict)
     resolve_cache: dict[str, Path | None] = field(default_factory=dict)
     namespace_dir_cache: dict[str, bool] = field(default_factory=dict)
+    resolved_path_cache: dict[Path, Path] = field(default_factory=dict)
+    resolved_roots_cache: dict[tuple[Path, ...], tuple[Path, ...]] = field(
+        default_factory=dict
+    )
     source_cache: dict[Path, str] = field(default_factory=dict)
     source_error_cache: dict[Path, Exception] = field(default_factory=dict)
     ast_cache: dict[tuple[Path, str], ast.AST] = field(default_factory=dict)
     ast_error_cache: dict[tuple[Path, str], SyntaxError] = field(default_factory=dict)
+    module_name_cache: dict[
+        tuple[Path, tuple[Path, ...], Path, Path | None], str
+    ] = field(default_factory=dict)
+    stdlib_path_cache: dict[tuple[Path, Path], bool] = field(default_factory=dict)
 
     def roots_for_module(
         self,
@@ -1846,8 +1870,60 @@ class _ModuleResolutionCache:
             self.namespace_dir_cache[module_name] = has_namespace_dir
         return has_namespace_dir
 
+    def resolved_path(self, path: Path) -> Path:
+        resolved = self.resolved_path_cache.get(path)
+        if resolved is None:
+            resolved = path.resolve()
+            self.resolved_path_cache[path] = resolved
+        return resolved
+
+    def resolved_roots(self, roots: list[Path]) -> tuple[Path, ...]:
+        roots_key = tuple(roots)
+        resolved = self.resolved_roots_cache.get(roots_key)
+        if resolved is None:
+            resolved = tuple(self.resolved_path(root) for root in roots)
+            self.resolved_roots_cache[roots_key] = resolved
+        return resolved
+
+    def module_name_from_path(
+        self, path: Path, roots: list[Path], stdlib_root: Path
+    ) -> str:
+        resolved = self.resolved_path(path)
+        resolved_stdlib_root = self.resolved_path(stdlib_root)
+        cpython_test_root: Path | None = None
+        cpython_dir = os.environ.get("MOLT_REGRTEST_CPYTHON_DIR")
+        if cpython_dir:
+            cpython_test_root = self.resolved_path(Path(cpython_dir) / "Lib" / "test")
+        cache_key = (
+            resolved,
+            self.resolved_roots(roots),
+            resolved_stdlib_root,
+            cpython_test_root,
+        )
+        cached = self.module_name_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        module_name = _module_name_from_resolved_path(
+            resolved,
+            resolved_roots=cache_key[1],
+            resolved_stdlib_root=resolved_stdlib_root,
+            cpython_test_root=cpython_test_root,
+        )
+        self.module_name_cache[cache_key] = module_name
+        return module_name
+
+    def is_stdlib_path(self, path: Path, stdlib_root: Path) -> bool:
+        resolved_path = self.resolved_path(path)
+        resolved_stdlib_root = self.resolved_path(stdlib_root)
+        cache_key = (resolved_path, resolved_stdlib_root)
+        cached = self.stdlib_path_cache.get(cache_key)
+        if cached is None:
+            cached = _is_stdlib_resolved_path(resolved_path, resolved_stdlib_root)
+            self.stdlib_path_cache[cache_key] = cached
+        return cached
+
     def read_module_source(self, path: Path) -> str:
-        cache_key = path.resolve()
+        cache_key = self.resolved_path(path)
         source = self.source_cache.get(cache_key)
         if source is not None:
             return source
@@ -1863,7 +1939,7 @@ class _ModuleResolutionCache:
         return source
 
     def parse_module_ast(self, path: Path, source: str, *, filename: str) -> ast.AST:
-        cache_key = (path.resolve(), filename)
+        cache_key = (self.resolved_path(path), filename)
         tree = self.ast_cache.get(cache_key)
         if tree is not None:
             return tree
@@ -2496,8 +2572,14 @@ def _collect_imports(
 
 
 def _is_stdlib_path(path: Path, stdlib_root: Path) -> bool:
+    resolved = path.resolve()
+    resolved_stdlib_root = stdlib_root.resolve()
+    return _is_stdlib_resolved_path(resolved, resolved_stdlib_root)
+
+
+def _is_stdlib_resolved_path(resolved: Path, resolved_stdlib_root: Path) -> bool:
     try:
-        path.resolve().relative_to(stdlib_root.resolve())
+        resolved.relative_to(resolved_stdlib_root)
         return True
     except ValueError:
         return False
@@ -4061,7 +4143,9 @@ def _discover_module_graph(
     while queue:
         path = queue.pop()
         queued_paths.discard(path)
-        module_name = _module_name_from_path(path, module_roots, stdlib_root)
+        module_name = resolution_cache.module_name_from_path(
+            path, module_roots, stdlib_root
+        )
         if module_name in graph:
             continue
         graph[module_name] = path
@@ -4075,7 +4159,7 @@ def _discover_module_graph(
             continue
         is_package = path.name == "__init__.py"
         include_nested_imports = (
-            not _is_stdlib_path(path, stdlib_root)
+            not resolution_cache.is_stdlib_path(path, stdlib_root)
             or module_name in nested_stdlib_scan_modules
         )
         for name in _collect_imports(
