@@ -870,15 +870,16 @@ def test_backend_daemon_retryable_error_classification() -> None:
     )
 
 
-def test_backend_daemon_request_payload_bytes_enforces_limit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("MOLT_BACKEND_DAEMON_MAX_REQUEST_BYTES", "64")
+def test_backend_daemon_request_payload_bytes_is_unbounded() -> None:
     payload = {"version": 1, "jobs": [{"id": "x", "ir": "x" * 4096}]}
     data, err = cli._backend_daemon_request_payload_bytes(payload)
-    assert data is None
-    assert isinstance(err, str)
-    assert "too large" in err
+    assert isinstance(data, bytes)
+    assert data.endswith(b"\n")
+    assert err is None
+
+
+def test_backend_daemon_start_timeout_is_unbounded() -> None:
+    assert cli._backend_daemon_start_timeout() is None
 
 
 def test_backend_codegen_env_digest_tracks_codegen_knobs(
@@ -1010,9 +1011,6 @@ def test_backend_daemon_health_from_response_parses_int_fields() -> None:
             "uptime_ms": 456,
             "cache_entries": 2,
             "cache_bytes": 100,
-            "cache_max_bytes": 200,
-            "request_limit_bytes": 1024,
-            "max_jobs": 8,
             "requests_total": 7,
             "jobs_total": 9,
             "cache_hits": 4,
@@ -1022,7 +1020,7 @@ def test_backend_daemon_health_from_response_parses_int_fields() -> None:
     health = cli._backend_daemon_health_from_response(response)
     assert isinstance(health, dict)
     assert health["pid"] == 123
-    assert health["max_jobs"] == 8
+    assert health["cache_entries"] == 2
 
 
 def test_backend_daemon_ping_health_backcompat_without_health(
