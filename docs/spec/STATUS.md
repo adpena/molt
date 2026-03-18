@@ -1579,7 +1579,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_gdbm` top-level stub with full intrinsic-backed lowering.
 - DONE(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:done): `_hashlib` now exposes intrinsic-backed hash/HMAC compatibility helpers, OpenSSL-style constructor aliases, and key derivation entrypoints through Molt `hashlib`/`hmac`.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_heapq` top-level stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_hmac` top-level stub with full intrinsic-backed lowering.
+- DONE(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:done): `_hmac` now exposes intrinsic-backed HMAC helpers, one-shot digest entrypoints, and CPython-compatible unknown-hash errors via Molt `hmac`.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_imp` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_interpchannels` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_interpqueues` top-level stub with full intrinsic-backed lowering.
