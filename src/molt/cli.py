@@ -67,8 +67,6 @@ _LOCK_CHECK_CACHE_VERSION = 1
 _HASH_SEED_SENTINEL_ENV = "MOLT_HASH_SEED_APPLIED"
 _HASH_SEED_OVERRIDE_ENV = "MOLT_HASH_SEED"
 _BACKEND_DAEMON_PROTOCOL_VERSION = 1
-_BACKEND_DAEMON_DEFAULT_MAX_REQUEST_BYTES = 32 * 1024 * 1024
-_BACKEND_DAEMON_DEFAULT_MAX_JOBS = 8
 _BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 1
 _DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 1
 _NATIVE_CODEGEN_ENV_KNOBS = (
@@ -5187,41 +5185,8 @@ def _backend_daemon_enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
-def _backend_daemon_max_request_bytes() -> int:
-    raw = os.environ.get("MOLT_BACKEND_DAEMON_MAX_REQUEST_BYTES", "").strip()
-    if raw:
-        try:
-            parsed = int(raw)
-            if parsed > 0:
-                return parsed
-        except ValueError:
-            pass
-    return _BACKEND_DAEMON_DEFAULT_MAX_REQUEST_BYTES
-
-
-def _backend_daemon_max_jobs() -> int:
-    raw = os.environ.get("MOLT_BACKEND_DAEMON_MAX_JOBS", "").strip()
-    if raw:
-        try:
-            parsed = int(raw)
-            if parsed > 0:
-                return parsed
-        except ValueError:
-            pass
-    return _BACKEND_DAEMON_DEFAULT_MAX_JOBS
-
-
-def _backend_daemon_start_timeout(default: float = 5.0) -> float:
-    raw = os.environ.get("MOLT_BACKEND_DAEMON_START_TIMEOUT", "").strip()
-    if not raw:
-        return default
-    try:
-        parsed = float(raw)
-        if parsed > 0:
-            return parsed
-    except ValueError:
-        pass
-    return default
+def _backend_daemon_start_timeout() -> None:
+    return None
 
 
 def _backend_daemon_socket_dir(project_root: Path) -> Path:
@@ -5398,15 +5363,6 @@ def _backend_daemon_request_payload_bytes(
         encoded = json.dumps(payload, default=_json_ir_default).encode("utf-8")
     except (TypeError, ValueError) as exc:
         return None, f"backend daemon request encode failed: {exc}"
-    request_limit = _backend_daemon_max_request_bytes()
-    if len(encoded) > request_limit:
-        return (
-            None,
-            (
-                "backend daemon request too large: "
-                f"{len(encoded)} bytes > limit {request_limit}"
-            ),
-        )
     return encoded + b"\n", None
 
 
@@ -5457,11 +5413,15 @@ def _backend_daemon_ping(socket_path: Path, *, timeout: float | None) -> bool:
 def _backend_daemon_wait_until_ready(
     socket_path: Path,
     *,
-    ready_timeout: float,
-    probe_timeout: float = 1.0,
+    ready_timeout: float | None,
+    probe_timeout: float | None = None,
 ) -> tuple[bool, dict[str, Any] | None]:
-    deadline = time.monotonic() + max(0.05, ready_timeout)
-    while time.monotonic() < deadline:
+    deadline = (
+        time.monotonic() + max(0.05, ready_timeout)
+        if ready_timeout is not None
+        else None
+    )
+    while deadline is None or time.monotonic() < deadline:
         ready, health = _backend_daemon_ping_health(socket_path, timeout=probe_timeout)
         if ready:
             return True, health
@@ -5492,9 +5452,7 @@ def _start_backend_daemon(
     startup_timeout: float | None,
     json_output: bool,
 ) -> bool:
-    startup_wait = (
-        startup_timeout if startup_timeout else _backend_daemon_start_timeout()
-    )
+    startup_wait = startup_timeout if startup_timeout is not None else None
     pid_path = _backend_daemon_pid_path(project_root, cargo_profile)
     existing_pid = _read_backend_daemon_pid(pid_path)
     if existing_pid is not None:
@@ -5512,8 +5470,8 @@ def _start_backend_daemon(
                 if socket_path.exists():
                     ready, _ = _backend_daemon_wait_until_ready(
                         socket_path,
-                        ready_timeout=max(0.25, min(2.0, startup_wait)),
-                        probe_timeout=1.0,
+                        ready_timeout=startup_wait,
+                        probe_timeout=None,
                     )
                     if ready:
                         return True
@@ -5531,8 +5489,8 @@ def _start_backend_daemon(
         if socket_path.exists():
             ready, _ = _backend_daemon_wait_until_ready(
                 socket_path,
-                ready_timeout=max(0.25, min(1.5, startup_wait)),
-                probe_timeout=1.0,
+                ready_timeout=startup_wait,
+                probe_timeout=None,
             )
             if ready:
                 return True
@@ -5562,7 +5520,7 @@ def _start_backend_daemon(
     ready, _ = _backend_daemon_wait_until_ready(
         socket_path,
         ready_timeout=startup_wait,
-        probe_timeout=1.0,
+        probe_timeout=None,
     )
     if ready:
         return True
@@ -5597,14 +5555,6 @@ def _compile_with_backend_daemon(
             "ir": ir,
         }
     ]
-    if len(jobs) > _backend_daemon_max_jobs():
-        return _BackendDaemonCompileResult(
-            False,
-            "backend daemon request exceeds max jobs limit",
-            None,
-            None,
-            None,
-        )
     payload: dict[str, Any] = {
         "version": _BACKEND_DAEMON_PROTOCOL_VERSION,
         "jobs": jobs,
@@ -9826,8 +9776,8 @@ def build(
                             pass
                     daemon_ready, daemon_health = _backend_daemon_wait_until_ready(
                         daemon_socket,
-                        ready_timeout=max(0.25, min(1.5, startup_timeout)),
-                        probe_timeout=1.0,
+                        ready_timeout=startup_timeout,
+                        probe_timeout=None,
                     )
                     if daemon_health is not None:
                         backend_daemon_health = daemon_health
@@ -9867,7 +9817,7 @@ def build(
                         cache_key=cache_key,
                         function_cache_key=function_cache_key,
                         config_digest=backend_daemon_config_digest,
-                        timeout=backend_timeout,
+                        timeout=None,
                     )
                     backend_compiled = daemon_compile.ok
                     daemon_error = daemon_compile.error
@@ -9893,8 +9843,8 @@ def build(
                             daemon_ready, daemon_health = (
                                 _backend_daemon_wait_until_ready(
                                     daemon_socket,
-                                    ready_timeout=max(0.25, min(1.5, restart_timeout)),
-                                    probe_timeout=1.0,
+                                    ready_timeout=restart_timeout,
+                                    probe_timeout=None,
                                 )
                             )
                             if daemon_health is not None:
@@ -9918,7 +9868,7 @@ def build(
                                 cache_key=cache_key,
                                 function_cache_key=function_cache_key,
                                 config_digest=backend_daemon_config_digest,
-                                timeout=backend_timeout,
+                                timeout=None,
                             )
                             backend_compiled = daemon_compile.ok
                             daemon_error = daemon_compile.error
