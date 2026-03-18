@@ -1168,7 +1168,7 @@ complete. M-GPU-1 is the earliest actionable item and has no GPU hardware depend
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_interpchannels` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_interpqueues` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_interpreters` top-level stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_io` top-level stub with full intrinsic-backed lowering.
+- Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_io` now re-exports Molt's intrinsic-backed core file/stream classes and `open()` surface for CPython-compatible private-module imports.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_ios_support` top-level stub with full intrinsic-backed lowering.
 - Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_json` now exposes an intrinsic-backed compatibility surface for `encode_basestring`, `encode_basestring_ascii`, `scanstring`, and callable `make_encoder`/`make_scanner` types.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_locale` top-level stub with full intrinsic-backed lowering.
