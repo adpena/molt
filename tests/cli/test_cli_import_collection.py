@@ -246,6 +246,53 @@ def test_backend_ir_text_is_compact() -> None:
     assert '"functions"' in text
 
 
+def test_link_fingerprint_reuses_inputs_digest_when_unchanged(tmp_path: Path) -> None:
+    stub = tmp_path / "main_stub.c"
+    obj = tmp_path / "output.o"
+    runtime = tmp_path / "libmolt_runtime.a"
+    stub.write_text("int main(void) { return 0; }\n")
+    obj.write_bytes(b"\x7fELFobject")
+    runtime.write_bytes(b"archive")
+
+    fingerprint = cli._link_fingerprint(
+        project_root=tmp_path,
+        inputs=[stub, obj, runtime],
+        link_cmd=["clang", str(stub), str(obj), str(runtime), "-o", "app"],
+    )
+    assert fingerprint is not None
+
+    reused = cli._link_fingerprint(
+        project_root=tmp_path,
+        inputs=[stub, obj, runtime],
+        link_cmd=["clang", str(stub), str(obj), str(runtime), "-o", "app"],
+        stored_fingerprint=fingerprint,
+    )
+    assert reused == fingerprint
+
+
+def test_link_fingerprint_changes_when_link_command_changes(tmp_path: Path) -> None:
+    stub = tmp_path / "main_stub.c"
+    obj = tmp_path / "output.o"
+    runtime = tmp_path / "libmolt_runtime.a"
+    stub.write_text("int main(void) { return 0; }\n")
+    obj.write_bytes(b"\x7fELFobject")
+    runtime.write_bytes(b"archive")
+
+    first = cli._link_fingerprint(
+        project_root=tmp_path,
+        inputs=[stub, obj, runtime],
+        link_cmd=["clang", str(stub), str(obj), str(runtime), "-o", "app"],
+    )
+    second = cli._link_fingerprint(
+        project_root=tmp_path,
+        inputs=[stub, obj, runtime],
+        link_cmd=["clang", "-fuse-ld=lld", str(stub), str(obj), str(runtime), "-o", "app"],
+    )
+    assert first is not None
+    assert second is not None
+    assert first["hash"] != second["hash"]
+
+
 def test_cache_payloads_for_ir_share_sorted_function_order() -> None:
     ir = {
         "functions": [
