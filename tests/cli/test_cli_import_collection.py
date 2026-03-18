@@ -429,6 +429,40 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
     assert parse_calls > 0
 
 
+def test_shared_module_resolution_cache_reuses_resolved_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry = tmp_path / "pkg" / "__init__.py"
+    entry.parent.mkdir()
+    entry.write_text("VALUE = 1\n")
+    stdlib_root = cli._stdlib_root_path()
+
+    resolve_calls = 0
+    original_resolve = Path.resolve
+
+    def wrapped_resolve(self: Path, *args: object, **kwargs: object) -> Path:
+        nonlocal resolve_calls
+        resolve_calls += 1
+        return original_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", wrapped_resolve)
+
+    cache = cli._ModuleResolutionCache()
+    module_roots = [tmp_path]
+    first_name = cache.module_name_from_path(entry, module_roots, stdlib_root)
+    first_is_stdlib = cache.is_stdlib_path(entry, stdlib_root)
+    first_resolve_calls = resolve_calls
+
+    second_name = cache.module_name_from_path(entry, module_roots, stdlib_root)
+    second_is_stdlib = cache.is_stdlib_path(entry, stdlib_root)
+
+    assert first_name == "pkg"
+    assert second_name == first_name
+    assert not first_is_stdlib
+    assert second_is_stdlib is first_is_stdlib
+    assert resolve_calls == first_resolve_calls
+
+
 def test_stdlib_graph_ignores_nested_imports_for_core_scan(tmp_path: Path) -> None:
     entry = tmp_path / "main.py"
     entry.write_text("print(1)\n")
