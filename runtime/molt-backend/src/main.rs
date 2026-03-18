@@ -304,7 +304,6 @@ fn write_output(path: &str, bytes: &[u8]) -> io::Result<()> {
     let tmp_path = output_path.with_file_name(tmp_name);
     let mut file = File::create(&tmp_path)?;
     file.write_all(bytes)?;
-    file.sync_all()?;
     drop(file);
 
     match std::fs::rename(&tmp_path, output_path) {
@@ -378,8 +377,7 @@ fn handle_daemon_connection(
     let mut raw_bytes = Vec::new();
     stream.read_to_end(&mut raw_bytes)?;
     stats.requests_total = stats.requests_total.saturating_add(1);
-    let raw = String::from_utf8_lossy(&raw_bytes);
-    if raw.trim().is_empty() {
+    if raw_bytes.iter().all(|byte| byte.is_ascii_whitespace()) {
         let response = DaemonResponse {
             ok: false,
             pong: false,
@@ -390,7 +388,7 @@ fn handle_daemon_connection(
         write_daemon_response(stream, &response)?;
         return Ok(());
     }
-    let req: DaemonRequest = match serde_json::from_str(&raw) {
+    let req: DaemonRequest = match serde_json::from_slice(&raw_bytes) {
         Ok(req) => req,
         Err(err) => {
             let response = DaemonResponse {
