@@ -5712,6 +5712,74 @@ def _atomic_copy_file(src: Path, dst: Path) -> None:
             pass
 
 
+def _atomic_link_or_copy_file(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dst.with_name(f".{dst.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        try:
+            os.link(src, tmp_path)
+        except OSError as exc:
+            if exc.errno not in {errno.EXDEV, errno.EPERM, errno.EACCES, errno.ENOTSUP}:
+                raise
+            shutil.copy2(src, tmp_path)
+        tmp_path.replace(dst)
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+
+
+def _stage_backend_output_and_caches(
+    backend_output: Path,
+    output_artifact: Path,
+    *,
+    cache_path: Path | None,
+    function_cache_path: Path | None,
+    warnings: list[str],
+) -> str | None:
+    try:
+        if output_artifact.parent != Path("."):
+            output_artifact.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return f"Failed to move backend output: {exc}"
+
+    staged_source = backend_output
+    if cache_path is not None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            backend_output.replace(cache_path)
+            staged_source = cache_path
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                return f"Failed to move backend output: {exc}"
+            try:
+                _atomic_copy_file(backend_output, cache_path)
+                backend_output.unlink()
+                staged_source = cache_path
+            except OSError as copy_exc:
+                return f"Failed to move backend output: {copy_exc}"
+
+    try:
+        if staged_source == backend_output:
+            backend_output.replace(output_artifact)
+        else:
+            _atomic_copy_file(staged_source, output_artifact)
+    except OSError as exc:
+        return f"Failed to move backend output: {exc}"
+
+    if cache_path is None:
+        return None
+
+    if function_cache_path is not None and function_cache_path != cache_path:
+        try:
+            _atomic_link_or_copy_file(cache_path, function_cache_path)
+        except OSError as exc:
+            warnings.append(f"Function cache write failed: {exc}")
+    return None
+
+
 def _backend_daemon_request_bytes(
     socket_path: Path,
     data: bytes,
@@ -10429,44 +10497,21 @@ def build(
                     return _fail("Backend output missing", json_output, command="build")
                 if diagnostics_enabled and "backend_artifact_stage" not in phase_starts:
                     phase_starts["backend_artifact_stage"] = time.perf_counter()
-                try:
-                    if output_artifact.parent != Path("."):
-                        output_artifact.parent.mkdir(parents=True, exist_ok=True)
-                    backend_output.replace(output_artifact)
-                except OSError as exc:
-                    if exc.errno != errno.EXDEV:
-                        return _fail(
-                            f"Failed to move backend output: {exc}",
-                            json_output,
-                            command="build",
-                        )
-                    try:
-                        shutil.copy2(backend_output, output_artifact)
-                        backend_output.unlink()
-                    except OSError as copy_exc:
-                        return _fail(
-                            f"Failed to move backend output: {copy_exc}",
-                            json_output,
-                            command="build",
-                        )
                 if cache and cache_path is not None:
                     if (
                         diagnostics_enabled
                         and "backend_cache_write" not in phase_starts
                     ):
                         phase_starts["backend_cache_write"] = time.perf_counter()
-                    try:
-                        _atomic_copy_file(output_artifact, cache_path)
-                    except OSError as exc:
-                        warnings.append(f"Cache write failed: {exc}")
-                    if (
-                        function_cache_path is not None
-                        and function_cache_path != cache_path
-                    ):
-                        try:
-                            _atomic_copy_file(output_artifact, function_cache_path)
-                        except OSError as exc:
-                            warnings.append(f"Function cache write failed: {exc}")
+                stage_error = _stage_backend_output_and_caches(
+                    backend_output,
+                    output_artifact,
+                    cache_path=cache_path if cache else None,
+                    function_cache_path=function_cache_path if cache else None,
+                    warnings=warnings,
+                )
+                if stage_error is not None:
+                    return _fail(stage_error, json_output, command="build")
 
     if is_wasm:
         output_wasm = output_artifact
