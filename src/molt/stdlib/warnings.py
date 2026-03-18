@@ -4,31 +4,47 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-
-from typing import Any
 import re as _re
 import sys as _sys
 
 _require_intrinsic("molt_stdlib_probe", globals())
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
-_molt_warnings_warn = _require_intrinsic("molt_warnings_warn", globals())
-_molt_warnings_warn_explicit = _require_intrinsic(
-    "molt_warnings_warn_explicit", globals()
-)
-_molt_warnings_formatwarning = _require_intrinsic(
-    "molt_warnings_formatwarning", globals()
-)
-_molt_warnings_showwarning = _require_intrinsic("molt_warnings_showwarning", globals())
-_molt_warnings_simplefilter = _require_intrinsic(
-    "molt_warnings_simplefilter", globals()
-)
-_molt_warnings_filterwarnings = _require_intrinsic(
-    "molt_warnings_filterwarnings", globals()
-)
-_molt_warnings_resetwarnings = _require_intrinsic(
-    "molt_warnings_resetwarnings", globals()
-)
-_molt_warnings_filters_get = _require_intrinsic("molt_warnings_filters_get", globals())
+
+
+def _warnings_intrinsic(name: str):
+    return _require_intrinsic(name, globals())
+
+
+def _molt_warnings_warn(*args):
+    return _warnings_intrinsic("molt_warnings_warn")(*args)
+
+
+def _molt_warnings_warn_explicit(*args):
+    return _warnings_intrinsic("molt_warnings_warn_explicit")(*args)
+
+
+def _molt_warnings_formatwarning(*args):
+    return _warnings_intrinsic("molt_warnings_formatwarning")(*args)
+
+
+def _molt_warnings_showwarning(*args):
+    return _warnings_intrinsic("molt_warnings_showwarning")(*args)
+
+
+def _molt_warnings_simplefilter(*args):
+    return _warnings_intrinsic("molt_warnings_simplefilter")(*args)
+
+
+def _molt_warnings_filterwarnings(*args):
+    return _warnings_intrinsic("molt_warnings_filterwarnings")(*args)
+
+
+def _molt_warnings_resetwarnings(*args):
+    return _warnings_intrinsic("molt_warnings_resetwarnings")(*args)
+
+
+def _molt_warnings_filters_get(*args):
+    return _warnings_intrinsic("molt_warnings_filters_get")(*args)
 
 
 class _WarningRecord:

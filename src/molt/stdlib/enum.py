@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
-from typing import Any
 
 __all__ = [
     "Enum",

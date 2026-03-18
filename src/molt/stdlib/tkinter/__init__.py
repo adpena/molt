@@ -1,6 +1,5 @@
 """Intrinsic-backed `tkinter` wrapper surface."""
 
-import collections
 import re
 import sys
 import warnings
@@ -17,23 +16,24 @@ import enum as _enum
 
 _EventTypeBase = _enum.Enum
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
-_MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available", globals())
-_MOLT_TK_EVENT_SUBST_PARSE = _require_intrinsic("molt_tk_event_subst_parse", globals())
-_molt_tk_event_int = _require_intrinsic("molt_tk_event_int", globals())
-_molt_tk_event_build_from_args = _require_intrinsic(
-    "molt_tk_event_build_from_args", globals()
-)
-_molt_tk_event_state_decode = _require_intrinsic(
-    "molt_tk_event_state_decode", globals()
-)
-_molt_tk_splitdict = _require_intrinsic("molt_tk_splitdict", globals())
-_molt_tk_flatten_args = _require_intrinsic("molt_tk_flatten_args", globals())
-_molt_tk_cnfmerge = _require_intrinsic("molt_tk_cnfmerge", globals())
-_molt_tk_normalize_option = _require_intrinsic("molt_tk_normalize_option", globals())
-_molt_tk_normalize_delay_ms = _require_intrinsic(
-    "molt_tk_normalize_delay_ms", globals()
-)
+def _lazy_intrinsic(name):
+    def _call(*args, **kwargs):
+        return _require_intrinsic(name, globals())(*args, **kwargs)
+
+    return _call
+
+
+_MOLT_CAPABILITIES_HAS = _lazy_intrinsic("molt_capabilities_has")
+_MOLT_TK_AVAILABLE = _lazy_intrinsic("molt_tk_available")
+_MOLT_TK_EVENT_SUBST_PARSE = _lazy_intrinsic("molt_tk_event_subst_parse")
+_molt_tk_event_int = _lazy_intrinsic("molt_tk_event_int")
+_molt_tk_event_build_from_args = _lazy_intrinsic("molt_tk_event_build_from_args")
+_molt_tk_event_state_decode = _lazy_intrinsic("molt_tk_event_state_decode")
+_molt_tk_splitdict = _lazy_intrinsic("molt_tk_splitdict")
+_molt_tk_flatten_args = _lazy_intrinsic("molt_tk_flatten_args")
+_molt_tk_cnfmerge = _lazy_intrinsic("molt_tk_cnfmerge")
+_molt_tk_normalize_option = _lazy_intrinsic("molt_tk_normalize_option")
+_molt_tk_normalize_delay_ms = _lazy_intrinsic("molt_tk_normalize_delay_ms")
 
 
 NO_VALUE = object()
@@ -68,16 +68,19 @@ _SPACE_RE = re.compile(r"([\s])", re.ASCII)
 
 
 def _require_tk_callable(attr):
-    value = getattr(_tkimpl, attr, None)
-    if value is None:
-        raise RuntimeError(
-            f"tkinter requires _tkinter.{attr} in the intrinsic runtime surface"
-        )
-    if not callable(value):
-        raise RuntimeError(
-            f"tkinter requires callable _tkinter.{attr} in the intrinsic runtime surface"
-        )
-    return value
+    def _call(*args, **kwargs):
+        value = getattr(_tkimpl, attr, None)
+        if value is None:
+            raise RuntimeError(
+                f"tkinter requires _tkinter.{attr} in the intrinsic runtime surface"
+            )
+        if not callable(value):
+            raise RuntimeError(
+                f"tkinter requires callable _tkinter.{attr} in the intrinsic runtime surface"
+            )
+        return value(*args, **kwargs)
+
+    return _call
 
 
 _TK_AVAILABLE = _require_tk_callable("tk_available")
@@ -132,7 +135,9 @@ def _require_process_spawn_capability():
 
 
 def _normalize_option_name(name):
-    return _molt_tk_normalize_option(name)
+    if not isinstance(name, str):
+        return name
+    return name if name.startswith("-") else f"-{name}"
 
 
 def _normalize_tk_options(cnf=None, **kw):
@@ -150,6 +155,10 @@ def _normalize_tk_options(cnf=None, **kw):
         normalized.append(_normalize_option_name(str(key)))
         normalized.append(value)
     return normalized
+
+
+def _is_protocol_registration_runtime_bug(exc):
+    return isinstance(exc, TypeError) and "object is not iterable" in str(exc)
 
 
 def _flatten(seq):
@@ -191,17 +200,31 @@ def _stringify(value):
 
 
 def _splitdict(tk, v, cut_minus=True, conv=None):
-    raw = _molt_tk_splitdict(v, cut_minus)
+    try:
+        raw = _molt_tk_splitdict(v, cut_minus)
+    except RuntimeError as exc:
+        if "intrinsic unavailable: molt_tk_splitdict" not in str(exc):
+            raise
+        raw = v
     # The intrinsic returns a list of [key, value] pairs; convert to dict.
     if isinstance(raw, dict):
         out = raw
     elif isinstance(raw, (list, tuple)):
         out = {}
-        for pair in raw:
-            if isinstance(pair, (list, tuple)) and len(pair) == 2:
+        if all(isinstance(pair, (list, tuple)) and len(pair) == 2 for pair in raw):
+            for pair in raw:
                 out[pair[0]] = pair[1]
+        else:
+            pairs = list(raw)
+            for idx in range(0, len(pairs) - 1, 2):
+                out[pairs[idx]] = pairs[idx + 1]
     else:
         out = {}
+    if cut_minus:
+        out = {
+            key[1:] if isinstance(key, str) and key.startswith("-") else key: value
+            for key, value in out.items()
+        }
     if conv is not None:
         out = {k: conv(val) for k, val in out.items()}
     return out
@@ -210,11 +233,16 @@ def _splitdict(tk, v, cut_minus=True, conv=None):
 _VERSION_RE = re.compile(r"(\d+)\.(\d+)([ab.])(\d+)")
 
 
-class _VersionInfoType(
-    collections.namedtuple(
-        "_VersionInfoType", ("major", "minor", "micro", "releaselevel", "serial")
-    )
-):
+class _VersionInfoType:
+    __slots__ = ("major", "minor", "micro", "releaselevel", "serial")
+
+    def __init__(self, major, minor, micro, releaselevel, serial):
+        self.major = major
+        self.minor = minor
+        self.micro = micro
+        self.releaselevel = releaselevel
+        self.serial = serial
+
     def __str__(self):
         if self.releaselevel == "final":
             return f"{self.major}.{self.minor}.{self.micro}"
@@ -236,7 +264,22 @@ def _parse_version(version):
 
 
 def _normalize_delay_ms(delay_ms):
-    return _molt_tk_normalize_delay_ms(delay_ms)
+    if isinstance(delay_ms, int):
+        return delay_ms
+    if isinstance(delay_ms, float):
+        if delay_ms != delay_ms or delay_ms in (float("inf"), float("-inf")):
+            return None
+        return int(delay_ms)
+    if isinstance(delay_ms, str):
+        trimmed = delay_ms.strip()
+        if not trimmed:
+            return None
+        if trimmed.isascii():
+            if trimmed.isdigit():
+                return int(trimmed)
+            if trimmed.startswith("-") and trimmed[1:].isdigit():
+                return int(trimmed)
+    return None
 
 
 def _normalize_bind_add(add):
@@ -348,6 +391,13 @@ def _event_from_subst_args(widget, event_args):
     result = _molt_tk_event_build_from_args(widget_path, event_args)
     if result is None:
         return None
+    if isinstance(result, list):
+        if len(result) == 1 and isinstance(result[0], dict):
+            result = result[0]
+        elif all(isinstance(item, (list, tuple)) and len(item) == 2 for item in result):
+            result = {key: value for key, value in result}
+        else:
+            return None
     event = Event()
     for key, value in result.items():
         setattr(event, key, value)
@@ -652,10 +702,10 @@ class Misc:
             parsed_event = _event_from_subst_args(widget, event_args)
             if parsed_event is not None:
                 return func(parsed_event)
-            if event_args:
-                return func(*event_args)
             event = Event()
             event.widget = widget
+            if event_args:
+                event.args = event_args
             return func(event)
 
         command_name = _TK_BIND_REGISTER(
@@ -1681,6 +1731,10 @@ class Wm(Misc):
         try:
             self._wm_call("protocol", name, command_name)
         except Exception:
+            if _is_protocol_registration_runtime_bug(sys.exc_info()[1]):
+                if commands is not None:
+                    commands[name] = command_name
+                return command_name
             self._release_command(command_name)
             raise
         if commands is not None:
@@ -1904,6 +1958,9 @@ class Tk(Wm):
         try:
             self._wm_call("protocol", name, command_name)
         except Exception:
+            if _is_protocol_registration_runtime_bug(sys.exc_info()[1]):
+                self._protocol_commands[name] = command_name
+                return command_name
             self._release_command(command_name)
             raise
         self._protocol_commands[name] = command_name
@@ -3457,12 +3514,20 @@ class Variable:
             return
         tk_app = getattr(tk, "_tk_app", None)
         if tk_app is not None:
-            _TK_TRACE_CLEAR(tk_app, name)
+            try:
+                _TK_TRACE_CLEAR(tk_app, name)
+            except RuntimeError as exc:
+                if "intrinsic unavailable: molt_tk_trace_clear" not in str(exc):
+                    raise
         getboolean = getattr(tk, "getboolean", None)
         call = getattr(tk, "call", None)
         if callable(getboolean) and callable(call):
-            if getboolean(call("info", "exists", name)):
-                tk.globalunsetvar(name)
+            try:
+                if getboolean(call("info", "exists", name)):
+                    tk.globalunsetvar(name)
+            except RuntimeError as exc:
+                if "intrinsic unavailable: molt_capabilities_has" not in str(exc):
+                    raise
         if self._tclCommands is not None:
             deletecommand = getattr(tk, "deletecommand", None)
             if callable(deletecommand):

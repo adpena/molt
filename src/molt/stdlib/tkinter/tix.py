@@ -5,13 +5,25 @@ import warnings
 import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-warnings.warn(
-    "tkinter.tix is deprecated since Python 3.6 and will be removed in Python 3.13. Use tkinter.ttk instead.",
-    DeprecationWarning,
-    stacklevel=2,
-)
+try:
+    warnings.warn(
+        "tkinter.tix is deprecated since Python 3.6 and will be removed in Python 3.13. Use tkinter.ttk instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+except RuntimeError as exc:
+    if "intrinsic unavailable" not in str(exc):
+        raise
 
-_MOLT_TK_CALL = _require_intrinsic("molt_tk_call", globals())
+
+def _lazy_intrinsic(name):
+    def _call(*args, **kwargs):
+        return _require_intrinsic(name, globals())(*args, **kwargs)
+
+    return _call
+
+
+_MOLT_TK_CALL = _lazy_intrinsic("molt_tk_call")
 
 # CPython-compatible symbolic constants.
 WINDOW = "window"
