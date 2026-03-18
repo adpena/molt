@@ -1777,13 +1777,21 @@ def _stdlib_root_path() -> Path:
 
 
 def _resolve_module_path(module_name: str, roots: list[Path]) -> Path | None:
-    parts = module_name.split(".")
-    rel = Path(*parts)
+    return _resolve_module_path_parts(tuple(module_name.split(".")), roots)
+
+
+def _resolve_module_path_parts(parts: tuple[str, ...], roots: list[Path]) -> Path | None:
+    if not parts:
+        return None
+    module_filename = f"{parts[-1]}.py"
     for root in roots:
-        pkg_path = root / rel / "__init__.py"
+        pkg_path = root.joinpath(*parts, "__init__.py")
         if pkg_path.exists():
             return pkg_path
-        mod_path = root / f"{rel}.py"
+        if len(parts) == 1:
+            mod_path = root / module_filename
+        else:
+            mod_path = root.joinpath(*parts[:-1], module_filename)
         if mod_path.exists():
             return mod_path
     return None
@@ -1809,6 +1817,7 @@ class _ModuleResolutionCache:
     import_scan_cache: dict[
         tuple[Path, str | None, bool, bool], list[str]
     ] = field(default_factory=dict)
+    module_parts_cache: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def roots_for_module(
         self,
@@ -1825,6 +1834,13 @@ class _ModuleResolutionCache:
             self.roots_cache[module_name] = candidate_roots
         return candidate_roots
 
+    def module_parts(self, module_name: str) -> tuple[str, ...]:
+        cached = self.module_parts_cache.get(module_name)
+        if cached is None:
+            cached = tuple(module_name.split("."))
+            self.module_parts_cache[module_name] = cached
+        return cached
+
     def resolve_module(
         self,
         module_name: str,
@@ -1838,15 +1854,15 @@ class _ModuleResolutionCache:
         if cache_key not in self.resolve_cache:
             if cache_key.startswith("stdlib:"):
                 stdlib_candidate = module_name[len("molt.stdlib.") :]
-                self.resolve_cache[cache_key] = _resolve_module_path(
-                    stdlib_candidate, [stdlib_root]
+                self.resolve_cache[cache_key] = _resolve_module_path_parts(
+                    self.module_parts(stdlib_candidate), [stdlib_root]
                 )
             else:
                 candidate_roots = self.roots_for_module(
                     module_name, roots, stdlib_root, stdlib_allowlist
                 )
-                self.resolve_cache[cache_key] = _resolve_module_path(
-                    module_name, candidate_roots
+                self.resolve_cache[cache_key] = _resolve_module_path_parts(
+                    self.module_parts(module_name), candidate_roots
                 )
         return self.resolve_cache[cache_key]
 
@@ -1869,7 +1885,10 @@ class _ModuleResolutionCache:
     def resolved_path(self, path: Path) -> Path:
         resolved = self.resolved_path_cache.get(path)
         if resolved is None:
-            resolved = path.resolve()
+            if path.is_absolute() and "." not in path.parts and ".." not in path.parts:
+                resolved = path
+            else:
+                resolved = path.resolve()
             self.resolved_path_cache[path] = resolved
         return resolved
 
