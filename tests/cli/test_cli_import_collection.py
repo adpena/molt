@@ -2188,6 +2188,83 @@ def test_stage_backend_output_and_caches_skips_state_rewrite_when_synced(
     assert not backend_output.exists()
 
 
+def test_stage_backend_output_and_caches_uses_known_sync_state_without_reread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend_output = tmp_path / "backend.o"
+    backend_output.write_bytes(b"artifact")
+    output_artifact = tmp_path / "dist" / "output.o"
+    output_artifact.parent.mkdir(parents=True)
+    output_artifact.write_bytes(b"artifact")
+    cache_path = tmp_path / "cache" / "module.o"
+    warnings: list[str] = []
+
+    def fail_read(path: Path) -> dict[str, object] | None:
+        raise AssertionError(f"unexpected sync-state read: {path}")
+
+    monkeypatch.setattr(cli, "_read_artifact_sync_state", fail_read)
+
+    err = cli._stage_backend_output_and_caches(
+        tmp_path,
+        backend_output,
+        output_artifact,
+        cache_path=cache_path,
+        cache_key="module-key",
+        function_cache_path=None,
+        warnings=warnings,
+        output_already_synced=True,
+    )
+
+    assert err is None
+    assert warnings == []
+    assert output_artifact.read_bytes() == b"artifact"
+    assert cache_path.read_bytes() == b"artifact"
+    assert not backend_output.exists()
+
+
+def test_stage_backend_output_and_caches_prefers_link_or_copy_for_output_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend_output = tmp_path / "backend.o"
+    backend_output.write_bytes(b"artifact")
+    output_artifact = tmp_path / "dist" / "output.o"
+    cache_path = tmp_path / "cache" / "module.o"
+    function_cache_path = tmp_path / "cache" / "function.o"
+    warnings: list[str] = []
+    link_calls: list[tuple[Path, Path]] = []
+    original_link_or_copy = cli._atomic_link_or_copy_file
+    original_copy = cli._atomic_copy_file
+
+    def record_link_or_copy(src: Path, dst: Path) -> None:
+        link_calls.append((src, dst))
+        original_link_or_copy(src, dst)
+
+    def fail_copy(src: Path, dst: Path) -> None:
+        if dst == output_artifact:
+            raise AssertionError(f"unexpected copy {src} -> {dst}")
+        original_copy(src, dst)
+
+    monkeypatch.setattr(cli, "_atomic_link_or_copy_file", record_link_or_copy)
+    monkeypatch.setattr(cli, "_atomic_copy_file", fail_copy)
+
+    err = cli._stage_backend_output_and_caches(
+        tmp_path,
+        backend_output,
+        output_artifact,
+        cache_path=cache_path,
+        cache_key="module-key",
+        function_cache_path=function_cache_path,
+        warnings=warnings,
+    )
+
+    assert err is None
+    assert warnings == []
+    assert output_artifact.read_bytes() == b"artifact"
+    assert cache_path.read_bytes() == b"artifact"
+    assert function_cache_path.read_bytes() == b"artifact"
+    assert (cache_path, output_artifact) in link_calls
+
+
 def test_stage_backend_output_and_caches_without_cache_moves_output(
     tmp_path: Path,
 ) -> None:
@@ -2308,6 +2385,46 @@ def test_materialize_cached_backend_artifact_skips_recopy_when_synced(
     )
     assert second is True
     assert warnings == []
+
+
+def test_materialize_cached_backend_artifact_prefers_link_or_copy_for_output_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = tmp_path / "cache" / "module.o"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"artifact")
+    output_artifact = tmp_path / "dist" / "output.o"
+    warnings: list[str] = []
+    link_calls: list[tuple[Path, Path]] = []
+    original_link_or_copy = cli._atomic_link_or_copy_file
+    original_copy = cli._atomic_copy_file
+
+    def record_link_or_copy(src: Path, dst: Path) -> None:
+        link_calls.append((src, dst))
+        original_link_or_copy(src, dst)
+
+    def fail_copy(src: Path, dst: Path) -> None:
+        if dst == output_artifact:
+            raise AssertionError(f"unexpected copy {src} -> {dst}")
+        original_copy(src, dst)
+
+    monkeypatch.setattr(cli, "_atomic_link_or_copy_file", record_link_or_copy)
+    monkeypatch.setattr(cli, "_atomic_copy_file", fail_copy)
+
+    ok = cli._materialize_cached_backend_artifact(
+        tmp_path,
+        candidate,
+        output_artifact,
+        tier="module",
+        source_key="module-key",
+        cache_path=candidate,
+        warnings=warnings,
+    )
+
+    assert ok is True
+    assert warnings == []
+    assert output_artifact.read_bytes() == b"artifact"
+    assert (candidate, output_artifact) in link_calls
 
 
 def test_temporary_backend_output_path_uses_expected_suffix_and_cleans_up(
