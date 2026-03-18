@@ -1375,6 +1375,8 @@ impl SimpleBackend {
             .unwrap_or(cfg!(debug_assertions));
         let defined_functions: HashSet<String> =
             ir.functions.iter().map(|func| func.name.clone()).collect();
+        // Track which functions are closures (need implicit env param in direct calls)
+        let mut closure_functions: HashSet<String> = HashSet::new();
         // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
         let mut task_kinds: BTreeMap<String, TrampolineKind> = BTreeMap::new();
         // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
@@ -1403,6 +1405,9 @@ impl SimpleBackend {
                         let Some(name) = op.s_value.as_ref() else {
                             continue;
                         };
+                        if op.kind == "func_new_closure" {
+                            closure_functions.insert(name.clone());
+                        }
                         if let Some(out) = op.out.as_ref() {
                             func_obj_names.insert(out.clone(), name.clone());
                         }
@@ -1474,6 +1479,7 @@ impl SimpleBackend {
                 &task_kinds,
                 &task_closure_sizes,
                 &defined_functions,
+                &closure_functions,
                 emit_traces,
             );
         }
@@ -1824,6 +1830,7 @@ impl SimpleBackend {
         task_kinds: &BTreeMap<String, TrampolineKind>,
         task_closure_sizes: &BTreeMap<String, i64>,
         defined_functions: &HashSet<String>,
+        closure_functions: &HashSet<String>,
         emit_traces: bool,
     ) {
         let mut builder_ctx = FunctionBuilderContext::new();
@@ -1900,6 +1907,8 @@ impl SimpleBackend {
         let mut is_block_filled = false;
         let mut if_stack: Vec<IfFrame> = Vec::new();
         let mut loop_stack: Vec<LoopFrame> = Vec::new();
+        // Map closure function names to their function object variable names
+        let mut local_closure_envs: HashMap<String, String> = HashMap::new();
         let mut loop_depth: i32 = 0;
         let mut block_tracked_obj: HashMap<Block, Vec<String>> = HashMap::new();
         let mut block_tracked_ptr: HashMap<Block, Vec<String>> = HashMap::new();
@@ -8949,6 +8958,10 @@ impl SimpleBackend {
                         &[func_addr, tramp_addr, arity_val, closure_bits],
                     );
                     let res = builder.inst_results(call)[0];
+                    // Track closure function object for direct calls
+                    if let Some(out_name) = op.out.as_ref() {
+                        local_closure_envs.insert(func_name.clone(), out_name.clone());
+                    }
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "code_new" => {
@@ -9336,6 +9349,23 @@ impl SimpleBackend {
                         }
                     }
 
+                    // For direct calls to closures, extract env from function object
+                    if closure_functions.contains(target_name.as_str()) {
+                        if let Some(func_obj_var) = local_closure_envs.get(target_name.as_str()) {
+                            let func_obj_bits = *var_get(&mut builder, &vars, func_obj_var)
+                                .expect("Closure func obj not found for direct call");
+                            let mut extract_sig = self.module.make_signature();
+                            extract_sig.params.push(AbiParam::new(types::I64));
+                            extract_sig.returns.push(AbiParam::new(types::I64));
+                            let extract_fn = self.module
+                                .declare_function("molt_function_closure_bits", Linkage::Import, &extract_sig)
+                                .unwrap();
+                            let extract_local = self.module.declare_func_in_func(extract_fn, builder.func);
+                            let extract_call = builder.ins().call(extract_local, &[func_obj_bits]);
+                            let env_bits = builder.inst_results(extract_call)[0];
+                            args.insert(0, env_bits);
+                        }
+                    }
                     let mut sig = self.module.make_signature();
                     for _ in 0..args.len() {
                         sig.params.push(AbiParam::new(types::I64));
@@ -9493,6 +9523,23 @@ impl SimpleBackend {
                         args.push(*var_get(&mut builder, &vars, name).expect("Arg not found"));
                     }
 
+                    // For direct calls to closures, extract env from function object
+                    if closure_functions.contains(target_name.as_str()) {
+                        if let Some(func_obj_var) = local_closure_envs.get(target_name.as_str()) {
+                            let func_obj_bits = *var_get(&mut builder, &vars, func_obj_var)
+                                .expect("Closure func obj not found for direct call");
+                            let mut extract_sig = self.module.make_signature();
+                            extract_sig.params.push(AbiParam::new(types::I64));
+                            extract_sig.returns.push(AbiParam::new(types::I64));
+                            let extract_fn = self.module
+                                .declare_function("molt_function_closure_bits", Linkage::Import, &extract_sig)
+                                .unwrap();
+                            let extract_local = self.module.declare_func_in_func(extract_fn, builder.func);
+                            let extract_call = builder.ins().call(extract_local, &[func_obj_bits]);
+                            let env_bits = builder.inst_results(extract_call)[0];
+                            args.insert(0, env_bits);
+                        }
+                    }
                     let mut sig = self.module.make_signature();
                     for _ in 0..args.len() {
                         sig.params.push(AbiParam::new(types::I64));
@@ -9584,6 +9631,23 @@ impl SimpleBackend {
                         args.push(*var_get(&mut builder, &vars, name).expect("Arg not found"));
                     }
 
+                    // For direct calls to closures, extract env from function object
+                    if closure_functions.contains(target_name.as_str()) {
+                        if let Some(func_obj_var) = local_closure_envs.get(target_name.as_str()) {
+                            let func_obj_bits = *var_get(&mut builder, &vars, func_obj_var)
+                                .expect("Closure func obj not found for direct call");
+                            let mut extract_sig = self.module.make_signature();
+                            extract_sig.params.push(AbiParam::new(types::I64));
+                            extract_sig.returns.push(AbiParam::new(types::I64));
+                            let extract_fn = self.module
+                                .declare_function("molt_function_closure_bits", Linkage::Import, &extract_sig)
+                                .unwrap();
+                            let extract_local = self.module.declare_func_in_func(extract_fn, builder.func);
+                            let extract_call = builder.ins().call(extract_local, &[func_obj_bits]);
+                            let env_bits = builder.inst_results(extract_call)[0];
+                            args.insert(0, env_bits);
+                        }
+                    }
                     let mut sig = self.module.make_signature();
                     for _ in 0..args.len() {
                         sig.params.push(AbiParam::new(types::I64));

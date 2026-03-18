@@ -638,6 +638,76 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     ),
 }
 
+# ── intrinsic arity lookup (compile-time optimisation) ────────────
+# Build a reverse map from runtime name -> arity so that the
+# compile-time _require_intrinsic resolution can emit BUILTIN_FUNC
+# with the correct parameter count.
+
+_INTRINSIC_ARITY_CACHE: dict[str, int] | None = None
+
+
+def _intrinsic_arity(runtime_name: str) -> int:
+    """Return the parameter count for *runtime_name*.
+
+    1. Check BUILTIN_FUNC_SPECS (keyed by Python name, value has .runtime).
+    2. Fall back to parsing molt/_intrinsics.pyi for ``def <name>(...)``.
+    3. Default to 0 if not found anywhere.
+    """
+    global _INTRINSIC_ARITY_CACHE
+    if _INTRINSIC_ARITY_CACHE is None:
+        cache: dict[str, int] = {}
+        # Seed from BUILTIN_FUNC_SPECS (runtime name -> arity).
+        for spec in BUILTIN_FUNC_SPECS.values():
+            arity = (
+                len(spec.params)
+                + len(spec.pos_or_kw_params)
+                + len(spec.kwonly_params)
+            )
+            if spec.vararg is not None:
+                arity += 1
+            cache[spec.runtime] = arity
+        # Augment with _intrinsics.pyi signatures.
+        import re as _re
+
+        pyi_path = Path(__file__).resolve().parent.parent / "_intrinsics.pyi"
+        if pyi_path.exists():
+            # Join multi-line signatures into single lines for parsing
+            text = pyi_path.read_text()
+            # Collapse multi-line defs: join lines until we see ") ->"
+            collapsed = []
+            buf = ""
+            for line in text.splitlines():
+                if buf:
+                    buf += " " + line.strip()
+                    if ")" in buf:
+                        collapsed.append(buf)
+                        buf = ""
+                elif line.startswith("def "):
+                    if ")" in line:
+                        collapsed.append(line)
+                    else:
+                        buf = line.strip()
+            _sig_re = _re.compile(r"^def\s+(\w+)\(([^)]*)\)")
+            for line in collapsed:
+                m = _sig_re.match(line)
+                if m:
+                    name = m.group(1)
+                    params_str = m.group(2).strip()
+                    if not params_str:
+                        cache.setdefault(name, 0)
+                    else:
+                        count = len(
+                            [
+                                p
+                                for p in params_str.split(",")
+                                if p.strip() and not p.strip().startswith("*")
+                            ]
+                        )
+                        cache.setdefault(name, count)
+        _INTRINSIC_ARITY_CACHE = cache
+    return _INTRINSIC_ARITY_CACHE.get(runtime_name, 0)
+
+
 MOLT_REEXPORT_FUNCTIONS = {
     "cancel_current": "molt.concurrency",
     "cancelled": "molt.concurrency",
@@ -17323,6 +17393,58 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
                 return res
 
+            # ── compile-time intrinsic resolution (Func: path) ──
+            if func_id in {
+                "_require_intrinsic",
+                "require_intrinsic",
+                "_require_builtin_intrinsic",
+                "_intrinsics_require",
+                "load_intrinsic",
+            }:
+                if (
+                    node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)
+                ):
+                    intrinsic_name = node.args[0].value
+                    arity = _intrinsic_arity(intrinsic_name)
+                    func_val = MoltValue(self.next_var(), type_hint="function")
+                    self.emit(
+                        MoltOp(
+                            kind="BUILTIN_FUNC",
+                            args=[intrinsic_name, arity],
+                            result=func_val,
+                        )
+                    )
+                    param_names = [f"arg{i}" for i in range(arity)]
+                    self._emit_function_metadata(
+                        func_val,
+                        name=intrinsic_name,
+                        qualname=intrinsic_name,
+                        trace_lineno=None,
+                        posonly_params=param_names,
+                        pos_or_kw_params=[],
+                        kwonly_params=[],
+                        vararg=None,
+                        varkw=None,
+                        default_exprs=[],
+                        kw_default_exprs=[],
+                        docstring=None,
+                        module_override="builtins",
+                    )
+                    set_builtin = self._emit_builtin_function(
+                        "_molt_function_set_builtin"
+                    )
+                    builtin_res = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(
+                        MoltOp(
+                            kind="CALL_FUNC",
+                            args=[set_builtin, func_val],
+                            result=builtin_res,
+                        )
+                    )
+                    return func_val
+
             if target_info and str(target_info.type_hint).startswith("Func:"):
                 target_name = target_info.type_hint.split(":")[1]
                 direct_ok = target_name in self.func_default_specs
@@ -18637,6 +18759,65 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 res = MoltValue(self.next_var(), type_hint="memoryview")
                 self.emit(MoltOp(kind="MEMORYVIEW_NEW", args=[arg], result=res))
                 return res
+            # ── compile-time intrinsic resolution ──────────────────────
+            # _require_intrinsic("name", ns) / require_intrinsic("name", ns)
+            # bypass the runtime dict lookup and emit a direct BUILTIN_FUNC
+            # load for the intrinsic name.  This avoids a Cranelift codegen
+            # issue where dict.get() fails in compiled binaries.
+            # ── compile-time intrinsic resolution ──
+            if func_id in {
+                "_require_intrinsic",
+                "require_intrinsic",
+                "_require_builtin_intrinsic",
+                "_intrinsics_require",
+                "load_intrinsic",
+            }:
+                if (
+                    node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)
+                ):
+                    intrinsic_name = node.args[0].value
+                    arity = _intrinsic_arity(intrinsic_name)
+                    func_val = MoltValue(self.next_var(), type_hint="function")
+                    self.emit(
+                        MoltOp(
+                            kind="BUILTIN_FUNC",
+                            args=[intrinsic_name, arity],
+                            result=func_val,
+                        )
+                    )
+                    # Add function metadata so the call dispatch handles
+                    # positional argument binding correctly.
+                    param_names = [f"arg{i}" for i in range(arity)]
+                    self._emit_function_metadata(
+                        func_val,
+                        name=intrinsic_name,
+                        qualname=intrinsic_name,
+                        trace_lineno=None,
+                        posonly_params=param_names,
+                        pos_or_kw_params=[],
+                        kwonly_params=[],
+                        vararg=None,
+                        varkw=None,
+                        default_exprs=[],
+                        kw_default_exprs=[],
+                        docstring=None,
+                        module_override="builtins",
+                    )
+                    set_builtin = self._emit_builtin_function(
+                        "_molt_function_set_builtin"
+                    )
+                    builtin_res = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(
+                        MoltOp(
+                            kind="CALL_FUNC",
+                            args=[set_builtin, func_val],
+                            result=builtin_res,
+                        )
+                    )
+                    return func_val
+
             if func_id in BUILTIN_FUNC_SPECS:
                 if func_id == "open":
                     needs_bind = True

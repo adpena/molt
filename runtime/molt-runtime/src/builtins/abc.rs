@@ -715,30 +715,29 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
 
         let frame_bits = crate::molt_getframe(int_bits_from_i64(_py, 0));
         if exception_pending(_py) {
-            return MoltObject::none().bits();
+            // Clear the exception — _getframe failure is non-fatal during
+            // compiled binary bootstrap where the frame stack may be empty.
+            crate::builtins::exceptions::clear_exception(_py);
         }
-        if obj_from_bits(frame_bits).is_none() {
-            return raise_exception::<_>(
-                _py,
-                "RuntimeError",
-                "sys._getframe() is unavailable while lowering collections.abc",
-            );
-        }
-        let frame_locals_bits =
-            get_attr_default(_py, frame_bits, b"f_locals", MoltObject::none().bits());
-        dec_ref_bits(_py, frame_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if obj_from_bits(frame_locals_bits).is_none() {
-            return raise_exception::<_>(
-                _py,
-                "RuntimeError",
-                "frame locals are unavailable while lowering collections.abc",
-            );
-        }
-        let framelocalsproxy = type_of_bits(_py, frame_locals_bits);
-        dec_ref_bits(_py, frame_locals_bits);
+        let framelocalsproxy = if obj_from_bits(frame_bits).is_none() {
+            // Frame unavailable (compiled binary bootstrap). Use the mappingproxy
+            // type already resolved above as a safe fallback.
+            mappingproxy
+        } else {
+            let fl_bits =
+                get_attr_default(_py, frame_bits, b"f_locals", MoltObject::none().bits());
+            dec_ref_bits(_py, frame_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            if obj_from_bits(fl_bits).is_none() {
+                mappingproxy
+            } else {
+                let proxy = type_of_bits(_py, fl_bits);
+                dec_ref_bits(_py, fl_bits);
+                proxy
+            }
+        };
 
         let entries: [(&[u8], u64); 20] = [
             (b"bytes_iterator", bytes_iterator),

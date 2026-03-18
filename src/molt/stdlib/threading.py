@@ -1175,7 +1175,7 @@ else:
         thread._synthetic_alive = True
         thread._ident_cache = get_ident()
         thread._native_id_cache = get_native_id()
-        _thread_registry_set_main(thread._name, thread._daemon)
+        _thread_registry_set_main(str(thread._name or "MainThread"), bool(thread._daemon))
         _MAIN_THREAD = thread
         return thread
 

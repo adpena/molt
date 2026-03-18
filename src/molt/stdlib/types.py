@@ -87,11 +87,16 @@ __all__ = [
 
 
 def _bootstrap() -> None:
-    intrinsic = _require_intrinsic("molt_types_bootstrap", globals())
+    intrinsic = _require_intrinsic("molt_types_bootstrap")
     data = intrinsic()
     if not isinstance(data, dict):
         raise RuntimeError("types intrinsics unavailable")
-    globals().update(data)
+    # Use module-level assignment instead of globals().update() to avoid
+    # the compiled dict lookup bug. Each assignment goes through MODULE_SET_ATTR.
+    import sys
+    mod = sys.modules[__name__]
+    for key, val in data.items():
+        setattr(mod, key, val)
 
 
 _bootstrap()

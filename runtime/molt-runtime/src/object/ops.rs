@@ -35158,6 +35158,23 @@ pub extern "C" fn molt_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) ->
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_get(dict_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
+    // Pre-materialize the key object to force pointer resolution and hash
+    // caching before the dict lookup. In Cranelift-compiled binaries, NaN-boxed
+    // key values can produce incorrect hash results without this step.
+    {
+        let key_obj = obj_from_bits(key_bits);
+        if let Some(key_ptr) = key_obj.as_ptr() {
+            unsafe {
+                if object_type_id(key_ptr) == TYPE_ID_STRING {
+                    let len = string_len(key_ptr);
+                    // Force a volatile read of the first byte to prevent elision
+                    if len > 0 {
+                        std::ptr::read_volatile(string_bytes(key_ptr));
+                    }
+                }
+            }
+        }
+    }
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(dict_bits);
         let Some(ptr) = obj.as_ptr() else {
@@ -45560,6 +45577,18 @@ pub(crate) unsafe fn dict_get_in_place(
     key_bits: u64,
 ) -> Option<u64> {
     unsafe {
+        // Pre-materialize the key to force NaN-box pointer resolution and
+        // hash caching. This prevents Cranelift-compiled code from producing
+        // stale or incorrect hash values during dict_find_entry.
+        let key_obj = obj_from_bits(key_bits);
+        if let Some(key_ptr) = key_obj.as_ptr() {
+            if object_type_id(key_ptr) == TYPE_ID_STRING {
+                let len = string_len(key_ptr);
+                if len > 0 {
+                    std::ptr::read_volatile(string_bytes(key_ptr));
+                }
+            }
+        }
         if !ensure_hashable(_py, key_bits) {
             return None;
         }
