@@ -77,6 +77,10 @@ def _run_molt_build(
     env.setdefault("MOLT_MIDEND_DISABLE", "1")
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     env.setdefault("MOLT_MIDEND_FAIL_OPEN", "1")
+    if target == "wasm":
+        # These tests compare pre-backend IR. Skip optional linked wasm output
+        # so the parity lane measures frontend/midend behavior, not linker cost.
+        env.setdefault("MOLT_WASM_LINKED", "0")
     args = [
         sys.executable,
         "-m",

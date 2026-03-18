@@ -1559,7 +1559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_datetime_td_total_seconds", symbol: "molt_datetime_td_total_seconds", arity: 3 },
     IntrinsicSpec { name: "molt_datetime_to_timestamp", symbol: "molt_datetime_to_timestamp", arity: 8 },
     IntrinsicSpec { name: "molt_datetime_validate_date", symbol: "molt_datetime_validate_date", arity: 3 },
-    IntrinsicSpec { name: "molt_datetime_validate_time", symbol: "molt_datetime_validate_time", arity: 4 },
+    IntrinsicSpec { name: "molt_datetime_validate_time", symbol: "molt_datetime_validate_time", arity: 5 },
     IntrinsicSpec { name: "molt_datetime_combine", symbol: "molt_datetime_combine", arity: 8 },
     IntrinsicSpec { name: "molt_date_fromisocalendar", symbol: "molt_date_fromisocalendar", arity: 3 },
     IntrinsicSpec { name: "molt_timedelta_truediv_scalar", symbol: "molt_timedelta_truediv_scalar", arity: 4 },

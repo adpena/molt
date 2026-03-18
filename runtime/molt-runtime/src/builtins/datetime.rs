@@ -2255,12 +2255,22 @@ pub extern "C" fn molt_datetime_validate_date(y_bits: u64, m_bits: u64, d_bits: 
             Ok(v) => v,
             Err(e) => return e,
         };
-        // CPython: year in [MINYEAR=1, MAXYEAR=9999], month in [1,12], day in [1, days_in_month]
-        let valid = (1..=9999).contains(&y)
-            && (1..=12).contains(&m)
-            && d >= 1
-            && d <= days_in_month_impl(y as i32, m as i32) as i64;
-        MoltObject::from_bool(valid).bits()
+        if !(1..=9999).contains(&y) {
+            let msg = format!("year must be in 1..9999, not {y}");
+            return raise_exception::<_>(_py, "ValueError", &msg);
+        }
+        if !(1..=12).contains(&m) {
+            let msg = format!("month must be in 1..12, not {m}");
+            return raise_exception::<_>(_py, "ValueError", &msg);
+        }
+        let max_day = days_in_month_impl(y as i32, m as i32) as i64;
+        if !(1..=max_day).contains(&d) {
+            let msg = format!(
+                "day {d} must be in range 1..{max_day} for month {m} in year {y}"
+            );
+            return raise_exception::<_>(_py, "ValueError", &msg);
+        }
+        MoltObject::from_bool(true).bits()
     })
 }
 
@@ -2270,6 +2280,7 @@ pub extern "C" fn molt_datetime_validate_time(
     min_bits: u64,
     s_bits: u64,
     us_bits: u64,
+    fold_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let h = match unpack_i64(_py, h_bits, "hour") {
@@ -2288,11 +2299,31 @@ pub extern "C" fn molt_datetime_validate_time(
             Ok(v) => v,
             Err(e) => return e,
         };
-        let valid = (0..24).contains(&h)
-            && (0..60).contains(&mi)
-            && (0..60).contains(&sec)
-            && (0..1_000_000).contains(&us);
-        MoltObject::from_bool(valid).bits()
+        let fold = match unpack_i64(_py, fold_bits, "fold") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        if !(0..24).contains(&h) {
+            let msg = format!("hour must be in 0..23, not {h}");
+            return raise_exception::<_>(_py, "ValueError", &msg);
+        }
+        if !(0..60).contains(&mi) {
+            let msg = format!("minute must be in 0..59, not {mi}");
+            return raise_exception::<_>(_py, "ValueError", &msg);
+        }
+        if !(0..60).contains(&sec) {
+            let msg = format!("second must be in 0..59, not {sec}");
+            return raise_exception::<_>(_py, "ValueError", &msg);
+        }
+        if !(0..1_000_000).contains(&us) {
+            let msg = format!("microsecond must be in 0..999999, not {us}");
+            return raise_exception::<_>(_py, "ValueError", &msg);
+        }
+        if !(0..=1).contains(&fold) {
+            let msg = format!("fold must be either 0 or 1, not {fold}");
+            return raise_exception::<_>(_py, "ValueError", &msg);
+        }
+        MoltObject::from_bool(true).bits()
     })
 }
 

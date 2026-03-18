@@ -11,7 +11,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 def _lazy_intrinsic(name):
     def _call(*args, **kwargs):
-        return _require_intrinsic(name, globals())(*args, **kwargs)
+        return _require_intrinsic(name)(*args, **kwargs)
 
     return _call
 
