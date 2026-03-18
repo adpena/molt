@@ -2636,7 +2636,7 @@ def _stdlib_module_intrinsic_status(path: Path) -> str:
             call_name = node.func.id
         elif isinstance(node.func, ast.Attribute):
             call_name = node.func.attr
-        if call_name not in _INTRINSIC_CALL_NAMES:
+        if call_name not in _INTRINSIC_CALL_NAMES and call_name != "_lazy_intrinsic":
             continue
         first: ast.expr | None = None
         if node.args:
@@ -2945,6 +2945,43 @@ def _emit_build_diagnostics(
         requested_profile = midend.get("requested_profile")
         if isinstance(requested_profile, str) and requested_profile:
             print(f"- midend.profile: {requested_profile}", file=sys.stderr)
+        policy_config = midend.get("policy_config")
+        if isinstance(policy_config, dict):
+            profile_override = policy_config.get("profile_override")
+            if isinstance(profile_override, str) and profile_override:
+                print(
+                    f"- midend.policy.profile_override: {profile_override}",
+                    file=sys.stderr,
+                )
+            hot_tier_promotion_enabled = policy_config.get(
+                "hot_tier_promotion_enabled"
+            )
+            if isinstance(hot_tier_promotion_enabled, bool):
+                print(
+                    "- midend.policy.hot_tier_promotion_enabled: "
+                    f"{hot_tier_promotion_enabled}",
+                    file=sys.stderr,
+                )
+            budget_override_ms = policy_config.get("budget_override_ms")
+            if isinstance(budget_override_ms, (int, float)):
+                print(
+                    f"- midend.policy.budget_override_ms: {budget_override_ms:.4f}",
+                    file=sys.stderr,
+                )
+            budget_alpha = policy_config.get("budget_alpha")
+            budget_beta = policy_config.get("budget_beta")
+            budget_scale = policy_config.get("budget_scale")
+            if all(
+                isinstance(value, (int, float))
+                for value in (budget_alpha, budget_beta, budget_scale)
+            ):
+                print(
+                    "- midend.policy.budget_formula: "
+                    f"alpha={float(budget_alpha):.4f} "
+                    f"beta={float(budget_beta):.4f} "
+                    f"scale={float(budget_scale):.4f}",
+                    file=sys.stderr,
+                )
         degraded_functions = midend.get("degraded_functions")
         if isinstance(degraded_functions, int):
             print(
@@ -3141,6 +3178,38 @@ def _midend_sample_percentile(samples: list[float], pct: float) -> float:
 
 def _midend_sample_p95(samples: list[float]) -> float:
     return _midend_sample_percentile(samples, 0.95)
+
+
+def _midend_policy_config_snapshot() -> dict[str, Any]:
+    profile_override = os.environ.get("MOLT_MIDEND_PROFILE", "").strip().lower()
+    budget_override_raw = os.environ.get("MOLT_MIDEND_BUDGET_MS", "").strip()
+    budget_override_ms: float | None = None
+    if budget_override_raw:
+        try:
+            budget_override_ms = max(0.0, float(budget_override_raw))
+        except ValueError:
+            budget_override_ms = None
+    hot_promotion_enabled = os.environ.get(
+        "MOLT_MIDEND_HOT_TIER_PROMOTION", "1"
+    ).strip().lower() not in {"0", "false", "no", "off"}
+
+    def _float_env(name: str, default: float) -> float:
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            return default
+
+    return {
+        "profile_override": profile_override or None,
+        "hot_tier_promotion_enabled": hot_promotion_enabled,
+        "budget_override_ms": budget_override_ms,
+        "budget_alpha": _float_env("MOLT_MIDEND_BUDGET_ALPHA", 0.03),
+        "budget_beta": _float_env("MOLT_MIDEND_BUDGET_BETA", 0.75),
+        "budget_scale": _float_env("MOLT_MIDEND_BUDGET_SCALE", 1.0),
+    }
 
 
 def _duration_ms_from_ns(start_ns: Any, end_ns: Any) -> float:
@@ -3424,6 +3493,7 @@ def _build_midend_diagnostics_payload(
     return {
         "requested_profile": requested_profile,
         "effective_profiles": sorted(effective_profiles),
+        "policy_config": _midend_policy_config_snapshot(),
         "function_count": max(
             len(normalized_policy),
             len(normalized_pass_stats),
