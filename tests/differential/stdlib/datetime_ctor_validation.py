@@ -11,6 +11,8 @@ def capture(label, fn):
 
 
 def human_reset_text(reset_at, *, now=None):
+    import datetime as dt
+
     current = now or dt.datetime.now(dt.timezone.utc)
     if reset_at.tzinfo is None:
         reset_at = reset_at.replace(tzinfo=dt.timezone.utc)
@@ -35,15 +37,17 @@ capture(
     .isoformat(),
 )
 capture("fromordinal-epoch", lambda: dt.date.fromordinal(719163).isoformat())
+capture("toordinal-epoch", lambda: dt.date(1970, 1, 1).toordinal())
 capture("now-utc", lambda: dt.datetime.now(dt.timezone.utc).tzname())
-capture("now-utc-iso", lambda: dt.datetime.now(dt.timezone.utc).isoformat())
-capture("utcnow-iso", lambda: dt.datetime.utcnow().isoformat())
+capture("now-utc-year", lambda: dt.datetime.now(dt.timezone.utc).year >= 2026)
+capture("utcnow-year", lambda: dt.datetime.utcnow().year >= 2026)
 capture("timedelta-float", lambda: str(dt.timedelta(minutes=1.5)))
+fixed_now = dt.datetime(2026, 3, 18, 21, 0, 0, tzinfo=dt.timezone.utc)
 capture(
     "timedelta-total-seconds",
     lambda: (
         dt.datetime.fromisoformat("2026-03-20T00:00:00+00:00")
-        - dt.datetime.now(dt.timezone.utc)
+        - fixed_now
     ).total_seconds()
     > 0,
 )
@@ -51,7 +55,7 @@ capture(
     "human-reset-text",
     lambda: human_reset_text(
         dt.datetime.fromisoformat("2026-03-20T00:00:00+00:00"),
-        now=dt.datetime.now(dt.timezone.utc),
+        now=fixed_now,
     ),
 )
 capture("bad-month", lambda: dt.datetime(2026, 13, 18))

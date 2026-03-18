@@ -16,58 +16,68 @@ def _lazy_intrinsic(name):
     return _call
 
 
-_MOLT_CAPABILITIES_HAS = _lazy_intrinsic("molt_capabilities_has")
-_MOLT_TK_AVAILABLE = _lazy_intrinsic("molt_tk_available")
-_MOLT_TK_APP_NEW = _lazy_intrinsic("molt_tk_app_new")
-_MOLT_TK_QUIT = _lazy_intrinsic("molt_tk_quit")
-_MOLT_TK_MAINLOOP = _lazy_intrinsic("molt_tk_mainloop")
-_MOLT_TK_DO_ONE_EVENT = _lazy_intrinsic("molt_tk_do_one_event")
-_MOLT_TK_AFTER = _lazy_intrinsic("molt_tk_after")
-_MOLT_TK_AFTER_IDLE = _lazy_intrinsic("molt_tk_after_idle")
-_MOLT_TK_AFTER_CANCEL = _lazy_intrinsic("molt_tk_after_cancel")
-_MOLT_TK_AFTER_INFO = _lazy_intrinsic("molt_tk_after_info")
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available", globals())
+_MOLT_TK_APP_NEW = _require_intrinsic("molt_tk_app_new", globals())
+_MOLT_TK_QUIT = _require_intrinsic("molt_tk_quit", globals())
+_MOLT_TK_MAINLOOP = _require_intrinsic("molt_tk_mainloop", globals())
+_MOLT_TK_DO_ONE_EVENT = _require_intrinsic("molt_tk_do_one_event", globals())
+_MOLT_TK_AFTER = _require_intrinsic("molt_tk_after", globals())
+_MOLT_TK_AFTER_IDLE = _require_intrinsic("molt_tk_after_idle", globals())
+_MOLT_TK_AFTER_CANCEL = _require_intrinsic("molt_tk_after_cancel", globals())
+_MOLT_TK_AFTER_INFO = _require_intrinsic("molt_tk_after_info", globals())
 _MOLT_TK_CALL = _require_intrinsic("molt_tk_call", globals())
-_MOLT_TK_TRACE_ADD = _lazy_intrinsic("molt_tk_trace_add")
-_MOLT_TK_TRACE_REMOVE = _lazy_intrinsic("molt_tk_trace_remove")
-_MOLT_TK_TRACE_CLEAR = _lazy_intrinsic("molt_tk_trace_clear")
-_MOLT_TK_TRACE_INFO = _lazy_intrinsic("molt_tk_trace_info")
-_MOLT_TK_TKWAIT_VARIABLE = _lazy_intrinsic("molt_tk_tkwait_variable")
-_MOLT_TK_TKWAIT_WINDOW = _lazy_intrinsic("molt_tk_tkwait_window")
-_MOLT_TK_TKWAIT_VISIBILITY = _lazy_intrinsic("molt_tk_tkwait_visibility")
-_MOLT_TK_BIND_CALLBACK_REGISTER = _lazy_intrinsic("molt_tk_bind_callback_register")
-_MOLT_TK_BIND_CALLBACK_UNREGISTER = _lazy_intrinsic(
-    "molt_tk_bind_callback_unregister"
+_MOLT_TK_TRACE_ADD = _require_intrinsic("molt_tk_trace_add", globals())
+_MOLT_TK_TRACE_REMOVE = _require_intrinsic("molt_tk_trace_remove", globals())
+_MOLT_TK_TRACE_CLEAR = _require_intrinsic("molt_tk_trace_clear", globals())
+_MOLT_TK_TRACE_INFO = _require_intrinsic("molt_tk_trace_info", globals())
+_MOLT_TK_TKWAIT_VARIABLE = _require_intrinsic("molt_tk_tkwait_variable", globals())
+_MOLT_TK_TKWAIT_WINDOW = _require_intrinsic("molt_tk_tkwait_window", globals())
+_MOLT_TK_TKWAIT_VISIBILITY = _require_intrinsic(
+    "molt_tk_tkwait_visibility", globals()
 )
-_MOLT_TK_WIDGET_BIND_CALLBACK_REGISTER = _lazy_intrinsic(
-    "molt_tk_widget_bind_callback_register"
+_MOLT_TK_BIND_CALLBACK_REGISTER = _require_intrinsic(
+    "molt_tk_bind_callback_register", globals()
 )
-_MOLT_TK_WIDGET_BIND_CALLBACK_UNREGISTER = _lazy_intrinsic(
-    "molt_tk_widget_bind_callback_unregister"
+_MOLT_TK_BIND_CALLBACK_UNREGISTER = _require_intrinsic(
+    "molt_tk_bind_callback_unregister", globals()
 )
-_MOLT_TK_TEXT_TAG_BIND_CALLBACK_REGISTER = _lazy_intrinsic(
-    "molt_tk_text_tag_bind_callback_register"
+_MOLT_TK_WIDGET_BIND_CALLBACK_REGISTER = _require_intrinsic(
+    "molt_tk_widget_bind_callback_register", globals()
 )
-_MOLT_TK_TEXT_TAG_BIND_CALLBACK_UNREGISTER = _lazy_intrinsic(
-    "molt_tk_text_tag_bind_callback_unregister"
+_MOLT_TK_WIDGET_BIND_CALLBACK_UNREGISTER = _require_intrinsic(
+    "molt_tk_widget_bind_callback_unregister", globals()
 )
-_MOLT_TK_TREEVIEW_TAG_BIND_CALLBACK_REGISTER = _lazy_intrinsic(
-    "molt_tk_treeview_tag_bind_callback_register"
+_MOLT_TK_TEXT_TAG_BIND_CALLBACK_REGISTER = _require_intrinsic(
+    "molt_tk_text_tag_bind_callback_register", globals()
 )
-_MOLT_TK_TREEVIEW_TAG_BIND_CALLBACK_UNREGISTER = _lazy_intrinsic(
-    "molt_tk_treeview_tag_bind_callback_unregister"
+_MOLT_TK_TEXT_TAG_BIND_CALLBACK_UNREGISTER = _require_intrinsic(
+    "molt_tk_text_tag_bind_callback_unregister", globals()
 )
-_MOLT_TK_BIND_COMMAND = _lazy_intrinsic("molt_tk_bind_command")
-_MOLT_TK_UNBIND_COMMAND = _lazy_intrinsic("molt_tk_unbind_command")
-_MOLT_TK_FILEHANDLER_CREATE = _lazy_intrinsic("molt_tk_filehandler_create")
-_MOLT_TK_FILEHANDLER_DELETE = _lazy_intrinsic("molt_tk_filehandler_delete")
-_MOLT_TK_DESTROY_WIDGET = _lazy_intrinsic("molt_tk_destroy_widget")
-_MOLT_TK_LAST_ERROR = _lazy_intrinsic("molt_tk_last_error")
-_MOLT_TK_GETBOOLEAN = _lazy_intrinsic("molt_tk_getboolean")
-_MOLT_TK_GETDOUBLE = _lazy_intrinsic("molt_tk_getdouble")
-_MOLT_TK_SPLITLIST = _lazy_intrinsic("molt_tk_splitlist")
-_MOLT_TK_ERRORINFO_APPEND = _lazy_intrinsic("molt_tk_errorinfo_append")
-_MOLT_TK_BIND_SCRIPT_REMOVE_COMMAND = _lazy_intrinsic(
-    "molt_tk_bind_script_remove_command"
+_MOLT_TK_TREEVIEW_TAG_BIND_CALLBACK_REGISTER = _require_intrinsic(
+    "molt_tk_treeview_tag_bind_callback_register", globals()
+)
+_MOLT_TK_TREEVIEW_TAG_BIND_CALLBACK_UNREGISTER = _require_intrinsic(
+    "molt_tk_treeview_tag_bind_callback_unregister", globals()
+)
+_MOLT_TK_BIND_COMMAND = _require_intrinsic("molt_tk_bind_command", globals())
+_MOLT_TK_UNBIND_COMMAND = _require_intrinsic("molt_tk_unbind_command", globals())
+_MOLT_TK_FILEHANDLER_CREATE = _require_intrinsic(
+    "molt_tk_filehandler_create", globals()
+)
+_MOLT_TK_FILEHANDLER_DELETE = _require_intrinsic(
+    "molt_tk_filehandler_delete", globals()
+)
+_MOLT_TK_DESTROY_WIDGET = _require_intrinsic("molt_tk_destroy_widget", globals())
+_MOLT_TK_LAST_ERROR = _require_intrinsic("molt_tk_last_error", globals())
+_MOLT_TK_GETBOOLEAN = _require_intrinsic("molt_tk_getboolean", globals())
+_MOLT_TK_GETDOUBLE = _require_intrinsic("molt_tk_getdouble", globals())
+_MOLT_TK_SPLITLIST = _require_intrinsic("molt_tk_splitlist", globals())
+_MOLT_TK_ERRORINFO_APPEND = _require_intrinsic(
+    "molt_tk_errorinfo_append", globals()
+)
+_MOLT_TK_BIND_SCRIPT_REMOVE_COMMAND = _require_intrinsic(
+    "molt_tk_bind_script_remove_command", globals()
 )
 
 # CPython exports these constants from `_tkinter`; Molt currently uses fixed values.
