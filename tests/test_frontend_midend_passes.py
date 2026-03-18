@@ -2054,6 +2054,41 @@ def test_midend_monolith_pressure_preserves_hot_function_aggressive_policy() -> 
     assert policy.enable_guard_hoist is True
 
 
+def test_midend_monolith_pressure_tracks_new_ops_incrementally() -> None:
+    gen = SimpleTIRGenerator(
+        optimization_profile="release",
+        module_name="pkg.mod",
+    )
+    gen.start_function("helper")
+    gen.emit(
+        MoltOp(kind="CONST", args=[1], result=MoltValue("a", type_hint="int"))
+    )
+    initial_total_ops = sum(len(info["ops"]) for info in gen.funcs_map.values())
+
+    first = gen._resolve_midend_function_policy(
+        gen.funcs_map["helper"]["ops"],
+        function_name="helper",
+        block_count=1,
+    )
+
+    gen.emit(
+        MoltOp(kind="CONST", args=[2], result=MoltValue("b", type_hint="int"))
+    )
+    updated_total_ops = sum(len(info["ops"]) for info in gen.funcs_map.values())
+
+    second = gen._resolve_midend_function_policy(
+        gen.funcs_map["helper"]["ops"],
+        function_name="helper",
+        block_count=1,
+    )
+
+    assert first.module_function_count == 1
+    assert second.module_function_count == 1
+    assert first.module_total_ops == initial_total_ops
+    assert second.module_total_ops == updated_total_ops
+    assert updated_total_ops > initial_total_ops
+
+
 # ---------------------------------------------------------------------------
 # MOL-37: MISSING values must not leak into CALL/CALL_INDIRECT arg positions
 # ---------------------------------------------------------------------------
