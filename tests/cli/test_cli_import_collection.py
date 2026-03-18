@@ -2105,6 +2105,43 @@ def test_backend_daemon_skip_output_sync_flags_track_artifact_state(
     assert skip_function is False
 
 
+def test_backend_daemon_skip_output_sync_flags_stats_artifact_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_artifact = tmp_path / "dist" / "output.o"
+    output_artifact.parent.mkdir(parents=True)
+    output_artifact.write_bytes(b"artifact")
+    state_path = cli._artifact_sync_state_path(tmp_path, output_artifact)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    cli._write_artifact_sync_state(
+        state_path,
+        source_key="module-key",
+        tier="module",
+        artifact=output_artifact,
+    )
+    original_stat = Path.stat
+    calls = 0
+
+    def wrapped_stat(self: Path):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        if self == output_artifact:
+            calls += 1
+        return original_stat(self)
+
+    monkeypatch.setattr(Path, "stat", wrapped_stat)
+
+    skip_module, skip_function = cli._backend_daemon_skip_output_sync_flags(
+        tmp_path,
+        output_artifact,
+        cache_key="module-key",
+        function_cache_key="function-key",
+    )
+
+    assert skip_module is True
+    assert skip_function is False
+    assert calls == 1
+
+
 def test_read_artifact_sync_state_reuses_process_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
