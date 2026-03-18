@@ -29931,33 +29931,45 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             raise
         self.midend_stats["cfg_structural_canonicalizations"] += structural_rewrites
         oversized_skip_threshold = self.midend_env.skip_op_threshold
-        if len(ops) >= oversized_skip_threshold:
-            self.midend_stats["midend_oversized_function_skips"] += 1
+        _module_function_count, _module_total_ops, monolith_pressure_level = (
+            self._current_module_pressure_snapshot()
+        )
+        effective_skip_threshold = oversized_skip_threshold
+        if monolith_pressure_level >= 1:
+            effective_skip_threshold = min(effective_skip_threshold, 650)
+        if monolith_pressure_level >= 2:
+            effective_skip_threshold = min(effective_skip_threshold, 500)
+        if len(ops) >= effective_skip_threshold:
             cfg = build_cfg(ops)
             policy = self._resolve_midend_function_policy(
                 ops,
                 function_name=self._active_midend_function_name,
                 block_count=max(1, len(cfg.blocks)),
             )
-            self._record_midend_policy_outcome(
-                policy=policy,
-                spent_ms=0.0,
-                degraded=True,
-                degrade_events=[
-                    {
-                        "reason": "oversized_function_skip",
-                        "stage": "midend_entry",
-                        "action": "emit_unoptimized_ir",
-                        "spent_ms": 0.0,
-                        "value": {
-                            "op_count": len(ops),
-                            "threshold": oversized_skip_threshold,
-                        },
-                    }
-                ],
-                round_snapshots=[],
-            )
-            return ops
+            if (
+                len(ops) >= oversized_skip_threshold
+                or (not policy.promoted and policy.tier != "A")
+            ):
+                self.midend_stats["midend_oversized_function_skips"] += 1
+                self._record_midend_policy_outcome(
+                    policy=policy,
+                    spent_ms=0.0,
+                    degraded=True,
+                    degrade_events=[
+                        {
+                            "reason": "oversized_function_skip",
+                            "stage": "midend_entry",
+                            "action": "emit_unoptimized_ir",
+                            "spent_ms": 0.0,
+                            "value": {
+                                "op_count": len(ops),
+                                "threshold": effective_skip_threshold,
+                            },
+                        }
+                    ],
+                    round_snapshots=[],
+                )
+                return ops
         skip_prefixes_raw = os.getenv("MOLT_MIDEND_SKIP_MODULE_PREFIXES", "").strip()
         if skip_prefixes_raw:
             skip_prefixes = [
@@ -30141,6 +30153,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self._module_pressure_total_ops = total_ops
         self._module_pressure_funcs_map_ref = self.funcs_map
 
+    def _current_module_pressure_snapshot(self) -> tuple[int, int, int]:
+        if self._module_pressure_funcs_map_ref is not self.funcs_map:
+            self._sync_module_pressure_counts_from_funcs_map()
+        function_count = self._module_pressure_function_count
+        total_ops = self._module_pressure_total_ops
+        func_threshold = self.midend_env.monolith_function_threshold
+        ops_threshold = self.midend_env.monolith_total_ops_threshold
+        hard_func_threshold = max(func_threshold + 1, func_threshold * 2)
+        hard_ops_threshold = max(ops_threshold + 1, ops_threshold * 2)
+        level = 0
+        if function_count >= func_threshold or total_ops >= ops_threshold:
+            level = 1
+        if function_count >= hard_func_threshold or total_ops >= hard_ops_threshold:
+            level = 2
+        return function_count, total_ops, level
+
     def _new_tracked_ops(
         self,
         initial: list[MoltOp] | None = None,
@@ -30319,23 +30347,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         block_count: int = 1,
     ) -> MidendFunctionPolicy:
         self._refresh_midend_env_config_if_needed()
-
-        def module_pressure() -> tuple[int, int, int]:
-            if self._module_pressure_funcs_map_ref is not self.funcs_map:
-                self._sync_module_pressure_counts_from_funcs_map()
-            function_count = self._module_pressure_function_count
-            total_ops = self._module_pressure_total_ops
-            func_threshold = self.midend_env.monolith_function_threshold
-            ops_threshold = self.midend_env.monolith_total_ops_threshold
-            hard_func_threshold = max(func_threshold + 1, func_threshold * 2)
-            hard_ops_threshold = max(ops_threshold + 1, ops_threshold * 2)
-            level = 0
-            if function_count >= func_threshold or total_ops >= ops_threshold:
-                level = 1
-            if function_count >= hard_func_threshold or total_ops >= hard_ops_threshold:
-                level = 2
-            return function_count, total_ops, level
-
         profile = self.optimization_profile
         profile_override = os.getenv("MOLT_MIDEND_PROFILE", "").strip().lower()
         if profile_override in {"dev", "release"}:
@@ -30349,7 +30360,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         promotion_source = ""
         promotion_signal = ""
         module_function_count, module_total_ops, monolith_pressure_level = (
-            module_pressure()
+            self._current_module_pressure_snapshot()
         )
         hot_promotion_enabled = self.midend_env.hot_tier_promotion_enabled
         if hot_promotion_enabled and tier_classification.allow_hot_promotion:

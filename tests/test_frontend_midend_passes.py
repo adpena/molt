@@ -1970,6 +1970,46 @@ def test_midend_default_skip_threshold_catches_mid_sized_functions() -> None:
     assert value.get("op_count") == 900
 
 
+def test_midend_monolith_pressure_lowers_skip_threshold_for_cold_functions() -> None:
+    ops = [
+        MoltOp(kind="CONST", args=[idx], result=MoltValue(f"v{idx}"))
+        for idx in range(600)
+    ]
+    gen = SimpleTIRGenerator(optimization_profile="release", module_name="pkg.mod")
+    gen.funcs_map = {
+        "molt_main": {"params": [], "ops": []},
+        **{
+            f"helper_{idx}": {
+                "params": [],
+                "ops": [
+                    MoltOp(kind="CONST", args=[j], result=MoltValue(f"h{idx}_{j}"))
+                    for j in range(80)
+                ],
+            }
+            for idx in range(96)
+        },
+    }
+
+    lowered = gen.map_ops_to_json(ops, function_name="cold_render")
+
+    assert len(lowered) == len(ops) + 1
+    outcome = gen.midend_policy_outcomes_by_function["cold_render"]
+    reasons = {
+        event.get("reason") for event in outcome.get("degrade_events", [])
+    }
+    assert "oversized_function_skip" in reasons
+    events = [
+        event
+        for event in outcome.get("degrade_events", [])
+        if event.get("reason") == "oversized_function_skip"
+    ]
+    assert events
+    value = events[0].get("value")
+    assert isinstance(value, dict)
+    assert value.get("threshold") == 500
+    assert value.get("op_count") == 600
+
+
 def test_midend_monolith_pressure_trims_cold_function_policy() -> None:
     baseline_gen = SimpleTIRGenerator(
         optimization_profile="release",
