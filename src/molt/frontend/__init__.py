@@ -100,6 +100,9 @@ class MidendFunctionPolicy:
     enable_guard_hoist: bool
     budget_ms: float
     allow_hot_promotion: bool
+    module_function_count: int
+    module_total_ops: int
+    monolith_pressure_level: int
 
 
 @dataclass
@@ -30081,6 +30084,38 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         function_name: str | None = None,
         block_count: int = 1,
     ) -> MidendFunctionPolicy:
+        def module_pressure() -> tuple[int, int, int]:
+            func_threshold = max(
+                8,
+                self._midend_positive_int_env(
+                    "MOLT_MIDEND_MONOLITH_FUNCTION_THRESHOLD", 48
+                ),
+            )
+            ops_threshold = max(
+                256,
+                self._midend_positive_int_env(
+                    "MOLT_MIDEND_MONOLITH_TOTAL_OPS_THRESHOLD", 4000
+                ),
+            )
+            hard_func_threshold = max(func_threshold + 1, func_threshold * 2)
+            hard_ops_threshold = max(ops_threshold + 1, ops_threshold * 2)
+            function_count = sum(
+                1
+                for name, info in self.funcs_map.items()
+                if name != "molt_main" and isinstance(info, dict) and "ops" in info
+            )
+            total_ops = sum(
+                len(cast(list[MoltOp], info.get("ops", [])))
+                for info in self.funcs_map.values()
+                if isinstance(info, dict)
+            )
+            level = 0
+            if function_count >= func_threshold or total_ops >= ops_threshold:
+                level = 1
+            if function_count >= hard_func_threshold or total_ops >= hard_ops_threshold:
+                level = 2
+            return function_count, total_ops, level
+
         profile = self.optimization_profile
         profile_override = os.getenv("MOLT_MIDEND_PROFILE", "").strip().lower()
         if profile_override in {"dev", "release"}:
@@ -30093,6 +30128,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         promoted = False
         promotion_source = ""
         promotion_signal = ""
+        module_function_count, module_total_ops, monolith_pressure_level = (
+            module_pressure()
+        )
         hot_promotion_enabled = os.getenv(
             "MOLT_MIDEND_HOT_TIER_PROMOTION", "1"
         ).strip().lower() not in {"0", "false", "no", "off"}
@@ -30168,6 +30206,28 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             },
         }
         selected = dict(defaults[(profile, tier)])
+        monolith_pressure_exempt = (
+            resolved_function == "molt_main" or promoted or tier == "A"
+        )
+        if not monolith_pressure_exempt and monolith_pressure_level >= 1:
+            selected["max_rounds"] = max(1, int(selected["max_rounds"]) - 1)
+            selected["sccp_iter_cap"] = max(
+                8, int(int(selected["sccp_iter_cap"]) * 0.75)
+            )
+            selected["cse_iter_cap"] = max(
+                4, int(int(selected["cse_iter_cap"]) * 0.75)
+            )
+            selected["budget_base_ms"] = float(selected["budget_base_ms"]) * 0.85
+        if not monolith_pressure_exempt and monolith_pressure_level >= 2:
+            selected["max_rounds"] = max(1, int(selected["max_rounds"]) - 1)
+            selected["sccp_iter_cap"] = max(
+                8, int(int(selected["sccp_iter_cap"]) * 0.75)
+            )
+            selected["cse_iter_cap"] = max(
+                4, int(int(selected["cse_iter_cap"]) * 0.75)
+            )
+            selected["enable_guard_hoist"] = False
+            selected["budget_base_ms"] = float(selected["budget_base_ms"]) * 0.8
         budget_override = os.getenv("MOLT_MIDEND_BUDGET_MS", "").strip()
         if budget_override:
             try:
@@ -30202,6 +30262,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             allow_hot_promotion=bool(
                 tier_classification.allow_hot_promotion and hot_promotion_enabled
             ),
+            module_function_count=module_function_count,
+            module_total_ops=module_total_ops,
+            monolith_pressure_level=monolith_pressure_level,
         )
 
     def _record_midend_pass_sample(
@@ -30257,6 +30320,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "promotion_source": policy.promotion_source,
             "promotion_signal": policy.promotion_signal,
             "allow_hot_promotion": policy.allow_hot_promotion,
+            "module_function_count": policy.module_function_count,
+            "module_total_ops": policy.module_total_ops,
+            "monolith_pressure_level": policy.monolith_pressure_level,
             "budget_ms": round(policy.budget_ms, 3),
             "spent_ms": round(max(0.0, spent_ms), 3),
             "degraded": degraded,
