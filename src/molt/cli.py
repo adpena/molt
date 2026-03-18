@@ -4236,6 +4236,7 @@ def _discover_module_graph(
     roots: list[Path],
     module_roots: list[Path],
     stdlib_root: Path,
+    project_root: Path | None,
     stdlib_allowlist: set[str],
     skip_modules: set[str] | None = None,
     stub_parents: set[str] | None = None,
@@ -4269,26 +4270,49 @@ def _discover_module_graph(
         if module_name in graph:
             continue
         graph[module_name] = path
-        try:
-            source = resolution_cache.read_module_source(path)
-        except (OSError, SyntaxError, UnicodeDecodeError):
-            continue
-        try:
-            tree = resolution_cache.parse_module_ast(path, source, filename=str(path))
-        except SyntaxError:
-            continue
         is_package = path.name == "__init__.py"
         include_nested_imports = (
             not resolution_cache.is_stdlib_path(path, stdlib_root)
             or module_name in nested_stdlib_scan_modules
         )
-        for name in resolution_cache.collect_imports(
-            path,
-            tree,
-            module_name=module_name,
-            is_package=is_package,
-            include_nested=include_nested_imports,
-        ):
+        persisted_imports = None
+        if project_root is not None:
+            persisted_imports = _read_persisted_import_scan(
+                project_root,
+                path,
+                module_name=module_name,
+                is_package=is_package,
+                include_nested=include_nested_imports,
+            )
+        if persisted_imports is None:
+            try:
+                source = resolution_cache.read_module_source(path)
+            except (OSError, SyntaxError, UnicodeDecodeError):
+                continue
+            try:
+                tree = resolution_cache.parse_module_ast(path, source, filename=str(path))
+            except SyntaxError:
+                continue
+            imports = resolution_cache.collect_imports(
+                path,
+                tree,
+                module_name=module_name,
+                is_package=is_package,
+                include_nested=include_nested_imports,
+            )
+            if project_root is not None:
+                with contextlib.suppress(OSError):
+                    _write_persisted_import_scan(
+                        project_root,
+                        path,
+                        module_name=module_name,
+                        is_package=is_package,
+                        include_nested=include_nested_imports,
+                        imports=imports,
+                    )
+        else:
+            imports = persisted_imports
+        for name in imports:
             explicit_imports.add(name)
             for candidate in _expand_module_chain_cached(name):
                 if candidate in stub_parents:
@@ -6313,6 +6337,88 @@ def _artifact_sync_state_matches(
     except OSError:
         return False
     return state.get("size") == stat.st_size and state.get("mtime_ns") == stat.st_mtime_ns
+
+
+def _import_scan_cache_path(
+    project_root: Path,
+    path: Path,
+    *,
+    module_name: str,
+    is_package: bool,
+    include_nested: bool,
+) -> Path:
+    root = _build_state_root(project_root) / "import_scan_cache"
+    cache_key = hashlib.sha256(
+        "|".join(
+            (
+                str(path.resolve()),
+                module_name,
+                "pkg" if is_package else "mod",
+                "nested" if include_nested else "top",
+            )
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    return root / f"{path.stem}.{cache_key}.json"
+
+
+def _read_persisted_import_scan(
+    project_root: Path,
+    path: Path,
+    *,
+    module_name: str,
+    is_package: bool,
+    include_nested: bool,
+) -> tuple[str, ...] | None:
+    cache_path = _import_scan_cache_path(
+        project_root,
+        path,
+        module_name=module_name,
+        is_package=is_package,
+        include_nested=include_nested,
+    )
+    payload = _read_artifact_sync_state(cache_path)
+    if payload is None:
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    imports = payload.get("imports")
+    if not isinstance(imports, list) or not all(isinstance(item, str) for item in imports):
+        return None
+    if payload.get("size") != stat.st_size or payload.get("mtime_ns") != stat.st_mtime_ns:
+        return None
+    return tuple(imports)
+
+
+def _write_persisted_import_scan(
+    project_root: Path,
+    path: Path,
+    *,
+    module_name: str,
+    is_package: bool,
+    include_nested: bool,
+    imports: Iterable[str],
+) -> None:
+    cache_path = _import_scan_cache_path(
+        project_root,
+        path,
+        module_name=module_name,
+        is_package=is_package,
+        include_nested=include_nested,
+    )
+    stat = path.stat()
+    payload = {
+        "version": 1,
+        "module_name": module_name,
+        "is_package": is_package,
+        "include_nested": include_nested,
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "imports": list(imports),
+    }
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
 def _link_fingerprint(
@@ -8505,6 +8611,7 @@ def build(
         roots,
         module_roots,
         stdlib_root,
+        project_root,
         stdlib_allowlist,
         skip_modules=stub_skip_modules,
         stub_parents=stub_parents,
@@ -8570,6 +8677,7 @@ def build(
             roots,
             module_roots,
             stdlib_root,
+            project_root,
             stdlib_allowlist,
             skip_modules=stub_skip_modules,
             stub_parents=stub_parents,
@@ -8612,6 +8720,7 @@ def build(
             roots,
             module_roots,
             stdlib_root,
+            project_root,
             stdlib_allowlist,
             skip_modules=stub_skip_modules,
             stub_parents=stub_parents,
