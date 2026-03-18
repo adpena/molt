@@ -20,6 +20,10 @@ struct DaemonJobRequest {
     output: String,
     cache_key: String,
     function_cache_key: Option<String>,
+    #[serde(default)]
+    skip_module_output_if_synced: bool,
+    #[serde(default)]
+    skip_function_output_if_synced: bool,
     ir: SimpleIR,
 }
 
@@ -37,6 +41,7 @@ struct DaemonJobResponse {
     ok: bool,
     cached: bool,
     cache_tier: Option<String>,
+    output_written: bool,
     message: Option<String>,
 }
 
@@ -198,13 +203,14 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
     if !cache_key.is_empty()
         && let Some(bytes) = cache.get_bytes(&cache_key)
     {
-        match write_output(&job.output, &bytes) {
-            Ok(()) => {
+        match write_cached_output(&job.output, bytes, job.skip_module_output_if_synced) {
+            Ok(output_written) => {
                 return DaemonJobResponse {
                     id: job.id,
                     ok: true,
                     cached: true,
                     cache_tier: Some("module".to_string()),
+                    output_written,
                     message: None,
                 };
             }
@@ -214,6 +220,7 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
                     ok: false,
                     cached: false,
                     cache_tier: None,
+                    output_written: false,
                     message: Some(format!("failed to write cached output: {err}")),
                 };
             }
@@ -223,13 +230,14 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
         && function_cache_key != cache_key
         && let Some(bytes) = cache.get_bytes(&function_cache_key)
     {
-        match write_output(&job.output, &bytes) {
-            Ok(()) => {
+        match write_cached_output(&job.output, bytes, job.skip_function_output_if_synced) {
+            Ok(output_written) => {
                 return DaemonJobResponse {
                     id: job.id,
                     ok: true,
                     cached: true,
                     cache_tier: Some("function".to_string()),
+                    output_written,
                     message: None,
                 };
             }
@@ -239,6 +247,7 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
                     ok: false,
                     cached: false,
                     cache_tier: None,
+                    output_written: false,
                     message: Some(format!("failed to write cached output: {err}")),
                 };
             }
@@ -259,6 +268,7 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
             ok: false,
             cached: false,
             cache_tier: None,
+            output_written: false,
             message: Some(format!("failed to write compiled output: {err}")),
         };
     }
@@ -278,8 +288,17 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
         ok: true,
         cached: false,
         cache_tier: None,
+        output_written: true,
         message: None,
     }
+}
+
+fn write_cached_output(path: &str, bytes: &[u8], skip_if_synced: bool) -> io::Result<bool> {
+    if skip_if_synced {
+        return Ok(false);
+    }
+    write_output(path, bytes)?;
+    Ok(true)
 }
 
 fn write_output(path: &str, bytes: &[u8]) -> io::Result<()> {
@@ -569,7 +588,8 @@ fn main() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::DaemonCache;
+    use super::{write_cached_output, DaemonCache};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn daemon_cache_get_bytes_updates_lru_without_cloning() {
@@ -582,5 +602,21 @@ mod tests {
         let entry = cache.entries.get("module").expect("entry retained");
         assert_eq!(entry.bytes, vec![1, 2, 3, 4]);
         assert_eq!(entry.stamp, cache.clock);
+    }
+
+    #[test]
+    fn write_cached_output_can_skip_disk_write_when_synced() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let output = std::env::temp_dir().join(format!("molt-backend-test-{nonce}.o"));
+
+        let written =
+            write_cached_output(output.to_str().expect("utf8 path"), b"artifact", true)
+                .expect("cache hit succeeds");
+
+        assert!(!written);
+        assert!(!output.exists());
     }
 }
