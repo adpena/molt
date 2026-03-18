@@ -77,6 +77,11 @@ def _find_tool(names: list[str]) -> str | None:
     return None
 
 
+def _find_wasm_ld() -> str | None:
+    """Return the path to `wasm-ld` if it is available."""
+    return _find_tool(["wasm-ld"])
+
+
 def _read_varuint(data: bytes, offset: int) -> tuple[int, int]:
     result = 0
     shift = 0
