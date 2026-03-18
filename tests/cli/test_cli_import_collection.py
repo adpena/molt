@@ -1972,6 +1972,50 @@ def test_compile_with_backend_daemon_uses_preencoded_request_bytes(
     assert result.output_written is True
 
 
+def test_backend_daemon_request_bytes_accumulates_partial_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sent: list[bytes] = []
+
+    class _FakeSocket:
+        def __enter__(self) -> "_FakeSocket":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
+
+        def settimeout(self, timeout: float) -> None:
+            assert timeout == 0.25
+
+        def connect(self, address: str) -> None:
+            assert address == str(tmp_path / "daemon.sock")
+
+        def sendall(self, data: bytes) -> None:
+            sent.append(data)
+
+        def shutdown(self, how: int) -> None:
+            assert how == cli.socket.SHUT_WR
+
+        def recv(self, size: int) -> bytes:
+            assert size == 65536
+            if not hasattr(self, "_chunks"):
+                self._chunks = [b'{"ok":', b'true,"pong":false}', b""]
+            return self._chunks.pop(0)
+
+    monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
+
+    response, err = cli._backend_daemon_request_bytes(
+        tmp_path / "daemon.sock",
+        b'{"version":1}\n',
+        timeout=0.25,
+    )
+
+    assert err is None
+    assert response == {"ok": True, "pong": False}
+    assert sent == [b'{"version":1}\n']
+
+
 def test_backend_daemon_skip_output_sync_flags_track_artifact_state(
     tmp_path: Path,
 ) -> None:

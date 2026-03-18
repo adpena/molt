@@ -6,6 +6,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::env;
 use std::fs::File;
+use std::io::BufRead;
 use std::io::Write;
 use std::io::{self, Read};
 use std::path::Path;
@@ -393,8 +394,7 @@ fn handle_daemon_connection(
     active_config_digest: &mut Option<String>,
     started_at: Instant,
 ) -> io::Result<()> {
-    let mut raw_bytes = Vec::new();
-    stream.read_to_end(&mut raw_bytes)?;
+    let raw_bytes = read_daemon_request_bytes(stream)?;
     stats.requests_total = stats.requests_total.saturating_add(1);
     if raw_bytes.iter().all(|byte| byte.is_ascii_whitespace()) {
         let response = DaemonResponse {
@@ -504,6 +504,14 @@ fn handle_daemon_connection(
 }
 
 #[cfg(unix)]
+fn read_daemon_request_bytes<R: Read>(reader: &mut R) -> io::Result<Vec<u8>> {
+    let mut raw_bytes = Vec::new();
+    let mut buffered = io::BufReader::new(reader);
+    buffered.read_until(b'\n', &mut raw_bytes)?;
+    Ok(raw_bytes)
+}
+
+#[cfg(unix)]
 fn write_daemon_response(
     stream: &mut std::os::unix::net::UnixStream,
     response: &DaemonResponse,
@@ -591,7 +599,8 @@ fn main() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{write_cached_output, DaemonCache};
+    use super::{read_daemon_request_bytes, write_cached_output, DaemonCache};
+    use std::io::Cursor;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -605,6 +614,13 @@ mod tests {
         let entry = cache.entries.get("module").expect("entry retained");
         assert_eq!(entry.bytes, vec![1, 2, 3, 4]);
         assert_eq!(entry.stamp, cache.clock);
+    }
+
+    #[test]
+    fn read_daemon_request_bytes_stops_at_protocol_newline() {
+        let mut cursor = Cursor::new(b"{\"version\":1}\ntrailing".to_vec());
+        let bytes = read_daemon_request_bytes(&mut cursor).expect("request bytes");
+        assert_eq!(bytes, b"{\"version\":1}\n");
     }
 
     #[test]
