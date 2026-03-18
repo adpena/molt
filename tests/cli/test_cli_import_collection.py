@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -105,8 +107,7 @@ def test_stdlib_allowlist_is_cached(
 ) -> None:
     cli._stdlib_allowlist_cached.cache_clear()
     spec_path = (
-        tmp_path
-        / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
+        tmp_path / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
     )
     spec_path.parent.mkdir(parents=True, exist_ok=True)
     spec_path.write_text("| Module |\n| --- |\n| json / pathlib |\n")
@@ -302,7 +303,15 @@ def test_link_fingerprint_changes_when_link_command_changes(tmp_path: Path) -> N
     second = cli._link_fingerprint(
         project_root=tmp_path,
         inputs=[stub, obj, runtime],
-        link_cmd=["clang", "-fuse-ld=lld", str(stub), str(obj), str(runtime), "-o", "app"],
+        link_cmd=[
+            "clang",
+            "-fuse-ld=lld",
+            str(stub),
+            str(obj),
+            str(runtime),
+            "-o",
+            "app",
+        ],
     )
     assert first is not None
     assert second is not None
@@ -475,9 +484,7 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
     first_parse_calls = parse_calls
     for module_path in graph.values():
         source = shared_cache.read_module_source(module_path)
-        shared_cache.parse_module_ast(
-            module_path, source, filename=str(module_path)
-        )
+        shared_cache.parse_module_ast(module_path, source, filename=str(module_path))
     assert read_calls == first_read_calls
     assert parse_calls == first_parse_calls
 
@@ -751,11 +758,7 @@ def test_load_module_analysis_reuses_persisted_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module_path = tmp_path / "pkg.py"
-    module_path.write_text(
-        "import warnings\n\n"
-        "def f(a, *, b=1):\n"
-        "    return a + b\n"
-    )
+    module_path.write_text("import warnings\n\ndef f(a, *, b=1):\n    return a + b\n")
     source = cli._read_module_source(module_path)
     cache = cli._ModuleResolutionCache()
 
@@ -778,15 +781,17 @@ def test_load_module_analysis_reuses_persisted_cache(
         raise AssertionError("unexpected parse")
 
     monkeypatch.setattr(cache, "parse_module_ast", fail_parse)
-    cached_tree, cached_imports, cached_defaults, cached_source = cli._load_module_analysis(
-        module_path,
-        module_name="pkg",
-        is_package=False,
-        include_nested=True,
-        source=None,
-        logical_source_path=str(module_path),
-        resolution_cache=cache,
-        project_root=tmp_path,
+    cached_tree, cached_imports, cached_defaults, cached_source = (
+        cli._load_module_analysis(
+            module_path,
+            module_name="pkg",
+            is_package=False,
+            include_nested=True,
+            source=None,
+            logical_source_path=str(module_path),
+            resolution_cache=cache,
+            project_root=tmp_path,
+        )
     )
 
     assert cached_tree is None
@@ -842,6 +847,123 @@ def test_persisted_module_lowering_roundtrip_respects_context_digest(
     assert miss is None
 
 
+def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+    entry = project / "main.py"
+    entry.write_text("import alpha\nimport beta\nprint(alpha.VALUE + beta.VALUE)\n")
+    (project / "alpha.py").write_text("VALUE = 1\n")
+    (project / "beta.py").write_text("VALUE = 2\n")
+
+    build_state_root = tmp_path / "build-state"
+    cache_root = tmp_path / "cache"
+    backend_bin = tmp_path / "fake-backend"
+    backend_bin.write_text("")
+
+    monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
+    monkeypatch.setenv("MOLT_CACHE", str(cache_root))
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli, "_resolve_frontend_parallel_module_workers", lambda: 2)
+    monkeypatch.setattr(cli, "_resolve_frontend_parallel_min_modules", lambda: 2)
+    monkeypatch.setattr(
+        cli, "_resolve_frontend_parallel_min_predicted_cost", lambda: 0.0
+    )
+    monkeypatch.setattr(
+        cli, "_resolve_frontend_parallel_target_cost_per_worker", lambda: 1.0
+    )
+    monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
+    monkeypatch.setattr(cli, "_module_order_has_back_edges", lambda *args: False)
+    monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli, "_ensure_backend_binary", lambda *args, **kwargs: True)
+
+    original_run = cli.subprocess.run
+
+    def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        if cmd and str(cmd[0]) == str(backend_bin):
+            output = Path(cmd[cmd.index("--output") + 1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"OBJ")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return original_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    submit_calls = 0
+
+    class _FakeFuture:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self._payload = payload
+
+        def result(self) -> dict[str, object]:
+            return cli._frontend_lower_module_worker(self._payload)
+
+    class _FakeExecutor:
+        def __init__(self, *, max_workers: int) -> None:
+            self.max_workers = max_workers
+
+        def __enter__(self) -> "_FakeExecutor":
+            return self
+
+        def __exit__(
+            self,
+            exc_type: object,
+            exc: object,
+            tb: object,
+        ) -> bool:
+            return False
+
+        def submit(self, fn: object, payload: dict[str, object]) -> _FakeFuture:
+            nonlocal submit_calls
+            submit_calls += 1
+            assert fn is cli._frontend_lower_module_worker
+            return _FakeFuture(payload)
+
+    monkeypatch.setattr(cli, "ProcessPoolExecutor", _FakeExecutor)
+    first_stdout = io.StringIO()
+    with contextlib.redirect_stdout(first_stdout):
+        rc = cli.build(
+            str(entry),
+            emit="obj",
+            output=str(tmp_path / "first.o"),
+            profile="dev",
+            deterministic=False,
+            json_output=True,
+            diagnostics=True,
+        )
+    assert rc == 0
+    first_submit_calls = submit_calls
+    assert first_submit_calls >= 2
+
+    submit_calls = 0
+    second_stdout = io.StringIO()
+    with contextlib.redirect_stdout(second_stdout):
+        rc = cli.build(
+            str(entry),
+            emit="obj",
+            output=str(tmp_path / "second.o"),
+            profile="dev",
+            deterministic=False,
+            json_output=True,
+            diagnostics=True,
+        )
+    assert rc == 0
+    assert 0 <= submit_calls < first_submit_calls
+
+    payload = json.loads(second_stdout.getvalue())
+    compile_diagnostics = payload["data"]["compile_diagnostics"]
+    worker_modes = {
+        item["mode"]
+        for item in compile_diagnostics["frontend_parallel"]["worker_timings"]
+    }
+    assert "parallel_cache_hit" in worker_modes
+
+
 def test_read_module_source_uses_utf8_fast_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -859,8 +981,13 @@ def test_read_module_source_falls_back_for_encoding_cookie(
     tmp_path: Path,
 ) -> None:
     source_path = tmp_path / "latin1_source.py"
-    source_path.write_bytes("# -*- coding: latin-1 -*-\nname = 'caf\xe9'\n".encode("latin-1"))
-    assert cli._read_module_source(source_path) == "# -*- coding: latin-1 -*-\nname = 'café'\n"
+    source_path.write_bytes(
+        "# -*- coding: latin-1 -*-\nname = 'caf\xe9'\n".encode("latin-1")
+    )
+    assert (
+        cli._read_module_source(source_path)
+        == "# -*- coding: latin-1 -*-\nname = 'café'\n"
+    )
 
 
 def test_stdlib_graph_ignores_nested_imports_for_core_scan(tmp_path: Path) -> None:
@@ -1300,7 +1427,10 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
     assert "frontend_parallel.layer.1: mode=parallel" in stderr
     assert "frontend_parallel.worker_ms: count=3" in stderr
     assert "- midend.policy.hot_tier_promotion_enabled: True" in stderr
-    assert "- midend.policy.budget_formula: alpha=0.0300 beta=0.7500 scale=1.0000" in stderr
+    assert (
+        "- midend.policy.budget_formula: alpha=0.0300 beta=0.7500 scale=1.0000"
+        in stderr
+    )
     assert "- midend.promoted_functions: 2" in stderr
     assert "- midend.promotion_source.pgo_hot_functions: 2" in stderr
     assert "midend.promotion_hotspot.1: pkg.mod::hot_fn B->A" in stderr

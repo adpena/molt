@@ -35,7 +35,17 @@ import zipfile
 from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ContextManager, Iterable, Iterator, Literal, Mapping, MutableMapping, NamedTuple, cast
+from typing import (
+    Any,
+    ContextManager,
+    Iterable,
+    Iterator,
+    Literal,
+    Mapping,
+    MutableMapping,
+    NamedTuple,
+    cast,
+)
 
 from packaging.markers import InvalidMarker, Marker
 from packaging.requirements import InvalidRequirement, Requirement
@@ -1637,9 +1647,7 @@ def _module_name_from_resolved_path(
     for root_resolved in resolved_roots:
         if cpython_test_root is not None and root_resolved == cpython_test_root:
             continue
-        candidate_parts = _relative_parts_if_within(
-            resolved_parts, root_resolved.parts
-        )
+        candidate_parts = _relative_parts_if_within(resolved_parts, root_resolved.parts)
         if candidate_parts is None:
             continue
         root_len = len(root_resolved.parts)
@@ -1787,7 +1795,9 @@ def _resolve_module_path(module_name: str, roots: list[Path]) -> Path | None:
     return _resolve_module_path_parts(tuple(module_name.split(".")), roots)
 
 
-def _resolve_module_path_parts(parts: tuple[str, ...], roots: list[Path]) -> Path | None:
+def _resolve_module_path_parts(
+    parts: tuple[str, ...], roots: list[Path]
+) -> Path | None:
     if not parts:
         return None
     module_filename = f"{parts[-1]}.py"
@@ -1818,15 +1828,15 @@ class _ModuleResolutionCache:
     source_error_cache: dict[Path, Exception] = field(default_factory=dict)
     ast_cache: dict[tuple[Path, str], ast.AST] = field(default_factory=dict)
     ast_error_cache: dict[tuple[Path, str], SyntaxError] = field(default_factory=dict)
-    module_name_cache: dict[
-        tuple[Path, tuple[Path, ...], Path, Path | None], str
-    ] = field(default_factory=dict)
+    module_name_cache: dict[tuple[Path, tuple[Path, ...], Path, Path | None], str] = (
+        field(default_factory=dict)
+    )
     module_name_context_key: tuple[tuple[Path, ...], Path, Path | None] | None = None
     module_name_context_cache: dict[Path, str] = field(default_factory=dict)
     stdlib_path_cache: dict[tuple[Path, Path], bool] = field(default_factory=dict)
-    import_scan_cache: dict[
-        tuple[Path, str | None, bool, bool], tuple[str, ...]
-    ] = field(default_factory=dict)
+    import_scan_cache: dict[tuple[Path, str | None, bool, bool], tuple[str, ...]] = (
+        field(default_factory=dict)
+    )
     module_parts_cache: dict[str, tuple[str, ...]] = field(default_factory=dict)
     cpython_test_root_cache: Path | None = None
     cpython_test_root_cache_populated: bool = False
@@ -2116,9 +2126,7 @@ def _collect_namespace_parents(
         if name in module_graph:
             return
         if (
-            resolution_cache.resolve_module(
-                name, roots, stdlib_root, stdlib_allowlist
-            )
+            resolution_cache.resolve_module(name, roots, stdlib_root, stdlib_allowlist)
             is not None
         ):
             return
@@ -2656,7 +2664,10 @@ def _is_stdlib_path(path: Path, stdlib_root: Path) -> bool:
 
 
 def _is_stdlib_resolved_path(resolved: Path, resolved_stdlib_root: Path) -> bool:
-    return _relative_parts_if_within(resolved.parts, resolved_stdlib_root.parts) is not None
+    return (
+        _relative_parts_if_within(resolved.parts, resolved_stdlib_root.parts)
+        is not None
+    )
 
 
 def _relative_parts_if_within(
@@ -2699,7 +2710,9 @@ def _module_dependencies(
     path = module_graph.get(module_name)
     is_package = path is not None and path.name == "__init__.py"
     collected_imports = (
-        imports if imports is not None else _collect_imports(tree, module_name, is_package)
+        imports
+        if imports is not None
+        else _collect_imports(tree, module_name, is_package)
     )
     for name in collected_imports:
         for candidate in _expand_module_chain_cached(name):
@@ -3149,9 +3162,7 @@ def _resolve_build_diagnostics_path(
     return path
 
 
-def _capture_build_allocation_diagnostics(
-    *, top_n: int = 10
-) -> dict[str, Any] | None:
+def _capture_build_allocation_diagnostics(*, top_n: int = 10) -> dict[str, Any] | None:
     if not tracemalloc.is_tracing():
         return None
     current_bytes, peak_bytes = tracemalloc.get_traced_memory()
@@ -3331,9 +3342,7 @@ def _emit_build_diagnostics(
                     f"- midend.policy.profile_override: {profile_override}",
                     file=sys.stderr,
                 )
-            hot_tier_promotion_enabled = policy_config.get(
-                "hot_tier_promotion_enabled"
-            )
+            hot_tier_promotion_enabled = policy_config.get("hot_tier_promotion_enabled")
             if isinstance(hot_tier_promotion_enabled, bool):
                 print(
                     "- midend.policy.hot_tier_promotion_enabled: "
@@ -4305,7 +4314,9 @@ def _discover_module_graph(
             except (OSError, SyntaxError, UnicodeDecodeError):
                 continue
             try:
-                tree = resolution_cache.parse_module_ast(path, source, filename=str(path))
+                tree = resolution_cache.parse_module_ast(
+                    path, source, filename=str(path)
+                )
             except SyntaxError:
                 continue
             imports = _load_module_imports(
@@ -6414,7 +6425,9 @@ def _artifact_sync_state_matches(
         stat = artifact.stat()
     except OSError:
         return False
-    return state.get("size") == stat.st_size and state.get("mtime_ns") == stat.st_mtime_ns
+    return (
+        state.get("size") == stat.st_size and state.get("mtime_ns") == stat.st_mtime_ns
+    )
 
 
 def _import_scan_cache_path(
@@ -6633,9 +6646,14 @@ def _read_persisted_import_scan(
     except OSError:
         return None
     imports = payload.get("imports")
-    if not isinstance(imports, list) or not all(isinstance(item, str) for item in imports):
+    if not isinstance(imports, list) or not all(
+        isinstance(item, str) for item in imports
+    ):
         return None
-    if payload.get("size") != stat.st_size or payload.get("mtime_ns") != stat.st_mtime_ns:
+    if (
+        payload.get("size") != stat.st_size
+        or payload.get("mtime_ns") != stat.st_mtime_ns
+    ):
         return None
     return tuple(imports)
 
@@ -6693,7 +6711,10 @@ def _read_persisted_module_analysis(
     raw_defaults = payload.get("func_defaults")
     if not isinstance(raw_defaults, dict):
         return None
-    if payload.get("size") != stat.st_size or payload.get("mtime_ns") != stat.st_mtime_ns:
+    if (
+        payload.get("size") != stat.st_size
+        or payload.get("mtime_ns") != stat.st_mtime_ns
+    ):
         return None
 
     normalized: dict[str, dict[str, Any]] = {}
@@ -6730,7 +6751,9 @@ def _write_persisted_module_analysis(
         "func_defaults": func_defaults,
     }
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(json.dumps(payload, indent=2, default=_json_ir_default) + "\n")
+    cache_path.write_text(
+        json.dumps(payload, indent=2, default=_json_ir_default) + "\n"
+    )
 
 
 def _decode_cached_json_value(value: Any) -> Any:
@@ -6797,7 +6820,7 @@ def _load_module_imports(
                 is_package=is_package,
                 include_nested=include_nested,
                 imports=imports,
-    )
+            )
     return imports
 
 
@@ -6894,6 +6917,56 @@ def _module_frontend_payload(
     }
 
 
+def _module_lowering_context_payload(
+    module_name: str,
+    module_path: Path,
+    *,
+    logical_source_path: str,
+    entry_override: str | None,
+    known_classes_snapshot: dict[str, Any],
+    parse_codec: ParseCodec,
+    type_hint_policy: TypeHintPolicy,
+    fallback_policy: FallbackPolicy,
+    type_facts: dict[str, Any] | None,
+    enable_phi: bool,
+    known_modules: set[str],
+    stdlib_allowlist: set[str],
+    known_func_defaults: dict[str, dict[str, Any]],
+    module_is_namespace: bool,
+    module_chunking: bool,
+    module_chunk_max_ops: int,
+    optimization_profile: str,
+    pgo_hot_function_names: set[str],
+) -> dict[str, Any] | None:
+    try:
+        stat = module_path.stat()
+    except OSError:
+        return None
+    return {
+        "version": 1,
+        "module_name": module_name,
+        "logical_source_path": logical_source_path,
+        "is_package": module_path.name == "__init__.py",
+        "module_is_namespace": module_is_namespace,
+        "entry_module": entry_override,
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "parse_codec": parse_codec,
+        "type_hint_policy": type_hint_policy,
+        "fallback_policy": fallback_policy,
+        "type_facts": type_facts,
+        "enable_phi": enable_phi,
+        "known_modules": sorted(known_modules),
+        "known_classes": known_classes_snapshot,
+        "stdlib_allowlist": sorted(stdlib_allowlist),
+        "known_func_defaults": known_func_defaults,
+        "module_chunking": module_chunking,
+        "module_chunk_max_ops": module_chunk_max_ops,
+        "optimization_profile": optimization_profile,
+        "pgo_hot_functions": sorted(pgo_hot_function_names),
+    }
+
+
 def _module_lowering_context_digest(payload: dict[str, Any]) -> str | None:
     try:
         encoded = json.dumps(
@@ -6933,7 +7006,10 @@ def _read_persisted_module_lowering(
         stat = path.stat()
     except OSError:
         return None
-    if payload.get("size") != stat.st_size or payload.get("mtime_ns") != stat.st_mtime_ns:
+    if (
+        payload.get("size") != stat.st_size
+        or payload.get("mtime_ns") != stat.st_mtime_ns
+    ):
         return None
     raw_result = payload.get("result")
     if not isinstance(raw_result, dict):
@@ -6965,7 +7041,194 @@ def _write_persisted_module_lowering(
         "result": result,
     }
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(json.dumps(payload, indent=2, default=_json_ir_default) + "\n")
+    cache_path.write_text(
+        json.dumps(payload, indent=2, default=_json_ir_default) + "\n"
+    )
+
+
+def _load_cached_module_lowering_result(
+    project_root: Path | None,
+    module_name: str,
+    module_path: Path,
+    *,
+    logical_source_path: str,
+    entry_override: str | None,
+    known_classes_snapshot: dict[str, Any],
+    parse_codec: ParseCodec,
+    type_hint_policy: TypeHintPolicy,
+    fallback_policy: FallbackPolicy,
+    type_facts: dict[str, Any] | None,
+    enable_phi: bool,
+    known_modules: set[str],
+    stdlib_allowlist: set[str],
+    known_func_defaults: dict[str, dict[str, Any]],
+    module_is_namespace: bool,
+    module_chunking: bool,
+    module_chunk_max_ops: int,
+    optimization_profile: str,
+    pgo_hot_function_names: set[str],
+) -> dict[str, Any] | None:
+    if project_root is None:
+        return None
+    context_payload = _module_lowering_context_payload(
+        module_name,
+        module_path,
+        logical_source_path=logical_source_path,
+        entry_override=entry_override,
+        known_classes_snapshot=known_classes_snapshot,
+        parse_codec=parse_codec,
+        type_hint_policy=type_hint_policy,
+        fallback_policy=fallback_policy,
+        type_facts=type_facts,
+        enable_phi=enable_phi,
+        known_modules=known_modules,
+        stdlib_allowlist=stdlib_allowlist,
+        known_func_defaults=known_func_defaults,
+        module_is_namespace=module_is_namespace,
+        module_chunking=module_chunking,
+        module_chunk_max_ops=module_chunk_max_ops,
+        optimization_profile=optimization_profile,
+        pgo_hot_function_names=pgo_hot_function_names,
+    )
+    if context_payload is None:
+        return None
+    context_digest = _module_lowering_context_digest(context_payload)
+    if context_digest is None:
+        return None
+    return _read_persisted_module_lowering(
+        project_root,
+        module_path,
+        module_name=module_name,
+        is_package=module_path.name == "__init__.py",
+        context_digest=context_digest,
+    )
+
+
+def _prepare_frontend_parallel_batch(
+    batch: list[str],
+    *,
+    module_graph: dict[str, Path],
+    module_sources: dict[str, str],
+    generated_module_source_paths: dict[str, str],
+    project_root: Path | None,
+    entry_module: str,
+    known_classes_snapshot: dict[str, Any],
+    module_resolution_cache: _ModuleResolutionCache,
+    parse_codec: ParseCodec,
+    type_hint_policy: TypeHintPolicy,
+    fallback_policy: FallbackPolicy,
+    type_facts: dict[str, Any] | None,
+    enable_phi: bool,
+    known_modules: set[str],
+    stdlib_allowlist: set[str],
+    known_func_defaults: dict[str, dict[str, Any]],
+    namespace_module_names: set[str],
+    is_wasm: bool,
+    module_chunk_max_ops: int,
+    optimization_profile: str,
+    pgo_hot_function_names: set[str],
+) -> tuple[
+    dict[str, dict[str, Any]],
+    list[tuple[str, dict[str, Any]]],
+    dict[str, str],
+    str | None,
+]:
+    cached_results: dict[str, dict[str, Any]] = {}
+    worker_payloads: list[tuple[str, dict[str, Any]]] = []
+    context_digest_by_module: dict[str, str] = {}
+    module_chunking = is_wasm and module_chunk_max_ops > 0
+    for module_name in batch:
+        module_path = module_graph[module_name]
+        logical_source_path = generated_module_source_paths.get(
+            module_name, str(module_path)
+        )
+        entry_override = entry_module
+        if module_name == entry_module and entry_module != "__main__":
+            entry_override = None
+        if project_root is not None:
+            context_payload = _module_lowering_context_payload(
+                module_name,
+                module_path,
+                logical_source_path=logical_source_path,
+                entry_override=entry_override,
+                known_classes_snapshot=known_classes_snapshot,
+                parse_codec=parse_codec,
+                type_hint_policy=type_hint_policy,
+                fallback_policy=fallback_policy,
+                type_facts=type_facts,
+                enable_phi=enable_phi,
+                known_modules=known_modules,
+                stdlib_allowlist=stdlib_allowlist,
+                known_func_defaults=known_func_defaults,
+                module_is_namespace=module_name in namespace_module_names,
+                module_chunking=module_chunking,
+                module_chunk_max_ops=module_chunk_max_ops,
+                optimization_profile=optimization_profile,
+                pgo_hot_function_names=pgo_hot_function_names,
+            )
+            if context_payload is not None:
+                context_digest = _module_lowering_context_digest(context_payload)
+                if context_digest is not None:
+                    context_digest_by_module[module_name] = context_digest
+        cached_result = _load_cached_module_lowering_result(
+            project_root,
+            module_name,
+            module_path,
+            logical_source_path=logical_source_path,
+            entry_override=entry_override,
+            known_classes_snapshot=known_classes_snapshot,
+            parse_codec=parse_codec,
+            type_hint_policy=type_hint_policy,
+            fallback_policy=fallback_policy,
+            type_facts=type_facts,
+            enable_phi=enable_phi,
+            known_modules=known_modules,
+            stdlib_allowlist=stdlib_allowlist,
+            known_func_defaults=known_func_defaults,
+            module_is_namespace=module_name in namespace_module_names,
+            module_chunking=module_chunking,
+            module_chunk_max_ops=module_chunk_max_ops,
+            optimization_profile=optimization_profile,
+            pgo_hot_function_names=pgo_hot_function_names,
+        )
+        if cached_result is not None:
+            cached_results[module_name] = cached_result
+            continue
+        source = module_sources.get(module_name)
+        if source is None:
+            try:
+                source = module_resolution_cache.read_module_source(module_path)
+            except (SyntaxError, UnicodeDecodeError) as exc:
+                return {}, [], {}, f"Syntax error in {module_path}: {exc}"
+            except OSError as exc:
+                return {}, [], {}, f"Failed to read module {module_path}: {exc}"
+            module_sources[module_name] = source
+        worker_payloads.append(
+            (
+                module_name,
+                {
+                    "module_name": module_name,
+                    "module_path": str(module_path),
+                    "logical_source_path": logical_source_path,
+                    "source": source,
+                    "parse_codec": parse_codec,
+                    "type_hint_policy": type_hint_policy,
+                    "fallback_policy": fallback_policy,
+                    "module_is_namespace": module_name in namespace_module_names,
+                    "entry_module": entry_override,
+                    "enable_phi": enable_phi,
+                    "known_modules": sorted(known_modules),
+                    "known_classes": known_classes_snapshot,
+                    "stdlib_allowlist": sorted(stdlib_allowlist),
+                    "known_func_defaults": known_func_defaults,
+                    "module_chunking": module_chunking,
+                    "module_chunk_max_ops": module_chunk_max_ops,
+                    "optimization_profile": optimization_profile,
+                    "pgo_hot_functions": sorted(pgo_hot_function_names),
+                },
+            )
+        )
+    return cached_results, worker_payloads, context_digest_by_module, None
 
 
 def _link_fingerprint(
@@ -7843,11 +8106,7 @@ def _wasm_runtime_root(project_root: Path) -> Path:
     if env_root:
         return Path(env_root).expanduser()
     configured = os.environ.get("MOLT_EXT_ROOT")
-    external_root = (
-        Path(configured).expanduser()
-        if configured
-        else Path.cwd()
-    )
+    external_root = Path(configured).expanduser() if configured else Path.cwd()
     if external_root.is_dir():
         return external_root / "wasm"
     return project_root / "wasm"
@@ -8425,7 +8684,14 @@ def _json_ir_default(value: Any) -> Any:
     if value is Ellipsis:
         return {"__ellipsis__": True}
     if isinstance(value, tuple):
-        return {"__tuple__": [_json_ir_default(item) if not isinstance(item, (str, int, float, bool, type(None), list, dict)) else item for item in value]}
+        return {
+            "__tuple__": [
+                _json_ir_default(item)
+                if not isinstance(item, (str, int, float, bool, type(None), list, dict))
+                else item
+                for item in value
+            ]
+        }
     if isinstance(value, ast.AST):
         return {"__ast__": ast.dump(value, include_attributes=False)}
     if isinstance(value, (set, frozenset)):
@@ -9838,87 +10104,6 @@ def build(
         except SyntaxError as exc:
             raise _ModuleLowerError(f"Syntax error in {module_path}: {exc}") from exc
 
-    def _ensure_module_sources_loaded(module_names: Iterable[str]) -> str | None:
-        for module_name in module_names:
-            if module_name in module_sources or module_name in syntax_error_modules:
-                continue
-            module_path = module_graph[module_name]
-            try:
-                module_sources[module_name] = module_resolution_cache.read_module_source(
-                    module_path
-                )
-            except (SyntaxError, UnicodeDecodeError) as exc:
-                return f"Syntax error in {module_path}: {exc}"
-            except OSError as exc:
-                return f"Failed to read module {module_path}: {exc}"
-        return None
-
-    def _module_lowering_context_payload(
-        module_name: str,
-        module_path: Path,
-        *,
-        logical_source_path: str,
-        entry_override: str | None,
-        known_classes_snapshot: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        try:
-            stat = module_path.stat()
-        except OSError:
-            return None
-        return {
-            "version": 1,
-            "module_name": module_name,
-            "logical_source_path": logical_source_path,
-            "is_package": module_path.name == "__init__.py",
-            "module_is_namespace": module_name in namespace_module_names,
-            "entry_module": entry_override,
-            "size": stat.st_size,
-            "mtime_ns": stat.st_mtime_ns,
-            "parse_codec": parse_codec,
-            "type_hint_policy": type_hint_policy,
-            "fallback_policy": fallback_policy,
-            "type_facts": type_facts,
-            "enable_phi": enable_phi,
-            "known_modules": sorted(known_modules),
-            "known_classes": known_classes_snapshot,
-            "stdlib_allowlist": sorted(stdlib_allowlist),
-            "known_func_defaults": known_func_defaults,
-            "module_chunking": is_wasm and module_chunk_max_ops > 0,
-            "module_chunk_max_ops": module_chunk_max_ops,
-            "optimization_profile": profile,
-            "pgo_hot_functions": sorted(pgo_hot_function_names),
-        }
-
-    def _load_cached_module_lowering_result(
-        module_name: str,
-        module_path: Path,
-        *,
-        logical_source_path: str,
-        entry_override: str | None,
-        known_classes_snapshot: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        if project_root is None:
-            return None
-        context_payload = _module_lowering_context_payload(
-            module_name,
-            module_path,
-            logical_source_path=logical_source_path,
-            entry_override=entry_override,
-            known_classes_snapshot=known_classes_snapshot,
-        )
-        if context_payload is None:
-            return None
-        context_digest = _module_lowering_context_digest(context_payload)
-        if context_digest is None:
-            return None
-        return _read_persisted_module_lowering(
-            project_root,
-            module_path,
-            module_name=module_name,
-            is_package=module_path.name == "__init__.py",
-            context_digest=context_digest,
-        )
-
     def _lower_module_serial(
         module_name: str,
         module_path: Path,
@@ -9938,6 +10123,19 @@ def build(
                 logical_source_path=logical_source_path,
                 entry_override=entry_override,
                 known_classes_snapshot=known_classes,
+                parse_codec=parse_codec,
+                type_hint_policy=type_hint_policy,
+                fallback_policy=fallback_policy,
+                type_facts=type_facts,
+                enable_phi=enable_phi,
+                known_modules=known_modules,
+                stdlib_allowlist=stdlib_allowlist,
+                known_func_defaults=known_func_defaults,
+                module_is_namespace=module_name in namespace_module_names,
+                module_chunking=is_wasm and module_chunk_max_ops > 0,
+                module_chunk_max_ops=module_chunk_max_ops,
+                optimization_profile=profile,
+                pgo_hot_function_names=pgo_hot_function_names,
             )
             if context_payload is not None:
                 context_digest = _module_lowering_context_digest(context_payload)
@@ -10063,10 +10261,6 @@ def build(
         list[dict[str, Any]],
         frontend_parallel_details["worker_timings"],
     )
-    if frontend_parallel_enabled:
-        source_error = _ensure_module_sources_loaded(module_order)
-        if source_error is not None:
-            return _fail(source_error, json_output, command="build")
 
     def _record_frontend_parallel_worker_timing(
         *,
@@ -10126,6 +10320,7 @@ def build(
                     name for name in layer if name not in syntax_error_modules
                 ]
                 layer_results: dict[str, dict[str, Any]] = {}
+                layer_context_digest_by_module: dict[str, str] = {}
                 worker_timing_by_module: dict[str, dict[str, Any]] = {}
                 layer_worker_timings: list[dict[str, Any]] = []
                 layer_fallback_reason: str | None = None
@@ -10166,38 +10361,52 @@ def build(
                         batch = candidates[batch_start : batch_start + layer_workers]
                         future_by_module: dict[str, Any] = {}
                         submit_ns_by_module: dict[str, int] = {}
-                        for module_name in batch:
-                            module_path = module_graph[module_name]
-                            source = module_sources.get(module_name, "")
-                            entry_override = entry_module
-                            if (
-                                module_name == entry_module
-                                and entry_module != "__main__"
-                            ):
-                                entry_override = None
-                            payload = {
-                                "module_name": module_name,
-                                "module_path": str(module_path),
-                                "logical_source_path": generated_module_source_paths.get(
-                                    module_name, str(module_path)
-                                ),
-                                "source": source,
-                                "parse_codec": parse_codec,
-                                "type_hint_policy": type_hint_policy,
-                                "fallback_policy": fallback_policy,
-                                "module_is_namespace": module_name
-                                in namespace_module_names,
-                                "entry_module": entry_override,
-                                "enable_phi": enable_phi,
-                                "known_modules": sorted(known_modules),
-                                "known_classes": known_classes_snapshot,
-                                "stdlib_allowlist": sorted(stdlib_allowlist),
-                                "known_func_defaults": known_func_defaults,
-                                "module_chunking": is_wasm and module_chunk_max_ops > 0,
-                                "module_chunk_max_ops": module_chunk_max_ops,
-                                "optimization_profile": profile,
-                                "pgo_hot_functions": sorted(pgo_hot_function_names),
+                        (
+                            cached_results,
+                            worker_payloads,
+                            context_digest_by_module,
+                            batch_error,
+                        ) = _prepare_frontend_parallel_batch(
+                            batch,
+                            module_graph=module_graph,
+                            module_sources=module_sources,
+                            generated_module_source_paths=generated_module_source_paths,
+                            project_root=project_root,
+                            entry_module=entry_module,
+                            known_classes_snapshot=known_classes_snapshot,
+                            module_resolution_cache=module_resolution_cache,
+                            parse_codec=parse_codec,
+                            type_hint_policy=type_hint_policy,
+                            fallback_policy=fallback_policy,
+                            type_facts=type_facts,
+                            enable_phi=enable_phi,
+                            known_modules=known_modules,
+                            stdlib_allowlist=stdlib_allowlist,
+                            known_func_defaults=known_func_defaults,
+                            namespace_module_names=namespace_module_names,
+                            is_wasm=is_wasm,
+                            module_chunk_max_ops=module_chunk_max_ops,
+                            optimization_profile=profile,
+                            pgo_hot_function_names=pgo_hot_function_names,
+                        )
+                        if batch_error is not None:
+                            return _fail(batch_error, json_output, command="build")
+                        layer_context_digest_by_module.update(context_digest_by_module)
+                        for module_name, cached_result in cached_results.items():
+                            timings = cast(
+                                dict[str, Any], cached_result.get("timings", {})
+                            )
+                            total_ms = float(timings.get("total_s", 0.0)) * 1000.0
+                            layer_results[module_name] = {"ok": True, **cached_result}
+                            worker_timing_by_module[module_name] = {
+                                "mode": "parallel_cache_hit",
+                                "queue_ms": 0.0,
+                                "wait_ms": 0.0,
+                                "exec_ms": round(max(0.0, total_ms), 6),
+                                "roundtrip_ms": round(max(0.0, total_ms), 6),
+                                "worker_pid": None,
                             }
+                        for module_name, payload in worker_payloads:
                             submit_ns_by_module[module_name] = time.time_ns()
                             future_by_module[module_name] = executor.submit(
                                 _frontend_lower_module_worker, payload
@@ -10225,6 +10434,7 @@ def build(
                                 if exec_from_ns > 0.0:
                                     exec_ms = exec_from_ns
                                 worker_timing_by_module[module_name] = {
+                                    "mode": "parallel",
                                     "queue_ms": _duration_ms_from_ns(
                                         submit_ns,
                                         worker_started_ns,
@@ -10303,6 +10513,7 @@ def build(
                                 "roundtrip_ms", max(queue_ms + wait_ms, exec_ms)
                             )
                         )
+                        worker_mode = str(worker_timing.get("mode", "parallel"))
                         worker_pid_raw = worker_timing.get("worker_pid")
                         worker_pid = (
                             worker_pid_raw if isinstance(worker_pid_raw, int) else None
@@ -10312,7 +10523,7 @@ def build(
                                 layer_index=layer_index,
                                 module_name=module_name,
                                 module_path=module_path,
-                                mode="parallel",
+                                mode=worker_mode,
                                 queue_ms=queue_ms,
                                 wait_ms=wait_ms,
                                 exec_ms=exec_ms,
@@ -10320,6 +10531,25 @@ def build(
                                 worker_pid=worker_pid,
                             )
                         )
+                        context_digest = layer_context_digest_by_module.get(module_name)
+                        if (
+                            project_root is not None
+                            and worker_mode != "parallel_cache_hit"
+                            and context_digest is not None
+                        ):
+                            with contextlib.suppress(OSError):
+                                _write_persisted_module_lowering(
+                                    project_root,
+                                    module_path,
+                                    module_name=module_name,
+                                    is_package=module_path.name == "__init__.py",
+                                    context_digest=context_digest,
+                                    result={
+                                        key: value
+                                        for key, value in result.items()
+                                        if key != "ok"
+                                    },
+                                )
                         integration_error = _integrate_module_frontend_result(
                             module_name,
                             ir_functions=cast(
@@ -10393,9 +10623,7 @@ def build(
                         module_name,
                         ir_functions=cast(list[dict[str, Any]], result["functions"]),
                         func_code_ids=cast(dict[str, int], result["func_code_ids"]),
-                        local_class_names=cast(
-                            list[str], result["local_class_names"]
-                        ),
+                        local_class_names=cast(list[str], result["local_class_names"]),
                         local_classes=cast(dict[str, Any], result["local_classes"]),
                     )
                     if integration_error is not None:
@@ -10435,6 +10663,11 @@ def build(
                     "module_count": len(layer),
                     "candidate_count": len(candidates),
                     "workers": layer_workers,
+                    "cache_hits": sum(
+                        1
+                        for item in layer_worker_timings
+                        if item.get("mode") == "parallel_cache_hit"
+                    ),
                     "predicted_cost_total": round(layer_predicted_cost_total, 3),
                     "effective_min_predicted_cost": round(
                         layer_effective_min_predicted_cost, 3
@@ -11054,6 +11287,7 @@ def build(
         if backend_ir_text is None:
             backend_ir_text = _backend_ir_text(ir)
         return backend_ir_text
+
     runtime_lib: Path | None = None
     runtime_wasm: Path | None = None
     runtime_reloc_wasm: Path | None = None
@@ -11202,7 +11436,9 @@ def build(
                         candidate,
                         output_artifact,
                         tier=tier,
-                        source_key=cache_key if tier == "module" else (function_cache_key or cache_key or ""),
+                        source_key=cache_key
+                        if tier == "module"
+                        else (function_cache_key or cache_key or ""),
                         cache_path=cache_path,
                         warnings=warnings,
                     ):
@@ -11225,7 +11461,9 @@ def build(
                 candidate,
                 output_artifact,
                 tier=tier,
-                source_key=cache_key if tier == "module" else (function_cache_key or cache_key or ""),
+                source_key=cache_key
+                if tier == "module"
+                else (function_cache_key or cache_key or ""),
                 cache_path=cache_path,
                 warnings=warnings,
             ):
