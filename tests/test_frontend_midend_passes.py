@@ -1944,6 +1944,90 @@ def test_midend_skips_oversized_functions_by_default() -> None:
     assert gen.midend_stats["midend_oversized_function_skips"] >= 1
 
 
+def test_midend_monolith_pressure_trims_cold_function_policy() -> None:
+    baseline_gen = SimpleTIRGenerator(
+        optimization_profile="release",
+        module_name="pkg.mod",
+    )
+    pressured_gen = SimpleTIRGenerator(
+        optimization_profile="release",
+        module_name="pkg.mod",
+    )
+    pressured_gen.funcs_map = {
+        "molt_main": {"params": [], "ops": []},
+        **{
+            f"helper_{idx}": {
+                "params": [],
+                "ops": [
+                    MoltOp(kind="CONST", args=[j], result=MoltValue(f"v{idx}_{j}"))
+                    for j in range(80)
+                ],
+            }
+            for idx in range(96)
+        },
+    }
+    ops = [
+        MoltOp(kind="CONST", args=[idx], result=MoltValue(f"v{idx}"))
+        for idx in range(64)
+    ]
+
+    baseline = baseline_gen._resolve_midend_function_policy(
+        ops,
+        function_name="cold_helper",
+        block_count=4,
+    )
+    pressured = pressured_gen._resolve_midend_function_policy(
+        ops,
+        function_name="cold_helper",
+        block_count=4,
+    )
+
+    assert pressured.monolith_pressure_level >= 1
+    assert pressured.module_function_count >= 96
+    assert pressured.module_total_ops >= 96 * 80
+    assert pressured.max_rounds < baseline.max_rounds
+    assert pressured.sccp_iter_cap < baseline.sccp_iter_cap
+    assert pressured.cse_iter_cap < baseline.cse_iter_cap
+    assert pressured.budget_ms < baseline.budget_ms
+
+
+def test_midend_monolith_pressure_preserves_hot_function_aggressive_policy() -> None:
+    hot_gen = SimpleTIRGenerator(
+        optimization_profile="release",
+        module_name="pkg.mod",
+        pgo_hot_functions={"pkg.mod::hot_helper"},
+    )
+    hot_gen.funcs_map = {
+        "molt_main": {"params": [], "ops": []},
+        **{
+            f"helper_{idx}": {
+                "params": [],
+                "ops": [
+                    MoltOp(kind="CONST", args=[j], result=MoltValue(f"v{idx}_{j}"))
+                    for j in range(80)
+                ],
+            }
+            for idx in range(96)
+        },
+    }
+    ops = [
+        MoltOp(kind="CONST", args=[idx], result=MoltValue(f"v{idx}"))
+        for idx in range(64)
+    ]
+
+    policy = hot_gen._resolve_midend_function_policy(
+        ops,
+        function_name="hot_helper",
+        block_count=4,
+    )
+
+    assert policy.monolith_pressure_level >= 1
+    assert policy.tier == "A"
+    assert policy.promoted is True
+    assert policy.max_rounds == 4
+    assert policy.enable_guard_hoist is True
+
+
 # ---------------------------------------------------------------------------
 # MOL-37: MISSING values must not leak into CALL/CALL_INDIRECT arg positions
 # ---------------------------------------------------------------------------
