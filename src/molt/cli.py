@@ -1813,6 +1813,9 @@ class _ModuleResolutionCache:
         tuple[Path, tuple[Path, ...], Path, Path | None], str
     ] = field(default_factory=dict)
     stdlib_path_cache: dict[tuple[Path, Path], bool] = field(default_factory=dict)
+    import_scan_cache: dict[
+        tuple[Path, str | None, bool, bool], list[str]
+    ] = field(default_factory=dict)
 
     def roots_for_module(
         self,
@@ -1953,6 +1956,33 @@ class _ModuleResolutionCache:
             raise
         self.ast_cache[cache_key] = tree
         return tree
+
+    def collect_imports(
+        self,
+        path: Path,
+        tree: ast.AST,
+        *,
+        module_name: str | None = None,
+        is_package: bool = False,
+        include_nested: bool = True,
+    ) -> list[str]:
+        cache_key = (
+            self.resolved_path(path),
+            module_name,
+            is_package,
+            include_nested,
+        )
+        cached = self.import_scan_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
+        imports = _collect_imports(
+            tree,
+            module_name,
+            is_package,
+            include_nested=include_nested,
+        )
+        self.import_scan_cache[cache_key] = list(imports)
+        return imports
 
 
 def _resolve_entry_module(
@@ -2322,6 +2352,10 @@ def _collect_imports(
         spec_override,
         spec_override_is_package,
     ) = _infer_module_overrides(tree)
+    module_body = list(getattr(tree, "body", []))
+    stmt_walks: list[tuple[ast.AST, tuple[ast.AST, ...]]] = [
+        (stmt, tuple(ast.walk(stmt))) for stmt in module_body
+    ]
 
     def _importlib_target(func: ast.expr) -> str | None:
         if isinstance(func, ast.Attribute):
@@ -2412,7 +2446,7 @@ def _collect_imports(
         return None
 
     if include_nested and isinstance(tree, ast.Module):
-        for stmt in tree.body:
+        for stmt, _ in stmt_walks:
             if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
                 target = stmt.targets[0]
                 if isinstance(target, ast.Name):
@@ -2441,7 +2475,7 @@ def _collect_imports(
                     continue
                 helper_string_functions[stmt.name] = (params, ret_expr)
 
-        for stmt in tree.body:
+        for stmt, stmt_nodes in stmt_walks:
             if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             params = [
@@ -2460,7 +2494,7 @@ def _collect_imports(
                 continue
             param_set = set(params)
             param_positions = {name: idx for idx, name in enumerate(params)}
-            for node in ast.walk(stmt):
+            for node in stmt_nodes:
                 if not isinstance(node, ast.Call) or not node.args:
                     continue
                 target = _importlib_target(node.func)
@@ -2479,8 +2513,8 @@ def _collect_imports(
                     pos = param_positions[first.id]
                     helper_param_import_positions.setdefault(stmt.name, set()).add(pos)
 
-        for stmt in tree.body:
-            for node in ast.walk(stmt):
+        for _, stmt_nodes in stmt_walks:
+            for node in stmt_nodes:
                 if not isinstance(node, ast.Call):
                     continue
                 if not isinstance(node.func, ast.Name):
@@ -2515,11 +2549,11 @@ def _collect_imports(
                         imports.append(resolved)
 
     if include_nested:
-        scan_nodes: list[ast.AST] = list(ast.walk(tree))
+        scan_nodes: Iterable[ast.AST] = tuple(ast.walk(tree))
     elif isinstance(tree, ast.Module):
-        scan_nodes = list(tree.body)
+        scan_nodes = module_body
     else:
-        scan_nodes = list(ast.walk(tree))
+        scan_nodes = tuple(ast.walk(tree))
 
     for node in scan_nodes:
         if isinstance(node, ast.Import):
@@ -2586,12 +2620,19 @@ def _is_stdlib_resolved_path(resolved: Path, resolved_stdlib_root: Path) -> bool
 
 
 def _module_dependencies(
-    tree: ast.AST, module_name: str, module_graph: dict[str, Path]
+    tree: ast.AST,
+    module_name: str,
+    module_graph: dict[str, Path],
+    *,
+    imports: list[str] | None = None,
 ) -> set[str]:
     deps: set[str] = set()
     path = module_graph.get(module_name)
     is_package = path is not None and path.name == "__init__.py"
-    for name in _collect_imports(tree, module_name, is_package):
+    collected_imports = (
+        imports if imports is not None else _collect_imports(tree, module_name, is_package)
+    )
+    for name in collected_imports:
         for candidate in _expand_module_chain(name):
             if candidate == "molt" and module_name.startswith("molt."):
                 continue
@@ -4162,10 +4203,11 @@ def _discover_module_graph(
             not resolution_cache.is_stdlib_path(path, stdlib_root)
             or module_name in nested_stdlib_scan_modules
         )
-        for name in _collect_imports(
+        for name in resolution_cache.collect_imports(
+            path,
             tree,
-            module_name,
-            is_package,
+            module_name=module_name,
+            is_package=is_package,
             include_nested=include_nested_imports,
         ):
             explicit_imports.add(name)
@@ -5619,16 +5661,12 @@ def _atomic_copy_file(src: Path, dst: Path) -> None:
             pass
 
 
-def _backend_daemon_request(
+def _backend_daemon_request_bytes(
     socket_path: Path,
-    payload: dict[str, Any],
+    data: bytes,
     *,
     timeout: float | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    data, encode_err = _backend_daemon_request_payload_bytes(payload)
-    if encode_err is not None:
-        return None, encode_err
-    assert data is not None
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             if timeout is not None:
@@ -5644,7 +5682,7 @@ def _backend_daemon_request(
                 chunks.append(chunk)
     except OSError as exc:
         return None, f"backend daemon connection failed: {exc}"
-    raw = b"".join(chunks).decode("utf-8", "replace").strip()
+    raw = b"".join(chunks).strip()
     if not raw:
         return None, "backend daemon returned empty response"
     try:
@@ -5656,11 +5694,28 @@ def _backend_daemon_request(
     return response, None
 
 
+def _backend_daemon_request(
+    socket_path: Path,
+    payload: dict[str, Any],
+    *,
+    timeout: float | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    data, encode_err = _backend_daemon_request_payload_bytes(payload)
+    if encode_err is not None:
+        return None, encode_err
+    assert data is not None
+    return _backend_daemon_request_bytes(socket_path, data, timeout=timeout)
+
+
 def _backend_daemon_request_payload_bytes(
     payload: dict[str, Any],
 ) -> tuple[bytes | None, str | None]:
     try:
-        encoded = json.dumps(payload, default=_json_ir_default).encode("utf-8")
+        encoded = json.dumps(
+            payload,
+            default=_json_ir_default,
+            separators=(",", ":"),
+        ).encode("utf-8")
     except (TypeError, ValueError) as exc:
         return None, f"backend daemon request encode failed: {exc}"
     return encoded + b"\n", None
@@ -5861,7 +5916,13 @@ def _compile_with_backend_daemon(
     }
     if config_digest:
         payload["config_digest"] = config_digest
-    response, err = _backend_daemon_request(socket_path, payload, timeout=timeout)
+    request_bytes, encode_err = _backend_daemon_request_payload_bytes(payload)
+    if encode_err is not None:
+        return _BackendDaemonCompileResult(False, encode_err, None, None, None)
+    assert request_bytes is not None
+    response, err = _backend_daemon_request_bytes(
+        socket_path, request_bytes, timeout=timeout
+    )
     if err is not None:
         return _BackendDaemonCompileResult(False, err, None, None, None)
     if response is None:
@@ -8552,7 +8613,18 @@ def build(
             known_func_defaults[module_name] = {}
             continue
         module_trees[module_name] = tree
-        module_deps[module_name] = _module_dependencies(tree, module_name, module_graph)
+        module_deps[module_name] = _module_dependencies(
+            tree,
+            module_name,
+            module_graph,
+            imports=module_resolution_cache.collect_imports(
+                module_path,
+                tree,
+                module_name=module_name,
+                is_package=module_path.name == "__init__.py",
+                include_nested=True,
+            ),
+        )
         known_func_defaults[module_name] = _collect_func_defaults(tree)
     module_order = _topo_sort_modules(module_graph, module_deps)
     if diagnostics_enabled:
