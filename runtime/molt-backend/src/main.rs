@@ -9,6 +9,7 @@ use std::fs::File;
 use std::io::Write;
 use std::io::{self, Read};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const BACKEND_DAEMON_PROTOCOL_VERSION: u32 = 1;
@@ -83,8 +84,8 @@ struct DaemonStats {
 }
 
 struct DaemonCache {
-    entries: HashMap<String, CacheEntry>,
-    order: BinaryHeap<Reverse<(u64, String)>>,
+    entries: HashMap<Arc<str>, CacheEntry>,
+    order: BinaryHeap<Reverse<(u64, Arc<str>)>>,
     clock: u64,
     bytes: usize,
     max_bytes: Option<usize>,
@@ -107,11 +108,12 @@ impl DaemonCache {
     }
 
     fn get_bytes(&mut self, key: &str) -> Option<&[u8]> {
+        let key_ref = Arc::clone(self.entries.get_key_value(key)?.0);
+        let entry = self.entries.get_mut(key)?;
         self.clock = self.clock.wrapping_add(1);
         let stamp = self.clock;
-        self.order.push(Reverse((stamp, key.to_string())));
-        let entry = self.entries.get_mut(key)?;
         entry.stamp = stamp;
+        self.order.push(Reverse((stamp, key_ref)));
         Some(entry.bytes.as_slice())
     }
 
@@ -119,13 +121,14 @@ impl DaemonCache {
         if key.is_empty() {
             return;
         }
-        if let Some(prev) = self.entries.remove(&key) {
+        if let Some(prev) = self.entries.remove(key.as_str()) {
             self.bytes = self.bytes.saturating_sub(prev.bytes.len());
         }
         self.clock = self.clock.wrapping_add(1);
         let stamp = self.clock;
         self.bytes = self.bytes.saturating_add(value.len());
-        self.order.push(Reverse((stamp, key.clone())));
+        let key = Arc::<str>::from(key);
+        self.order.push(Reverse((stamp, Arc::clone(&key))));
         self.entries.insert(
             key,
             CacheEntry {
@@ -156,7 +159,7 @@ impl DaemonCache {
         if self.order.len() > self.entries.len().saturating_mul(8).saturating_add(32) {
             let mut compacted = BinaryHeap::with_capacity(self.entries.len());
             for (key, entry) in &self.entries {
-                compacted.push(Reverse((entry.stamp, key.clone())));
+                compacted.push(Reverse((entry.stamp, Arc::clone(key))));
             }
             self.order = compacted;
         }
