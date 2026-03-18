@@ -46,6 +46,82 @@ def test_runtime_fingerprint_changes_with_runtime_features(
     assert baseline["hash"] != tk_native["hash"]
 
 
+def test_runtime_fingerprint_reuses_stored_hash_when_inputs_unchanged(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "runtime_source.rs"
+    source.write_text("pub fn marker() {}\n")
+    monkeypatch.setattr(
+        cli, "_runtime_source_paths", lambda _project_root: [source], raising=True
+    )
+    monkeypatch.setattr(cli, "_rustc_version", lambda: "rustc-test", raising=True)
+
+    baseline = cli._runtime_fingerprint(
+        tmp_path,
+        cargo_profile="dev-fast",
+        target_triple=None,
+        rustflags="",
+        runtime_features=(),
+    )
+    assert baseline is not None
+
+    calls = 0
+    original = cli._hash_runtime_file
+
+    def wrapped(path: Path, root: Path, hasher: object) -> None:
+        nonlocal calls
+        calls += 1
+        original(path, root, hasher)
+
+    monkeypatch.setattr(cli, "_hash_runtime_file", wrapped, raising=True)
+    reused = cli._runtime_fingerprint(
+        tmp_path,
+        cargo_profile="dev-fast",
+        target_triple=None,
+        rustflags="",
+        runtime_features=(),
+        stored_fingerprint=baseline,
+    )
+    assert reused == baseline
+    assert calls == 0
+
+
+def test_backend_fingerprint_reuses_stored_hash_when_inputs_unchanged(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "backend_source.rs"
+    source.write_text("pub fn marker() {}\n")
+    monkeypatch.setattr(
+        cli, "_backend_source_paths", lambda _project_root: [source], raising=True
+    )
+    monkeypatch.setattr(cli, "_rustc_version", lambda: "rustc-test", raising=True)
+
+    baseline = cli._backend_fingerprint(
+        tmp_path,
+        cargo_profile="dev-fast",
+        rustflags="",
+    )
+    assert baseline is not None
+
+    calls = 0
+    original = cli._hash_runtime_file
+
+    def wrapped(path: Path, root: Path, hasher: object) -> None:
+        nonlocal calls
+        calls += 1
+        original(path, root, hasher)
+
+    monkeypatch.setattr(cli, "_hash_runtime_file", wrapped, raising=True)
+    reused = cli._backend_fingerprint(
+        tmp_path,
+        cargo_profile="dev-fast",
+        rustflags="",
+        stored_fingerprint=baseline,
+    )
+    assert reused == baseline
+    assert calls == 0
+
+
 def test_ensure_runtime_lib_passes_tk_feature_to_native_build(
     tmp_path: Path, monkeypatch
 ) -> None:
