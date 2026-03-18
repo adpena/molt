@@ -22103,6 +22103,7 @@ pub extern "C" fn molt_wsgiref_runtime_ready() -> u64 {
     crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_zoneinfo_runtime_ready() -> u64 {
     crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
 }

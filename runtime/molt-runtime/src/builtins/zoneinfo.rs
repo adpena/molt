@@ -5,8 +5,8 @@
 //! Reads IANA TZif v1/v2/v3 binary data from `/usr/share/zoneinfo` and exposes
 //! timezone key, UTC offset, tzname, and DST offset for a given datetime.
 //!
-//! The `dt_components_bits` argument is a tuple of 6 integers:
-//!   (year, month, day, hour, minute, second)
+//! The `dt_components_bits` argument is a tuple of 6 or 7 integers:
+//!   (year, month, day, hour, minute, second[, fold])
 //! representing a naive local datetime for which to compute the offset.
 //!
 //! ABI: NaN-boxed u64 in/out.
@@ -73,6 +73,37 @@ impl ZoneData {
         let t = &self.transitions[idx];
         let abbr = abbr_from_bytes(&self.abbr_strings, t.abbr_idx);
         (t.utoff, t.is_dst != 0, abbr)
+    }
+
+    fn local_mapping_at(&self, local_unix_ts: i64, fold: i64) -> (i32, bool, &str) {
+        let mut candidates: Vec<(i64, i32, bool, &str)> = Vec::new();
+        candidates.push((
+            local_unix_ts - self.default_utoff as i64,
+            self.default_utoff,
+            self.default_is_dst,
+            &self.default_abbr,
+        ));
+        for transition in &self.transitions {
+            let candidate_utc = local_unix_ts - transition.utoff as i64;
+            let (resolved_off, is_dst, abbr) = self.utoff_at(candidate_utc);
+            if resolved_off == transition.utoff {
+                candidates.push((candidate_utc, resolved_off, is_dst, abbr));
+            }
+        }
+        candidates.sort_by_key(|entry| entry.0);
+        candidates.dedup_by(|left, right| left.0 == right.0 && left.1 == right.1);
+        match candidates.len() {
+            0 => self.utoff_at(local_unix_ts),
+            1 => {
+                let (_, utoff, is_dst, abbr) = candidates[0];
+                (utoff, is_dst, abbr)
+            }
+            _ => {
+                let index = if fold > 0 { candidates.len() - 1 } else { 0 };
+                let (_, utoff, is_dst, abbr) = candidates[index];
+                (utoff, is_dst, abbr)
+            }
+        }
     }
 }
 
@@ -353,6 +384,10 @@ fn dt_components_to_unix(components: &[i64]) -> i64 {
     days_from_epoch * 86400 + hour * 3600 + minute * 60 + second
 }
 
+fn dt_components_fold(components: &[i64]) -> i64 {
+    components.get(6).copied().unwrap_or(0)
+}
+
 /// Extract i64 tuple/list into a Vec<i64>.
 fn extract_dt_components(_py: &PyToken<'_>, bits: u64) -> Option<Vec<i64>> {
     let obj = obj_from_bits(bits);
@@ -433,8 +468,13 @@ pub extern "C" fn molt_zoneinfo_utcoffset(handle_bits: u64, dt_components_bits: 
                 );
             }
         };
-        let unix_ts = dt_components_to_unix(&comps);
-        let utoff = ZONE_MAP.with(|m| m.borrow().get(&id).map(|z| z.utoff_at(unix_ts).0));
+        let local_unix_ts = dt_components_to_unix(&comps);
+        let fold = dt_components_fold(&comps);
+        let utoff = ZONE_MAP.with(|m| {
+            m.borrow()
+                .get(&id)
+                .map(|z| z.local_mapping_at(local_unix_ts, fold).0)
+        });
         match utoff {
             None => raise_exception::<u64>(_py, "ValueError", "invalid zoneinfo handle"),
             Some(secs) => int_bits_from_i64(_py, secs as i64),
@@ -459,11 +499,12 @@ pub extern "C" fn molt_zoneinfo_tzname(handle_bits: u64, dt_components_bits: u64
                 );
             }
         };
-        let unix_ts = dt_components_to_unix(&comps);
+        let local_unix_ts = dt_components_to_unix(&comps);
+        let fold = dt_components_fold(&comps);
         let name_opt: Option<String> = ZONE_MAP.with(|m| {
             let map = m.borrow();
             let zone = map.get(&id)?;
-            let (utoff, _is_dst, abbr) = zone.utoff_at(unix_ts);
+            let (utoff, _is_dst, abbr) = zone.local_mapping_at(local_unix_ts, fold);
             // Produce a CPython-compatible tzname: abbreviation or "UTC±HH:MM".
             if !abbr.is_empty() && abbr != "UTC" {
                 Some(abbr.to_string())
@@ -506,11 +547,12 @@ pub extern "C" fn molt_zoneinfo_dst(handle_bits: u64, dt_components_bits: u64) -
                 );
             }
         };
-        let unix_ts = dt_components_to_unix(&comps);
+        let local_unix_ts = dt_components_to_unix(&comps);
+        let fold = dt_components_fold(&comps);
         let dst_secs: Option<i64> = ZONE_MAP.with(|m| {
             let map = m.borrow();
             let zone = map.get(&id)?;
-            let (_utoff, is_dst, _abbr) = zone.utoff_at(unix_ts);
+            let (_utoff, is_dst, _abbr) = zone.local_mapping_at(local_unix_ts, fold);
             // CPython returns the DST offset (difference between standard and DST)
             // as a timedelta in seconds.  If no DST, returns 0.
             if is_dst { Some(3600) } else { Some(0) }

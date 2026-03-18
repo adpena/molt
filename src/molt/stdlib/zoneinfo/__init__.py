@@ -27,7 +27,7 @@ class ZoneInfoNotFoundError(KeyError):
 def _dt_to_components(dt: _datetime.datetime | None) -> tuple[int, ...] | None:
     if dt is None:
         return None
-    return (dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second)
+    return (dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, dt.fold)
 
 
 class ZoneInfo(_datetime.tzinfo):
