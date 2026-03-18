@@ -7277,6 +7277,10 @@ def _cache_backend_ir_payload(ir: dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+def _backend_ir_text(ir: dict[str, Any]) -> str:
+    return json.dumps(ir, separators=(",", ":"), default=_json_ir_default)
+
+
 def _function_cache_key(
     ir: dict[str, Any],
     target: str,
@@ -9631,6 +9635,7 @@ def build(
             )
         except OSError as exc:
             return _fail(f"Failed to write IR: {exc}", json_output, command="build")
+    backend_ir_text = _backend_ir_text(ir)
     runtime_lib: Path | None = None
     runtime_wasm: Path | None = None
     runtime_reloc_wasm: Path | None = None
@@ -10060,7 +10065,7 @@ def build(
                     try:
                         backend_process = subprocess.run(
                             cmd_with_output,
-                            input=json.dumps(ir, default=_json_ir_default),
+                            input=backend_ir_text,
                             text=True,
                             capture_output=True,
                             env=backend_env,
