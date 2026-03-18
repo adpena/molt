@@ -53,7 +53,7 @@ document the chosen target in specs/tests.
 - Add a minimal tasks/channels runtime skeleton and gated API in `molt`.
 - Promote MsgPack/CBOR parsing as the default structured codec; keep JSON only for compatibility/debug.
 - Wire guard/deopt instrumentation to emit `molt_runtime_feedback.json` (MPA loop).
-  - Partial delivered: runtime feedback emission + schema validation gate (`MOLT_RUNTIME_FEEDBACK`, `MOLT_RUNTIME_FEEDBACK_FILE`, `tools/check_runtime_feedback.py`) are wired; broader MPA consumption loop remains pending.
+  - Partial delivered: runtime feedback emission + schema validation gate (`MOLT_RUNTIME_FEEDBACK`, `MOLT_RUNTIME_FEEDBACK_FILE`, `tools/check_runtime_feedback.py`) are wired, and build-time hot-function promotion now consumes `molt_runtime_feedback.json`; broader MPA consumption loops remain pending.
 - Keep `molt run` compiled-by-default; use `molt compare` (or a dedicated parity runner) for CPython parity testing.
 - Compiler/mid-end throughput recovery (priority override):
   1. Land profile-gated mid-end policy matrix (`dev` correctness-first cheap optimization, `release` full fixed-point) with deterministic pass-order diagnostics.

@@ -2784,6 +2784,17 @@ def _build_diagnostics_enabled() -> bool:
     return _coerce_bool(os.environ.get("MOLT_BUILD_DIAGNOSTICS", ""), False)
 
 
+def _resolve_build_diagnostics_verbosity(raw: str | None) -> str:
+    value = (raw or "").strip().lower()
+    if value in {"", "default", "normal", "standard"}:
+        return "default"
+    if value in {"summary", "compact", "brief"}:
+        return "summary"
+    if value in {"full", "verbose", "detailed"}:
+        return "full"
+    return "default"
+
+
 def _phase_duration_map(phase_starts: dict[str, float]) -> dict[str, float]:
     if not phase_starts:
         return {}
@@ -2813,6 +2824,7 @@ def _emit_build_diagnostics(
     diagnostics: dict[str, Any] | None,
     diagnostics_path: Path | None,
     json_output: bool,
+    verbosity: str = "default",
 ) -> None:
     if diagnostics is None:
         return
@@ -2821,6 +2833,9 @@ def _emit_build_diagnostics(
         diagnostics_path.write_text(json.dumps(diagnostics, indent=2) + "\n")
     if json_output:
         return
+    resolved_verbosity = _resolve_build_diagnostics_verbosity(verbosity)
+    summary_only = resolved_verbosity == "summary"
+    full_details = resolved_verbosity == "full"
     phase_sec = diagnostics.get("phase_sec", {})
     total_sec = diagnostics.get("total_sec")
     module_count = diagnostics.get("module_count")
@@ -2844,7 +2859,8 @@ def _emit_build_diagnostics(
             if isinstance(value, int):
                 print(f"- reason.{name}: {value}", file=sys.stderr)
     if isinstance(frontend_modules_top, list):
-        for idx, item in enumerate(frontend_modules_top[:10], start=1):
+        limit = 20 if full_details else 10
+        for idx, item in enumerate(frontend_modules_top[:limit], start=1):
             if not isinstance(item, dict):
                 continue
             module_name = str(item.get("module", ""))
@@ -2881,9 +2897,10 @@ def _emit_build_diagnostics(
                 file=sys.stderr,
             )
         layer_stats = frontend_parallel.get("layers")
-        if isinstance(layer_stats, list):
+        if not summary_only and isinstance(layer_stats, list):
+            limit = 20 if full_details else 10
             print(f"- frontend_parallel.layers: {len(layer_stats)}", file=sys.stderr)
-            for item in layer_stats[:10]:
+            for item in layer_stats[:limit]:
                 if not isinstance(item, dict):
                     continue
                 layer_index = int(item.get("index", 0)) + 1
@@ -2902,13 +2919,13 @@ def _emit_build_diagnostics(
                     f"exec_ms={exec_ms_total:.3f}",
                     file=sys.stderr,
                 )
-            if len(layer_stats) > 10:
+            if len(layer_stats) > limit:
                 print(
-                    f"- frontend_parallel.layers_truncated: {len(layer_stats) - 10}",
+                    f"- frontend_parallel.layers_truncated: {len(layer_stats) - limit}",
                     file=sys.stderr,
                 )
         worker_stats = frontend_parallel.get("worker_summary")
-        if isinstance(worker_stats, dict):
+        if not summary_only and isinstance(worker_stats, dict):
             worker_count = int(worker_stats.get("count", 0))
             queue_ms_total = float(worker_stats.get("queue_ms_total", 0.0))
             wait_ms_total = float(worker_stats.get("wait_ms_total", 0.0))
@@ -2968,8 +2985,9 @@ def _emit_build_diagnostics(
                 if isinstance(value, int):
                     print(f"- midend.degrade_reason.{reason}: {value}", file=sys.stderr)
         hotspots = midend.get("pass_hotspots_top")
-        if isinstance(hotspots, list):
-            for idx, item in enumerate(hotspots[:10], start=1):
+        if not summary_only and isinstance(hotspots, list):
+            limit = 20 if full_details else 10
+            for idx, item in enumerate(hotspots[:limit], start=1):
                 if not isinstance(item, dict):
                     continue
                 module_name = str(item.get("module", ""))
@@ -2984,8 +3002,9 @@ def _emit_build_diagnostics(
                     file=sys.stderr,
                 )
         function_hotspots = midend.get("function_hotspots_top")
-        if isinstance(function_hotspots, list):
-            for idx, item in enumerate(function_hotspots[:10], start=1):
+        if not summary_only and isinstance(function_hotspots, list):
+            limit = 20 if full_details else 10
+            for idx, item in enumerate(function_hotspots[:limit], start=1):
                 if not isinstance(item, dict):
                     continue
                 module_name = str(item.get("module", ""))
@@ -3001,8 +3020,9 @@ def _emit_build_diagnostics(
                     file=sys.stderr,
                 )
         promotion_hotspots = midend.get("promotion_hotspots_top")
-        if isinstance(promotion_hotspots, list):
-            for idx, item in enumerate(promotion_hotspots[:10], start=1):
+        if not summary_only and isinstance(promotion_hotspots, list):
+            limit = 20 if full_details else 10
+            for idx, item in enumerate(promotion_hotspots[:limit], start=1):
                 if not isinstance(item, dict):
                     continue
                 module_name = str(item.get("module", ""))
@@ -3020,8 +3040,9 @@ def _emit_build_diagnostics(
                     file=sys.stderr,
                 )
         degrade_hotspots = midend.get("degrade_event_hotspots_top")
-        if isinstance(degrade_hotspots, list):
-            for idx, item in enumerate(degrade_hotspots[:10], start=1):
+        if not summary_only and isinstance(degrade_hotspots, list):
+            limit = 20 if full_details else 10
+            for idx, item in enumerate(degrade_hotspots[:limit], start=1):
                 if not isinstance(item, dict):
                     continue
                 module_name = str(item.get("module", ""))
@@ -3060,7 +3081,7 @@ def _emit_build_diagnostics(
                 file=sys.stderr,
             )
         budget_ranked_functions: list[dict[str, Any]] = []
-        if isinstance(function_hotspots, list):
+        if not summary_only and isinstance(function_hotspots, list):
             for item in function_hotspots:
                 if not isinstance(item, dict):
                     continue
@@ -3077,7 +3098,8 @@ def _emit_build_diagnostics(
                         }
                     )
             budget_ranked_functions.sort(key=lambda x: -x["ratio"])
-            for idx, item in enumerate(budget_ranked_functions[:5], start=1):
+            limit = 10 if full_details else 5
+            for idx, item in enumerate(budget_ranked_functions[:limit], start=1):
                 print(
                     "- midend.budget_top."
                     f"{idx}: {item['module']}::{item['function']} "
@@ -3087,8 +3109,9 @@ def _emit_build_diagnostics(
                     file=sys.stderr,
                 )
         pass_wall_ranked = midend.get("pass_wall_time_ranked")
-        if isinstance(pass_wall_ranked, list):
-            for idx, item in enumerate(pass_wall_ranked[:3], start=1):
+        if not summary_only and isinstance(pass_wall_ranked, list):
+            limit = 10 if full_details else 3
+            for idx, item in enumerate(pass_wall_ranked[:limit], start=1):
                 if not isinstance(item, dict):
                     continue
                 pass_name = str(item.get("pass", ""))
@@ -3099,7 +3122,7 @@ def _emit_build_diagnostics(
                     file=sys.stderr,
                 )
         promo_candidates = midend.get("promotion_candidates")
-        if isinstance(promo_candidates, list) and promo_candidates:
+        if not summary_only and isinstance(promo_candidates, list) and promo_candidates:
             print(
                 f"- midend.promotion_candidates: {len(promo_candidates)}",
                 file=sys.stderr,
@@ -7319,6 +7342,7 @@ def build(
     module: str | None = None,
     diagnostics: bool | None = None,
     diagnostics_file: str | None = None,
+    diagnostics_verbosity: str | None = None,
     portable: bool = False,
 ) -> int:
     if isinstance(profile, bool):
@@ -7353,6 +7377,9 @@ def build(
         diagnostics_path_spec = os.environ.get(
             "MOLT_BUILD_DIAGNOSTICS_FILE", ""
         ).strip()
+    resolved_diagnostics_verbosity = _resolve_build_diagnostics_verbosity(
+        diagnostics_verbosity or os.environ.get("MOLT_BUILD_DIAGNOSTICS_VERBOSITY")
+    )
     frontend_timing_raw = os.environ.get("MOLT_FRONTEND_TIMINGS", "").strip()
     frontend_timing_enabled = diagnostics_enabled or bool(frontend_timing_raw)
     frontend_timing_threshold = 0.0
@@ -9983,6 +10010,7 @@ def build(
             diagnostics=diagnostics_payload,
             diagnostics_path=diagnostics_path,
             json_output=json_output,
+            verbosity=resolved_diagnostics_verbosity,
         )
         return 0
 
@@ -10041,6 +10069,7 @@ def build(
             diagnostics=diagnostics_payload,
             diagnostics_path=diagnostics_path,
             json_output=json_output,
+            verbosity=resolved_diagnostics_verbosity,
         )
         return 0
 
@@ -10443,6 +10472,7 @@ int main(int argc, char** argv) {
             diagnostics=diagnostics_payload,
             diagnostics_path=diagnostics_path,
             json_output=json_output,
+            verbosity=resolved_diagnostics_verbosity,
         )
     else:
         if json_output:
@@ -10486,6 +10516,7 @@ int main(int argc, char** argv) {
             diagnostics=diagnostics_payload,
             diagnostics_path=diagnostics_path,
             json_output=json_output,
+            verbosity=resolved_diagnostics_verbosity,
         )
 
     return link_process.returncode
@@ -11224,6 +11255,7 @@ def _internal_batch_build_server(
                             params.get("respect_pythonpath", False)
                         ),
                         module=params.get("module"),
+                        diagnostics_verbosity=params.get("diagnostics_verbosity"),
                     )
         except Exception as exc:  # pragma: no cover - defensive server hardening
             _emit_response(
@@ -15070,6 +15102,15 @@ def main() -> int:
         ),
     )
     build_parser.add_argument(
+        "--diagnostics-verbosity",
+        choices=["summary", "default", "full"],
+        default=None,
+        help=(
+            "Select stderr build diagnostics detail level. "
+            "JSON/file diagnostics remain complete."
+        ),
+    )
+    build_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
     build_parser.add_argument(
@@ -15997,6 +16038,13 @@ def main() -> int:
         )
         if diagnostics_file == "":
             diagnostics_file = None
+        diagnostics_verbosity = (
+            args.diagnostics_verbosity
+            or build_cfg.get("diagnostics_verbosity")
+            or build_cfg.get("diagnostics-verbosity")
+            or build_cfg.get("build_diagnostics_verbosity")
+            or build_cfg.get("build-diagnostics-verbosity")
+        )
         capabilities = (
             args.capabilities or build_cfg.get("capabilities") or cfg_capabilities
         )
@@ -16037,6 +16085,7 @@ def main() -> int:
             args.module,
             diagnostics,
             diagnostics_file,
+            diagnostics_verbosity,
             portable=getattr(args, "portable", False),
         )
     if args.command == "extension":
