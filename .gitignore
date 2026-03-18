@@ -7,7 +7,12 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.hypothesis/
+.playwright-mcp/
 .tmp/
+tmp/
+.molt_cache/
+.uv-cache/
 dist/
 build/
 var/
@@ -74,3 +79,4 @@ packaging/out/
 .codex/
 .gemini/worktrees/
 .claude/todos/
+type_facts.json
