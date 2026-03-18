@@ -1706,13 +1706,14 @@ def test_temporary_backend_output_path_uses_expected_suffix_and_cleans_up(
 ) -> None:
     with cli._temporary_backend_output_path(tmp_path, is_wasm=False) as path:
         assert path.suffix == ".o"
-        assert path.exists()
+        assert not path.exists()
         path.write_bytes(b"artifact")
     assert not path.exists()
 
     with cli._temporary_backend_output_path(tmp_path, is_wasm=True) as path:
         assert path.suffix == ".wasm"
-        assert path.exists()
+        assert not path.exists()
+        path.write_bytes(b"artifact")
     assert not path.exists()
 
 
