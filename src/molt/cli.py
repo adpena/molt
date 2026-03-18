@@ -6013,11 +6013,13 @@ def _backend_daemon_request_bytes(
             sock.sendall(data)
             sock.shutdown(socket.SHUT_WR)
             raw = bytearray()
+            recv_buffer = bytearray(65536)
+            recv_view = memoryview(recv_buffer)
             while True:
-                chunk = sock.recv(65536)
-                if not chunk:
+                received = sock.recv_into(recv_view)
+                if received == 0:
                     break
-                raw.extend(chunk)
+                raw.extend(recv_view[:received])
     except OSError as exc:
         return None, f"backend daemon connection failed: {exc}"
     raw = bytes(raw).strip()
