@@ -5858,13 +5858,15 @@ def _materialize_cached_backend_artifact(
 ) -> bool:
     state_path = _artifact_sync_state_path(project_root, output_artifact)
     state = _read_artifact_sync_state(state_path)
-    if _artifact_sync_state_matches(
-        state,
-        source_key=source_key,
-        tier=tier,
-        artifact=output_artifact,
-    ):
-        return True
+    with contextlib.suppress(OSError):
+        stat = output_artifact.stat()
+        if _artifact_sync_state_matches_stat(
+            state,
+            source_key=source_key,
+            tier=tier,
+            stat=stat,
+        ):
+            return True
     try:
         _atomic_link_or_copy_file(candidate, output_artifact)
         if (
@@ -5901,17 +5903,21 @@ def _backend_daemon_skip_output_sync_flags(
     state = _read_artifact_sync_state(
         _artifact_sync_state_path(project_root, output_artifact)
     )
-    skip_module_output = bool(cache_key) and _artifact_sync_state_matches(
+    try:
+        stat = output_artifact.stat()
+    except OSError:
+        return False, False
+    skip_module_output = bool(cache_key) and _artifact_sync_state_matches_stat(
         state,
         source_key=cache_key or "",
         tier="module",
-        artifact=output_artifact,
+        stat=stat,
     )
-    skip_function_output = bool(function_cache_key) and _artifact_sync_state_matches(
+    skip_function_output = bool(function_cache_key) and _artifact_sync_state_matches_stat(
         state,
         source_key=function_cache_key or "",
         tier="function",
-        artifact=output_artifact,
+        stat=stat,
     )
     return skip_module_output, skip_function_output
 
@@ -5970,12 +5976,18 @@ def _stage_backend_output_and_caches(
 
     state_path = _artifact_sync_state_path(project_root, output_artifact)
     if output_already_synced is None:
-        output_already_synced = bool(cache_key) and _artifact_sync_state_matches(
-            _read_artifact_sync_state(state_path),
-            source_key=cache_key or "",
-            tier="module",
-            artifact=output_artifact,
-        )
+        state = _read_artifact_sync_state(state_path)
+        try:
+            stat = output_artifact.stat()
+        except OSError:
+            output_already_synced = False
+        else:
+            output_already_synced = bool(cache_key) and _artifact_sync_state_matches_stat(
+                state,
+                source_key=cache_key or "",
+                tier="module",
+                stat=stat,
+            )
 
     try:
         if output_already_synced:
@@ -6556,13 +6568,28 @@ def _artifact_sync_state_matches(
     tier: str,
     artifact: Path,
 ) -> bool:
-    if state is None or not artifact.exists():
-        return False
-    if state.get("source_key") != source_key or state.get("tier") != tier:
-        return False
     try:
         stat = artifact.stat()
     except OSError:
+        return False
+    return _artifact_sync_state_matches_stat(
+        state,
+        source_key=source_key,
+        tier=tier,
+        stat=stat,
+    )
+
+
+def _artifact_sync_state_matches_stat(
+    state: dict[str, Any] | None,
+    *,
+    source_key: str,
+    tier: str,
+    stat: os.stat_result,
+) -> bool:
+    if state is None:
+        return False
+    if state.get("source_key") != source_key or state.get("tier") != tier:
         return False
     return (
         state.get("size") == stat.st_size and state.get("mtime_ns") == stat.st_mtime_ns
