@@ -1849,6 +1849,59 @@ def test_compile_with_backend_daemon_allows_cached_hit_without_output_write(
     assert captured_payload["jobs"][0]["skip_function_output_if_synced"] is False
 
 
+def test_compile_with_backend_daemon_uses_preencoded_request_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend_output = tmp_path / "output.o"
+    preencoded = (
+        b'{"version":1,"jobs":[{"id":"job0","is_wasm":false,"target_triple":"","output":"'
+        + str(backend_output).encode("utf-8")
+        + b'","cache_key":"","function_cache_key":"","skip_module_output_if_synced":false,'
+        b'"skip_function_output_if_synced":false,"ir":{"functions":[]}}]}\n'
+    )
+
+    def fail_encode(payload: dict[str, object]) -> tuple[bytes | None, str | None]:
+        raise AssertionError(f"unexpected request encode: {payload}")
+
+    def _fake_request(
+        socket_path: Path,
+        data: bytes,
+        *,
+        timeout: float | None,
+    ) -> tuple[dict[str, object], None]:
+        del socket_path, timeout
+        assert data == preencoded
+        backend_output.write_bytes(b"\x7fELF")
+        return (
+            {
+                "ok": True,
+                "jobs": [{"id": "job0", "ok": True}],
+            },
+            None,
+        )
+
+    monkeypatch.setattr(cli, "_backend_daemon_request_payload_bytes", fail_encode)
+    monkeypatch.setattr(cli, "_backend_daemon_request_bytes", _fake_request)
+    result = cli._compile_with_backend_daemon(
+        Path("/tmp/fake.sock"),
+        ir={"functions": []},
+        backend_output=backend_output,
+        is_wasm=False,
+        target_triple="",
+        cache_key=None,
+        function_cache_key=None,
+        config_digest=None,
+        skip_module_output_if_synced=False,
+        skip_function_output_if_synced=False,
+        timeout=0.1,
+        request_bytes=preencoded,
+    )
+
+    assert result.ok is True
+    assert result.output_written is True
+
+
 def test_backend_daemon_skip_output_sync_flags_track_artifact_state(
     tmp_path: Path,
 ) -> None:
