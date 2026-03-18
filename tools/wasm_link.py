@@ -44,8 +44,9 @@ def _default_runtime_path() -> Path:
     env_root = os.environ.get("MOLT_WASM_RUNTIME_DIR")
     if env_root:
         return Path(env_root).expanduser() / "molt_runtime.wasm"
-    external_root = Path("/Volumes/APDataStore/Molt")
-    if external_root.is_dir():
+    ext_root = os.environ.get("MOLT_EXT_ROOT")
+    external_root = Path(ext_root).expanduser() if ext_root else None
+    if external_root is not None and external_root.is_dir():
         return external_root / "wasm" / "molt_runtime.wasm"
     return Path("wasm/molt_runtime.wasm")
 

@@ -238,9 +238,8 @@ def _run_molt(
         # Route build artifacts to tmp
         env.setdefault("MOLT_CACHE", os.path.join(tmp_dir, "cache"))
         env.setdefault("TMPDIR", tmp_dir)
-        # Use external volume cargo target if available
-        ext_root = os.environ.get("MOLT_EXT_ROOT", "/Volumes/APDataStore/Molt")
-        env.setdefault("CARGO_TARGET_DIR", os.path.join(ext_root, "cargo-target"))
+        artifact_root = os.environ.get("MOLT_EXT_ROOT", str(_ROOT))
+        env.setdefault("CARGO_TARGET_DIR", os.path.join(artifact_root, "target"))
 
         stem = Path(source_path).stem
         output_binary = os.path.join(tmp_dir, f"{stem}_molt")
@@ -620,7 +619,7 @@ def _build_parser() -> argparse.ArgumentParser:
               MOLT_TV_BUILD_PROFILE  Build profile: dev or release (default: dev)
               MOLT_TV_JOBS           Parallel jobs (default: 4)
               MOLT_TV_PYTHON         CPython executable for baseline
-              MOLT_EXT_ROOT          External volume root for build artifacts
+              MOLT_EXT_ROOT          Artifact root for build artifacts/cache/tmp
               MOLT_DIFF_TMPDIR       Temp directory root
         """),
     )
