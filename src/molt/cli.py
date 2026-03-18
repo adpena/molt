@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
     Any,
+    Collection,
     ContextManager,
     Iterable,
     Iterator,
@@ -6929,19 +6930,28 @@ def _module_lowering_context_payload(
     fallback_policy: FallbackPolicy,
     type_facts: dict[str, Any] | None,
     enable_phi: bool,
-    known_modules: set[str],
-    stdlib_allowlist: set[str],
+    known_modules: Collection[str],
+    stdlib_allowlist: Collection[str],
     known_func_defaults: dict[str, dict[str, Any]],
     module_is_namespace: bool,
     module_chunking: bool,
     module_chunk_max_ops: int,
     optimization_profile: str,
-    pgo_hot_function_names: set[str],
+    pgo_hot_function_names: Collection[str],
+    known_modules_sorted: tuple[str, ...] | None = None,
+    stdlib_allowlist_sorted: tuple[str, ...] | None = None,
+    pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
 ) -> dict[str, Any] | None:
     try:
         stat = module_path.stat()
     except OSError:
         return None
+    if known_modules_sorted is None:
+        known_modules_sorted = tuple(sorted(known_modules))
+    if stdlib_allowlist_sorted is None:
+        stdlib_allowlist_sorted = tuple(sorted(stdlib_allowlist))
+    if pgo_hot_function_names_sorted is None:
+        pgo_hot_function_names_sorted = tuple(sorted(pgo_hot_function_names))
     return {
         "version": 1,
         "module_name": module_name,
@@ -6956,14 +6966,14 @@ def _module_lowering_context_payload(
         "fallback_policy": fallback_policy,
         "type_facts": type_facts,
         "enable_phi": enable_phi,
-        "known_modules": sorted(known_modules),
+        "known_modules": known_modules_sorted,
         "known_classes": known_classes_snapshot,
-        "stdlib_allowlist": sorted(stdlib_allowlist),
+        "stdlib_allowlist": stdlib_allowlist_sorted,
         "known_func_defaults": known_func_defaults,
         "module_chunking": module_chunking,
         "module_chunk_max_ops": module_chunk_max_ops,
         "optimization_profile": optimization_profile,
-        "pgo_hot_functions": sorted(pgo_hot_function_names),
+        "pgo_hot_functions": pgo_hot_function_names_sorted,
     }
 
 
@@ -7059,14 +7069,17 @@ def _load_cached_module_lowering_result(
     fallback_policy: FallbackPolicy,
     type_facts: dict[str, Any] | None,
     enable_phi: bool,
-    known_modules: set[str],
-    stdlib_allowlist: set[str],
+    known_modules: Collection[str],
+    stdlib_allowlist: Collection[str],
     known_func_defaults: dict[str, dict[str, Any]],
     module_is_namespace: bool,
     module_chunking: bool,
     module_chunk_max_ops: int,
     optimization_profile: str,
-    pgo_hot_function_names: set[str],
+    pgo_hot_function_names: Collection[str],
+    known_modules_sorted: tuple[str, ...] | None = None,
+    stdlib_allowlist_sorted: tuple[str, ...] | None = None,
+    pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
 ) -> dict[str, Any] | None:
     if project_root is None:
         return None
@@ -7089,6 +7102,9 @@ def _load_cached_module_lowering_result(
         module_chunk_max_ops=module_chunk_max_ops,
         optimization_profile=optimization_profile,
         pgo_hot_function_names=pgo_hot_function_names,
+        known_modules_sorted=known_modules_sorted,
+        stdlib_allowlist_sorted=stdlib_allowlist_sorted,
+        pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
     )
     if context_payload is None:
         return None
@@ -7119,14 +7135,17 @@ def _prepare_frontend_parallel_batch(
     fallback_policy: FallbackPolicy,
     type_facts: dict[str, Any] | None,
     enable_phi: bool,
-    known_modules: set[str],
-    stdlib_allowlist: set[str],
+    known_modules: Collection[str],
+    stdlib_allowlist: Collection[str],
     known_func_defaults: dict[str, dict[str, Any]],
     namespace_module_names: set[str],
     is_wasm: bool,
     module_chunk_max_ops: int,
     optimization_profile: str,
-    pgo_hot_function_names: set[str],
+    pgo_hot_function_names: Collection[str],
+    known_modules_sorted: tuple[str, ...],
+    stdlib_allowlist_sorted: tuple[str, ...],
+    pgo_hot_function_names_sorted: tuple[str, ...],
 ) -> tuple[
     dict[str, dict[str, Any]],
     list[tuple[str, dict[str, Any]]],
@@ -7165,6 +7184,9 @@ def _prepare_frontend_parallel_batch(
                 module_chunk_max_ops=module_chunk_max_ops,
                 optimization_profile=optimization_profile,
                 pgo_hot_function_names=pgo_hot_function_names,
+                known_modules_sorted=known_modules_sorted,
+                stdlib_allowlist_sorted=stdlib_allowlist_sorted,
+                pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
             )
             if context_payload is not None:
                 context_digest = _module_lowering_context_digest(context_payload)
@@ -7190,6 +7212,9 @@ def _prepare_frontend_parallel_batch(
             module_chunk_max_ops=module_chunk_max_ops,
             optimization_profile=optimization_profile,
             pgo_hot_function_names=pgo_hot_function_names,
+            known_modules_sorted=known_modules_sorted,
+            stdlib_allowlist_sorted=stdlib_allowlist_sorted,
+            pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
         )
         if cached_result is not None:
             cached_results[module_name] = cached_result
@@ -7217,14 +7242,14 @@ def _prepare_frontend_parallel_batch(
                     "module_is_namespace": module_name in namespace_module_names,
                     "entry_module": entry_override,
                     "enable_phi": enable_phi,
-                    "known_modules": sorted(known_modules),
+                    "known_modules": list(known_modules_sorted),
                     "known_classes": known_classes_snapshot,
-                    "stdlib_allowlist": sorted(stdlib_allowlist),
+                    "stdlib_allowlist": list(stdlib_allowlist_sorted),
                     "known_func_defaults": known_func_defaults,
                     "module_chunking": module_chunking,
                     "module_chunk_max_ops": module_chunk_max_ops,
                     "optimization_profile": optimization_profile,
-                    "pgo_hot_functions": sorted(pgo_hot_function_names),
+                    "pgo_hot_functions": list(pgo_hot_function_names_sorted),
                 },
             )
         )
@@ -9239,6 +9264,7 @@ def build(
             for symbol in pgo_profile_summary.hot_functions
             if isinstance(symbol, str) and symbol.strip()
         }
+    pgo_hot_function_names_sorted = tuple(sorted(pgo_hot_function_names))
     if runtime_feedback:
         summary, resolved, err = _load_runtime_feedback(
             project_root,
@@ -9851,6 +9877,8 @@ def build(
     stdlib_allowlist.update(STUB_MODULES)
     stdlib_allowlist.update(stub_parents)
     stdlib_allowlist.add("molt.stdlib")
+    known_modules_sorted = tuple(sorted(known_modules))
+    stdlib_allowlist_sorted = tuple(sorted(stdlib_allowlist))
     module_deps: dict[str, set[str]] = {}
     module_sources: dict[str, str] = {}
     known_func_defaults: dict[str, dict[str, dict[str, Any]]] = {}
@@ -10136,6 +10164,9 @@ def build(
                 module_chunk_max_ops=module_chunk_max_ops,
                 optimization_profile=profile,
                 pgo_hot_function_names=pgo_hot_function_names,
+                known_modules_sorted=known_modules_sorted,
+                stdlib_allowlist_sorted=stdlib_allowlist_sorted,
+                pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
             )
             if context_payload is not None:
                 context_digest = _module_lowering_context_digest(context_payload)
@@ -10388,6 +10419,9 @@ def build(
                             module_chunk_max_ops=module_chunk_max_ops,
                             optimization_profile=profile,
                             pgo_hot_function_names=pgo_hot_function_names,
+                            known_modules_sorted=known_modules_sorted,
+                            stdlib_allowlist_sorted=stdlib_allowlist_sorted,
+                            pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
                         )
                         if batch_error is not None:
                             return _fail(batch_error, json_output, command="build")
