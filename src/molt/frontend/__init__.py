@@ -73,6 +73,20 @@ _SCCP_UNKNOWN = object()
 _SCCP_MISSING = object()  # Sentinel for MISSING values — must never propagate or fold
 MidendProfile = Literal["dev", "release"]
 MidendTier = Literal["A", "B", "C"]
+_MIDEND_ENV_KEYS = (
+    "MOLT_MIDEND_SKIP_OP_THRESHOLD",
+    "MOLT_MIDEND_MONOLITH_FUNCTION_THRESHOLD",
+    "MOLT_MIDEND_MONOLITH_TOTAL_OPS_THRESHOLD",
+    "MOLT_MIDEND_HOT_TIER_PROMOTION",
+    "MOLT_MIDEND_BUDGET_MS",
+    "MOLT_MIDEND_BUDGET_ALPHA",
+    "MOLT_MIDEND_BUDGET_BETA",
+    "MOLT_MIDEND_BUDGET_SCALE",
+    "MOLT_MIDEND_BUDGET_PREEMPT_RATIO",
+    "MOLT_MIDEND_MAX_ROUNDS",
+    "MOLT_SCCP_MAX_ITERS",
+    "MOLT_CSE_MAX_ITERS",
+)
 
 
 @dataclass(frozen=True)
@@ -103,6 +117,23 @@ class MidendFunctionPolicy:
     module_function_count: int
     module_total_ops: int
     monolith_pressure_level: int
+
+
+@dataclass(frozen=True)
+class MidendEnvConfig:
+    skip_op_threshold: int
+    monolith_function_threshold: int
+    monolith_total_ops_threshold: int
+    hot_tier_promotion_enabled: bool
+    budget_override_ms: float | None
+    budget_alpha: float
+    budget_beta: float
+    budget_scale: float
+    budget_preempt_ratio: float
+    max_rounds_override: int | None
+    sccp_iter_cap_override: int | None
+    cse_iter_cap_override: int | None
+    cse_fp_max_iters: int
 
 
 @dataclass
@@ -662,9 +693,7 @@ def _intrinsic_arity(runtime_name: str) -> int:
         # Seed from BUILTIN_FUNC_SPECS (runtime name -> arity).
         for spec in BUILTIN_FUNC_SPECS.values():
             arity = (
-                len(spec.params)
-                + len(spec.pos_or_kw_params)
-                + len(spec.kwonly_params)
+                len(spec.params) + len(spec.pos_or_kw_params) + len(spec.kwonly_params)
             )
             if spec.vararg is not None:
                 arity += 1
@@ -1103,6 +1132,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             for symbol in (pgo_hot_functions or set())
             if isinstance(symbol, str) and symbol.strip()
         }
+        self.midend_env = self._resolve_midend_env_config()
+        self._midend_env_snapshot = self._capture_midend_env_snapshot()
         self.module_frame_entered = False
         self.module_frame_exited = False
         self.module_frame_code_id: int | None = None
@@ -29775,6 +29806,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return json_ops
 
     def _run_ir_midend_passes(self, ops: list[MoltOp]) -> list[MoltOp]:
+        self._refresh_midend_env_config_if_needed()
         if os.getenv("MOLT_MIDEND_DISABLE", "").strip().lower() in {
             "1",
             "true",
@@ -29803,9 +29835,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return ops
             raise
         self.midend_stats["cfg_structural_canonicalizations"] += structural_rewrites
-        oversized_skip_threshold = self._midend_positive_int_env(
-            "MOLT_MIDEND_SKIP_OP_THRESHOLD", 800, minimum=1
-        )
+        oversized_skip_threshold = self.midend_env.skip_op_threshold
         if len(ops) >= oversized_skip_threshold:
             self.midend_stats["midend_oversized_function_skips"] += 1
             cfg = build_cfg(ops)
@@ -29925,6 +29955,81 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if parsed < floor:
             return fallback
         return parsed
+
+    def _resolve_midend_env_config(self) -> MidendEnvConfig:
+        budget_override_raw = os.getenv("MOLT_MIDEND_BUDGET_MS", "").strip()
+        budget_override_ms: float | None = None
+        if budget_override_raw:
+            try:
+                budget_override_ms = max(0.0, float(budget_override_raw))
+            except ValueError:
+                budget_override_ms = None
+        max_rounds_override = os.getenv("MOLT_MIDEND_MAX_ROUNDS", "").strip()
+        sccp_iter_cap_override = os.getenv("MOLT_SCCP_MAX_ITERS", "").strip()
+        cse_iter_cap_override = os.getenv("MOLT_CSE_MAX_ITERS", "").strip()
+        return MidendEnvConfig(
+            skip_op_threshold=self._midend_positive_int_env(
+                "MOLT_MIDEND_SKIP_OP_THRESHOLD", 800, minimum=1
+            ),
+            monolith_function_threshold=max(
+                8,
+                self._midend_positive_int_env(
+                    "MOLT_MIDEND_MONOLITH_FUNCTION_THRESHOLD", 48
+                ),
+            ),
+            monolith_total_ops_threshold=max(
+                256,
+                self._midend_positive_int_env(
+                    "MOLT_MIDEND_MONOLITH_TOTAL_OPS_THRESHOLD", 4000
+                ),
+            ),
+            hot_tier_promotion_enabled=os.getenv("MOLT_MIDEND_HOT_TIER_PROMOTION", "1")
+            .strip()
+            .lower()
+            not in {"0", "false", "no", "off"},
+            budget_override_ms=budget_override_ms,
+            budget_alpha=self._midend_float_env("MOLT_MIDEND_BUDGET_ALPHA", 0.03),
+            budget_beta=self._midend_float_env("MOLT_MIDEND_BUDGET_BETA", 0.75),
+            budget_scale=max(
+                0.0, self._midend_float_env("MOLT_MIDEND_BUDGET_SCALE", 1.0)
+            ),
+            budget_preempt_ratio=min(
+                1.0,
+                max(
+                    0.0,
+                    self._midend_float_env("MOLT_MIDEND_BUDGET_PREEMPT_RATIO", 0.92),
+                ),
+            ),
+            max_rounds_override=(
+                self._midend_positive_int_env("MOLT_MIDEND_MAX_ROUNDS", 1, minimum=1)
+                if max_rounds_override
+                else None
+            ),
+            sccp_iter_cap_override=(
+                self._midend_positive_int_env("MOLT_SCCP_MAX_ITERS", 1, minimum=1)
+                if sccp_iter_cap_override
+                else None
+            ),
+            cse_iter_cap_override=(
+                self._midend_positive_int_env("MOLT_CSE_MAX_ITERS", 1, minimum=1)
+                if cse_iter_cap_override
+                else None
+            ),
+            cse_fp_max_iters=self._midend_positive_int_env(
+                "MOLT_CSE_FP_MAX_ITERS", 3, minimum=1
+            ),
+        )
+
+    @staticmethod
+    def _capture_midend_env_snapshot() -> tuple[str | None, ...]:
+        return tuple(os.environ.get(name) for name in _MIDEND_ENV_KEYS)
+
+    def _refresh_midend_env_config_if_needed(self) -> None:
+        snapshot = self._capture_midend_env_snapshot()
+        if snapshot == self._midend_env_snapshot:
+            return
+        self.midend_env = self._resolve_midend_env_config()
+        self._midend_env_snapshot = snapshot
 
     def _midend_hot_function_match(self, function_name: str) -> str | None:
         if not self.midend_hot_functions:
@@ -30084,19 +30189,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         function_name: str | None = None,
         block_count: int = 1,
     ) -> MidendFunctionPolicy:
+        self._refresh_midend_env_config_if_needed()
+
         def module_pressure() -> tuple[int, int, int]:
-            func_threshold = max(
-                8,
-                self._midend_positive_int_env(
-                    "MOLT_MIDEND_MONOLITH_FUNCTION_THRESHOLD", 48
-                ),
-            )
-            ops_threshold = max(
-                256,
-                self._midend_positive_int_env(
-                    "MOLT_MIDEND_MONOLITH_TOTAL_OPS_THRESHOLD", 4000
-                ),
-            )
+            func_threshold = self.midend_env.monolith_function_threshold
+            ops_threshold = self.midend_env.monolith_total_ops_threshold
             hard_func_threshold = max(func_threshold + 1, func_threshold * 2)
             hard_ops_threshold = max(ops_threshold + 1, ops_threshold * 2)
             function_count = sum(
@@ -30131,9 +30228,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         module_function_count, module_total_ops, monolith_pressure_level = (
             module_pressure()
         )
-        hot_promotion_enabled = os.getenv(
-            "MOLT_MIDEND_HOT_TIER_PROMOTION", "1"
-        ).strip().lower() not in {"0", "false", "no", "off"}
+        hot_promotion_enabled = self.midend_env.hot_tier_promotion_enabled
         if hot_promotion_enabled and tier_classification.allow_hot_promotion:
             hot_signal = self._midend_hot_function_match(resolved_function)
             if hot_signal and tier_base in {"B", "C"}:
@@ -30214,30 +30309,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             selected["sccp_iter_cap"] = max(
                 8, int(int(selected["sccp_iter_cap"]) * 0.75)
             )
-            selected["cse_iter_cap"] = max(
-                4, int(int(selected["cse_iter_cap"]) * 0.75)
-            )
+            selected["cse_iter_cap"] = max(4, int(int(selected["cse_iter_cap"]) * 0.75))
             selected["budget_base_ms"] = float(selected["budget_base_ms"]) * 0.85
         if not monolith_pressure_exempt and monolith_pressure_level >= 2:
             selected["max_rounds"] = max(1, int(selected["max_rounds"]) - 1)
             selected["sccp_iter_cap"] = max(
                 8, int(int(selected["sccp_iter_cap"]) * 0.75)
             )
-            selected["cse_iter_cap"] = max(
-                4, int(int(selected["cse_iter_cap"]) * 0.75)
-            )
+            selected["cse_iter_cap"] = max(4, int(int(selected["cse_iter_cap"]) * 0.75))
             selected["enable_guard_hoist"] = False
             selected["budget_base_ms"] = float(selected["budget_base_ms"]) * 0.8
-        budget_override = os.getenv("MOLT_MIDEND_BUDGET_MS", "").strip()
-        if budget_override:
-            try:
-                budget_ms = max(0.0, float(budget_override))
-            except ValueError:
-                budget_ms = selected["budget_base_ms"]
+        budget_override_ms = self.midend_env.budget_override_ms
+        if budget_override_ms is not None:
+            budget_ms = budget_override_ms
         else:
-            alpha = self._midend_float_env("MOLT_MIDEND_BUDGET_ALPHA", 0.03)
-            beta = self._midend_float_env("MOLT_MIDEND_BUDGET_BETA", 0.75)
-            scale = self._midend_float_env("MOLT_MIDEND_BUDGET_SCALE", 1.0)
+            alpha = self.midend_env.budget_alpha
+            beta = self.midend_env.budget_beta
+            scale = self.midend_env.budget_scale
             budget_ms = (
                 selected["budget_base_ms"]
                 + alpha * max(1, len(ops))
@@ -32018,9 +32106,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 out_name = op.result.name
                 if out_name == "none" or out_name in missing_tainted:
                     continue
-                phi_value_args = [
-                    arg for arg in op.args if isinstance(arg, MoltValue)
-                ]
+                phi_value_args = [arg for arg in op.args if isinstance(arg, MoltValue)]
                 if phi_value_args and all(
                     arg.name in missing_tainted for arg in phi_value_args
                 ):
@@ -32854,15 +32940,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
         iterations = 0
         ssa_defs = sum(1 for op in ops if op.result.name != "none")
-        max_iterations_env = os.getenv("MOLT_SCCP_MAX_ITERS", "").strip()
         if max_iters_override is not None and max_iters_override > 0:
             max_iterations = max_iters_override
-        elif max_iterations_env:
-            try:
-                parsed = int(max_iterations_env)
-            except ValueError:
-                parsed = 0
-            max_iterations = parsed if parsed > 0 else 256
+        elif self.midend_env.sccp_iter_cap_override is not None:
+            max_iterations = self.midend_env.sccp_iter_cap_override
         else:
             # Dynamic cap keeps compile-time bounded while scaling with function/CFG size.
             # Keep the default ceiling conservative so wasm builds cannot stall for
@@ -34798,8 +34879,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if max_cse_iterations_override is not None and max_cse_iterations_override > 0:
             max_cse_iterations = max_cse_iterations_override
         else:
-            max_cse_iterations = self._midend_positive_int_env(
-                "MOLT_CSE_MAX_ITERS", 20, minimum=1
+            max_cse_iterations = (
+                self.midend_env.cse_iter_cap_override
+                if self.midend_env.cse_iter_cap_override is not None
+                else 20
             )
         while changed and iterations < max_cse_iterations:
             iterations += 1
@@ -34867,6 +34950,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         *,
         allow_cross_block_const_dedupe: bool,
     ) -> list[MoltOp]:
+        self._refresh_midend_env_config_if_needed()
         # Current contract: sparse SCCP covers arithmetic/boolean/comparison/type
         # families plus bounded loop facts used by today’s fixed-point passes;
         # heap/call-specialization widening and stronger cross-iteration solvers
@@ -34919,15 +35003,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         degrade_level: int = 0
         degrade_level_reasons: list[str] = []
 
-        max_rounds = self._midend_positive_int_env(
-            "MOLT_MIDEND_MAX_ROUNDS", max_rounds, minimum=1
-        )
-        sccp_iter_cap = self._midend_positive_int_env(
-            "MOLT_SCCP_MAX_ITERS", sccp_iter_cap, minimum=1
-        )
-        cse_iter_cap = self._midend_positive_int_env(
-            "MOLT_CSE_MAX_ITERS", cse_iter_cap, minimum=1
-        )
+        if self.midend_env.max_rounds_override is not None:
+            max_rounds = self.midend_env.max_rounds_override
+        if self.midend_env.sccp_iter_cap_override is not None:
+            sccp_iter_cap = self.midend_env.sccp_iter_cap_override
+        if self.midend_env.cse_iter_cap_override is not None:
+            cse_iter_cap = self.midend_env.cse_iter_cap_override
         enable_idempotence_probe = (
             os.getenv("MOLT_MIDEND_IDEMPOTENCE_CHECK", "1") != "0"
         )
@@ -34942,13 +35023,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         def spent_midend_ms() -> float:
             return (time.perf_counter() - midend_start) * 1000.0
 
-        budget_preempt_ratio = max(
-            0.0,
-            min(
-                1.0,
-                self._midend_float_env("MOLT_MIDEND_BUDGET_PREEMPT_RATIO", 0.92),
-            ),
-        )
+        budget_preempt_ratio = self.midend_env.budget_preempt_ratio
 
         def recent_pass_p95_ms(pass_name: str) -> float:
             per_func = self.midend_pass_stats_by_function.get(
@@ -35007,13 +35082,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 degraded = True
                 enable_licm = False
                 enable_guard_hoist = False
-                degrade_events.append({
-                    "reason": "per_func_budget_level_1",
-                    "stage": stage,
-                    "action": "disable_licm_and_guard_hoist",
-                    "spent_ms": round(max(0.0, spent), 3),
-                    "degrade_level": 1,
-                })
+                degrade_events.append(
+                    {
+                        "reason": "per_func_budget_level_1",
+                        "stage": stage,
+                        "action": "disable_licm_and_guard_hoist",
+                        "spent_ms": round(max(0.0, spent), 3),
+                        "degrade_level": 1,
+                    }
+                )
             spent = (time.perf_counter() - midend_start) * 1000.0
             if spent <= per_func_budget_ms:
                 return False
@@ -35030,13 +35107,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 enable_cse = False
                 enable_deep_edge_thread = False
                 enable_idempotence_probe = False
-                degrade_events.append({
-                    "reason": "per_func_budget_level_2",
-                    "stage": stage,
-                    "action": "single_sccp_pass_only",
-                    "spent_ms": round(max(0.0, spent), 3),
-                    "degrade_level": 2,
-                })
+                degrade_events.append(
+                    {
+                        "reason": "per_func_budget_level_2",
+                        "stage": stage,
+                        "action": "single_sccp_pass_only",
+                        "spent_ms": round(max(0.0, spent), 3),
+                        "degrade_level": 2,
+                    }
+                )
             spent = (time.perf_counter() - midend_start) * 1000.0
             if spent <= per_func_budget_ms:
                 return False
@@ -35048,13 +35127,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     f"level=3 (skip all optimisation)"
                 )
                 degrade_level_reasons.append(reason)
-                degrade_events.append({
-                    "reason": "per_func_budget_level_3",
-                    "stage": stage,
-                    "action": "emit_unoptimized_ir",
-                    "spent_ms": round(max(0.0, spent), 3),
-                    "degrade_level": 3,
-                })
+                degrade_events.append(
+                    {
+                        "reason": "per_func_budget_level_3",
+                        "stage": stage,
+                        "action": "emit_unoptimized_ir",
+                        "spent_ms": round(max(0.0, spent), 3),
+                        "degrade_level": 3,
+                    }
+                )
                 return True
             return degrade_level >= 3
 
