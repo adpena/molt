@@ -6768,11 +6768,11 @@ def _load_module_analysis(
     module_name: str,
     is_package: bool,
     include_nested: bool,
-    source: str,
+    source: str | None,
     logical_source_path: str,
     resolution_cache: _ModuleResolutionCache,
     project_root: Path | None,
-) -> tuple[ast.AST | None, tuple[str, ...], dict[str, dict[str, Any]]]:
+) -> tuple[ast.AST | None, tuple[str, ...], dict[str, dict[str, Any]], str | None]:
     persisted_imports = (
         _read_persisted_import_scan(
             project_root,
@@ -6795,7 +6795,10 @@ def _load_module_analysis(
         else None
     )
     if persisted_imports is not None and persisted_defaults is not None:
-        return None, persisted_imports, persisted_defaults
+        return None, persisted_imports, persisted_defaults, None
+
+    if source is None:
+        source = resolution_cache.read_module_source(path)
 
     tree = resolution_cache.parse_module_ast(path, source, filename=logical_source_path)
     imports = persisted_imports
@@ -6821,7 +6824,7 @@ def _load_module_analysis(
                     is_package=is_package,
                     func_defaults=func_defaults,
                 )
-    return tree, imports, func_defaults
+    return tree, imports, func_defaults, source
 
 
 def _link_fingerprint(
@@ -9431,9 +9434,19 @@ def build(
     syntax_error_modules: dict[str, ModuleSyntaxErrorInfo] = {}
     for module_name, module_path in module_graph.items():
         try:
-            source = module_resolution_cache.read_module_source(module_path)
-            module_sources[module_name] = source
-        except (SyntaxError, UnicodeDecodeError) as exc:
+            tree, module_imports, func_defaults, source = _load_module_analysis(
+                module_path,
+                module_name=module_name,
+                is_package=module_path.name == "__init__.py",
+                include_nested=True,
+                source=None,
+                logical_source_path=str(module_path),
+                resolution_cache=module_resolution_cache,
+                project_root=project_root,
+            )
+            if source is not None:
+                module_sources[module_name] = source
+        except SyntaxError as exc:
             if module_name == entry_module:
                 return _fail(
                     f"Syntax error in {module_path}: {exc}",
@@ -9452,30 +9465,6 @@ def build(
                 json_output,
                 command="build",
             )
-        try:
-            tree, module_imports, func_defaults = _load_module_analysis(
-                module_path,
-                module_name=module_name,
-                is_package=module_path.name == "__init__.py",
-                include_nested=True,
-                source=source,
-                logical_source_path=str(module_path),
-                resolution_cache=module_resolution_cache,
-                project_root=project_root,
-            )
-        except SyntaxError as exc:
-            if module_name == entry_module:
-                return _fail(
-                    f"Syntax error in {module_path}: {exc}",
-                    json_output,
-                    command="build",
-                )
-            syntax_error_modules[module_name] = _syntax_error_info_from_exception(
-                exc, path=module_path
-            )
-            module_deps[module_name] = set()
-            known_func_defaults[module_name] = {}
-            continue
         if tree is not None:
             module_trees[module_name] = tree
         module_deps[module_name] = _module_dependencies(
@@ -9691,6 +9680,21 @@ def build(
         except SyntaxError as exc:
             raise _ModuleLowerError(f"Syntax error in {module_path}: {exc}") from exc
 
+    def _ensure_module_sources_loaded(module_names: Iterable[str]) -> str | None:
+        for module_name in module_names:
+            if module_name in module_sources or module_name in syntax_error_modules:
+                continue
+            module_path = module_graph[module_name]
+            try:
+                module_sources[module_name] = module_resolution_cache.read_module_source(
+                    module_path
+                )
+            except (SyntaxError, UnicodeDecodeError) as exc:
+                return f"Syntax error in {module_path}: {exc}"
+            except OSError as exc:
+                return f"Failed to read module {module_path}: {exc}"
+        return None
+
     def _lower_module_serial(
         module_name: str,
         module_path: Path,
@@ -9795,6 +9799,10 @@ def build(
         list[dict[str, Any]],
         frontend_parallel_details["worker_timings"],
     )
+    if frontend_parallel_enabled:
+        source_error = _ensure_module_sources_loaded(module_order)
+        if source_error is not None:
+            return _fail(source_error, json_output, command="build")
 
     def _record_frontend_parallel_worker_timing(
         *,
