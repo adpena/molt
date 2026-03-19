@@ -873,6 +873,14 @@ class _PreparedBuildPreamble:
 
 
 @dataclass(frozen=True)
+class _PreparedBuildRoots:
+    cwd_root: Path
+    project_root: Path
+    molt_root: Path
+    sysroot_path: Path | None
+
+
+@dataclass(frozen=True)
 class _PreparedFrontendAnalysis:
     module_graph_metadata: _ModuleGraphMetadata
     module_deps: dict[str, set[str]]
@@ -3045,6 +3053,50 @@ def _prepare_build_preamble(
         stdlib_root=stdlib_root,
         warnings=warnings,
         native_arch_perf_enabled=native_arch_perf_enabled,
+    ), None
+
+
+def _prepare_build_roots(
+    *,
+    file_path: str | None,
+    json_output: bool,
+    warnings: list[str],
+    deterministic: bool,
+    deterministic_warn: bool,
+    sysroot: str | None,
+) -> tuple[_PreparedBuildRoots | None, dict[str, Any] | None]:
+    cwd_root = _find_project_root(Path.cwd())
+    project_root = (
+        _find_project_root(Path(file_path).resolve()) if file_path else cwd_root
+    )
+    if not _has_project_markers(project_root) and _has_project_markers(cwd_root):
+        project_root = cwd_root
+    molt_root = _find_molt_root(project_root, cwd_root)
+    root_error = _require_molt_root(molt_root, json_output, "build")
+    if root_error is not None:
+        return None, root_error
+    lock_error = _check_lockfiles(
+        molt_root,
+        json_output,
+        warnings,
+        deterministic,
+        deterministic_warn,
+        "build",
+    )
+    if lock_error is not None:
+        return None, lock_error
+    sysroot_path = _resolve_sysroot(project_root, sysroot)
+    if sysroot_path is not None and not sysroot_path.exists():
+        return None, _fail(
+            f"Sysroot not found: {sysroot_path}",
+            json_output,
+            command="build",
+        )
+    return _PreparedBuildRoots(
+        cwd_root=cwd_root,
+        project_root=project_root,
+        molt_root=molt_root,
+        sysroot_path=sysroot_path,
     ), None
 
 
@@ -17156,33 +17208,21 @@ def build(
     stdlib_root = prepared_build_preamble.stdlib_root
     warnings = prepared_build_preamble.warnings
     native_arch_perf_enabled = prepared_build_preamble.native_arch_perf_enabled
-    cwd_root = _find_project_root(Path.cwd())
-    project_root = (
-        _find_project_root(Path(file_path).resolve()) if file_path else cwd_root
+    prepared_build_roots, prepared_build_roots_error = _prepare_build_roots(
+        file_path=file_path,
+        json_output=json_output,
+        warnings=warnings,
+        deterministic=deterministic,
+        deterministic_warn=deterministic_warn,
+        sysroot=sysroot,
     )
-    if not _has_project_markers(project_root) and _has_project_markers(cwd_root):
-        project_root = cwd_root
-    molt_root = _find_molt_root(project_root, cwd_root)
-    root_error = _require_molt_root(molt_root, json_output, "build")
-    if root_error is not None:
-        return root_error
-    lock_error = _check_lockfiles(
-        molt_root,
-        json_output,
-        warnings,
-        deterministic,
-        deterministic_warn,
-        "build",
-    )
-    if lock_error is not None:
-        return lock_error
-    sysroot_path = _resolve_sysroot(project_root, sysroot)
-    if sysroot_path is not None and not sysroot_path.exists():
-        return _fail(
-            f"Sysroot not found: {sysroot_path}",
-            json_output,
-            command="build",
-        )
+    if prepared_build_roots_error is not None:
+        return prepared_build_roots_error
+    assert prepared_build_roots is not None
+    cwd_root = prepared_build_roots.cwd_root
+    project_root = prepared_build_roots.project_root
+    molt_root = prepared_build_roots.molt_root
+    sysroot_path = prepared_build_roots.sysroot_path
     prepared_build_config, prepared_build_config_error = _prepare_build_config(
         project_root=project_root,
         warnings=warnings,
