@@ -52,7 +52,7 @@ Any = _Any
 cast = _cast
 
 
-_MOLT_ABC_BOOTSTRAP = _require_intrinsic("molt_abc_bootstrap", globals())
+_MOLT_ABC_BOOTSTRAP = _require_intrinsic("molt_abc_bootstrap")
 
 
 GenericAlias = type(list[int])
@@ -109,7 +109,7 @@ __name__ = "collections.abc"
 # and they may have their own implementation specific types that
 # are not included on this list.
 _MOLT_COLLECTIONS_ABC_RUNTIME_TYPES = _require_intrinsic(
-    "molt_collections_abc_runtime_types", globals()
+    "molt_collections_abc_runtime_types"
 )
 _RUNTIME_TYPE_NAMES = (
     "bytes_iterator",
