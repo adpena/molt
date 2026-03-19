@@ -6910,7 +6910,7 @@ def _read_persisted_module_analysis(
     module_name: str,
     is_package: bool,
     path_stat: os.stat_result | None = None,
-) -> dict[str, dict[str, Any]] | None:
+) -> tuple[dict[str, dict[str, Any]], tuple[str, ...] | None] | None:
     cache_path = _module_analysis_cache_path(
         project_root,
         path,
@@ -6933,6 +6933,14 @@ def _read_persisted_module_analysis(
         or payload.get("mtime_ns") != path_stat.st_mtime_ns
     ):
         return None
+    cached_imports: tuple[str, ...] | None = None
+    raw_imports = payload.get("imports")
+    if raw_imports is not None:
+        if not isinstance(raw_imports, list) or not all(
+            isinstance(item, str) for item in raw_imports
+        ):
+            return None
+        cached_imports = tuple(raw_imports)
 
     normalized: dict[str, dict[str, Any]] = {}
     for func_name, func_payload in raw_defaults.items():
@@ -6941,7 +6949,7 @@ def _read_persisted_module_analysis(
         normalized[func_name] = cast(
             dict[str, Any], _decode_cached_json_value(func_payload)
         )
-    return normalized
+    return normalized, cached_imports
 
 
 def _write_persisted_module_analysis(
@@ -6951,6 +6959,7 @@ def _write_persisted_module_analysis(
     module_name: str,
     is_package: bool,
     func_defaults: dict[str, dict[str, Any]],
+    imports: Iterable[str] | None = None,
 ) -> None:
     cache_path = _module_analysis_cache_path(
         project_root,
@@ -6967,6 +6976,8 @@ def _write_persisted_module_analysis(
         "mtime_ns": stat.st_mtime_ns,
         "func_defaults": func_defaults,
     }
+    if imports is not None:
+        payload["imports"] = list(imports)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     _write_artifact_sync_payload(cache_path, payload, default=_json_ir_default)
 
@@ -7054,19 +7065,7 @@ def _load_module_analysis(
     if project_root is not None:
         with contextlib.suppress(OSError):
             path_stat = resolution_cache.path_stat(path)
-    persisted_imports = (
-        _read_persisted_import_scan(
-            project_root,
-            path,
-            module_name=module_name,
-            is_package=is_package,
-            include_nested=include_nested,
-            path_stat=path_stat,
-        )
-        if project_root is not None
-        else None
-    )
-    persisted_defaults = (
+    persisted_analysis = (
         _read_persisted_module_analysis(
             project_root,
             path,
@@ -7077,6 +7076,22 @@ def _load_module_analysis(
         if project_root is not None
         else None
     )
+    persisted_defaults = (
+        persisted_analysis[0] if persisted_analysis is not None else None
+    )
+    persisted_imports_from_analysis = (
+        persisted_analysis[1] if persisted_analysis is not None else None
+    )
+    persisted_imports = persisted_imports_from_analysis
+    if persisted_imports is None and project_root is not None:
+        persisted_imports = _read_persisted_import_scan(
+            project_root,
+            path,
+            module_name=module_name,
+            is_package=is_package,
+            include_nested=include_nested,
+            path_stat=path_stat,
+        )
     if persisted_imports is not None and persisted_defaults is not None:
         return None, persisted_imports, persisted_defaults, None
 
@@ -7101,12 +7116,13 @@ def _load_module_analysis(
         if project_root is not None:
             with contextlib.suppress(OSError):
                 _write_persisted_module_analysis(
-                    project_root,
-                    path,
-                    module_name=module_name,
-                    is_package=is_package,
-                    func_defaults=func_defaults,
-                )
+                project_root,
+                path,
+                module_name=module_name,
+                is_package=is_package,
+                func_defaults=func_defaults,
+                imports=imports,
+            )
     return tree, imports, func_defaults, source
 
 
