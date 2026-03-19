@@ -890,6 +890,19 @@ class _PreparedFrontendExecution:
     frontend_layer_runtime_hooks: _FrontendLayerRuntimeHooks
 
 
+@dataclass(frozen=True)
+class _PreparedBackendSetup:
+    runtime_state: _RuntimeArtifactState
+    cache_setup: _BackendCacheSetup
+    cache_hit: bool
+    cache_hit_tier: str | None
+    cache_key: str | None
+    function_cache_key: str | None
+    cache_path: Path | None
+    function_cache_path: Path | None
+    cache_candidates: list[tuple[str, Path]]
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -12138,6 +12151,75 @@ def _prepare_frontend_execution(
     )
 
 
+def _prepare_backend_setup(
+    *,
+    is_rust_transpile: bool,
+    is_wasm: bool,
+    emit_mode: str,
+    molt_root: Path,
+    runtime_cargo_profile: str,
+    target_triple: str | None,
+    json_output: bool,
+    cargo_timeout: float | None,
+    target: str,
+    profile: BuildProfile,
+    backend_cargo_profile: str,
+    linked: bool,
+    project_root: Path,
+    cache_dir: str | None,
+    output_artifact: Path,
+    warnings: list[str],
+    cache: bool,
+    ir: Mapping[str, Any],
+) -> tuple[_PreparedBackendSetup | None, dict[str, Any] | None]:
+    runtime_state = _initialize_runtime_artifact_state(
+        is_rust_transpile=is_rust_transpile,
+        is_wasm=is_wasm,
+        emit_mode=emit_mode,
+        molt_root=molt_root,
+        runtime_cargo_profile=runtime_cargo_profile,
+        target_triple=target_triple,
+    )
+    runtime_lib = runtime_state.runtime_lib
+    if runtime_lib is not None and not _ensure_runtime_lib_ready(
+        runtime_state,
+        target_triple=target_triple,
+        json_output=json_output,
+        runtime_cargo_profile=runtime_cargo_profile,
+        molt_root=molt_root,
+        cargo_timeout=cargo_timeout,
+    ):
+        return None, _fail("Runtime build failed", json_output, command="build")
+
+    cache_setup = _prepare_backend_cache_setup(
+        cache_enabled=cache,
+        ir=ir,
+        target=target,
+        target_triple=target_triple,
+        profile=profile,
+        runtime_cargo_profile=runtime_cargo_profile,
+        backend_cargo_profile=backend_cargo_profile,
+        emit_mode=emit_mode,
+        is_wasm=is_wasm,
+        linked=linked,
+        project_root=project_root,
+        cache_dir=cache_dir,
+        output_artifact=output_artifact,
+        warnings=warnings,
+    )
+    return _PreparedBackendSetup(
+        runtime_state=runtime_state,
+        cache_setup=cache_setup,
+        cache_hit=cache_setup.cache_hit,
+        cache_hit_tier=cache_setup.cache_hit_tier,
+        cache_key=cache_setup.cache_key,
+        function_cache_key=cache_setup.function_cache_key,
+        cache_path=cache_setup.cache_path,
+        function_cache_path=cache_setup.function_cache_path,
+        cache_candidates=list(cache_setup.cache_candidates),
+    ), None
+
+
 def _prepare_backend_cache_setup(
     *,
     cache_enabled: bool,
@@ -16216,26 +16298,33 @@ def build(
             backend_ir_bytes = _backend_ir_bytes(ir)
         return backend_ir_bytes
 
-    runtime_state = _initialize_runtime_artifact_state(
+    prepared_backend_setup, prepared_backend_setup_error = _prepare_backend_setup(
         is_rust_transpile=is_rust_transpile,
         is_wasm=is_wasm,
         emit_mode=emit_mode,
         molt_root=molt_root,
         runtime_cargo_profile=runtime_cargo_profile,
         target_triple=target_triple,
+        json_output=json_output,
+        cargo_timeout=cargo_timeout,
+        target=target,
+        profile=profile,
+        backend_cargo_profile=backend_cargo_profile,
+        linked=linked,
+        project_root=project_root,
+        cache_dir=cache_dir,
+        output_artifact=output_artifact,
+        warnings=warnings,
+        cache=cache,
+        ir=ir,
     )
+    if prepared_backend_setup_error is not None:
+        return prepared_backend_setup_error
+    assert prepared_backend_setup is not None
+    runtime_state = prepared_backend_setup.runtime_state
     runtime_lib = runtime_state.runtime_lib
     runtime_wasm = runtime_state.runtime_wasm
     runtime_reloc_wasm = runtime_state.runtime_reloc_wasm
-    if runtime_lib is not None and not _ensure_runtime_lib_ready(
-        runtime_state,
-        target_triple=target_triple,
-        json_output=json_output,
-        runtime_cargo_profile=runtime_cargo_profile,
-        molt_root=molt_root,
-        cargo_timeout=cargo_timeout,
-    ):
-            return _fail("Runtime build failed", json_output, command="build")
 
     def ensure_runtime_wasm_shared() -> bool:
         return _ensure_runtime_wasm_artifact(
@@ -16257,40 +16346,18 @@ def build(
             project_root=molt_root,
         )
 
-    cache_hit = False
-    cache_hit_tier: str | None = None
-    cache_key = None
-    function_cache_key = None
-    cache_path: Path | None = None
-    function_cache_path: Path | None = None
-    cache_candidates: list[tuple[str, Path]] = []
+    cache_hit = prepared_backend_setup.cache_hit
+    cache_hit_tier = prepared_backend_setup.cache_hit_tier
+    cache_key = prepared_backend_setup.cache_key
+    function_cache_key = prepared_backend_setup.function_cache_key
+    cache_path = prepared_backend_setup.cache_path
+    function_cache_path = prepared_backend_setup.function_cache_path
+    cache_candidates = prepared_backend_setup.cache_candidates
 
     if diagnostics_enabled:
         phase_starts["cache_lookup"] = time.perf_counter()
-    cache_setup = _prepare_backend_cache_setup(
-        cache_enabled=cache,
-        ir=ir,
-        target=target,
-        target_triple=target_triple,
-        profile=profile,
-        runtime_cargo_profile=runtime_cargo_profile,
-        backend_cargo_profile=backend_cargo_profile,
-        emit_mode=emit_mode,
-        is_wasm=is_wasm,
-        linked=linked,
-        project_root=project_root,
-        cache_dir=cache_dir,
-        output_artifact=output_artifact,
-        warnings=warnings,
-    )
+    cache_setup = prepared_backend_setup.cache_setup
     cache = cache_setup.cache_enabled
-    cache_key = cache_setup.cache_key
-    function_cache_key = cache_setup.function_cache_key
-    cache_path = cache_setup.cache_path
-    function_cache_path = cache_setup.function_cache_path
-    cache_candidates = list(cache_setup.cache_candidates)
-    cache_hit = cache_setup.cache_hit
-    cache_hit_tier = cache_setup.cache_hit_tier
 
     if (verbose or cache_report) and not json_output:
         if not cache:
