@@ -697,6 +697,26 @@ class _MidendDiagnosticsState:
     pass_stats_by_function: dict[str, dict[str, dict[str, Any]]]
 
 
+@dataclass(frozen=True)
+class _EntryFrontendLoweringContext:
+    entry_module: str
+    entry_path: Path
+    parse_codec: "ParseCodec"
+    type_hint_policy: "TypeHintPolicy"
+    fallback_policy: "FallbackPolicy"
+    type_facts: dict[str, Any] | None
+    enable_phi: bool
+    known_modules: Collection[str]
+    known_classes: Mapping[str, Any]
+    stdlib_allowlist: Collection[str]
+    known_func_defaults: dict[str, dict[str, Any]]
+    module_chunking: bool
+    module_chunk_max_ops: int
+    optimization_profile: str
+    pgo_hot_function_names: Collection[str]
+    frontend_phase_timeout: float | None
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -9374,6 +9394,126 @@ def _integrate_module_frontend_result_with_state(
     return None
 
 
+def _lower_entry_module_as_main(
+    *,
+    lowering_context: _EntryFrontendLoweringContext,
+    integration_state: _FrontendIntegrationState,
+    diagnostics_state: _MidendDiagnosticsState,
+    record_frontend_timing: Callable[..., None],
+    fail: Callable[[str, bool, str], dict[str, Any] | None],
+    json_output: bool,
+) -> dict[str, Any] | None:
+    try:
+        source = _read_module_source(lowering_context.entry_path)
+    except (SyntaxError, UnicodeDecodeError) as exc:
+        return fail(
+            f"Syntax error in {lowering_context.entry_path}: {exc}",
+            json_output,
+            command="build",
+        )
+    except OSError as exc:
+        return fail(
+            f"Failed to read module {lowering_context.entry_path}: {exc}",
+            json_output,
+            command="build",
+        )
+    try:
+        tree = ast.parse(source, filename=str(lowering_context.entry_path))
+    except SyntaxError as exc:
+        return fail(
+            f"Syntax error in {lowering_context.entry_path}: {exc}",
+            json_output,
+            command="build",
+        )
+
+    main_gen = SimpleTIRGenerator(
+        parse_codec=lowering_context.parse_codec,
+        type_hint_policy=lowering_context.type_hint_policy,
+        fallback_policy=lowering_context.fallback_policy,
+        source_path=str(lowering_context.entry_path),
+        type_facts=lowering_context.type_facts,
+        type_facts_module=lowering_context.entry_module,
+        module_name="__main__",
+        module_spec_name=lowering_context.entry_module,
+        entry_module=None,
+        enable_phi=lowering_context.enable_phi,
+        known_modules=lowering_context.known_modules,
+        known_classes=lowering_context.known_classes,
+        stdlib_allowlist=lowering_context.stdlib_allowlist,
+        known_func_defaults=lowering_context.known_func_defaults,
+        module_chunking=lowering_context.module_chunking,
+        module_chunk_max_ops=lowering_context.module_chunk_max_ops,
+        optimization_profile=lowering_context.optimization_profile,
+        pgo_hot_functions=lowering_context.pgo_hot_function_names,
+    )
+    main_frontend_start = time.perf_counter()
+    main_visit_s = 0.0
+    main_lower_s = 0.0
+    try:
+        main_visit_start = time.perf_counter()
+        with _phase_timeout(
+            lowering_context.frontend_phase_timeout,
+            phase_name="frontend visit (__main__)",
+        ):
+            main_gen.visit(tree)
+        main_visit_s = time.perf_counter() - main_visit_start
+        main_lower_start = time.perf_counter()
+        with _phase_timeout(
+            lowering_context.frontend_phase_timeout,
+            phase_name="frontend IR lowering (__main__)",
+        ):
+            main_ir = main_gen.to_json()
+        main_lower_s = time.perf_counter() - main_lower_start
+    except TimeoutError as exc:
+        record_frontend_timing(
+            module_name="__main__",
+            module_path=lowering_context.entry_path,
+            visit_s=main_visit_s,
+            lower_s=main_lower_s,
+            total_s=time.perf_counter() - main_frontend_start,
+            timed_out=True,
+            detail=str(exc),
+        )
+        return fail(str(exc), json_output, command="build")
+    except CompatibilityError as exc:
+        return fail(str(exc), json_output, command="build")
+
+    record_frontend_timing(
+        module_name="__main__",
+        module_path=lowering_context.entry_path,
+        visit_s=main_visit_s,
+        lower_s=main_lower_s,
+        total_s=time.perf_counter() - main_frontend_start,
+    )
+    main_init = SimpleTIRGenerator.module_init_symbol("__main__")
+    local_code_ids = dict(main_gen.func_code_ids)
+    if "molt_main" in local_code_ids:
+        local_code_ids[main_init] = local_code_ids.pop("molt_main")
+    local_id_to_symbol = {
+        code_id: symbol for symbol, code_id in local_code_ids.items()
+    }
+    try:
+        _remap_module_code_ops_with_state(
+            integration_state,
+            "__main__",
+            main_ir["functions"],
+            local_id_to_symbol,
+        )
+    except ValueError as exc:
+        return fail(str(exc), json_output, command="build")
+    for func in main_ir["functions"]:
+        if func["name"] == "molt_main":
+            func["name"] = main_init
+    integration_state.functions.extend(main_ir["functions"])
+    _accumulate_midend_diagnostics_with_state(
+        diagnostics_state,
+        "__main__",
+        policy_outcomes_by_func=dict(main_gen.midend_policy_outcomes_by_function),
+        pass_stats_by_func=dict(main_gen.midend_pass_stats_by_function),
+    )
+    return None
+
+
 def _run_frontend_parallel_enabled_layers(
     module_layers: Sequence[Sequence[str]],
     *,
@@ -13778,112 +13918,33 @@ def build(
                 json_output,
                 command="build",
             )
-        try:
-            source = _read_module_source(entry_path)
-        except (SyntaxError, UnicodeDecodeError) as exc:
-            return _fail(
-                f"Syntax error in {entry_path}: {exc}",
-                json_output,
-                command="build",
-            )
-        except OSError as exc:
-            return _fail(
-                f"Failed to read module {entry_path}: {exc}",
-                json_output,
-                command="build",
-            )
-        try:
-            tree = ast.parse(source, filename=str(entry_path))
-        except SyntaxError as exc:
-            return _fail(
-                f"Syntax error in {entry_path}: {exc}",
-                json_output,
-                command="build",
-            )
-        main_gen = SimpleTIRGenerator(
-            parse_codec=parse_codec,
-            type_hint_policy=type_hint_policy,
-            fallback_policy=fallback_policy,
-            source_path=str(entry_path),
-            type_facts=type_facts,
-            type_facts_module=entry_module,
-            module_name="__main__",
-            module_spec_name=entry_module,
-            entry_module=None,
-            enable_phi=enable_phi,
-            known_modules=known_modules,
-            known_classes=known_classes,
-            stdlib_allowlist=stdlib_allowlist,
-            known_func_defaults=known_func_defaults,
-            module_chunking=module_chunking,
-            module_chunk_max_ops=module_chunk_max_ops,
-            optimization_profile=profile,
-            pgo_hot_functions=pgo_hot_function_names,
+        entry_lower_error = _lower_entry_module_as_main(
+            lowering_context=_EntryFrontendLoweringContext(
+                entry_module=entry_module,
+                entry_path=entry_path,
+                parse_codec=parse_codec,
+                type_hint_policy=type_hint_policy,
+                fallback_policy=fallback_policy,
+                type_facts=type_facts,
+                enable_phi=enable_phi,
+                known_modules=known_modules,
+                known_classes=known_classes,
+                stdlib_allowlist=stdlib_allowlist,
+                known_func_defaults=known_func_defaults,
+                module_chunking=module_chunking,
+                module_chunk_max_ops=module_chunk_max_ops,
+                optimization_profile=profile,
+                pgo_hot_function_names=pgo_hot_function_names,
+                frontend_phase_timeout=frontend_phase_timeout,
+            ),
+            integration_state=integration_state,
+            diagnostics_state=midend_diagnostics_state,
+            record_frontend_timing=_record_frontend_timing,
+            fail=_fail,
+            json_output=json_output,
         )
-        main_frontend_start = time.perf_counter()
-        main_visit_s = 0.0
-        main_lower_s = 0.0
-        try:
-            main_visit_start = time.perf_counter()
-            with _phase_timeout(
-                frontend_phase_timeout,
-                phase_name="frontend visit (__main__)",
-            ):
-                main_gen.visit(tree)
-            main_visit_s = time.perf_counter() - main_visit_start
-            main_lower_start = time.perf_counter()
-            with _phase_timeout(
-                frontend_phase_timeout,
-                phase_name="frontend IR lowering (__main__)",
-            ):
-                main_ir = main_gen.to_json()
-            main_lower_s = time.perf_counter() - main_lower_start
-        except TimeoutError as exc:
-            _record_frontend_timing(
-                module_name="__main__",
-                module_path=entry_path,
-                visit_s=main_visit_s,
-                lower_s=main_lower_s,
-                total_s=time.perf_counter() - main_frontend_start,
-                timed_out=True,
-                detail=str(exc),
-            )
-            return _fail(str(exc), json_output, command="build")
-        except CompatibilityError as exc:
-            return _fail(str(exc), json_output, command="build")
-        _record_frontend_timing(
-            module_name="__main__",
-            module_path=entry_path,
-            visit_s=main_visit_s,
-            lower_s=main_lower_s,
-            total_s=time.perf_counter() - main_frontend_start,
-        )
-        main_init = SimpleTIRGenerator.module_init_symbol("__main__")
-        local_code_ids = dict(main_gen.func_code_ids)
-        if "molt_main" in local_code_ids:
-            local_code_ids[main_init] = local_code_ids.pop("molt_main")
-        local_id_to_symbol = {
-            code_id: symbol for symbol, code_id in local_code_ids.items()
-        }
-        try:
-            _remap_module_code_ops_with_state(
-                integration_state,
-                "__main__",
-                main_ir["functions"],
-                local_id_to_symbol,
-            )
-        except ValueError as exc:
-            return _fail(str(exc), json_output, command="build")
-        for func in main_ir["functions"]:
-            if func["name"] == "molt_main":
-                func["name"] = main_init
-        integration_state.functions.extend(main_ir["functions"])
-        _accumulate_midend_diagnostics_with_state(
-            midend_diagnostics_state,
-            "__main__",
-            policy_outcomes_by_func=dict(main_gen.midend_policy_outcomes_by_function),
-            pass_stats_by_func=dict(main_gen.midend_pass_stats_by_function),
-        )
+        if entry_lower_error is not None:
+            return entry_lower_error
 
     entry_init_name = "__main__" if entry_module != "__main__" else entry_module
     entry_init = SimpleTIRGenerator.module_init_symbol(entry_init_name)
