@@ -4751,18 +4751,31 @@ def _check_lockfiles(
     return None
 
 
-def _lock_check_cache_path(project_root: Path, name: str) -> Path:
+@functools.lru_cache(maxsize=256)
+def _lock_check_cache_path_cached(
+    project_root_str: str,
+    name: str,
+    cargo_target_override: str | None,
+) -> Path:
     # The lock-check cache can grow (especially for Cargo metadata inputs).
     # Keep it colocated with Cargo build outputs when CARGO_TARGET_DIR is set so
     # developers can move all large artifacts onto an external volume.
-    target_dir_env = os.environ.get("CARGO_TARGET_DIR")
-    if target_dir_env:
-        target_dir = Path(target_dir_env)
+    project_root = Path(project_root_str)
+    if cargo_target_override:
+        target_dir = Path(cargo_target_override)
         if not target_dir.is_absolute():
             target_dir = project_root / target_dir
     else:
         target_dir = project_root / "target"
     return target_dir / "lock_checks" / f"{name}.json"
+
+
+def _lock_check_cache_path(project_root: Path, name: str) -> Path:
+    return _lock_check_cache_path_cached(
+        os.fspath(project_root),
+        name,
+        os.environ.get("CARGO_TARGET_DIR"),
+    )
 
 
 def _lock_check_inputs(
@@ -4989,6 +5002,11 @@ def _run_cargo_with_sccache_retry(
     return build
 
 
+@functools.lru_cache(maxsize=256)
+def _build_lock_dir_cached(project_root_str: str, build_state_root_str: str) -> Path:
+    return Path(build_state_root_str) / "build_locks"
+
+
 @contextmanager
 def _build_lock(project_root: Path, name: str):
     if os.name != "posix":
@@ -4999,7 +5017,10 @@ def _build_lock(project_root: Path, name: str):
     except Exception:
         yield
         return
-    lock_dir = _build_state_root(project_root) / "build_locks"
+    lock_dir = _build_lock_dir_cached(
+        os.fspath(project_root),
+        os.fspath(_build_state_root(project_root)),
+    )
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_path = lock_dir / f"{name}.lock"
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
