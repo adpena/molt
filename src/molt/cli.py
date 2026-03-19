@@ -454,6 +454,33 @@ class _ScopedLoweringInputView:
     known_func_defaults: dict[str, dict[str, Any]]
     pgo_hot_function_names: tuple[str, ...]
     type_facts: TypeFacts | None
+    known_modules_payload: list[str] = field(default_factory=list)
+    known_modules_set: frozenset[str] = field(default_factory=frozenset)
+    pgo_hot_function_names_payload: list[str] = field(default_factory=list)
+    pgo_hot_function_names_set: frozenset[str] = field(default_factory=frozenset)
+
+    def __post_init__(self) -> None:
+        if not self.known_modules_payload and self.known_modules:
+            object.__setattr__(self, "known_modules_payload", list(self.known_modules))
+        if not self.known_modules_set and self.known_modules:
+            object.__setattr__(
+                self, "known_modules_set", frozenset(self.known_modules)
+            )
+        if (
+            not self.pgo_hot_function_names_payload
+            and self.pgo_hot_function_names
+        ):
+            object.__setattr__(
+                self,
+                "pgo_hot_function_names_payload",
+                list(self.pgo_hot_function_names),
+            )
+        if not self.pgo_hot_function_names_set and self.pgo_hot_function_names:
+            object.__setattr__(
+                self,
+                "pgo_hot_function_names_set",
+                frozenset(self.pgo_hot_function_names),
+            )
 
 
 @dataclass(frozen=True)
@@ -3340,6 +3367,10 @@ def _scoped_lowering_input_view(
         known_func_defaults=scoped_known_func_defaults,
         pgo_hot_function_names=scoped_pgo_hot_function_names,
         type_facts=scoped_type_facts,
+        known_modules_payload=list(scoped_known_modules),
+        known_modules_set=frozenset(scoped_known_modules),
+        pgo_hot_function_names_payload=list(scoped_pgo_hot_function_names),
+        pgo_hot_function_names_set=frozenset(scoped_pgo_hot_function_names),
     )
 
 
@@ -8337,15 +8368,21 @@ def _module_frontend_generator(
         module_is_namespace=module_is_namespace,
         entry_module=entry_override,
         enable_phi=enable_phi,
-        known_modules=set(scoped_inputs.known_modules),
+        known_modules=scoped_inputs.known_modules_set,
         known_classes=scoped_known_classes,
         stdlib_allowlist=stdlib_allowlist,
         known_func_defaults=scoped_inputs.known_func_defaults,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
         optimization_profile=optimization_profile,
-        pgo_hot_functions=set(scoped_inputs.pgo_hot_function_names),
+        pgo_hot_functions=scoped_inputs.pgo_hot_function_names_set,
     )
+
+
+def _known_classes_snapshot_copy(known_classes: Mapping[str, Any]) -> dict[str, Any]:
+    if not known_classes:
+        return {}
+    return dict(known_classes)
 
 
 def _module_lowering_context_payload(
@@ -8732,14 +8769,14 @@ def _module_worker_payload(
         "module_is_namespace": module_is_namespace,
         "entry_module": entry_module,
         "enable_phi": enable_phi,
-        "known_modules": list(scoped_inputs.known_modules),
+        "known_modules": scoped_inputs.known_modules_payload,
         "known_classes": scoped_known_classes,
         "stdlib_allowlist": stdlib_allowlist_payload,
         "known_func_defaults": scoped_inputs.known_func_defaults,
         "module_chunking": module_chunking,
         "module_chunk_max_ops": module_chunk_max_ops,
         "optimization_profile": optimization_profile,
-        "pgo_hot_functions": list(scoped_inputs.pgo_hot_function_names),
+        "pgo_hot_functions": scoped_inputs.pgo_hot_function_names_payload,
         "type_facts": scoped_inputs.type_facts,
     }
 
@@ -12394,7 +12431,9 @@ def build(
                     and len(candidates) > 1
                 ):
                     layer_mode = "parallel"
-                    known_classes_snapshot = dict(known_classes)
+                    known_classes_snapshot = _known_classes_snapshot_copy(
+                        known_classes
+                    )
                     scoped_known_classes_by_module = (
                         _build_scoped_known_classes_snapshot(
                             candidates,
