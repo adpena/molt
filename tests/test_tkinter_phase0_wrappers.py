@@ -1054,6 +1054,24 @@ checks["tkinter_protocol_registration_roundtrip"] = (
     and protocol_query_after == ""
     and root._tk_app._handle["wm_protocols"].get((root._w, "WM_DELETE_WINDOW")) is None
 )
+toplevel_call_start = len(root._tk_app._handle["calls"])
+dialog = tkinter.Toplevel(root)
+dialog.title("dialog-probe")
+dialog.transient(root)
+dialog_protocol_id = dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+dialog_protocol_query = dialog.protocol("WM_DELETE_WINDOW")
+dialog_calls = root._tk_app._handle["calls"][toplevel_call_start:]
+checks["tkinter_toplevel_wm_commands_are_window_scoped"] = (
+    dialog._w == ".!toplevel1"
+    and ("toplevel", dialog._w) in dialog_calls
+    and ("wm", "title", dialog._w, "dialog-probe") in dialog_calls
+    and ("wm", "transient", dialog._w, root._w) in dialog_calls
+    and isinstance(dialog_protocol_id, str)
+    and dialog_protocol_query == dialog_protocol_id
+    and root._tk_app._handle["wm_protocols"].get((dialog._w, "WM_DELETE_WINDOW"))
+    == dialog_protocol_id
+    and root._tk_app._handle["wm_protocols"].get((root._w, "WM_DELETE_WINDOW")) is None
+)
 
 widget_call_start = len(root._tk_app._handle["calls"])
 button = tkinter.Button(root, text="button-probe")
@@ -1070,15 +1088,15 @@ checks["tkinter_widget_wrappers_emit_commands"] = (
     and ("message", message._w, "-text", "message-probe") in widget_calls
 )
 checks["tkinter_widget_wrapper_paths_deterministic"] = (
-    button._w == ".!button1"
-    and frame._w == ".!frame2"
-    and label._w == ".!frame2.!label3"
-    and message._w == ".!message4"
+    button._w == ".!button2"
+    and frame._w == ".!frame3"
+    and label._w == ".!frame3.!label4"
+    and message._w == ".!message5"
 )
 checks["tkinter_widget_wrapper_children_are_parent_relative"] = (
-    getattr(button, "_name", "") == "!button1"
-    and getattr(frame, "_name", "") == "!frame2"
-    and getattr(label, "_name", "") == "!label3"
+    getattr(button, "_name", "") == "!button2"
+    and getattr(frame, "_name", "") == "!frame3"
+    and getattr(label, "_name", "") == "!label4"
     and frame.children.get(label._name) is label
     and root.children.get(frame._name) is frame
 )
