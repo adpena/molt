@@ -10425,6 +10425,85 @@ def _darwin_link_validation_failure(
     return "Generated binary failed dyld import validation.\n" + detail + "\n"
 
 
+def _validate_darwin_link_output(
+    *,
+    link_process: subprocess.CompletedProcess[str],
+    link_cmd: Sequence[str],
+    linker_hint: str | None,
+    output_binary: Path,
+    validation_kind: str,
+    json_output: bool,
+    link_timeout: float | None,
+    warnings: list[str],
+) -> subprocess.CompletedProcess[str]:
+    validation_error = _darwin_link_validation_failure(
+        output_binary=output_binary,
+        kind=validation_kind,
+    )
+    if (
+        validation_error is not None
+        and linker_hint is not None
+        and any(arg == f"-fuse-ld={linker_hint}" for arg in link_cmd)
+    ):
+        retry_process, _ = _retry_native_link_without_hint(
+            link_cmd=link_cmd,
+            linker_hint=linker_hint,
+            json_output=json_output,
+            link_timeout=link_timeout,
+        )
+        if retry_process is not None:
+            if retry_process.returncode == 0:
+                retry_validation_error = _darwin_link_validation_failure(
+                    output_binary=output_binary,
+                    kind=validation_kind,
+                )
+                if retry_validation_error is None:
+                    label = (
+                        "invalid output"
+                        if validation_kind == "magic"
+                        else "invalid dyld imports"
+                    )
+                    warnings.append(
+                        "Linker fallback: "
+                        f"-fuse-ld={linker_hint} produced {label}; "
+                        "retried default linker."
+                    )
+                    return retry_process
+                link_process = retry_process
+                validation_error = retry_validation_error
+            else:
+                return retry_process
+    if validation_error is None:
+        return link_process
+    failure_stderr = (link_process.stderr or "") + "\n" + validation_error
+    return subprocess.CompletedProcess(
+        args=list(link_cmd),
+        returncode=1,
+        stdout=link_process.stdout,
+        stderr=failure_stderr,
+    )
+
+
+def _write_link_fingerprint_if_needed(
+    *,
+    link_skipped: bool,
+    link_fingerprint: dict[str, Any] | None,
+    link_fingerprint_path: Path,
+    json_output: bool,
+) -> None:
+    if link_skipped or link_fingerprint is None:
+        return
+    try:
+        link_fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+        _write_runtime_fingerprint(link_fingerprint_path, link_fingerprint)
+    except OSError:
+        if not json_output:
+            print(
+                "Warning: failed to write link fingerprint metadata.",
+                file=sys.stderr,
+            )
+
+
 def _initialize_runtime_artifact_state(
     *,
     is_rust_transpile: bool,
@@ -15767,55 +15846,19 @@ def build(
         and sys.platform == "darwin"
         and not target_triple
     ):
-        magic_error = _darwin_link_validation_failure(
-            output_binary=output_binary,
-            kind="magic",
-        )
-        if (
-            magic_error is not None
-            and linker_hint is not None
-            and any(arg == f"-fuse-ld={linker_hint}" for arg in link_cmd)
-        ):
-            try:
-                retry_process, _ = _retry_native_link_without_hint(
-                    link_cmd=link_cmd,
-                    linker_hint=linker_hint,
-                    json_output=json_output,
-                    link_timeout=link_timeout,
-                )
-            except subprocess.TimeoutExpired:
-                return _fail("Linker timed out", json_output, command="build")
-            if retry_process is not None:
-                if retry_process.returncode == 0:
-                    retry_magic_error = _darwin_link_validation_failure(
-                        output_binary=output_binary,
-                        kind="magic",
-                    )
-                    if retry_magic_error is None:
-                        warnings.append(
-                            "Linker fallback: "
-                            f"-fuse-ld={linker_hint} produced invalid output; "
-                            "retried default linker."
-                        )
-                        link_process = retry_process
-                        magic_error = None
-                    else:
-                        link_process = retry_process
-                        magic_error = retry_magic_error
-                else:
-                    link_process = retry_process
-        if magic_error is not None:
-            failure_stderr = (
-                (link_process.stderr or "")
-                + "\n"
-                + magic_error
+        try:
+            link_process = _validate_darwin_link_output(
+                link_process=link_process,
+                link_cmd=link_cmd,
+                linker_hint=linker_hint,
+                output_binary=output_binary,
+                validation_kind="magic",
+                json_output=json_output,
+                link_timeout=link_timeout,
+                warnings=warnings,
             )
-            link_process = subprocess.CompletedProcess(
-                args=link_cmd,
-                returncode=1,
-                stdout=link_process.stdout,
-                stderr=failure_stderr,
-            )
+        except subprocess.TimeoutExpired:
+            return _fail("Linker timed out", json_output, command="build")
 
     if (
         not link_skipped
@@ -15823,68 +15866,28 @@ def build(
         and sys.platform == "darwin"
         and not target_triple
     ):
-        dyld_validation_error = _darwin_link_validation_failure(
-            output_binary=output_binary,
-            kind="dyld",
-        )
-        if (
-            dyld_validation_error is not None
-            and linker_hint is not None
-            and any(arg == f"-fuse-ld={linker_hint}" for arg in link_cmd)
-        ):
-            try:
-                retry_process, _ = _retry_native_link_without_hint(
-                    link_cmd=link_cmd,
-                    linker_hint=linker_hint,
-                    json_output=json_output,
-                    link_timeout=link_timeout,
-                )
-            except subprocess.TimeoutExpired:
-                return _fail("Linker timed out", json_output, command="build")
-            if retry_process is not None:
-                if retry_process.returncode == 0:
-                    retry_validation_error = _darwin_link_validation_failure(
-                        output_binary=output_binary,
-                        kind="dyld",
-                    )
-                    if retry_validation_error is None:
-                        warnings.append(
-                            "Linker fallback: "
-                            f"-fuse-ld={linker_hint} produced invalid dyld imports; "
-                            "retried default linker."
-                        )
-                        link_process = retry_process
-                        dyld_validation_error = None
-                    else:
-                        link_process = retry_process
-                        dyld_validation_error = retry_validation_error
-                else:
-                    link_process = retry_process
-        if dyld_validation_error is not None:
-            failure_stderr = (
-                (link_process.stderr or "")
-                + "\n"
-                + dyld_validation_error
+        try:
+            link_process = _validate_darwin_link_output(
+                link_process=link_process,
+                link_cmd=link_cmd,
+                linker_hint=linker_hint,
+                output_binary=output_binary,
+                validation_kind="dyld",
+                json_output=json_output,
+                link_timeout=link_timeout,
+                warnings=warnings,
             )
-            link_process = subprocess.CompletedProcess(
-                args=link_cmd,
-                returncode=1,
-                stdout=link_process.stdout,
-                stderr=failure_stderr,
-            )
+        except subprocess.TimeoutExpired:
+            return _fail("Linker timed out", json_output, command="build")
 
     diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
     if link_process.returncode == 0:
-        if not link_skipped and link_fingerprint is not None:
-            try:
-                link_fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-                _write_runtime_fingerprint(link_fingerprint_path, link_fingerprint)
-            except OSError:
-                if not json_output:
-                    print(
-                        "Warning: failed to write link fingerprint metadata.",
-                        file=sys.stderr,
-                    )
+        _write_link_fingerprint_if_needed(
+            link_skipped=link_skipped,
+            link_fingerprint=link_fingerprint,
+            link_fingerprint_path=link_fingerprint_path,
+            json_output=json_output,
+        )
         if json_output:
             cache_info = _build_cache_info(
                 enabled=cache,
