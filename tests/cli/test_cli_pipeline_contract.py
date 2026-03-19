@@ -41,3 +41,11 @@ def test_backend_build_context_owns_backend_finalize_surfaces() -> None:
         "link_timeout",
     ):
         assert name in field_names
+
+
+def test_frontend_internal_stage_transport_removed() -> None:
+    assert not hasattr(cli, "_PreparedFrontendStageState")
+
+
+def test_frontend_internal_execution_transport_removed() -> None:
+    assert not hasattr(cli, "_PreparedFrontendExecutionContext")
