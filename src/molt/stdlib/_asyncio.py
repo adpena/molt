@@ -57,12 +57,14 @@ _MOLT_ASYNCIO_UNREGISTER_TASK = _require_intrinsic(
 # ---------------------------------------------------------------------------
 
 
-def _get_running_loop():
-    return _MOLT_ASYNCIO_RUNNING_LOOP_GET()
+def _get_running_loop(_get_running_loop_intrinsic=_MOLT_ASYNCIO_RUNNING_LOOP_GET):
+    return _get_running_loop_intrinsic()
 
 
-def _set_running_loop(loop):
-    _MOLT_ASYNCIO_RUNNING_LOOP_SET(loop)
+def _set_running_loop(
+    loop, _set_running_loop_intrinsic=_MOLT_ASYNCIO_RUNNING_LOOP_SET
+):
+    _set_running_loop_intrinsic(loop)
     return None
 
 
@@ -73,12 +75,15 @@ def get_running_loop():
     return loop
 
 
-def get_event_loop():
-    loop = _MOLT_ASYNCIO_EVENT_LOOP_GET()
+def get_event_loop(
+    _get_event_loop_intrinsic=_MOLT_ASYNCIO_EVENT_LOOP_GET,
+    _get_event_loop_policy_intrinsic=_MOLT_ASYNCIO_EVENT_LOOP_POLICY_GET,
+):
+    loop = _get_event_loop_intrinsic()
     if loop is not None:
         return loop
 
-    policy = _MOLT_ASYNCIO_EVENT_LOOP_POLICY_GET()
+    policy = _get_event_loop_policy_intrinsic()
     if policy is None:
         raise RuntimeError(
             "_asyncio event loop policy is unset; initialize policy via "
@@ -93,7 +98,11 @@ def get_event_loop():
 # ---------------------------------------------------------------------------
 
 
-def current_task(loop=None):
+def current_task(
+    loop=None,
+    _current_task_intrinsic=_MOLT_ASYNCIO_TASK_REGISTRY_CURRENT,
+    _current_task_for_loop_intrinsic=_MOLT_ASYNCIO_TASK_REGISTRY_CURRENT_FOR_LOOP,
+):
     """Return the currently running task for *loop*, or ``None``.
 
     When *loop* is ``None``, attempts to get the running loop.  If no loop
@@ -106,8 +115,8 @@ def current_task(loop=None):
         loop = _get_running_loop()
         if loop is None:
             return None
-        return _MOLT_ASYNCIO_TASK_REGISTRY_CURRENT()
-    return _MOLT_ASYNCIO_TASK_REGISTRY_CURRENT_FOR_LOOP(loop)
+        return _current_task_intrinsic()
+    return _current_task_for_loop_intrinsic(loop)
 
 
 # ---------------------------------------------------------------------------
@@ -115,22 +124,22 @@ def current_task(loop=None):
 # ---------------------------------------------------------------------------
 
 
-def _enter_task(loop, task):
+def _enter_task(loop, task, _enter_task_intrinsic=_MOLT_ASYNCIO_ENTER_TASK):
     """Mark *task* as the current task for *loop*.
 
     Raises ``RuntimeError`` if another task is already current for
     this loop.  Mirrors CPython ``_asyncio._enter_task``.
     """
-    _MOLT_ASYNCIO_ENTER_TASK(loop, task)
+    _enter_task_intrinsic(loop, task)
 
 
-def _leave_task(loop, task):
+def _leave_task(loop, task, _leave_task_intrinsic=_MOLT_ASYNCIO_LEAVE_TASK):
     """Clear *task* as the current task for *loop*.
 
     Raises ``RuntimeError`` if *task* is not the current task for
     this loop.  Mirrors CPython ``_asyncio._leave_task``.
     """
-    _MOLT_ASYNCIO_LEAVE_TASK(loop, task)
+    _leave_task_intrinsic(loop, task)
 
 
 # ---------------------------------------------------------------------------
@@ -138,20 +147,22 @@ def _leave_task(loop, task):
 # ---------------------------------------------------------------------------
 
 
-def _register_task(task):
+def _register_task(task, _register_task_intrinsic=_MOLT_ASYNCIO_REGISTER_TASK):
     """Add *task* to the global set of all tasks.
 
     Mirrors CPython ``_asyncio._register_task``.
     """
-    _MOLT_ASYNCIO_REGISTER_TASK(task)
+    _register_task_intrinsic(task)
 
 
-def _unregister_task(task):
+def _unregister_task(
+    task, _unregister_task_intrinsic=_MOLT_ASYNCIO_UNREGISTER_TASK
+):
     """Remove *task* from the global set of all tasks.
 
     Mirrors CPython ``_asyncio._unregister_task``.
     """
-    _MOLT_ASYNCIO_UNREGISTER_TASK(task)
+    _unregister_task_intrinsic(task)
 
 
 # ---------------------------------------------------------------------------
@@ -234,3 +245,17 @@ __all__ = [
     "_register_task",
     "_unregister_task",
 ]
+
+for _name in (
+    "_MOLT_ASYNCIO_RUNNING_LOOP_GET",
+    "_MOLT_ASYNCIO_RUNNING_LOOP_SET",
+    "_MOLT_ASYNCIO_EVENT_LOOP_GET",
+    "_MOLT_ASYNCIO_EVENT_LOOP_POLICY_GET",
+    "_MOLT_ASYNCIO_TASK_REGISTRY_CURRENT",
+    "_MOLT_ASYNCIO_TASK_REGISTRY_CURRENT_FOR_LOOP",
+    "_MOLT_ASYNCIO_ENTER_TASK",
+    "_MOLT_ASYNCIO_LEAVE_TASK",
+    "_MOLT_ASYNCIO_REGISTER_TASK",
+    "_MOLT_ASYNCIO_UNREGISTER_TASK",
+):
+    globals().pop(_name, None)

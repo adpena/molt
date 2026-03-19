@@ -74,12 +74,17 @@ __all__ = [
 class LockType:
     """Low-level lock object backed by Molt runtime intrinsics."""
 
-    def __init__(self) -> None:
-        self._handle: Any | None = _lock_new()
+    def __init__(self, _lock_new_intrinsic=_lock_new) -> None:
+        self._handle: Any | None = _lock_new_intrinsic()
 
     # -- acquire / release / locked -----------------------------------------
 
-    def acquire(self, blocking: bool = True, timeout: float = -1.0) -> bool:
+    def acquire(
+        self,
+        blocking: bool = True,
+        timeout: float = -1.0,
+        _lock_acquire_intrinsic=_lock_acquire,
+    ) -> bool:
         """Acquire the lock.
 
         *blocking* controls whether the call blocks.  *timeout* (seconds) is
@@ -107,19 +112,21 @@ class LockType:
                 raise OverflowError("timestamp out of range for platform time_t")
         if self._handle is None:
             raise RuntimeError("lock is not initialized")
-        return bool(_lock_acquire(self._handle, bool(blocking), timeout_val))
+        return bool(
+            _lock_acquire_intrinsic(self._handle, bool(blocking), timeout_val)
+        )
 
-    def release(self) -> None:
+    def release(self, _lock_release_intrinsic=_lock_release) -> None:
         """Release the lock."""
         if self._handle is None:
             raise RuntimeError("lock is not initialized")
-        _lock_release(self._handle)
+        _lock_release_intrinsic(self._handle)
 
-    def locked(self) -> bool:
+    def locked(self, _lock_locked_intrinsic=_lock_locked) -> bool:
         """Return whether the lock is currently held."""
         if self._handle is None:
             return False
-        return bool(_lock_locked(self._handle))
+        return bool(_lock_locked_intrinsic(self._handle))
 
     # -- context manager protocol -------------------------------------------
 
@@ -131,10 +138,10 @@ class LockType:
 
     # -- handle lifecycle ---------------------------------------------------
 
-    def _drop(self) -> None:
+    def _drop(self, _lock_drop_intrinsic=_lock_drop) -> None:
         if self._handle is None:
             return
-        _lock_drop(self._handle)
+        _lock_drop_intrinsic(self._handle)
         self._handle = None
 
     def __del__(self) -> None:
@@ -177,7 +184,11 @@ def _next_thread_token() -> int:
 
 
 def start_new_thread(
-    function: Any, args: tuple[Any, ...] = (), kwargs: dict[str, Any] | None = None
+    function: Any,
+    args: tuple[Any, ...] = (),
+    kwargs: dict[str, Any] | None = None,
+    _thread_spawn_shared_intrinsic=_thread_spawn_shared,
+    _thread_ident_intrinsic=_thread_ident,
 ) -> int:
     """Start a new thread and return its identifier.
 
@@ -193,8 +204,8 @@ def start_new_thread(
     if kwargs is None:
         kwargs = {}
     token = _next_thread_token()
-    handle = _thread_spawn_shared(token, function, args, kwargs)
-    ident = _thread_ident(handle)
+    handle = _thread_spawn_shared_intrinsic(token, function, args, kwargs)
+    ident = _thread_ident_intrinsic(handle)
     if ident is not None:
         return int(ident)
     # Fallback: use the token as ident if the runtime cannot provide one yet.
@@ -214,22 +225,26 @@ def exit() -> None:
 exit_thread = exit
 
 
-def get_ident() -> int:
+def get_ident(_thread_current_ident_intrinsic=_thread_current_ident) -> int:
     """Return the thread identifier of the current thread."""
-    return int(_thread_current_ident())
+    return int(_thread_current_ident_intrinsic())
 
 
-def get_native_id() -> int:
+def get_native_id(_thread_current_native_id_intrinsic=_thread_current_native_id) -> int:
     """Return the native integral thread ID of the current thread."""
-    return int(_thread_current_native_id())
+    return int(_thread_current_native_id_intrinsic())
 
 
-def _count() -> int:
+def _count(_thread_registry_active_count_intrinsic=_thread_registry_active_count) -> int:
     """Return the number of currently active threads (including the main thread)."""
-    return int(_thread_registry_active_count())
+    return int(_thread_registry_active_count_intrinsic())
 
 
-def stack_size(size: int = 0) -> int:
+def stack_size(
+    size: int = 0,
+    _thread_stack_size_get_intrinsic=_thread_stack_size_get,
+    _thread_stack_size_set_intrinsic=_thread_stack_size_set,
+) -> int:
     """Get or set the thread stack size (in bytes).
 
     With no argument (or *size* == 0), return the current stack size.
@@ -241,20 +256,37 @@ def stack_size(size: int = 0) -> int:
             f"'{type(size).__name__}' object cannot be interpreted as an integer"
         )
     if size == 0:
-        return int(_thread_stack_size_get())
-    return int(_thread_stack_size_set(size))
+        return int(_thread_stack_size_get_intrinsic())
+    return int(_thread_stack_size_set_intrinsic(size))
 
 
-def interrupt_main(signum: int = 2) -> None:
+def interrupt_main(signum: int = 2, _signal_raise_signal_intrinsic=_signal_raise_signal) -> None:
     """Simulate the effect of a signal arriving in the main thread.
 
     The default *signum* is ``SIGINT`` (2).
     """
-    _signal_raise_signal(int(signum))
+    _signal_raise_signal_intrinsic(int(signum))
 
 
 # ---------------------------------------------------------------------------
 # Namespace cleanup — remove names that are not part of CPython's _thread API.
 # ---------------------------------------------------------------------------
 for _name in ("Any",):
+    globals().pop(_name, None)
+
+for _name in (
+    "_lock_new",
+    "_lock_acquire",
+    "_lock_release",
+    "_lock_locked",
+    "_lock_drop",
+    "_thread_spawn_shared",
+    "_thread_ident",
+    "_thread_current_ident",
+    "_thread_current_native_id",
+    "_thread_registry_active_count",
+    "_thread_stack_size_get",
+    "_thread_stack_size_set",
+    "_signal_raise_signal",
+):
     globals().pop(_name, None)

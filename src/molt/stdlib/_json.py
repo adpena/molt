@@ -33,11 +33,17 @@ class make_encoder:
         self.skipkeys = skipkeys
         self.allow_nan = allow_nan
 
-    def __call__(self, obj, _current_indent_level):
+    def __call__(
+        self,
+        obj,
+        _current_indent_level,
+        _dumps_ex=_MOLT_JSON_DUMPS_EX,
+        _default_separators=_MOLT_JSON_DEFAULT_SEPARATORS,
+    ):
         separators = (self.item_separator, self.key_separator)
         if separators == (None, None):
-            separators = _MOLT_JSON_DEFAULT_SEPARATORS(self.indent)
-        text = _MOLT_JSON_DUMPS_EX(
+            separators = _default_separators(self.indent)
+        text = _dumps_ex(
             obj,
             self.skipkeys,
             self.encoder is encode_basestring_ascii,
@@ -58,3 +64,8 @@ class make_scanner:
 
     def __call__(self, string, idx):
         return self.context.raw_decode(string, idx)
+
+
+del _MOLT_JSON_DUMPS_EX
+del _MOLT_JSON_DEFAULT_SEPARATORS
+del _MOLT_JSON_PARSE_SCALAR

@@ -97,6 +97,18 @@ checks = {{
         and isinstance(_private.Future(), _AsyncFuture)
         and isinstance(_private.Task("coro", loop="loop-a"), _AsyncTask)
     ),
+    "private_handles_hidden": (
+        "_MOLT_ASYNCIO_RUNNING_LOOP_GET" not in _private.__dict__
+        and "_MOLT_ASYNCIO_RUNNING_LOOP_SET" not in _private.__dict__
+        and "_MOLT_ASYNCIO_EVENT_LOOP_GET" not in _private.__dict__
+        and "_MOLT_ASYNCIO_EVENT_LOOP_POLICY_GET" not in _private.__dict__
+        and "_MOLT_ASYNCIO_TASK_REGISTRY_CURRENT" not in _private.__dict__
+        and "_MOLT_ASYNCIO_TASK_REGISTRY_CURRENT_FOR_LOOP" not in _private.__dict__
+        and "_MOLT_ASYNCIO_ENTER_TASK" not in _private.__dict__
+        and "_MOLT_ASYNCIO_LEAVE_TASK" not in _private.__dict__
+        and "_MOLT_ASYNCIO_REGISTER_TASK" not in _private.__dict__
+        and "_MOLT_ASYNCIO_UNREGISTER_TASK" not in _private.__dict__
+    ),
 }}
 for key in sorted(checks):
     print(f"CHECK|{{key}}|{{checks[key]}}")
@@ -131,4 +143,4 @@ def test__asyncio_public_surface_matches_expected_shape() -> None:
     assert "current_task" in names
     assert "get_event_loop" in names
     assert "get_running_loop" in names
-    assert checks == {"behavior": "True"}
+    assert checks == {"behavior": "True", "private_handles_hidden": "True"}

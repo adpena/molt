@@ -76,6 +76,14 @@ sc = _private.make_scanner(_host_json.JSONDecoder())
 checks = {{
     "encoder": type(enc).__name__ == "make_encoder" and enc({{"a": 1}}, 0) == ('{{"a":1}}',),
     "scanner": type(sc).__name__ == "make_scanner" and sc('{{"a":1}}', 0) == ({{"a": 1}}, 7),
+    "private_handles_hidden": (
+        "molt_json_dumps_ex" not in _private.__dict__
+        and "molt_json_default_separators" not in _private.__dict__
+        and "molt_json_parse_scalar_obj" not in _private.__dict__
+        and "_MOLT_JSON_DUMPS_EX" not in _private.__dict__
+        and "_MOLT_JSON_DEFAULT_SEPARATORS" not in _private.__dict__
+        and "_MOLT_JSON_PARSE_SCALAR" not in _private.__dict__
+    ),
 }}
 for key in sorted(checks):
     print(f"CHECK|{{key}}|{{checks[key]}}")
@@ -110,4 +118,8 @@ def test__json_public_surface_matches_expected_shape() -> None:
         ("make_scanner", "type", "True"),
         ("scanstring", "builtin_function_or_method", "True"),
     ]
-    assert checks == {"encoder": "True", "scanner": "True"}
+    assert checks == {
+        "encoder": "True",
+        "private_handles_hidden": "True",
+        "scanner": "True",
+    }
