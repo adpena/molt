@@ -23,21 +23,21 @@ __all__ = [
     "UNIQUE",
 ]
 
-_require_intrinsic("molt_stdlib_probe", globals())
-_enum_init_member = _require_intrinsic("molt_enum_init_member", globals())
-_enum_auto_value = _require_intrinsic("molt_enum_auto_value", globals())
-_enum_flag_and = _require_intrinsic("molt_enum_flag_and", globals())
-_enum_flag_contains = _require_intrinsic("molt_enum_flag_contains", globals())
-_enum_flag_decompose = _require_intrinsic("molt_enum_flag_decompose", globals())
-_enum_flag_invert = _require_intrinsic("molt_enum_flag_invert", globals())
-_enum_flag_new = _require_intrinsic("molt_enum_flag_new", globals())
-_enum_flag_or = _require_intrinsic("molt_enum_flag_or", globals())
-_enum_flag_xor = _require_intrinsic("molt_enum_flag_xor", globals())
-_enum_str_value = _require_intrinsic("molt_enum_str_value", globals())
-_enum_unique_check = _require_intrinsic("molt_enum_unique_check", globals())
-_enum_verify_member = _require_intrinsic("molt_enum_verify_member", globals())
-_enum_is_descriptor = _require_intrinsic("molt_enum_is_descriptor", globals())
-_enum_is_auto = _require_intrinsic("molt_enum_is_auto", globals())
+_require_intrinsic("molt_stdlib_probe")
+_enum_init_member = _require_intrinsic("molt_enum_init_member")
+_enum_auto_value = _require_intrinsic("molt_enum_auto_value")
+_enum_flag_and = _require_intrinsic("molt_enum_flag_and")
+_enum_flag_contains = _require_intrinsic("molt_enum_flag_contains")
+_enum_flag_decompose = _require_intrinsic("molt_enum_flag_decompose")
+_enum_flag_invert = _require_intrinsic("molt_enum_flag_invert")
+_enum_flag_new = _require_intrinsic("molt_enum_flag_new")
+_enum_flag_or = _require_intrinsic("molt_enum_flag_or")
+_enum_flag_xor = _require_intrinsic("molt_enum_flag_xor")
+_enum_str_value = _require_intrinsic("molt_enum_str_value")
+_enum_unique_check = _require_intrinsic("molt_enum_unique_check")
+_enum_verify_member = _require_intrinsic("molt_enum_verify_member")
+_enum_is_descriptor = _require_intrinsic("molt_enum_is_descriptor")
+_enum_is_auto = _require_intrinsic("molt_enum_is_auto")
 
 
 class _AutoValue:

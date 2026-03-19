@@ -6,66 +6,52 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 # Protocol constants
 _MOLT_SSL_PROTOCOL_TLS_CLIENT = _require_intrinsic(
-    "molt_ssl_protocol_tls_client", globals()
-)
+    "molt_ssl_protocol_tls_client")
 _MOLT_SSL_PROTOCOL_TLS_SERVER = _require_intrinsic(
-    "molt_ssl_protocol_tls_server", globals()
-)
-_MOLT_SSL_CERT_NONE = _require_intrinsic("molt_ssl_cert_none", globals())
-_MOLT_SSL_CERT_OPTIONAL = _require_intrinsic("molt_ssl_cert_optional", globals())
-_MOLT_SSL_CERT_REQUIRED = _require_intrinsic("molt_ssl_cert_required", globals())
-_MOLT_SSL_HAS_SNI = _require_intrinsic("molt_ssl_has_sni", globals())
-_MOLT_SSL_OPENSSL_VERSION = _require_intrinsic("molt_ssl_openssl_version", globals())
+    "molt_ssl_protocol_tls_server")
+_MOLT_SSL_CERT_NONE = _require_intrinsic("molt_ssl_cert_none")
+_MOLT_SSL_CERT_OPTIONAL = _require_intrinsic("molt_ssl_cert_optional")
+_MOLT_SSL_CERT_REQUIRED = _require_intrinsic("molt_ssl_cert_required")
+_MOLT_SSL_HAS_SNI = _require_intrinsic("molt_ssl_has_sni")
+_MOLT_SSL_OPENSSL_VERSION = _require_intrinsic("molt_ssl_openssl_version")
 
 # Context operations
-_MOLT_SSL_CONTEXT_NEW = _require_intrinsic("molt_ssl_context_new", globals())
-_MOLT_SSL_CONTEXT_DROP = _require_intrinsic("molt_ssl_context_drop", globals())
+_MOLT_SSL_CONTEXT_NEW = _require_intrinsic("molt_ssl_context_new")
+_MOLT_SSL_CONTEXT_DROP = _require_intrinsic("molt_ssl_context_drop")
 _MOLT_SSL_CONTEXT_GET_PROTOCOL = _require_intrinsic(
-    "molt_ssl_context_get_protocol", globals()
-)
+    "molt_ssl_context_get_protocol")
 _MOLT_SSL_CONTEXT_VERIFY_MODE_GET = _require_intrinsic(
-    "molt_ssl_context_verify_mode_get", globals()
-)
+    "molt_ssl_context_verify_mode_get")
 _MOLT_SSL_CONTEXT_VERIFY_MODE_SET = _require_intrinsic(
-    "molt_ssl_context_verify_mode_set", globals()
-)
+    "molt_ssl_context_verify_mode_set")
 _MOLT_SSL_CONTEXT_CHECK_HOSTNAME_GET = _require_intrinsic(
-    "molt_ssl_context_check_hostname_get", globals()
-)
+    "molt_ssl_context_check_hostname_get")
 _MOLT_SSL_CONTEXT_CHECK_HOSTNAME_SET = _require_intrinsic(
-    "molt_ssl_context_check_hostname_set", globals()
-)
+    "molt_ssl_context_check_hostname_set")
 _MOLT_SSL_CONTEXT_SET_CIPHERS = _require_intrinsic(
-    "molt_ssl_context_set_ciphers", globals()
-)
+    "molt_ssl_context_set_ciphers")
 _MOLT_SSL_CONTEXT_SET_DEFAULT_VERIFY_PATHS = _require_intrinsic(
-    "molt_ssl_context_set_default_verify_paths", globals()
-)
+    "molt_ssl_context_set_default_verify_paths")
 _MOLT_SSL_CONTEXT_LOAD_CERT_CHAIN = _require_intrinsic(
-    "molt_ssl_context_load_cert_chain", globals()
-)
+    "molt_ssl_context_load_cert_chain")
 _MOLT_SSL_CONTEXT_LOAD_VERIFY_LOCATIONS = _require_intrinsic(
-    "molt_ssl_context_load_verify_locations", globals()
-)
+    "molt_ssl_context_load_verify_locations")
 _MOLT_SSL_CREATE_DEFAULT_CONTEXT = _require_intrinsic(
-    "molt_ssl_create_default_context", globals()
-)
+    "molt_ssl_create_default_context")
 
 # Socket wrapping
-_MOLT_SSL_WRAP_SOCKET = _require_intrinsic("molt_ssl_wrap_socket", globals())
+_MOLT_SSL_WRAP_SOCKET = _require_intrinsic("molt_ssl_wrap_socket")
 _MOLT_SSL_SOCKET_DO_HANDSHAKE = _require_intrinsic(
-    "molt_ssl_socket_do_handshake", globals()
-)
-_MOLT_SSL_SOCKET_READ = _require_intrinsic("molt_ssl_socket_read", globals())
-_MOLT_SSL_SOCKET_WRITE = _require_intrinsic("molt_ssl_socket_write", globals())
-_MOLT_SSL_SOCKET_CIPHER = _require_intrinsic("molt_ssl_socket_cipher", globals())
-_MOLT_SSL_SOCKET_VERSION = _require_intrinsic("molt_ssl_socket_version", globals())
+    "molt_ssl_socket_do_handshake")
+_MOLT_SSL_SOCKET_READ = _require_intrinsic("molt_ssl_socket_read")
+_MOLT_SSL_SOCKET_WRITE = _require_intrinsic("molt_ssl_socket_write")
+_MOLT_SSL_SOCKET_CIPHER = _require_intrinsic("molt_ssl_socket_cipher")
+_MOLT_SSL_SOCKET_VERSION = _require_intrinsic("molt_ssl_socket_version")
 _MOLT_SSL_SOCKET_GETPEERCERT = _require_intrinsic(
-    "molt_ssl_socket_getpeercert", globals()
-)
-_MOLT_SSL_SOCKET_UNWRAP = _require_intrinsic("molt_ssl_socket_unwrap", globals())
-_MOLT_SSL_SOCKET_CLOSE = _require_intrinsic("molt_ssl_socket_close", globals())
-_MOLT_SSL_SOCKET_DROP = _require_intrinsic("molt_ssl_socket_drop", globals())
+    "molt_ssl_socket_getpeercert")
+_MOLT_SSL_SOCKET_UNWRAP = _require_intrinsic("molt_ssl_socket_unwrap")
+_MOLT_SSL_SOCKET_CLOSE = _require_intrinsic("molt_ssl_socket_close")
+_MOLT_SSL_SOCKET_DROP = _require_intrinsic("molt_ssl_socket_drop")
 
 PROTOCOL_TLS_CLIENT = int(_MOLT_SSL_PROTOCOL_TLS_CLIENT())
 PROTOCOL_TLS_SERVER = int(_MOLT_SSL_PROTOCOL_TLS_SERVER())

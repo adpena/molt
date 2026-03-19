@@ -5,14 +5,14 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 # --- One-shot compress / decompress ---
-_MOLT_LZMA_COMPRESS = _require_intrinsic("molt_lzma_compress", globals())
-_MOLT_LZMA_DECOMPRESS = _require_intrinsic("molt_lzma_decompress", globals())
+_MOLT_LZMA_COMPRESS = _require_intrinsic("molt_lzma_compress")
+_MOLT_LZMA_DECOMPRESS = _require_intrinsic("molt_lzma_decompress")
 
 # --- Format constants ---
-_MOLT_LZMA_FORMAT_XZ = _require_intrinsic("molt_lzma_format_xz", globals())
-_MOLT_LZMA_FORMAT_ALONE = _require_intrinsic("molt_lzma_format_alone", globals())
-_MOLT_LZMA_FORMAT_RAW = _require_intrinsic("molt_lzma_format_raw", globals())
-_MOLT_LZMA_FORMAT_AUTO = _require_intrinsic("molt_lzma_format_auto", globals())
+_MOLT_LZMA_FORMAT_XZ = _require_intrinsic("molt_lzma_format_xz")
+_MOLT_LZMA_FORMAT_ALONE = _require_intrinsic("molt_lzma_format_alone")
+_MOLT_LZMA_FORMAT_RAW = _require_intrinsic("molt_lzma_format_raw")
+_MOLT_LZMA_FORMAT_AUTO = _require_intrinsic("molt_lzma_format_auto")
 
 FORMAT_XZ: int = int(_MOLT_LZMA_FORMAT_XZ())
 FORMAT_ALONE: int = int(_MOLT_LZMA_FORMAT_ALONE())
@@ -20,10 +20,10 @@ FORMAT_RAW: int = int(_MOLT_LZMA_FORMAT_RAW())
 FORMAT_AUTO: int = int(_MOLT_LZMA_FORMAT_AUTO())
 
 # --- Check constants ---
-_MOLT_LZMA_CHECK_NONE = _require_intrinsic("molt_lzma_check_none", globals())
-_MOLT_LZMA_CHECK_CRC32 = _require_intrinsic("molt_lzma_check_crc32", globals())
-_MOLT_LZMA_CHECK_CRC64 = _require_intrinsic("molt_lzma_check_crc64", globals())
-_MOLT_LZMA_CHECK_SHA256 = _require_intrinsic("molt_lzma_check_sha256", globals())
+_MOLT_LZMA_CHECK_NONE = _require_intrinsic("molt_lzma_check_none")
+_MOLT_LZMA_CHECK_CRC32 = _require_intrinsic("molt_lzma_check_crc32")
+_MOLT_LZMA_CHECK_CRC64 = _require_intrinsic("molt_lzma_check_crc64")
+_MOLT_LZMA_CHECK_SHA256 = _require_intrinsic("molt_lzma_check_sha256")
 
 CHECK_NONE: int = int(_MOLT_LZMA_CHECK_NONE())
 CHECK_CRC32: int = int(_MOLT_LZMA_CHECK_CRC32())
@@ -31,48 +31,40 @@ CHECK_CRC64: int = int(_MOLT_LZMA_CHECK_CRC64())
 CHECK_SHA256: int = int(_MOLT_LZMA_CHECK_SHA256())
 
 # --- Preset constants ---
-_MOLT_LZMA_PRESET_DEFAULT = _require_intrinsic("molt_lzma_preset_default", globals())
-_MOLT_LZMA_PRESET_EXTREME = _require_intrinsic("molt_lzma_preset_extreme", globals())
+_MOLT_LZMA_PRESET_DEFAULT = _require_intrinsic("molt_lzma_preset_default")
+_MOLT_LZMA_PRESET_EXTREME = _require_intrinsic("molt_lzma_preset_extreme")
 
 PRESET_DEFAULT: int = int(_MOLT_LZMA_PRESET_DEFAULT())
 PRESET_EXTREME: int = int(_MOLT_LZMA_PRESET_EXTREME())
 
 # --- Incremental compressor ---
-_MOLT_LZMA_COMPRESSOR_NEW = _require_intrinsic("molt_lzma_compressor_new", globals())
+_MOLT_LZMA_COMPRESSOR_NEW = _require_intrinsic("molt_lzma_compressor_new")
 _MOLT_LZMA_COMPRESSOR_COMPRESS = _require_intrinsic(
-    "molt_lzma_compressor_compress", globals()
-)
+    "molt_lzma_compressor_compress")
 _MOLT_LZMA_COMPRESSOR_FLUSH = _require_intrinsic(
-    "molt_lzma_compressor_flush", globals()
-)
-_MOLT_LZMA_COMPRESSOR_DROP = _require_intrinsic("molt_lzma_compressor_drop", globals())
+    "molt_lzma_compressor_flush")
+_MOLT_LZMA_COMPRESSOR_DROP = _require_intrinsic("molt_lzma_compressor_drop")
 
 # --- Incremental decompressor ---
 _MOLT_LZMA_DECOMPRESSOR_NEW = _require_intrinsic(
-    "molt_lzma_decompressor_new", globals()
-)
+    "molt_lzma_decompressor_new")
 _MOLT_LZMA_DECOMPRESSOR_DECOMPRESS = _require_intrinsic(
-    "molt_lzma_decompressor_decompress", globals()
-)
+    "molt_lzma_decompressor_decompress")
 _MOLT_LZMA_DECOMPRESSOR_EOF = _require_intrinsic(
-    "molt_lzma_decompressor_eof", globals()
-)
+    "molt_lzma_decompressor_eof")
 _MOLT_LZMA_DECOMPRESSOR_NEEDS_INPUT = _require_intrinsic(
-    "molt_lzma_decompressor_needs_input", globals()
-)
+    "molt_lzma_decompressor_needs_input")
 _MOLT_LZMA_DECOMPRESSOR_UNUSED_DATA = _require_intrinsic(
-    "molt_lzma_decompressor_unused_data", globals()
-)
+    "molt_lzma_decompressor_unused_data")
 _MOLT_LZMA_DECOMPRESSOR_DROP = _require_intrinsic(
-    "molt_lzma_decompressor_drop", globals()
-)
+    "molt_lzma_decompressor_drop")
 
 # --- File handle intrinsics ---
-_MOLT_LZMA_FILE_OPEN = _require_intrinsic("molt_lzma_file_open", globals())
-_MOLT_LZMA_FILE_READ = _require_intrinsic("molt_lzma_file_read", globals())
-_MOLT_LZMA_FILE_WRITE = _require_intrinsic("molt_lzma_file_write", globals())
-_MOLT_LZMA_FILE_CLOSE = _require_intrinsic("molt_lzma_file_close", globals())
-_MOLT_LZMA_FILE_DROP = _require_intrinsic("molt_lzma_file_drop", globals())
+_MOLT_LZMA_FILE_OPEN = _require_intrinsic("molt_lzma_file_open")
+_MOLT_LZMA_FILE_READ = _require_intrinsic("molt_lzma_file_read")
+_MOLT_LZMA_FILE_WRITE = _require_intrinsic("molt_lzma_file_write")
+_MOLT_LZMA_FILE_CLOSE = _require_intrinsic("molt_lzma_file_close")
+_MOLT_LZMA_FILE_DROP = _require_intrinsic("molt_lzma_file_drop")
 
 
 class LZMAError(Exception):
