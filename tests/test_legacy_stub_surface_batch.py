@@ -51,6 +51,11 @@ for module_name, path_text in (
     ("molt_test__mailcap", {str(STDLIB_ROOT / "mailcap.py")!r}),
     ("molt_test__nntplib", {str(STDLIB_ROOT / "nntplib.py")!r}),
     ("molt_test__xdrlib", {str(STDLIB_ROOT / "xdrlib.py")!r}),
+    ("molt_test__ossaudiodev", {str(STDLIB_ROOT / "ossaudiodev.py")!r}),
+    ("molt_test__nis", {str(STDLIB_ROOT / "nis.py")!r}),
+    ("molt_test__spwd", {str(STDLIB_ROOT / "spwd.py")!r}),
+    ("molt_test__msilib", {str(STDLIB_ROOT / "msilib.py")!r}),
+    ("molt_test__pipes", {str(STDLIB_ROOT / "pipes.py")!r}),
 ):
     module = _load_module(module_name, path_text)
     try:
@@ -85,4 +90,9 @@ def test_legacy_private_stub_surfaces_hide_capability_anchor() -> None:
         ["molt_test__mailcap", "True", "True", "True"],
         ["molt_test__nntplib", "True", "True", "True"],
         ["molt_test__xdrlib", "True", "True", "True"],
+        ["molt_test__ossaudiodev", "True", "True", "True"],
+        ["molt_test__nis", "True", "True", "True"],
+        ["molt_test__spwd", "True", "True", "True"],
+        ["molt_test__msilib", "True", "True", "True"],
+        ["molt_test__pipes", "True", "True", "True"],
     ]

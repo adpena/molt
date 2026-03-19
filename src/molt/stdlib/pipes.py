@@ -7,7 +7,8 @@ stdlib coverage synchronized with CPython 3.12/3.13/3.14.
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
+del _MOLT_CAPABILITIES_HAS
 
 
 # TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `pipes` top-level stub with full intrinsic-backed lowering.
