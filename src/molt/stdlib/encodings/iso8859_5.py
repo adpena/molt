@@ -312,4 +312,4 @@ encoding_table = codecs.charmap_build(decoding_table)
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+_require_intrinsic("molt_capabilities_has")
