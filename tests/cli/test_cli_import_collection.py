@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from typing import cast
 
 import molt.cli as cli
 import pytest
@@ -4551,6 +4552,67 @@ def test_backend_daemon_start_timeout_can_be_unbounded_explicitly(
 ) -> None:
     monkeypatch.setenv("MOLT_BACKEND_DAEMON_START_TIMEOUT", "0")
     assert cli._backend_daemon_start_timeout() is None
+
+
+def test_backend_daemon_spawn_probe_timeout_is_capped() -> None:
+    assert cli._backend_daemon_spawn_probe_timeout(2.0) == 0.25
+    assert cli._backend_daemon_spawn_probe_timeout(0.1) == 0.1
+    assert cli._backend_daemon_spawn_probe_timeout(None) == 0.25
+
+
+def test_start_backend_daemon_leaves_warming_process_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend_bin = tmp_path / "molt-backend"
+    backend_bin.write_text("backend")
+    socket_path = tmp_path / "daemon.sock"
+    pid_path = tmp_path / "daemon.pid"
+    log_path = tmp_path / "daemon.log"
+    wait_timeouts: list[float | None] = []
+    terminated: list[int] = []
+    removed: list[Path] = []
+
+    class _FakePopen:
+        pid = 4321
+
+    monkeypatch.setattr(cli, "_backend_daemon_pid_path", lambda *args, **kwargs: pid_path)
+    monkeypatch.setattr(cli, "_backend_daemon_log_path", lambda *args, **kwargs: log_path)
+    monkeypatch.setattr(cli, "_read_backend_daemon_pid", lambda *args, **kwargs: None)
+
+    def fake_wait_until_ready(*args: object, **kwargs: object) -> tuple[bool, dict[str, object] | None]:
+        del args
+        wait_timeouts.append(cast(float | None, kwargs.get("ready_timeout")))
+        return False, None
+
+    monkeypatch.setattr(cli, "_backend_daemon_wait_until_ready", fake_wait_until_ready)
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda *args, **kwargs: _FakePopen())
+    monkeypatch.setattr(
+        cli,
+        "_terminate_backend_daemon_pid",
+        lambda pid, **kwargs: terminated.append(pid),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_remove_backend_daemon_pid",
+        lambda path: removed.append(path),
+    )
+
+    assert (
+        cli._start_backend_daemon(
+            backend_bin,
+            socket_path,
+            cargo_profile="dev-fast",
+            project_root=tmp_path,
+            startup_timeout=2.0,
+            json_output=True,
+        )
+        is False
+    )
+    assert wait_timeouts == [0.25]
+    assert pid_path.read_text().strip() == "4321"
+    assert terminated == []
+    assert removed == []
 
 
 def test_backend_daemon_enabled_is_cached(

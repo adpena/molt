@@ -7750,6 +7750,12 @@ def _backend_daemon_start_timeout() -> float | None:
     )
 
 
+def _backend_daemon_spawn_probe_timeout(startup_timeout: float | None) -> float:
+    if startup_timeout is None:
+        return 0.25
+    return min(startup_timeout, 0.25)
+
+
 def _backend_daemon_socket_dir(project_root: Path) -> Path:
     # Unix sockets can fail on some external/shared volumes (e.g. exFAT).
     # Keep sockets on a local socket-capable path by default.
@@ -8469,16 +8475,16 @@ def _start_backend_daemon(
         return False
     ready, _ = _backend_daemon_wait_until_ready(
         socket_path,
-        ready_timeout=startup_wait,
+        ready_timeout=_backend_daemon_spawn_probe_timeout(startup_wait),
         probe_timeout=None,
     )
     if ready:
         return True
-    if daemon_pid is not None:
-        _terminate_backend_daemon_pid(daemon_pid, grace=1.0)
-    _remove_backend_daemon_pid(pid_path)
     if not json_output:
-        print("Backend daemon failed to become ready in time.", file=sys.stderr)
+        print(
+            "Backend daemon is warming in background; using one-shot compile for this build.",
+            file=sys.stderr,
+        )
     return False
 
 
