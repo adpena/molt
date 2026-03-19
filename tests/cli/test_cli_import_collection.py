@@ -1500,7 +1500,14 @@ def test_load_module_analysis_reuses_persisted_cache(
     source = cli._read_module_source(module_path)
     cache = cli._ModuleResolutionCache()
 
-    tree, imports, func_defaults, cached_source, cache_hit = cli._load_module_analysis(
+    (
+        tree,
+        imports,
+        func_defaults,
+        cached_source,
+        cache_hit,
+        interface_changed,
+    ) = cli._load_module_analysis(
         module_path,
         module_name="pkg",
         is_package=False,
@@ -1515,12 +1522,20 @@ def test_load_module_analysis_reuses_persisted_cache(
     assert "f" in func_defaults
     assert cached_source == source
     assert cache_hit is False
+    assert interface_changed is True
 
     def fail_parse(*args: object, **kwargs: object) -> ast.AST:
         raise AssertionError("unexpected parse")
 
     monkeypatch.setattr(cache, "parse_module_ast", fail_parse)
-    cached_tree, cached_imports, cached_defaults, cached_source, cache_hit = (
+    (
+        cached_tree,
+        cached_imports,
+        cached_defaults,
+        cached_source,
+        cache_hit,
+        interface_changed,
+    ) = (
         cli._load_module_analysis(
             module_path,
             module_name="pkg",
@@ -1538,6 +1553,7 @@ def test_load_module_analysis_reuses_persisted_cache(
     assert cached_defaults == func_defaults
     assert cached_source is None
     assert cache_hit is True
+    assert interface_changed is False
 
 
 def test_load_module_analysis_reuses_persisted_module_analysis_imports(
@@ -1571,7 +1587,14 @@ def test_load_module_analysis_reuses_persisted_module_analysis_imports(
         ),
     )
 
-    cached_tree, cached_imports, cached_defaults, cached_source, cache_hit = (
+    (
+        cached_tree,
+        cached_imports,
+        cached_defaults,
+        cached_source,
+        cache_hit,
+        interface_changed,
+    ) = (
         cli._load_module_analysis(
             module_path,
             module_name="pkg",
@@ -1589,6 +1612,7 @@ def test_load_module_analysis_reuses_persisted_module_analysis_imports(
     assert "f" in cached_defaults
     assert cached_source is None
     assert cache_hit is True
+    assert interface_changed is False
 
 
 def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
@@ -1627,7 +1651,14 @@ def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
         ),
     )
 
-    cached_tree, cached_imports, cached_defaults, cached_source, cache_hit = (
+    (
+        cached_tree,
+        cached_imports,
+        cached_defaults,
+        cached_source,
+        cache_hit,
+        interface_changed,
+    ) = (
         cli._load_module_analysis(
             module_path,
             module_name="pkg",
@@ -1646,6 +1677,56 @@ def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
     assert cached_source is None
     assert calls == 1
     assert cache_hit is True
+    assert interface_changed is False
+
+
+def test_load_module_analysis_marks_body_only_edit_as_interface_stable(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg.py"
+    module_path.write_text("import warnings\n\ndef f(a, *, b=1):\n    return a + b\n")
+    cache = cli._ModuleResolutionCache()
+
+    cli._load_module_analysis(
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        include_nested=True,
+        source=None,
+        logical_source_path=str(module_path),
+        resolution_cache=cache,
+        project_root=tmp_path,
+    )
+
+    module_path.write_text(
+        "import warnings\n\ndef f(a, *, b=1):\n    total = a + b\n    return total\n"
+    )
+    cache = cli._ModuleResolutionCache()
+
+    (
+        tree,
+        imports,
+        func_defaults,
+        cached_source,
+        cache_hit,
+        interface_changed,
+    ) = cli._load_module_analysis(
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        include_nested=True,
+        source=None,
+        logical_source_path=str(module_path),
+        resolution_cache=cache,
+        project_root=tmp_path,
+    )
+
+    assert tree is not None
+    assert imports == ("warnings",)
+    assert "f" in func_defaults
+    assert cached_source is not None
+    assert cache_hit is False
+    assert interface_changed is False
 
 
 def test_persisted_module_lowering_roundtrip_respects_context_digest(
@@ -2180,7 +2261,7 @@ def test_parallel_build_only_relowers_changed_frontier(
 
     assert worker_modes_by_module["beta"] == "parallel_cache_hit"
     assert worker_modes_by_module["alpha"] == "parallel"
-    assert worker_modes_by_module["main"] == "parallel"
+    assert worker_modes_by_module["main"] == "parallel_cache_hit"
 
 
 def test_build_skips_daemon_preflight_when_socket_exists(

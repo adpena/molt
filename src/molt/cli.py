@@ -7314,6 +7314,7 @@ def _read_persisted_module_analysis(
     module_name: str,
     is_package: bool,
     path_stat: os.stat_result | None = None,
+    validate_stat: bool = True,
 ) -> tuple[dict[str, dict[str, Any]], tuple[str, ...] | None] | None:
     cache_path = _module_analysis_cache_path(
         project_root,
@@ -7324,19 +7325,20 @@ def _read_persisted_module_analysis(
     payload = _read_artifact_sync_state(cache_path)
     if payload is None:
         return None
-    if path_stat is None:
-        try:
-            path_stat = path.stat()
-        except OSError:
-            return None
     raw_defaults = payload.get("func_defaults")
     if not isinstance(raw_defaults, dict):
         return None
-    if (
-        payload.get("size") != path_stat.st_size
-        or payload.get("mtime_ns") != path_stat.st_mtime_ns
-    ):
-        return None
+    if validate_stat:
+        if path_stat is None:
+            try:
+                path_stat = path.stat()
+            except OSError:
+                return None
+        if (
+            payload.get("size") != path_stat.st_size
+            or payload.get("mtime_ns") != path_stat.st_mtime_ns
+        ):
+            return None
     cached_imports: tuple[str, ...] | None = None
     raw_imports = payload.get("imports")
     if raw_imports is not None:
@@ -7470,6 +7472,7 @@ def _load_module_analysis(
     dict[str, dict[str, Any]],
     str | None,
     bool,
+    bool,
 ]:
     path_stat: os.stat_result | None = None
     if project_root is not None:
@@ -7482,6 +7485,17 @@ def _load_module_analysis(
             module_name=module_name,
             is_package=is_package,
             path_stat=path_stat,
+        )
+        if project_root is not None
+        else None
+    )
+    stale_analysis = (
+        _read_persisted_module_analysis(
+            project_root,
+            path,
+            module_name=module_name,
+            is_package=is_package,
+            validate_stat=False,
         )
         if project_root is not None
         else None
@@ -7503,7 +7517,7 @@ def _load_module_analysis(
             path_stat=path_stat,
         )
     if persisted_imports is not None and persisted_defaults is not None:
-        return None, persisted_imports, persisted_defaults, None, True
+        return None, persisted_imports, persisted_defaults, None, True, False
 
     if source is None:
         source = resolution_cache.read_module_source(path)
@@ -7533,7 +7547,12 @@ def _load_module_analysis(
                     func_defaults=func_defaults,
                     imports=imports,
                 )
-    return tree, imports, func_defaults, source, False
+    interface_changed = True
+    if stale_analysis is not None:
+        stale_defaults, stale_imports = stale_analysis
+        if stale_imports is not None and stale_imports == imports and stale_defaults == func_defaults:
+            interface_changed = False
+    return tree, imports, func_defaults, source, False, interface_changed
 
 
 def _module_frontend_payload(
@@ -10762,6 +10781,7 @@ def build(
     module_trees: dict[str, ast.AST] = {}
     syntax_error_modules: dict[str, ModuleSyntaxErrorInfo] = {}
     analysis_cache_miss_modules: set[str] = set()
+    interface_changed_modules: set[str] = set()
     for module_name, module_path in module_graph.items():
         try:
             (
@@ -10770,6 +10790,7 @@ def build(
                 func_defaults,
                 source,
                 analysis_cache_hit,
+                interface_changed,
             ) = _load_module_analysis(
                 module_path,
                 module_name=module_name,
@@ -10784,6 +10805,8 @@ def build(
                 module_sources[module_name] = source
             if not analysis_cache_hit:
                 analysis_cache_miss_modules.add(module_name)
+            if interface_changed:
+                interface_changed_modules.add(module_name)
         except SyntaxError as exc:
             if module_name == entry_module:
                 return _fail(
@@ -10813,10 +10836,13 @@ def build(
         )
         known_func_defaults[module_name] = func_defaults
     module_order = _topo_sort_modules(module_graph, module_deps)
-    dirty_lowering_modules = _dependent_module_closure(
-        analysis_cache_miss_modules,
-        module_deps,
-        module_graph,
+    dirty_lowering_modules = set(analysis_cache_miss_modules)
+    dirty_lowering_modules.update(
+        _dependent_module_closure(
+            interface_changed_modules,
+            module_deps,
+            module_graph,
+        )
     )
     if diagnostics_enabled:
         phase_starts["ir_lowering"] = time.perf_counter()
