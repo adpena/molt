@@ -1136,6 +1136,18 @@ def test_backend_bin_path_is_cached(
     assert info.currsize >= 1
 
 
+def test_cargo_profile_dir_is_cached() -> None:
+    cli._cargo_profile_dir.cache_clear()
+
+    first = cli._cargo_profile_dir("dev")
+    second = cli._cargo_profile_dir("dev")
+
+    info = cli._cargo_profile_dir.cache_info()
+    assert first == second == "debug"
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
 def test_runtime_lib_path_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

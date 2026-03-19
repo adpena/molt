@@ -8579,6 +8579,7 @@ def _read_wasm_memory_min_bytes(path: Path) -> int | None:
     return memory_pages * 65536
 
 
+@functools.lru_cache(maxsize=64)
 def _cargo_profile_dir(cargo_profile: str) -> str:
     return "debug" if cargo_profile == "dev" else cargo_profile
 
