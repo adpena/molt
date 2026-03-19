@@ -10,13 +10,20 @@ import molt.cli as cli
 def test_is_valid_wasm_binary_accepts_wasm_magic(tmp_path: Path) -> None:
     artifact = tmp_path / "ok.wasm"
     artifact.write_bytes(b"\x00asm\x01\x00\x00\x00rest")
+    assert cli._inspect_wasm_binary(artifact) == "valid"
     assert cli._is_valid_wasm_binary(artifact)
 
 
 def test_is_valid_wasm_binary_rejects_zero_filled_file(tmp_path: Path) -> None:
     artifact = tmp_path / "bad.wasm"
     artifact.write_bytes(b"\x00" * 32)
+    assert cli._inspect_wasm_binary(artifact) == "invalid"
     assert not cli._is_valid_wasm_binary(artifact)
+
+
+def test_inspect_wasm_binary_reports_missing(tmp_path: Path) -> None:
+    artifact = tmp_path / "missing.wasm"
+    assert cli._inspect_wasm_binary(artifact) == "missing"
 
 
 def test_wasm_runtime_recovery_target_root_suffix(tmp_path: Path) -> None:
@@ -138,10 +145,15 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
         target_root = Path(env.get("CARGO_TARGET_DIR", str(project_root / "target")))
         seen_profiles.append(profile)
         seen_targets.append(target_root)
+        output_profile_dir = (
+            "release-fast"
+            if profile == "release-fast"
+            else cli._cargo_profile_dir(profile)
+        )
         src = (
             target_root
             / "wasm32-wasip1"
-            / ("release-fast" if profile == "release-fast" else "release")
+            / output_profile_dir
             / "molt_runtime.wasm"
         )
         src.parent.mkdir(parents=True, exist_ok=True)
@@ -162,6 +174,6 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
         project_root=project_root,
     )
     assert cli._is_valid_wasm_binary(runtime_wasm)
-    assert seen_profiles == ["release", "release", "release-fast"]
+    assert seen_profiles == ["wasm-release", "wasm-release", "release-fast"]
     assert seen_targets[0] == primary_target
     assert seen_targets[1] == cli._wasm_runtime_recovery_target_root(primary_target)
