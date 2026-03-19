@@ -19,3 +19,6 @@ if _sys.version_info >= (3, 14):
     Placeholder = _MOLT_KWD_MARK()
     del _MOLT_KWD_MARK
     __all__.insert(0, "Placeholder")
+
+
+globals().pop("_require_intrinsic", None)

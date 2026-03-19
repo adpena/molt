@@ -38,3 +38,6 @@ __all__ = [
     "spec_from_loader",
     "sys",
 ]
+
+
+globals().pop("_require_intrinsic", None)

@@ -100,3 +100,6 @@ __all__ = [
     "pbkdf2_hmac",
     "scrypt",
 ]
+
+
+globals().pop("_require_intrinsic", None)

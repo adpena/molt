@@ -105,3 +105,6 @@ __all__ = [
     "compute_sha512",
     "new",
 ]
+
+
+globals().pop("_require_intrinsic", None)

@@ -133,3 +133,6 @@ __all__ = [
     "sre_constants",
     "sre_parse",
 ]
+
+
+globals().pop("_require_intrinsic", None)
