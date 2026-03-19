@@ -6,11 +6,11 @@ from typing import Any
 
 from _intrinsics import require_intrinsic as _intrinsics_require
 
-_molt_runpy_run_module = _intrinsics_require("molt_runpy_run_module", globals())
-_molt_runpy_resolve_path = _intrinsics_require("molt_runpy_resolve_path", globals())
-_molt_runpy_run_path = _intrinsics_require("molt_runpy_run_path", globals())
-_molt_capabilities_trusted = _intrinsics_require("molt_capabilities_trusted", globals())
-_molt_capabilities_require = _intrinsics_require("molt_capabilities_require", globals())
+_molt_runpy_run_module = _intrinsics_require("molt_runpy_run_module")
+_molt_runpy_resolve_path = _intrinsics_require("molt_runpy_resolve_path")
+_molt_runpy_run_path = _intrinsics_require("molt_runpy_run_path")
+_molt_capabilities_trusted = _intrinsics_require("molt_capabilities_trusted")
+_molt_capabilities_require = _intrinsics_require("molt_capabilities_require")
 
 __all__ = ["run_module", "run_path"]
 
@@ -21,14 +21,17 @@ def _require_intrinsic(fn: Any, name: str) -> Any:
     return fn
 
 
-def _require_fs_read() -> None:
+def _require_fs_read(
+    _capabilities_trusted_intrinsic=_molt_capabilities_trusted,
+    _capabilities_require_intrinsic=_molt_capabilities_require,
+) -> None:
     trusted = _require_intrinsic(
-        _molt_capabilities_trusted, "molt_capabilities_trusted"
+        _capabilities_trusted_intrinsic, "molt_capabilities_trusted"
     )
     if trusted():
         return
     require = _require_intrinsic(
-        _molt_capabilities_require, "molt_capabilities_require"
+        _capabilities_require_intrinsic, "molt_capabilities_require"
     )
     require("fs.read")
 
@@ -49,8 +52,10 @@ def _runpy_module_file() -> str | None:
     return None
 
 
-def _resolve_run_path(path: str) -> str:
-    resolver = _require_intrinsic(_molt_runpy_resolve_path, "molt_runpy_resolve_path")
+def _resolve_run_path(
+    path: str, _resolve_path_intrinsic=_molt_runpy_resolve_path
+) -> str:
+    resolver = _require_intrinsic(_resolve_path_intrinsic, "molt_runpy_resolve_path")
     payload = resolver(path, _runpy_module_file())
     if not isinstance(payload, dict):
         raise RuntimeError("invalid runpy path payload: dict expected")
@@ -70,6 +75,7 @@ def run_module(
     init_globals: dict[str, Any] | None = None,
     run_name: str | None = None,
     alter_sys: bool = False,
+    _run_module_intrinsic=_molt_runpy_run_module,
 ) -> dict[str, Any]:
     if not isinstance(mod_name, str):
         raise TypeError("mod_name must be a string")
@@ -77,7 +83,7 @@ def run_module(
         raise TypeError("init_globals must be a dict or None")
     if run_name is not None and not isinstance(run_name, str):
         raise TypeError("run_name must be a string or None")
-    runner = _require_intrinsic(_molt_runpy_run_module, "molt_runpy_run_module")
+    runner = _require_intrinsic(_run_module_intrinsic, "molt_runpy_run_module")
     return runner(mod_name, run_name, init_globals, alter_sys)
 
 
@@ -85,6 +91,7 @@ def run_path(
     path_name: Any,
     init_globals: dict[str, Any] | None = None,
     run_name: str | None = None,
+    _run_path_intrinsic=_molt_runpy_run_path,
 ) -> dict[str, Any]:
     if init_globals is not None and not isinstance(init_globals, dict):
         raise TypeError("init_globals must be a dict or None")
@@ -98,5 +105,15 @@ def run_path(
         raise TypeError("run_name must be a string or None")
     _require_fs_read()
     abs_path = _resolve_run_path(path)
-    runner = _require_intrinsic(_molt_runpy_run_path, "molt_runpy_run_path")
+    runner = _require_intrinsic(_run_path_intrinsic, "molt_runpy_run_path")
     return runner(abs_path, run_name, init_globals)
+
+
+for _name in (
+    "_molt_runpy_run_module",
+    "_molt_runpy_resolve_path",
+    "_molt_runpy_run_path",
+    "_molt_capabilities_trusted",
+    "_molt_capabilities_require",
+):
+    globals().pop(_name, None)

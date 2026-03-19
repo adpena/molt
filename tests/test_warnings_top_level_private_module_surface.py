@@ -77,6 +77,14 @@ checks = {{
     "filters": isinstance(_private.filters, list),
     "warn": _private.warn("hello", UserWarning, 2) is None,
     "warn_explicit": _private.warn_explicit("boom", UserWarning, "file.py", 7) is None,
+    "warnings_module_private_handles_hidden": (
+        "_MOLT_STDLIB_PROBE" not in sys.modules["warnings"].__dict__
+        and "_MOLT_CAPABILITIES_HAS" not in sys.modules["warnings"].__dict__
+        and "molt_stdlib_probe" not in sys.modules["warnings"].__dict__
+        and "molt_capabilities_has" not in sys.modules["warnings"].__dict__
+        and "molt_warnings_warn" not in sys.modules["warnings"].__dict__
+        and "molt_warnings_warn_explicit" not in sys.modules["warnings"].__dict__
+    ),
 }}
 for key in sorted(checks):
     print(f"CHECK|{{key}}|{{checks[key]}}")
@@ -113,4 +121,5 @@ def test__warnings_public_surface_matches_expected_shape() -> None:
         "filters": "True",
         "warn": "True",
         "warn_explicit": "True",
+        "warnings_module_private_handles_hidden": "True",
     }

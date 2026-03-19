@@ -48,15 +48,18 @@ def _load_module(name, path_text):
 
 
 grp = _load_module("grp", {str(STDLIB_ROOT / "grp.py")!r})
+pyclbr = _load_module("pyclbr", {str(STDLIB_ROOT / "pyclbr.py")!r})
 sre_parse = _load_module("sre_parse", {str(STDLIB_ROOT / "sre_parse.py")!r})
 parsed = sre_parse.parse("abc")
 
 checks = {{
-    "behavior": calls == ["ready", "ready"] and parsed == [],
+    "behavior": calls == ["ready", "ready", "ready"] and parsed == [],
     "private_handles_hidden": (
         "_MOLT_IMPORT_SMOKE_RUNTIME_READY" not in grp.__dict__
+        and "_MOLT_IMPORT_SMOKE_RUNTIME_READY" not in pyclbr.__dict__
         and "_MOLT_IMPORT_SMOKE_RUNTIME_READY" not in sre_parse.__dict__
         and "molt_import_smoke_runtime_ready" not in grp.__dict__
+        and "molt_import_smoke_runtime_ready" not in pyclbr.__dict__
         and "molt_import_smoke_runtime_ready" not in sre_parse.__dict__
     ),
 }}
