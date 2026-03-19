@@ -46,6 +46,7 @@ from typing import (
     Mapping,
     MutableMapping,
     NamedTuple,
+    Sequence,
     cast,
 )
 
@@ -3022,7 +3023,20 @@ def _module_dependency_closure(
 def _module_dependency_closures(
     module_deps: dict[str, set[str]],
     module_names: Collection[str],
+    *,
+    module_order: Sequence[str] | None = None,
+    has_back_edges: bool = False,
 ) -> dict[str, frozenset[str]]:
+    if module_order is not None and not has_back_edges:
+        closures: dict[str, frozenset[str]] = {}
+        for module_name in tuple(module_order):
+            closure: set[str] = {module_name}
+            for dep in module_deps.get(module_name, ()):
+                closure.update(closures.get(dep, frozenset({dep})))
+            closures[module_name] = frozenset(closure)
+        for module_name in module_names:
+            closures.setdefault(module_name, frozenset({module_name}))
+        return closures
     closures: dict[str, frozenset[str]] = {}
     for module_name in sorted(module_names):
         closures[module_name] = frozenset(
@@ -11656,7 +11670,12 @@ def build(
         has_back_edges,
         module_layers,
     ) = _analyze_module_schedule(module_graph, module_deps)
-    module_dep_closures = _module_dependency_closures(module_deps, module_graph)
+    module_dep_closures = _module_dependency_closures(
+        module_deps,
+        module_graph,
+        module_order=module_order,
+        has_back_edges=has_back_edges,
+    )
     dirty_lowering_modules = set(analysis_cache_miss_modules)
     dirty_lowering_modules.update(
         _dependent_module_closure(

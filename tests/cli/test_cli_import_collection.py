@@ -2189,6 +2189,44 @@ def test_module_dependency_closure_tracks_forward_dependencies() -> None:
     assert closure == {"main", "alpha", "beta", "leaf"}
 
 
+def test_module_dependency_closures_reuse_topological_order_when_acyclic() -> None:
+    module_deps = {
+        "main": {"alpha", "beta"},
+        "alpha": {"leaf"},
+        "beta": set(),
+        "leaf": set(),
+    }
+
+    closures = cli._module_dependency_closures(
+        module_deps,
+        {"main", "alpha", "beta", "leaf"},
+        module_order=["leaf", "alpha", "beta", "main"],
+        has_back_edges=False,
+    )
+
+    assert closures["leaf"] == frozenset({"leaf"})
+    assert closures["alpha"] == frozenset({"alpha", "leaf"})
+    assert closures["beta"] == frozenset({"beta"})
+    assert closures["main"] == frozenset({"main", "alpha", "beta", "leaf"})
+
+
+def test_module_dependency_closures_fallback_on_back_edges() -> None:
+    module_deps = {
+        "a": {"b"},
+        "b": {"a"},
+    }
+
+    closures = cli._module_dependency_closures(
+        module_deps,
+        {"a", "b"},
+        module_order=["a", "b"],
+        has_back_edges=True,
+    )
+
+    assert closures["a"] == frozenset({"a", "b"})
+    assert closures["b"] == frozenset({"a", "b"})
+
+
 def test_module_dependencies_from_imports_resolves_direct_graph_edges() -> None:
     module_graph = {
         "main": Path("/tmp/main.py"),
