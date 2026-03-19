@@ -9,8 +9,8 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 _intrinsics = _stdlib_intrinsics
 
-_require_intrinsic("molt_stdlib_probe", globals())
-_MOLT_STDLIB_CAP_HAS = _require_intrinsic("molt_capabilities_has", globals())
+_require_intrinsic("molt_stdlib_probe")
+_MOLT_STDLIB_CAP_HAS = _require_intrinsic("molt_capabilities_has")
 
 _modules = getattr(_sys, "modules", None)
 if isinstance(_modules, dict):
