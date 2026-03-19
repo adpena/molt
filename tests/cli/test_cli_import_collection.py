@@ -1089,6 +1089,44 @@ def test_backend_bin_path_is_cached(
     assert info.currsize >= 1
 
 
+def test_runtime_lib_path_is_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli._runtime_lib_path_cached.cache_clear()
+    cli._cargo_target_root_cached.cache_clear()
+    monkeypatch.setenv("CARGO_TARGET_DIR", "external-target")
+    monkeypatch.chdir(tmp_path)
+
+    first = cli._runtime_lib_path(tmp_path, "dev-fast", None)
+    second = cli._runtime_lib_path(tmp_path, "dev-fast", None)
+
+    info = cli._runtime_lib_path_cached.cache_info()
+    assert first == second == (
+        tmp_path / "external-target" / "dev-fast" / "libmolt_runtime.a"
+    )
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
+def test_runtime_lib_path_includes_target_triple(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli._runtime_lib_path_cached.cache_clear()
+    cli._cargo_target_root_cached.cache_clear()
+    monkeypatch.setenv("CARGO_TARGET_DIR", "external-target")
+    monkeypatch.chdir(tmp_path)
+
+    runtime_lib = cli._runtime_lib_path(tmp_path, "release", "aarch64-apple-darwin")
+
+    assert runtime_lib == (
+        tmp_path
+        / "external-target"
+        / "aarch64-apple-darwin"
+        / "release"
+        / "libmolt_runtime.a"
+    )
+
+
 def test_load_module_imports_reuses_persisted_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
