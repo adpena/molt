@@ -402,3 +402,6 @@ __all__ = [
     "REVERSE_IMPORT_MAPPING",
     "REVERSE_NAME_MAPPING",
 ]
+
+
+globals().pop("_require_intrinsic", None)

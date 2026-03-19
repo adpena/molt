@@ -23,3 +23,4 @@ class BZ2Decompressor:
 __all__ = ["BZ2Compressor", "BZ2Decompressor"]
 
 del _MOLT_CAPABILITIES_HAS
+globals().pop("_require_intrinsic", None)

@@ -40,3 +40,6 @@ def _getcodec(name):
 
 
 getcodec = _BuiltinFunctionOrMethod(_getcodec)
+
+
+globals().pop("_require_intrinsic", None)
