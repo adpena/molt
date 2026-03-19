@@ -430,114 +430,118 @@ fn handle_daemon_connection(
     active_config_digest: &mut Option<String>,
     started_at: Instant,
 ) -> io::Result<()> {
-    let raw_bytes = read_daemon_request_bytes(stream)?;
-    stats.requests_total = stats.requests_total.saturating_add(1);
-    if raw_bytes.iter().all(|byte| byte.is_ascii_whitespace()) {
-        let response = DaemonResponse {
-            ok: false,
-            pong: false,
-            jobs: Vec::new(),
-            error: Some("empty request".to_string()),
-            health: None,
-        };
-        write_daemon_response(stream, &response)?;
-        return Ok(());
-    }
-    let req: DaemonRequest = match serde_json::from_slice(&raw_bytes) {
-        Ok(req) => req,
-        Err(err) => {
+    loop {
+        let raw_bytes = read_daemon_request_bytes(stream)?;
+        if raw_bytes.is_empty() {
+            return Ok(());
+        }
+        stats.requests_total = stats.requests_total.saturating_add(1);
+        if raw_bytes.iter().all(|byte| byte.is_ascii_whitespace()) {
             let response = DaemonResponse {
                 ok: false,
                 pong: false,
                 jobs: Vec::new(),
-                error: Some(format!("invalid request JSON: {err}")),
+                error: Some("empty request".to_string()),
                 health: None,
             };
             write_daemon_response(stream, &response)?;
-            return Ok(());
+            continue;
         }
-    };
-    let include_health = req.include_health.unwrap_or(req.ping.unwrap_or(false));
-    let version = req.version.unwrap_or(0);
-    if version != BACKEND_DAEMON_PROTOCOL_VERSION {
-        let response = DaemonResponse {
-            ok: false,
-            pong: false,
-            jobs: Vec::new(),
-            error: Some(format!(
-                "unsupported protocol version {version}; expected {BACKEND_DAEMON_PROTOCOL_VERSION}"
-            )),
-            health: include_health.then(|| daemon_health(cache, stats, started_at)),
+        let req: DaemonRequest = match serde_json::from_slice(&raw_bytes) {
+            Ok(req) => req,
+            Err(err) => {
+                let response = DaemonResponse {
+                    ok: false,
+                    pong: false,
+                    jobs: Vec::new(),
+                    error: Some(format!("invalid request JSON: {err}")),
+                    health: None,
+                };
+                write_daemon_response(stream, &response)?;
+                continue;
+            }
         };
-        write_daemon_response(stream, &response)?;
-        return Ok(());
-    }
-    if req.ping.unwrap_or(false) {
+        let include_health = req.include_health.unwrap_or(req.ping.unwrap_or(false));
+        let version = req.version.unwrap_or(0);
+        if version != BACKEND_DAEMON_PROTOCOL_VERSION {
+            let response = DaemonResponse {
+                ok: false,
+                pong: false,
+                jobs: Vec::new(),
+                error: Some(format!(
+                    "unsupported protocol version {version}; expected {BACKEND_DAEMON_PROTOCOL_VERSION}"
+                )),
+                health: include_health.then(|| daemon_health(cache, stats, started_at)),
+            };
+            write_daemon_response(stream, &response)?;
+            continue;
+        }
+        if req.ping.unwrap_or(false) {
+            let response = DaemonResponse {
+                ok: true,
+                pong: true,
+                jobs: Vec::new(),
+                error: None,
+                health: Some(daemon_health(cache, stats, started_at)),
+            };
+            write_daemon_response(stream, &response)?;
+            continue;
+        }
+        let request_config_digest = req
+            .config_digest
+            .as_deref()
+            .map(str::trim)
+            .filter(|digest| !digest.is_empty())
+            .map(|digest| digest.to_string());
+        if let Some(ref digest) = request_config_digest
+            && active_config_digest.as_deref() != Some(digest.as_str())
+        {
+            cache.clear();
+            *active_config_digest = Some(digest.clone());
+        }
+        let Some(jobs) = req.jobs else {
+            let response = DaemonResponse {
+                ok: false,
+                pong: false,
+                jobs: Vec::new(),
+                error: Some("missing jobs in request".to_string()),
+                health: include_health.then(|| daemon_health(cache, stats, started_at)),
+            };
+            write_daemon_response(stream, &response)?;
+            continue;
+        };
+        if jobs.is_empty() {
+            let response = DaemonResponse {
+                ok: false,
+                pong: false,
+                jobs: Vec::new(),
+                error: Some("empty jobs in request".to_string()),
+                health: include_health.then(|| daemon_health(cache, stats, started_at)),
+            };
+            write_daemon_response(stream, &response)?;
+            continue;
+        }
+        stats.jobs_total = stats.jobs_total.saturating_add(jobs.len() as u64);
+        let mut results = Vec::with_capacity(jobs.len());
+        for job in jobs {
+            let result = compile_single_job(job, cache);
+            if result.ok && result.cached {
+                stats.cache_hits = stats.cache_hits.saturating_add(1);
+            } else {
+                stats.cache_misses = stats.cache_misses.saturating_add(1);
+            }
+            results.push(result);
+        }
+        let all_ok = results.iter().all(|job| job.ok);
         let response = DaemonResponse {
-            ok: true,
-            pong: true,
-            jobs: Vec::new(),
+            ok: all_ok,
+            pong: false,
+            jobs: results,
             error: None,
-            health: Some(daemon_health(cache, stats, started_at)),
-        };
-        write_daemon_response(stream, &response)?;
-        return Ok(());
-    }
-    let request_config_digest = req
-        .config_digest
-        .as_deref()
-        .map(str::trim)
-        .filter(|digest| !digest.is_empty())
-        .map(|digest| digest.to_string());
-    if let Some(ref digest) = request_config_digest
-        && active_config_digest.as_deref() != Some(digest.as_str())
-    {
-        cache.clear();
-        *active_config_digest = Some(digest.clone());
-    }
-    let Some(jobs) = req.jobs else {
-        let response = DaemonResponse {
-            ok: false,
-            pong: false,
-            jobs: Vec::new(),
-            error: Some("missing jobs in request".to_string()),
             health: include_health.then(|| daemon_health(cache, stats, started_at)),
         };
         write_daemon_response(stream, &response)?;
-        return Ok(());
-    };
-    if jobs.is_empty() {
-        let response = DaemonResponse {
-            ok: false,
-            pong: false,
-            jobs: Vec::new(),
-            error: Some("empty jobs in request".to_string()),
-            health: include_health.then(|| daemon_health(cache, stats, started_at)),
-        };
-        write_daemon_response(stream, &response)?;
-        return Ok(());
     }
-    stats.jobs_total = stats.jobs_total.saturating_add(jobs.len() as u64);
-    let mut results = Vec::with_capacity(jobs.len());
-    for job in jobs {
-        let result = compile_single_job(job, cache);
-        if result.ok && result.cached {
-            stats.cache_hits = stats.cache_hits.saturating_add(1);
-        } else {
-            stats.cache_misses = stats.cache_misses.saturating_add(1);
-        }
-        results.push(result);
-    }
-    let all_ok = results.iter().all(|job| job.ok);
-    let response = DaemonResponse {
-        ok: all_ok,
-        pong: false,
-        jobs: results,
-        error: None,
-        health: include_health.then(|| daemon_health(cache, stats, started_at)),
-    };
-    write_daemon_response(stream, &response)?;
-    Ok(())
 }
 
 #[cfg(unix)]
@@ -553,7 +557,8 @@ fn write_daemon_response(
     stream: &mut std::os::unix::net::UnixStream,
     response: &DaemonResponse,
 ) -> io::Result<()> {
-    let payload = serde_json::to_vec(response).map_err(io::Error::other)?;
+    let mut payload = serde_json::to_vec(response).map_err(io::Error::other)?;
+    payload.push(b'\n');
     stream.write_all(&payload)?;
     Ok(())
 }

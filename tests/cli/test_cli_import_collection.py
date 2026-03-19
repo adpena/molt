@@ -2305,6 +2305,102 @@ def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
     assert payload["pgo_hot_functions"] == ["main::hot"]
 
 
+def test_build_scoped_known_classes_snapshot_precomputes_parallel_views() -> None:
+    scoped = cli._build_scoped_known_classes_snapshot(
+        {"main", "alpha"},
+        module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
+        module_dep_closures={
+            "main": frozenset({"main", "alpha"}),
+            "alpha": frozenset({"alpha"}),
+        },
+        known_classes_snapshot={
+            "MainClass": {"module": "main", "fields": {}},
+            "DepClass": {"module": "alpha", "fields": {}},
+            "UnrelatedClass": {"module": "unrelated", "fields": {}},
+        },
+    )
+
+    assert set(scoped["main"]) == {"MainClass", "DepClass"}
+    assert set(scoped["alpha"]) == {"DepClass"}
+
+
+def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_graph = {
+        "main": tmp_path / "main.py",
+        "alpha": tmp_path / "alpha.py",
+    }
+    module_sources = {
+        "main": "import alpha\n",
+        "alpha": "VALUE = 1\n",
+    }
+    for path, source in zip(
+        module_graph.values(), module_sources.values(), strict=False
+    ):
+        path.write_text(source)
+
+    original = cli._scoped_known_classes
+    calls = 0
+
+    def wrapped_scoped_known_classes(
+        *args: object, **kwargs: object
+    ) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "_scoped_known_classes", wrapped_scoped_known_classes)
+    monkeypatch.setattr(
+        cli, "_load_cached_module_lowering_result", lambda *args, **kwargs: None
+    )
+
+    cached_results, worker_payloads, context_digest_by_module, batch_error = (
+        cli._prepare_frontend_parallel_batch(
+            ["main", "alpha"],
+            module_graph=module_graph,
+            module_sources=module_sources,
+            generated_module_source_paths={},
+            project_root=tmp_path,
+            entry_module="__main__",
+            known_classes_snapshot={
+                "MainClass": {"module": "main", "fields": {}},
+                "DepClass": {"module": "alpha", "fields": {}},
+                "UnrelatedClass": {"module": "unrelated", "fields": {}},
+            },
+            module_resolution_cache=cli._ModuleResolutionCache(),
+            parse_codec="json",
+            type_hint_policy="ignore",
+            fallback_policy="error",
+            type_facts=None,
+            enable_phi=True,
+            known_modules={"main", "alpha"},
+            stdlib_allowlist=set(),
+            known_func_defaults={},
+            module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
+            namespace_module_names=set(),
+            is_wasm=False,
+            module_chunk_max_ops=0,
+            optimization_profile="dev",
+            pgo_hot_function_names=set(),
+            known_modules_sorted=("alpha", "main"),
+            stdlib_allowlist_sorted=(),
+            pgo_hot_function_names_sorted=(),
+            module_dep_closures={
+                "main": frozenset({"main", "alpha"}),
+                "alpha": frozenset({"alpha"}),
+            },
+            dirty_lowering_modules={"main", "alpha"},
+        )
+    )
+
+    assert batch_error is None
+    assert cached_results == {}
+    assert len(worker_payloads) == 2
+    assert set(context_digest_by_module) == {"main", "alpha"}
+    assert calls == 2
+
+
 def test_module_lowering_context_payload_scopes_type_facts() -> None:
     type_facts = TypeFacts(
         modules={
@@ -4054,33 +4150,52 @@ def test_compile_with_backend_daemon_probes_cache_without_ir_on_hit(
     backend_output = tmp_path / "output.o"
     seen_payloads: list[dict[str, object]] = []
 
-    def _fake_request(
-        socket_path: Path,
-        data: bytes,
-        *,
-        timeout: float | None,
-    ) -> tuple[dict[str, object], None]:
-        del socket_path, timeout
-        payload = json.loads(data)
-        seen_payloads.append(payload)
-        backend_output.write_bytes(b"\x7fELF")
-        return (
-            {
-                "ok": True,
-                "jobs": [
-                    {
-                        "id": "job0",
-                        "ok": True,
-                        "cached": True,
-                        "cache_tier": "module",
-                        "output_written": True,
-                    }
-                ],
-            },
-            None,
-        )
+    class _FakeSocket:
+        def __init__(self) -> None:
+            self._chunks: list[bytes] = []
 
-    monkeypatch.setattr(cli, "_backend_daemon_request_bytes", _fake_request)
+        def settimeout(self, timeout: float) -> None:
+            assert timeout == 0.1
+
+        def connect(self, address: str) -> None:
+            assert address == "/tmp/fake.sock"
+
+        def sendall(self, data: bytes) -> None:
+            payload = json.loads(data)
+            seen_payloads.append(payload)
+            backend_output.write_bytes(b"\x7fELF")
+            self._chunks = [
+                json.dumps(
+                    {
+                        "ok": True,
+                        "jobs": [
+                            {
+                                "id": "job0",
+                                "ok": True,
+                                "cached": True,
+                                "cache_tier": "module",
+                                "output_written": True,
+                            }
+                        ],
+                    }
+                ).encode("utf-8")
+                + b"\n"
+            ]
+
+        def shutdown(self, how: int) -> None:
+            assert how in (cli.socket.SHUT_WR,)
+
+        def recv_into(self, buffer: memoryview) -> int:
+            if not self._chunks:
+                return 0
+            chunk = self._chunks.pop(0)
+            buffer[: len(chunk)] = chunk
+            return len(chunk)
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
     result = cli._compile_with_backend_daemon(
         Path("/tmp/fake.sock"),
         ir={"functions": [{"name": "heavy"}]},
@@ -4107,19 +4222,25 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
 ) -> None:
     backend_output = tmp_path / "output.o"
     seen_payloads: list[dict[str, object]] = []
+    connects = 0
 
-    def _fake_request(
-        socket_path: Path,
-        data: bytes,
-        *,
-        timeout: float | None,
-    ) -> tuple[dict[str, object], None]:
-        del socket_path, timeout
-        payload = json.loads(data)
-        seen_payloads.append(payload)
-        if len(seen_payloads) == 1:
-            return (
-                {
+    class _FakeSocket:
+        def __init__(self) -> None:
+            self._chunks: list[bytes] = []
+
+        def settimeout(self, timeout: float) -> None:
+            assert timeout == 0.1
+
+        def connect(self, address: str) -> None:
+            nonlocal connects
+            connects += 1
+            assert address == "/tmp/fake.sock"
+
+        def sendall(self, data: bytes) -> None:
+            payload = json.loads(data)
+            seen_payloads.append(payload)
+            if len(seen_payloads) == 1:
+                response = {
                     "ok": True,
                     "jobs": [
                         {
@@ -4130,26 +4251,36 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
                             "needs_ir": True,
                         }
                     ],
-                },
-                None,
-            )
-        backend_output.write_bytes(b"\x7fELF")
-        return (
-            {
-                "ok": True,
-                "jobs": [
-                    {
-                        "id": "job0",
-                        "ok": True,
-                        "cached": False,
-                        "output_written": True,
-                    }
-                ],
-            },
-            None,
-        )
+                }
+            else:
+                backend_output.write_bytes(b"\x7fELF")
+                response = {
+                    "ok": True,
+                    "jobs": [
+                        {
+                            "id": "job0",
+                            "ok": True,
+                            "cached": False,
+                            "output_written": True,
+                        }
+                    ],
+                }
+            self._chunks = [json.dumps(response).encode("utf-8") + b"\n"]
 
-    monkeypatch.setattr(cli, "_backend_daemon_request_bytes", _fake_request)
+        def shutdown(self, how: int) -> None:
+            assert how in (cli.socket.SHUT_WR,)
+
+        def recv_into(self, buffer: memoryview) -> int:
+            if not self._chunks:
+                return 0
+            chunk = self._chunks.pop(0)
+            buffer[: len(chunk)] = chunk
+            return len(chunk)
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
     result = cli._compile_with_backend_daemon(
         Path("/tmp/fake.sock"),
         ir={"functions": [{"name": "heavy"}]},
@@ -4166,6 +4297,7 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
 
     assert result.ok is True
     assert len(seen_payloads) == 2
+    assert connects == 1
     assert seen_payloads[0]["jobs"][0]["probe_cache_only"] is True
     assert "ir" not in seen_payloads[0]["jobs"][0]
     assert seen_payloads[1]["jobs"][0]["ir"] == {"functions": [{"name": "heavy"}]}
@@ -4188,18 +4320,21 @@ def test_compile_with_backend_daemon_defers_full_encode_until_probe_miss(
         )
         return original(**kwargs)
 
-    def _fake_request(
-        socket_path: Path,
-        data: bytes,
-        *,
-        timeout: float | None,
-    ) -> tuple[dict[str, object], None]:
-        del socket_path, timeout
-        payload = json.loads(data)
-        if payload["jobs"][0].get("probe_cache_only"):
-            backend_output.write_bytes(b"\x7fELF")
-            return (
-                {
+    class _FakeSocket:
+        def __init__(self) -> None:
+            self._chunks: list[bytes] = []
+
+        def settimeout(self, timeout: float) -> None:
+            assert timeout == 0.1
+
+        def connect(self, address: str) -> None:
+            assert address == "/tmp/fake.sock"
+
+        def sendall(self, data: bytes) -> None:
+            payload = json.loads(data)
+            if payload["jobs"][0].get("probe_cache_only"):
+                backend_output.write_bytes(b"\x7fELF")
+                response = {
                     "ok": True,
                     "jobs": [
                         {
@@ -4210,15 +4345,28 @@ def test_compile_with_backend_daemon_defers_full_encode_until_probe_miss(
                             "output_written": True,
                         }
                     ],
-                },
-                None,
-            )
-        raise AssertionError("full IR request should not be sent on cache hit")
+                }
+                self._chunks = [json.dumps(response).encode("utf-8") + b"\n"]
+                return
+            raise AssertionError("full IR request should not be sent on cache hit")
+
+        def shutdown(self, how: int) -> None:
+            assert how in (cli.socket.SHUT_WR,)
+
+        def recv_into(self, buffer: memoryview) -> int:
+            if not self._chunks:
+                return 0
+            chunk = self._chunks.pop(0)
+            buffer[: len(chunk)] = chunk
+            return len(chunk)
+
+        def close(self) -> None:
+            return None
 
     monkeypatch.setattr(
         cli, "_backend_daemon_compile_request_bytes", wrapped_compile_request_bytes
     )
-    monkeypatch.setattr(cli, "_backend_daemon_request_bytes", _fake_request)
+    monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
     result = cli._compile_with_backend_daemon(
         Path("/tmp/fake.sock"),
         ir={"functions": [{"name": "heavy"}]},

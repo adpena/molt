@@ -3113,6 +3113,24 @@ def _build_scoped_lowering_inputs(
     )
 
 
+def _build_scoped_known_classes_snapshot(
+    module_names: Collection[str],
+    *,
+    module_deps: dict[str, set[str]],
+    module_dep_closures: dict[str, frozenset[str]],
+    known_classes_snapshot: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    scoped_known_classes_by_module: dict[str, dict[str, Any]] = {}
+    for module_name in sorted(module_names):
+        scoped_known_classes_by_module[module_name] = _scoped_known_classes(
+            module_name,
+            module_deps=module_deps,
+            known_classes=known_classes_snapshot,
+            module_dep_closures=module_dep_closures,
+        )
+    return scoped_known_classes_by_module
+
+
 def _build_module_lowering_metadata(
     module_graph: Mapping[str, Path],
     *,
@@ -6674,16 +6692,32 @@ def _backend_daemon_request_bytes(
             if timeout is not None:
                 sock.settimeout(timeout)
             sock.connect(str(socket_path))
-            sock.sendall(data)
+            return _backend_daemon_request_on_socket(sock, data, shutdown_write=True)
+    except OSError as exc:
+        return None, f"backend daemon connection failed: {exc}"
+
+
+def _backend_daemon_request_on_socket(
+    sock: socket.socket,
+    data: bytes,
+    *,
+    shutdown_write: bool,
+) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        sock.sendall(data)
+        if shutdown_write:
             sock.shutdown(socket.SHUT_WR)
-            raw = bytearray()
-            recv_buffer = bytearray(65536)
-            recv_view = memoryview(recv_buffer)
-            while True:
-                received = sock.recv_into(recv_view)
-                if received == 0:
-                    break
-                raw.extend(recv_view[:received])
+        raw = bytearray()
+        recv_buffer = bytearray(65536)
+        recv_view = memoryview(recv_buffer)
+        while True:
+            received = sock.recv_into(recv_view)
+            if received == 0:
+                break
+            raw.extend(recv_view[:received])
+            if b"\n" in raw:
+                raw = raw.partition(b"\n")[0]
+                break
     except OSError as exc:
         return None, f"backend daemon connection failed: {exc}"
     if not raw or all(byte in b" \t\r\n" for byte in raw):
@@ -6947,6 +6981,7 @@ def _compile_with_backend_daemon(
 ) -> _BackendDaemonCompileResult:
     full_request_bytes = request_bytes
     probe_request_bytes: bytes | None = None
+    probe_followup_socket: socket.socket | None = None
     if request_bytes is None and (cache_key or function_cache_key):
         probe_request_bytes, probe_encode_err = _backend_daemon_compile_request_bytes(
             ir=None,
@@ -6983,12 +7018,43 @@ def _compile_with_backend_daemon(
                 False, encode_err, None, None, None, True, False
             )
         assert full_request_bytes is not None
-    response, err = _backend_daemon_request_bytes(
-        socket_path, probe_request_bytes or full_request_bytes, timeout=timeout
-    )
+    if probe_request_bytes is not None:
+        try:
+            probe_followup_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            if timeout is not None:
+                probe_followup_socket.settimeout(timeout)
+            probe_followup_socket.connect(str(socket_path))
+            response, err = _backend_daemon_request_on_socket(
+                probe_followup_socket,
+                probe_request_bytes,
+                shutdown_write=False,
+            )
+        except OSError as exc:
+            if probe_followup_socket is not None:
+                with contextlib.suppress(OSError):
+                    probe_followup_socket.close()
+            return _BackendDaemonCompileResult(
+                False,
+                f"backend daemon connection failed: {exc}",
+                None,
+                None,
+                None,
+                True,
+                False,
+            )
+    else:
+        response, err = _backend_daemon_request_bytes(
+            socket_path, full_request_bytes, timeout=timeout
+        )
     if err is not None:
+        if probe_followup_socket is not None:
+            with contextlib.suppress(OSError):
+                probe_followup_socket.close()
         return _BackendDaemonCompileResult(False, err, None, None, None, True, False)
     if response is None:
+        if probe_followup_socket is not None:
+            with contextlib.suppress(OSError):
+                probe_followup_socket.close()
         return _BackendDaemonCompileResult(
             False,
             "backend daemon returned no response",
@@ -7069,14 +7135,21 @@ def _compile_with_backend_daemon(
                     False, encode_err, health, None, None, True, False
                 )
             assert full_request_bytes is not None
-        response, err = _backend_daemon_request_bytes(
-            socket_path, full_request_bytes, timeout=timeout
+        assert probe_followup_socket is not None
+        response, err = _backend_daemon_request_on_socket(
+            probe_followup_socket,
+            full_request_bytes,
+            shutdown_write=True,
         )
         if err is not None:
+            with contextlib.suppress(OSError):
+                probe_followup_socket.close()
             return _BackendDaemonCompileResult(
                 False, err, health, None, None, True, False
             )
         if response is None:
+            with contextlib.suppress(OSError):
+                probe_followup_socket.close()
             return _BackendDaemonCompileResult(
                 False,
                 "backend daemon returned no response",
@@ -7135,6 +7208,9 @@ def _compile_with_backend_daemon(
             else True
         )
         output_exists = not output_written
+    if probe_followup_socket is not None:
+        with contextlib.suppress(OSError):
+            probe_followup_socket.close()
     if not bool(first.get("ok")):
         message = first.get("message")
         if isinstance(message, str) and message:
@@ -7947,6 +8023,7 @@ def _module_lowering_context_payload(
     pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
     module_dep_closures: dict[str, frozenset[str]] | None = None,
     scoped_known_modules_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
     scoped_known_func_defaults_by_module: Mapping[str, dict[str, dict[str, Any]]]
     | None = None,
     scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]]
@@ -8008,12 +8085,18 @@ def _module_lowering_context_payload(
             known_func_defaults=known_func_defaults,
             module_dep_closures=module_dep_closures,
         )
-    scoped_known_classes = _scoped_known_classes(
-        module_name,
-        module_deps=module_deps,
-        known_classes=known_classes_snapshot,
-        module_dep_closures=module_dep_closures,
-    )
+    if (
+        scoped_known_classes_by_module is not None
+        and module_name in scoped_known_classes_by_module
+    ):
+        scoped_known_classes = scoped_known_classes_by_module[module_name]
+    else:
+        scoped_known_classes = _scoped_known_classes(
+            module_name,
+            module_deps=module_deps,
+            known_classes=known_classes_snapshot,
+            module_dep_closures=module_dep_closures,
+        )
     if (
         scoped_type_facts_by_module is not None
         and module_name in scoped_type_facts_by_module
@@ -8159,6 +8242,7 @@ def _load_cached_module_lowering_result(
     pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
     module_dep_closures: dict[str, frozenset[str]] | None = None,
     scoped_known_modules_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
     scoped_known_func_defaults_by_module: Mapping[str, dict[str, dict[str, Any]]]
     | None = None,
     scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]]
@@ -8199,6 +8283,7 @@ def _load_cached_module_lowering_result(
             pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
             module_dep_closures=module_dep_closures,
             scoped_known_modules_by_module=scoped_known_modules_by_module,
+            scoped_known_classes_by_module=scoped_known_classes_by_module,
             scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
             scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
             scoped_type_facts_by_module=scoped_type_facts_by_module,
@@ -8244,6 +8329,7 @@ def _module_worker_payload(
     pgo_hot_function_names: Collection[str],
     module_dep_closures: dict[str, frozenset[str]],
     scoped_known_modules_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
     scoped_known_func_defaults_by_module: Mapping[str, dict[str, dict[str, Any]]]
     | None = None,
     scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]]
@@ -8307,11 +8393,18 @@ def _module_worker_payload(
         "entry_module": entry_module,
         "enable_phi": enable_phi,
         "known_modules": list(scoped_known_modules),
-        "known_classes": _scoped_known_classes(
-            module_name,
-            module_deps=module_deps,
-            known_classes=known_classes_snapshot,
-            module_dep_closures=module_dep_closures,
+        "known_classes": (
+            scoped_known_classes_by_module[module_name]
+            if (
+                scoped_known_classes_by_module is not None
+                and module_name in scoped_known_classes_by_module
+            )
+            else _scoped_known_classes(
+                module_name,
+                module_deps=module_deps,
+                known_classes=known_classes_snapshot,
+                module_dep_closures=module_dep_closures,
+            )
         ),
         "stdlib_allowlist": list(stdlib_allowlist_sorted),
         "known_func_defaults": scoped_known_func_defaults,
@@ -8357,6 +8450,7 @@ def _prepare_frontend_parallel_batch(
     module_is_package_by_module: Mapping[str, bool] | None = None,
     path_stat_by_module: Mapping[str, os.stat_result | None] | None = None,
     scoped_known_modules_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
     scoped_known_func_defaults_by_module: Mapping[str, dict[str, dict[str, Any]]]
     | None = None,
     scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]]
@@ -8374,6 +8468,13 @@ def _prepare_frontend_parallel_batch(
     context_digest_by_module: dict[str, str] = {}
     module_chunking = is_wasm and module_chunk_max_ops > 0
     dirty_lowering = set(dirty_lowering_modules)
+    if scoped_known_classes_by_module is None:
+        scoped_known_classes_by_module = _build_scoped_known_classes_snapshot(
+            batch,
+            module_deps=module_deps,
+            module_dep_closures=module_dep_closures,
+            known_classes_snapshot=known_classes_snapshot,
+        )
     for module_name in batch:
         module_path = module_graph[module_name]
         logical_source_path = (
@@ -8431,6 +8532,7 @@ def _prepare_frontend_parallel_batch(
                 pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
                 module_dep_closures=module_dep_closures,
                 scoped_known_modules_by_module=scoped_known_modules_by_module,
+                scoped_known_classes_by_module=scoped_known_classes_by_module,
                 scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
                 scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
                 scoped_type_facts_by_module=scoped_type_facts_by_module,
@@ -8469,6 +8571,7 @@ def _prepare_frontend_parallel_batch(
                 pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
                 module_dep_closures=module_dep_closures,
                 scoped_known_modules_by_module=scoped_known_modules_by_module,
+                scoped_known_classes_by_module=scoped_known_classes_by_module,
                 scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
                 scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
                 scoped_type_facts_by_module=scoped_type_facts_by_module,
@@ -8514,6 +8617,7 @@ def _prepare_frontend_parallel_batch(
                     pgo_hot_function_names=pgo_hot_function_names_sorted,
                     module_dep_closures=module_dep_closures,
                     scoped_known_modules_by_module=scoped_known_modules_by_module,
+                    scoped_known_classes_by_module=scoped_known_classes_by_module,
                     scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
                     scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
                     scoped_type_facts_by_module=scoped_type_facts_by_module,
@@ -11959,6 +12063,14 @@ def build(
                 ):
                     layer_mode = "parallel"
                     known_classes_snapshot = dict(known_classes)
+                    scoped_known_classes_by_module = (
+                        _build_scoped_known_classes_snapshot(
+                            candidates,
+                            module_deps=module_deps,
+                            module_dep_closures=module_dep_closures,
+                            known_classes_snapshot=known_classes_snapshot,
+                        )
+                    )
                     layer_workers = min(layer_workers, len(candidates))
                     layer_failure_detail = ""
                     for batch_start in range(0, len(candidates), layer_workers):
@@ -12003,6 +12115,7 @@ def build(
                             module_is_package_by_module=module_is_package_by_module,
                             path_stat_by_module=module_path_stats,
                             scoped_known_modules_by_module=scoped_known_modules_by_module,
+                            scoped_known_classes_by_module=scoped_known_classes_by_module,
                             scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
                             scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
                             scoped_type_facts_by_module=scoped_type_facts_by_module,
