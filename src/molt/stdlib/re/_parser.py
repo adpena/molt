@@ -34,3 +34,5 @@ def parse(pattern: str, flags: int = 0) -> Any:
     if parser is None:
         raise RuntimeError("re parser unavailable in this build")
     return parser(pattern).parse()
+
+globals().pop("_require_intrinsic", None)

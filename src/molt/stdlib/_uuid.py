@@ -23,3 +23,5 @@ __all__ = [
     "has_stable_extractable_node",
     "has_uuid_generate_time_safe",
 ]
+
+globals().pop("_require_intrinsic", None)

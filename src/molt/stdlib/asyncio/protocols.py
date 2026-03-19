@@ -21,3 +21,5 @@ __all__ = [
     "Protocol",
     "SubprocessProtocol",
 ]
+
+globals().pop("_require_intrinsic", None)

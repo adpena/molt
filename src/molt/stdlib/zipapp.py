@@ -62,3 +62,5 @@ def is_archive(path: str | os.PathLike[str]) -> bool:
 
 
 __all__ = ["create_archive", "is_archive"]
+
+globals().pop("_require_intrinsic", None)

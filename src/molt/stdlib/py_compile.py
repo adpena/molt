@@ -34,3 +34,5 @@ def compile(
     if not isinstance(out, str):
         raise RuntimeError("py_compile.compile intrinsic returned invalid value")
     return out
+
+globals().pop("_require_intrinsic", None)

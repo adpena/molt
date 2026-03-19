@@ -16,3 +16,5 @@ _require_intrinsic("molt_path_join")
 PathLike: TypeAlias = os.PathLike
 
 __all__ = ["PathLike"]
+
+globals().pop("_require_intrinsic", None)

@@ -30,3 +30,5 @@ def insort_right(a, x, lo=0, hi=None, *, key=None):
 
 bisect = bisect_right
 insort = insort_right
+
+globals().pop("_require_intrinsic", None)

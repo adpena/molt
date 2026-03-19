@@ -192,3 +192,5 @@ for _name in (
     "_MISSING",
 ):
     globals().pop(_name, None)
+
+globals().pop("_require_intrinsic", None)

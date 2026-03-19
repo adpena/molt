@@ -28,3 +28,5 @@ class Timer:
 
 
 __all__ = ["Timer", "timeit"]
+
+globals().pop("_require_intrinsic", None)

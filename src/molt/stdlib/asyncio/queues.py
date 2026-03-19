@@ -28,3 +28,5 @@ __all__ = [
     "locks",
     "mixins",
 ]
+
+globals().pop("_require_intrinsic", None)

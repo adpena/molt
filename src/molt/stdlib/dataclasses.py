@@ -808,3 +808,5 @@ __all__ = [
     "make_dataclass",
     "replace",
 ]
+
+globals().pop("_require_intrinsic", None)

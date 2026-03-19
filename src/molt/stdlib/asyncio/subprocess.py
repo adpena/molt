@@ -39,3 +39,5 @@ __all__ = [
     "subprocess",
     "tasks",
 ]
+
+globals().pop("_require_intrinsic", None)

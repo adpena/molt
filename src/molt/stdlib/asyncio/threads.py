@@ -13,3 +13,5 @@ import asyncio.events as events
 from asyncio import to_thread
 
 __all__ = ["contextvars", "events", "functools", "to_thread"]
+
+globals().pop("_require_intrinsic", None)

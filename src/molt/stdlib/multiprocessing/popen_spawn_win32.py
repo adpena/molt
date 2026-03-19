@@ -9,3 +9,5 @@ if _os.name != "nt":
     raise ModuleNotFoundError("No module named 'msvcrt'")
 
 import msvcrt  # noqa: F401
+
+globals().pop("_require_intrinsic", None)

@@ -96,3 +96,5 @@ class SystemRandom:
 
     def choice(self, seq):
         return choice(seq)
+
+globals().pop("_require_intrinsic", None)

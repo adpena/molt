@@ -240,3 +240,5 @@ __all__ = [
     "ready_to_import",
     "unload",
 ]
+
+globals().pop("_require_intrinsic", None)

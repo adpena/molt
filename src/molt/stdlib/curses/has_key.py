@@ -9,3 +9,5 @@ _require_intrinsic("molt_capabilities_has")
 
 def has_key(_ch: int) -> bool:
     return False
+
+globals().pop("_require_intrinsic", None)

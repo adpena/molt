@@ -74,3 +74,5 @@ __all__ = [
 
 del _MOLT_TOKENIZE_RUNTIME_READY
 del _MOLT_TOKENIZE_SCAN
+
+globals().pop("_require_intrinsic", None)

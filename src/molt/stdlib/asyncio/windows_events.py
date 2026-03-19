@@ -76,3 +76,5 @@ else:
 
         def __repr__(self) -> str:
             return f"<IocpProactor concurrency={self._concurrency:#x}>"
+
+globals().pop("_require_intrinsic", None)

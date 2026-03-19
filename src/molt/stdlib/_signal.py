@@ -245,3 +245,5 @@ def sigpending() -> set[int]:
 def sigwait(sigset: Iterable[int]) -> int:
     """Wait for a signal."""
     return int(_MOLT_SIGNAL_SIGWAIT(list(sigset)))
+
+globals().pop("_require_intrinsic", None)

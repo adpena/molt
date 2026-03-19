@@ -89,3 +89,5 @@ def from_package(package: types.ModuleType):
 
 def as_file(path):
     return _resources_as_file(path)
+
+globals().pop("_require_intrinsic", None)

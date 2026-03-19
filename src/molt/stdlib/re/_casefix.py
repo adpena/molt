@@ -17,3 +17,5 @@ _require_intrinsic("molt_re_literal_advance")
 EXTRA_CASES: dict[int, str] = {}
 
 __all__ = ["EXTRA_CASES"]
+
+globals().pop("_require_intrinsic", None)

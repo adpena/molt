@@ -289,3 +289,5 @@ __all__ = [
     "PRESET_DEFAULT",
     "PRESET_EXTREME",
 ]
+
+globals().pop("_require_intrinsic", None)

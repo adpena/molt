@@ -49,3 +49,5 @@ __all__ = [
     "sha384",
     "sha512",
 ]
+
+globals().pop("_require_intrinsic", None)

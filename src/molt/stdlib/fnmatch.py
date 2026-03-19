@@ -40,3 +40,5 @@ def translate(pat: str) -> str:
     if not isinstance(out, str):
         raise RuntimeError("fnmatch translate intrinsic returned invalid value")
     return out
+
+globals().pop("_require_intrinsic", None)

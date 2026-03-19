@@ -501,3 +501,5 @@ if _HAS_DEVPOLL:
     __all__.append("devpoll")
 if _HAS_KQUEUE:
     __all__.extend(["kqueue", "kevent"])
+
+globals().pop("_require_intrinsic", None)

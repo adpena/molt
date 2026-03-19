@@ -272,3 +272,5 @@ def urlencode(query: Iterable, doseq: bool = False, safe: str = "") -> str:
     if not isinstance(out, str):
         raise RuntimeError("urllib.parse.urlencode intrinsic returned invalid value")
     return out
+
+globals().pop("_require_intrinsic", None)

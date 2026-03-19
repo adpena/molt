@@ -14,3 +14,5 @@ def check(_path: str) -> None:
 
 
 __all__ = ["check"]
+
+globals().pop("_require_intrinsic", None)

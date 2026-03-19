@@ -126,3 +126,5 @@ def __getattr__(name: str) -> Any:
     if _LOADED_EXTERNAL:
         raise AttributeError(name)
     raise RuntimeError(f"MOLT_COMPAT_ERROR: test.support.{name} is not supported")
+
+globals().pop("_require_intrinsic", None)

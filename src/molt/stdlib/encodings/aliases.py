@@ -461,3 +461,5 @@ _STATIC_ALIASES = {
     "x_mac_simp_chinese": "gb2312",
     "x_mac_trad_chinese": "big5",
 }  # end _STATIC_ALIASES — kept for reference only, not used at runtime
+
+globals().pop("_require_intrinsic", None)

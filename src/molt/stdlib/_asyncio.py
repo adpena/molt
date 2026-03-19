@@ -259,3 +259,5 @@ for _name in (
     "_MOLT_ASYNCIO_UNREGISTER_TASK",
 ):
     globals().pop(_name, None)
+
+globals().pop("_require_intrinsic", None)

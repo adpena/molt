@@ -1266,3 +1266,5 @@ def get_type_hints(
             evaluated = evaluated.__origin__
         hints[name] = evaluated
     return hints
+
+globals().pop("_require_intrinsic", None)

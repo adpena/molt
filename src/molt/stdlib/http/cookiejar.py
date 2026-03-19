@@ -64,3 +64,5 @@ class CookieJar:
             headers["Cookie"] = f"{cookie}; {header}"
         else:
             headers["Cookie"] = header
+
+globals().pop("_require_intrinsic", None)

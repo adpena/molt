@@ -341,3 +341,5 @@ def _open_source(filename: str):
         True,
         None,
     )
+
+globals().pop("_require_intrinsic", None)

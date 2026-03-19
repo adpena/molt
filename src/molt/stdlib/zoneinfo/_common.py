@@ -11,3 +11,5 @@ def __getattr__(attr: str):
     raise RuntimeError(
         'stdlib module "zoneinfo._common" is not fully lowered yet; only an intrinsic-first stub is available.'
     )
+
+globals().pop("_require_intrinsic", None)

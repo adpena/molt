@@ -245,3 +245,5 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 _MOLT_EMAIL_POLICY_NEW = _require_intrinsic("molt_email_policy_new")
+
+globals().pop("_require_intrinsic", None)

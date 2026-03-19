@@ -21,3 +21,5 @@ class Stats:
 
 
 __all__ = ["Stats"]
+
+globals().pop("_require_intrinsic", None)

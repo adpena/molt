@@ -298,3 +298,5 @@ def unique(enumeration: type) -> type:
 def verify(enumeration: type) -> type:
     """Class decorator that checks all enum members are valid."""
     return enumeration
+
+globals().pop("_require_intrinsic", None)

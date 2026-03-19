@@ -22,3 +22,5 @@ def find_library(name: str):
 
 def test() -> int:
     return 0
+
+globals().pop("_require_intrinsic", None)

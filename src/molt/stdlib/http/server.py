@@ -276,3 +276,5 @@ __all__ = [
     "time",
     "urllib",
 ]
+
+globals().pop("_require_intrinsic", None)

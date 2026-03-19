@@ -222,3 +222,5 @@ def capwords(s: str, sep: str | None = None) -> str:
     for part in s.split(sep):
         parts.append(_MOLT_STRING_CAPITALIZE(part))
     return sep.join(parts)
+
+globals().pop("_require_intrinsic", None)

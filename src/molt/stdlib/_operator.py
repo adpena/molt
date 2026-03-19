@@ -128,3 +128,5 @@ __all__ = [
     "truth",
     "xor",
 ]
+
+globals().pop("_require_intrinsic", None)

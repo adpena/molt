@@ -103,3 +103,5 @@ class SimpleXMLRPCServer:
 
 
 __all__ = ["SimpleXMLRPCServer"]
+
+globals().pop("_require_intrinsic", None)

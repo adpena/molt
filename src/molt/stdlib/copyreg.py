@@ -104,3 +104,5 @@ def __newobj__(cls: type, *args: object) -> object:
 __newobj_ex__ = _MOLT_COPYREG_NEWOBJ_EX
 _reconstructor = _MOLT_COPYREG_RECONSTRUCTOR
 _reduce_ex = _MOLT_COPYREG_REDUCE_EX
+
+globals().pop("_require_intrinsic", None)

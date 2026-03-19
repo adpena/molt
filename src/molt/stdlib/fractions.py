@@ -265,3 +265,5 @@ class Fraction:
 
 
 __all__ = ["Fraction"]
+
+globals().pop("_require_intrinsic", None)

@@ -256,3 +256,5 @@ def _possibly_sorted(x):
 
 aRepr = Repr()
 repr = aRepr.repr
+
+globals().pop("_require_intrinsic", None)

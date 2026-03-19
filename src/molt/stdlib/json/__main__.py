@@ -12,3 +12,5 @@ if __name__ == "__main__":
     import json.tool as _tool
 
     _tool.main()
+
+globals().pop("_require_intrinsic", None)

@@ -10,3 +10,5 @@ def __getattr__(attr: str):
     raise RuntimeError(
         'stdlib module "sqlite3.__main__" is not fully lowered yet; only an intrinsic-first stub is available.'
     )
+
+globals().pop("_require_intrinsic", None)

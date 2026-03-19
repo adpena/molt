@@ -176,3 +176,5 @@ class OrderedDict:
                 _MOLT_ORDEREDDICT_DROP(handle)
             except Exception:
                 pass
+
+globals().pop("_require_intrinsic", None)

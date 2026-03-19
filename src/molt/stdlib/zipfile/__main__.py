@@ -11,3 +11,5 @@ _require_intrinsic("molt_capabilities_has")
 
 if __name__ == "__main__":
     main()
+
+globals().pop("_require_intrinsic", None)

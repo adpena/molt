@@ -16,3 +16,5 @@ def py_make_scanner(_context):
         raise NotImplementedError("py_make_scanner runtime path is not implemented")
 
     return _scan_once
+
+globals().pop("_require_intrinsic", None)

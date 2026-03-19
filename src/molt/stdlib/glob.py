@@ -110,3 +110,5 @@ def glob1(dirname: Any, pattern: Any):
     """Deprecated: use glob.glob() with root_dir instead."""
     _warn_deprecated("glob.glob1")
     return glob(pattern, root_dir=dirname)
+
+globals().pop("_require_intrinsic", None)

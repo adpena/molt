@@ -144,3 +144,5 @@ __all__ = [
     "IS_LINE_JUNK",
     "IS_CHARACTER_JUNK",
 ]
+
+globals().pop("_require_intrinsic", None)

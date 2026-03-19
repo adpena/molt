@@ -27,3 +27,5 @@ def getpreferredencoding(do_setlocale: object = True) -> str:
 
 def getlocale(category: object | None = None) -> tuple[object, object]:
     return _MOLT_LOCALE_GETLOCALE(category)
+
+globals().pop("_require_intrinsic", None)

@@ -190,3 +190,5 @@ del _make_struct
 del PyCSimpleType
 del PyCPointerType
 del PyCStructType
+
+globals().pop("_require_intrinsic", None)

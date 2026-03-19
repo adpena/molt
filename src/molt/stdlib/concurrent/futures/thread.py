@@ -25,3 +25,5 @@ __all__ = [
     "types",
     "weakref",
 ]
+
+globals().pop("_require_intrinsic", None)

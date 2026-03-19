@@ -29,3 +29,5 @@ __all__ = [
 for _name in ("_require_intrinsic",):
     globals().pop(_name, None)
 globals().pop("_name", None)
+
+globals().pop("_require_intrinsic", None)

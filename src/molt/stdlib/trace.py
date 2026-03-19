@@ -36,3 +36,5 @@ class Trace:
 
 
 __all__ = ["Trace"]
+
+globals().pop("_require_intrinsic", None)

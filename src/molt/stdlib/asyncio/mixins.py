@@ -11,3 +11,5 @@ _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 import asyncio.events as events
 
 __all__ = ["events", "threading"]
+
+globals().pop("_require_intrinsic", None)

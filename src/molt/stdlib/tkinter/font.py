@@ -175,3 +175,5 @@ __all__ = [
     "nametofont",
     "names",
 ]
+
+globals().pop("_require_intrinsic", None)

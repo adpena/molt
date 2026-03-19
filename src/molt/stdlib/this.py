@@ -26,3 +26,5 @@ for _k, _v in d.items():
         raise RuntimeError("this intrinsic returned invalid payload")
 
 print(_decoded)
+
+globals().pop("_require_intrinsic", None)

@@ -346,3 +346,5 @@ def ip_network(
 ) -> IPv4Network:
     """Return an IPv4Network for *address*."""
     return IPv4Network(address, strict)
+
+globals().pop("_require_intrinsic", None)

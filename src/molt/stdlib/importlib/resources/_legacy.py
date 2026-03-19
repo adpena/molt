@@ -70,3 +70,5 @@ def is_resource(package: Package, name: str) -> bool:
 
 def path(package: Package, resource: Resource) -> ContextManager[pathlib.Path]:
     return _resources_path(package, normalize_path(resource))
+
+globals().pop("_require_intrinsic", None)

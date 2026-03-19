@@ -312,3 +312,5 @@ __all__ = [
     "askstring",
     "messagebox",
 ]
+
+globals().pop("_require_intrinsic", None)

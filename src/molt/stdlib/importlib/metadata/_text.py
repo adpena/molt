@@ -36,3 +36,5 @@ class FoldedCase(str):
         if other_text is NotImplemented:
             return NotImplemented
         return _MOLT_OPERATOR_LT(self.lower(), str(other_text).lower())
+
+globals().pop("_require_intrinsic", None)

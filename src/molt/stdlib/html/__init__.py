@@ -21,3 +21,5 @@ def unescape(s: str) -> str:
     """Convert all named and numeric character references (e.g. &gt;, &#62;,
     &x3e;) in the string s to the corresponding unicode characters."""
     return str(_molt_html_unescape(str(s)))
+
+globals().pop("_require_intrinsic", None)

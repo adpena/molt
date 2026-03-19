@@ -23,3 +23,5 @@ __all__ = [
     "sys",
     "types",
 ]
+
+globals().pop("_require_intrinsic", None)

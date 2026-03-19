@@ -41,3 +41,5 @@ __all__ = [
     "TypeVar",
     "TypeVarTuple",
 ]
+
+globals().pop("_require_intrinsic", None)

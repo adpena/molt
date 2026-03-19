@@ -290,3 +290,5 @@ for _name in (
     "_signal_raise_signal",
 ):
     globals().pop(_name, None)
+
+globals().pop("_require_intrinsic", None)

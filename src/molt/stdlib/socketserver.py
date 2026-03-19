@@ -550,3 +550,5 @@ __all__ = [
     "threading",
     "time",
 ]
+
+globals().pop("_require_intrinsic", None)

@@ -12,3 +12,5 @@ __all__ = [
     "warn",
     "warn_explicit",
 ]
+
+globals().pop("_require_intrinsic", None)

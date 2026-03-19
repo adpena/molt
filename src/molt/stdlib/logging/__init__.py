@@ -1420,3 +1420,5 @@ def _install_handlers_submodule() -> ModuleType:
 
 
 handlers = _install_handlers_submodule()
+
+globals().pop("_require_intrinsic", None)

@@ -395,3 +395,5 @@ if _default_selector_cls is SelectSelector:
             break
 
 DefaultSelector = _default_selector_cls
+
+globals().pop("_require_intrinsic", None)

@@ -209,3 +209,5 @@ def parse(
     return _MOLT_AST_PARSE(
         source, filename, mode, type_comments, feature_version, _AST_PARSE_CTORS
     )
+
+globals().pop("_require_intrinsic", None)

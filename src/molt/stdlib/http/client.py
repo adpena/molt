@@ -678,3 +678,5 @@ __all__ = [
     "sys",
     "urlsplit",
 ]
+
+globals().pop("_require_intrinsic", None)

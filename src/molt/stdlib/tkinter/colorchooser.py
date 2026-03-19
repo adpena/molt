@@ -40,3 +40,5 @@ def askcolor(color=None, **options):
 
 
 __all__ = ["Chooser", "Dialog", "askcolor"]
+
+globals().pop("_require_intrinsic", None)

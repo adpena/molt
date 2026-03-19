@@ -21,3 +21,5 @@ class Loader(metaclass=abc.ABCMeta):
         if not hasattr(self, "exec_module"):
             raise ImportError
         return _MOLT_IMPORTLIB_LOAD_MODULE_SHIM(_bootstrap, self, fullname)
+
+globals().pop("_require_intrinsic", None)

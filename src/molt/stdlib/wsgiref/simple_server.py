@@ -203,3 +203,5 @@ def make_server(
 
 
 __all__ = ["WSGIServer", "WSGIRequestHandler", "make_server"]
+
+globals().pop("_require_intrinsic", None)

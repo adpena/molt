@@ -79,3 +79,5 @@ else:
         """Subclass of subprocess.Popen using PipeHandle on Windows."""
 
         pass
+
+globals().pop("_require_intrinsic", None)

@@ -316,3 +316,5 @@ __all__ = [
     "Z_NO_FLUSH",
     "Z_SYNC_FLUSH",
 ]
+
+globals().pop("_require_intrinsic", None)

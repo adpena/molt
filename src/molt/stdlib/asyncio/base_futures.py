@@ -19,3 +19,5 @@ def isfuture(obj) -> bool:
 
 
 __all__ = ["format_helpers", "isfuture", "reprlib"]
+
+globals().pop("_require_intrinsic", None)

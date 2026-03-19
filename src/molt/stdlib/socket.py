@@ -974,3 +974,5 @@ def send_fds(sock, buffers, fds, flags=0, address=None):
 def recv_fds(sock, bufsize, maxfds, flags=0):
     """Receive file descriptors from a Unix socket using SCM_RIGHTS."""
     return _molt_socket_recv_fds(sock._handle, bufsize, maxfds, flags)
+
+globals().pop("_require_intrinsic", None)

@@ -54,3 +54,5 @@ __all__ = [
     "shake_128",
     "shake_256",
 ]
+
+globals().pop("_require_intrinsic", None)

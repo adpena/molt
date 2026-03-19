@@ -99,3 +99,5 @@ class DecompressReader(io.RawIOBase):
         if decomp is None:
             return False
         return getattr(decomp, "needs_input", True)  # type: ignore[union-attr]
+
+globals().pop("_require_intrinsic", None)

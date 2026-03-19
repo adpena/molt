@@ -284,3 +284,5 @@ def sigwait(sigset: Iterable[int]) -> int:
 # ---------------------------------------------------------------------------
 for _name in ("Iterable",):
     globals().pop(_name, None)
+
+globals().pop("_require_intrinsic", None)

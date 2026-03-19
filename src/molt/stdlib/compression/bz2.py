@@ -7,3 +7,5 @@ _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 from bz2 import *  # noqa: F401, F403
 from bz2 import __all__ as __all__  # noqa: F811
 from bz2 import BZ2Compressor, BZ2Decompressor  # noqa: F401
+
+globals().pop("_require_intrinsic", None)

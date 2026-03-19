@@ -20,3 +20,5 @@ __all__ = [
     "Transport",
     "WriteTransport",
 ]
+
+globals().pop("_require_intrinsic", None)

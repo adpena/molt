@@ -19,3 +19,5 @@ OPCODES: tuple[str, ...] = (
 )
 
 __all__ = ["OPCODES"]
+
+globals().pop("_require_intrinsic", None)

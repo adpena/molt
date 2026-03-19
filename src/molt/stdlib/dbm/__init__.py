@@ -32,3 +32,5 @@ def open(file: str, flag: str = "c", mode: int = 0o666) -> object:
     import dbm.dumb
 
     return dbm.dumb.open(file, flag, mode)
+
+globals().pop("_require_intrinsic", None)

@@ -135,3 +135,5 @@ def copy_context() -> "_Context":
 Token = _Token
 ContextVar = _ContextVar
 Context = _Context
+
+globals().pop("_require_intrinsic", None)

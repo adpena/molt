@@ -225,3 +225,5 @@ __all__ = [
     "ucd_3_2_0",
     "unidata_version",
 ]
+
+globals().pop("_require_intrinsic", None)

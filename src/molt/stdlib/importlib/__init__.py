@@ -136,3 +136,5 @@ def invalidate_caches() -> None:
 
 def reload(module):
     return _MOLT_IMPORTLIB_RELOAD(module, util, machinery, import_module)
+
+globals().pop("_require_intrinsic", None)

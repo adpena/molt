@@ -12,3 +12,5 @@ import asyncio.tasks as tasks
 from asyncio import TaskGroup
 
 __all__ = ["TaskGroup", "events", "exceptions", "tasks"]
+
+globals().pop("_require_intrinsic", None)

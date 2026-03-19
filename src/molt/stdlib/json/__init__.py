@@ -347,3 +347,5 @@ class JSONDecoder:
             )
         except ValueError as exc:
             _raise_json_decode_from_value_error(exc, s)
+
+globals().pop("_require_intrinsic", None)

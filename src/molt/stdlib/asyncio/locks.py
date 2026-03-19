@@ -25,3 +25,5 @@ __all__ = [
     "exceptions",
     "mixins",
 ]
+
+globals().pop("_require_intrinsic", None)

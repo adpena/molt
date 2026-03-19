@@ -212,3 +212,5 @@ __all__ = [
     "import_deprecated",
     "save_restore_warnings_filters",
 ]
+
+globals().pop("_require_intrinsic", None)

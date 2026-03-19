@@ -657,3 +657,5 @@ class _PureWindowsPath(Path):
 
 
 PureWindowsPath = _PureWindowsPath
+
+globals().pop("_require_intrinsic", None)

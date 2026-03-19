@@ -383,3 +383,5 @@ NAMESPACE_DNS = UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 NAMESPACE_URL = UUID("6ba7b811-9dad-11d1-80b4-00c04fd430c8")
 NAMESPACE_OID = UUID("6ba7b812-9dad-11d1-80b4-00c04fd430c8")
 NAMESPACE_X500 = UUID("6ba7b814-9dad-11d1-80b4-00c04fd430c8")
+
+globals().pop("_require_intrinsic", None)

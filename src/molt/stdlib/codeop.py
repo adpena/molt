@@ -52,3 +52,5 @@ class CommandCompiler:
         )
         self.compiler.flags = next_flags
         return codeob
+
+globals().pop("_require_intrinsic", None)

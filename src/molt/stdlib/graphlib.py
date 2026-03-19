@@ -88,3 +88,5 @@ class TopologicalSorter:
     @classmethod
     def __class_getitem__(cls, item):
         return GenericAlias(cls, item)
+
+globals().pop("_require_intrinsic", None)

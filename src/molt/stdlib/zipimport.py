@@ -241,3 +241,5 @@ class zipimporter:
         if not callable(get_reader):
             return None
         return get_reader(fullname)
+
+globals().pop("_require_intrinsic", None)

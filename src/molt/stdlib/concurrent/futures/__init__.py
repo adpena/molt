@@ -836,3 +836,5 @@ for _name in (
     "time",
 ):
     globals().pop(_name, None)
+
+globals().pop("_require_intrinsic", None)

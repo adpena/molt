@@ -762,3 +762,5 @@ def entry_points(**params) -> EntryPoints:
     if params and not use_runtime_filter:
         return cast(EntryPoints, entry_points_obj.select(**params))
     return entry_points_obj
+
+globals().pop("_require_intrinsic", None)

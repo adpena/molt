@@ -14,3 +14,5 @@ def compile(_pattern, _flags: int = 0):
 
 
 __all__ = ["compile"]
+
+globals().pop("_require_intrinsic", None)

@@ -1119,3 +1119,5 @@ def _wrap_bytes_repr(object: bytes, width: int, allowance: int):
             current = candidate
     if current:
         yield repr(current)
+
+globals().pop("_require_intrinsic", None)

@@ -504,3 +504,5 @@ class ConfigParser(RawConfigParser):
         return self._interpolation.before_get(
             self, str(section), str(option), value, defaults_dict
         )
+
+globals().pop("_require_intrinsic", None)

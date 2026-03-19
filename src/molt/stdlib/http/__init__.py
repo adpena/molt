@@ -97,3 +97,5 @@ def __getattr__(name: str):
 
 
 __all__ = ["HTTPStatus", "client", "cookiejar", "cookies", "server"]
+
+globals().pop("_require_intrinsic", None)

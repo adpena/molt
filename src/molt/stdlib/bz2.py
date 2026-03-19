@@ -203,3 +203,5 @@ __all__ = [
     "BZ2Compressor",
     "BZ2Decompressor",
 ]
+
+globals().pop("_require_intrinsic", None)

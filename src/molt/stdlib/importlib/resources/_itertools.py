@@ -10,3 +10,5 @@ _MOLT_IMPORTLIB_RESOURCES_ONLY = _require_intrinsic(
 
 def only(iterable, default=None, too_long=None):
     return _MOLT_IMPORTLIB_RESOURCES_ONLY(iterable, default, too_long)
+
+globals().pop("_require_intrinsic", None)

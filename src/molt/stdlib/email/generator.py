@@ -65,3 +65,5 @@ class BytesGenerator(Generator):
 
 class DecodedGenerator(Generator):
     pass
+
+globals().pop("_require_intrinsic", None)

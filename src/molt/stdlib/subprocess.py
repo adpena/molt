@@ -948,3 +948,5 @@ __all__ = [
 # ---------------------------------------------------------------------------
 for _name in ("Any",):
     globals().pop(_name, None)
+
+globals().pop("_require_intrinsic", None)

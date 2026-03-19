@@ -1198,3 +1198,5 @@ __all__ = [
     "setcontext",
     "localcontext",
 ]
+
+globals().pop("_require_intrinsic", None)

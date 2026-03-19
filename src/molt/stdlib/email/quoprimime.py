@@ -90,3 +90,5 @@ decodestring = decode
 
 def header_decode(s):
     return _MOLT_EMAIL_QUOPRIMIME_HEADER_DECODE(s)
+
+globals().pop("_require_intrinsic", None)

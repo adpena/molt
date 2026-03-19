@@ -151,3 +151,5 @@ class Message(_email_message.Message):
 
     def set_raw(self, name: str, value: str) -> None:
         super().__setitem__(name, value)
+
+globals().pop("_require_intrinsic", None)

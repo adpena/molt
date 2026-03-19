@@ -183,3 +183,5 @@ del PyCArrayType
 del PyCStructType
 del UnionType
 del CFunctionType
+
+globals().pop("_require_intrinsic", None)

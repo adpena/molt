@@ -64,3 +64,5 @@ class BytesFeedParser(FeedParser):
         if isinstance(data, (bytes, bytearray)):
             data = data.decode("utf-8", "replace")
         super().feed(data)
+
+globals().pop("_require_intrinsic", None)

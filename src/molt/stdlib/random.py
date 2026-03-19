@@ -367,3 +367,5 @@ def weibullvariate(alpha, beta):
 
 def binomialvariate(n=1, p=0.5):
     return _global.binomialvariate(n, p)
+
+globals().pop("_require_intrinsic", None)

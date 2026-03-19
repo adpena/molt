@@ -306,3 +306,5 @@ class addinfourl(addinfo):
         except Exception:
             pass
         self._molt_handle = None
+
+globals().pop("_require_intrinsic", None)

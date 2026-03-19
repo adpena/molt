@@ -22,3 +22,5 @@ def is_enabled() -> bool:
 
 
 __all__ = ["enable", "disable", "is_enabled"]
+
+globals().pop("_require_intrinsic", None)

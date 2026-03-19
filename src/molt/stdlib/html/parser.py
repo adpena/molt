@@ -117,3 +117,5 @@ class HTMLParser:
 
     def handle_pi(self, data: str) -> None:
         """Override to handle processing instructions (e.g. <?...>)."""
+
+globals().pop("_require_intrinsic", None)

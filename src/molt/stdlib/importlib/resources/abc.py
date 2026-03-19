@@ -119,3 +119,5 @@ class TraversableResources(ResourceReader):
 
     def contents(self) -> Iterator[str]:
         return (item.name for item in self.files().iterdir())
+
+globals().pop("_require_intrinsic", None)

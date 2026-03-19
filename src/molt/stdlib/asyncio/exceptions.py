@@ -28,3 +28,5 @@ __all__ = [
 
 for _name in ("QueueEmpty", "QueueFull", "QueueShutDown"):
     globals().pop(_name, None)
+
+globals().pop("_require_intrinsic", None)

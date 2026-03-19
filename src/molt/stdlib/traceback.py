@@ -415,3 +415,5 @@ def format_exc(limit: int | None = None) -> str:
 def print_exc(limit: int | None = None, file: Any | None = None) -> None:
     exc_type, value, tb = sys.exc_info()
     print_exception(exc_type, value, tb, limit, file)
+
+globals().pop("_require_intrinsic", None)

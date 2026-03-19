@@ -13,3 +13,5 @@ class error(Exception):
 
 library = "ndbm"
 open = len
+
+globals().pop("_require_intrinsic", None)

@@ -41,3 +41,5 @@ else:
         "SelectorEventLoop",
         "DefaultEventLoopPolicy",
     )
+
+globals().pop("_require_intrinsic", None)

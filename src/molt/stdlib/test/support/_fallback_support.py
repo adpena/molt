@@ -237,3 +237,5 @@ __all__ = [
     "use_resources",
     "verbose",
 ]
+
+globals().pop("_require_intrinsic", None)
