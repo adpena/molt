@@ -847,6 +847,23 @@ class _PreparedBuildConfig:
     capabilities_source: str | None
 
 
+@dataclass(frozen=True)
+class _PreparedFrontendAnalysis:
+    module_graph_metadata: _ModuleGraphMetadata
+    module_deps: dict[str, set[str]]
+    module_sources: dict[str, str]
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]]
+    module_trees: dict[str, ast.AST]
+    module_path_stats: dict[str, os.stat_result | None]
+    syntax_error_modules: dict[str, "ModuleSyntaxErrorInfo"]
+    module_order: list[str]
+    reverse_module_deps: dict[str, set[str]]
+    has_back_edges: bool
+    module_layers: list[list[str]]
+    module_dep_closures: dict[str, set[str]]
+    dirty_lowering_modules: set[str]
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -11699,6 +11716,113 @@ def _prepare_build_module_outputs(
     ), None
 
 
+def _prepare_frontend_analysis(
+    *,
+    module_graph: Mapping[str, Path],
+    module_graph_metadata: _ModuleGraphMetadata,
+    module_resolution_cache: "_ModuleResolutionCache",
+    project_root: Path,
+    entry_module: str,
+    json_output: bool,
+) -> tuple[_PreparedFrontendAnalysis | None, dict[str, Any] | None]:
+    module_deps: dict[str, set[str]] = {}
+    module_sources: dict[str, str] = {}
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]] = {}
+    module_trees: dict[str, ast.AST] = {}
+    module_path_stats: dict[str, os.stat_result | None] = {}
+    syntax_error_modules: dict[str, ModuleSyntaxErrorInfo] = {}
+    analysis_cache_miss_modules: set[str] = set()
+    interface_changed_modules: set[str] = set()
+    for module_name, module_path in module_graph.items():
+        try:
+            (
+                tree,
+                module_imports,
+                func_defaults,
+                source,
+                analysis_cache_hit,
+                interface_changed,
+                path_stat,
+            ) = _load_module_analysis(
+                module_path,
+                module_name=module_name,
+                is_package=module_graph_metadata.module_is_package_by_module[module_name],
+                include_nested=True,
+                source=None,
+                logical_source_path=module_graph_metadata.logical_source_path_by_module[
+                    module_name
+                ],
+                resolution_cache=module_resolution_cache,
+                project_root=project_root,
+            )
+            module_path_stats[module_name] = path_stat
+            if source is not None:
+                module_sources[module_name] = source
+            if not analysis_cache_hit:
+                analysis_cache_miss_modules.add(module_name)
+            if interface_changed:
+                interface_changed_modules.add(module_name)
+        except SyntaxError as exc:
+            if module_name == entry_module:
+                return None, _fail(
+                    f"Syntax error in {module_path}: {exc}",
+                    json_output,
+                    command="build",
+                )
+            syntax_error_modules[module_name] = _syntax_error_info_from_exception(
+                exc, path=module_path
+            )
+            module_deps[module_name] = set()
+            known_func_defaults[module_name] = {}
+            module_path_stats[module_name] = None
+            continue
+        except OSError as exc:
+            return None, _fail(
+                f"Failed to read module {module_path}: {exc}",
+                json_output,
+                command="build",
+            )
+        if tree is not None:
+            module_trees[module_name] = tree
+        module_deps[module_name] = _module_dependencies_from_imports(
+            module_name,
+            module_graph,
+            module_imports,
+        )
+        known_func_defaults[module_name] = func_defaults
+    (
+        module_order,
+        reverse_module_deps,
+        has_back_edges,
+        module_layers,
+        module_dep_closures,
+    ) = _analyze_module_schedule(module_graph, module_deps)
+    dirty_lowering_modules = set(analysis_cache_miss_modules)
+    dirty_lowering_modules.update(
+        _dependent_module_closure(
+            interface_changed_modules,
+            module_deps,
+            module_graph,
+            reverse_module_deps=reverse_module_deps,
+        )
+    )
+    return _PreparedFrontendAnalysis(
+        module_graph_metadata=module_graph_metadata,
+        module_deps=module_deps,
+        module_sources=module_sources,
+        known_func_defaults=known_func_defaults,
+        module_trees=module_trees,
+        module_path_stats=module_path_stats,
+        syntax_error_modules=syntax_error_modules,
+        module_order=module_order,
+        reverse_module_deps=reverse_module_deps,
+        has_back_edges=has_back_edges,
+        module_layers=module_layers,
+        module_dep_closures=module_dep_closures,
+        dirty_lowering_modules=dirty_lowering_modules,
+    ), None
+
+
 def _prepare_backend_cache_setup(
     *,
     cache_enabled: bool,
@@ -15479,87 +15603,32 @@ def build(
     known_modules_sorted = prepared_build_outputs.known_modules_sorted
     stdlib_allowlist_sorted = prepared_build_outputs.stdlib_allowlist_sorted
     module_graph_metadata = prepared_build_outputs.module_graph_metadata
-    module_deps: dict[str, set[str]] = {}
-    module_sources: dict[str, str] = {}
-    known_func_defaults: dict[str, dict[str, dict[str, Any]]] = {}
-    module_trees: dict[str, ast.AST] = {}
-    module_path_stats: dict[str, os.stat_result | None] = {}
-    syntax_error_modules: dict[str, ModuleSyntaxErrorInfo] = {}
-    analysis_cache_miss_modules: set[str] = set()
-    interface_changed_modules: set[str] = set()
-    for module_name, module_path in module_graph.items():
-        try:
-            (
-                tree,
-                module_imports,
-                func_defaults,
-                source,
-                analysis_cache_hit,
-                interface_changed,
-                path_stat,
-            ) = _load_module_analysis(
-                module_path,
-                module_name=module_name,
-                is_package=module_graph_metadata.module_is_package_by_module[module_name],
-                include_nested=True,
-                source=None,
-                logical_source_path=module_graph_metadata.logical_source_path_by_module[
-                    module_name
-                ],
-                resolution_cache=module_resolution_cache,
-                project_root=project_root,
-            )
-            module_path_stats[module_name] = path_stat
-            if source is not None:
-                module_sources[module_name] = source
-            if not analysis_cache_hit:
-                analysis_cache_miss_modules.add(module_name)
-            if interface_changed:
-                interface_changed_modules.add(module_name)
-        except SyntaxError as exc:
-            if module_name == entry_module:
-                return _fail(
-                    f"Syntax error in {module_path}: {exc}",
-                    json_output,
-                    command="build",
-                )
-            syntax_error_modules[module_name] = _syntax_error_info_from_exception(
-                exc, path=module_path
-            )
-            module_deps[module_name] = set()
-            known_func_defaults[module_name] = {}
-            module_path_stats[module_name] = None
-            continue
-        except OSError as exc:
-            return _fail(
-                f"Failed to read module {module_path}: {exc}",
-                json_output,
-                command="build",
-            )
-        if tree is not None:
-            module_trees[module_name] = tree
-        module_deps[module_name] = _module_dependencies_from_imports(
-            module_name,
-            module_graph,
-            module_imports,
-        )
-        known_func_defaults[module_name] = func_defaults
-    (
-        module_order,
-        reverse_module_deps,
-        has_back_edges,
-        module_layers,
-        module_dep_closures,
-    ) = _analyze_module_schedule(module_graph, module_deps)
-    dirty_lowering_modules = set(analysis_cache_miss_modules)
-    dirty_lowering_modules.update(
-        _dependent_module_closure(
-            interface_changed_modules,
-            module_deps,
-            module_graph,
-            reverse_module_deps=reverse_module_deps,
+    prepared_frontend_analysis, prepared_frontend_analysis_error = (
+        _prepare_frontend_analysis(
+            module_graph=module_graph,
+            module_graph_metadata=module_graph_metadata,
+            module_resolution_cache=module_resolution_cache,
+            project_root=project_root,
+            entry_module=entry_module,
+            json_output=json_output,
         )
     )
+    if prepared_frontend_analysis_error is not None:
+        return prepared_frontend_analysis_error
+    assert prepared_frontend_analysis is not None
+    module_graph_metadata = prepared_frontend_analysis.module_graph_metadata
+    module_deps = prepared_frontend_analysis.module_deps
+    module_sources = prepared_frontend_analysis.module_sources
+    known_func_defaults = prepared_frontend_analysis.known_func_defaults
+    module_trees = prepared_frontend_analysis.module_trees
+    module_path_stats = prepared_frontend_analysis.module_path_stats
+    syntax_error_modules = prepared_frontend_analysis.syntax_error_modules
+    module_order = prepared_frontend_analysis.module_order
+    reverse_module_deps = prepared_frontend_analysis.reverse_module_deps
+    has_back_edges = prepared_frontend_analysis.has_back_edges
+    module_layers = prepared_frontend_analysis.module_layers
+    module_dep_closures = prepared_frontend_analysis.module_dep_closures
+    dirty_lowering_modules = prepared_frontend_analysis.dirty_lowering_modules
     if diagnostics_enabled:
         phase_starts["ir_lowering"] = time.perf_counter()
     type_facts = None
