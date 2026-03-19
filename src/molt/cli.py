@@ -8584,14 +8584,26 @@ def _cargo_profile_dir(cargo_profile: str) -> str:
     return "debug" if cargo_profile == "dev" else cargo_profile
 
 
-def _resolve_env_path(var: str, default: Path) -> Path:
-    value = os.environ.get(var)
+@functools.lru_cache(maxsize=256)
+def _resolve_env_path_cached(
+    value: str | None,
+    default_str: str,
+    cwd_str: str,
+) -> Path:
     if not value:
-        return default
+        return Path(default_str)
     path = Path(value).expanduser()
     if not path.is_absolute():
-        path = (Path.cwd() / path).absolute()
+        path = (Path(cwd_str) / path).absolute()
     return path
+
+
+def _resolve_env_path(var: str, default: Path) -> Path:
+    return _resolve_env_path_cached(
+        os.environ.get(var),
+        os.fspath(default),
+        os.fspath(Path.cwd()),
+    )
 
 
 @functools.lru_cache(maxsize=512)

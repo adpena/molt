@@ -1148,6 +1148,22 @@ def test_cargo_profile_dir_is_cached() -> None:
     assert info.currsize >= 1
 
 
+def test_resolve_env_path_is_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli._resolve_env_path_cached.cache_clear()
+    monkeypatch.setenv("MOLT_TEST_PATH", "relative-root")
+    monkeypatch.chdir(tmp_path)
+
+    first = cli._resolve_env_path("MOLT_TEST_PATH", tmp_path / "fallback")
+    second = cli._resolve_env_path("MOLT_TEST_PATH", tmp_path / "fallback")
+
+    info = cli._resolve_env_path_cached.cache_info()
+    assert first == second == (tmp_path / "relative-root")
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
 def test_default_molt_cache_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cli._default_molt_cache_cached.cache_clear()
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache-root"))
