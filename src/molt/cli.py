@@ -3113,6 +3113,43 @@ def _build_scoped_lowering_inputs(
     )
 
 
+def _build_module_lowering_metadata(
+    module_graph: Mapping[str, Path],
+    *,
+    generated_module_source_paths: Mapping[str, str],
+    entry_module: str,
+    namespace_module_names: Collection[str],
+) -> tuple[
+    dict[str, str],
+    dict[str, str | None],
+    dict[str, bool],
+    dict[str, bool],
+]:
+    logical_source_path_by_module: dict[str, str] = {}
+    entry_override_by_module: dict[str, str | None] = {}
+    module_is_namespace_by_module: dict[str, bool] = {}
+    module_is_package_by_module: dict[str, bool] = {}
+    namespace_modules = set(namespace_module_names)
+    for module_name in sorted(module_graph):
+        module_path = module_graph[module_name]
+        logical_source_path_by_module[module_name] = generated_module_source_paths.get(
+            module_name, str(module_path)
+        )
+        entry_override_by_module[module_name] = (
+            None
+            if module_name == entry_module and entry_module != "__main__"
+            else entry_module
+        )
+        module_is_namespace_by_module[module_name] = module_name in namespace_modules
+        module_is_package_by_module[module_name] = module_path.name == "__init__.py"
+    return (
+        logical_source_path_by_module,
+        entry_override_by_module,
+        module_is_namespace_by_module,
+        module_is_package_by_module,
+    )
+
+
 def _scoped_pgo_hot_function_names(
     module_name: str,
     pgo_hot_function_names: Collection[str],
@@ -8308,6 +8345,9 @@ def _prepare_frontend_parallel_batch(
     stdlib_allowlist_sorted: tuple[str, ...],
     pgo_hot_function_names_sorted: tuple[str, ...],
     module_dep_closures: dict[str, frozenset[str]],
+    logical_source_path_by_module: Mapping[str, str] | None = None,
+    entry_override_by_module: Mapping[str, str | None] | None = None,
+    module_is_namespace_by_module: Mapping[str, bool] | None = None,
     scoped_known_modules_by_module: Mapping[str, tuple[str, ...]] | None = None,
     scoped_known_func_defaults_by_module: Mapping[str, dict[str, dict[str, Any]]]
     | None = None,
@@ -8328,12 +8368,25 @@ def _prepare_frontend_parallel_batch(
     dirty_lowering = set(dirty_lowering_modules)
     for module_name in batch:
         module_path = module_graph[module_name]
-        logical_source_path = generated_module_source_paths.get(
-            module_name, str(module_path)
+        logical_source_path = (
+            logical_source_path_by_module[module_name]
+            if logical_source_path_by_module is not None
+            else generated_module_source_paths.get(module_name, str(module_path))
         )
-        entry_override = entry_module
-        if module_name == entry_module and entry_module != "__main__":
-            entry_override = None
+        entry_override = (
+            entry_override_by_module[module_name]
+            if entry_override_by_module is not None
+            else (
+                None
+                if module_name == entry_module and entry_module != "__main__"
+                else entry_module
+            )
+        )
+        module_is_namespace = (
+            module_is_namespace_by_module[module_name]
+            if module_is_namespace_by_module is not None
+            else module_name in namespace_module_names
+        )
         if project_root is not None:
             context_payload = _module_lowering_context_payload(
                 module_name,
@@ -8350,7 +8403,7 @@ def _prepare_frontend_parallel_batch(
                 stdlib_allowlist=stdlib_allowlist,
                 known_func_defaults=known_func_defaults,
                 module_deps=module_deps,
-                module_is_namespace=module_name in namespace_module_names,
+                module_is_namespace=module_is_namespace,
                 module_chunking=module_chunking,
                 module_chunk_max_ops=module_chunk_max_ops,
                 optimization_profile=optimization_profile,
@@ -8385,7 +8438,7 @@ def _prepare_frontend_parallel_batch(
                 stdlib_allowlist=stdlib_allowlist,
                 known_func_defaults=known_func_defaults,
                 module_deps=module_deps,
-                module_is_namespace=module_name in namespace_module_names,
+                module_is_namespace=module_is_namespace,
                 module_chunking=module_chunking,
                 module_chunk_max_ops=module_chunk_max_ops,
                 optimization_profile=optimization_profile,
@@ -8424,7 +8477,7 @@ def _prepare_frontend_parallel_batch(
                     parse_codec=parse_codec,
                     type_hint_policy=type_hint_policy,
                     fallback_policy=fallback_policy,
-                    module_is_namespace=module_name in namespace_module_names,
+                    module_is_namespace=module_is_namespace,
                     entry_module=entry_override,
                     type_facts=type_facts,
                     enable_phi=enable_phi,
@@ -11433,6 +11486,17 @@ def build(
         pgo_hot_function_names=pgo_hot_function_names,
         type_facts=cast(TypeFacts | None, type_facts),
     )
+    (
+        logical_source_path_by_module,
+        entry_override_by_module,
+        module_is_namespace_by_module,
+        module_is_package_by_module,
+    ) = _build_module_lowering_metadata(
+        module_graph,
+        generated_module_source_paths=generated_module_source_paths,
+        entry_module=entry_module,
+        namespace_module_names=namespace_module_names,
+    )
 
     functions: list[dict[str, Any]] = []
     # Normalize code-slot IDs across modules to keep tracebacks consistent.
@@ -11601,13 +11665,10 @@ def build(
         module_name: str,
         module_path: Path,
     ) -> tuple[dict[str, Any], float, float, float]:
-        logical_source_path = generated_module_source_paths.get(
-            module_name, str(module_path)
-        )
-        entry_override = entry_module
-        if module_name == entry_module and entry_module != "__main__":
-            entry_override = None
-        is_package = module_path.name == "__init__.py"
+        logical_source_path = logical_source_path_by_module[module_name]
+        entry_override = entry_override_by_module[module_name]
+        is_package = module_is_package_by_module[module_name]
+        module_is_namespace = module_is_namespace_by_module[module_name]
         path_stat: os.stat_result | None = None
         with contextlib.suppress(OSError):
             path_stat = module_resolution_cache.path_stat(module_path)
@@ -11628,7 +11689,7 @@ def build(
                 stdlib_allowlist=stdlib_allowlist,
                 known_func_defaults=known_func_defaults,
                 module_deps=module_deps,
-                module_is_namespace=module_name in namespace_module_names,
+                module_is_namespace=module_is_namespace,
                 module_chunking=is_wasm and module_chunk_max_ops > 0,
                 module_chunk_max_ops=module_chunk_max_ops,
                 optimization_profile=profile,
@@ -11675,7 +11736,7 @@ def build(
             source_path=logical_source_path,
             type_facts=scoped_type_facts,
             module_name=module_name,
-            module_is_namespace=module_name in namespace_module_names,
+            module_is_namespace=module_is_namespace,
             entry_module=entry_override,
             enable_phi=enable_phi,
             known_modules=set(scoped_known_modules),
@@ -11908,6 +11969,9 @@ def build(
                             stdlib_allowlist_sorted=stdlib_allowlist_sorted,
                             pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
                             module_dep_closures=module_dep_closures,
+                            logical_source_path_by_module=logical_source_path_by_module,
+                            entry_override_by_module=entry_override_by_module,
+                            module_is_namespace_by_module=module_is_namespace_by_module,
                             scoped_known_modules_by_module=scoped_known_modules_by_module,
                             scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
                             scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
