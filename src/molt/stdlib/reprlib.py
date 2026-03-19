@@ -7,7 +7,7 @@ from itertools import islice
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_REPRLIB_CAP_HAS = _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_REPRLIB_CAP_HAS = _require_intrinsic("molt_capabilities_has")
 _MOLT_THREAD_CURRENT_IDENT = _require_intrinsic("molt_thread_current_ident", globals())
 
 __all__ = ["Repr", "repr", "recursive_repr"]

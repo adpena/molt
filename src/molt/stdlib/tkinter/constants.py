@@ -5,7 +5,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 from ._support import has_gui_capability as _has_gui_capability
 from ._support import tk_available as _tk_available
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 _MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available", globals())
 
 NO = 0

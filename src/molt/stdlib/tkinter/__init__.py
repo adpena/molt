@@ -23,7 +23,7 @@ def _lazy_intrinsic(name):
     return _call
 
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 _MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available", globals())
 _MOLT_TK_EVENT_SUBST_PARSE = _require_intrinsic("molt_tk_event_subst_parse", globals())
 _molt_tk_event_int = _require_intrinsic("molt_tk_event_int", globals())
