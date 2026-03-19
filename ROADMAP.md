@@ -1219,7 +1219,7 @@ complete. M-GPU-1 is the earliest actionable item and has no GPU hardware depend
 - DONE(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:done): `_sha1` now exposes an intrinsic-backed `sha1` constructor and `SHA1Type` via Molt `hashlib`.
 - DONE(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:done): `_sha2` now exposes intrinsic-backed `sha224`/`sha256`/`sha384`/`sha512` constructors and CPython-style type aliases via Molt `hashlib`.
 - DONE(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:done): `_sha3` now exposes intrinsic-backed SHA-3 and SHAKE constructors, `implementation`, and CPython-shaped module constants via Molt `hashlib`.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_signal` top-level stub with full intrinsic-backed lowering.
+- Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_signal` now exposes Molt's intrinsic-backed low-level signal surface (`SIG*` constants, `signal`, `getsignal`, `raise_signal`, mask helpers, and wakeup/strsignal APIs) for CPython-compatible private-module imports.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_sqlite3` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_sre` top-level stub with full intrinsic-backed lowering.
 - Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_ssl` now re-exports Molt's intrinsic-backed TLS context/socket surface for CPython-compatible private-module imports.
