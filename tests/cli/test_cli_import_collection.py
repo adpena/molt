@@ -2628,7 +2628,18 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
         cli, "_resolve_frontend_parallel_target_cost_per_worker", lambda: 1.0
     )
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
-    monkeypatch.setattr(cli, "_module_order_has_back_edges", lambda *args: False)
+    monkeypatch.setattr(
+        cli,
+        "_analyze_module_schedule",
+        lambda module_graph, module_deps: (
+            cli._topo_sort_modules(module_graph, module_deps),
+            cli._reverse_module_dependencies(module_deps, module_graph),
+            False,
+            cli._module_dependency_layers(
+                cli._topo_sort_modules(module_graph, module_deps), module_deps
+            ),
+        ),
+    )
     monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli, "_ensure_backend_binary", lambda *args, **kwargs: True)
 
@@ -2746,7 +2757,18 @@ def test_parallel_build_only_relowers_changed_frontier(
         cli, "_resolve_frontend_parallel_target_cost_per_worker", lambda: 1.0
     )
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
-    monkeypatch.setattr(cli, "_module_order_has_back_edges", lambda *args: False)
+    monkeypatch.setattr(
+        cli,
+        "_analyze_module_schedule",
+        lambda module_graph, module_deps: (
+            cli._topo_sort_modules(module_graph, module_deps),
+            cli._reverse_module_dependencies(module_deps, module_graph),
+            False,
+            cli._module_dependency_layers(
+                cli._topo_sort_modules(module_graph, module_deps), module_deps
+            ),
+        ),
+    )
     monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli, "_ensure_backend_binary", lambda *args, **kwargs: True)
 
@@ -2860,7 +2882,18 @@ def test_parallel_build_allows_scoped_type_facts(
         cli, "_resolve_frontend_parallel_target_cost_per_worker", lambda: 1.0
     )
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
-    monkeypatch.setattr(cli, "_module_order_has_back_edges", lambda *args: False)
+    monkeypatch.setattr(
+        cli,
+        "_analyze_module_schedule",
+        lambda module_graph, module_deps: (
+            cli._topo_sort_modules(module_graph, module_deps),
+            cli._reverse_module_dependencies(module_deps, module_graph),
+            False,
+            cli._module_dependency_layers(
+                cli._topo_sort_modules(module_graph, module_deps), module_deps
+            ),
+        ),
+    )
     monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli, "_ensure_backend_binary", lambda *args, **kwargs: True)
 
@@ -3409,6 +3442,35 @@ def test_module_dependency_layers_preserve_topological_determinism() -> None:
     assert layers == [["a"], ["b", "c"], ["d", "e"]]
 
 
+def test_analyze_module_schedule_reuses_reverse_edges_and_layers() -> None:
+    module_graph = {
+        "a": Path("/tmp/a.py"),
+        "b": Path("/tmp/b.py"),
+        "c": Path("/tmp/c.py"),
+        "d": Path("/tmp/d.py"),
+        "e": Path("/tmp/e.py"),
+    }
+    deps = {
+        "a": set(),
+        "b": {"a"},
+        "c": {"a"},
+        "d": {"b", "c"},
+        "e": {"b"},
+    }
+
+    order, reverse_deps, has_back_edges, layers = cli._analyze_module_schedule(
+        module_graph,
+        deps,
+    )
+
+    assert order == ["a", "b", "c", "e", "d"]
+    assert reverse_deps["a"] == {"b", "c"}
+    assert reverse_deps["b"] == {"d", "e"}
+    assert reverse_deps["c"] == {"d"}
+    assert has_back_edges is False
+    assert layers == [["a"], ["b", "c"], ["e", "d"]]
+
+
 def test_choose_frontend_parallel_layer_workers_applies_policy_gates() -> None:
     decision = cli._choose_frontend_parallel_layer_workers(
         candidates=["a", "b"],
@@ -3510,6 +3572,25 @@ def test_module_order_has_back_edges_detects_cycles() -> None:
     order = ["a", "b"]
     assert cli._module_order_has_back_edges(order, {"a": {"b"}, "b": {"a"}})
     assert not cli._module_order_has_back_edges(order, {"a": set(), "b": {"a"}})
+
+
+def test_analyze_module_schedule_marks_cycles_and_appends_remaining() -> None:
+    module_graph = {
+        "a": Path("/tmp/a.py"),
+        "b": Path("/tmp/b.py"),
+    }
+    deps = {"a": {"b"}, "b": {"a"}}
+
+    order, reverse_deps, has_back_edges, layers = cli._analyze_module_schedule(
+        module_graph,
+        deps,
+    )
+
+    assert set(order) == {"a", "b"}
+    assert reverse_deps["a"] == {"b"}
+    assert reverse_deps["b"] == {"a"}
+    assert has_back_edges is True
+    assert sum(len(layer) for layer in layers) == 2
 
 
 def test_frontend_lower_module_worker_smoke(tmp_path: Path) -> None:
