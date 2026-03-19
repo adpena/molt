@@ -125,6 +125,21 @@ checks = {{
         and _private.stack_size() == 0
         and _private.stack_size(4096) == 4096
     ),
+    "private_handles_hidden": (
+        "_lock_new" not in _private.__dict__
+        and "_lock_acquire" not in _private.__dict__
+        and "_lock_release" not in _private.__dict__
+        and "_lock_locked" not in _private.__dict__
+        and "_lock_drop" not in _private.__dict__
+        and "_thread_spawn_shared" not in _private.__dict__
+        and "_thread_ident" not in _private.__dict__
+        and "_thread_current_ident" not in _private.__dict__
+        and "_thread_current_native_id" not in _private.__dict__
+        and "_thread_registry_active_count" not in _private.__dict__
+        and "_thread_stack_size_get" not in _private.__dict__
+        and "_thread_stack_size_set" not in _private.__dict__
+        and "_signal_raise_signal" not in _private.__dict__
+    ),
 }}
 for key in sorted(checks):
     print(f"CHECK|{{key}}|{{checks[key]}}")
@@ -168,4 +183,4 @@ def test__thread_public_surface_matches_expected_shape() -> None:
         ("start_new", "function", "True"),
         ("start_new_thread", "function", "True"),
     ]
-    assert checks == {"behavior": "True"}
+    assert checks == {"behavior": "True", "private_handles_hidden": "True"}

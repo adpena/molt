@@ -109,6 +109,19 @@ checks = {{
         and _private.if_nametoindex("lo0") == 1
         and _private.if_indextoname(1) == "lo0"
     ),
+    "private_handles_hidden": (
+        "_MOLT_SOCKET_CONSTANTS" not in _private.__dict__
+        and "_MOLT_OS_CLOSE" not in _private.__dict__
+        and "_MOLT_OS_DUP" not in _private.__dict__
+        and "_MOLT_SOCKET_GETPROTOBYNAME" not in _private.__dict__
+        and "_MOLT_GETHOSTBYNAME_EX" not in _private.__dict__
+        and "_MOLT_IF_NAMEINDEX" not in _private.__dict__
+        and "_MOLT_IF_NAMETOINDEX" not in _private.__dict__
+        and "_MOLT_IF_INDEXTONAME" not in _private.__dict__
+        and "_MOLT_CMSG_LEN" not in _private.__dict__
+        and "_MOLT_CMSG_SPACE" not in _private.__dict__
+        and "_MOLT_SOCKET_SETHOSTNAME" not in _private.__dict__
+    ),
 }}
 for key in sorted(checks):
     print(f"CHECK|{{key}}|{{checks[key]}}")
@@ -143,4 +156,4 @@ def test__socket_public_surface_matches_expected_shape() -> None:
     assert "CMSG_SPACE" in names
     assert "socket" in names
     assert "SocketType" in names
-    assert checks == {"behavior": "True"}
+    assert checks == {"behavior": "True", "private_handles_hidden": "True"}

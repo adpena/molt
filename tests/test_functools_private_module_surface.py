@@ -77,6 +77,10 @@ checks = {{
     "placeholder_gate": (
         hasattr(_private, "Placeholder") == hasattr(_host_functools, "Placeholder")
     ),
+    "private_handles_hidden": (
+        "_MOLT_PARTIAL" not in _private.__dict__
+        and "_MOLT_KWD_MARK" not in _private.__dict__
+    ),
 }}
 if hasattr(_host_functools, "Placeholder"):
     checks["aliases"] = (
@@ -118,4 +122,8 @@ def test__functools_public_surface_matches_expected_shape() -> None:
     if sys.version_info >= (3, 14):
         expected.insert(0, ("Placeholder", "_PlaceholderType", "False"))
     assert rows == expected
-    assert checks == {"aliases": "True", "placeholder_gate": "True"}
+    assert checks == {
+        "aliases": "True",
+        "placeholder_gate": "True",
+        "private_handles_hidden": "True",
+    }

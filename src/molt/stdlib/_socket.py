@@ -76,39 +76,39 @@ for _name, _val in list(_socket_mod.__dict__.items()):
         globals()[_name] = int(_val)
 
 
-def _gethostbyname_ex(hostname: str):
-    return _MOLT_GETHOSTBYNAME_EX(hostname)
+def _gethostbyname_ex(hostname: str, _gethostbyname_ex_intrinsic=_MOLT_GETHOSTBYNAME_EX):
+    return _gethostbyname_ex_intrinsic(hostname)
 
 
-def _getprotobyname(name: str):
-    return _MOLT_SOCKET_GETPROTOBYNAME(name)
+def _getprotobyname(name: str, _getprotobyname_intrinsic=_MOLT_SOCKET_GETPROTOBYNAME):
+    return _getprotobyname_intrinsic(name)
 
 
-def _if_nameindex():
-    return _MOLT_IF_NAMEINDEX()
+def _if_nameindex(_if_nameindex_intrinsic=_MOLT_IF_NAMEINDEX):
+    return _if_nameindex_intrinsic()
 
 
-def _if_nametoindex(name: str):
-    return _MOLT_IF_NAMETOINDEX(name)
+def _if_nametoindex(name: str, _if_nametoindex_intrinsic=_MOLT_IF_NAMETOINDEX):
+    return _if_nametoindex_intrinsic(name)
 
 
-def _if_indextoname(index: int):
-    return _MOLT_IF_INDEXTONAME(index)
+def _if_indextoname(index: int, _if_indextoname_intrinsic=_MOLT_IF_INDEXTONAME):
+    return _if_indextoname_intrinsic(index)
 
 
 _MOLT_SOCKET_SETHOSTNAME = _require_intrinsic("molt_socket_sethostname")
 
 
-def _sethostname(name: str):
-    _MOLT_SOCKET_SETHOSTNAME(name)
+def _sethostname(name: str, _sethostname_intrinsic=_MOLT_SOCKET_SETHOSTNAME):
+    _sethostname_intrinsic(name)
 
 
-def _cmsg_len(length: int):
-    return _MOLT_CMSG_LEN(length)
+def _cmsg_len(length: int, _cmsg_len_intrinsic=_MOLT_CMSG_LEN):
+    return _cmsg_len_intrinsic(length)
 
 
-def _cmsg_space(length: int):
-    return _MOLT_CMSG_SPACE(length)
+def _cmsg_space(length: int, _cmsg_space_intrinsic=_MOLT_CMSG_SPACE):
+    return _cmsg_space_intrinsic(length)
 
 
 _CALLABLES = {
@@ -156,6 +156,21 @@ _CALLABLES = {
 
 for _name, _fn in _CALLABLES.items():
     globals()[_name] = _as_builtin_function(_name, _fn)
+
+for _name in (
+    "_MOLT_SOCKET_CONSTANTS",
+    "_MOLT_OS_CLOSE",
+    "_MOLT_OS_DUP",
+    "_MOLT_SOCKET_GETPROTOBYNAME",
+    "_MOLT_GETHOSTBYNAME_EX",
+    "_MOLT_IF_NAMEINDEX",
+    "_MOLT_IF_NAMETOINDEX",
+    "_MOLT_IF_INDEXTONAME",
+    "_MOLT_CMSG_LEN",
+    "_MOLT_CMSG_SPACE",
+    "_MOLT_SOCKET_SETHOSTNAME",
+):
+    globals().pop(_name, None)
 
 
 __all__ = sorted(
