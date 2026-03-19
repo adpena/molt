@@ -8788,6 +8788,22 @@ def _append_frontend_parallel_layer_detail(
     )
 
 
+def _fallback_frontend_parallel_layer_to_serial(
+    *,
+    frontend_parallel_details: MutableMapping[str, Any],
+    warnings: list[str],
+    failure_detail: str,
+) -> _FrontendParallelLayerState:
+    frontend_parallel_details["reason"] = "worker_error_fallback_serial"
+    warnings.append(
+        "Frontend parallel lowering fallback to serial for layer: "
+        f"{failure_detail}"
+    )
+    fallback_state = _fresh_frontend_parallel_layer_state()
+    fallback_state.fallback_reason = failure_detail
+    return fallback_state
+
+
 def _frontend_parallel_worker_timing_inputs(
     result_timings: _FrontendModuleResultTimings,
     worker_timing: Mapping[str, Any] | None,
@@ -12982,19 +12998,15 @@ def build(
                         if layer_parallel_failed:
                             break
                     if layer_parallel_failed:
-                        layer_state = _fresh_frontend_parallel_layer_state()
-                        frontend_parallel_details["reason"] = (
-                            "worker_error_fallback_serial"
+                        layer_state = _fallback_frontend_parallel_layer_to_serial(
+                            frontend_parallel_details=frontend_parallel_details,
+                            warnings=warnings,
+                            failure_detail=layer_failure_detail,
                         )
                         layer_mode = "serial_fallback"
                         layer_workers = 1
                         layer_policy_reason = "worker_error_fallback_serial"
-                        layer_state.fallback_reason = layer_failure_detail
                         parallel_pool_usable = False
-                        warnings.append(
-                            "Frontend parallel lowering fallback to serial for layer: "
-                            f"{layer_failure_detail}"
-                        )
                 elif len(candidates) > 1:
                     if not parallel_pool_usable:
                         layer_policy_reason = "pool_unavailable_after_error"
