@@ -9577,6 +9577,82 @@ def _append_module_code_slot_ops(
     return next_var
 
 
+def _python_version_display() -> tuple[str, str, int]:
+    py_version = sys.version_info
+    version_release = py_version.releaselevel
+    version_serial = py_version.serial
+    version_suffix = ""
+    if version_release == "alpha":
+        version_suffix = f"a{version_serial}"
+    elif version_release == "beta":
+        version_suffix = f"b{version_serial}"
+    elif version_release == "candidate":
+        version_suffix = f"rc{version_serial}"
+    elif version_release != "final":
+        version_suffix = f"{version_release}{version_serial}"
+    version_str = (
+        f"{py_version.major}.{py_version.minor}.{py_version.micro}"
+        f"{version_suffix} (molt)"
+    )
+    return version_release, version_str, version_serial
+
+
+def _build_version_info_ops(
+    *,
+    register_global_code_id: Callable[[str], int],
+) -> list[dict[str, Any]]:
+    py_version = sys.version_info
+    version_release, version_str, version_serial = _python_version_display()
+    return [
+        {"kind": "const", "value": py_version.major, "out": "v3"},
+        {"kind": "const", "value": py_version.minor, "out": "v4"},
+        {"kind": "const", "value": py_version.micro, "out": "v5"},
+        {"kind": "const_str", "s_value": version_release, "out": "v6"},
+        {"kind": "const", "value": version_serial, "out": "v7"},
+        {"kind": "const_str", "s_value": version_str, "out": "v8"},
+        {
+            "kind": "call",
+            "s_value": "molt_sys_set_version_info",
+            "args": ["v3", "v4", "v5", "v6", "v7", "v8"],
+            "out": "v9",
+            "value": register_global_code_id("molt_sys_set_version_info"),
+        },
+    ]
+
+
+def _build_entry_main_ops(
+    *,
+    entry_init: str,
+    version_ops: Sequence[dict[str, Any]],
+    register_global_code_id: Callable[[str], int],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "kind": "call",
+            "s_value": "molt_runtime_init",
+            "args": [],
+            "out": "v0",
+            "value": register_global_code_id("molt_runtime_init"),
+        },
+        *version_ops,
+        {
+            "kind": "call",
+            "s_value": entry_init,
+            "args": [],
+            "out": "v1",
+            "value": register_global_code_id(entry_init),
+        },
+        {
+            "kind": "call",
+            "s_value": "molt_runtime_shutdown",
+            "args": [],
+            "out": "v2",
+            "value": register_global_code_id("molt_runtime_shutdown"),
+        },
+        {"kind": "ret_void"},
+    ]
+
+
 def _build_isolate_bootstrap_ops(
     *,
     code_slot_count: int,
@@ -14079,62 +14155,14 @@ def build(
 
     entry_init_name = "__main__" if entry_module != "__main__" else entry_module
     entry_init = SimpleTIRGenerator.module_init_symbol(entry_init_name)
-    py_version = sys.version_info
-    version_release = py_version.releaselevel
-    version_serial = py_version.serial
-    version_suffix = ""
-    if version_release == "alpha":
-        version_suffix = f"a{version_serial}"
-    elif version_release == "beta":
-        version_suffix = f"b{version_serial}"
-    elif version_release == "candidate":
-        version_suffix = f"rc{version_serial}"
-    elif version_release != "final":
-        version_suffix = f"{version_release}{version_serial}"
-    version_str = (
-        f"{py_version.major}.{py_version.minor}.{py_version.micro}"
-        f"{version_suffix} (molt)"
+    version_ops = _build_version_info_ops(
+        register_global_code_id=_register_global_code_id
     )
-    entry_ops = [
-        {
-            "kind": "call",
-            "s_value": "molt_runtime_init",
-            "args": [],
-            "out": "v0",
-            "value": _register_global_code_id("molt_runtime_init"),
-        },
-        {
-            "kind": "call",
-            "s_value": entry_init,
-            "args": [],
-            "out": "v1",
-            "value": _register_global_code_id(entry_init),
-        },
-        {
-            "kind": "call",
-            "s_value": "molt_runtime_shutdown",
-            "args": [],
-            "out": "v2",
-            "value": _register_global_code_id("molt_runtime_shutdown"),
-        },
-        {"kind": "ret_void"},
-    ]
-    version_ops = [
-        {"kind": "const", "value": py_version.major, "out": "v3"},
-        {"kind": "const", "value": py_version.minor, "out": "v4"},
-        {"kind": "const", "value": py_version.micro, "out": "v5"},
-        {"kind": "const_str", "s_value": version_release, "out": "v6"},
-        {"kind": "const", "value": version_serial, "out": "v7"},
-        {"kind": "const_str", "s_value": version_str, "out": "v8"},
-        {
-            "kind": "call",
-            "s_value": "molt_sys_set_version_info",
-            "args": ["v3", "v4", "v5", "v6", "v7", "v8"],
-            "out": "v9",
-            "value": _register_global_code_id("molt_sys_set_version_info"),
-        },
-    ]
-    entry_ops[1:1] = version_ops
+    entry_ops = _build_entry_main_ops(
+        entry_init=entry_init,
+        version_ops=version_ops,
+        register_global_code_id=_register_global_code_id,
+    )
     entry_call_idx = next(
         idx
         for idx, op in enumerate(entry_ops)
