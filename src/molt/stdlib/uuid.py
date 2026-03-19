@@ -36,11 +36,11 @@ RESERVED_FUTURE = "reserved for future definition"
 
 _NODE: int | None = None
 
-_MOLT_UUID_GETNODE = _require_intrinsic("molt_uuid_getnode", globals())
-_MOLT_UUID_UUID1_BYTES = _require_intrinsic("molt_uuid_uuid1_bytes", globals())
-_MOLT_UUID_UUID3_BYTES = _require_intrinsic("molt_uuid_uuid3_bytes", globals())
-_MOLT_UUID_UUID4_BYTES = _require_intrinsic("molt_uuid_uuid4_bytes", globals())
-_MOLT_UUID_UUID5_BYTES = _require_intrinsic("molt_uuid_uuid5_bytes", globals())
+_MOLT_UUID_GETNODE = _require_intrinsic("molt_uuid_getnode")
+_MOLT_UUID_UUID1_BYTES = _require_intrinsic("molt_uuid_uuid1_bytes")
+_MOLT_UUID_UUID3_BYTES = _require_intrinsic("molt_uuid_uuid3_bytes")
+_MOLT_UUID_UUID4_BYTES = _require_intrinsic("molt_uuid_uuid4_bytes")
+_MOLT_UUID_UUID5_BYTES = _require_intrinsic("molt_uuid_uuid5_bytes")
 
 
 class SafeUUID(_enum.Enum):

@@ -96,9 +96,9 @@ __all__ = [
     "FALSE",
 ]
 
-_require_intrinsic("molt_stdlib_probe", globals())
-_pickle_dumps_core = _require_intrinsic("molt_pickle_dumps_core", globals())
-_pickle_loads_core = _require_intrinsic("molt_pickle_loads_core", globals())
+_require_intrinsic("molt_stdlib_probe")
+_pickle_dumps_core = _require_intrinsic("molt_pickle_dumps_core")
+_pickle_loads_core = _require_intrinsic("molt_pickle_loads_core")
 
 # TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): close
 # remaining CPython 3.12+ pickle parity gaps (full opcode/PEP edge coverage,
