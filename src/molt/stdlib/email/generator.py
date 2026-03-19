@@ -6,9 +6,9 @@ import re
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 _MOLT_EMAIL_MESSAGE_AS_STRING = _require_intrinsic(
-    "molt_email_message_as_string", globals()
+    "molt_email_message_as_string"
 )
 
 UNDERSCORE = "_"

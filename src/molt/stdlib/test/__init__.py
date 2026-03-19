@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import importlib
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 def _extend_cpython_test_path() -> None:
