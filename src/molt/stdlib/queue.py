@@ -165,3 +165,5 @@ if _module is not None:
     _MOLT_MODULE_CACHE_SET(__name__, _module)
     if __name__ != "queue":
         _MOLT_MODULE_CACHE_SET("queue", _module)
+
+globals().pop("_require_intrinsic", None)

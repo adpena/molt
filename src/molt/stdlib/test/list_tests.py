@@ -589,3 +589,5 @@ class CommonTest(seq_tests.CommonTest):
         self.assertEqual(list(exhit), [])
         self.assertEqual(list(empit), [9])
         self.assertEqual(a, self.type2test([1, 2, 3, 9]))
+
+globals().pop("_require_intrinsic", None)

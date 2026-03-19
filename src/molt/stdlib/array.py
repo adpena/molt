@@ -148,3 +148,5 @@ class array:
 
 
 ArrayType = array
+
+globals().pop("_require_intrinsic", None)

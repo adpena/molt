@@ -68,3 +68,5 @@ def getregentry():
         streamwriter=StreamWriter,
         streamreader=StreamReader,
     )
+
+globals().pop("_require_intrinsic", None)

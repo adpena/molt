@@ -18,3 +18,5 @@ def __getattr__(attr: str):
 
 
 del _MOLT_CAPABILITIES_HAS
+
+globals().pop("_require_intrinsic", None)

@@ -13,3 +13,5 @@ def _raise_missing():
 
 if getattr(sys, "version_info", (0, 0))[1] < 14:
     _raise_missing()
+
+globals().pop("_require_intrinsic", None)

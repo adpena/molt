@@ -66,3 +66,5 @@ __all__ = [
     "sys",
     "threading",
 ]
+
+globals().pop("_require_intrinsic", None)

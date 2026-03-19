@@ -33,3 +33,5 @@ def py_encode_basestring(value):
 
 def py_encode_basestring_ascii(value):
     return py_encode_basestring(value)
+
+globals().pop("_require_intrinsic", None)

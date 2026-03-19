@@ -34,3 +34,5 @@ def get_traced_memory() -> tuple[int, int]:
 
 
 __all__ = ["start", "stop", "is_tracing", "get_traced_memory"]
+
+globals().pop("_require_intrinsic", None)

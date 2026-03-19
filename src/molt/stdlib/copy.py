@@ -64,3 +64,5 @@ def replace(obj: Any, /, **changes: Any) -> Any:
     for key, value in changes.items():
         setattr(new, key, value)
     return new
+
+globals().pop("_require_intrinsic", None)

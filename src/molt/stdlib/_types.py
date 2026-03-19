@@ -65,3 +65,5 @@ __all__ = [
 ]
 
 del _MOLT_TYPES_BOOTSTRAP
+
+globals().pop("_require_intrinsic", None)

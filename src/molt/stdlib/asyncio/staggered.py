@@ -25,3 +25,5 @@ __all__ = [
     "staggered_race",
     "tasks",
 ]
+
+globals().pop("_require_intrinsic", None)

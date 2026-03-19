@@ -10,3 +10,5 @@ _require_intrinsic("molt_thread_spawn")
 from . import futures as futures  # noqa: E402
 
 __all__ = ["futures"]
+
+globals().pop("_require_intrinsic", None)

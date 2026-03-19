@@ -47,3 +47,5 @@ __all__ = [
     "threading",
     "weakref",
 ]
+
+globals().pop("_require_intrinsic", None)

@@ -522,3 +522,5 @@ sys = _re
 urllib = _re
 
 utils = _re
+
+globals().pop("_require_intrinsic", None)

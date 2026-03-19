@@ -43,3 +43,5 @@ __all__ = [
     "types",
     "warnings",
 ]
+
+globals().pop("_require_intrinsic", None)

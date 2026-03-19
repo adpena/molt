@@ -148,3 +148,5 @@ def unpack_archive(
 ) -> None:
     """Unpack an archive (via Rust intrinsic)."""
     _MOLT_SHUTIL_UNPACK_ARCHIVE(filename, extract_dir)
+
+globals().pop("_require_intrinsic", None)

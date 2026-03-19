@@ -157,3 +157,5 @@ __all__ = [
     "GzipFile",
     "BadGzipFile",
 ]
+
+globals().pop("_require_intrinsic", None)

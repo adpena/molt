@@ -69,3 +69,5 @@ def walk_packages(
     source = sys.path if path is None else path
     rows = _MOLT_PKGUTIL_WALK_PACKAGES(source, prefix)
     yield from _rows_to_module_info(rows)
+
+globals().pop("_require_intrinsic", None)

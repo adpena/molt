@@ -14,3 +14,5 @@ def __getattr__(attr: str):
     raise RuntimeError(
         'stdlib module "encodings._win_cp_codecs" is not fully lowered yet; only an intrinsic-first stub is available.'
     )
+
+globals().pop("_require_intrinsic", None)

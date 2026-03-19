@@ -21,3 +21,5 @@ class sha1(_hashlib._Hash):
 SHA1Type = sha1
 
 __all__ = ["SHA1Type", "_GIL_MINSIZE", "sha1"]
+
+globals().pop("_require_intrinsic", None)

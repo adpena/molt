@@ -91,3 +91,5 @@ def digest(key: Any, msg: Any, digestmod: Any) -> bytes:
 
 def compare_digest(a: Any, b: Any) -> bool:
     return bool(_molt_compare_digest(a, b))
+
+globals().pop("_require_intrinsic", None)

@@ -45,3 +45,5 @@ __all__ = [
     "U",
     "X",
 ]
+
+globals().pop("_require_intrinsic", None)

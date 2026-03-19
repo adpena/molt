@@ -54,3 +54,5 @@ __all__ = [
     "timeout",
     "timeout_at",
 ]
+
+globals().pop("_require_intrinsic", None)

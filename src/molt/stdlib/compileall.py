@@ -88,3 +88,5 @@ def compile_path(
 ) -> bool:
     del quiet
     return bool(_MOLT_COMPILEALL_COMPILE_PATH(sys.path, skip_curdir, int(maxlevels)))
+
+globals().pop("_require_intrinsic", None)

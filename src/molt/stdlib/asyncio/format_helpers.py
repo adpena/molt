@@ -28,3 +28,5 @@ __all__ = [
     "sys",
     "traceback",
 ]
+
+globals().pop("_require_intrinsic", None)

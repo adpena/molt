@@ -46,3 +46,5 @@ __all__ = [
     "trsock",
     "warnings",
 ]
+
+globals().pop("_require_intrinsic", None)

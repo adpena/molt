@@ -67,3 +67,5 @@ def set_message_content(msg, message, *args, **kw):
 
 
 raw_data_manager = ContentManager()
+
+globals().pop("_require_intrinsic", None)

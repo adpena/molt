@@ -634,3 +634,5 @@ ROWS_BY_MODULE: dict[str, list[tuple[str, str, bool]]] = {
         ("weakref", "module", False),
     ],
 }
+
+globals().pop("_require_intrinsic", None)

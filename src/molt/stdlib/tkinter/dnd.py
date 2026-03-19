@@ -312,3 +312,5 @@ def test():
 
 
 __all__ = ["DndHandler", "Icon", "Tester", "dnd_start", "test"]
+
+globals().pop("_require_intrinsic", None)

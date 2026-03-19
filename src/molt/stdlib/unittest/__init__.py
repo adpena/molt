@@ -403,3 +403,5 @@ def main(module: str | None = None, exit: bool = True) -> TestResult:
     if exit:
         raise SystemExit(0 if result.wasSuccessful() else 1)
     return result
+
+globals().pop("_require_intrinsic", None)

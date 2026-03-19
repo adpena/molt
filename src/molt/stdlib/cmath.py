@@ -229,3 +229,5 @@ __all__ = [
     "nan",
     "nanj",
 ]
+
+globals().pop("_require_intrinsic", None)

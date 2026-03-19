@@ -1170,3 +1170,5 @@ else:
         return thread
 
     _bootstrap_main_thread()
+
+globals().pop("_require_intrinsic", None)

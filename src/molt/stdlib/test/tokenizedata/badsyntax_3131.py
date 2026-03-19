@@ -14,3 +14,5 @@ raise SyntaxError(
     _MESSAGE,
     ("badsyntax_3131.py", 2, 1, f"{_CHAR} = 2"),
 )
+
+globals().pop("_require_intrinsic", None)

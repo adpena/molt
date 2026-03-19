@@ -205,3 +205,5 @@ class QueueListener:
                 break
             self._handle(record)
         self._running = False
+
+globals().pop("_require_intrinsic", None)

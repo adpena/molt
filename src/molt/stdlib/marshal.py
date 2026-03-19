@@ -22,3 +22,5 @@ def loads(data: bytes):
 
 
 __all__ = ["dumps", "loads"]
+
+globals().pop("_require_intrinsic", None)

@@ -299,3 +299,5 @@ class Cmd:
 
 
 __all__ = ["Cmd", "PROMPT", "IDENTCHARS"]
+
+globals().pop("_require_intrinsic", None)

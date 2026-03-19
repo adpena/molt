@@ -36,3 +36,5 @@ __all__ = [
     "sys",
     "wrap_future",
 ]
+
+globals().pop("_require_intrinsic", None)

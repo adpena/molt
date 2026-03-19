@@ -209,3 +209,5 @@ class SMTP:
             self.quit()
         except Exception:  # noqa: BLE001
             self.close()
+
+globals().pop("_require_intrinsic", None)

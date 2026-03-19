@@ -56,3 +56,5 @@ def loads(payload: str) -> dict[str, object]:
 
 
 __all__ = ["TOMLDecodeError", "loads"]
+
+globals().pop("_require_intrinsic", None)

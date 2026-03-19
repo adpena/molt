@@ -589,3 +589,5 @@ def unicode_escape_encode(input, errors="strict"):
 
 def unicode_escape_decode(input, errors="strict"):
     return _decode_with_consumed(input, "unicode-escape", errors)
+
+globals().pop("_require_intrinsic", None)

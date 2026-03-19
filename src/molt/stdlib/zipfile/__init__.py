@@ -482,3 +482,5 @@ from ._path import (  # noqa: E402
     Path,
     CompleteDirs,  # noqa: F401
 )
+
+globals().pop("_require_intrinsic", None)

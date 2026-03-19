@@ -33,3 +33,5 @@ def setup_testing_defaults(environ: dict[str, Any]) -> None:
 
 
 __all__ = ["setup_testing_defaults"]
+
+globals().pop("_require_intrinsic", None)

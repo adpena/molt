@@ -63,3 +63,5 @@ if sys.version_info >= (3, 14):
 
     def get_theme():
         return {}
+
+globals().pop("_require_intrinsic", None)

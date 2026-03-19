@@ -16,3 +16,5 @@ __all__ = [
     "unpack",
     "unpack_from",
 ]
+
+globals().pop("_require_intrinsic", None)

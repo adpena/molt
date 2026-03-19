@@ -147,3 +147,5 @@ __all__ = [
     "temp_dir",
     "unlink",
 ]
+
+globals().pop("_require_intrinsic", None)

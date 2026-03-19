@@ -41,3 +41,5 @@ __all__ = [
     "TLSVersion",
     "create_default_context",
 ]
+
+globals().pop("_require_intrinsic", None)

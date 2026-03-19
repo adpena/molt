@@ -184,3 +184,5 @@ __all__ = [
     "compile_command",
     "interact",
 ]
+
+globals().pop("_require_intrinsic", None)

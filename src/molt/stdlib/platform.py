@@ -102,3 +102,5 @@ def uname() -> uname_result:
             proc,
         )
     raise RuntimeError("platform.uname intrinsic returned unexpected value")
+
+globals().pop("_require_intrinsic", None)

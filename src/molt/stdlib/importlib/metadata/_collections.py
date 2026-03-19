@@ -25,3 +25,5 @@ class FreezableDefaultDict(collections.defaultdict):
 
 
 Pair = collections.namedtuple("Pair", "name value")
+
+globals().pop("_require_intrinsic", None)

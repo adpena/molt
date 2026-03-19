@@ -11,3 +11,5 @@ _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 logger = logging.getLogger("asyncio")
 
 __all__ = ["logger", "logging"]
+
+globals().pop("_require_intrinsic", None)

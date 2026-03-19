@@ -122,3 +122,5 @@ __all__ = [
     "showinfo",
     "showwarning",
 ]
+
+globals().pop("_require_intrinsic", None)

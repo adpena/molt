@@ -123,3 +123,5 @@ class NamespaceReader(abc.TraversableResources):
 
     def files(self):
         return self.path
+
+globals().pop("_require_intrinsic", None)

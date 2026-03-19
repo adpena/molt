@@ -70,3 +70,5 @@ class ServerProxy:
 
 
 __all__ = ["ServerProxy"]
+
+globals().pop("_require_intrinsic", None)

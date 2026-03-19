@@ -49,3 +49,5 @@ def decode(ew: str):
 def encode(text: str, charset: str = "utf-8", encoding: str | None = None):
     del encoding
     return _MOLT_EMAIL_HEADER_ENCODE_WORD(text, charset)
+
+globals().pop("_require_intrinsic", None)

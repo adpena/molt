@@ -1374,3 +1374,5 @@ __all__ = [
     "Y_REGION",
     "tixCommand",
 ]
+
+globals().pop("_require_intrinsic", None)

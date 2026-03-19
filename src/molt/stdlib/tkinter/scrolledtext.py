@@ -58,3 +58,5 @@ def example():
 
 if __name__ == "__main__":
     example()
+
+globals().pop("_require_intrinsic", None)

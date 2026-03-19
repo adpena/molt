@@ -66,3 +66,5 @@ __all__ = [
     "support",
     "warnings_helper",
 ]
+
+globals().pop("_require_intrinsic", None)

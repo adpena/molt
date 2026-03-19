@@ -17,3 +17,5 @@ def RLock(*args, **kwargs):
 __all__ = ["RLock", "contextmanager", "current_thread", "local", "ref"]
 
 del _MOLT_CAPABILITIES_HAS
+
+globals().pop("_require_intrinsic", None)

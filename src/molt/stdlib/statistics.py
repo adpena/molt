@@ -519,3 +519,5 @@ def linear_regression(
         return LinearRegression(float(slope), float(intercept))
     except ValueError as exc:
         raise StatisticsError(str(exc)) from None
+
+globals().pop("_require_intrinsic", None)

@@ -348,3 +348,5 @@ class ArgumentParser:
         handle = getattr(self, "_handle", None)
         if handle is not None and getattr(self, "_owns_handle", False):
             _PARSER_DROP(handle)
+
+globals().pop("_require_intrinsic", None)

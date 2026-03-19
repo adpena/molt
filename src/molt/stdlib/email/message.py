@@ -1292,3 +1292,5 @@ _MOLT_EMAIL_MESSAGE_AS_STRING = _require_intrinsic(
 )
 _MOLT_EMAIL_MESSAGE_ITEMS = _require_intrinsic("molt_email_message_items")
 _MOLT_EMAIL_MESSAGE_DROP = _require_intrinsic("molt_email_message_drop")
+
+globals().pop("_require_intrinsic", None)

@@ -202,3 +202,5 @@ class ABC(metaclass=ABCMeta):
 
 del _MOLT_ABC_BOOTSTRAP
 del _MOLT_ABC_UPDATE_ABSTRACTMETHODS
+
+globals().pop("_require_intrinsic", None)

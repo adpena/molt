@@ -145,3 +145,5 @@ class TemporaryDirectory:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.cleanup()
+
+globals().pop("_require_intrinsic", None)

@@ -275,3 +275,5 @@ def build_opener(*handlers):
 
 def urlopen(url, data=None, timeout=None):
     return build_opener().open(url, data=data, timeout=timeout)
+
+globals().pop("_require_intrinsic", None)

@@ -262,3 +262,5 @@ def signature(obj: Any) -> Signature:
             raise ValueError(f"no signature found for builtin {obj!r}")
         raise ValueError(f"no signature found for builtin type {obj!r}")
     raise ValueError(f"no signature found for {obj!r}")
+
+globals().pop("_require_intrinsic", None)

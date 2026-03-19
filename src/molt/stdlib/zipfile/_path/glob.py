@@ -84,3 +84,5 @@ else:
             .replace("\\*", r"[^/]*")
             .replace("\\?", r".")
         )
+
+globals().pop("_require_intrinsic", None)

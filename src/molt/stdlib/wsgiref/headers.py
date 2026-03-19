@@ -67,3 +67,5 @@ class Headers:
 
 
 __all__ = ["Headers"]
+
+globals().pop("_require_intrinsic", None)

@@ -91,3 +91,5 @@ def open(file: str, flag: str = "c", mode: int = 0o666) -> _Database:
     """Open a dbm.dumb database."""
     handle = _MOLT_DBM_DUMB_OPEN(file, flag, mode)
     return _Database(handle)
+
+globals().pop("_require_intrinsic", None)

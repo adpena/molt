@@ -14,3 +14,5 @@ import asyncio.base_futures as base_futures
 import asyncio.coroutines as coroutines
 
 __all__ = ["base_futures", "coroutines", "linecache", "reprlib", "traceback"]
+
+globals().pop("_require_intrinsic", None)

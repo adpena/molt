@@ -176,3 +176,5 @@ def symtable(code: str, filename: str, compile_type: str) -> _SymbolTable:
 
 
 __all__ = ["symtable"]
+
+globals().pop("_require_intrinsic", None)

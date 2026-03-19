@@ -134,3 +134,5 @@ class shlex:
         if token == "":
             raise StopIteration
         return token
+
+globals().pop("_require_intrinsic", None)

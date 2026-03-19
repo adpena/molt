@@ -19,3 +19,5 @@ def _normal_dist_inv_cdf(
 
 
 del _MOLT_STATISTICS_NORMAL_DIST_INV_CDF
+
+globals().pop("_require_intrinsic", None)

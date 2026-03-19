@@ -443,3 +443,5 @@ class chdir(AbstractContextManager):
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
         _MOLT_CONTEXTLIB_CHDIR_EXIT(self._old_cwd.pop())
         return False
+
+globals().pop("_require_intrinsic", None)

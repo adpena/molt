@@ -127,3 +127,5 @@ class BaseCookie(dict):
 
 class SimpleCookie(BaseCookie):
     pass
+
+globals().pop("_require_intrinsic", None)

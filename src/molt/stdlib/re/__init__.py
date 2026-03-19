@@ -461,3 +461,5 @@ def escape(pattern: object) -> str:
         else:
             out.append("\\" + ch)
     return "".join(out)
+
+globals().pop("_require_intrinsic", None)

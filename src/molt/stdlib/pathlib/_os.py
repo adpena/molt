@@ -14,3 +14,5 @@ from . import capabilities as capabilities
 _require_intrinsic("molt_path_join")
 
 __all__ = ["capabilities"]
+
+globals().pop("_require_intrinsic", None)

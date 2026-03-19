@@ -174,3 +174,5 @@ def collapse_rfc2231_value(
 
 def decode_params(params):
     return params
+
+globals().pop("_require_intrinsic", None)

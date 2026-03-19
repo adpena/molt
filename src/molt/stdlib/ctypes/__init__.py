@@ -172,3 +172,5 @@ def pointer(obj: Any) -> _Pointer:
 def sizeof(obj_or_type: Any) -> int:
     _require_ffi()
     return _sizeof_type(obj_or_type)
+
+globals().pop("_require_intrinsic", None)

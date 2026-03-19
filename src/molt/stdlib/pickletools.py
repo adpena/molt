@@ -14,3 +14,5 @@ def optimize(data: bytes) -> bytes:
 
 
 __all__ = ["optimize"]
+
+globals().pop("_require_intrinsic", None)

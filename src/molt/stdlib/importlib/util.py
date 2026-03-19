@@ -163,3 +163,5 @@ def spec_from_file_location(
     return _MOLT_IMPORTLIB_SPEC_FROM_FILE_LOCATION(
         name, location, loader, submodule_search_locations, _machinery
     )
+
+globals().pop("_require_intrinsic", None)

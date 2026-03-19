@@ -15,3 +15,5 @@ _molt_html_entities_html5 = _require_intrinsic("molt_html_entities_html5")
 codepoint2name: dict[int, str] = _molt_html_entities_codepoint2name()
 name2codepoint: dict[str, int] = _molt_html_entities_name2codepoint()
 html5: dict[str, str] = _molt_html_entities_html5()
+
+globals().pop("_require_intrinsic", None)

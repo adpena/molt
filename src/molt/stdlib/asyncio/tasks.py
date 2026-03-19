@@ -77,3 +77,5 @@ __all__ = [
     "warnings",
     "weakref",
 ]
+
+globals().pop("_require_intrinsic", None)

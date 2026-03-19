@@ -27,3 +27,5 @@ __all__ = [
 ]
 
 del _MOLT_WEAKREF_COUNT
+
+globals().pop("_require_intrinsic", None)

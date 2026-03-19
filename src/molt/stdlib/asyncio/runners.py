@@ -33,3 +33,5 @@ __all__ = [
     "tasks",
     "threading",
 ]
+
+globals().pop("_require_intrinsic", None)

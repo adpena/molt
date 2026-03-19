@@ -86,3 +86,5 @@ del _MOLT_QUEUE_EMPTY
 del _MOLT_QUEUE_PUT
 del _MOLT_QUEUE_GET
 del _MOLT_QUEUE_DROP
+
+globals().pop("_require_intrinsic", None)

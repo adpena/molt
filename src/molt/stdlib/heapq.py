@@ -80,3 +80,5 @@ def merge(*iterables: Iterable[T], **kwargs):
         if kwargs:
             raise TypeError("merge() got unexpected keyword arguments")
     return iter(_molt_heapq_merge(list(iterables), key, reverse))
+
+globals().pop("_require_intrinsic", None)

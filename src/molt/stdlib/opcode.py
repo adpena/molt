@@ -131,3 +131,5 @@ del _PAYLOAD
 
 def is_pseudo(op):
     return MIN_PSEUDO_OPCODE <= op <= MAX_PSEUDO_OPCODE
+
+globals().pop("_require_intrinsic", None)

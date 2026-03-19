@@ -120,3 +120,5 @@ def open(name: str | None = None, mode: str = "r", **kwargs) -> TarFile:
 
 def is_tarfile(name: str) -> bool:
     return bool(_molt_tarfile_is_tarfile(str(name)))
+
+globals().pop("_require_intrinsic", None)

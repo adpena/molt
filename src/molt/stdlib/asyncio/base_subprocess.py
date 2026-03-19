@@ -40,3 +40,5 @@ __all__ = [
     "transports",
     "warnings",
 ]
+
+globals().pop("_require_intrinsic", None)

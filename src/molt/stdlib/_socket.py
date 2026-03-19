@@ -191,3 +191,5 @@ __all__ = sorted(
         "__spec__",
     }
 )
+
+globals().pop("_require_intrinsic", None)

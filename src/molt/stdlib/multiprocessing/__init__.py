@@ -267,3 +267,5 @@ _apply_api_surface(
     },
     prune=True,
 )
+
+globals().pop("_require_intrinsic", None)

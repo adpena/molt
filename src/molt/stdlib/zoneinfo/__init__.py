@@ -80,3 +80,5 @@ def available_timezones() -> set[str]:
 
 
 __all__ = ["ZoneInfo", "ZoneInfoNotFoundError", "available_timezones"]
+
+globals().pop("_require_intrinsic", None)

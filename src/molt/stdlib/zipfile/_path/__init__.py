@@ -271,3 +271,5 @@ class Path:
         if parent_at:
             parent_at += "/"
         return self._next(parent_at)
+
+globals().pop("_require_intrinsic", None)

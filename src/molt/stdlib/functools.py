@@ -307,3 +307,5 @@ class partialmethod:
                 return func(obj, *p_args, *call_args, **call_kw)
 
         return _bound
+
+globals().pop("_require_intrinsic", None)

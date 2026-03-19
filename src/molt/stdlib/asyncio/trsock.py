@@ -14,3 +14,5 @@ class TransportSocket:
 
 
 __all__ = ["TransportSocket", "socket"]
+
+globals().pop("_require_intrinsic", None)

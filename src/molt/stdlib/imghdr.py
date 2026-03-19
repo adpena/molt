@@ -230,3 +230,5 @@ def testall(list, recursive, toplevel):
                 print(what(filename))
             except OSError:
                 print("*** not found ***")
+
+globals().pop("_require_intrinsic", None)

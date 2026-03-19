@@ -18,3 +18,5 @@ from .resources.simple import (
 )
 
 __all__ = ["SimpleReader", "ResourceHandle", "ResourceContainer", "TraversableReader"]
+
+globals().pop("_require_intrinsic", None)

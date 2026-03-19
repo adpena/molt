@@ -101,3 +101,5 @@ def make_header(
             text = str(item)
         h.append(text, charset=charset)
     return h
+
+globals().pop("_require_intrinsic", None)

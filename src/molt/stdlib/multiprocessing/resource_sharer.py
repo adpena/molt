@@ -5,3 +5,5 @@ from multiprocessing._api_surface import apply_module_api_surface as _apply
 
 _require_intrinsic("molt_capabilities_has")
 _apply(__name__, globals())
+
+globals().pop("_require_intrinsic", None)

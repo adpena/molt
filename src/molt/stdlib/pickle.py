@@ -411,3 +411,5 @@ def _test_roundtrip(obj: Any, protocol: int = DEFAULT_PROTOCOL) -> Any:
     dump(obj, buf, protocol=protocol)
     buf.seek(0)
     return load(buf)
+
+globals().pop("_require_intrinsic", None)

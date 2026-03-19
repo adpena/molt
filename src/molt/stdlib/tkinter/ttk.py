@@ -1186,3 +1186,5 @@ __all__ = [
 
 def __getattr__(attr):
     raise AttributeError(f'module "{__name__}" has no attribute "{attr}"')
+
+globals().pop("_require_intrinsic", None)

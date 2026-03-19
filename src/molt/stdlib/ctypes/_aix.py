@@ -80,3 +80,5 @@ def find_library(_name: str) -> str | None:
 
 
 del PyCSimpleType
+
+globals().pop("_require_intrinsic", None)

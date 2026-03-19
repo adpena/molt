@@ -14,3 +14,5 @@ def dis(_obj=None, *, file=None) -> None:
 
 
 __all__ = ["dis"]
+
+globals().pop("_require_intrinsic", None)

@@ -199,3 +199,5 @@ def open(
 ) -> Shelf:
     """Open a persistent dictionary backed by a dbm database."""
     return DbfilenameShelf(filename, flag=flag, protocol=protocol, writeback=writeback)
+
+globals().pop("_require_intrinsic", None)

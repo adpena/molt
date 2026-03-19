@@ -138,3 +138,5 @@ def listen(
 def stopListening() -> None:
     _MOLT_LOGGING_CONFIG_STOP_LISTENING()
     return None
+
+globals().pop("_require_intrinsic", None)

@@ -19,3 +19,5 @@ def ParserCreate(*_args, **_kwargs) -> _Parser:
 
 
 __all__ = ["ParserCreate"]
+
+globals().pop("_require_intrinsic", None)

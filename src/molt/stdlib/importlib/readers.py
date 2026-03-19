@@ -18,3 +18,5 @@ from .resources.readers import (
 )
 
 __all__ = ["FileReader", "ZipReader", "MultiplexedPath", "NamespaceReader"]
+
+globals().pop("_require_intrinsic", None)

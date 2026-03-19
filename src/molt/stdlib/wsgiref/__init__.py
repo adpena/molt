@@ -8,3 +8,5 @@ _MOLT_WSGIREF_RUNTIME_READY = _require_intrinsic(
     "molt_wsgiref_runtime_ready")
 
 __all__ = ["headers", "simple_server", "util"]
+
+globals().pop("_require_intrinsic", None)

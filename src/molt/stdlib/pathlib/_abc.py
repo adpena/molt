@@ -14,3 +14,5 @@ from . import Path as Path  # re-export
 _require_intrinsic("molt_path_join")
 
 __all__ = ["Path"]
+
+globals().pop("_require_intrinsic", None)

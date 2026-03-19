@@ -422,3 +422,5 @@ _CONSTRUCTORS: dict[str, Callable[..., _Hash]] = {
     "blake2b": blake2b,
     "blake2s": blake2s,
 }
+
+globals().pop("_require_intrinsic", None)

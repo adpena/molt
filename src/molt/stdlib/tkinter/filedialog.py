@@ -383,3 +383,5 @@ __all__ = [
     "os",
     "test",
 ]
+
+globals().pop("_require_intrinsic", None)

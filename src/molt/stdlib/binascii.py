@@ -47,3 +47,5 @@ __all__ = [
     "hexlify",
     "unhexlify",
 ]
+
+globals().pop("_require_intrinsic", None)

@@ -99,3 +99,5 @@ __all__ = [
     "types",
     "wait",
 ]
+
+globals().pop("_require_intrinsic", None)

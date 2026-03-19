@@ -11,3 +11,5 @@ raise SyntaxError(
     "utf-8 codec can't decode byte",
     ("badsyntax_pep3120.py", 1, 1, 'print("b\\ufffdse")'),
 )
+
+globals().pop("_require_intrinsic", None)

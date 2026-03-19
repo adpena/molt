@@ -555,3 +555,5 @@ class Sniffer:
             return bool(_MOLT_CSV_HAS_HEADER(sample))
         except ValueError as exc:
             raise Error(str(exc)) from None
+
+globals().pop("_require_intrinsic", None)

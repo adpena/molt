@@ -21,3 +21,5 @@ def parse(
 __all__ = ["parse"]
 
 del _MOLT_IMPORT_SMOKE_RUNTIME_READY
+
+globals().pop("_require_intrinsic", None)

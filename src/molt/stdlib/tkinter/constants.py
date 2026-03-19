@@ -110,3 +110,5 @@ TK_AVAILABLE = _tk_available()
 HAS_GUI_CAPABILITY = _has_gui_capability()
 
 __all__ = [name for name in globals() if name.isupper() and not name.startswith("_")]
+
+globals().pop("_require_intrinsic", None)

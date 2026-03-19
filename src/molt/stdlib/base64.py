@@ -222,3 +222,5 @@ def encodestring(s: Any) -> bytes:
 
 def decodestring(s: Any) -> bytes:
     return decodebytes(s)
+
+globals().pop("_require_intrinsic", None)

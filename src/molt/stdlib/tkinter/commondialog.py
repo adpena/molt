@@ -74,3 +74,5 @@ class Dialog:
 
 
 __all__ = ["Dialog"]
+
+globals().pop("_require_intrinsic", None)

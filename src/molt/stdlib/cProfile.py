@@ -10,3 +10,5 @@ _MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic(
 _MOLT_IMPORT_SMOKE_RUNTIME_READY()
 
 __all__ = ["Profile"]
+
+globals().pop("_require_intrinsic", None)

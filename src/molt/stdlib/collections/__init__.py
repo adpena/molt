@@ -1732,3 +1732,5 @@ class UserString:
 
     def zfill(self, width: int) -> "UserString":
         return self.__class__(self.data.zfill(width))
+
+globals().pop("_require_intrinsic", None)

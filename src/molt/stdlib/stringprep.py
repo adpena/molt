@@ -119,3 +119,5 @@ def in_table_d1(code):
 def in_table_d2(code):
     """Table D.2: Characters with bidirectional property L."""
     return _stringprep_in_table("d2", code)
+
+globals().pop("_require_intrinsic", None)

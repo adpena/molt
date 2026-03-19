@@ -15,3 +15,5 @@ class Profile:
 
 
 __all__ = ["Profile"]
+
+globals().pop("_require_intrinsic", None)

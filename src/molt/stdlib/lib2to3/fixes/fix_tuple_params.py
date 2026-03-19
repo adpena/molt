@@ -10,3 +10,5 @@ def __getattr__(attr: str):
     raise RuntimeError(
         'stdlib module "lib2to3.fixes.fix_tuple_params" is not fully lowered yet; only an intrinsic-first stub is available.'
     )
+
+globals().pop("_require_intrinsic", None)

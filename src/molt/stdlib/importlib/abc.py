@@ -173,3 +173,5 @@ class SourceLoader(_bootstrap_external.SourceLoader, ResourceLoader, ExecutionLo
 
 
 _register(SourceLoader, machinery.SourceFileLoader)
+
+globals().pop("_require_intrinsic", None)
