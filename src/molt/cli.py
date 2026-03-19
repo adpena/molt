@@ -738,6 +738,27 @@ class _BackendCacheSetup:
     cache_hit_tier: str | None
 
 
+@dataclass(frozen=True)
+class _BuildDiagnosticsContext:
+    diagnostics_enabled: bool
+    diagnostics_start: float
+    phase_starts: Mapping[str, float]
+    module_graph: Mapping[str, Path]
+    module_reasons: Mapping[str, set[str]]
+    frontend_module_timings: Sequence[dict[str, Any]]
+    allocation_diagnostics_enabled: bool
+    frontend_parallel_details: Mapping[str, Any]
+    profile: str
+    midend_policy_outcomes_by_function: Mapping[str, dict[str, Any]]
+    midend_pass_stats_by_function: Mapping[str, dict[str, dict[str, Any]]]
+    backend_daemon_health: Mapping[str, Any] | None
+    backend_daemon_cached: bool | None
+    backend_daemon_cache_tier: str | None
+    backend_daemon_config_digest: str | None
+    diagnostics_path_spec: str | None
+    artifacts_root: Path
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -10756,6 +10777,73 @@ def _emit_non_native_build_result(
     return 0
 
 
+def _build_build_diagnostics_payload(
+    diagnostics_context: _BuildDiagnosticsContext,
+) -> tuple[dict[str, Any] | None, Path | None]:
+    if not diagnostics_context.diagnostics_enabled:
+        return None, None
+    module_reason_map = {
+        name: sorted(reasons)
+        for name, reasons in sorted(diagnostics_context.module_reasons.items())
+    }
+    payload: dict[str, Any] = {
+        "enabled": True,
+        "total_sec": round(time.perf_counter() - diagnostics_context.diagnostics_start, 6),
+        "phase_sec": _phase_duration_map(diagnostics_context.phase_starts),
+        "module_count": len(diagnostics_context.module_graph),
+        "module_reason_summary": _build_reason_summary(
+            diagnostics_context.module_reasons
+        ),
+        "module_reasons": module_reason_map,
+    }
+    frontend_module_timings = list(diagnostics_context.frontend_module_timings)
+    if frontend_module_timings:
+        payload["frontend_module_timings"] = frontend_module_timings
+        payload["frontend_module_timings_top"] = sorted(
+            frontend_module_timings,
+            key=lambda item: float(item.get("total_s", 0.0)),
+            reverse=True,
+        )[:20]
+    if diagnostics_context.allocation_diagnostics_enabled:
+        allocations_payload = _capture_build_allocation_diagnostics()
+        if allocations_payload is not None:
+            payload["allocations"] = allocations_payload
+    payload["frontend_parallel"] = dict(diagnostics_context.frontend_parallel_details)
+    midend_payload = _build_midend_diagnostics_payload(
+        requested_profile=diagnostics_context.profile,
+        policy_outcomes_by_function=diagnostics_context.midend_policy_outcomes_by_function,
+        pass_stats_by_function=diagnostics_context.midend_pass_stats_by_function,
+    )
+    if midend_payload is not None:
+        payload["midend"] = midend_payload
+    if diagnostics_context.backend_daemon_health is not None:
+        payload["backend_daemon"] = diagnostics_context.backend_daemon_health
+    if (
+        diagnostics_context.backend_daemon_cached is not None
+        or diagnostics_context.backend_daemon_cache_tier is not None
+        or diagnostics_context.backend_daemon_config_digest is not None
+    ):
+        daemon_compile_info: dict[str, Any] = {}
+        if diagnostics_context.backend_daemon_cached is not None:
+            daemon_compile_info["cached"] = diagnostics_context.backend_daemon_cached
+        if diagnostics_context.backend_daemon_cache_tier is not None:
+            daemon_compile_info["cache_tier"] = (
+                diagnostics_context.backend_daemon_cache_tier
+            )
+        if diagnostics_context.backend_daemon_config_digest is not None:
+            daemon_compile_info["config_digest"] = (
+                diagnostics_context.backend_daemon_config_digest
+            )
+        payload["backend_daemon_compile"] = daemon_compile_info
+    out_path: Path | None = None
+    if diagnostics_context.diagnostics_path_spec:
+        out_path = _resolve_build_diagnostics_path(
+            diagnostics_context.diagnostics_path_spec,
+            diagnostics_context.artifacts_root,
+        )
+    return payload, out_path
+
+
 def _prepare_backend_cache_setup(
     *,
     cache_enabled: bool,
@@ -14762,60 +14850,27 @@ def build(
             )
 
     def _build_diagnostics_payload() -> tuple[dict[str, Any] | None, Path | None]:
-        if not diagnostics_enabled:
-            return None, None
-        module_reason_map = {
-            name: sorted(reasons) for name, reasons in sorted(module_reasons.items())
-        }
-        payload: dict[str, Any] = {
-            "enabled": True,
-            "total_sec": round(time.perf_counter() - diagnostics_start, 6),
-            "phase_sec": _phase_duration_map(phase_starts),
-            "module_count": len(module_graph),
-            "module_reason_summary": _build_reason_summary(module_reasons),
-            "module_reasons": module_reason_map,
-        }
-        if frontend_module_timings:
-            payload["frontend_module_timings"] = frontend_module_timings
-            payload["frontend_module_timings_top"] = sorted(
-                frontend_module_timings,
-                key=lambda item: float(item.get("total_s", 0.0)),
-                reverse=True,
-            )[:20]
-        if allocation_diagnostics_enabled:
-            allocations_payload = _capture_build_allocation_diagnostics()
-            if allocations_payload is not None:
-                payload["allocations"] = allocations_payload
-        payload["frontend_parallel"] = dict(frontend_parallel_details)
-        midend_payload = _build_midend_diagnostics_payload(
-            requested_profile=profile,
-            policy_outcomes_by_function=midend_policy_outcomes_by_function,
-            pass_stats_by_function=midend_pass_stats_by_function,
-        )
-        if midend_payload is not None:
-            payload["midend"] = midend_payload
-        if backend_daemon_health is not None:
-            payload["backend_daemon"] = backend_daemon_health
-        if (
-            backend_daemon_cached is not None
-            or backend_daemon_cache_tier is not None
-            or backend_daemon_config_digest is not None
-        ):
-            daemon_compile_info: dict[str, Any] = {}
-            if backend_daemon_cached is not None:
-                daemon_compile_info["cached"] = backend_daemon_cached
-            if backend_daemon_cache_tier is not None:
-                daemon_compile_info["cache_tier"] = backend_daemon_cache_tier
-            if backend_daemon_config_digest is not None:
-                daemon_compile_info["config_digest"] = backend_daemon_config_digest
-            payload["backend_daemon_compile"] = daemon_compile_info
-        out_path: Path | None = None
-        if diagnostics_path_spec:
-            out_path = _resolve_build_diagnostics_path(
-                diagnostics_path_spec,
-                artifacts_root,
+        return _build_build_diagnostics_payload(
+            _BuildDiagnosticsContext(
+                diagnostics_enabled=diagnostics_enabled,
+                diagnostics_start=diagnostics_start,
+                phase_starts=phase_starts,
+                module_graph=module_graph,
+                module_reasons=module_reasons,
+                frontend_module_timings=frontend_module_timings,
+                allocation_diagnostics_enabled=allocation_diagnostics_enabled,
+                frontend_parallel_details=frontend_parallel_details,
+                profile=profile,
+                midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
+                midend_pass_stats_by_function=midend_pass_stats_by_function,
+                backend_daemon_health=backend_daemon_health,
+                backend_daemon_cached=backend_daemon_cached,
+                backend_daemon_cache_tier=backend_daemon_cache_tier,
+                backend_daemon_config_digest=backend_daemon_config_digest,
+                diagnostics_path_spec=diagnostics_path_spec,
+                artifacts_root=artifacts_root,
             )
-        return payload, out_path
+        )
 
     namespace_modules: dict[str, Path] = {}
     if namespace_parents:
