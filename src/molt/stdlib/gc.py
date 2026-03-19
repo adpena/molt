@@ -5,11 +5,11 @@ from __future__ import annotations
 # Intrinsic-only stdlib guard.
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_STDLIB_PROBE = _require_intrinsic("molt_stdlib_probe")
 
 
 def _require_callable_intrinsic(name: str):
-    value = _require_intrinsic(name, globals())
+    value = _require_intrinsic(name)
     if not callable(value):
         raise RuntimeError(f"intrinsic unavailable: {name}")
     return value

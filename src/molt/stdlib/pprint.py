@@ -35,12 +35,12 @@ import importlib.util as _importlib_util
 import sys as _sys
 import types as _types
 
-_MOLT_REPR_FROM_OBJ = _require_intrinsic("molt_repr_from_obj", globals())
-_MOLT_PPRINT_SAFE_REPR = _require_intrinsic("molt_pprint_safe_repr", globals())
-_MOLT_PPRINT_PFORMAT = _require_intrinsic("molt_pprint_pformat", globals())
-_MOLT_PPRINT_ISREADABLE = _require_intrinsic("molt_pprint_isreadable", globals())
-_MOLT_PPRINT_ISRECURSIVE = _require_intrinsic("molt_pprint_isrecursive", globals())
-_MOLT_PPRINT_FORMAT_OBJECT = _require_intrinsic("molt_pprint_format_object", globals())
+_MOLT_REPR_FROM_OBJ = _require_intrinsic("molt_repr_from_obj")
+_MOLT_PPRINT_SAFE_REPR = _require_intrinsic("molt_pprint_safe_repr")
+_MOLT_PPRINT_PFORMAT = _require_intrinsic("molt_pprint_pformat")
+_MOLT_PPRINT_ISREADABLE = _require_intrinsic("molt_pprint_isreadable")
+_MOLT_PPRINT_ISRECURSIVE = _require_intrinsic("molt_pprint_isrecursive")
+_MOLT_PPRINT_FORMAT_OBJECT = _require_intrinsic("molt_pprint_format_object")
 
 
 __all__ = [

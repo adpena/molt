@@ -9,39 +9,35 @@ from types import ModuleType as _ModuleType
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_STDLIB_PROBE = _require_intrinsic("molt_stdlib_probe")
 _MOLT_HTTP_PARSE_HEADER_PAIRS = _require_intrinsic(
-    "molt_http_parse_header_pairs", globals()
+    "molt_http_parse_header_pairs"
 )
 _MOLT_HTTP_SERVER_READ_REQUEST = _require_intrinsic(
-    "molt_http_server_read_request", globals()
+    "molt_http_server_read_request"
 )
 _MOLT_HTTP_SERVER_COMPUTE_CLOSE_CONNECTION = _require_intrinsic(
-    "molt_http_server_compute_close_connection", globals()
+    "molt_http_server_compute_close_connection"
 )
 _MOLT_HTTP_SERVER_HANDLE_ONE_REQUEST = _require_intrinsic(
-    "molt_http_server_handle_one_request", globals()
+    "molt_http_server_handle_one_request"
 )
 _MOLT_HTTP_SERVER_SEND_RESPONSE = _require_intrinsic(
-    "molt_http_server_send_response", globals()
+    "molt_http_server_send_response"
 )
 _MOLT_HTTP_SERVER_SEND_RESPONSE_ONLY = _require_intrinsic(
-    "molt_http_server_send_response_only", globals()
+    "molt_http_server_send_response_only"
 )
 _MOLT_HTTP_SERVER_SEND_HEADER = _require_intrinsic(
-    "molt_http_server_send_header", globals()
+    "molt_http_server_send_header"
 )
-_MOLT_HTTP_SERVER_END_HEADERS = _require_intrinsic(
-    "molt_http_server_end_headers", globals()
-)
-_MOLT_HTTP_SERVER_SEND_ERROR = _require_intrinsic(
-    "molt_http_server_send_error", globals()
-)
+_MOLT_HTTP_SERVER_END_HEADERS = _require_intrinsic("molt_http_server_end_headers")
+_MOLT_HTTP_SERVER_SEND_ERROR = _require_intrinsic("molt_http_server_send_error")
 _MOLT_HTTP_SERVER_VERSION_STRING = _require_intrinsic(
-    "molt_http_server_version_string", globals()
+    "molt_http_server_version_string"
 )
 _MOLT_HTTP_SERVER_DATE_TIME_STRING = _require_intrinsic(
-    "molt_http_server_date_time_string", globals()
+    "molt_http_server_date_time_string"
 )
 
 

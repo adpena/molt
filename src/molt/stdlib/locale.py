@@ -10,11 +10,11 @@ __all__ = ["LC_ALL", "setlocale", "getpreferredencoding", "getlocale"]
 
 LC_ALL = 6
 
-_MOLT_LOCALE_SETLOCALE = _require_intrinsic("molt_locale_setlocale", globals())
+_MOLT_LOCALE_SETLOCALE = _require_intrinsic("molt_locale_setlocale")
 _MOLT_LOCALE_GETPREFERREDENCODING = _require_intrinsic(
-    "molt_locale_getpreferredencoding", globals()
+    "molt_locale_getpreferredencoding"
 )
-_MOLT_LOCALE_GETLOCALE = _require_intrinsic("molt_locale_getlocale", globals())
+_MOLT_LOCALE_GETLOCALE = _require_intrinsic("molt_locale_getlocale")
 
 
 def setlocale(category: object, locale: object = None) -> str:

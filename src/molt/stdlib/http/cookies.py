@@ -6,9 +6,9 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 __all__ = ["BaseCookie", "CookieError", "Morsel", "SimpleCookie"]
 
-_MOLT_HTTP_COOKIES_PARSE = _require_intrinsic("molt_http_cookies_parse", globals())
+_MOLT_HTTP_COOKIES_PARSE = _require_intrinsic("molt_http_cookies_parse")
 _MOLT_HTTP_COOKIES_RENDER_MORSEL = _require_intrinsic(
-    "molt_http_cookies_render_morsel", globals()
+    "molt_http_cookies_render_morsel"
 )
 
 _MORSEL_ATTR_ORDER = ("expires", "httponly", "max-age", "path", "secure")

@@ -8,7 +8,7 @@ from collections.abc import Callable
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_ZIPAPP_RUNTIME_READY = _require_intrinsic("molt_zipapp_runtime_ready", globals())
+_MOLT_ZIPAPP_RUNTIME_READY = _require_intrinsic("molt_zipapp_runtime_ready")
 
 # TODO(stdlib-compat, owner:runtime, milestone:TL3, priority:P2, status:planned): extend `zipapp` coverage to full CPython semantics (interpreter shebangs, custom entry-points, and in-memory target handling) via Rust intrinsics.
 

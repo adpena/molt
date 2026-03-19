@@ -7,8 +7,8 @@ from enum import IntEnum
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_http_client_execute", globals())
-_MOLT_HTTP_STATUS_REASON = _require_intrinsic("molt_http_status_reason", globals())
+_MOLT_HTTP_CLIENT_EXECUTE = _require_intrinsic("molt_http_client_execute")
+_MOLT_HTTP_STATUS_REASON = _require_intrinsic("molt_http_status_reason")
 
 
 class HTTPStatus(IntEnum):
