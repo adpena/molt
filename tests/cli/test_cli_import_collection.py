@@ -2237,6 +2237,7 @@ def test_backend_daemon_config_digest_and_socket_path_include_config(
     tmp_path: Path,
 ) -> None:
     monkeypatch.delenv("MOLT_BACKEND_DAEMON_SOCKET", raising=False)
+    cli._backend_daemon_paths_cached.cache_clear()
     digest_a = cli._backend_daemon_config_digest(tmp_path, "dev-fast")
     monkeypatch.setenv("MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2", "2")
     digest_b = cli._backend_daemon_config_digest(tmp_path, "dev-fast")
@@ -2249,6 +2250,39 @@ def test_backend_daemon_config_digest_and_socket_path_include_config(
         tmp_path, "dev-fast", config_digest=digest_b
     )
     assert socket_a != socket_b
+
+
+def test_backend_daemon_paths_are_cached(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("MOLT_BACKEND_DAEMON_SOCKET", raising=False)
+    monkeypatch.delenv("MOLT_BACKEND_DAEMON_SOCKET_DIR", raising=False)
+    cli._backend_daemon_paths_cached.cache_clear()
+
+    first = cli._backend_daemon_socket_path(tmp_path, "dev-fast", config_digest="abc")
+    second = cli._backend_daemon_socket_path(tmp_path, "dev-fast", config_digest="abc")
+
+    info = cli._backend_daemon_paths_cached.cache_info()
+    assert first == second
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
+def test_backend_daemon_log_and_pid_paths_reuse_cached_bundle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("MOLT_BACKEND_DAEMON_SOCKET", raising=False)
+    monkeypatch.delenv("MOLT_BACKEND_DAEMON_SOCKET_DIR", raising=False)
+    cli._backend_daemon_paths_cached.cache_clear()
+
+    log_path = cli._backend_daemon_log_path(tmp_path, "dev-fast")
+    pid_path = cli._backend_daemon_pid_path(tmp_path, "dev-fast")
+
+    info = cli._backend_daemon_paths_cached.cache_info()
+    assert log_path.name == "molt-backend.dev-fast.log"
+    assert pid_path.name == "molt-backend.dev-fast.pid"
+    assert log_path.parent == pid_path.parent
+    assert info.hits >= 1
 
 
 def test_function_cache_key_tracks_top_level_ir_extras() -> None:
