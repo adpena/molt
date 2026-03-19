@@ -5795,16 +5795,44 @@ def _runtime_wasm_artifact_path(project_root: Path, artifact_name: str) -> Path:
     )
 
 
-def _resolve_backend_profile(
+@functools.lru_cache(maxsize=32)
+def _resolve_backend_profile_cached(
     default_profile: BuildProfile,
+    raw: str | None,
 ) -> tuple[BuildProfile, str | None]:
-    raw = os.environ.get("MOLT_BACKEND_PROFILE")
     if not raw:
         return default_profile, None
     value = raw.strip().lower()
     if value not in {"dev", "release"}:
         return default_profile, f"Invalid MOLT_BACKEND_PROFILE value: {raw}"
     return cast(BuildProfile, value), None
+
+
+def _resolve_backend_profile(
+    default_profile: BuildProfile,
+) -> tuple[BuildProfile, str | None]:
+    return _resolve_backend_profile_cached(
+        default_profile,
+        os.environ.get("MOLT_BACKEND_PROFILE"),
+    )
+
+
+@functools.lru_cache(maxsize=32)
+def _resolve_cargo_profile_name_cached(
+    build_profile: BuildProfile,
+    raw: str,
+) -> tuple[str, str | None]:
+    env_var = (
+        "MOLT_DEV_CARGO_PROFILE"
+        if build_profile == "dev"
+        else "MOLT_RELEASE_CARGO_PROFILE"
+    )
+    normalized_raw = raw.strip()
+    default_profile = "dev-fast" if build_profile == "dev" else "release"
+    profile_name = normalized_raw or default_profile
+    if not _CARGO_PROFILE_NAME_RE.match(profile_name):
+        return build_profile, f"Invalid {env_var} value: {raw}"
+    return profile_name, None
 
 
 def _resolve_cargo_profile_name(
@@ -5815,12 +5843,10 @@ def _resolve_cargo_profile_name(
         if build_profile == "dev"
         else "MOLT_RELEASE_CARGO_PROFILE"
     )
-    raw = os.environ.get(env_var, "").strip()
-    default_profile = "dev-fast" if build_profile == "dev" else "release"
-    profile_name = raw or default_profile
-    if not _CARGO_PROFILE_NAME_RE.match(profile_name):
-        return build_profile, f"Invalid {env_var} value: {raw}"
-    return profile_name, None
+    return _resolve_cargo_profile_name_cached(
+        build_profile,
+        os.environ.get(env_var, ""),
+    )
 
 
 def _resolve_wasm_cargo_profile(cargo_profile: str) -> str:
@@ -5905,11 +5931,18 @@ def _backend_daemon_config_digest(
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _backend_daemon_enabled() -> bool:
-    if os.name != "posix":
+@functools.lru_cache(maxsize=32)
+def _backend_daemon_enabled_cached(os_name: str, raw: str) -> bool:
+    if os_name != "posix":
         return False
-    raw = os.environ.get("MOLT_BACKEND_DAEMON", "1").strip().lower()
-    return raw not in {"0", "false", "no", "off"}
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _backend_daemon_enabled() -> bool:
+    return _backend_daemon_enabled_cached(
+        os.name,
+        os.environ.get("MOLT_BACKEND_DAEMON", "1"),
+    )
 
 
 def _backend_daemon_start_timeout() -> None:
