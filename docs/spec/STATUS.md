@@ -1,6 +1,6 @@
 # STATUS (Canonical)
 
-Last updated: 2026-03-01
+Last updated: 2026-03-19
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
@@ -12,6 +12,19 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Coverage/interoperability: approach Nuitka-level CPython surface coverage and
   ecosystem interoperability, while preserving Molt vision constraints
   (determinism, explicit capabilities, and no implicit host-Python fallback).
+
+## Validation Recovery (2026-03-19)
+- Fixed: persisted module-analysis cache serialization now handles `bytes` defaults in `src/molt/cli.py`, unblocking targeted differential builds that were failing with `TypeError: Object of type bytes is not JSON serializable`.
+- Fixed: `re.Match.pos` / `re.Match.endpos` now report search bounds instead of match span in `src/molt/stdlib/re/__init__.py`; targeted regression probe `tests/differential/stdlib/re_match_metadata.py` is green and `tests/differential/basic/re_parity.py` is green again.
+- Fixed: frozen dataclass field assignment now raises `dataclasses.FrozenInstanceError` in the direct dataclass field-set runtime path (`runtime/molt-runtime/src/object/ops.rs`); targeted probe `tests/differential/basic/dataclasses_frozen_instance_error.py` is green and `tests/differential/basic/dataclasses_parity.py` is green again.
+- Validation evidence (2026-03-19):
+  - targeted builtins-symbol differential rerun: 3/3 pass (`open`, `property`, `compile`)
+  - focused regression rerun: 2/2 pass (`re_match_metadata`, `dataclasses_frozen_instance_error`)
+  - parity rerun: 2/2 pass (`re_parity`, `dataclasses_parity`)
+- Benchmark refresh update (2026-03-19):
+  - native targeted benchmark capture is now refreshed for `tests/benchmarks/bench_sum.py` in `bench/results/bench_native_bench_sum_20260319.json` when run with `MOLT_BACKEND_DAEMON=0`; result: build `11.49s`, run `0.392s`, CPython baseline `0.156s`, binary size `32103.5 KB`.
+  - the default backend-daemon lane still causes benchmark startup to stall on this host; daemon-lock contention remains an operational throughput issue for release benchmarking.
+  - linked wasm targeted benchmark capture is refreshed in `bench/results/bench_wasm_targeted_20260319.json`; both `bench_sum` and `bench_bytes_find` now build and link, but both fail at runtime in Node and Wasmtime with `ImportError: No module named 'importlib.machinery'`.
 
 ## Rust-First Stdlib Lowering Sprint (2026-03-01)
 - Completed: **SIMD Expansion** — 20+ runtime operations now have explicit SSE2/AVX2/NEON
