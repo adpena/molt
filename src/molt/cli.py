@@ -4410,6 +4410,13 @@ def _resolved_artifact_hash_key(path_str: str) -> str:
     return hashlib.sha256(str(Path(path_str).resolve()).encode("utf-8")).hexdigest()[:16]
 
 
+@functools.lru_cache(maxsize=4096)
+def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
+    return hashlib.sha256(
+        "|".join((str(Path(path_str).resolve()), *parts)).encode("utf-8")
+    ).hexdigest()[:24]
+
+
 def _runtime_fingerprint_path(
     project_root: Path,
     artifact: Path,
@@ -6631,16 +6638,12 @@ def _import_scan_cache_path(
     include_nested: bool,
 ) -> Path:
     root = _build_state_root(project_root) / "import_scan_cache"
-    cache_key = hashlib.sha256(
-        "|".join(
-            (
-                str(path.resolve()),
-                module_name,
-                "pkg" if is_package else "mod",
-                "nested" if include_nested else "top",
-            )
-        ).encode("utf-8")
-    ).hexdigest()[:24]
+    cache_key = _resolved_module_cache_key(
+        os.fspath(path),
+        module_name,
+        "pkg" if is_package else "mod",
+        "nested" if include_nested else "top",
+    )
     return root / f"{path.stem}.{cache_key}.json"
 
 
@@ -6654,9 +6657,12 @@ def _module_analysis_cache_path(
 ) -> Path:
     root = _build_state_root(project_root) / kind
     package_kind = "pkg" if is_package else "mod" if is_package is not None else "-"
-    cache_key = hashlib.sha256(
-        "|".join((str(path.resolve()), module_name, package_kind, kind)).encode("utf-8")
-    ).hexdigest()[:24]
+    cache_key = _resolved_module_cache_key(
+        os.fspath(path),
+        module_name,
+        package_kind,
+        kind,
+    )
     return root / f"{path.stem}.{cache_key}.json"
 
 
@@ -6668,15 +6674,11 @@ def _module_lowering_cache_path(
     is_package: bool,
 ) -> Path:
     root = _build_state_root(project_root) / "module_lowering_cache"
-    cache_key = hashlib.sha256(
-        "|".join(
-            (
-                str(path.resolve()),
-                module_name,
-                "pkg" if is_package else "mod",
-            )
-        ).encode("utf-8")
-    ).hexdigest()[:24]
+    cache_key = _resolved_module_cache_key(
+        os.fspath(path),
+        module_name,
+        "pkg" if is_package else "mod",
+    )
     return root / f"{path.stem}.{cache_key}.json"
 
 
