@@ -19,89 +19,84 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 _LOGGING_PERCENT_STYLE_FORMAT = cast(
     Callable[[str, dict[str, Any]], str],
-    _require_intrinsic("molt_logging_percent_style_format", globals()),
+    _require_intrinsic("molt_logging_percent_style_format"),
 )
 
 # LogRecord intrinsics
-_RECORD_NEW = _require_intrinsic("molt_logging_record_new", globals())
-_RECORD_GET_MESSAGE = _require_intrinsic("molt_logging_record_get_message", globals())
-_RECORD_GET_ATTR = _require_intrinsic("molt_logging_record_get_attr", globals())
-_RECORD_DROP = _require_intrinsic("molt_logging_record_drop", globals())
+_RECORD_NEW = _require_intrinsic("molt_logging_record_new")
+_RECORD_GET_MESSAGE = _require_intrinsic("molt_logging_record_get_message")
+_RECORD_GET_ATTR = _require_intrinsic("molt_logging_record_get_attr")
+_RECORD_DROP = _require_intrinsic("molt_logging_record_drop")
 
 # Formatter intrinsics
-_FORMATTER_NEW = _require_intrinsic("molt_logging_formatter_new", globals())
-_FORMATTER_FORMAT = _require_intrinsic("molt_logging_formatter_format", globals())
+_FORMATTER_NEW = _require_intrinsic("molt_logging_formatter_new")
+_FORMATTER_FORMAT = _require_intrinsic("molt_logging_formatter_format")
 _FORMATTER_FORMAT_TIME = _require_intrinsic(
-    "molt_logging_formatter_format_time", globals()
-)
-_FORMATTER_DROP = _require_intrinsic("molt_logging_formatter_drop", globals())
+    "molt_logging_formatter_format_time")
+_FORMATTER_DROP = _require_intrinsic("molt_logging_formatter_drop")
 
 # Handler intrinsics
-_HANDLER_NEW = _require_intrinsic("molt_logging_handler_new", globals())
-_HANDLER_EMIT = _require_intrinsic("molt_logging_handler_emit", globals())
-_HANDLER_SET_LEVEL = _require_intrinsic("molt_logging_handler_set_level", globals())
+_HANDLER_NEW = _require_intrinsic("molt_logging_handler_new")
+_HANDLER_EMIT = _require_intrinsic("molt_logging_handler_emit")
+_HANDLER_SET_LEVEL = _require_intrinsic("molt_logging_handler_set_level")
 _HANDLER_SET_FORMATTER = _require_intrinsic(
-    "molt_logging_handler_set_formatter", globals()
-)
-_HANDLER_FLUSH = _require_intrinsic("molt_logging_handler_flush", globals())
-_HANDLER_CLOSE = _require_intrinsic("molt_logging_handler_close", globals())
-_HANDLER_DROP = _require_intrinsic("molt_logging_handler_drop", globals())
+    "molt_logging_handler_set_formatter")
+_HANDLER_FLUSH = _require_intrinsic("molt_logging_handler_flush")
+_HANDLER_CLOSE = _require_intrinsic("molt_logging_handler_close")
+_HANDLER_DROP = _require_intrinsic("molt_logging_handler_drop")
 
 # StreamHandler intrinsics
-_STREAM_HANDLER_NEW = _require_intrinsic("molt_logging_stream_handler_new", globals())
-_STREAM_HANDLER_EMIT = _require_intrinsic("molt_logging_stream_handler_emit", globals())
+_STREAM_HANDLER_NEW = _require_intrinsic("molt_logging_stream_handler_new")
+_STREAM_HANDLER_EMIT = _require_intrinsic("molt_logging_stream_handler_emit")
 
 # Logger intrinsics
-_LOGGER_NEW = _require_intrinsic("molt_logging_logger_new", globals())
-_LOGGER_SET_LEVEL = _require_intrinsic("molt_logging_logger_set_level", globals())
-_LOGGER_ADD_HANDLER = _require_intrinsic("molt_logging_logger_add_handler", globals())
+_LOGGER_NEW = _require_intrinsic("molt_logging_logger_new")
+_LOGGER_SET_LEVEL = _require_intrinsic("molt_logging_logger_set_level")
+_LOGGER_ADD_HANDLER = _require_intrinsic("molt_logging_logger_add_handler")
 _LOGGER_REMOVE_HANDLER = _require_intrinsic(
-    "molt_logging_logger_remove_handler", globals()
-)
-_LOGGER_LOG = _require_intrinsic("molt_logging_logger_log", globals())
+    "molt_logging_logger_remove_handler")
+_LOGGER_LOG = _require_intrinsic("molt_logging_logger_log")
 _LOGGER_IS_ENABLED_FOR = _require_intrinsic(
-    "molt_logging_logger_is_enabled_for", globals()
-)
+    "molt_logging_logger_is_enabled_for")
 _LOGGER_GET_EFFECTIVE_LEVEL = _require_intrinsic(
-    "molt_logging_logger_get_effective_level", globals()
-)
-_LOGGER_DROP = _require_intrinsic("molt_logging_logger_drop", globals())
+    "molt_logging_logger_get_effective_level")
+_LOGGER_DROP = _require_intrinsic("molt_logging_logger_drop")
 
 # Manager / root intrinsics
-_MANAGER_GET_LOGGER = _require_intrinsic("molt_logging_manager_get_logger", globals())
-_ROOT_LOGGER = _require_intrinsic("molt_logging_root_logger", globals())
+_MANAGER_GET_LOGGER = _require_intrinsic("molt_logging_manager_get_logger")
+_ROOT_LOGGER = _require_intrinsic("molt_logging_root_logger")
 
 # Config / shutdown intrinsics
-_BASIC_CONFIG = _require_intrinsic("molt_logging_basic_config", globals())
-_SHUTDOWN = _require_intrinsic("molt_logging_shutdown", globals())
+_BASIC_CONFIG = _require_intrinsic("molt_logging_basic_config")
+_SHUTDOWN = _require_intrinsic("molt_logging_shutdown")
 
 # Level utility intrinsics
-_GET_LEVEL_NAME = _require_intrinsic("molt_logging_get_level_name", globals())
-_ADD_LEVEL_NAME = _require_intrinsic("molt_logging_add_level_name", globals())
-_LEVEL_TO_INT = _require_intrinsic("molt_logging_level_to_int", globals())
+_GET_LEVEL_NAME = _require_intrinsic("molt_logging_get_level_name")
+_ADD_LEVEL_NAME = _require_intrinsic("molt_logging_add_level_name")
+_LEVEL_TO_INT = _require_intrinsic("molt_logging_level_to_int")
 
 # Filter intrinsic
-_FILTER_CHECK = _require_intrinsic("molt_logging_filter_check", globals())
+_FILTER_CHECK = _require_intrinsic("molt_logging_filter_check")
 
 # FileHandler intrinsic
-_FILE_HANDLER_EMIT = _require_intrinsic("molt_logging_file_handler_emit", globals())
+_FILE_HANDLER_EMIT = _require_intrinsic("molt_logging_file_handler_emit")
 
 # Logging runtime readiness check
-_LOGGING_RUNTIME_READY = _require_intrinsic("molt_logging_runtime_ready", globals())
+_LOGGING_RUNTIME_READY = _require_intrinsic("molt_logging_runtime_ready")
 
 # Capability gate
-_CAP_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
+_CAP_REQUIRE = _require_intrinsic("molt_capabilities_require")
 
 # Lock intrinsics (for handler synchronization)
-_RLOCK_NEW = _require_intrinsic("molt_rlock_new", globals())
-_RLOCK_ACQUIRE = _require_intrinsic("molt_rlock_acquire", globals())
-_RLOCK_RELEASE = _require_intrinsic("molt_rlock_release", globals())
-_RLOCK_LOCKED = _require_intrinsic("molt_rlock_locked", globals())
-_RLOCK_DROP = _require_intrinsic("molt_rlock_drop", globals())
+_RLOCK_NEW = _require_intrinsic("molt_rlock_new")
+_RLOCK_ACQUIRE = _require_intrinsic("molt_rlock_acquire")
+_RLOCK_RELEASE = _require_intrinsic("molt_rlock_release")
+_RLOCK_LOCKED = _require_intrinsic("molt_rlock_locked")
+_RLOCK_DROP = _require_intrinsic("molt_rlock_drop")
 
 # Thread/process intrinsics for LogRecord metadata
-_THREAD_CURRENT_IDENT = _require_intrinsic("molt_thread_current_ident", globals())
-_GETPID = _require_intrinsic("molt_getpid", globals())
+_THREAD_CURRENT_IDENT = _require_intrinsic("molt_thread_current_ident")
+_GETPID = _require_intrinsic("molt_getpid")
 
 __all__ = [
     "BASIC_FORMAT",

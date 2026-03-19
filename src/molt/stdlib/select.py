@@ -18,33 +18,29 @@ _SELECT_KIND_EPOLL = 1
 _SELECT_KIND_KQUEUE = 2
 _SELECT_KIND_DEVPOLL = 3
 
-_MOLT_SELECT_SELECT = _require_intrinsic("molt_select_select", globals())
-_MOLT_SELECT_CONSTANTS = _require_intrinsic("molt_select_constants", globals())
-_MOLT_SELECT_POLL = _require_intrinsic("molt_select_poll", globals())
-_MOLT_SELECT_EPOLL = _require_intrinsic("molt_select_epoll", globals())
-_MOLT_SELECT_DEVPOLL = _require_intrinsic("molt_select_devpoll", globals())
-_MOLT_SELECT_FILENO = _require_intrinsic("molt_select_fileno", globals())
-_MOLT_SELECTOR_NEW = _require_intrinsic("molt_select_selector_new", globals())
-_MOLT_SELECTOR_FILENO = _require_intrinsic("molt_select_selector_fileno", globals())
-_MOLT_SELECTOR_LEN = _require_intrinsic("molt_select_selector_len", globals())
-_MOLT_SELECTOR_EVENTS = _require_intrinsic("molt_select_selector_events", globals())
-_MOLT_SELECTOR_REGISTER = _require_intrinsic("molt_select_selector_register", globals())
+_MOLT_SELECT_SELECT = _require_intrinsic("molt_select_select")
+_MOLT_SELECT_CONSTANTS = _require_intrinsic("molt_select_constants")
+_MOLT_SELECT_POLL = _require_intrinsic("molt_select_poll")
+_MOLT_SELECT_EPOLL = _require_intrinsic("molt_select_epoll")
+_MOLT_SELECT_DEVPOLL = _require_intrinsic("molt_select_devpoll")
+_MOLT_SELECT_FILENO = _require_intrinsic("molt_select_fileno")
+_MOLT_SELECTOR_NEW = _require_intrinsic("molt_select_selector_new")
+_MOLT_SELECTOR_FILENO = _require_intrinsic("molt_select_selector_fileno")
+_MOLT_SELECTOR_LEN = _require_intrinsic("molt_select_selector_len")
+_MOLT_SELECTOR_EVENTS = _require_intrinsic("molt_select_selector_events")
+_MOLT_SELECTOR_REGISTER = _require_intrinsic("molt_select_selector_register")
 _MOLT_SELECTOR_REGISTER_FD = _require_intrinsic(
-    "molt_select_selector_register_fd", globals()
-)
+    "molt_select_selector_register_fd")
 _MOLT_SELECTOR_UNREGISTER = _require_intrinsic(
-    "molt_select_selector_unregister", globals()
-)
+    "molt_select_selector_unregister")
 _MOLT_SELECTOR_UNREGISTER_OBJ = _require_intrinsic(
-    "molt_select_selector_unregister_obj", globals()
-)
-_MOLT_SELECTOR_MODIFY = _require_intrinsic("molt_select_selector_modify", globals())
+    "molt_select_selector_unregister_obj")
+_MOLT_SELECTOR_MODIFY = _require_intrinsic("molt_select_selector_modify")
 _MOLT_SELECTOR_MODIFY_OBJ = _require_intrinsic(
-    "molt_select_selector_modify_obj", globals()
-)
-_MOLT_SELECTOR_POLL = _require_intrinsic("molt_select_selector_poll", globals())
-_MOLT_SELECTOR_CLOSE = _require_intrinsic("molt_select_selector_close", globals())
-_MOLT_SELECTOR_DROP = _require_intrinsic("molt_select_selector_drop", globals())
+    "molt_select_selector_modify_obj")
+_MOLT_SELECTOR_POLL = _require_intrinsic("molt_select_selector_poll")
+_MOLT_SELECTOR_CLOSE = _require_intrinsic("molt_select_selector_close")
+_MOLT_SELECTOR_DROP = _require_intrinsic("molt_select_selector_drop")
 
 
 def _load_constants() -> dict[str, int]:

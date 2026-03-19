@@ -5,67 +5,55 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 # --- runtime gate ---
-_MOLT_ZLIB_RUNTIME_READY = _require_intrinsic("molt_zlib_runtime_ready", globals())
+_MOLT_ZLIB_RUNTIME_READY = _require_intrinsic("molt_zlib_runtime_ready")
 
 # --- one-shot functions ---
-_MOLT_ZLIB_COMPRESS = _require_intrinsic("molt_zlib_compress", globals())
-_MOLT_ZLIB_DECOMPRESS = _require_intrinsic("molt_zlib_decompress", globals())
-_MOLT_ZLIB_CRC32 = _require_intrinsic("molt_zlib_crc32", globals())
-_MOLT_ZLIB_ADLER32 = _require_intrinsic("molt_zlib_adler32", globals())
+_MOLT_ZLIB_COMPRESS = _require_intrinsic("molt_zlib_compress")
+_MOLT_ZLIB_DECOMPRESS = _require_intrinsic("molt_zlib_decompress")
+_MOLT_ZLIB_CRC32 = _require_intrinsic("molt_zlib_crc32")
+_MOLT_ZLIB_ADLER32 = _require_intrinsic("molt_zlib_adler32")
 
 # --- compressobj handle operations ---
-_MOLT_ZLIB_COMPRESSOBJ_NEW = _require_intrinsic("molt_zlib_compressobj_new", globals())
+_MOLT_ZLIB_COMPRESSOBJ_NEW = _require_intrinsic("molt_zlib_compressobj_new")
 _MOLT_ZLIB_COMPRESSOBJ_COMPRESS = _require_intrinsic(
-    "molt_zlib_compressobj_compress", globals()
-)
+    "molt_zlib_compressobj_compress")
 _MOLT_ZLIB_COMPRESSOBJ_FLUSH = _require_intrinsic(
-    "molt_zlib_compressobj_flush", globals()
-)
+    "molt_zlib_compressobj_flush")
 _MOLT_ZLIB_COMPRESSOBJ_DROP = _require_intrinsic(
-    "molt_zlib_compressobj_drop", globals()
-)
+    "molt_zlib_compressobj_drop")
 
 # --- decompressobj handle operations ---
 _MOLT_ZLIB_DECOMPRESSOBJ_NEW = _require_intrinsic(
-    "molt_zlib_decompressobj_new", globals()
-)
+    "molt_zlib_decompressobj_new")
 _MOLT_ZLIB_DECOMPRESSOBJ_DECOMPRESS = _require_intrinsic(
-    "molt_zlib_decompressobj_decompress", globals()
-)
+    "molt_zlib_decompressobj_decompress")
 _MOLT_ZLIB_DECOMPRESSOBJ_FLUSH = _require_intrinsic(
-    "molt_zlib_decompressobj_flush", globals()
-)
+    "molt_zlib_decompressobj_flush")
 _MOLT_ZLIB_DECOMPRESSOBJ_DROP = _require_intrinsic(
-    "molt_zlib_decompressobj_drop", globals()
-)
+    "molt_zlib_decompressobj_drop")
 _MOLT_ZLIB_DECOMPRESSOBJ_EOF = _require_intrinsic(
-    "molt_zlib_decompressobj_eof", globals()
-)
+    "molt_zlib_decompressobj_eof")
 _MOLT_ZLIB_DECOMPRESSOBJ_UNCONSUMED_TAIL = _require_intrinsic(
-    "molt_zlib_decompressobj_unconsumed_tail", globals()
-)
+    "molt_zlib_decompressobj_unconsumed_tail")
 
 # --- constants from Rust ---
-DEF_BUF_SIZE: int = _require_intrinsic("molt_zlib_def_buf_size", globals())()
-DEF_MEM_LEVEL: int = _require_intrinsic("molt_zlib_def_mem_level", globals())()
-MAX_WBITS: int = _require_intrinsic("molt_zlib_max_wbits", globals())()
+DEF_BUF_SIZE: int = _require_intrinsic("molt_zlib_def_buf_size")()
+DEF_MEM_LEVEL: int = _require_intrinsic("molt_zlib_def_mem_level")()
+MAX_WBITS: int = _require_intrinsic("molt_zlib_max_wbits")()
 Z_BEST_COMPRESSION: int = _require_intrinsic(
-    "molt_zlib_z_best_compression", globals()
-)()
-Z_BEST_SPEED: int = _require_intrinsic("molt_zlib_z_best_speed", globals())()
+    "molt_zlib_z_best_compression")()
+Z_BEST_SPEED: int = _require_intrinsic("molt_zlib_z_best_speed")()
 Z_DEFAULT_COMPRESSION: int = _require_intrinsic(
-    "molt_zlib_z_default_compression", globals()
-)()
+    "molt_zlib_z_default_compression")()
 Z_DEFAULT_STRATEGY: int = _require_intrinsic(
-    "molt_zlib_z_default_strategy", globals()
-)()
-Z_FILTERED: int = _require_intrinsic("molt_zlib_z_filtered", globals())()
-Z_FINISH: int = _require_intrinsic("molt_zlib_z_finish", globals())()
-Z_FULL_FLUSH: int = _require_intrinsic("molt_zlib_z_full_flush", globals())()
-Z_HUFFMAN_ONLY: int = _require_intrinsic("molt_zlib_z_huffman_only", globals())()
-Z_NO_COMPRESSION: int = _require_intrinsic("molt_zlib_z_no_compression", globals())()
-Z_NO_FLUSH: int = _require_intrinsic("molt_zlib_z_no_flush", globals())()
-Z_SYNC_FLUSH: int = _require_intrinsic("molt_zlib_z_sync_flush", globals())()
+    "molt_zlib_z_default_strategy")()
+Z_FILTERED: int = _require_intrinsic("molt_zlib_z_filtered")()
+Z_FINISH: int = _require_intrinsic("molt_zlib_z_finish")()
+Z_FULL_FLUSH: int = _require_intrinsic("molt_zlib_z_full_flush")()
+Z_HUFFMAN_ONLY: int = _require_intrinsic("molt_zlib_z_huffman_only")()
+Z_NO_COMPRESSION: int = _require_intrinsic("molt_zlib_z_no_compression")()
+Z_NO_FLUSH: int = _require_intrinsic("molt_zlib_z_no_flush")()
+Z_SYNC_FLUSH: int = _require_intrinsic("molt_zlib_z_sync_flush")()
 
 # DEFLATED is the only supported method constant (matches CPython)
 DEFLATED: int = 8

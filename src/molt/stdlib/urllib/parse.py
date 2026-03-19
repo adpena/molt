@@ -25,19 +25,19 @@ __all__ = [
     "urlunsplit",
 ]
 
-_MOLT_URLLIB_QUOTE = _require_intrinsic("molt_urllib_quote", globals())
-_MOLT_URLLIB_QUOTE_PLUS = _require_intrinsic("molt_urllib_quote_plus", globals())
-_MOLT_URLLIB_UNQUOTE = _require_intrinsic("molt_urllib_unquote", globals())
-_MOLT_URLLIB_UNQUOTE_PLUS = _require_intrinsic("molt_urllib_unquote_plus", globals())
-_MOLT_URLLIB_PARSE_QSL = _require_intrinsic("molt_urllib_parse_qsl", globals())
-_MOLT_URLLIB_PARSE_QS = _require_intrinsic("molt_urllib_parse_qs", globals())
-_MOLT_URLLIB_URLENCODE = _require_intrinsic("molt_urllib_urlencode", globals())
-_MOLT_URLLIB_URLSPLIT = _require_intrinsic("molt_urllib_urlsplit", globals())
-_MOLT_URLLIB_URLPARSE = _require_intrinsic("molt_urllib_urlparse", globals())
-_MOLT_URLLIB_URLUNSPLIT = _require_intrinsic("molt_urllib_urlunsplit", globals())
-_MOLT_URLLIB_URLUNPARSE = _require_intrinsic("molt_urllib_urlunparse", globals())
-_MOLT_URLLIB_URLDEFRAG = _require_intrinsic("molt_urllib_urldefrag", globals())
-_MOLT_URLLIB_URLJOIN = _require_intrinsic("molt_urllib_urljoin", globals())
+_MOLT_URLLIB_QUOTE = _require_intrinsic("molt_urllib_quote")
+_MOLT_URLLIB_QUOTE_PLUS = _require_intrinsic("molt_urllib_quote_plus")
+_MOLT_URLLIB_UNQUOTE = _require_intrinsic("molt_urllib_unquote")
+_MOLT_URLLIB_UNQUOTE_PLUS = _require_intrinsic("molt_urllib_unquote_plus")
+_MOLT_URLLIB_PARSE_QSL = _require_intrinsic("molt_urllib_parse_qsl")
+_MOLT_URLLIB_PARSE_QS = _require_intrinsic("molt_urllib_parse_qs")
+_MOLT_URLLIB_URLENCODE = _require_intrinsic("molt_urllib_urlencode")
+_MOLT_URLLIB_URLSPLIT = _require_intrinsic("molt_urllib_urlsplit")
+_MOLT_URLLIB_URLPARSE = _require_intrinsic("molt_urllib_urlparse")
+_MOLT_URLLIB_URLUNSPLIT = _require_intrinsic("molt_urllib_urlunsplit")
+_MOLT_URLLIB_URLUNPARSE = _require_intrinsic("molt_urllib_urlunparse")
+_MOLT_URLLIB_URLDEFRAG = _require_intrinsic("molt_urllib_urldefrag")
+_MOLT_URLLIB_URLJOIN = _require_intrinsic("molt_urllib_urljoin")
 
 
 class _BaseResult:

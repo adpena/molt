@@ -42,8 +42,8 @@ def _as_callable(value: object) -> Callable[..., object]:
 
 
 # Define early to avoid circular-import NameError during stdlib bootstrap.
-_MOLT_GETFRAME = _as_callable(_require_intrinsic("molt_getframe", globals()))
-_MOLT_IS_STRING_OBJ = _as_callable(_require_intrinsic("molt_is_string_obj", globals()))
+_MOLT_GETFRAME = _as_callable(_require_intrinsic("molt_getframe"))
+_MOLT_IS_STRING_OBJ = _as_callable(_require_intrinsic("molt_is_string_obj"))
 
 # Compiled runtimes are the host; avoid recursive sys -> importlib -> sys.
 
@@ -127,146 +127,146 @@ __all__ = [
     "audit",
 ]
 
-_MOLT_GETARGV = _as_callable(_require_intrinsic("molt_getargv", globals()))
+_MOLT_GETARGV = _as_callable(_require_intrinsic("molt_getargv"))
 _MOLT_SYS_EXECUTABLE = _as_callable(
-    _require_intrinsic("molt_sys_executable", globals())
+    _require_intrinsic("molt_sys_executable")
 )
 _MOLT_GETRECURSIONLIMIT = _as_callable(
-    _require_intrinsic("molt_getrecursionlimit", globals())
+    _require_intrinsic("molt_getrecursionlimit")
 )
 _MOLT_SETRECURSIONLIMIT = _as_callable(
-    _require_intrinsic("molt_setrecursionlimit", globals())
+    _require_intrinsic("molt_setrecursionlimit")
 )
 _MOLT_EXCEPTION_ACTIVE = _as_callable(
-    _require_intrinsic("molt_exception_active", globals())
+    _require_intrinsic("molt_exception_active")
 )
 _MOLT_EXCEPTION_LAST = _as_callable(
-    _require_intrinsic("molt_exception_last", globals())
+    _require_intrinsic("molt_exception_last")
 )
 _MOLT_ASYNCGEN_HOOKS_GET = _as_callable(
-    _require_intrinsic("molt_asyncgen_hooks_get", globals())
+    _require_intrinsic("molt_asyncgen_hooks_get")
 )
 _MOLT_ASYNCGEN_HOOKS_SET = _as_callable(
-    _require_intrinsic("molt_asyncgen_hooks_set", globals())
+    _require_intrinsic("molt_asyncgen_hooks_set")
 )
 _MOLT_SYS_VERSION_INFO = _as_callable(
-    _require_intrinsic("molt_sys_version_info", globals())
+    _require_intrinsic("molt_sys_version_info")
 )
-_MOLT_SYS_VERSION = _as_callable(_require_intrinsic("molt_sys_version", globals()))
+_MOLT_SYS_VERSION = _as_callable(_require_intrinsic("molt_sys_version"))
 _MOLT_SYS_HEXVERSION = _as_callable(
-    _require_intrinsic("molt_sys_hexversion", globals())
+    _require_intrinsic("molt_sys_hexversion")
 )
 _MOLT_SYS_API_VERSION = _as_callable(
-    _require_intrinsic("molt_sys_api_version", globals())
+    _require_intrinsic("molt_sys_api_version")
 )
-_MOLT_SYS_ABIFLAGS = _as_callable(_require_intrinsic("molt_sys_abiflags", globals()))
+_MOLT_SYS_ABIFLAGS = _as_callable(_require_intrinsic("molt_sys_abiflags"))
 _MOLT_SYS_IMPLEMENTATION_PAYLOAD = _as_callable(
-    _require_intrinsic("molt_sys_implementation_payload", globals())
+    _require_intrinsic("molt_sys_implementation_payload")
 )
 _MOLT_SYS_FLAGS_PAYLOAD = _as_callable(
-    _require_intrinsic("molt_sys_flags_payload", globals())
+    _require_intrinsic("molt_sys_flags_payload")
 )
-_MOLT_SYS_PLATFORM = _as_callable(_require_intrinsic("molt_sys_platform", globals()))
+_MOLT_SYS_PLATFORM = _as_callable(_require_intrinsic("molt_sys_platform"))
 _MOLT_SYS_IS_FINALIZING = _as_callable(
-    _require_intrinsic("molt_sys_is_finalizing", globals())
+    _require_intrinsic("molt_sys_is_finalizing")
 )
 _MOLT_SYS_GETREFCOUNT = _as_callable(
-    _require_intrinsic("molt_sys_getrefcount", globals())
+    _require_intrinsic("molt_sys_getrefcount")
 )
-_MOLT_SYS_SETTRACE = _as_callable(_require_intrinsic("molt_sys_settrace", globals()))
-_MOLT_SYS_GETTRACE = _as_callable(_require_intrinsic("molt_sys_gettrace", globals()))
+_MOLT_SYS_SETTRACE = _as_callable(_require_intrinsic("molt_sys_settrace"))
+_MOLT_SYS_GETTRACE = _as_callable(_require_intrinsic("molt_sys_gettrace"))
 _MOLT_SYS_SETPROFILE = _as_callable(
-    _require_intrinsic("molt_sys_setprofile", globals())
+    _require_intrinsic("molt_sys_setprofile")
 )
 _MOLT_SYS_GETPROFILE = _as_callable(
-    _require_intrinsic("molt_sys_getprofile", globals())
+    _require_intrinsic("molt_sys_getprofile")
 )
-_MOLT_SYS_STDIN = _as_callable(_require_intrinsic("molt_sys_stdin", globals()))
-_MOLT_SYS_STDOUT = _as_callable(_require_intrinsic("molt_sys_stdout", globals()))
-_MOLT_SYS_STDERR = _as_callable(_require_intrinsic("molt_sys_stderr", globals()))
+_MOLT_SYS_STDIN = _as_callable(_require_intrinsic("molt_sys_stdin"))
+_MOLT_SYS_STDOUT = _as_callable(_require_intrinsic("molt_sys_stdout"))
+_MOLT_SYS_STDERR = _as_callable(_require_intrinsic("molt_sys_stderr"))
 _MOLT_SYS_GETFILESYSTEMENCODEERRORS = _as_callable(
-    _require_intrinsic("molt_sys_getfilesystemencodeerrors", globals())
+    _require_intrinsic("molt_sys_getfilesystemencodeerrors")
 )
 _MOLT_SYS_BOOTSTRAP_PAYLOAD = _as_callable(
-    _require_intrinsic("molt_sys_bootstrap_payload", globals())
+    _require_intrinsic("molt_sys_bootstrap_payload")
 )
-_MOLT_SYS_MAXSIZE = _as_callable(_require_intrinsic("molt_sys_maxsize", globals()))
+_MOLT_SYS_MAXSIZE = _as_callable(_require_intrinsic("molt_sys_maxsize"))
 _MOLT_SYS_MAXUNICODE = _as_callable(
-    _require_intrinsic("molt_sys_maxunicode", globals())
+    _require_intrinsic("molt_sys_maxunicode")
 )
-_MOLT_SYS_BYTEORDER = _as_callable(_require_intrinsic("molt_sys_byteorder", globals()))
-_MOLT_SYS_PREFIX = _as_callable(_require_intrinsic("molt_sys_prefix", globals()))
+_MOLT_SYS_BYTEORDER = _as_callable(_require_intrinsic("molt_sys_byteorder"))
+_MOLT_SYS_PREFIX = _as_callable(_require_intrinsic("molt_sys_prefix"))
 _MOLT_SYS_EXEC_PREFIX = _as_callable(
-    _require_intrinsic("molt_sys_exec_prefix", globals())
+    _require_intrinsic("molt_sys_exec_prefix")
 )
 _MOLT_SYS_BASE_PREFIX = _as_callable(
-    _require_intrinsic("molt_sys_base_prefix", globals())
+    _require_intrinsic("molt_sys_base_prefix")
 )
 _MOLT_SYS_BASE_EXEC_PREFIX = _as_callable(
-    _require_intrinsic("molt_sys_base_exec_prefix", globals())
+    _require_intrinsic("molt_sys_base_exec_prefix")
 )
 _MOLT_SYS_PLATLIBDIR = _as_callable(
-    _require_intrinsic("molt_sys_platlibdir", globals())
+    _require_intrinsic("molt_sys_platlibdir")
 )
 _MOLT_SYS_FLOAT_INFO = _as_callable(
-    _require_intrinsic("molt_sys_float_info", globals())
+    _require_intrinsic("molt_sys_float_info")
 )
-_MOLT_SYS_INT_INFO = _as_callable(_require_intrinsic("molt_sys_int_info", globals()))
-_MOLT_SYS_HASH_INFO = _as_callable(_require_intrinsic("molt_sys_hash_info", globals()))
+_MOLT_SYS_INT_INFO = _as_callable(_require_intrinsic("molt_sys_int_info"))
+_MOLT_SYS_HASH_INFO = _as_callable(_require_intrinsic("molt_sys_hash_info"))
 _MOLT_SYS_THREAD_INFO = _as_callable(
-    _require_intrinsic("molt_sys_thread_info", globals())
+    _require_intrinsic("molt_sys_thread_info")
 )
-_MOLT_SYS_INTERN = _as_callable(_require_intrinsic("molt_sys_intern", globals()))
-_MOLT_SYS_GETSIZEOF = _as_callable(_require_intrinsic("molt_sys_getsizeof", globals()))
+_MOLT_SYS_INTERN = _as_callable(_require_intrinsic("molt_sys_intern"))
+_MOLT_SYS_GETSIZEOF = _as_callable(_require_intrinsic("molt_sys_getsizeof"))
 _MOLT_SYS_STDLIB_MODULE_NAMES = _as_callable(
-    _require_intrinsic("molt_sys_stdlib_module_names", globals())
+    _require_intrinsic("molt_sys_stdlib_module_names")
 )
 _MOLT_SYS_BUILTIN_MODULE_NAMES = _as_callable(
-    _require_intrinsic("molt_sys_builtin_module_names", globals())
+    _require_intrinsic("molt_sys_builtin_module_names")
 )
-_MOLT_SYS_ORIG_ARGV = _as_callable(_require_intrinsic("molt_sys_orig_argv", globals()))
-_MOLT_SYS_COPYRIGHT = _as_callable(_require_intrinsic("molt_sys_copyright", globals()))
+_MOLT_SYS_ORIG_ARGV = _as_callable(_require_intrinsic("molt_sys_orig_argv"))
+_MOLT_SYS_COPYRIGHT = _as_callable(_require_intrinsic("molt_sys_copyright"))
 _MOLT_TRACEBACK_FORMAT_EXCEPTION = _as_callable(
-    _require_intrinsic("molt_traceback_format_exception", globals())
+    _require_intrinsic("molt_traceback_format_exception")
 )
 _MOLT_SYS_GETDEFAULTENCODING = _as_callable(
-    _require_intrinsic("molt_sys_getdefaultencoding", globals())
+    _require_intrinsic("molt_sys_getdefaultencoding")
 )
 _MOLT_SYS_GETFILESYSTEMENCODING = _as_callable(
-    _require_intrinsic("molt_sys_getfilesystemencoding", globals())
+    _require_intrinsic("molt_sys_getfilesystemencoding")
 )
 _MOLT_SYS_GETSWITCHINTERVAL = _as_callable(
-    _require_intrinsic("molt_sys_getswitchinterval", globals())
+    _require_intrinsic("molt_sys_getswitchinterval")
 )
 _MOLT_SYS_SETSWITCHINTERVAL = _as_callable(
-    _require_intrinsic("molt_sys_setswitchinterval", globals())
+    _require_intrinsic("molt_sys_setswitchinterval")
 )
 _MOLT_SYS_GET_INT_MAX_STR_DIGITS = _as_callable(
-    _require_intrinsic("molt_sys_get_int_max_str_digits", globals())
+    _require_intrinsic("molt_sys_get_int_max_str_digits")
 )
 _MOLT_SYS_SET_INT_MAX_STR_DIGITS = _as_callable(
-    _require_intrinsic("molt_sys_set_int_max_str_digits", globals())
+    _require_intrinsic("molt_sys_set_int_max_str_digits")
 )
 _MOLT_SYS_CALL_TRACING_VALIDATE = _as_callable(
-    _require_intrinsic("molt_sys_call_tracing_validate", globals())
+    _require_intrinsic("molt_sys_call_tracing_validate")
 )
 _MOLT_SYS_ADDAUDITHOOK = _as_callable(
-    _require_intrinsic("molt_sys_addaudithook", globals())
+    _require_intrinsic("molt_sys_addaudithook")
 )
 _MOLT_SYS_AUDIT_HOOK_COUNT = _as_callable(
-    _require_intrinsic("molt_sys_audit_hook_count", globals())
+    _require_intrinsic("molt_sys_audit_hook_count")
 )
 _MOLT_SYS_AUDIT_GET_HOOKS = _as_callable(
-    _require_intrinsic("molt_sys_audit_get_hooks", globals())
+    _require_intrinsic("molt_sys_audit_get_hooks")
 )
 _MOLT_SYS_EXIT = _as_callable(
-    _require_intrinsic("molt_sys_exit", globals())
+    _require_intrinsic("molt_sys_exit")
 )
 _MOLT_SYS_DISPLAYHOOK_WRITE = _as_callable(
-    _require_intrinsic("molt_sys_displayhook_write", globals())
+    _require_intrinsic("molt_sys_displayhook_write")
 )
 _MOLT_SYS_EXCEPTHOOK_WRITE = _as_callable(
-    _require_intrinsic("molt_sys_excepthook_write", globals())
+    _require_intrinsic("molt_sys_excepthook_write")
 )
 
 raw_argv = _MOLT_GETARGV()
