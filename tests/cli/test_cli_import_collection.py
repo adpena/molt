@@ -2635,6 +2635,60 @@ def test_build_scoped_lowering_inputs_precomputes_scoped_views() -> None:
     }
 
 
+def test_scoped_lowering_input_view_reuses_precomputed_bundle() -> None:
+    type_facts = TypeFacts(
+        modules={
+            "main": ModuleFacts(globals={"VALUE": Fact(type="int", trust="trusted")}),
+            "alpha": ModuleFacts(globals={"DEP": Fact(type="str", trust="trusted")}),
+        }
+    )
+    scoped_lowering_inputs = cli._build_scoped_lowering_inputs(
+        {"main", "alpha"},
+        module_deps={"main": {"alpha"}, "alpha": set()},
+        module_dep_closures={
+            "main": frozenset({"main", "alpha"}),
+            "alpha": frozenset({"alpha"}),
+        },
+        known_modules={"main", "alpha"},
+        known_func_defaults={
+            "main": {"run": {"params": 0, "defaults": []}},
+            "alpha": {"helper": {"params": 1, "defaults": []}},
+        },
+        pgo_hot_function_names={"main::hot"},
+        type_facts=type_facts,
+    )
+
+    scoped_view = cli._scoped_lowering_input_view(
+        "main",
+        module_deps={"main": {"alpha"}, "alpha": set()},
+        known_modules={"main", "alpha"},
+        known_func_defaults={
+            "main": {"run": {"params": 0, "defaults": []}},
+            "alpha": {"helper": {"params": 1, "defaults": []}},
+        },
+        pgo_hot_function_names={"main::hot"},
+        type_facts=type_facts,
+        module_dep_closures={
+            "main": frozenset({"main", "alpha"}),
+            "alpha": frozenset({"alpha"}),
+        },
+        scoped_lowering_inputs=scoped_lowering_inputs,
+        known_modules_sorted=("alpha", "main"),
+        pgo_hot_function_names_sorted=("main::hot",),
+    )
+
+    assert scoped_view.known_modules is scoped_lowering_inputs.known_modules_by_module["main"]
+    assert (
+        scoped_view.known_func_defaults
+        is scoped_lowering_inputs.known_func_defaults_by_module["main"]
+    )
+    assert (
+        scoped_view.pgo_hot_function_names
+        is scoped_lowering_inputs.pgo_hot_function_names_by_module["main"]
+    )
+    assert scoped_view.type_facts is scoped_lowering_inputs.type_facts_by_module["main"]
+
+
 def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
