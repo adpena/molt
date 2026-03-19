@@ -6,12 +6,12 @@ from typing import Any as _Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_QUEUE_NEW = _require_intrinsic("molt_queue_new", globals())
-_MOLT_QUEUE_QSIZE = _require_intrinsic("molt_queue_qsize", globals())
-_MOLT_QUEUE_EMPTY = _require_intrinsic("molt_queue_empty", globals())
-_MOLT_QUEUE_PUT = _require_intrinsic("molt_queue_put", globals())
-_MOLT_QUEUE_GET = _require_intrinsic("molt_queue_get", globals())
-_MOLT_QUEUE_DROP = _require_intrinsic("molt_queue_drop", globals())
+_MOLT_QUEUE_NEW = _require_intrinsic("molt_queue_new")
+_MOLT_QUEUE_QSIZE = _require_intrinsic("molt_queue_qsize")
+_MOLT_QUEUE_EMPTY = _require_intrinsic("molt_queue_empty")
+_MOLT_QUEUE_PUT = _require_intrinsic("molt_queue_put")
+_MOLT_QUEUE_GET = _require_intrinsic("molt_queue_get")
+_MOLT_QUEUE_DROP = _require_intrinsic("molt_queue_drop")
 
 _GET_TIMEOUT = object()
 
