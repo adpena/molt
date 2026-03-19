@@ -8853,6 +8853,69 @@ def _append_frontend_parallel_layer_detail(
     )
 
 
+def _initialize_frontend_parallel_details(
+    frontend_parallel_details: MutableMapping[str, Any],
+    *,
+    frontend_parallel_config: _FrontendParallelConfig,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    frontend_parallel_details["enabled"] = frontend_parallel_config.enabled
+    frontend_parallel_details["workers"] = frontend_parallel_config.workers
+    frontend_parallel_details["mode"] = (
+        "process_pool_reused" if frontend_parallel_config.enabled else "serial"
+    )
+    frontend_parallel_details["reason"] = frontend_parallel_config.reason
+    frontend_parallel_details["policy"] = _frontend_parallel_policy_payload(
+        frontend_parallel_config
+    )
+    frontend_parallel_details["layers"] = []
+    frontend_parallel_details["worker_timings"] = []
+    return (
+        cast(list[dict[str, Any]], frontend_parallel_details["layers"]),
+        cast(list[dict[str, Any]], frontend_parallel_details["worker_timings"]),
+    )
+
+
+def _summarize_frontend_parallel_worker_timings(
+    frontend_parallel_details: MutableMapping[str, Any],
+    worker_timings: Sequence[Mapping[str, Any]],
+) -> None:
+    summary = _summarize_worker_timing_items(worker_timings)
+    frontend_parallel_details["worker_summary"] = _worker_timing_summary_payload(summary)
+
+
+def _append_frontend_serial_disabled_layer_detail(
+    frontend_parallel_layers: list[dict[str, Any]],
+    *,
+    module_order: Sequence[str],
+    serial_layer_state: _FrontendParallelLayerState,
+    frontend_module_costs: Mapping[str, float],
+    stdlib_like_by_module: Mapping[str, bool],
+    frontend_parallel_config: _FrontendParallelConfig,
+    serial_layer_started_ns: int,
+) -> None:
+    serial_static_metrics = _frontend_layer_static_metrics(
+        module_order,
+        frontend_module_costs=frontend_module_costs,
+        stdlib_like_by_module=stdlib_like_by_module,
+    )
+    _append_frontend_parallel_layer_detail(
+        frontend_parallel_layers,
+        layer_index=0,
+        layer_mode="serial_disabled",
+        layer_policy_reason=frontend_parallel_config.reason,
+        module_names=module_order,
+        candidate_count=len(module_order),
+        workers=1,
+        timing_items=serial_layer_state.recorded_worker_timings,
+        predicted_cost_total=serial_static_metrics.predicted_cost_total,
+        effective_min_predicted_cost=frontend_parallel_config.min_predicted_cost,
+        stdlib_candidates=serial_static_metrics.stdlib_candidates,
+        target_cost_per_worker=frontend_parallel_config.target_cost_per_worker,
+        started_ns=serial_layer_started_ns,
+        finished_ns=time.time_ns(),
+    )
+
+
 def _run_frontend_parallel_layer_batches(
     candidates: Sequence[str],
     *,
@@ -13350,24 +13413,12 @@ def build(
         has_back_edges=has_back_edges,
         frontend_phase_timeout=frontend_phase_timeout,
     )
-    frontend_parallel_details["enabled"] = frontend_parallel_config.enabled
-    frontend_parallel_details["workers"] = frontend_parallel_config.workers
-    frontend_parallel_details["mode"] = (
-        "process_pool_reused" if frontend_parallel_config.enabled else "serial"
-    )
-    frontend_parallel_details["reason"] = frontend_parallel_config.reason
-    frontend_parallel_details["policy"] = _frontend_parallel_policy_payload(
-        frontend_parallel_config
-    )
-    frontend_parallel_details["layers"] = []
-    frontend_parallel_details["worker_timings"] = []
-    frontend_parallel_layers = cast(
-        list[dict[str, Any]],
-        frontend_parallel_details["layers"],
-    )
-    frontend_parallel_worker_timings = cast(
-        list[dict[str, Any]],
-        frontend_parallel_details["worker_timings"],
+    (
+        frontend_parallel_layers,
+        frontend_parallel_worker_timings,
+    ) = _initialize_frontend_parallel_details(
+        frontend_parallel_details,
+        frontend_parallel_config=frontend_parallel_config,
     )
 
     def _record_frontend_parallel_worker_timing(
@@ -13396,12 +13447,6 @@ def build(
             item["worker_pid"] = worker_pid
         frontend_parallel_worker_timings.append(item)
         return item
-
-    def _summarize_parallel_worker_timings() -> None:
-        summary = _summarize_worker_timing_items(frontend_parallel_worker_timings)
-        frontend_parallel_details["worker_summary"] = _worker_timing_summary_payload(
-            summary
-        )
 
     if frontend_parallel_config.enabled:
         parallel_pool_usable = True
@@ -13476,7 +13521,10 @@ def build(
                     finished_ns=time.time_ns(),
                     fallback_reason=layer_state.fallback_reason,
                 )
-        _summarize_parallel_worker_timings()
+        _summarize_frontend_parallel_worker_timings(
+            frontend_parallel_details,
+            frontend_parallel_worker_timings,
+        )
     else:
         serial_layer_started_ns = time.time_ns()
         serial_layer_state = _fresh_frontend_parallel_layer_state()
@@ -13495,28 +13543,19 @@ def build(
         )
         if serial_error is not None:
             return serial_error
-        serial_static_metrics = _frontend_layer_static_metrics(
-            module_order,
+        _append_frontend_serial_disabled_layer_detail(
+            frontend_parallel_layers,
+            module_order=module_order,
+            serial_layer_state=serial_layer_state,
             frontend_module_costs=frontend_module_costs,
             stdlib_like_by_module=stdlib_like_by_module,
+            frontend_parallel_config=frontend_parallel_config,
+            serial_layer_started_ns=serial_layer_started_ns,
         )
-        _append_frontend_parallel_layer_detail(
-            frontend_parallel_layers,
-            layer_index=0,
-            layer_mode="serial_disabled",
-            layer_policy_reason=frontend_parallel_config.reason,
-            module_names=module_order,
-            candidate_count=len(module_order),
-            workers=1,
-            timing_items=serial_layer_state.recorded_worker_timings,
-            predicted_cost_total=serial_static_metrics.predicted_cost_total,
-            effective_min_predicted_cost=frontend_parallel_config.min_predicted_cost,
-            stdlib_candidates=serial_static_metrics.stdlib_candidates,
-            target_cost_per_worker=frontend_parallel_config.target_cost_per_worker,
-            started_ns=serial_layer_started_ns,
-            finished_ns=time.time_ns(),
+        _summarize_frontend_parallel_worker_timings(
+            frontend_parallel_details,
+            frontend_parallel_worker_timings,
         )
-        _summarize_parallel_worker_timings()
 
     entry_path: Path | None = None
     if entry_module != "__main__":
