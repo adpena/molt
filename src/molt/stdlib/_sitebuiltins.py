@@ -19,12 +19,18 @@ _MOLT_SITE_QUITTER_CALL = _require_intrinsic("molt_site_quitter_call")
 
 
 class _Helper:
-    def __call__(self, *args: object, **kwds: object) -> None:
+    def __call__(
+        self,
+        *args: object,
+        _help0_intrinsic=_MOLT_SITE_HELP0,
+        _help1_intrinsic=_MOLT_SITE_HELP1,
+        **kwds: object,
+    ) -> None:
         del kwds
         if not args:
-            _MOLT_SITE_HELP0()
+            _help0_intrinsic()
             return None
-        _MOLT_SITE_HELP1(args[0])
+        _help1_intrinsic(args[0])
         return None
 
 
@@ -53,8 +59,10 @@ class Quitter:
     def __repr__(self) -> str:
         return f"Use {self._name}() or Ctrl-D (i.e. EOF) to exit"
 
-    def __call__(self, code: object = None) -> None:
-        _MOLT_SITE_QUITTER_CALL(code)
+    def __call__(
+        self, code: object = None, _quitter_call_intrinsic=_MOLT_SITE_QUITTER_CALL
+    ) -> None:
+        _quitter_call_intrinsic(code)
         return None
 
 
@@ -70,3 +78,7 @@ except Exception as _exc:  # noqa: BLE001
 
 quit = Quitter("quit")
 exit = Quitter("exit")
+
+del _MOLT_SITE_HELP0
+del _MOLT_SITE_HELP1
+del _MOLT_SITE_QUITTER_CALL

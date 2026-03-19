@@ -83,6 +83,14 @@ checks = {{
         and "quit()" in repr(_private.quit)
         and "exit()" in repr(_private.exit)
     ),
+    "private_handles_hidden": (
+        "_MOLT_SITE_HELP0" not in _private.__dict__
+        and "_MOLT_SITE_HELP1" not in _private.__dict__
+        and "_MOLT_SITE_QUITTER_CALL" not in _private.__dict__
+        and "molt_site_help0" not in _private.__dict__
+        and "molt_site_help1" not in _private.__dict__
+        and "molt_site_quitter_call" not in _private.__dict__
+    ),
 }}
 for key in sorted(checks):
     print(f"CHECK|{{key}}|{{checks[key]}}")
@@ -120,4 +128,4 @@ def test__sitebuiltins_public_surface_matches_expected_shape() -> None:
     assert "license" in names
     assert "quit" in names
     assert "exit" in names
-    assert checks == {"behavior": "True"}
+    assert checks == {"behavior": "True", "private_handles_hidden": "True"}
