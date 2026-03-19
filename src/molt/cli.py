@@ -8310,6 +8310,44 @@ def _module_frontend_payload(
     }
 
 
+def _module_frontend_generator(
+    *,
+    module_name: str,
+    logical_source_path: str,
+    entry_override: str | None,
+    module_is_namespace: bool,
+    parse_codec: ParseCodec,
+    type_hint_policy: TypeHintPolicy,
+    fallback_policy: FallbackPolicy,
+    enable_phi: bool,
+    stdlib_allowlist: Collection[str],
+    module_chunking: bool,
+    module_chunk_max_ops: int,
+    optimization_profile: str,
+    scoped_inputs: _ScopedLoweringInputView,
+    scoped_known_classes: dict[str, Any],
+) -> SimpleTIRGenerator:
+    return SimpleTIRGenerator(
+        parse_codec=parse_codec,
+        type_hint_policy=type_hint_policy,
+        fallback_policy=fallback_policy,
+        source_path=logical_source_path,
+        type_facts=scoped_inputs.type_facts,
+        module_name=module_name,
+        module_is_namespace=module_is_namespace,
+        entry_module=entry_override,
+        enable_phi=enable_phi,
+        known_modules=set(scoped_inputs.known_modules),
+        known_classes=scoped_known_classes,
+        stdlib_allowlist=stdlib_allowlist,
+        known_func_defaults=scoped_inputs.known_func_defaults,
+        module_chunking=module_chunking,
+        module_chunk_max_ops=module_chunk_max_ops,
+        optimization_profile=optimization_profile,
+        pgo_hot_functions=set(scoped_inputs.pgo_hot_function_names),
+    )
+
+
 def _module_lowering_context_payload(
     module_name: str,
     module_path: Path,
@@ -8414,6 +8452,74 @@ def _module_lowering_context_digest(payload: dict[str, Any]) -> str | None:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _module_lowering_context_digest_for_module(
+    module_name: str,
+    module_path: Path,
+    *,
+    logical_source_path: str,
+    entry_override: str | None,
+    known_classes_snapshot: dict[str, Any],
+    parse_codec: ParseCodec,
+    type_hint_policy: TypeHintPolicy,
+    fallback_policy: FallbackPolicy,
+    type_facts: dict[str, Any] | None,
+    enable_phi: bool,
+    known_modules: Collection[str],
+    stdlib_allowlist: Collection[str],
+    known_func_defaults: dict[str, dict[str, Any]],
+    module_deps: dict[str, set[str]],
+    module_is_namespace: bool,
+    module_chunking: bool,
+    module_chunk_max_ops: int,
+    optimization_profile: str,
+    pgo_hot_function_names: Collection[str],
+    known_modules_sorted: tuple[str, ...] | None = None,
+    stdlib_allowlist_sorted: tuple[str, ...] | None = None,
+    pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
+    module_dep_closures: dict[str, frozenset[str]] | None = None,
+    scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
+    scoped_inputs: _ScopedLoweringInputView | None = None,
+    scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
+    scoped_known_classes: dict[str, Any] | None = None,
+    is_package: bool | None = None,
+    path_stat: os.stat_result | None = None,
+) -> str | None:
+    context_payload = _module_lowering_context_payload(
+        module_name,
+        module_path,
+        logical_source_path=logical_source_path,
+        entry_override=entry_override,
+        known_classes_snapshot=known_classes_snapshot,
+        parse_codec=parse_codec,
+        type_hint_policy=type_hint_policy,
+        fallback_policy=fallback_policy,
+        type_facts=type_facts,
+        enable_phi=enable_phi,
+        known_modules=known_modules,
+        stdlib_allowlist=stdlib_allowlist,
+        known_func_defaults=known_func_defaults,
+        module_deps=module_deps,
+        module_is_namespace=module_is_namespace,
+        module_chunking=module_chunking,
+        module_chunk_max_ops=module_chunk_max_ops,
+        optimization_profile=optimization_profile,
+        pgo_hot_function_names=pgo_hot_function_names,
+        known_modules_sorted=known_modules_sorted,
+        stdlib_allowlist_sorted=stdlib_allowlist_sorted,
+        pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+        module_dep_closures=module_dep_closures,
+        scoped_lowering_inputs=scoped_lowering_inputs,
+        scoped_inputs=scoped_inputs,
+        scoped_known_classes_by_module=scoped_known_classes_by_module,
+        scoped_known_classes=scoped_known_classes,
+        is_package=is_package,
+        path_stat=path_stat,
+    )
+    if context_payload is None:
+        return None
+    return _module_lowering_context_digest(context_payload)
+
+
 def _read_persisted_module_lowering(
     project_root: Path,
     path: Path,
@@ -8507,7 +8613,9 @@ def _load_cached_module_lowering_result(
     pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
     module_dep_closures: dict[str, frozenset[str]] | None = None,
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
+    scoped_inputs: _ScopedLoweringInputView | None = None,
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
+    scoped_known_classes: dict[str, Any] | None = None,
     context_digest: str | None = None,
     resolution_cache: _ModuleResolutionCache | None = None,
     path_stat: os.stat_result | None = None,
@@ -8518,7 +8626,7 @@ def _load_cached_module_lowering_result(
         with contextlib.suppress(OSError):
             path_stat = resolution_cache.path_stat(module_path)
     if context_digest is None:
-        context_payload = _module_lowering_context_payload(
+        context_digest = _module_lowering_context_digest_for_module(
             module_name,
             module_path,
             logical_source_path=logical_source_path,
@@ -8543,13 +8651,12 @@ def _load_cached_module_lowering_result(
             pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
             module_dep_closures=module_dep_closures,
             scoped_lowering_inputs=scoped_lowering_inputs,
+            scoped_inputs=scoped_inputs,
             scoped_known_classes_by_module=scoped_known_classes_by_module,
+            scoped_known_classes=scoped_known_classes,
             is_package=is_package,
             path_stat=path_stat,
         )
-        if context_payload is None:
-            return None
-        context_digest = _module_lowering_context_digest(context_payload)
         if context_digest is None:
             return None
     return _read_persisted_module_lowering(
@@ -8718,7 +8825,7 @@ def _prepare_frontend_parallel_batch(
             scoped_known_classes_by_module=scoped_known_classes_by_module,
         )
         if project_root is not None:
-            context_payload = _module_lowering_context_payload(
+            context_digest = _module_lowering_context_digest_for_module(
                 module_name,
                 module_path,
                 logical_source_path=logical_source_path,
@@ -8749,10 +8856,8 @@ def _prepare_frontend_parallel_batch(
                 is_package=is_package,
                 path_stat=path_stat,
             )
-            if context_payload is not None:
-                context_digest = _module_lowering_context_digest(context_payload)
-                if context_digest is not None:
-                    context_digest_by_module[module_name] = context_digest
+            if context_digest is not None:
+                context_digest_by_module[module_name] = context_digest
         if module_name not in dirty_lowering:
             cached_result = _load_cached_module_lowering_result(
                 project_root,
@@ -8781,7 +8886,9 @@ def _prepare_frontend_parallel_batch(
                 pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
                 module_dep_closures=module_dep_closures,
                 scoped_lowering_inputs=scoped_lowering_inputs,
+                scoped_inputs=scoped_inputs,
                 scoped_known_classes_by_module=scoped_known_classes_by_module,
+                scoped_known_classes=scoped_known_classes,
                 context_digest=context_digest_by_module.get(module_name),
                 resolution_cache=module_resolution_cache,
                 path_stat=path_stat,
@@ -12046,7 +12153,7 @@ def build(
         )
         context_digest: str | None = None
         if project_root is not None:
-            context_payload = _module_lowering_context_payload(
+            context_digest = _module_lowering_context_digest_for_module(
                 module_name,
                 module_path,
                 logical_source_path=logical_source_path,
@@ -12076,8 +12183,6 @@ def build(
                 is_package=is_package,
                 path_stat=path_stat,
             )
-            if context_payload is not None:
-                context_digest = _module_lowering_context_digest(context_payload)
             if context_digest is not None and module_name not in dirty_lowering_modules:
                 cached_payload = _read_persisted_module_lowering(
                     project_root,
@@ -12091,24 +12196,21 @@ def build(
                     return cached_payload, 0.0, 0.0, 0.0
 
         tree = _resolve_tree_for_module(module_name, module_path)
-        gen = SimpleTIRGenerator(
+        gen = _module_frontend_generator(
+            module_name=module_name,
+            logical_source_path=logical_source_path,
+            entry_override=entry_override,
+            module_is_namespace=module_is_namespace,
             parse_codec=parse_codec,
             type_hint_policy=type_hint_policy,
             fallback_policy=fallback_policy,
-            source_path=logical_source_path,
-            type_facts=scoped_inputs.type_facts,
-            module_name=module_name,
-            module_is_namespace=module_is_namespace,
-            entry_module=entry_override,
             enable_phi=enable_phi,
-            known_modules=set(scoped_inputs.known_modules),
-            known_classes=scoped_known_classes,
             stdlib_allowlist=stdlib_allowlist,
-            known_func_defaults=scoped_inputs.known_func_defaults,
             module_chunking=module_chunking,
             module_chunk_max_ops=module_chunk_max_ops,
             optimization_profile=profile,
-            pgo_hot_functions=set(scoped_inputs.pgo_hot_function_names),
+            scoped_inputs=scoped_inputs,
+            scoped_known_classes=scoped_known_classes,
         )
         module_frontend_start = time.perf_counter()
         visit_s = 0.0

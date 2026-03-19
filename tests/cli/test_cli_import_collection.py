@@ -2844,6 +2844,143 @@ def test_module_worker_payload_reuses_precomputed_scoped_inputs(
     assert set(payload["known_func_defaults"]) == {"main"}
 
 
+def test_load_cached_module_lowering_result_reuses_precomputed_views(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "alpha.py"
+    module_path.write_text("VALUE = 1\n")
+    cache = cli._ModuleResolutionCache()
+    context_digest = cli._module_lowering_context_digest({"module": "alpha", "v": 1})
+    assert context_digest is not None
+
+    cli._write_persisted_module_lowering(
+        tmp_path,
+        module_path,
+        module_name="alpha",
+        is_package=False,
+        context_digest=context_digest,
+        result={
+            "functions": [],
+            "func_code_ids": {},
+            "local_class_names": [],
+            "local_classes": {},
+            "midend_policy_outcomes_by_function": {},
+            "midend_pass_stats_by_function": {},
+            "timings": {"visit_s": 0.0, "lower_s": 0.0, "total_s": 0.0},
+        },
+    )
+
+    monkeypatch.setattr(
+        cli,
+        "_module_lowering_context_payload",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("unexpected context payload recompute")
+        ),
+    )
+
+    result = cli._load_cached_module_lowering_result(
+        tmp_path,
+        "alpha",
+        module_path,
+        logical_source_path=str(module_path),
+        entry_override=None,
+        is_package=False,
+        known_classes_snapshot={},
+        parse_codec="json",
+        type_hint_policy="ignore",
+        fallback_policy="error",
+        type_facts=None,
+        enable_phi=True,
+        known_modules={"alpha"},
+        stdlib_allowlist=set(),
+        known_func_defaults={},
+        module_deps={"alpha": set()},
+        module_is_namespace=False,
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=set(),
+        context_digest=context_digest,
+        scoped_inputs=cli._ScopedLoweringInputView(
+            known_modules=("alpha",),
+            known_func_defaults={},
+            pgo_hot_function_names=(),
+            type_facts=None,
+        ),
+        scoped_known_classes={},
+        resolution_cache=cache,
+    )
+
+    assert result is not None
+    assert result["functions"] == []
+
+
+def test_module_frontend_generator_uses_scoped_inputs() -> None:
+    gen = cli._module_frontend_generator(
+        module_name="main",
+        logical_source_path="/tmp/main.py",
+        entry_override=None,
+        module_is_namespace=False,
+        parse_codec="json",
+        type_hint_policy="ignore",
+        fallback_policy="error",
+        enable_phi=True,
+        stdlib_allowlist=("json",),
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        scoped_inputs=cli._ScopedLoweringInputView(
+            known_modules=("alpha", "main"),
+            known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
+            pgo_hot_function_names=("main::hot",),
+            type_facts=None,
+        ),
+        scoped_known_classes={"MainClass": {"module": "main", "fields": {}}},
+    )
+
+    assert gen.module_name == "main"
+    assert gen.known_modules == {"alpha", "main"}
+    assert gen.known_func_defaults == {"main": {"run": {"params": 0, "defaults": []}}}
+    assert gen.midend_hot_functions == {"main::hot"}
+    assert gen.classes["MainClass"]["module"] == "main"
+
+
+def test_module_lowering_context_digest_for_module_reuses_precomputed_views() -> None:
+    digest = cli._module_lowering_context_digest_for_module(
+        "main",
+        Path("/tmp/main.py"),
+        logical_source_path="/tmp/main.py",
+        entry_override=None,
+        known_classes_snapshot={},
+        parse_codec="json",
+        type_hint_policy="ignore",
+        fallback_policy="error",
+        type_facts=None,
+        enable_phi=True,
+        known_modules={"main", "alpha"},
+        stdlib_allowlist=set(),
+        known_func_defaults={},
+        module_deps={"main": {"alpha"}, "alpha": set()},
+        module_is_namespace=False,
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=set(),
+        module_dep_closures={"main": frozenset({"main", "alpha"})},
+        scoped_inputs=cli._ScopedLoweringInputView(
+            known_modules=("alpha", "main"),
+            known_func_defaults={},
+            pgo_hot_function_names=(),
+            type_facts=None,
+        ),
+        scoped_known_classes={},
+        path_stat=os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
+    )
+
+    assert isinstance(digest, str)
+    assert digest
+
+
 def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
