@@ -1051,7 +1051,36 @@ class _PreparedBackendPipeline:
     runtime_lib: Path | None
     runtime_reloc_wasm: Path | None
     ensure_runtime_wasm_reloc: Callable[[], bool]
-    build_result_context: "_BuildResultEmissionContext"
+    cache: bool
+    cache_hit: bool
+    cache_key: str | None
+    function_cache_key: str | None
+    cache_path: Path | None
+    function_cache_path: Path | None
+    cache_hit_tier: str | None
+    backend_daemon_cached: bool | None
+    backend_daemon_cache_tier: str | None
+    backend_daemon_config_digest: str | None
+    target: str
+    target_triple: str | None
+    source_path: Path
+    deterministic: bool
+    trusted: bool
+    capabilities_list: list[str] | None
+    capability_profiles: list[str]
+    capabilities_source: str | None
+    sysroot_path: Path | None
+    emit_mode: str
+    profile: BuildProfile
+    native_arch_perf_enabled: bool
+    pgo_profile_payload: dict[str, Any] | None
+    runtime_feedback_payload: dict[str, Any] | None
+    emit_ir_path: Path | None
+    warnings: list[str]
+    json_output: bool
+    resolved_diagnostics_verbosity: str
+    diagnostics_payload: dict[str, Any] | None
+    diagnostics_path: Path | None
 
 
 @dataclass(frozen=True)
@@ -1098,40 +1127,6 @@ class _PreparedNativeLink:
     link_fingerprint: dict[str, Any]
     link_skipped: bool
     link_process: subprocess.CompletedProcess[str]
-
-
-@dataclass(frozen=True)
-class _BuildResultEmissionContext:
-    cache: bool
-    cache_hit: bool
-    cache_key: str | None
-    function_cache_key: str | None
-    cache_path: Path | None
-    function_cache_path: Path | None
-    cache_hit_tier: str | None
-    backend_daemon_cached: bool | None
-    backend_daemon_cache_tier: str | None
-    backend_daemon_config_digest: str | None
-    target: str
-    target_triple: str | None
-    source_path: Path
-    deterministic: bool
-    trusted: bool
-    capabilities_list: list[str] | None
-    capability_profiles: list[str]
-    capabilities_source: str | None
-    sysroot_path: Path | None
-    emit_mode: str
-    profile: BuildProfile
-    native_arch_perf_enabled: bool
-    pgo_profile_payload: dict[str, Any] | None
-    runtime_feedback_payload: dict[str, Any] | None
-    emit_ir_path: Path | None
-    warnings: list[str]
-    json_output: bool
-    resolved_diagnostics_verbosity: str
-    diagnostics_payload: dict[str, Any] | None
-    diagnostics_path: Path | None
 
 
 @dataclass(frozen=True)
@@ -13553,7 +13548,10 @@ def _prepare_backend_pipeline(
     diagnostics_payload, diagnostics_path = (
         prepared_backend_build_context.build_diagnostics_payload()
     )
-    build_result_context = _BuildResultEmissionContext(
+    return _PreparedBackendPipeline(
+        runtime_lib=prepared_backend_runtime_context.runtime_lib,
+        runtime_reloc_wasm=prepared_backend_runtime_context.runtime_reloc_wasm,
+        ensure_runtime_wasm_reloc=prepared_backend_runtime_context.ensure_runtime_wasm_reloc,
         cache=prepared_backend_compile.cache_enabled,
         cache_hit=prepared_backend_compile.cache_hit,
         cache_key=prepared_backend_runtime_context.cache_key,
@@ -13586,12 +13584,6 @@ def _prepare_backend_pipeline(
         ),
         diagnostics_payload=diagnostics_payload,
         diagnostics_path=diagnostics_path,
-    )
-    return _PreparedBackendPipeline(
-        runtime_lib=prepared_backend_runtime_context.runtime_lib,
-        runtime_reloc_wasm=prepared_backend_runtime_context.runtime_reloc_wasm,
-        ensure_runtime_wasm_reloc=prepared_backend_runtime_context.ensure_runtime_wasm_reloc,
-        build_result_context=build_result_context,
     ), None
 
 
@@ -13849,41 +13841,41 @@ def _emit_build_result(
     is_wasm: bool,
     prepared_non_native_result: _PreparedNonNativeResult | None,
     prepared_native_link: _PreparedNativeLink | None,
-    result_context: _BuildResultEmissionContext,
+    prepared_backend_pipeline: _PreparedBackendPipeline,
 ) -> int:
     if prepared_non_native_result is not None:
         return _emit_non_native_build_result(
             output=prepared_non_native_result.primary_output,
-            cache=result_context.cache,
-            cache_hit=result_context.cache_hit,
-            cache_key=result_context.cache_key,
-            function_cache_key=result_context.function_cache_key,
-            cache_path=result_context.cache_path,
-            function_cache_path=result_context.function_cache_path,
-            cache_hit_tier=result_context.cache_hit_tier,
-            backend_daemon_cached=result_context.backend_daemon_cached,
-            backend_daemon_cache_tier=result_context.backend_daemon_cache_tier,
-            backend_daemon_config_digest=result_context.backend_daemon_config_digest,
-            target=result_context.target,
-            target_triple=result_context.target_triple,
-            source_path=result_context.source_path,
-            deterministic=result_context.deterministic,
-            trusted=result_context.trusted,
-            capabilities_list=result_context.capabilities_list,
-            capability_profiles=result_context.capability_profiles,
-            capabilities_source=result_context.capabilities_source,
-            sysroot_path=result_context.sysroot_path,
-            emit_mode=result_context.emit_mode,
-            profile=result_context.profile,
-            native_arch_perf_enabled=result_context.native_arch_perf_enabled,
-            diagnostics_payload=result_context.diagnostics_payload,
-            diagnostics_path=result_context.diagnostics_path,
-            pgo_profile_payload=result_context.pgo_profile_payload,
-            runtime_feedback_payload=result_context.runtime_feedback_payload,
-            emit_ir_path=result_context.emit_ir_path,
-            warnings=result_context.warnings,
-            json_output=result_context.json_output,
-            resolved_diagnostics_verbosity=result_context.resolved_diagnostics_verbosity,
+            cache=prepared_backend_pipeline.cache,
+            cache_hit=prepared_backend_pipeline.cache_hit,
+            cache_key=prepared_backend_pipeline.cache_key,
+            function_cache_key=prepared_backend_pipeline.function_cache_key,
+            cache_path=prepared_backend_pipeline.cache_path,
+            function_cache_path=prepared_backend_pipeline.function_cache_path,
+            cache_hit_tier=prepared_backend_pipeline.cache_hit_tier,
+            backend_daemon_cached=prepared_backend_pipeline.backend_daemon_cached,
+            backend_daemon_cache_tier=prepared_backend_pipeline.backend_daemon_cache_tier,
+            backend_daemon_config_digest=prepared_backend_pipeline.backend_daemon_config_digest,
+            target=prepared_backend_pipeline.target,
+            target_triple=prepared_backend_pipeline.target_triple,
+            source_path=prepared_backend_pipeline.source_path,
+            deterministic=prepared_backend_pipeline.deterministic,
+            trusted=prepared_backend_pipeline.trusted,
+            capabilities_list=prepared_backend_pipeline.capabilities_list,
+            capability_profiles=prepared_backend_pipeline.capability_profiles,
+            capabilities_source=prepared_backend_pipeline.capabilities_source,
+            sysroot_path=prepared_backend_pipeline.sysroot_path,
+            emit_mode=prepared_backend_pipeline.emit_mode,
+            profile=prepared_backend_pipeline.profile,
+            native_arch_perf_enabled=prepared_backend_pipeline.native_arch_perf_enabled,
+            diagnostics_payload=prepared_backend_pipeline.diagnostics_payload,
+            diagnostics_path=prepared_backend_pipeline.diagnostics_path,
+            pgo_profile_payload=prepared_backend_pipeline.pgo_profile_payload,
+            runtime_feedback_payload=prepared_backend_pipeline.runtime_feedback_payload,
+            emit_ir_path=prepared_backend_pipeline.emit_ir_path,
+            warnings=prepared_backend_pipeline.warnings,
+            json_output=prepared_backend_pipeline.json_output,
+            resolved_diagnostics_verbosity=prepared_backend_pipeline.resolved_diagnostics_verbosity,
             extra_fields=prepared_non_native_result.extra_fields,
             artifacts=prepared_non_native_result.artifacts,
             success_messages=prepared_non_native_result.success_messages,
@@ -13894,40 +13886,40 @@ def _emit_build_result(
         link_skipped=prepared_native_link.link_skipped,
         link_fingerprint=prepared_native_link.link_fingerprint,
         link_fingerprint_path=prepared_native_link.link_fingerprint_path,
-        cache=result_context.cache,
-        cache_hit=result_context.cache_hit,
-        cache_key=result_context.cache_key,
-        function_cache_key=result_context.function_cache_key,
-        cache_path=result_context.cache_path,
-        function_cache_path=result_context.function_cache_path,
-        cache_hit_tier=result_context.cache_hit_tier,
-        backend_daemon_cached=result_context.backend_daemon_cached,
-        backend_daemon_cache_tier=result_context.backend_daemon_cache_tier,
-        backend_daemon_config_digest=result_context.backend_daemon_config_digest,
-        target=result_context.target,
-        target_triple=result_context.target_triple,
-        source_path=result_context.source_path,
+        cache=prepared_backend_pipeline.cache,
+        cache_hit=prepared_backend_pipeline.cache_hit,
+        cache_key=prepared_backend_pipeline.cache_key,
+        function_cache_key=prepared_backend_pipeline.function_cache_key,
+        cache_path=prepared_backend_pipeline.cache_path,
+        function_cache_path=prepared_backend_pipeline.function_cache_path,
+        cache_hit_tier=prepared_backend_pipeline.cache_hit_tier,
+        backend_daemon_cached=prepared_backend_pipeline.backend_daemon_cached,
+        backend_daemon_cache_tier=prepared_backend_pipeline.backend_daemon_cache_tier,
+        backend_daemon_config_digest=prepared_backend_pipeline.backend_daemon_config_digest,
+        target=prepared_backend_pipeline.target,
+        target_triple=prepared_backend_pipeline.target_triple,
+        source_path=prepared_backend_pipeline.source_path,
         output_binary=prepared_native_link.output_binary,
-        deterministic=result_context.deterministic,
-        trusted=result_context.trusted,
-        capabilities_list=result_context.capabilities_list,
-        capability_profiles=result_context.capability_profiles,
-        capabilities_source=result_context.capabilities_source,
-        sysroot_path=result_context.sysroot_path,
-        emit_mode=result_context.emit_mode,
-        profile=result_context.profile,
-        native_arch_perf_enabled=result_context.native_arch_perf_enabled,
+        deterministic=prepared_backend_pipeline.deterministic,
+        trusted=prepared_backend_pipeline.trusted,
+        capabilities_list=prepared_backend_pipeline.capabilities_list,
+        capability_profiles=prepared_backend_pipeline.capability_profiles,
+        capabilities_source=prepared_backend_pipeline.capabilities_source,
+        sysroot_path=prepared_backend_pipeline.sysroot_path,
+        emit_mode=prepared_backend_pipeline.emit_mode,
+        profile=prepared_backend_pipeline.profile,
+        native_arch_perf_enabled=prepared_backend_pipeline.native_arch_perf_enabled,
         output_obj=prepared_native_link.output_obj,
         stub_path=prepared_native_link.stub_path,
         runtime_lib=prepared_native_link.runtime_lib,
-        diagnostics_payload=result_context.diagnostics_payload,
-        diagnostics_path=result_context.diagnostics_path,
-        pgo_profile_payload=result_context.pgo_profile_payload,
-        runtime_feedback_payload=result_context.runtime_feedback_payload,
-        emit_ir_path=result_context.emit_ir_path,
-        warnings=result_context.warnings,
-        json_output=result_context.json_output,
-        resolved_diagnostics_verbosity=result_context.resolved_diagnostics_verbosity,
+        diagnostics_payload=prepared_backend_pipeline.diagnostics_payload,
+        diagnostics_path=prepared_backend_pipeline.diagnostics_path,
+        pgo_profile_payload=prepared_backend_pipeline.pgo_profile_payload,
+        runtime_feedback_payload=prepared_backend_pipeline.runtime_feedback_payload,
+        emit_ir_path=prepared_backend_pipeline.emit_ir_path,
+        warnings=prepared_backend_pipeline.warnings,
+        json_output=prepared_backend_pipeline.json_output,
+        resolved_diagnostics_verbosity=prepared_backend_pipeline.resolved_diagnostics_verbosity,
     )
 
 
@@ -13960,7 +13952,7 @@ def _finalize_build_result(
             is_wasm=output_layout.is_wasm,
             prepared_non_native_result=prepared_non_native_result,
             prepared_native_link=None,
-            result_context=prepared_backend_pipeline.build_result_context,
+            prepared_backend_pipeline=prepared_backend_pipeline,
         )
 
     prepared_native_link, prepared_native_link_error = _prepare_native_link(
@@ -13989,7 +13981,7 @@ def _finalize_build_result(
         is_wasm=output_layout.is_wasm,
         prepared_non_native_result=None,
         prepared_native_link=prepared_native_link,
-        result_context=prepared_backend_pipeline.build_result_context,
+        prepared_backend_pipeline=prepared_backend_pipeline,
     )
 
 
