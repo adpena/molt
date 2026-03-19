@@ -13,6 +13,8 @@ def _public_rows(module_name: str) -> list[tuple[str, str, bool]]:
 
 
 def test__datetime_public_surface_matches_expected_shape() -> None:
+    module = importlib.import_module("_datetime")
+    assert "molt_datetime_runtime_ready" not in module.__dict__
     assert _public_rows("_datetime") == [
         ("MAXYEAR", "int", False),
         ("MINYEAR", "int", False),
@@ -28,6 +30,8 @@ def test__datetime_public_surface_matches_expected_shape() -> None:
 
 
 def test__pydatetime_public_surface_matches_expected_shape() -> None:
+    module = importlib.import_module("_pydatetime")
+    assert "molt_datetime_runtime_ready" not in module.__dict__
     assert _public_rows("_pydatetime") == [
         ("MAXYEAR", "int", False),
         ("MINYEAR", "int", False),
