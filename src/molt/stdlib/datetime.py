@@ -857,6 +857,10 @@ class datetime:
         )
 
     def timestamp(self) -> float:
+        offset = self.utcoffset()
+        off_secs = None
+        if offset is not None:
+            off_secs = offset.days * _DAY_SECONDS + offset.seconds
         return float(
             _MOLT_DT_TO_TIMESTAMP(
                 self.year,
@@ -866,6 +870,7 @@ class datetime:
                 self.minute,
                 self.second,
                 self.microsecond,
+                off_secs,
             )
         )
 

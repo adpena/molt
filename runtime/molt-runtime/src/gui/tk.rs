@@ -941,6 +941,7 @@ struct TkMenuEntryState {
 struct TkWidgetState {
     widget_command: String,
     options: HashMap<String, u64>,
+    wm: Option<TkWmState>,
     treeview: Option<TkTreeviewState>,
     ttk_state: HashSet<String>,
     ttk_values: HashMap<String, u64>,
@@ -1399,6 +1400,9 @@ fn clear_treeview_refs(py: &PyToken<'_>, treeview: &mut TkTreeviewState) {
 fn clear_widget_refs(py: &PyToken<'_>, widget: TkWidgetState) {
     let mut options = widget.options;
     clear_value_map_refs(py, &mut options);
+    if let Some(mut wm) = widget.wm {
+        clear_wm_refs(py, &mut wm);
+    }
     for bits in widget.list_items {
         dec_ref_bits(py, bits);
     }
@@ -1450,6 +1454,25 @@ fn clear_ttk_style_refs(py: &PyToken<'_>, style: &mut TkTtkStyleState) {
 
 fn clear_wm_refs(py: &PyToken<'_>, wm: &mut TkWmState) {
     clear_value_map_refs(py, &mut wm.attributes);
+}
+
+fn wm_state_for_path<'a>(app: &'a TkAppState, toplevel: &str) -> Option<&'a TkWmState> {
+    if toplevel == "." {
+        return Some(&app.wm);
+    }
+    app.widgets.get(toplevel).and_then(|widget| widget.wm.as_ref())
+}
+
+fn wm_state_for_path_mut<'a>(
+    app: &'a mut TkAppState,
+    toplevel: &str,
+) -> Option<&'a mut TkWmState> {
+    if toplevel == "." {
+        return Some(&mut app.wm);
+    }
+    app.widgets
+        .get_mut(toplevel)
+        .and_then(|widget| widget.wm.as_mut())
 }
 
 fn drop_app_state_refs(py: &PyToken<'_>, app: &mut TkAppState) {
@@ -6256,7 +6279,7 @@ fn handle_wm_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64,
     if toplevel != "." {
         let mut registry = tk_registry().lock().unwrap();
         let app = app_mut_from_registry(py, &mut registry, handle)?;
-        if !app.widgets.contains_key(&toplevel) {
+        if wm_state_for_path(app, &toplevel).is_none() {
             return Err(app_tcl_error_locked(
                 py,
                 app,
@@ -6266,7 +6289,25 @@ fn handle_wm_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64,
     }
     let mut registry = tk_registry().lock().unwrap();
     let app = app_mut_from_registry(py, &mut registry, handle)?;
-    let wm = &mut app.wm;
+    let Some(wm_ptr) = (if toplevel == "." {
+        Some((&mut app.wm) as *mut TkWmState)
+    } else {
+        app.widgets
+            .get_mut(&toplevel)
+            .and_then(|widget| widget.wm.as_mut())
+            .map(|wm| (wm as *mut TkWmState))
+    }) else {
+        return Err(app_tcl_error_locked(
+            py,
+            app,
+            format!("bad window path name \"{toplevel}\""),
+        ));
+    };
+    // The target WM state lives inside `app` and remains valid for the duration
+    // of this command because we do not mutate `app.widgets` while handling a
+    // single `wm` subcommand. A raw pointer keeps Rust's borrow checker from
+    // treating `app.last_error` updates as overlapping borrows of the same app.
+    let wm = unsafe { &mut *wm_ptr };
     match subcommand.as_str() {
         "title" => {
             if args.len() == 3 {
@@ -8148,6 +8189,7 @@ fn handle_widget_create_command(
         TkWidgetState {
             widget_command: widget_command.to_string(),
             options,
+            wm: (widget_command == "toplevel").then(TkWmState::default),
             treeview: (widget_command == "ttk::treeview").then(TkTreeviewState::default),
             ..TkWidgetState::default()
         },
@@ -16901,6 +16943,45 @@ mod tests {
         );
         assert!(tkwait_visibility_reached_in_app(&app, ".w"));
         assert!(!tkwait_visibility_reached_in_app(&app, ".missing"));
+    }
+
+    #[test]
+    fn wm_state_is_isolated_per_toplevel_path() {
+        let mut app = TkAppState::default();
+        app.wm.title = "root".to_string();
+        app.wm.protocols
+            .insert("WM_DELETE_WINDOW".to_string(), "root_cb".to_string());
+        app.widgets.insert(
+            ".dialog".to_string(),
+            TkWidgetState {
+                widget_command: "toplevel".to_string(),
+                wm: Some(TkWmState::default()),
+                ..TkWidgetState::default()
+            },
+        );
+
+        let dialog_wm = wm_state_for_path_mut(&mut app, ".dialog").expect("dialog wm");
+        dialog_wm.title = "dialog".to_string();
+        dialog_wm.transient = Some(".".to_string());
+        dialog_wm
+            .protocols
+            .insert("WM_DELETE_WINDOW".to_string(), "dialog_cb".to_string());
+
+        let root_wm = wm_state_for_path(&app, ".").expect("root wm");
+        assert_eq!(root_wm.title, "root");
+        assert_eq!(
+            root_wm.protocols.get("WM_DELETE_WINDOW").map(String::as_str),
+            Some("root_cb")
+        );
+        assert!(root_wm.transient.is_none());
+
+        let dialog_wm = wm_state_for_path(&app, ".dialog").expect("dialog wm");
+        assert_eq!(dialog_wm.title, "dialog");
+        assert_eq!(dialog_wm.transient.as_deref(), Some("."));
+        assert_eq!(
+            dialog_wm.protocols.get("WM_DELETE_WINDOW").map(String::as_str),
+            Some("dialog_cb")
+        );
     }
 
     #[test]
