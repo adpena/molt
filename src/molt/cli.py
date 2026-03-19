@@ -3009,6 +3009,23 @@ def _scoped_known_modules(
     )
 
 
+def _scoped_known_classes(
+    module_name: str,
+    *,
+    module_deps: dict[str, set[str]],
+    known_classes: dict[str, Any],
+    module_dep_closures: dict[str, frozenset[str]] | None = None,
+) -> dict[str, Any]:
+    scoped_modules = module_dep_closures.get(module_name) if module_dep_closures else None
+    if scoped_modules is None:
+        scoped_modules = _module_dependency_closure(module_name, module_deps)
+    return {
+        class_name: class_info
+        for class_name, class_info in known_classes.items()
+        if isinstance(class_info, dict) and class_info.get("module") in scoped_modules
+    }
+
+
 def _scoped_pgo_hot_function_names(
     module_name: str,
     pgo_hot_function_names: Collection[str],
@@ -7817,6 +7834,12 @@ def _module_lowering_context_payload(
         known_func_defaults=known_func_defaults,
         module_dep_closures=module_dep_closures,
     )
+    scoped_known_classes = _scoped_known_classes(
+        module_name,
+        module_deps=module_deps,
+        known_classes=known_classes_snapshot,
+        module_dep_closures=module_dep_closures,
+    )
     return {
         "version": 1,
         "module_name": module_name,
@@ -7832,7 +7855,7 @@ def _module_lowering_context_payload(
         "type_facts": type_facts,
         "enable_phi": enable_phi,
         "known_modules": known_modules_sorted,
-        "known_classes": known_classes_snapshot,
+        "known_classes": scoped_known_classes,
         "stdlib_allowlist": stdlib_allowlist_sorted,
         "known_func_defaults": scoped_known_func_defaults,
         "module_chunking": module_chunking,
@@ -7997,6 +8020,72 @@ def _load_cached_module_lowering_result(
     )
 
 
+def _module_worker_payload(
+    module_name: str,
+    *,
+    module_path: Path,
+    logical_source_path: str,
+    source: str,
+    parse_codec: ParseCodec,
+    type_hint_policy: TypeHintPolicy,
+    fallback_policy: FallbackPolicy,
+    module_is_namespace: bool,
+    entry_module: str | None,
+    type_facts: dict[str, Any] | None,
+    enable_phi: bool,
+    known_modules: Collection[str],
+    known_classes_snapshot: dict[str, Any],
+    stdlib_allowlist: Collection[str],
+    known_func_defaults: dict[str, dict[str, Any]],
+    module_deps: dict[str, set[str]],
+    module_chunking: bool,
+    module_chunk_max_ops: int,
+    optimization_profile: str,
+    pgo_hot_function_names: Collection[str],
+    module_dep_closures: dict[str, frozenset[str]],
+) -> dict[str, Any]:
+    return {
+        "module_name": module_name,
+        "module_path": str(module_path),
+        "logical_source_path": logical_source_path,
+        "source": source,
+        "parse_codec": parse_codec,
+        "type_hint_policy": type_hint_policy,
+        "fallback_policy": fallback_policy,
+        "module_is_namespace": module_is_namespace,
+        "entry_module": entry_module,
+        "enable_phi": enable_phi,
+        "known_modules": list(
+            _scoped_known_modules(
+                module_name,
+                module_deps=module_deps,
+                known_modules=known_modules,
+                module_dep_closures=module_dep_closures,
+            )
+        ),
+        "known_classes": _scoped_known_classes(
+            module_name,
+            module_deps=module_deps,
+            known_classes=known_classes_snapshot,
+            module_dep_closures=module_dep_closures,
+        ),
+        "stdlib_allowlist": list(sorted(stdlib_allowlist)),
+        "known_func_defaults": _scoped_known_func_defaults(
+            module_name,
+            module_deps=module_deps,
+            known_func_defaults=known_func_defaults,
+            module_dep_closures=module_dep_closures,
+        ),
+        "module_chunking": module_chunking,
+        "module_chunk_max_ops": module_chunk_max_ops,
+        "optimization_profile": optimization_profile,
+        "pgo_hot_functions": list(
+            _scoped_pgo_hot_function_names(module_name, pgo_hot_function_names)
+        ),
+        "type_facts": type_facts,
+    }
+
+
 def _prepare_frontend_parallel_batch(
     batch: list[str],
     *,
@@ -8119,26 +8208,29 @@ def _prepare_frontend_parallel_batch(
         worker_payloads.append(
             (
                 module_name,
-                {
-                    "module_name": module_name,
-                    "module_path": str(module_path),
-                    "logical_source_path": logical_source_path,
-                    "source": source,
-                    "parse_codec": parse_codec,
-                    "type_hint_policy": type_hint_policy,
-                    "fallback_policy": fallback_policy,
-                    "module_is_namespace": module_name in namespace_module_names,
-                    "entry_module": entry_override,
-                    "enable_phi": enable_phi,
-                    "known_modules": list(known_modules_sorted),
-                    "known_classes": known_classes_snapshot,
-                    "stdlib_allowlist": list(stdlib_allowlist_sorted),
-                    "known_func_defaults": known_func_defaults,
-                    "module_chunking": module_chunking,
-                    "module_chunk_max_ops": module_chunk_max_ops,
-                    "optimization_profile": optimization_profile,
-                    "pgo_hot_functions": list(pgo_hot_function_names_sorted),
-                },
+                _module_worker_payload(
+                    module_name,
+                    module_path=module_path,
+                    logical_source_path=logical_source_path,
+                    source=source,
+                    parse_codec=parse_codec,
+                    type_hint_policy=type_hint_policy,
+                    fallback_policy=fallback_policy,
+                    module_is_namespace=module_name in namespace_module_names,
+                    entry_module=entry_override,
+                    type_facts=type_facts,
+                    enable_phi=enable_phi,
+                    known_modules=known_modules_sorted,
+                    known_classes_snapshot=known_classes_snapshot,
+                    stdlib_allowlist=stdlib_allowlist_sorted,
+                    known_func_defaults=known_func_defaults,
+                    module_deps=module_deps,
+                    module_chunking=module_chunking,
+                    module_chunk_max_ops=module_chunk_max_ops,
+                    optimization_profile=optimization_profile,
+                    pgo_hot_function_names=pgo_hot_function_names_sorted,
+                    module_dep_closures=module_dep_closures,
+                ),
             )
         )
     return cached_results, worker_payloads, context_digest_by_module, None
