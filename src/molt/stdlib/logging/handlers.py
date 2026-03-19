@@ -12,8 +12,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 # TODO(stdlib-compat, owner:runtime, milestone:TL3, priority:P2, status:planned): extend queue-backed logging handler parity for advanced listener lifecycle and queue edge cases after baseline stdlib queue support stabilizes.
 _MOLT_LOGGING_RUNTIME_READY = _require_intrinsic(
-    "molt_logging_runtime_ready", globals()
-)
+    "molt_logging_runtime_ready")
 
 __all__ = [
     "BaseRotatingHandler",
