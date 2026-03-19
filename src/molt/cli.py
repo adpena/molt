@@ -9514,6 +9514,69 @@ def _lower_entry_module_as_main(
     return None
 
 
+def _append_module_code_slot_ops(
+    ops: list[dict[str, Any]],
+    *,
+    logical_source_path: str,
+    code_id: int,
+    next_var: int,
+) -> int:
+    file_var = f"v{next_var}"
+    next_var += 1
+    name_var = f"v{next_var}"
+    next_var += 1
+    line_var = f"v{next_var}"
+    next_var += 1
+    linetable_var = f"v{next_var}"
+    next_var += 1
+    varnames_var = f"v{next_var}"
+    next_var += 1
+    argcount_var = f"v{next_var}"
+    next_var += 1
+    posonly_var = f"v{next_var}"
+    next_var += 1
+    kwonly_var = f"v{next_var}"
+    next_var += 1
+    code_var = f"v{next_var}"
+    next_var += 1
+    ops.extend(
+        [
+            {
+                "kind": "const_str",
+                "s_value": logical_source_path,
+                "out": file_var,
+            },
+            {"kind": "const_str", "s_value": "<module>", "out": name_var},
+            {"kind": "const", "value": 1, "out": line_var},
+            {"kind": "const_none", "out": linetable_var},
+            {"kind": "tuple_new", "args": [], "out": varnames_var},
+            {"kind": "const", "value": 0, "out": argcount_var},
+            {"kind": "const", "value": 0, "out": posonly_var},
+            {"kind": "const", "value": 0, "out": kwonly_var},
+            {
+                "kind": "code_new",
+                "args": [
+                    file_var,
+                    name_var,
+                    line_var,
+                    linetable_var,
+                    varnames_var,
+                    argcount_var,
+                    posonly_var,
+                    kwonly_var,
+                ],
+                "out": code_var,
+            },
+            {
+                "kind": "code_slot_set",
+                "value": code_id,
+                "args": [code_var],
+            },
+        ]
+    )
+    return next_var
+
+
 def _run_frontend_parallel_enabled_layers(
     module_layers: Sequence[Sequence[str]],
     *,
@@ -14044,114 +14107,20 @@ def build(
         )
         init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
         code_id = _register_global_code_id(init_symbol)
-        file_var = f"v{next_var}"
-        next_var += 1
-        name_var = f"v{next_var}"
-        next_var += 1
-        line_var = f"v{next_var}"
-        next_var += 1
-        linetable_var = f"v{next_var}"
-        next_var += 1
-        varnames_var = f"v{next_var}"
-        next_var += 1
-        argcount_var = f"v{next_var}"
-        next_var += 1
-        posonly_var = f"v{next_var}"
-        next_var += 1
-        kwonly_var = f"v{next_var}"
-        next_var += 1
-        code_var = f"v{next_var}"
-        next_var += 1
-        module_code_ops.extend(
-            [
-                {
-                    "kind": "const_str",
-                    "s_value": logical_source_path,
-                    "out": file_var,
-                },
-                {"kind": "const_str", "s_value": "<module>", "out": name_var},
-                {"kind": "const", "value": 1, "out": line_var},
-                {"kind": "const_none", "out": linetable_var},
-                {"kind": "tuple_new", "args": [], "out": varnames_var},
-                {"kind": "const", "value": 0, "out": argcount_var},
-                {"kind": "const", "value": 0, "out": posonly_var},
-                {"kind": "const", "value": 0, "out": kwonly_var},
-                {
-                    "kind": "code_new",
-                    "args": [
-                        file_var,
-                        name_var,
-                        line_var,
-                        linetable_var,
-                        varnames_var,
-                        argcount_var,
-                        posonly_var,
-                        kwonly_var,
-                    ],
-                    "out": code_var,
-                },
-                {
-                    "kind": "code_slot_set",
-                    "value": code_id,
-                    "args": [code_var],
-                },
-            ]
+        next_var = _append_module_code_slot_ops(
+            module_code_ops,
+            logical_source_path=logical_source_path,
+            code_id=code_id,
+            next_var=next_var,
         )
     if entry_module != "__main__" and entry_path is not None:
         init_symbol = SimpleTIRGenerator.module_init_symbol("__main__")
         code_id = _register_global_code_id(init_symbol)
-        file_var = f"v{next_var}"
-        next_var += 1
-        name_var = f"v{next_var}"
-        next_var += 1
-        line_var = f"v{next_var}"
-        next_var += 1
-        linetable_var = f"v{next_var}"
-        next_var += 1
-        varnames_var = f"v{next_var}"
-        next_var += 1
-        argcount_var = f"v{next_var}"
-        next_var += 1
-        posonly_var = f"v{next_var}"
-        next_var += 1
-        kwonly_var = f"v{next_var}"
-        next_var += 1
-        code_var = f"v{next_var}"
-        next_var += 1
-        module_code_ops.extend(
-            [
-                {
-                    "kind": "const_str",
-                    "s_value": entry_path.as_posix(),
-                    "out": file_var,
-                },
-                {"kind": "const_str", "s_value": "<module>", "out": name_var},
-                {"kind": "const", "value": 1, "out": line_var},
-                {"kind": "const_none", "out": linetable_var},
-                {"kind": "tuple_new", "args": [], "out": varnames_var},
-                {"kind": "const", "value": 0, "out": argcount_var},
-                {"kind": "const", "value": 0, "out": posonly_var},
-                {"kind": "const", "value": 0, "out": kwonly_var},
-                {
-                    "kind": "code_new",
-                    "args": [
-                        file_var,
-                        name_var,
-                        line_var,
-                        linetable_var,
-                        varnames_var,
-                        argcount_var,
-                        posonly_var,
-                        kwonly_var,
-                    ],
-                    "out": code_var,
-                },
-                {
-                    "kind": "code_slot_set",
-                    "value": code_id,
-                    "args": [code_var],
-                },
-            ]
+        next_var = _append_module_code_slot_ops(
+            module_code_ops,
+            logical_source_path=entry_path.as_posix(),
+            code_id=code_id,
+            next_var=next_var,
         )
     entry_ops[entry_call_idx:entry_call_idx] = module_code_ops
     if spawn_enabled:
