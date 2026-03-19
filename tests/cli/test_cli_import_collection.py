@@ -813,6 +813,100 @@ def test_module_analysis_cache_path_uses_cached_module_key(
     assert info.hits >= 1
 
 
+def test_module_graph_cache_key_is_cached(tmp_path: Path) -> None:
+    entry_path = tmp_path / "main.py"
+    roots = (str(tmp_path),)
+    module_roots = (str(tmp_path / "src"),)
+    stdlib_root = str(tmp_path / "stdlib")
+    cli._module_graph_cache_key.cache_clear()
+
+    first = cli._module_graph_cache_key(
+        str(entry_path),
+        roots,
+        module_roots,
+        stdlib_root,
+        ("warnings",),
+        ("asyncio",),
+        ("tkinter",),
+    )
+    second = cli._module_graph_cache_key(
+        str(entry_path),
+        roots,
+        module_roots,
+        stdlib_root,
+        ("warnings",),
+        ("asyncio",),
+        ("tkinter",),
+    )
+
+    info = cli._module_graph_cache_key.cache_info()
+    assert first == second
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
+def test_module_graph_cache_path_uses_cached_graph_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry_path = tmp_path / "main.py"
+    roots = [tmp_path]
+    module_roots = [tmp_path / "src"]
+    stdlib_root = tmp_path / "stdlib"
+    cli._module_graph_cache_key.cache_clear()
+
+    calls = 0
+    original = cli._module_graph_cache_key
+
+    def wrapped(
+        entry_path_str: str,
+        roots_key: tuple[str, ...],
+        module_roots_key: tuple[str, ...],
+        stdlib_root_str: str,
+        skip_modules: tuple[str, ...],
+        stub_parents: tuple[str, ...],
+        nested_stdlib_scan_modules: tuple[str, ...],
+    ) -> str:
+        nonlocal calls
+        calls += 1
+        return original(
+            entry_path_str,
+            roots_key,
+            module_roots_key,
+            stdlib_root_str,
+            skip_modules,
+            stub_parents,
+            nested_stdlib_scan_modules,
+        )
+
+    monkeypatch.setattr(cli, "_module_graph_cache_key", wrapped, raising=True)
+
+    first = cli._module_graph_cache_path(
+        tmp_path,
+        entry_path,
+        roots=roots,
+        module_roots=module_roots,
+        stdlib_root=stdlib_root,
+        skip_modules={"warnings"},
+        stub_parents={"asyncio"},
+        nested_stdlib_scan_modules={"tkinter"},
+    )
+    second = cli._module_graph_cache_path(
+        tmp_path,
+        entry_path,
+        roots=roots,
+        module_roots=module_roots,
+        stdlib_root=stdlib_root,
+        skip_modules={"warnings"},
+        stub_parents={"asyncio"},
+        nested_stdlib_scan_modules={"tkinter"},
+    )
+
+    info = original.cache_info()
+    assert first == second
+    assert calls == 2
+    assert info.hits >= 1
+
+
 def test_load_module_imports_reuses_persisted_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
