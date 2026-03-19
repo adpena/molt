@@ -883,14 +883,6 @@ class _PreparedBuildRoots:
 
 
 @dataclass(frozen=True)
-class _PreparedBuildInputs:
-    prepared_build_preamble: _PreparedBuildPreamble
-    prepared_build_roots: _PreparedBuildRoots
-    prepared_build_config: _PreparedBuildConfig
-    resolved_build_entry: _ResolvedBuildEntry
-
-
-@dataclass(frozen=True)
 class _PreparedFrontendAnalysis:
     module_graph_metadata: _ModuleGraphMetadata
     module_deps: dict[str, set[str]]
@@ -3095,7 +3087,16 @@ def _prepare_build_inputs(
     runtime_feedback: str | None,
     capabilities: CapabilityInput | None,
     respect_pythonpath: bool,
-) -> tuple[_PreparedBuildInputs | None, dict[str, Any] | None]:
+) -> tuple[
+    tuple[
+        _PreparedBuildPreamble,
+        _PreparedBuildRoots,
+        _PreparedBuildConfig,
+        _ResolvedBuildEntry,
+    ]
+    | None,
+    dict[str, Any] | None,
+]:
     prepared_build_preamble, prepared_build_preamble_error = _prepare_build_preamble(
         diagnostics=diagnostics,
         diagnostics_file=diagnostics_file,
@@ -3145,11 +3146,11 @@ def _prepare_build_inputs(
         return None, resolved_build_entry_error
     assert resolved_build_entry is not None
 
-    return _PreparedBuildInputs(
-        prepared_build_preamble=prepared_build_preamble,
-        prepared_build_roots=prepared_build_roots,
-        prepared_build_config=prepared_build_config,
-        resolved_build_entry=resolved_build_entry,
+    return (
+        prepared_build_preamble,
+        prepared_build_roots,
+        prepared_build_config,
+        resolved_build_entry,
     ), None
 
 
@@ -13320,7 +13321,10 @@ def _prepare_backend_compile(
 
 def _run_backend_pipeline(
     *,
-    prepared_build_inputs: _PreparedBuildInputs,
+    prepared_build_preamble: _PreparedBuildPreamble,
+    prepared_build_roots: _PreparedBuildRoots,
+    prepared_build_config: _PreparedBuildConfig,
+    resolved_build_entry: _ResolvedBuildEntry,
     prepared_frontend_pipeline_bundle: tuple[
         _PreparedFrontendRunTicket,
         dict[str, Path],
@@ -13356,10 +13360,6 @@ def _run_backend_pipeline(
     verbose: bool,
     require_linked: bool,
 ) -> int:
-    prepared_build_preamble = prepared_build_inputs.prepared_build_preamble
-    prepared_build_roots = prepared_build_inputs.prepared_build_roots
-    prepared_build_config = prepared_build_inputs.prepared_build_config
-    resolved_build_entry = prepared_build_inputs.resolved_build_entry
     (
         _prepared_frontend_run_ticket,
         module_graph,
@@ -13882,7 +13882,10 @@ def _prepare_native_link(
 
 def _run_build_pipeline(
     *,
-    prepared_build_inputs: _PreparedBuildInputs,
+    prepared_build_preamble: _PreparedBuildPreamble,
+    prepared_build_roots: _PreparedBuildRoots,
+    prepared_build_config: _PreparedBuildConfig,
+    resolved_build_entry: _ResolvedBuildEntry,
     prepared_frontend_pipeline_bundle: tuple[
         _PreparedFrontendRunTicket,
         dict[str, Path],
@@ -13926,7 +13929,10 @@ def _run_build_pipeline(
         return frontend_layer_error
 
     return _run_backend_pipeline(
-        prepared_build_inputs=prepared_build_inputs,
+        prepared_build_preamble=prepared_build_preamble,
+        prepared_build_roots=prepared_build_roots,
+        prepared_build_config=prepared_build_config,
+        resolved_build_entry=resolved_build_entry,
         prepared_frontend_pipeline_bundle=prepared_frontend_pipeline_bundle,
         parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
@@ -17990,12 +17996,18 @@ def build(
     if prepared_build_inputs_error is not None:
         return prepared_build_inputs_error
     assert prepared_build_inputs is not None
+    (
+        prepared_build_preamble,
+        prepared_build_roots,
+        prepared_build_config,
+        resolved_build_entry,
+    ) = prepared_build_inputs
     prepared_frontend_pipeline_bundle, prepared_frontend_pipeline_error = (
         _prepare_frontend_pipeline(
-            prepared_build_preamble=prepared_build_inputs.prepared_build_preamble,
-            prepared_build_roots=prepared_build_inputs.prepared_build_roots,
-            prepared_build_config=prepared_build_inputs.prepared_build_config,
-            resolved_build_entry=prepared_build_inputs.resolved_build_entry,
+            prepared_build_preamble=prepared_build_preamble,
+            prepared_build_roots=prepared_build_roots,
+            prepared_build_config=prepared_build_config,
+            resolved_build_entry=resolved_build_entry,
             parse_codec=parse_codec,
             type_hint_policy=type_hint_policy,
             fallback_policy=fallback_policy,
@@ -18018,7 +18030,10 @@ def build(
         return prepared_frontend_pipeline_error
     assert prepared_frontend_pipeline_bundle is not None
     return _run_build_pipeline(
-        prepared_build_inputs=prepared_build_inputs,
+        prepared_build_preamble=prepared_build_preamble,
+        prepared_build_roots=prepared_build_roots,
+        prepared_build_config=prepared_build_config,
+        resolved_build_entry=resolved_build_entry,
         prepared_frontend_pipeline_bundle=prepared_frontend_pipeline_bundle,
         parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
