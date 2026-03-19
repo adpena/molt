@@ -932,6 +932,11 @@ class _PreparedBackendCompile:
 
 
 @dataclass(frozen=True)
+class _PreparedBackendIR:
+    ir: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class _PreparedNonNativeResult:
     primary_output: Path
     linked_output_path: Path | None
@@ -10425,6 +10430,144 @@ def _write_emitted_ir(emit_ir_path: Path | None, ir: Mapping[str, Any]) -> str |
     return None
 
 
+def _prepare_backend_ir(
+    *,
+    entry_module: str,
+    module_graph: Mapping[str, Path],
+    parse_codec: ParseCodec,
+    type_hint_policy: TypeHintPolicy,
+    fallback_policy: FallbackPolicy,
+    type_facts: TypeFacts | None,
+    enable_phi: bool,
+    known_modules: Collection[str],
+    known_classes: Mapping[str, Any],
+    stdlib_allowlist: Collection[str],
+    known_func_defaults: dict[str, dict[str, Any]],
+    module_chunking: bool,
+    module_chunk_max_ops: int,
+    optimization_profile: str,
+    pgo_hot_function_names: Collection[str],
+    frontend_phase_timeout: float | None,
+    integration_state: _FrontendIntegrationState,
+    diagnostics_state: _MidendDiagnosticsState,
+    record_frontend_timing: Callable[..., None],
+    fail: Callable[[str, bool, str], dict[str, Any] | None],
+    json_output: bool,
+    module_order: Sequence[str],
+    generated_module_source_paths: Mapping[str, str],
+    spawn_enabled: bool,
+    pgo_profile_summary: Any | None,
+    runtime_feedback_summary: Any | None,
+    emit_ir_path: Path | None,
+) -> tuple[_PreparedBackendIR | None, dict[str, Any] | None]:
+    entry_path: Path | None = None
+    if entry_module != "__main__":
+        entry_path = module_graph.get(entry_module)
+        if entry_path is None:
+            return None, _fail(
+                f"Entry module not found: {entry_module}",
+                json_output,
+                command="build",
+            )
+        entry_lower_error = _lower_entry_module_as_main(
+            lowering_context=_EntryFrontendLoweringContext(
+                entry_module=entry_module,
+                entry_path=entry_path,
+                parse_codec=parse_codec,
+                type_hint_policy=type_hint_policy,
+                fallback_policy=fallback_policy,
+                type_facts=type_facts,
+                enable_phi=enable_phi,
+                known_modules=known_modules,
+                known_classes=known_classes,
+                stdlib_allowlist=stdlib_allowlist,
+                known_func_defaults=known_func_defaults,
+                module_chunking=module_chunking,
+                module_chunk_max_ops=module_chunk_max_ops,
+                optimization_profile=optimization_profile,
+                pgo_hot_function_names=pgo_hot_function_names,
+                frontend_phase_timeout=frontend_phase_timeout,
+            ),
+            integration_state=integration_state,
+            diagnostics_state=diagnostics_state,
+            record_frontend_timing=record_frontend_timing,
+            fail=fail,
+            json_output=json_output,
+        )
+        if entry_lower_error is not None:
+            return None, entry_lower_error
+
+    functions = integration_state.functions
+    global_code_ids = integration_state.global_code_ids
+
+    def register_global_code_id(symbol: str) -> int:
+        return _register_global_code_id_with_state(integration_state, symbol)
+
+    entry_init_name = "__main__" if entry_module != "__main__" else entry_module
+    entry_init = SimpleTIRGenerator.module_init_symbol(entry_init_name)
+    version_ops = _build_version_info_ops(
+        register_global_code_id=register_global_code_id
+    )
+    entry_ops = _build_entry_main_ops(
+        entry_init=entry_init,
+        version_ops=version_ops,
+        register_global_code_id=register_global_code_id,
+    )
+    entry_call_idx = _entry_call_index(entry_ops, entry_init)
+    next_var = _next_tir_var_index(entry_ops)
+    if "sys" in module_graph:
+        next_var = _append_entry_sys_init_op(
+            entry_ops,
+            entry_init=entry_init,
+            register_global_code_id=register_global_code_id,
+            next_var=next_var,
+        )
+        entry_call_idx = _entry_call_index(entry_ops, entry_init)
+    module_code_ops, next_var = _build_module_code_ops(
+        module_order=module_order,
+        module_graph=module_graph,
+        generated_module_source_paths=generated_module_source_paths,
+        entry_module=entry_module,
+        entry_path=entry_path,
+        register_global_code_id=register_global_code_id,
+        next_var=next_var,
+    )
+    entry_ops[entry_call_idx:entry_call_idx] = module_code_ops
+    if spawn_enabled:
+        _replace_entry_call_with_spawn_override(
+            entry_ops,
+            entry_init=entry_init,
+            register_global_code_id=register_global_code_id,
+            next_var=next_var,
+        )
+    entry_ops.insert(1, {"kind": "code_slots_init", "value": len(global_code_ids)})
+    functions.append({"name": "molt_main", "params": [], "ops": entry_ops})
+    isolate_bootstrap_ops = _build_isolate_bootstrap_ops(
+        code_slot_count=len(global_code_ids),
+        version_ops=version_ops,
+        module_code_ops=module_code_ops,
+    )
+    functions.append(
+        {"name": "molt_isolate_bootstrap", "params": [], "ops": isolate_bootstrap_ops}
+    )
+    import_ops = _build_isolate_import_ops(
+        module_order=module_order,
+        register_global_code_id=register_global_code_id,
+    )
+    functions.append(
+        {"name": "molt_isolate_import", "params": ["p0"], "ops": import_ops}
+    )
+    ir = _finalize_backend_ir(
+        functions=functions,
+        pgo_profile_summary=pgo_profile_summary,
+        runtime_feedback_summary=runtime_feedback_summary,
+    )
+    emit_ir_error = _write_emitted_ir(emit_ir_path, ir)
+    if emit_ir_error is not None:
+        return None, _fail(emit_ir_error, json_output, command="build")
+    return _PreparedBackendIR(ir=ir), None
+
+
 def _build_cache_info(
     *,
     enabled: bool,
@@ -17073,11 +17216,6 @@ def build(
     midend_diagnostics_state = (
         prepared_frontend_execution.midend_diagnostics_state
     )
-    functions = integration_state.functions
-    global_code_ids = integration_state.global_code_ids
-
-    def _register_global_code_id(symbol: str) -> int:
-        return _register_global_code_id_with_state(integration_state, symbol)
     frontend_layer_runtime_hooks = (
         prepared_frontend_execution.frontend_layer_runtime_hooks
     )
@@ -17106,107 +17244,41 @@ def build(
         frontend_parallel_worker_timings,
     )
 
-    entry_path: Path | None = None
-    if entry_module != "__main__":
-        entry_path = module_graph.get(entry_module)
-        if entry_path is None:
-            return _fail(
-                f"Entry module not found: {entry_module}",
-                json_output,
-                command="build",
-            )
-        entry_lower_error = _lower_entry_module_as_main(
-            lowering_context=_EntryFrontendLoweringContext(
-                entry_module=entry_module,
-                entry_path=entry_path,
-                parse_codec=parse_codec,
-                type_hint_policy=type_hint_policy,
-                fallback_policy=fallback_policy,
-                type_facts=type_facts,
-                enable_phi=enable_phi,
-                known_modules=known_modules,
-                known_classes=known_classes,
-                stdlib_allowlist=stdlib_allowlist,
-                known_func_defaults=known_func_defaults,
-                module_chunking=module_chunking,
-                module_chunk_max_ops=module_chunk_max_ops,
-                optimization_profile=profile,
-                pgo_hot_function_names=pgo_hot_function_names,
-                frontend_phase_timeout=frontend_phase_timeout,
-            ),
-            integration_state=integration_state,
-            diagnostics_state=midend_diagnostics_state,
-            record_frontend_timing=_record_frontend_timing,
-            fail=_fail,
-            json_output=json_output,
-        )
-        if entry_lower_error is not None:
-            return entry_lower_error
-
-    entry_init_name = "__main__" if entry_module != "__main__" else entry_module
-    entry_init = SimpleTIRGenerator.module_init_symbol(entry_init_name)
-    version_ops = _build_version_info_ops(
-        register_global_code_id=_register_global_code_id
-    )
-    entry_ops = _build_entry_main_ops(
-        entry_init=entry_init,
-        version_ops=version_ops,
-        register_global_code_id=_register_global_code_id,
-    )
-    entry_call_idx = _entry_call_index(entry_ops, entry_init)
-    next_var = _next_tir_var_index(entry_ops)
-    if "sys" in module_graph:
-        next_var = _append_entry_sys_init_op(
-            entry_ops,
-            entry_init=entry_init,
-            register_global_code_id=_register_global_code_id,
-            next_var=next_var,
-        )
-        entry_call_idx = _entry_call_index(entry_ops, entry_init)
-    module_code_ops, next_var = _build_module_code_ops(
-        module_order=module_order,
-        module_graph=module_graph,
-        generated_module_source_paths=generated_module_source_paths,
+    prepared_backend_ir, prepared_backend_ir_error = _prepare_backend_ir(
         entry_module=entry_module,
-        entry_path=entry_path,
-        register_global_code_id=_register_global_code_id,
-        next_var=next_var,
-    )
-    entry_ops[entry_call_idx:entry_call_idx] = module_code_ops
-    if spawn_enabled:
-        next_var = _replace_entry_call_with_spawn_override(
-            entry_ops,
-            entry_init=entry_init,
-            register_global_code_id=_register_global_code_id,
-            next_var=next_var,
-        )
-    entry_ops.insert(1, {"kind": "code_slots_init", "value": len(global_code_ids)})
-    functions.append({"name": "molt_main", "params": [], "ops": entry_ops})
-    isolate_bootstrap_ops = _build_isolate_bootstrap_ops(
-        code_slot_count=len(global_code_ids),
-        version_ops=version_ops,
-        module_code_ops=module_code_ops,
-    )
-    functions.append(
-        {"name": "molt_isolate_bootstrap", "params": [], "ops": isolate_bootstrap_ops}
-    )
-    import_ops = _build_isolate_import_ops(
+        module_graph=module_graph,
+        parse_codec=parse_codec,
+        type_hint_policy=type_hint_policy,
+        fallback_policy=fallback_policy,
+        type_facts=type_facts,
+        enable_phi=enable_phi,
+        known_modules=known_modules,
+        known_classes=known_classes,
+        stdlib_allowlist=stdlib_allowlist,
+        known_func_defaults=known_func_defaults,
+        module_chunking=module_chunking,
+        module_chunk_max_ops=module_chunk_max_ops,
+        optimization_profile=profile,
+        pgo_hot_function_names=pgo_hot_function_names,
+        frontend_phase_timeout=frontend_phase_timeout,
+        integration_state=integration_state,
+        diagnostics_state=midend_diagnostics_state,
+        record_frontend_timing=_record_frontend_timing,
+        fail=_fail,
+        json_output=json_output,
         module_order=module_order,
-        register_global_code_id=_register_global_code_id,
-    )
-    functions.append(
-        {"name": "molt_isolate_import", "params": ["p0"], "ops": import_ops}
-    )
-    ir = _finalize_backend_ir(
-        functions=functions,
+        generated_module_source_paths=generated_module_source_paths,
+        spawn_enabled=spawn_enabled,
         pgo_profile_summary=pgo_profile_summary,
         runtime_feedback_summary=runtime_feedback_summary,
+        emit_ir_path=emit_ir_path,
     )
+    if prepared_backend_ir_error is not None:
+        return prepared_backend_ir_error
+    assert prepared_backend_ir is not None
+    ir = prepared_backend_ir.ir
     if diagnostics_enabled:
         phase_starts["runtime_setup"] = time.perf_counter()
-    emit_ir_error = _write_emitted_ir(emit_ir_path, ir)
-    if emit_ir_error is not None:
-        return _fail(emit_ir_error, json_output, command="build")
     backend_ir_bytes: bytes | None = None
 
     def _ensure_backend_ir_bytes() -> bytes:
