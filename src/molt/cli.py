@@ -932,14 +932,41 @@ class _PreparedFrontendExecution:
 
 
 @dataclass(frozen=True)
-class _PreparedFrontendPipeline:
+class _PreparedFrontendRunTicket:
+    module_order: list[str]
+    module_layers: list[list[str]]
+    frontend_parallel_config: _FrontendParallelConfig
+    frontend_parallel_layers: list[dict[str, Any]]
+    frontend_parallel_worker_timings: list[dict[str, Any]]
+    prepared_frontend_execution: _PreparedFrontendExecution
+
+
+@dataclass(frozen=True)
+class _PreparedFrontendBackendHandoff:
+    module_graph: dict[str, Path]
+    stdlib_allowlist: set[str]
+    spawn_enabled: bool
+    output_layout: _BuildOutputLayout
+    known_modules: set[str]
+    generated_module_source_paths: dict[str, str]
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]]
+    module_order: list[str]
+    type_facts: TypeFacts | None
+    known_classes: dict[str, Any]
+    enable_phi: bool
+    module_chunk_max_ops: int
+    module_chunking: bool
+    integration_state: _FrontendIntegrationState
+    diagnostics_state: _MidendDiagnosticsState
     record_frontend_timing: Callable[..., None]
     build_diagnostics_payload: Callable[[], tuple[dict[str, Any] | None, Path | None]]
     artifacts_root: Path
-    frontend_parallel_worker_timings: list[dict[str, Any]]
-    frontend_parallel_config: _FrontendParallelConfig
-    frontend_parallel_layers: list[dict[str, Any]]
-    prepared_frontend_execution: _PreparedFrontendExecution
+
+
+@dataclass(frozen=True)
+class _PreparedFrontendPipeline:
+    prepared_frontend_run_ticket: _PreparedFrontendRunTicket
+    prepared_frontend_backend_handoff: _PreparedFrontendBackendHandoff
     prepared_build_outputs: _PreparedBuildModuleOutputs
     prepared_frontend_analysis: _PreparedFrontendAnalysis
     prepared_frontend_lowering_config: _PreparedFrontendLoweringConfig
@@ -13367,36 +13394,18 @@ def _prepare_backend_compile(
 def _prepare_backend_pipeline(
     *,
     entry_module: str,
-    module_graph: Mapping[str, Path],
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
-    type_facts: TypeFacts | None,
-    enable_phi: bool,
-    known_modules: Collection[str],
-    known_classes: Mapping[str, Any],
-    stdlib_allowlist: Collection[str],
-    known_func_defaults: dict[str, dict[str, Any]],
-    module_chunking: bool,
-    module_chunk_max_ops: int,
+    prepared_frontend_backend_handoff: _PreparedFrontendBackendHandoff,
     profile: BuildProfile,
     pgo_hot_function_names: Collection[str],
     frontend_phase_timeout: float | None,
-    integration_state: _FrontendIntegrationState,
-    diagnostics_state: _MidendDiagnosticsState,
-    record_frontend_timing: Callable[..., None],
     json_output: bool,
-    module_order: Sequence[str],
-    generated_module_source_paths: Mapping[str, str],
-    spawn_enabled: bool,
     pgo_profile_summary: Any | None,
     runtime_feedback_summary: Any | None,
-    emit_ir_path: Path | None,
     diagnostics_enabled: bool,
     phase_starts: dict[str, float],
-    is_rust_transpile: bool,
-    is_wasm: bool,
-    emit_mode: str,
     molt_root: Path,
     runtime_cargo_profile: str,
     target_triple: str | None,
@@ -13411,7 +13420,6 @@ def _prepare_backend_pipeline(
     cache: bool,
     backend_timeout: float | None,
     backend_daemon_config_digest: str | None,
-    artifacts_root: Path,
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
     backend_daemon_health: dict[str, Any] | None,
@@ -13426,38 +13434,40 @@ def _prepare_backend_pipeline(
     pgo_profile_payload: dict[str, Any] | None,
     runtime_feedback_payload: dict[str, Any] | None,
     resolved_diagnostics_verbosity: str,
-    build_diagnostics_payload: Callable[[], tuple[dict[str, Any] | None, Path | None]],
     cache_report: bool,
     verbose: bool,
 ) -> tuple[_PreparedBackendPipeline | None, dict[str, Any] | None]:
+    output_layout = prepared_frontend_backend_handoff.output_layout
     prepared_backend_ir, prepared_backend_ir_error = _prepare_backend_ir(
         entry_module=entry_module,
-        module_graph=module_graph,
+        module_graph=prepared_frontend_backend_handoff.module_graph,
         parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
         fallback_policy=fallback_policy,
-        type_facts=type_facts,
-        enable_phi=enable_phi,
-        known_modules=known_modules,
-        known_classes=known_classes,
-        stdlib_allowlist=stdlib_allowlist,
-        known_func_defaults=known_func_defaults,
-        module_chunking=module_chunking,
-        module_chunk_max_ops=module_chunk_max_ops,
+        type_facts=prepared_frontend_backend_handoff.type_facts,
+        enable_phi=prepared_frontend_backend_handoff.enable_phi,
+        known_modules=prepared_frontend_backend_handoff.known_modules,
+        known_classes=prepared_frontend_backend_handoff.known_classes,
+        stdlib_allowlist=prepared_frontend_backend_handoff.stdlib_allowlist,
+        known_func_defaults=prepared_frontend_backend_handoff.known_func_defaults,
+        module_chunking=prepared_frontend_backend_handoff.module_chunking,
+        module_chunk_max_ops=prepared_frontend_backend_handoff.module_chunk_max_ops,
         optimization_profile=profile,
         pgo_hot_function_names=pgo_hot_function_names,
         frontend_phase_timeout=frontend_phase_timeout,
-        integration_state=integration_state,
-        diagnostics_state=diagnostics_state,
-        record_frontend_timing=record_frontend_timing,
+        integration_state=prepared_frontend_backend_handoff.integration_state,
+        diagnostics_state=prepared_frontend_backend_handoff.diagnostics_state,
+        record_frontend_timing=prepared_frontend_backend_handoff.record_frontend_timing,
         fail=_fail,
         json_output=json_output,
-        module_order=module_order,
-        generated_module_source_paths=generated_module_source_paths,
-        spawn_enabled=spawn_enabled,
+        module_order=prepared_frontend_backend_handoff.module_order,
+        generated_module_source_paths=(
+            prepared_frontend_backend_handoff.generated_module_source_paths
+        ),
+        spawn_enabled=prepared_frontend_backend_handoff.spawn_enabled,
         pgo_profile_summary=pgo_profile_summary,
         runtime_feedback_summary=runtime_feedback_summary,
-        emit_ir_path=emit_ir_path,
+        emit_ir_path=output_layout.emit_ir_path,
     )
     if prepared_backend_ir_error is not None:
         return None, prepared_backend_ir_error
@@ -13474,9 +13484,9 @@ def _prepare_backend_pipeline(
         return backend_ir_bytes
 
     prepared_backend_setup, prepared_backend_setup_error = _prepare_backend_setup(
-        is_rust_transpile=is_rust_transpile,
-        is_wasm=is_wasm,
-        emit_mode=emit_mode,
+        is_rust_transpile=output_layout.is_rust_transpile,
+        is_wasm=output_layout.is_wasm,
+        emit_mode=output_layout.emit_mode,
         molt_root=molt_root,
         runtime_cargo_profile=runtime_cargo_profile,
         target_triple=target_triple,
@@ -13485,7 +13495,7 @@ def _prepare_backend_pipeline(
         target=target,
         profile=profile,
         backend_cargo_profile=backend_cargo_profile,
-        linked=linked,
+        linked=output_layout.linked,
         project_root=project_root,
         cache_dir=cache_dir,
         output_artifact=output_artifact,
@@ -13518,9 +13528,9 @@ def _prepare_backend_pipeline(
         function_cache_path=prepared_backend_runtime_context.function_cache_path,
         project_root=project_root,
         warnings=warnings,
-        is_wasm=is_wasm,
+        is_wasm=output_layout.is_wasm,
         output_artifact=output_artifact,
-        linked=linked,
+        linked=output_layout.linked,
         deterministic=deterministic,
         profile=profile,
         runtime_state=prepared_backend_runtime_context.runtime_state,
@@ -13533,7 +13543,7 @@ def _prepare_backend_pipeline(
         backend_daemon_config_digest=backend_daemon_config_digest,
         ensure_runtime_wasm_shared=prepared_backend_runtime_context.ensure_runtime_wasm_shared,
         ensure_runtime_wasm_reloc=prepared_backend_runtime_context.ensure_runtime_wasm_reloc,
-        artifacts_root=artifacts_root,
+        artifacts_root=prepared_frontend_backend_handoff.artifacts_root,
         ir=ir,
         _ensure_backend_ir_bytes=_ensure_backend_ir_bytes,
         backend_daemon_cached=backend_daemon_cached,
@@ -13543,7 +13553,9 @@ def _prepare_backend_pipeline(
     if prepared_backend_compile_error is not None:
         return None, prepared_backend_compile_error
     assert prepared_backend_compile is not None
-    diagnostics_payload, diagnostics_path = build_diagnostics_payload()
+    diagnostics_payload, diagnostics_path = (
+        prepared_frontend_backend_handoff.build_diagnostics_payload()
+    )
     build_result_context = _BuildResultEmissionContext(
         cache=prepared_backend_compile.cache_enabled,
         cache_hit=prepared_backend_compile.cache_hit,
@@ -13564,12 +13576,12 @@ def _prepare_backend_pipeline(
         capability_profiles=capability_profiles,
         capabilities_source=capabilities_source,
         sysroot_path=sysroot_path,
-        emit_mode=emit_mode,
+        emit_mode=output_layout.emit_mode,
         profile=profile,
         native_arch_perf_enabled=native_arch_perf_enabled,
         pgo_profile_payload=pgo_profile_payload,
         runtime_feedback_payload=runtime_feedback_payload,
-        emit_ir_path=emit_ir_path,
+        emit_ir_path=output_layout.emit_ir_path,
         warnings=warnings,
         json_output=json_output,
         resolved_diagnostics_verbosity=resolved_diagnostics_verbosity,
@@ -14245,14 +14257,43 @@ def _prepare_frontend_pipeline(
         midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
         midend_pass_stats_by_function=midend_pass_stats_by_function,
     )
-    return _PreparedFrontendPipeline(
+    prepared_frontend_run_ticket = _PreparedFrontendRunTicket(
+        module_order=prepared_frontend_analysis.module_order,
+        module_layers=prepared_frontend_analysis.module_layers,
+        frontend_parallel_config=(
+            prepared_frontend_lowering_config.frontend_parallel_config
+        ),
+        frontend_parallel_layers=(
+            prepared_frontend_lowering_config.frontend_parallel_layers
+        ),
+        frontend_parallel_worker_timings=frontend_parallel_worker_timings,
+        prepared_frontend_execution=prepared_frontend_execution,
+    )
+    prepared_frontend_backend_handoff = _PreparedFrontendBackendHandoff(
+        module_graph=prepared_module_graph.module_graph,
+        stdlib_allowlist=prepared_module_graph.stdlib_allowlist,
+        spawn_enabled=prepared_module_graph.spawn_enabled,
+        output_layout=prepared_build_outputs.output_layout,
+        known_modules=prepared_build_outputs.known_modules,
+        generated_module_source_paths=(
+            prepared_build_outputs.generated_module_source_paths
+        ),
+        known_func_defaults=prepared_frontend_analysis.known_func_defaults,
+        module_order=prepared_frontend_analysis.module_order,
+        type_facts=prepared_frontend_lowering_config.type_facts,
+        known_classes=prepared_frontend_lowering_config.known_classes,
+        enable_phi=prepared_frontend_lowering_config.enable_phi,
+        module_chunk_max_ops=prepared_frontend_lowering_config.module_chunk_max_ops,
+        module_chunking=prepared_frontend_lowering_config.module_chunking,
+        integration_state=prepared_frontend_execution.integration_state,
+        diagnostics_state=prepared_frontend_execution.midend_diagnostics_state,
         record_frontend_timing=record_frontend_timing,
         build_diagnostics_payload=build_diagnostics_payload,
         artifacts_root=artifacts_root,
-        frontend_parallel_worker_timings=frontend_parallel_worker_timings,
-        frontend_parallel_config=prepared_frontend_lowering_config.frontend_parallel_config,
-        frontend_parallel_layers=prepared_frontend_lowering_config.frontend_parallel_layers,
-        prepared_frontend_execution=prepared_frontend_execution,
+    )
+    return _PreparedFrontendPipeline(
+        prepared_frontend_run_ticket=prepared_frontend_run_ticket,
+        prepared_frontend_backend_handoff=prepared_frontend_backend_handoff,
         prepared_build_outputs=prepared_build_outputs,
         prepared_frontend_analysis=prepared_frontend_analysis,
         prepared_frontend_lowering_config=prepared_frontend_lowering_config,
@@ -14491,14 +14532,18 @@ def _run_frontend_parallel_enabled_layers(
 
 def _run_frontend_pipeline(
     *,
-    module_order: list[str],
-    module_layers: list[list[str]],
-    frontend_parallel_config: _FrontendParallelConfig,
-    frontend_parallel_layers: list[dict[str, Any]],
     frontend_parallel_details: dict[str, Any],
-    frontend_parallel_worker_timings: list[dict[str, Any]],
-    prepared_frontend_execution: _PreparedFrontendExecution,
+    prepared_frontend_run_ticket: _PreparedFrontendRunTicket,
 ) -> dict[str, Any] | None:
+    frontend_parallel_config = (
+        prepared_frontend_run_ticket.frontend_parallel_config
+    )
+    frontend_parallel_layers = (
+        prepared_frontend_run_ticket.frontend_parallel_layers
+    )
+    prepared_frontend_execution = (
+        prepared_frontend_run_ticket.prepared_frontend_execution
+    )
     frontend_layer_execution_context = (
         prepared_frontend_execution.frontend_layer_execution_context
     )
@@ -14507,7 +14552,7 @@ def _run_frontend_pipeline(
     )
     if frontend_parallel_config.enabled:
         frontend_layer_error = _run_frontend_parallel_enabled_layers(
-            module_layers,
+            prepared_frontend_run_ticket.module_layers,
             execution_context=frontend_layer_execution_context,
             runtime_hooks=frontend_layer_runtime_hooks,
             frontend_parallel_config=frontend_parallel_config,
@@ -14515,7 +14560,7 @@ def _run_frontend_pipeline(
         )
     else:
         frontend_layer_error = _run_frontend_serial_disabled_layers(
-            module_order,
+            prepared_frontend_run_ticket.module_order,
             execution_context=frontend_layer_execution_context,
             runtime_hooks=frontend_layer_runtime_hooks,
             frontend_parallel_layers=frontend_parallel_layers,
@@ -14525,7 +14570,7 @@ def _run_frontend_pipeline(
         return frontend_layer_error
     _summarize_frontend_parallel_worker_timings(
         frontend_parallel_details,
-        frontend_parallel_worker_timings,
+        prepared_frontend_run_ticket.frontend_parallel_worker_timings,
     )
     return None
 
@@ -17926,37 +17971,16 @@ def build(
     if prepared_frontend_pipeline_error is not None:
         return prepared_frontend_pipeline_error
     assert prepared_frontend_pipeline is not None
+    prepared_frontend_run_ticket = (
+        prepared_frontend_pipeline.prepared_frontend_run_ticket
+    )
+    prepared_frontend_backend_handoff = (
+        prepared_frontend_pipeline.prepared_frontend_backend_handoff
+    )
     prepared_module_graph = prepared_frontend_pipeline.prepared_module_graph
     prepared_build_outputs = prepared_frontend_pipeline.prepared_build_outputs
-    prepared_frontend_analysis = prepared_frontend_pipeline.prepared_frontend_analysis
-    prepared_frontend_lowering_config = (
-        prepared_frontend_pipeline.prepared_frontend_lowering_config
-    )
-    prepared_frontend_execution = (
-        prepared_frontend_pipeline.prepared_frontend_execution
-    )
-    _record_frontend_timing = prepared_frontend_pipeline.record_frontend_timing
-    _build_diagnostics_payload = (
-        prepared_frontend_pipeline.build_diagnostics_payload
-    )
-    artifacts_root = prepared_frontend_pipeline.artifacts_root
-    frontend_parallel_worker_timings = (
-        prepared_frontend_pipeline.frontend_parallel_worker_timings
-    )
-    frontend_parallel_config = prepared_frontend_pipeline.frontend_parallel_config
-    frontend_parallel_layers = prepared_frontend_pipeline.frontend_parallel_layers
     stdlib_allowlist = prepared_module_graph.stdlib_allowlist
-    roots = prepared_module_graph.roots
-    module_resolution_cache = prepared_module_graph.module_resolution_cache
-    module_graph = prepared_module_graph.module_graph
-    explicit_imports = prepared_module_graph.explicit_imports
-    stub_parents = prepared_module_graph.stub_parents
-    spawn_enabled = prepared_module_graph.spawn_enabled
-    namespace_module_names = prepared_build_outputs.namespace_module_names
-    generated_module_source_paths = (
-        prepared_build_outputs.generated_module_source_paths
-    )
-    output_layout = prepared_build_outputs.output_layout
+    output_layout = prepared_frontend_backend_handoff.output_layout
     is_wasm = output_layout.is_wasm
     is_rust_transpile = output_layout.is_rust_transpile
     linked = output_layout.linked
@@ -17965,56 +17989,9 @@ def build(
     output_artifact = output_layout.output_artifact
     output_binary = output_layout.output_binary
     linked_output_path = output_layout.linked_output_path
-    emit_ir_path = output_layout.emit_ir_path
-    known_modules = prepared_build_outputs.known_modules
-    known_modules_sorted = prepared_build_outputs.known_modules_sorted
-    stdlib_allowlist_sorted = prepared_build_outputs.stdlib_allowlist_sorted
-    module_graph_metadata = prepared_frontend_analysis.module_graph_metadata
-    module_deps = prepared_frontend_analysis.module_deps
-    module_sources = prepared_frontend_analysis.module_sources
-    known_func_defaults = prepared_frontend_analysis.known_func_defaults
-    module_trees = prepared_frontend_analysis.module_trees
-    module_path_stats = prepared_frontend_analysis.module_path_stats
-    syntax_error_modules = prepared_frontend_analysis.syntax_error_modules
-    module_order = prepared_frontend_analysis.module_order
-    reverse_module_deps = prepared_frontend_analysis.reverse_module_deps
-    has_back_edges = prepared_frontend_analysis.has_back_edges
-    module_layers = prepared_frontend_analysis.module_layers
-    module_dep_closures = prepared_frontend_analysis.module_dep_closures
-    dirty_lowering_modules = prepared_frontend_analysis.dirty_lowering_modules
-    type_facts = prepared_frontend_lowering_config.type_facts
-    known_classes = prepared_frontend_lowering_config.known_classes
-    scoped_lowering_inputs = prepared_frontend_lowering_config.scoped_lowering_inputs
-    module_graph_metadata = prepared_frontend_lowering_config.module_graph_metadata
-    frontend_module_costs = prepared_frontend_lowering_config.frontend_module_costs
-    stdlib_like_by_module = prepared_frontend_lowering_config.stdlib_like_by_module
-    enable_phi = prepared_frontend_lowering_config.enable_phi
-    module_chunk_max_ops = prepared_frontend_lowering_config.module_chunk_max_ops
-    module_chunking = prepared_frontend_lowering_config.module_chunking
-    frontend_parallel_config = (
-        prepared_frontend_lowering_config.frontend_parallel_config
-    )
-    frontend_parallel_layers = (
-        prepared_frontend_lowering_config.frontend_parallel_layers
-    )
-    serial_frontend_lowering_context = (
-        prepared_frontend_execution.serial_frontend_lowering_context
-    )
-    serial_frontend_lowering_hooks = (
-        prepared_frontend_execution.serial_frontend_lowering_hooks
-    )
-    integration_state = prepared_frontend_execution.integration_state
-    midend_diagnostics_state = (
-        prepared_frontend_execution.midend_diagnostics_state
-    )
     frontend_layer_error = _run_frontend_pipeline(
-        module_order=module_order,
-        module_layers=module_layers,
-        frontend_parallel_config=frontend_parallel_config,
-        frontend_parallel_layers=frontend_parallel_layers,
         frontend_parallel_details=frontend_parallel_details,
-        frontend_parallel_worker_timings=frontend_parallel_worker_timings,
-        prepared_frontend_execution=prepared_frontend_execution,
+        prepared_frontend_run_ticket=prepared_frontend_run_ticket,
     )
     if frontend_layer_error is not None:
         return frontend_layer_error
@@ -18022,36 +17999,18 @@ def build(
     prepared_backend_pipeline, prepared_backend_pipeline_error = (
         _prepare_backend_pipeline(
             entry_module=entry_module,
-            module_graph=module_graph,
             parse_codec=parse_codec,
             type_hint_policy=type_hint_policy,
             fallback_policy=fallback_policy,
-            type_facts=type_facts,
-            enable_phi=enable_phi,
-            known_modules=known_modules,
-            known_classes=known_classes,
-            stdlib_allowlist=stdlib_allowlist,
-            known_func_defaults=known_func_defaults,
-            module_chunking=module_chunking,
-            module_chunk_max_ops=module_chunk_max_ops,
+            prepared_frontend_backend_handoff=prepared_frontend_backend_handoff,
             profile=profile,
             pgo_hot_function_names=pgo_hot_function_names,
             frontend_phase_timeout=frontend_phase_timeout,
-            integration_state=integration_state,
-            diagnostics_state=midend_diagnostics_state,
-            record_frontend_timing=_record_frontend_timing,
             json_output=json_output,
-            module_order=module_order,
-            generated_module_source_paths=generated_module_source_paths,
-            spawn_enabled=spawn_enabled,
             pgo_profile_summary=pgo_profile_summary,
             runtime_feedback_summary=runtime_feedback_summary,
-            emit_ir_path=emit_ir_path,
             diagnostics_enabled=diagnostics_enabled,
             phase_starts=phase_starts,
-            is_rust_transpile=is_rust_transpile,
-            is_wasm=is_wasm,
-            emit_mode=emit_mode,
             molt_root=molt_root,
             runtime_cargo_profile=runtime_cargo_profile,
             target_triple=target_triple,
@@ -18066,7 +18025,6 @@ def build(
             cache=cache,
             backend_timeout=backend_timeout,
             backend_daemon_config_digest=backend_daemon_config_digest,
-            artifacts_root=artifacts_root,
             backend_daemon_cached=backend_daemon_cached,
             backend_daemon_cache_tier=backend_daemon_cache_tier,
             backend_daemon_health=backend_daemon_health,
@@ -18081,7 +18039,6 @@ def build(
             pgo_profile_payload=pgo_profile_payload,
             runtime_feedback_payload=runtime_feedback_payload,
             resolved_diagnostics_verbosity=resolved_diagnostics_verbosity,
-            build_diagnostics_payload=_build_diagnostics_payload,
             cache_report=cache_report,
             verbose=verbose,
         )
@@ -18123,7 +18080,7 @@ def build(
         output_artifact=output_artifact,
         trusted=trusted,
         capabilities_list=capabilities_list,
-        artifacts_root=artifacts_root,
+        artifacts_root=prepared_frontend_backend_handoff.artifacts_root,
         json_output=json_output,
         output_binary=output_binary,
         runtime_lib=runtime_lib,
