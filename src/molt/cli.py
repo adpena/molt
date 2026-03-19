@@ -767,6 +767,19 @@ class _FrontendTimingRecorderConfig:
     json_output: bool
 
 
+@dataclass(frozen=True)
+class _BuildOutputLayout:
+    is_wasm: bool
+    is_rust_transpile: bool
+    linked: bool
+    target_triple: str | None
+    emit_mode: str
+    output_artifact: Path
+    output_binary: Path | None
+    linked_output_path: Path | None
+    emit_ir_path: Path | None
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -10887,6 +10900,117 @@ def _record_frontend_timing_item(
         )
 
 
+def _resolve_build_output_layout(
+    *,
+    target: str,
+    trusted: bool,
+    require_linked: bool,
+    linked: bool,
+    linked_output: str | None,
+    emit: str | None,
+    output: str | None,
+    emit_ir: str | None,
+    artifacts_root: Path,
+    bin_root: Path,
+    output_root: Path,
+    output_base: str,
+    out_dir_path: Path | None,
+    project_root: Path | None,
+) -> _BuildOutputLayout:
+    is_wasm = target == "wasm"
+    is_rust_transpile = target == "rust"
+    if trusted and is_wasm:
+        raise ValueError("Trusted mode is not supported for wasm targets")
+    if require_linked and not is_wasm:
+        raise ValueError("--require-linked is only supported for wasm targets")
+    if linked_output and not linked and not require_linked:
+        raise ValueError("--linked-output requires --linked")
+    if linked and not is_wasm and not is_rust_transpile:
+        raise ValueError("Linked output is only supported for wasm targets")
+    if require_linked and not linked:
+        linked = True
+    if is_wasm and not linked:
+        wasm_linked_env = os.environ.get("MOLT_WASM_LINKED", "1").strip().lower()
+        if wasm_linked_env not in {"0", "false", "no", "off"}:
+            linked = True
+    target_triple = None if target in {"native", "wasm", "rust"} else target
+    emit_mode = "bin" if is_rust_transpile else (emit or ("wasm" if is_wasm else "bin"))
+    if not is_rust_transpile and emit_mode not in {"bin", "obj", "wasm"}:
+        raise ValueError(f"Invalid emit mode: {emit_mode}")
+    if is_wasm and emit_mode != "wasm":
+        raise ValueError(f"Invalid emit mode for wasm target: {emit_mode}")
+    if not is_wasm and not is_rust_transpile and emit_mode == "wasm":
+        raise ValueError("emit=wasm requires --target wasm")
+
+    output_binary: Path | None = None
+    linked_output_path: Path | None = None
+    if is_rust_transpile:
+        output_artifact = _resolve_output_path(
+            output,
+            output_root / f"{output_base}.rs",
+            out_dir=out_dir_path,
+            project_root=project_root,
+        )
+    elif is_wasm:
+        output_wasm = _resolve_output_path(
+            output,
+            output_root / "output.wasm",
+            out_dir=out_dir_path,
+            project_root=project_root,
+        )
+        output_artifact = output_wasm
+        if linked:
+            stem = output_wasm.stem
+            if stem.endswith("_linked"):
+                stem = stem[: -len("_linked")]
+            linked_output_path = output_wasm.with_name(f"{stem}_linked{output_wasm.suffix}")
+            if linked_output is not None:
+                linked_output_path = _resolve_output_path(
+                    linked_output,
+                    linked_output_path,
+                    out_dir=out_dir_path,
+                    project_root=project_root,
+                )
+    else:
+        output_obj = artifacts_root / "output.o"
+        if emit_mode == "obj":
+            output_obj = _resolve_output_path(
+                output,
+                output_root / "output.o",
+                out_dir=out_dir_path,
+                project_root=project_root,
+            )
+        output_artifact = output_obj
+        if emit_mode == "bin":
+            output_binary = _resolve_output_path(
+                output,
+                bin_root / f"{output_base}_molt",
+                out_dir=out_dir_path,
+                project_root=project_root,
+            )
+    for path in (output_artifact, output_binary):
+        if path is not None and path.parent != Path("."):
+            path.parent.mkdir(parents=True, exist_ok=True)
+    emit_ir_path: Path | None = None
+    if emit_ir:
+        emit_ir_path = Path(emit_ir)
+        if not emit_ir_path.is_absolute():
+            emit_ir_path = artifacts_root / emit_ir_path
+        if emit_ir_path.parent != Path("."):
+            emit_ir_path.parent.mkdir(parents=True, exist_ok=True)
+    return _BuildOutputLayout(
+        is_wasm=is_wasm,
+        is_rust_transpile=is_rust_transpile,
+        linked=linked,
+        target_triple=target_triple,
+        emit_mode=emit_mode,
+        output_artifact=output_artifact,
+        output_binary=output_binary,
+        linked_output_path=linked_output_path,
+        emit_ir_path=emit_ir_path,
+    )
+
+
 def _prepare_backend_cache_setup(
     *,
     cache_enabled: bool,
@@ -14926,123 +15050,34 @@ def build(
     generated_module_source_paths: dict[str, str] = {
         name: _logical_generated_module_path(name) for name in namespace_modules
     }
-    is_wasm = target == "wasm"
-    is_rust_transpile = target == "rust"
-    if trusted and is_wasm:
-        return _fail(
-            "Trusted mode is not supported for wasm targets",
-            json_output,
-            command="build",
-        )
-    if require_linked and not is_wasm:
-        return _fail(
-            "--require-linked is only supported for wasm targets",
-            json_output,
-            command="build",
-        )
-    if linked_output and not linked and not require_linked:
-        return _fail(
-            "--linked-output requires --linked",
-            json_output,
-            command="build",
-        )
-    if linked and not is_wasm:
-        if not is_rust_transpile:
-            return _fail(
-                "Linked output is only supported for wasm targets",
-                json_output,
-                command="build",
-            )
-    if require_linked and not linked:
-        linked = True
-    # Default to linked mode for WASM targets (10-20% faster runtime, single
-    # module output).  Opt out with MOLT_WASM_LINKED=0.
-    if is_wasm and not linked:
-        wasm_linked_env = os.environ.get("MOLT_WASM_LINKED", "1").strip().lower()
-        if wasm_linked_env not in {"0", "false", "no", "off"}:
-            linked = True
-    target_triple = None if target in {"native", "wasm", "rust"} else target
-    if is_rust_transpile:
-        emit_mode = "bin"  # placeholder — not used for transpiler targets
-    else:
-        emit_mode = emit or ("wasm" if is_wasm else "bin")
-    if not is_rust_transpile and emit_mode not in {"bin", "obj", "wasm"}:
-        return _fail(
-            f"Invalid emit mode: {emit_mode}",
-            json_output,
-            command="build",
-        )
-    if is_wasm and emit_mode != "wasm":
-        return _fail(
-            f"Invalid emit mode for wasm target: {emit_mode}",
-            json_output,
-            command="build",
-        )
-    if not is_wasm and not is_rust_transpile and emit_mode == "wasm":
-        return _fail(
-            "emit=wasm requires --target wasm",
-            json_output,
-            command="build",
-        )
-    output_binary: Path | None = None
-    linked_output_path: Path | None = None
-    if is_rust_transpile:
-        output_rs = _resolve_output_path(
-            output,
-            output_root / f"{output_base}.rs",
-            out_dir=out_dir_path,
+    try:
+        output_layout = _resolve_build_output_layout(
+            target=target,
+            trusted=trusted,
+            require_linked=require_linked,
+            linked=linked,
+            linked_output=linked_output,
+            emit=emit,
+            output=output,
+            emit_ir=emit_ir,
+            artifacts_root=artifacts_root,
+            bin_root=bin_root,
+            output_root=output_root,
+            output_base=output_base,
+            out_dir_path=out_dir_path,
             project_root=project_root,
         )
-        output_artifact = output_rs
-    elif is_wasm:
-        output_wasm = _resolve_output_path(
-            output,
-            output_root / "output.wasm",
-            out_dir=out_dir_path,
-            project_root=project_root,
-        )
-        output_artifact = output_wasm
-        if linked:
-            stem = output_wasm.stem
-            if stem.endswith("_linked"):
-                stem = stem[: -len("_linked")]
-            linked_output_path = output_wasm.with_name(
-                f"{stem}_linked{output_wasm.suffix}"
-            )
-            if linked_output is not None:
-                linked_output_path = _resolve_output_path(
-                    linked_output,
-                    linked_output_path,
-                    out_dir=out_dir_path,
-                    project_root=project_root,
-                )
-    else:
-        output_obj = artifacts_root / "output.o"
-        if emit_mode == "obj":
-            output_obj = _resolve_output_path(
-                output,
-                output_root / "output.o",
-                out_dir=out_dir_path,
-                project_root=project_root,
-            )
-        output_artifact = output_obj
-        if emit_mode == "bin":
-            output_binary = _resolve_output_path(
-                output,
-                bin_root / f"{output_base}_molt",
-                out_dir=out_dir_path,
-                project_root=project_root,
-            )
-    for path in (output_artifact, output_binary):
-        if path is not None and path.parent != Path("."):
-            path.parent.mkdir(parents=True, exist_ok=True)
-    emit_ir_path: Path | None = None
-    if emit_ir:
-        emit_ir_path = Path(emit_ir)
-        if not emit_ir_path.is_absolute():
-            emit_ir_path = artifacts_root / emit_ir_path
-        if emit_ir_path.parent != Path("."):
-            emit_ir_path.parent.mkdir(parents=True, exist_ok=True)
+    except ValueError as exc:
+        return _fail(str(exc), json_output, command="build")
+    is_wasm = output_layout.is_wasm
+    is_rust_transpile = output_layout.is_rust_transpile
+    linked = output_layout.linked
+    target_triple = output_layout.target_triple
+    emit_mode = output_layout.emit_mode
+    output_artifact = output_layout.output_artifact
+    output_binary = output_layout.output_binary
+    linked_output_path = output_layout.linked_output_path
+    emit_ir_path = output_layout.emit_ir_path
     for stub in stub_parents:
         if stub != entry_module:
             module_graph.pop(stub, None)
