@@ -694,6 +694,113 @@ def test_discover_module_graph_reuses_persisted_graph_cache(
     assert "pkg.helper" in explicit_imports
     assert "pkg" in graph
 
+
+def test_discover_module_graph_reuses_persisted_paths_for_unchanged_modules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry = tmp_path / "pkg" / "__init__.py"
+    entry.parent.mkdir()
+    entry.write_text("import pkg.helper\nimport pkg.extra\n")
+    helper = entry.parent / "helper.py"
+    helper.write_text("VALUE = 1\n")
+    extra = entry.parent / "extra.py"
+    extra.write_text("VALUE = 2\n")
+
+    stdlib_root = cli._stdlib_root_path()
+    module_roots = [tmp_path.resolve()]
+    roots = module_roots + [stdlib_root]
+    stdlib_allowlist = cli._stdlib_allowlist()
+
+    graph, explicit_imports = cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        tmp_path,
+        stdlib_allowlist,
+    )
+    assert {"pkg", "pkg.helper", "pkg.extra"} <= set(graph)
+    assert {"pkg.helper", "pkg.extra"} <= explicit_imports
+
+    helper.write_text("VALUE = 10\n")
+    cache = cli._ModuleResolutionCache()
+    read_paths: list[Path] = []
+    original_read = cache.read_module_source
+    original_resolve = cache.resolve_module
+    resolved_candidates: list[str] = []
+
+    def wrapped_read(path: Path) -> str:
+        read_paths.append(path)
+        return original_read(path)
+
+    def wrapped_resolve(
+        candidate: str,
+        roots_arg: list[Path],
+        stdlib_root_arg: Path,
+        stdlib_allowlist_arg: set[str],
+    ) -> Path | None:
+        resolved_candidates.append(candidate)
+        return original_resolve(candidate, roots_arg, stdlib_root_arg, stdlib_allowlist_arg)
+
+    monkeypatch.setattr(cache, "read_module_source", wrapped_read)
+    monkeypatch.setattr(cache, "resolve_module", wrapped_resolve)
+
+    graph, explicit_imports = cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        tmp_path,
+        stdlib_allowlist,
+        resolver_cache=cache,
+    )
+
+    assert {"pkg", "pkg.helper", "pkg.extra"} <= set(graph)
+    assert {"pkg.helper", "pkg.extra"} <= explicit_imports
+    assert helper in read_paths
+    assert entry not in read_paths
+    assert extra not in read_paths
+    assert resolved_candidates == ["pkg.helper"]
+
+
+def test_discover_module_graph_prunes_removed_persisted_dependency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry = tmp_path / "pkg" / "__init__.py"
+    entry.parent.mkdir()
+    entry.write_text("import pkg.helper\nimport pkg.old\n")
+    (entry.parent / "helper.py").write_text("VALUE = 1\n")
+    old = entry.parent / "old.py"
+    old.write_text("VALUE = 2\n")
+
+    stdlib_root = cli._stdlib_root_path()
+    module_roots = [tmp_path.resolve()]
+    roots = module_roots + [stdlib_root]
+    stdlib_allowlist = cli._stdlib_allowlist()
+
+    graph, _ = cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        tmp_path,
+        stdlib_allowlist,
+    )
+    assert "pkg.old" in graph
+
+    entry.write_text("import pkg.helper\n")
+    graph, explicit_imports = cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        tmp_path,
+        stdlib_allowlist,
+    )
+
+    assert "pkg.old" not in graph
+    assert "pkg.old" not in explicit_imports
+
     cache = cli._ModuleResolutionCache()
 
     def fail_resolve(*args: object, **kwargs: object) -> Path | None:
