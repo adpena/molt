@@ -14,15 +14,15 @@ import sys as _sys
 
 from . import glob
 
-_require_intrinsic("molt_capabilities_has", globals())
+_require_intrinsic("molt_capabilities_has")
 _MOLT_ZIPFILE_PATH_IMPLIED_DIRS = _require_intrinsic(
-    "molt_zipfile_path_implied_dirs", globals()
+    "molt_zipfile_path_implied_dirs"
 )
 _MOLT_ZIPFILE_PATH_RESOLVE_DIR = _require_intrinsic(
-    "molt_zipfile_path_resolve_dir", globals()
+    "molt_zipfile_path_resolve_dir"
 )
 _MOLT_ZIPFILE_PATH_IS_CHILD = _require_intrinsic(
-    "molt_zipfile_path_is_child", globals()
+    "molt_zipfile_path_is_child"
 )
 
 

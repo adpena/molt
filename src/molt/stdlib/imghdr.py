@@ -4,8 +4,8 @@ from os import PathLike
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_IMGHDR_TEST = _require_intrinsic("molt_imghdr_test", globals())
-_MOLT_IMGHDR_WHAT = _require_intrinsic("molt_imghdr_what", globals())
+_MOLT_IMGHDR_TEST = _require_intrinsic("molt_imghdr_test")
+_MOLT_IMGHDR_WHAT = _require_intrinsic("molt_imghdr_what")
 
 
 tests: list = []
