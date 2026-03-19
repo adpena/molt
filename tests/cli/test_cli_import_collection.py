@@ -2126,6 +2126,82 @@ def test_module_lowering_context_payload_scopes_known_modules_and_hot_functions(
     assert tuple(payload["pgo_hot_functions"]) == ("main.hot_attr", "main::hot_func")
 
 
+def test_module_lowering_context_payload_scopes_known_classes() -> None:
+    payload = cli._module_lowering_context_payload(
+        "main",
+        Path("/tmp/main.py"),
+        logical_source_path="/tmp/main.py",
+        entry_override=None,
+        known_classes_snapshot={
+            "MainClass": {"module": "main", "fields": {}},
+            "DepClass": {"module": "alpha", "fields": {}},
+            "UnrelatedClass": {"module": "unrelated", "fields": {}},
+        },
+        parse_codec="json",
+        type_hint_policy="ignore",
+        fallback_policy="error",
+        type_facts=None,
+        enable_phi=True,
+        known_modules={"main", "alpha", "unrelated"},
+        stdlib_allowlist=set(),
+        known_func_defaults={},
+        module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
+        module_is_namespace=False,
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=set(),
+        known_modules_sorted=("alpha", "main", "unrelated"),
+        stdlib_allowlist_sorted=(),
+        pgo_hot_function_names_sorted=(),
+        module_dep_closures={"main": frozenset({"main", "alpha"})},
+        path_stat=os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
+    )
+
+    assert payload is not None
+    assert set(payload["known_classes"]) == {"MainClass", "DepClass"}
+    assert "UnrelatedClass" not in payload["known_classes"]
+
+
+def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
+    payload = cli._module_worker_payload(
+        "main",
+        module_path=Path("/tmp/main.py"),
+        logical_source_path="/tmp/main.py",
+        source="import alpha\n",
+        parse_codec="json",
+        type_hint_policy="ignore",
+        fallback_policy="error",
+        module_is_namespace=False,
+        entry_module=None,
+        type_facts=None,
+        enable_phi=True,
+        known_modules=("alpha", "main", "unrelated"),
+        known_classes_snapshot={
+            "MainClass": {"module": "main", "fields": {}},
+            "DepClass": {"module": "alpha", "fields": {}},
+            "UnrelatedClass": {"module": "unrelated", "fields": {}},
+        },
+        stdlib_allowlist=("json",),
+        known_func_defaults={
+            "main": {"run": {"params": 0, "defaults": []}},
+            "alpha": {"helper": {"params": 1, "defaults": []}},
+            "unrelated": {"unused": {"params": 0, "defaults": []}},
+        },
+        module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=("main::hot", "unrelated::cold"),
+        module_dep_closures={"main": frozenset({"main", "alpha"})},
+    )
+
+    assert payload["known_modules"] == ["alpha", "main"]
+    assert set(payload["known_classes"]) == {"MainClass", "DepClass"}
+    assert set(payload["known_func_defaults"]) == {"main", "alpha"}
+    assert payload["pgo_hot_functions"] == ["main::hot"]
+
+
 def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
