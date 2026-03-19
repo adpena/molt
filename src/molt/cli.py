@@ -932,6 +932,23 @@ class _PreparedBackendCompile:
 
 
 @dataclass(frozen=True)
+class _PreparedBackendRuntimeContext:
+    runtime_state: _RuntimeArtifactState
+    runtime_lib: Path | None
+    runtime_wasm: Path | None
+    runtime_reloc_wasm: Path | None
+    ensure_runtime_wasm_shared: Callable[[], bool]
+    ensure_runtime_wasm_reloc: Callable[[], bool]
+    cache_setup: _BackendCacheSetup
+    cache_hit: bool
+    cache_hit_tier: str | None
+    cache_key: str | None
+    function_cache_key: str | None
+    cache_path: Path | None
+    function_cache_path: Path | None
+
+
+@dataclass(frozen=True)
 class _PreparedBackendIR:
     ir: dict[str, Any]
 
@@ -12421,6 +12438,53 @@ def _prepare_backend_setup(
     ), None
 
 
+def _prepare_backend_runtime_context(
+    *,
+    prepared_backend_setup: _PreparedBackendSetup,
+    json_output: bool,
+    runtime_cargo_profile: str,
+    cargo_timeout: float | None,
+    molt_root: Path,
+) -> _PreparedBackendRuntimeContext:
+    runtime_state = prepared_backend_setup.runtime_state
+
+    def ensure_runtime_wasm_shared() -> bool:
+        return _ensure_runtime_wasm_artifact(
+            runtime_state,
+            reloc=False,
+            json_output=json_output,
+            cargo_profile=runtime_cargo_profile,
+            cargo_timeout=cargo_timeout,
+            project_root=molt_root,
+        )
+
+    def ensure_runtime_wasm_reloc() -> bool:
+        return _ensure_runtime_wasm_artifact(
+            runtime_state,
+            reloc=True,
+            json_output=json_output,
+            cargo_profile=runtime_cargo_profile,
+            cargo_timeout=cargo_timeout,
+            project_root=molt_root,
+        )
+
+    return _PreparedBackendRuntimeContext(
+        runtime_state=runtime_state,
+        runtime_lib=runtime_state.runtime_lib,
+        runtime_wasm=runtime_state.runtime_wasm,
+        runtime_reloc_wasm=runtime_state.runtime_reloc_wasm,
+        ensure_runtime_wasm_shared=ensure_runtime_wasm_shared,
+        ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
+        cache_setup=prepared_backend_setup.cache_setup,
+        cache_hit=prepared_backend_setup.cache_hit,
+        cache_hit_tier=prepared_backend_setup.cache_hit_tier,
+        cache_key=prepared_backend_setup.cache_key,
+        function_cache_key=prepared_backend_setup.function_cache_key,
+        cache_path=prepared_backend_setup.cache_path,
+        function_cache_path=prepared_backend_setup.function_cache_path,
+    )
+
+
 def _prepare_backend_dispatch(
     *,
     is_wasm: bool,
@@ -17310,40 +17374,31 @@ def build(
     if prepared_backend_setup_error is not None:
         return prepared_backend_setup_error
     assert prepared_backend_setup is not None
-    runtime_state = prepared_backend_setup.runtime_state
-    runtime_lib = runtime_state.runtime_lib
-    runtime_wasm = runtime_state.runtime_wasm
-    runtime_reloc_wasm = runtime_state.runtime_reloc_wasm
+    prepared_backend_runtime_context = _prepare_backend_runtime_context(
+        prepared_backend_setup=prepared_backend_setup,
+        json_output=json_output,
+        runtime_cargo_profile=runtime_cargo_profile,
+        cargo_timeout=cargo_timeout,
+        molt_root=molt_root,
+    )
+    runtime_state = prepared_backend_runtime_context.runtime_state
+    runtime_lib = prepared_backend_runtime_context.runtime_lib
+    runtime_wasm = prepared_backend_runtime_context.runtime_wasm
+    runtime_reloc_wasm = prepared_backend_runtime_context.runtime_reloc_wasm
+    ensure_runtime_wasm_shared = (
+        prepared_backend_runtime_context.ensure_runtime_wasm_shared
+    )
+    ensure_runtime_wasm_reloc = (
+        prepared_backend_runtime_context.ensure_runtime_wasm_reloc
+    )
+    cache_hit = prepared_backend_runtime_context.cache_hit
+    cache_hit_tier = prepared_backend_runtime_context.cache_hit_tier
+    cache_key = prepared_backend_runtime_context.cache_key
+    function_cache_key = prepared_backend_runtime_context.function_cache_key
+    cache_path = prepared_backend_runtime_context.cache_path
+    function_cache_path = prepared_backend_runtime_context.function_cache_path
 
-    def ensure_runtime_wasm_shared() -> bool:
-        return _ensure_runtime_wasm_artifact(
-            runtime_state,
-            reloc=False,
-            json_output=json_output,
-            cargo_profile=runtime_cargo_profile,
-            cargo_timeout=cargo_timeout,
-            project_root=molt_root,
-        )
-
-    def ensure_runtime_wasm_reloc() -> bool:
-        return _ensure_runtime_wasm_artifact(
-            runtime_state,
-            reloc=True,
-            json_output=json_output,
-            cargo_profile=runtime_cargo_profile,
-            cargo_timeout=cargo_timeout,
-            project_root=molt_root,
-        )
-
-    cache_hit = prepared_backend_setup.cache_hit
-    cache_hit_tier = prepared_backend_setup.cache_hit_tier
-    cache_key = prepared_backend_setup.cache_key
-    function_cache_key = prepared_backend_setup.function_cache_key
-    cache_path = prepared_backend_setup.cache_path
-    function_cache_path = prepared_backend_setup.function_cache_path
-    cache_candidates = prepared_backend_setup.cache_candidates
-
-    cache_setup = prepared_backend_setup.cache_setup
+    cache_setup = prepared_backend_runtime_context.cache_setup
     prepared_backend_compile, prepared_backend_compile_error = (
         _prepare_backend_compile(
             diagnostics_enabled=diagnostics_enabled,
