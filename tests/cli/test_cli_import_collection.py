@@ -838,6 +838,62 @@ def test_load_module_analysis_reuses_persisted_cache(
     assert cached_source is None
 
 
+def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "pkg.py"
+    module_path.write_text("import warnings\n\ndef f(a, *, b=1):\n    return a + b\n")
+    source = cli._read_module_source(module_path)
+    cache = cli._ModuleResolutionCache()
+
+    cli._load_module_analysis(
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        include_nested=True,
+        source=source,
+        logical_source_path=str(module_path),
+        resolution_cache=cache,
+        project_root=tmp_path,
+    )
+
+    original_path_stat = cache.path_stat
+    calls = 0
+
+    def wrapped_path_stat(path: Path) -> os.stat_result:
+        nonlocal calls
+        calls += 1
+        return original_path_stat(path)
+
+    monkeypatch.setattr(cache, "path_stat", wrapped_path_stat)
+    monkeypatch.setattr(
+        cache,
+        "parse_module_ast",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("unexpected parse")
+        ),
+    )
+
+    cached_tree, cached_imports, cached_defaults, cached_source = (
+        cli._load_module_analysis(
+            module_path,
+            module_name="pkg",
+            is_package=False,
+            include_nested=True,
+            source=None,
+            logical_source_path=str(module_path),
+            resolution_cache=cache,
+            project_root=tmp_path,
+        )
+    )
+
+    assert cached_tree is None
+    assert cached_imports == ("warnings",)
+    assert "f" in cached_defaults
+    assert cached_source is None
+    assert calls == 1
+
+
 def test_persisted_module_lowering_roundtrip_respects_context_digest(
     tmp_path: Path,
 ) -> None:
@@ -957,12 +1013,14 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
         module_name: str,
         is_package: bool,
         context_digest: str,
+        path_stat: os.stat_result | None = None,
     ) -> dict[str, object] | None:
         assert root == project_root
         assert path == module_path
         assert module_name == "alpha"
         assert is_package is False
         assert context_digest == "digest"
+        assert path_stat is not None
         return {"module": module_name, "kind": "cached"}
 
     monkeypatch.setattr(cli, "_read_persisted_module_lowering", fake_read)
@@ -1001,6 +1059,74 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
     assert cached_results == {"alpha": {"module": "alpha", "kind": "cached"}}
     assert context_digest_by_module == {"alpha": "digest"}
     assert context_payload_calls == 1
+
+
+def test_load_cached_module_lowering_result_reuses_single_module_stat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "alpha.py"
+    module_path.write_text("VALUE = 1\n")
+    cache = cli._ModuleResolutionCache()
+    context_digest = cli._module_lowering_context_digest({"module": "alpha", "v": 1})
+    assert context_digest is not None
+
+    cli._write_persisted_module_lowering(
+        tmp_path,
+        module_path,
+        module_name="alpha",
+        is_package=False,
+        context_digest=context_digest,
+        result={
+            "functions": [],
+            "func_code_ids": {},
+            "local_class_names": [],
+            "local_classes": {},
+            "midend_policy_outcomes_by_function": {},
+            "midend_pass_stats_by_function": {},
+            "timings": {"visit_s": 0.0, "lower_s": 0.0, "total_s": 0.0},
+        },
+    )
+
+    original_path_stat = cache.path_stat
+    calls = 0
+
+    def wrapped_path_stat(path: Path) -> os.stat_result:
+        nonlocal calls
+        calls += 1
+        return original_path_stat(path)
+
+    monkeypatch.setattr(cache, "path_stat", wrapped_path_stat)
+
+    result = cli._load_cached_module_lowering_result(
+        tmp_path,
+        "alpha",
+        module_path,
+        logical_source_path=str(module_path),
+        entry_override=None,
+        known_classes_snapshot={},
+        parse_codec="json",
+        type_hint_policy="ignore",
+        fallback_policy="error",
+        type_facts=None,
+        enable_phi=True,
+        known_modules={"alpha"},
+        stdlib_allowlist=set(),
+        known_func_defaults={},
+        module_is_namespace=False,
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=set(),
+        known_modules_sorted=("alpha",),
+        stdlib_allowlist_sorted=(),
+        pgo_hot_function_names_sorted=(),
+        context_digest=context_digest,
+        resolution_cache=cache,
+    )
+
+    assert result is not None
+    assert result["functions"] == []
+    assert calls == 1
 
 
 def test_parallel_build_reuses_cached_lowering_across_parallel_builds(

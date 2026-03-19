@@ -1840,6 +1840,8 @@ class _ModuleResolutionCache:
     import_scan_cache: dict[tuple[Path, str | None, bool, bool], tuple[str, ...]] = (
         field(default_factory=dict)
     )
+    path_stat_cache: dict[Path, os.stat_result] = field(default_factory=dict)
+    path_stat_error_cache: dict[Path, OSError] = field(default_factory=dict)
     module_parts_cache: dict[str, tuple[str, ...]] = field(default_factory=dict)
     cpython_test_root_cache: Path | None = None
     cpython_test_root_cache_populated: bool = False
@@ -1995,6 +1997,22 @@ class _ModuleResolutionCache:
             raise
         self.source_cache[cache_key] = source
         return source
+
+    def path_stat(self, path: Path) -> os.stat_result:
+        cache_key = self.resolved_path(path)
+        cached = self.path_stat_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        cached_error = self.path_stat_error_cache.get(cache_key)
+        if cached_error is not None:
+            raise cached_error
+        try:
+            stat_result = path.stat()
+        except OSError as exc:
+            self.path_stat_error_cache[cache_key] = exc
+            raise
+        self.path_stat_cache[cache_key] = stat_result
+        return stat_result
 
     def parse_module_ast(self, path: Path, source: str, *, filename: str) -> ast.AST:
         cache_key = (self.resolved_path(path), filename)
@@ -6796,6 +6814,7 @@ def _read_persisted_import_scan(
     module_name: str,
     is_package: bool,
     include_nested: bool,
+    path_stat: os.stat_result | None = None,
 ) -> tuple[str, ...] | None:
     cache_path = _import_scan_cache_path(
         project_root,
@@ -6807,18 +6826,19 @@ def _read_persisted_import_scan(
     payload = _read_artifact_sync_state(cache_path)
     if payload is None:
         return None
-    try:
-        stat = path.stat()
-    except OSError:
-        return None
+    if path_stat is None:
+        try:
+            path_stat = path.stat()
+        except OSError:
+            return None
     imports = payload.get("imports")
     if not isinstance(imports, list) or not all(
         isinstance(item, str) for item in imports
     ):
         return None
     if (
-        payload.get("size") != stat.st_size
-        or payload.get("mtime_ns") != stat.st_mtime_ns
+        payload.get("size") != path_stat.st_size
+        or payload.get("mtime_ns") != path_stat.st_mtime_ns
     ):
         return None
     return tuple(imports)
@@ -6860,6 +6880,7 @@ def _read_persisted_module_analysis(
     *,
     module_name: str,
     is_package: bool,
+    path_stat: os.stat_result | None = None,
 ) -> dict[str, dict[str, Any]] | None:
     cache_path = _module_analysis_cache_path(
         project_root,
@@ -6870,16 +6891,17 @@ def _read_persisted_module_analysis(
     payload = _read_artifact_sync_state(cache_path)
     if payload is None:
         return None
-    try:
-        stat = path.stat()
-    except OSError:
-        return None
+    if path_stat is None:
+        try:
+            path_stat = path.stat()
+        except OSError:
+            return None
     raw_defaults = payload.get("func_defaults")
     if not isinstance(raw_defaults, dict):
         return None
     if (
-        payload.get("size") != stat.st_size
-        or payload.get("mtime_ns") != stat.st_mtime_ns
+        payload.get("size") != path_stat.st_size
+        or payload.get("mtime_ns") != path_stat.st_mtime_ns
     ):
         return None
 
@@ -6999,6 +7021,10 @@ def _load_module_analysis(
     resolution_cache: _ModuleResolutionCache,
     project_root: Path | None,
 ) -> tuple[ast.AST | None, tuple[str, ...], dict[str, dict[str, Any]], str | None]:
+    path_stat: os.stat_result | None = None
+    if project_root is not None:
+        with contextlib.suppress(OSError):
+            path_stat = resolution_cache.path_stat(path)
     persisted_imports = (
         _read_persisted_import_scan(
             project_root,
@@ -7006,6 +7032,7 @@ def _load_module_analysis(
             module_name=module_name,
             is_package=is_package,
             include_nested=include_nested,
+            path_stat=path_stat,
         )
         if project_root is not None
         else None
@@ -7016,6 +7043,7 @@ def _load_module_analysis(
             path,
             module_name=module_name,
             is_package=is_package,
+            path_stat=path_stat,
         )
         if project_root is not None
         else None
@@ -7104,11 +7132,13 @@ def _module_lowering_context_payload(
     known_modules_sorted: tuple[str, ...] | None = None,
     stdlib_allowlist_sorted: tuple[str, ...] | None = None,
     pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
+    path_stat: os.stat_result | None = None,
 ) -> dict[str, Any] | None:
-    try:
-        stat = module_path.stat()
-    except OSError:
-        return None
+    if path_stat is None:
+        try:
+            path_stat = module_path.stat()
+        except OSError:
+            return None
     if known_modules_sorted is None:
         known_modules_sorted = tuple(sorted(known_modules))
     if stdlib_allowlist_sorted is None:
@@ -7122,8 +7152,8 @@ def _module_lowering_context_payload(
         "is_package": module_path.name == "__init__.py",
         "module_is_namespace": module_is_namespace,
         "entry_module": entry_override,
-        "size": stat.st_size,
-        "mtime_ns": stat.st_mtime_ns,
+        "size": path_stat.st_size,
+        "mtime_ns": path_stat.st_mtime_ns,
         "parse_codec": parse_codec,
         "type_hint_policy": type_hint_policy,
         "fallback_policy": fallback_policy,
@@ -7160,6 +7190,7 @@ def _read_persisted_module_lowering(
     module_name: str,
     is_package: bool,
     context_digest: str,
+    path_stat: os.stat_result | None = None,
 ) -> dict[str, Any] | None:
     cache_path = _module_lowering_cache_path(
         project_root,
@@ -7174,13 +7205,14 @@ def _read_persisted_module_lowering(
         return None
     if payload.get("context_digest") != context_digest:
         return None
-    try:
-        stat = path.stat()
-    except OSError:
-        return None
+    if path_stat is None:
+        try:
+            path_stat = path.stat()
+        except OSError:
+            return None
     if (
-        payload.get("size") != stat.st_size
-        or payload.get("mtime_ns") != stat.st_mtime_ns
+        payload.get("size") != path_stat.st_size
+        or payload.get("mtime_ns") != path_stat.st_mtime_ns
     ):
         return None
     raw_result = payload.get("result")
@@ -7241,9 +7273,14 @@ def _load_cached_module_lowering_result(
     stdlib_allowlist_sorted: tuple[str, ...] | None = None,
     pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
     context_digest: str | None = None,
+    resolution_cache: _ModuleResolutionCache | None = None,
 ) -> dict[str, Any] | None:
     if project_root is None:
         return None
+    path_stat: os.stat_result | None = None
+    if resolution_cache is not None:
+        with contextlib.suppress(OSError):
+            path_stat = resolution_cache.path_stat(module_path)
     if context_digest is None:
         context_payload = _module_lowering_context_payload(
             module_name,
@@ -7267,6 +7304,7 @@ def _load_cached_module_lowering_result(
             known_modules_sorted=known_modules_sorted,
             stdlib_allowlist_sorted=stdlib_allowlist_sorted,
             pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+            path_stat=path_stat,
         )
         if context_payload is None:
             return None
@@ -7279,6 +7317,7 @@ def _load_cached_module_lowering_result(
         module_name=module_name,
         is_package=module_path.name == "__init__.py",
         context_digest=context_digest,
+        path_stat=path_stat,
     )
 
 
@@ -7378,6 +7417,7 @@ def _prepare_frontend_parallel_batch(
             stdlib_allowlist_sorted=stdlib_allowlist_sorted,
             pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
             context_digest=context_digest_by_module.get(module_name),
+            resolution_cache=module_resolution_cache,
         )
         if cached_result is not None:
             cached_results[module_name] = cached_result
@@ -10294,6 +10334,9 @@ def build(
         if module_name == entry_module and entry_module != "__main__":
             entry_override = None
         is_package = module_path.name == "__init__.py"
+        path_stat: os.stat_result | None = None
+        with contextlib.suppress(OSError):
+            path_stat = module_resolution_cache.path_stat(module_path)
         context_digest: str | None = None
         if project_root is not None:
             context_payload = _module_lowering_context_payload(
@@ -10318,6 +10361,7 @@ def build(
                 known_modules_sorted=known_modules_sorted,
                 stdlib_allowlist_sorted=stdlib_allowlist_sorted,
                 pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+                path_stat=path_stat,
             )
             if context_payload is not None:
                 context_digest = _module_lowering_context_digest(context_payload)
@@ -10328,6 +10372,7 @@ def build(
                     module_name=module_name,
                     is_package=is_package,
                     context_digest=context_digest,
+                    path_stat=path_stat,
                 )
                 if cached_payload is not None:
                     return cached_payload, 0.0, 0.0, 0.0
