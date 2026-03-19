@@ -9653,6 +9653,149 @@ def _build_entry_main_ops(
     ]
 
 
+def _entry_call_index(entry_ops: Sequence[dict[str, Any]], entry_init: str) -> int:
+    return next(
+        idx
+        for idx, op in enumerate(entry_ops)
+        if op.get("kind") == "call" and op.get("s_value") == entry_init
+    )
+
+
+def _next_tir_var_index(ops: Sequence[dict[str, Any]]) -> int:
+    used_vars: set[int] = set()
+    for op in ops:
+        out = op.get("out")
+        if isinstance(out, str) and out.startswith("v"):
+            try:
+                used_vars.add(int(out[1:]))
+            except ValueError:
+                continue
+    return max(used_vars, default=-1) + 1
+
+
+def _append_entry_sys_init_op(
+    entry_ops: list[dict[str, Any]],
+    *,
+    entry_init: str,
+    register_global_code_id: Callable[[str], int],
+    next_var: int,
+) -> int:
+    sys_init = SimpleTIRGenerator.module_init_symbol("sys")
+    sys_out_var = f"v{next_var}"
+    next_var += 1
+    entry_call_idx = _entry_call_index(entry_ops, entry_init)
+    entry_ops[entry_call_idx:entry_call_idx] = [
+        {
+            "kind": "call",
+            "s_value": sys_init,
+            "args": [],
+            "out": sys_out_var,
+            "value": register_global_code_id(sys_init),
+        }
+    ]
+    return next_var
+
+
+def _build_module_code_ops(
+    *,
+    module_order: Sequence[str],
+    module_graph: Mapping[str, Path],
+    generated_module_source_paths: Mapping[str, str],
+    entry_module: str,
+    entry_path: Path | None,
+    register_global_code_id: Callable[[str], int],
+    next_var: int,
+) -> tuple[list[dict[str, Any]], int]:
+    module_code_ops: list[dict[str, Any]] = []
+    for module_name in module_order:
+        module_path = module_graph[module_name]
+        logical_source_path = generated_module_source_paths.get(
+            module_name, module_path.as_posix()
+        )
+        init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
+        code_id = register_global_code_id(init_symbol)
+        next_var = _append_module_code_slot_ops(
+            module_code_ops,
+            logical_source_path=logical_source_path,
+            code_id=code_id,
+            next_var=next_var,
+        )
+    if entry_module != "__main__" and entry_path is not None:
+        init_symbol = SimpleTIRGenerator.module_init_symbol("__main__")
+        code_id = register_global_code_id(init_symbol)
+        next_var = _append_module_code_slot_ops(
+            module_code_ops,
+            logical_source_path=entry_path.as_posix(),
+            code_id=code_id,
+            next_var=next_var,
+        )
+    return module_code_ops, next_var
+
+
+def _replace_entry_call_with_spawn_override(
+    entry_ops: list[dict[str, Any]],
+    *,
+    entry_init: str,
+    register_global_code_id: Callable[[str], int],
+    next_var: int,
+) -> int:
+    spawn_init = SimpleTIRGenerator.module_init_symbol(ENTRY_OVERRIDE_SPAWN)
+    spawn_code_id = register_global_code_id(spawn_init)
+    entry_call_idx = _entry_call_index(entry_ops, entry_init)
+    entry_code_id = register_global_code_id(entry_init)
+    env_key_var = f"v{next_var}"
+    next_var += 1
+    env_default_var = f"v{next_var}"
+    next_var += 1
+    env_value_var = f"v{next_var}"
+    next_var += 1
+    spawn_name_var = f"v{next_var}"
+    next_var += 1
+    spawn_eq_var = f"v{next_var}"
+    next_var += 1
+    spawn_out_var = f"v{next_var}"
+    next_var += 1
+    entry_out_var = f"v{next_var}"
+    next_var += 1
+    entry_ops[entry_call_idx : entry_call_idx + 1] = [
+        {"kind": "const_str", "s_value": ENTRY_OVERRIDE_ENV, "out": env_key_var},
+        {"kind": "const_str", "s_value": "", "out": env_default_var},
+        {
+            "kind": "env_get",
+            "args": [env_key_var, env_default_var],
+            "out": env_value_var,
+        },
+        {
+            "kind": "const_str",
+            "s_value": ENTRY_OVERRIDE_SPAWN,
+            "out": spawn_name_var,
+        },
+        {
+            "kind": "string_eq",
+            "args": [env_value_var, spawn_name_var],
+            "out": spawn_eq_var,
+        },
+        {"kind": "if", "args": [spawn_eq_var]},
+        {
+            "kind": "call",
+            "s_value": spawn_init,
+            "args": [],
+            "out": spawn_out_var,
+            "value": spawn_code_id,
+        },
+        {"kind": "else"},
+        {
+            "kind": "call",
+            "s_value": entry_init,
+            "args": [],
+            "out": entry_out_var,
+            "value": entry_code_id,
+        },
+        {"kind": "end_if"},
+    ]
+    return next_var
+
+
 def _build_isolate_bootstrap_ops(
     *,
     code_slot_count: int,
@@ -14163,121 +14306,33 @@ def build(
         version_ops=version_ops,
         register_global_code_id=_register_global_code_id,
     )
-    entry_call_idx = next(
-        idx
-        for idx, op in enumerate(entry_ops)
-        if op.get("kind") == "call" and op.get("s_value") == entry_init
-    )
-    used_vars: set[int] = set()
-    for op in entry_ops:
-        out = op.get("out")
-        if isinstance(out, str) and out.startswith("v"):
-            try:
-                used_vars.add(int(out[1:]))
-            except ValueError:
-                continue
-    next_var = max(used_vars, default=-1) + 1
+    entry_call_idx = _entry_call_index(entry_ops, entry_init)
+    next_var = _next_tir_var_index(entry_ops)
     if "sys" in module_graph:
-        sys_init = SimpleTIRGenerator.module_init_symbol("sys")
-        sys_out_var = f"v{next_var}"
-        next_var += 1
-        sys_init_op = {
-            "kind": "call",
-            "s_value": sys_init,
-            "args": [],
-            "out": sys_out_var,
-            "value": _register_global_code_id(sys_init),
-        }
-        entry_call_idx = next(
-            idx
-            for idx, op in enumerate(entry_ops)
-            if op.get("kind") == "call" and op.get("s_value") == entry_init
-        )
-        entry_ops[entry_call_idx:entry_call_idx] = [sys_init_op]
-
-    module_code_ops: list[dict[str, Any]] = []
-    for module_name in module_order:
-        module_path = module_graph[module_name]
-        logical_source_path = generated_module_source_paths.get(
-            module_name, module_path.as_posix()
-        )
-        init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
-        code_id = _register_global_code_id(init_symbol)
-        next_var = _append_module_code_slot_ops(
-            module_code_ops,
-            logical_source_path=logical_source_path,
-            code_id=code_id,
+        next_var = _append_entry_sys_init_op(
+            entry_ops,
+            entry_init=entry_init,
+            register_global_code_id=_register_global_code_id,
             next_var=next_var,
         )
-    if entry_module != "__main__" and entry_path is not None:
-        init_symbol = SimpleTIRGenerator.module_init_symbol("__main__")
-        code_id = _register_global_code_id(init_symbol)
-        next_var = _append_module_code_slot_ops(
-            module_code_ops,
-            logical_source_path=entry_path.as_posix(),
-            code_id=code_id,
-            next_var=next_var,
-        )
+        entry_call_idx = _entry_call_index(entry_ops, entry_init)
+    module_code_ops, next_var = _build_module_code_ops(
+        module_order=module_order,
+        module_graph=module_graph,
+        generated_module_source_paths=generated_module_source_paths,
+        entry_module=entry_module,
+        entry_path=entry_path,
+        register_global_code_id=_register_global_code_id,
+        next_var=next_var,
+    )
     entry_ops[entry_call_idx:entry_call_idx] = module_code_ops
     if spawn_enabled:
-        spawn_init = SimpleTIRGenerator.module_init_symbol(ENTRY_OVERRIDE_SPAWN)
-        spawn_code_id = _register_global_code_id(spawn_init)
-        entry_call_idx = next(
-            idx
-            for idx, op in enumerate(entry_ops)
-            if op.get("kind") == "call" and op.get("s_value") == entry_init
+        next_var = _replace_entry_call_with_spawn_override(
+            entry_ops,
+            entry_init=entry_init,
+            register_global_code_id=_register_global_code_id,
+            next_var=next_var,
         )
-        entry_code_id = _register_global_code_id(entry_init)
-        env_key_var = f"v{next_var}"
-        next_var += 1
-        env_default_var = f"v{next_var}"
-        next_var += 1
-        env_value_var = f"v{next_var}"
-        next_var += 1
-        spawn_name_var = f"v{next_var}"
-        next_var += 1
-        spawn_eq_var = f"v{next_var}"
-        next_var += 1
-        spawn_out_var = f"v{next_var}"
-        next_var += 1
-        entry_out_var = f"v{next_var}"
-        next_var += 1
-        entry_ops[entry_call_idx : entry_call_idx + 1] = [
-            {"kind": "const_str", "s_value": ENTRY_OVERRIDE_ENV, "out": env_key_var},
-            {"kind": "const_str", "s_value": "", "out": env_default_var},
-            {
-                "kind": "env_get",
-                "args": [env_key_var, env_default_var],
-                "out": env_value_var,
-            },
-            {
-                "kind": "const_str",
-                "s_value": ENTRY_OVERRIDE_SPAWN,
-                "out": spawn_name_var,
-            },
-            {
-                "kind": "string_eq",
-                "args": [env_value_var, spawn_name_var],
-                "out": spawn_eq_var,
-            },
-            {"kind": "if", "args": [spawn_eq_var]},
-            {
-                "kind": "call",
-                "s_value": spawn_init,
-                "args": [],
-                "out": spawn_out_var,
-                "value": spawn_code_id,
-            },
-            {"kind": "else"},
-            {
-                "kind": "call",
-                "s_value": entry_init,
-                "args": [],
-                "out": entry_out_var,
-                "value": entry_code_id,
-            },
-            {"kind": "end_if"},
-        ]
     entry_ops.insert(1, {"kind": "code_slots_init", "value": len(global_code_ids)})
     functions.append({"name": "molt_main", "params": [], "ops": entry_ops})
     isolate_bootstrap_ops = _build_isolate_bootstrap_ops(
