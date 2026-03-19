@@ -805,6 +805,15 @@ class _PreparedEntryModuleGraph:
     spawn_enabled: bool
 
 
+@dataclass(frozen=True)
+class _ResolvedBuildEntry:
+    source_path: Path
+    entry_module: str
+    module_roots: list[Path]
+    entry_source: str
+    entry_tree: ast.AST
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -2458,6 +2467,115 @@ def _resolve_entry_module(
     if mod_path is not None:
         return stripped, mod_path
     return None
+
+
+def _resolve_build_entry(
+    *,
+    file_path: str | None,
+    module: str | None,
+    project_root: Path,
+    cwd_root: Path,
+    stdlib_root: Path,
+    respect_pythonpath: bool,
+    json_output: bool,
+) -> tuple[_ResolvedBuildEntry | None, dict[str, Any] | None]:
+    module_roots = _resolve_module_roots(
+        project_root,
+        cwd_root,
+        respect_pythonpath=respect_pythonpath,
+    )
+    source_path: Path | None = None
+    entry_module: str | None = None
+    if file_path:
+        source_path = Path(file_path).resolve()
+        if not source_path.exists():
+            return None, _fail(
+                f"File not found: {source_path}", json_output, command="build"
+            )
+        module_roots.append(source_path.parent)
+        module_roots = list(dict.fromkeys(root.resolve() for root in module_roots))
+    if module:
+        resolved = _resolve_entry_module(module, module_roots)
+        if resolved is None:
+            return None, _fail(
+                f"Entry module not found: {module}",
+                json_output,
+                command="build",
+            )
+        entry_module, source_path = resolved
+        module_roots.append(source_path.parent.resolve())
+        module_roots = list(dict.fromkeys(module_roots))
+    elif source_path is not None:
+        entry_module = _module_name_from_path(source_path, module_roots, stdlib_root)
+    if source_path is None or entry_module is None:
+        return None, _fail(
+            "Failed to resolve entry module.", json_output, command="build"
+        )
+    try:
+        entry_source = _read_module_source(source_path)
+    except (SyntaxError, UnicodeDecodeError) as exc:
+        return None, _fail(
+            f"Syntax error in {source_path}: {exc}",
+            json_output,
+            command="build",
+        )
+    except OSError as exc:
+        return None, _fail(
+            f"Failed to read entry module {source_path}: {exc}",
+            json_output,
+            command="build",
+        )
+    try:
+        entry_tree = ast.parse(entry_source, filename=str(source_path))
+    except SyntaxError as exc:
+        return None, _fail(
+            f"Syntax error in {source_path}: {exc}",
+            json_output,
+            command="build",
+        )
+    (
+        entry_pkg_override_set,
+        entry_pkg_override,
+        entry_spec_override_set,
+        entry_spec_override,
+        entry_spec_override_is_package,
+    ) = _infer_module_overrides(entry_tree)
+    if entry_pkg_override_set and entry_pkg_override:
+        root = _package_root_for_override(source_path, entry_pkg_override)
+        if root is not None:
+            source_parent = source_path.parent.resolve()
+            module_roots = [
+                candidate
+                for candidate in module_roots
+                if candidate.resolve() != source_parent
+            ]
+            module_roots.append(root)
+            entry_module = _module_name_from_path(source_path, [root], stdlib_root)
+    elif entry_spec_override_set and entry_spec_override:
+        override_is_package = (
+            entry_spec_override_is_package
+            if entry_spec_override_is_package is not None
+            else source_path.name == "__init__.py"
+        )
+        package_name = _spec_parent(entry_spec_override, override_is_package)
+        if package_name:
+            root = _package_root_for_override(source_path, package_name)
+            if root is not None:
+                source_parent = source_path.parent.resolve()
+                module_roots = [
+                    candidate
+                    for candidate in module_roots
+                    if candidate.resolve() != source_parent
+                ]
+                module_roots.append(root)
+                entry_module = _module_name_from_path(source_path, [root], stdlib_root)
+    return _ResolvedBuildEntry(
+        source_path=source_path,
+        entry_module=entry_module,
+        module_roots=list(dict.fromkeys(root.resolve() for root in module_roots)),
+        entry_source=entry_source,
+        entry_tree=entry_tree,
+    ), None
 
 
 def _output_base_for_entry(entry_module: str, source_path: Path) -> str:
@@ -15026,116 +15144,25 @@ def build(
         capabilities_list = parsed
         capability_profiles = profiles
         capabilities_source = source
-    cwd_root = _find_project_root(Path.cwd())
-    module_roots: list[Path] = []
-    extra_roots = os.environ.get("MOLT_MODULE_ROOTS", "")
-    if extra_roots:
-        for entry in extra_roots.split(os.pathsep):
-            if not entry:
-                continue
-            entry_path = Path(entry).expanduser()
-            if entry_path.exists():
-                module_roots.append(entry_path)
-    for root in (project_root, cwd_root):
-        if root.exists():
-            module_roots.append(root)
-        src_root = root / "src"
-        if src_root.exists():
-            module_roots.append(src_root)
-        module_roots.extend(_vendor_roots(root))
-    source_path: Path | None = None
-    entry_module: str | None = None
-    if file_path:
-        source_path = Path(file_path).resolve()
-        if not source_path.exists():
-            return _fail(f"File not found: {source_path}", json_output, command="build")
-        module_roots.append(source_path.parent)
-    if respect_pythonpath:
-        pythonpath = os.environ.get("PYTHONPATH", "")
-        if pythonpath:
-            for entry in pythonpath.split(os.pathsep):
-                if not entry:
-                    continue
-                entry_path = Path(entry).expanduser()
-                if entry_path.exists():
-                    module_roots.append(entry_path)
-    module_roots = list(dict.fromkeys(root.resolve() for root in module_roots))
-    if module:
-        resolved = _resolve_entry_module(module, module_roots)
-        if resolved is None:
-            return _fail(
-                f"Entry module not found: {module}",
-                json_output,
-                command="build",
-            )
-        entry_module, source_path = resolved
-        module_roots.append(source_path.parent.resolve())
-        module_roots = list(dict.fromkeys(module_roots))
-    elif source_path is not None:
-        entry_module = _module_name_from_path(source_path, module_roots, stdlib_root)
-    if source_path is None or entry_module is None:
-        return _fail("Failed to resolve entry module.", json_output, command="build")
-    try:
-        entry_source = _read_module_source(source_path)
-    except (SyntaxError, UnicodeDecodeError) as exc:
-        return _fail(
-            f"Syntax error in {source_path}: {exc}",
-            json_output,
-            command="build",
-        )
-    except OSError as exc:
-        return _fail(
-            f"Failed to read entry module {source_path}: {exc}",
-            json_output,
-            command="build",
-        )
-    try:
-        entry_tree = ast.parse(entry_source, filename=str(source_path))
-    except SyntaxError as exc:
-        return _fail(
-            f"Syntax error in {source_path}: {exc}",
-            json_output,
-            command="build",
-        )
-    (
-        entry_pkg_override_set,
-        entry_pkg_override,
-        entry_spec_override_set,
-        entry_spec_override,
-        entry_spec_override_is_package,
-    ) = _infer_module_overrides(entry_tree)
+    resolved_build_entry, resolved_build_entry_error = _resolve_build_entry(
+        file_path=file_path,
+        module=module,
+        project_root=project_root,
+        cwd_root=cwd_root,
+        stdlib_root=stdlib_root,
+        respect_pythonpath=respect_pythonpath,
+        json_output=json_output,
+    )
+    if resolved_build_entry_error is not None:
+        return resolved_build_entry_error
+    assert resolved_build_entry is not None
+    source_path = resolved_build_entry.source_path
+    entry_module = resolved_build_entry.entry_module
+    module_roots = resolved_build_entry.module_roots
+    entry_source = resolved_build_entry.entry_source
+    entry_tree = resolved_build_entry.entry_tree
     if diagnostics_enabled:
         phase_starts["module_graph"] = time.perf_counter()
-    if entry_pkg_override_set and entry_pkg_override:
-        root = _package_root_for_override(source_path, entry_pkg_override)
-        if root is not None:
-            source_parent = source_path.parent.resolve()
-            module_roots = [
-                candidate
-                for candidate in module_roots
-                if candidate.resolve() != source_parent
-            ]
-            module_roots.append(root)
-            entry_module = _module_name_from_path(source_path, [root], stdlib_root)
-    elif entry_spec_override_set and entry_spec_override:
-        override_is_package = (
-            entry_spec_override_is_package
-            if entry_spec_override_is_package is not None
-            else source_path.name == "__init__.py"
-        )
-        package_name = _spec_parent(entry_spec_override, override_is_package)
-        if package_name:
-            root = _package_root_for_override(source_path, package_name)
-            if root is not None:
-                source_parent = source_path.parent.resolve()
-                module_roots = [
-                    candidate
-                    for candidate in module_roots
-                    if candidate.resolve() != source_parent
-                ]
-                module_roots.append(root)
-                entry_module = _module_name_from_path(source_path, [root], stdlib_root)
-    module_roots = list(dict.fromkeys(root.resolve() for root in module_roots))
     prepared_module_graph, prepared_module_graph_error = _prepare_entry_module_graph(
         source_path=source_path,
         entry_module=entry_module,
