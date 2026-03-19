@@ -14,11 +14,11 @@ def cast(_tp, value):  # type: ignore[override]
     return value
 
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_require_intrinsic("molt_stdlib_probe")
 
 
 def _require_callable_intrinsic(name: str):
-    value = _require_intrinsic(name, globals())
+    value = _require_intrinsic(name)
     if not callable(value):
         raise RuntimeError(f"{name} intrinsic unavailable")
     return value

@@ -6,15 +6,15 @@ from typing import Any, NoReturn, cast
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_STRING_CAPITALIZE = _require_intrinsic("molt_string_capitalize", globals())
-_molt_template_scan = _require_intrinsic("molt_string_template_scan", globals())
-_molt_template_is_valid = _require_intrinsic("molt_string_template_is_valid", globals())
+_MOLT_STRING_CAPITALIZE = _require_intrinsic("molt_string_capitalize")
+_molt_template_scan = _require_intrinsic("molt_string_template_scan")
+_molt_template_is_valid = _require_intrinsic("molt_string_template_is_valid")
 _molt_template_get_identifiers = _require_intrinsic(
-    "molt_string_template_get_identifiers", globals()
+    "molt_string_template_get_identifiers"
 )
-_molt_formatter_parse = _require_intrinsic("molt_string_formatter_parse", globals())
+_molt_formatter_parse = _require_intrinsic("molt_string_formatter_parse")
 _molt_field_name_split = _require_intrinsic(
-    "molt_string_formatter_field_name_split", globals()
+    "molt_string_formatter_field_name_split"
 )
 
 

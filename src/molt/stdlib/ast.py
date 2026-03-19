@@ -159,11 +159,11 @@ class BinOp(AST):
         self.right = right
 
 
-_MOLT_AST_PARSE = _require_intrinsic("molt_ast_parse", globals())
-_MOLT_AST_WALK = _require_intrinsic("molt_ast_walk", globals())
-_MOLT_AST_GET_DOCSTRING = _require_intrinsic("molt_ast_get_docstring", globals())
-_MOLT_AST_ITER_FIELDS = _require_intrinsic("molt_ast_iter_fields", globals())
-_MOLT_AST_ITER_CHILD_NODES = _require_intrinsic("molt_ast_iter_child_nodes", globals())
+_MOLT_AST_PARSE = _require_intrinsic("molt_ast_parse")
+_MOLT_AST_WALK = _require_intrinsic("molt_ast_walk")
+_MOLT_AST_GET_DOCSTRING = _require_intrinsic("molt_ast_get_docstring")
+_MOLT_AST_ITER_FIELDS = _require_intrinsic("molt_ast_iter_fields")
+_MOLT_AST_ITER_CHILD_NODES = _require_intrinsic("molt_ast_iter_child_nodes")
 
 _AST_PARSE_CTORS = (
     Module,

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_molt_html_escape = _require_intrinsic("molt_html_escape", globals())
-_molt_html_unescape = _require_intrinsic("molt_html_unescape", globals())
+_molt_html_escape = _require_intrinsic("molt_html_escape")
+_molt_html_unescape = _require_intrinsic("molt_html_unescape")
 
 
 def escape(s: str, quote: bool = True) -> str:

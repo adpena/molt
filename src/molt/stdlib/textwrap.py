@@ -6,11 +6,11 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 __all__ = ["TextWrapper", "wrap", "fill", "indent", "dedent", "shorten"]
 
-_MOLT_TEXTWRAP_WRAP_EX = _require_intrinsic("molt_textwrap_wrap_ex", globals())
-_MOLT_TEXTWRAP_FILL_EX = _require_intrinsic("molt_textwrap_fill_ex", globals())
-_MOLT_TEXTWRAP_INDENT_EX = _require_intrinsic("molt_textwrap_indent_ex", globals())
-_MOLT_TEXTWRAP_DEDENT = _require_intrinsic("molt_textwrap_dedent", globals())
-_MOLT_TEXTWRAP_SHORTEN = _require_intrinsic("molt_textwrap_shorten", globals())
+_MOLT_TEXTWRAP_WRAP_EX = _require_intrinsic("molt_textwrap_wrap_ex")
+_MOLT_TEXTWRAP_FILL_EX = _require_intrinsic("molt_textwrap_fill_ex")
+_MOLT_TEXTWRAP_INDENT_EX = _require_intrinsic("molt_textwrap_indent_ex")
+_MOLT_TEXTWRAP_DEDENT = _require_intrinsic("molt_textwrap_dedent")
+_MOLT_TEXTWRAP_SHORTEN = _require_intrinsic("molt_textwrap_shorten")
 
 
 class TextWrapper:

@@ -20,18 +20,18 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
-_MOLT_LOGGING_CONFIG_DICT = _require_intrinsic("molt_logging_config_dict", globals())
+_MOLT_LOGGING_CONFIG_DICT = _require_intrinsic("molt_logging_config_dict")
 _MOLT_LOGGING_CONFIG_VALID_IDENT = _require_intrinsic(
-    "molt_logging_config_valid_ident", globals()
+    "molt_logging_config_valid_ident"
 )
 _MOLT_LOGGING_CONFIG_FILE_CONFIG = _require_intrinsic(
-    "molt_logging_config_file_config", globals()
+    "molt_logging_config_file_config"
 )
 _MOLT_LOGGING_CONFIG_LISTEN = _require_intrinsic(
-    "molt_logging_config_listen", globals()
+    "molt_logging_config_listen"
 )
 _MOLT_LOGGING_CONFIG_STOP_LISTENING = _require_intrinsic(
-    "molt_logging_config_stop_listening", globals()
+    "molt_logging_config_stop_listening"
 )
 
 DEFAULT_LOGGING_CONFIG_PORT = 9030

@@ -9,12 +9,12 @@ __all__ = [
     "DefaultCookiePolicy",
 ]
 
-_MOLT_COOKIEJAR_NEW = _require_intrinsic("molt_http_cookiejar_new", globals())
-_MOLT_COOKIEJAR_LEN = _require_intrinsic("molt_http_cookiejar_len", globals())
-_MOLT_COOKIEJAR_CLEAR = _require_intrinsic("molt_http_cookiejar_clear", globals())
-_MOLT_COOKIEJAR_EXTRACT = _require_intrinsic("molt_http_cookiejar_extract", globals())
+_MOLT_COOKIEJAR_NEW = _require_intrinsic("molt_http_cookiejar_new")
+_MOLT_COOKIEJAR_LEN = _require_intrinsic("molt_http_cookiejar_len")
+_MOLT_COOKIEJAR_CLEAR = _require_intrinsic("molt_http_cookiejar_clear")
+_MOLT_COOKIEJAR_EXTRACT = _require_intrinsic("molt_http_cookiejar_extract")
 _MOLT_COOKIEJAR_HEADER_FOR_URL = _require_intrinsic(
-    "molt_http_cookiejar_header_for_url", globals()
+    "molt_http_cookiejar_header_for_url"
 )
 
 

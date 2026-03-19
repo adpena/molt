@@ -8,26 +8,26 @@ import sys
 
 Any = object
 
-_require_intrinsic("molt_stdlib_probe", globals())
-_MOLT_TRACEBACK_PAYLOAD = _require_intrinsic("molt_traceback_payload", globals())
+_require_intrinsic("molt_stdlib_probe")
+_MOLT_TRACEBACK_PAYLOAD = _require_intrinsic("molt_traceback_payload")
 _MOLT_TRACEBACK_FORMAT_EXCEPTION_ONLY = _require_intrinsic(
-    "molt_traceback_format_exception_only", globals()
+    "molt_traceback_format_exception_only"
 )
 _MOLT_TRACEBACK_FORMAT_EXCEPTION = _require_intrinsic(
-    "molt_traceback_format_exception", globals()
+    "molt_traceback_format_exception"
 )
-_MOLT_TRACEBACK_FORMAT_TB = _require_intrinsic("molt_traceback_format_tb", globals())
+_MOLT_TRACEBACK_FORMAT_TB = _require_intrinsic("molt_traceback_format_tb")
 _MOLT_TRACEBACK_FORMAT_STACK = _require_intrinsic(
-    "molt_traceback_format_stack", globals()
+    "molt_traceback_format_stack"
 )
-_MOLT_TRACEBACK_EXTRACT_TB = _require_intrinsic("molt_traceback_extract_tb", globals())
+_MOLT_TRACEBACK_EXTRACT_TB = _require_intrinsic("molt_traceback_extract_tb")
 _MOLT_TRACEBACK_EXCEPTION_CHAIN_PAYLOAD = _require_intrinsic(
-    "molt_traceback_exception_chain_payload", globals()
+    "molt_traceback_exception_chain_payload"
 )
 _MOLT_TRACEBACK_EXCEPTION_SUPPRESS_CONTEXT = _require_intrinsic(
-    "molt_traceback_exception_suppress_context", globals()
+    "molt_traceback_exception_suppress_context"
 )
-_MOLT_GETFRAME = _require_intrinsic("molt_getframe", globals())
+_MOLT_GETFRAME = _require_intrinsic("molt_getframe")
 
 
 __all__ = [

@@ -11,23 +11,23 @@ import sys as _sys
 import importlib.machinery as machinery
 import importlib.util as util
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_require_intrinsic("molt_stdlib_probe")
 _MOLT_IMPORTLIB_RESOLVE_NAME = _require_intrinsic(
-    "molt_importlib_resolve_name", globals()
+    "molt_importlib_resolve_name"
 )
 _MOLT_IMPORTLIB_KNOWN_ABSENT_MISSING_NAME = _require_intrinsic(
-    "molt_importlib_known_absent_missing_name", globals()
+    "molt_importlib_known_absent_missing_name"
 )
 _MOLT_IMPORTLIB_IMPORT_MODULE = _require_intrinsic(
-    "molt_importlib_import_module", globals()
+    "molt_importlib_import_module"
 )
 _MOLT_IMPORTLIB_RUNTIME_MODULES = _require_intrinsic(
-    "molt_importlib_runtime_modules", globals()
+    "molt_importlib_runtime_modules"
 )
 _MOLT_IMPORTLIB_INVALIDATE_CACHES = _require_intrinsic(
-    "molt_importlib_invalidate_caches", globals()
+    "molt_importlib_invalidate_caches"
 )
-_MOLT_IMPORTLIB_RELOAD = _require_intrinsic("molt_importlib_reload", globals())
+_MOLT_IMPORTLIB_RELOAD = _require_intrinsic("molt_importlib_reload")
 _MODULE_ALIASES: dict[str, str] = {}
 
 

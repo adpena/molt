@@ -31,40 +31,40 @@ import textwrap
 import warnings
 import zipfile
 
-_require_intrinsic("molt_stdlib_probe", globals())
-_MOLT_IMPORTLIB_READ_FILE = _require_intrinsic("molt_importlib_read_file", globals())
+_require_intrinsic("molt_stdlib_probe")
+_MOLT_IMPORTLIB_READ_FILE = _require_intrinsic("molt_importlib_read_file")
 _MOLT_IMPORTLIB_METADATA_DIST_PATHS = _require_intrinsic(
-    "molt_importlib_metadata_dist_paths", globals()
+    "molt_importlib_metadata_dist_paths"
 )
 _MOLT_IMPORTLIB_BOOTSTRAP_PAYLOAD = _require_intrinsic(
-    "molt_importlib_bootstrap_payload", globals()
+    "molt_importlib_bootstrap_payload"
 )
 _MOLT_IMPORTLIB_METADATA_ENTRY_POINTS_SELECT_PAYLOAD = _require_intrinsic(
-    "molt_importlib_metadata_entry_points_select_payload", globals()
+    "molt_importlib_metadata_entry_points_select_payload"
 )
 _MOLT_IMPORTLIB_METADATA_ENTRY_POINTS_FILTER_PAYLOAD = _require_intrinsic(
-    "molt_importlib_metadata_entry_points_filter_payload", globals()
+    "molt_importlib_metadata_entry_points_filter_payload"
 )
 _MOLT_IMPORTLIB_METADATA_PAYLOAD = _require_intrinsic(
-    "molt_importlib_metadata_payload", globals()
+    "molt_importlib_metadata_payload"
 )
 _MOLT_IMPORTLIB_METADATA_DISTRIBUTIONS_PAYLOAD = _require_intrinsic(
-    "molt_importlib_metadata_distributions_payload", globals()
+    "molt_importlib_metadata_distributions_payload"
 )
 _MOLT_IMPORTLIB_METADATA_RECORD_PAYLOAD = _require_intrinsic(
-    "molt_importlib_metadata_record_payload", globals()
+    "molt_importlib_metadata_record_payload"
 )
 _MOLT_IMPORTLIB_METADATA_PACKAGES_DISTRIBUTIONS_PAYLOAD = _require_intrinsic(
-    "molt_importlib_metadata_packages_distributions_payload", globals()
+    "molt_importlib_metadata_packages_distributions_payload"
 )
 _MOLT_IMPORTLIB_METADATA_NORMALIZE_NAME = _require_intrinsic(
-    "molt_importlib_metadata_normalize_name", globals()
+    "molt_importlib_metadata_normalize_name"
 )
 _MOLT_IMPORTLIB_METADATA_TYPES_PAYLOAD = _require_intrinsic(
-    "molt_importlib_metadata_types_payload", globals()
+    "molt_importlib_metadata_types_payload"
 )
-_MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted", globals())
-_MOLT_CAPABILITIES_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
+_MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted")
+_MOLT_CAPABILITIES_REQUIRE = _require_intrinsic("molt_capabilities_require")
 
 
 def _load_types_payload() -> dict[str, object]:

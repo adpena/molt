@@ -7,8 +7,8 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 from ._functools import method_cache
 import re as re
 
-_MOLT_OPERATOR_EQ = _require_intrinsic("molt_operator_eq", globals())
-_MOLT_OPERATOR_LT = _require_intrinsic("molt_operator_lt", globals())
+_MOLT_OPERATOR_EQ = _require_intrinsic("molt_operator_eq")
+_MOLT_OPERATOR_LT = _require_intrinsic("molt_operator_lt")
 
 
 class FoldedCase(str):

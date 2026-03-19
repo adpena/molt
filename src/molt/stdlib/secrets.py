@@ -4,16 +4,16 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_molt_secrets_token_bytes = _require_intrinsic("molt_secrets_token_bytes", globals())
-_molt_secrets_token_hex = _require_intrinsic("molt_secrets_token_hex", globals())
+_molt_secrets_token_bytes = _require_intrinsic("molt_secrets_token_bytes")
+_molt_secrets_token_hex = _require_intrinsic("molt_secrets_token_hex")
 _molt_secrets_token_urlsafe = _require_intrinsic(
-    "molt_secrets_token_urlsafe", globals()
+    "molt_secrets_token_urlsafe"
 )
-_molt_secrets_randbits = _require_intrinsic("molt_secrets_randbits", globals())
-_molt_secrets_below = _require_intrinsic("molt_secrets_below", globals())
-_molt_secrets_choice = _require_intrinsic("molt_secrets_choice", globals())
+_molt_secrets_randbits = _require_intrinsic("molt_secrets_randbits")
+_molt_secrets_below = _require_intrinsic("molt_secrets_below")
+_molt_secrets_choice = _require_intrinsic("molt_secrets_choice")
 _molt_secrets_compare_digest = _require_intrinsic(
-    "molt_secrets_compare_digest", globals()
+    "molt_secrets_compare_digest"
 )
 
 DEFAULT_ENTROPY = 32
