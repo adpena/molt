@@ -11,7 +11,7 @@ import os
 from typing import TypeAlias
 
 # Avoid probe-only classification: this shim must still be intrinsic-backed.
-_require_intrinsic("molt_path_join", globals())
+_require_intrinsic("molt_path_join")
 
 PathLike: TypeAlias = os.PathLike
 

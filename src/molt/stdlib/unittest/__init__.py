@@ -11,7 +11,7 @@ import sys
 import traceback
 import types
 
-_MOLT_INSPECT_CLEANDOC = _require_intrinsic("molt_inspect_cleandoc", globals())
+_MOLT_INSPECT_CLEANDOC = _require_intrinsic("molt_inspect_cleandoc")
 
 
 __all__ = [

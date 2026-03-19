@@ -11,6 +11,6 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 from . import capabilities as capabilities
 
 # Avoid probe-only classification: this shim must still be intrinsic-backed.
-_require_intrinsic("molt_path_join", globals())
+_require_intrinsic("molt_path_join")
 
 __all__ = ["capabilities"]

@@ -7,7 +7,7 @@ import sys
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj", globals())
+_MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj")
 
 
 def _load_module(name: str):
