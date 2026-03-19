@@ -3,8 +3,8 @@
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
-_MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available", globals())
-_MOLT_TK_LAST_ERROR = _require_intrinsic("molt_tk_last_error", globals())
+_MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available")
+_MOLT_TK_LAST_ERROR = _require_intrinsic("molt_tk_last_error")
 
 
 def has_gui_capability():

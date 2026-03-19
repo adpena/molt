@@ -8,7 +8,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 from tkinter import commondialog as _commondialog
 from tkinter import dialog as _dialog
 
-_MOLT_TK_FILEDIALOG_SHOW = _require_intrinsic("molt_tk_filedialog_show", globals())
+_MOLT_TK_FILEDIALOG_SHOW = _require_intrinsic("molt_tk_filedialog_show")
 
 Dialog = _dialog.Dialog
 commondialog = _commondialog
