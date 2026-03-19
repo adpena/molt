@@ -7,16 +7,16 @@ import datetime as _datetime
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _molt_zoneinfo_runtime_ready = _require_intrinsic(
-    "molt_zoneinfo_runtime_ready", globals()
+    "molt_zoneinfo_runtime_ready"
 )
-_molt_zoneinfo_new = _require_intrinsic("molt_zoneinfo_new", globals())
-_molt_zoneinfo_drop = _require_intrinsic("molt_zoneinfo_drop", globals())
-_molt_zoneinfo_key = _require_intrinsic("molt_zoneinfo_key", globals())
-_molt_zoneinfo_utcoffset = _require_intrinsic("molt_zoneinfo_utcoffset", globals())
-_molt_zoneinfo_dst = _require_intrinsic("molt_zoneinfo_dst", globals())
-_molt_zoneinfo_tzname = _require_intrinsic("molt_zoneinfo_tzname", globals())
+_molt_zoneinfo_new = _require_intrinsic("molt_zoneinfo_new")
+_molt_zoneinfo_drop = _require_intrinsic("molt_zoneinfo_drop")
+_molt_zoneinfo_key = _require_intrinsic("molt_zoneinfo_key")
+_molt_zoneinfo_utcoffset = _require_intrinsic("molt_zoneinfo_utcoffset")
+_molt_zoneinfo_dst = _require_intrinsic("molt_zoneinfo_dst")
+_molt_zoneinfo_tzname = _require_intrinsic("molt_zoneinfo_tzname")
 _molt_zoneinfo_available_timezones = _require_intrinsic(
-    "molt_zoneinfo_available_timezones", globals()
+    "molt_zoneinfo_available_timezones"
 )
 
 
