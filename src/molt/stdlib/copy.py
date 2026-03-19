@@ -6,12 +6,12 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 from typing import Any, Callable
 
-_molt_copy_copy = _require_intrinsic("molt_copy_copy", globals())
-_molt_copy_deepcopy = _require_intrinsic("molt_copy_deepcopy", globals())
-_molt_copy_memo_new = _require_intrinsic("molt_copy_memo_new", globals())
-_molt_copy_memo_drop = _require_intrinsic("molt_copy_memo_drop", globals())
-_molt_copy_error = _require_intrinsic("molt_copy_error", globals())
-_molt_copy_replace = _require_intrinsic("molt_copy_replace", globals())
+_molt_copy_copy = _require_intrinsic("molt_copy_copy")
+_molt_copy_deepcopy = _require_intrinsic("molt_copy_deepcopy")
+_molt_copy_memo_new = _require_intrinsic("molt_copy_memo_new")
+_molt_copy_memo_drop = _require_intrinsic("molt_copy_memo_drop")
+_molt_copy_error = _require_intrinsic("molt_copy_error")
+_molt_copy_replace = _require_intrinsic("molt_copy_replace")
 
 __all__ = ["copy", "deepcopy", "replace", "Error", "dispatch_table"]
 

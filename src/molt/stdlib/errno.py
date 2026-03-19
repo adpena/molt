@@ -8,7 +8,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 
 def _load_errno_constants():
-    intrinsic = _require_intrinsic("molt_errno_constants", globals())
+    intrinsic = _require_intrinsic("molt_errno_constants")
     payload = intrinsic()
     if not isinstance(payload, tuple):
         raise RuntimeError("errno intrinsics unavailable")
