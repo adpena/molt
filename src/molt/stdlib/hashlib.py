@@ -34,14 +34,14 @@ __all__ = [
     "UnsupportedDigestmodError",
 ]
 
-_molt_hash_new = _require_intrinsic("molt_hash_new", globals())
-_molt_hash_update = _require_intrinsic("molt_hash_update", globals())
-_molt_hash_copy = _require_intrinsic("molt_hash_copy", globals())
-_molt_hash_digest = _require_intrinsic("molt_hash_digest", globals())
-_molt_hash_drop = _require_intrinsic("molt_hash_drop", globals())
-_molt_compare_digest = _require_intrinsic("molt_compare_digest", globals())
-_molt_pbkdf2_hmac = _require_intrinsic("molt_pbkdf2_hmac", globals())
-_molt_scrypt = _require_intrinsic("molt_scrypt", globals())
+_molt_hash_new = _require_intrinsic("molt_hash_new")
+_molt_hash_update = _require_intrinsic("molt_hash_update")
+_molt_hash_copy = _require_intrinsic("molt_hash_copy")
+_molt_hash_digest = _require_intrinsic("molt_hash_digest")
+_molt_hash_drop = _require_intrinsic("molt_hash_drop")
+_molt_compare_digest = _require_intrinsic("molt_compare_digest")
+_molt_pbkdf2_hmac = _require_intrinsic("molt_pbkdf2_hmac")
+_molt_scrypt = _require_intrinsic("molt_scrypt")
 
 _HASH_INFO: dict[str, tuple[int, int, bool]] = {
     "md4": (16, 64, False),
