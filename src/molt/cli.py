@@ -6071,8 +6071,7 @@ def _backend_daemon_request_bytes(
                 raw.extend(recv_view[:received])
     except OSError as exc:
         return None, f"backend daemon connection failed: {exc}"
-    raw = bytes(raw).strip()
-    if not raw:
+    if not raw or all(byte in b" \t\r\n" for byte in raw):
         return None, "backend daemon returned empty response"
     try:
         response = json.loads(raw)
