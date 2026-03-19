@@ -10,7 +10,7 @@ import unittest
 from itertools import chain
 from typing import TYPE_CHECKING, Any
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 if TYPE_CHECKING:
     from . import support

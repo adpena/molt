@@ -5,7 +5,7 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 if False:
-    _require_intrinsic("molt_capabilities_has", globals())
+    _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 raise SyntaxError(
     "utf-8 codec can't decode byte",

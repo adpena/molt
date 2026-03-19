@@ -8,7 +8,7 @@ import sys
 from functools import cmp_to_key
 from typing import TYPE_CHECKING, Any, cast
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 if TYPE_CHECKING:
     from . import seq_tests

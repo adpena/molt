@@ -6,7 +6,7 @@ import sys as _sys
 if _sys.platform != "win32":
     raise ModuleNotFoundError("No module named 'encodings._win_cp_codecs'")
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 # TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `encodings._win_cp_codecs` module stub with full intrinsic-backed lowering.
