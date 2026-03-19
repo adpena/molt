@@ -12,7 +12,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 from . import protocols
 from . import transports
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 logger = _logging.getLogger("asyncio")
 

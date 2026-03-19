@@ -37,7 +37,7 @@ from . import timeouts
 from . import transports
 from . import trsock
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 MAXIMUM_SELECT_TIMEOUT = 24 * 3600
 logger = _logging.getLogger("asyncio")
