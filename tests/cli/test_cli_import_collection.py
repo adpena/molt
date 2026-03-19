@@ -1927,6 +1927,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
             known_modules={"alpha"},
             stdlib_allowlist=set(),
             known_func_defaults={},
+            module_deps={"alpha": set()},
             namespace_module_names=set(),
             is_wasm=False,
             module_chunk_max_ops=0,
@@ -1997,6 +1998,7 @@ def test_load_cached_module_lowering_result_reuses_single_module_stat(
         known_modules={"alpha"},
         stdlib_allowlist=set(),
         known_func_defaults={},
+        module_deps={"alpha": set()},
         module_is_namespace=False,
         module_chunking=False,
         module_chunk_max_ops=0,
@@ -2029,6 +2031,55 @@ def test_dependent_module_closure_tracks_reverse_frontier() -> None:
     )
 
     assert closure == {"leaf", "alpha", "main"}
+
+
+def test_module_dependency_closure_tracks_forward_dependencies() -> None:
+    module_deps = {
+        "main": {"alpha", "beta"},
+        "alpha": {"leaf"},
+        "beta": set(),
+        "leaf": set(),
+    }
+
+    closure = cli._module_dependency_closure("main", module_deps)
+
+    assert closure == {"main", "alpha", "beta", "leaf"}
+
+
+def test_module_lowering_context_payload_ignores_unrelated_func_defaults() -> None:
+    payload = cli._module_lowering_context_payload(
+        "main",
+        Path("/tmp/main.py"),
+        logical_source_path="/tmp/main.py",
+        entry_override=None,
+        known_classes_snapshot={},
+        parse_codec="json",
+        type_hint_policy="ignore",
+        fallback_policy="error",
+        type_facts=None,
+        enable_phi=True,
+        known_modules={"main", "alpha", "beta"},
+        stdlib_allowlist=set(),
+        known_func_defaults={
+            "main": {"run": {"params": 0, "defaults": []}},
+            "alpha": {"helper": {"params": 1, "defaults": []}},
+            "beta": {"unused": {"params": 2, "defaults": []}},
+        },
+        module_deps={"main": {"alpha"}, "alpha": set(), "beta": set()},
+        module_is_namespace=False,
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=set(),
+        known_modules_sorted=("alpha", "beta", "main"),
+        stdlib_allowlist_sorted=(),
+        pgo_hot_function_names_sorted=(),
+        path_stat=os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
+    )
+
+    assert payload is not None
+    assert set(payload["known_func_defaults"]) == {"main", "alpha"}
+    assert "beta" not in payload["known_func_defaults"]
 
 
 def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
