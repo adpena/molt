@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import subprocess
 from pathlib import Path
 
@@ -84,6 +85,28 @@ def test_runtime_fingerprint_reuses_stored_hash_when_inputs_unchanged(
     )
     assert reused == baseline
     assert calls == 0
+
+
+def test_artifact_needs_rebuild_stats_artifact_once(tmp_path: Path, monkeypatch) -> None:
+    artifact = tmp_path / "artifact.o"
+    artifact.write_bytes(b"obj")
+    original_stat = Path.stat
+    calls = 0
+
+    def wrapped_stat(self: Path) -> os.stat_result:
+        nonlocal calls
+        calls += 1
+        return original_stat(self)
+
+    monkeypatch.setattr(Path, "stat", wrapped_stat, raising=True)
+    needs = cli._artifact_needs_rebuild(
+        artifact,
+        {"hash": "abc", "rustc": None, "inputs_digest": "x"},
+        {"hash": "abc", "rustc": None, "inputs_digest": "x"},
+    )
+
+    assert needs is False
+    assert calls == 1
 
 
 def test_backend_fingerprint_reuses_stored_hash_when_inputs_unchanged(

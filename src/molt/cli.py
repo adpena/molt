@@ -4806,7 +4806,9 @@ def _artifact_needs_rebuild(
     fingerprint: dict[str, str | None] | None,
     stored_fingerprint: dict[str, str | None] | None,
 ) -> bool:
-    if not artifact.exists():
+    try:
+        artifact.stat()
+    except OSError:
         return True
     if fingerprint is None or stored_fingerprint is None:
         return True
