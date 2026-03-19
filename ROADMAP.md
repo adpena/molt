@@ -1230,7 +1230,7 @@ complete. M-GPU-1 is the earliest actionable item and has no GPU hardware depend
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_suggestions` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_symtable` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_sysconfig` top-level stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_thread` top-level stub with full intrinsic-backed lowering.
+- Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_thread` now exposes Molt's intrinsic-backed low-level thread surface (`LockType`, `allocate_lock`, `start_new_thread`, identity helpers, `interrupt_main`, and stack-size controls) for CPython-compatible private-module imports.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_tokenize` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_tracemalloc` top-level stub with full intrinsic-backed lowering.
 - Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_types` now re-exports Molt's intrinsic-backed runtime type objects for CPython-compatible private-module imports.
