@@ -9989,6 +9989,25 @@ def _build_cache_info(
     return cache_info
 
 
+def _attach_build_metadata(
+    data: MutableMapping[str, Any],
+    *,
+    diagnostics_payload: Any | None,
+    pgo_profile_payload: Any | None,
+    runtime_feedback_payload: Any | None,
+    emit_ir_path: Path | None,
+) -> MutableMapping[str, Any]:
+    if diagnostics_payload is not None:
+        data["compile_diagnostics"] = diagnostics_payload
+    if pgo_profile_payload is not None:
+        data["pgo_profile"] = pgo_profile_payload
+    if runtime_feedback_payload is not None:
+        data["runtime_feedback"] = runtime_feedback_payload
+    if emit_ir_path is not None:
+        data["emit_ir"] = str(emit_ir_path)
+    return data
+
+
 def _initialize_runtime_artifact_state(
     *,
     is_rust_transpile: bool,
@@ -15154,16 +15173,15 @@ def build(
                 "linked": linked,
                 "require_linked": require_linked,
             }
-            if diagnostics_payload is not None:
-                data["compile_diagnostics"] = diagnostics_payload
-            if pgo_profile_payload is not None:
-                data["pgo_profile"] = pgo_profile_payload
-            if runtime_feedback_payload is not None:
-                data["runtime_feedback"] = runtime_feedback_payload
+            _attach_build_metadata(
+                data,
+                diagnostics_payload=diagnostics_payload,
+                pgo_profile_payload=pgo_profile_payload,
+                runtime_feedback_payload=runtime_feedback_payload,
+                emit_ir_path=emit_ir_path,
+            )
             if linked_output_path is not None:
                 data["linked_output"] = str(linked_output_path)
-            if emit_ir_path is not None:
-                data["emit_ir"] = str(emit_ir_path)
             payload = _json_payload(
                 "build",
                 "ok",
@@ -15221,14 +15239,13 @@ def build(
                 "cranelift_flags": "default",
                 "artifacts": {"object": str(output_obj)},
             }
-            if diagnostics_payload is not None:
-                data["compile_diagnostics"] = diagnostics_payload
-            if pgo_profile_payload is not None:
-                data["pgo_profile"] = pgo_profile_payload
-            if runtime_feedback_payload is not None:
-                data["runtime_feedback"] = runtime_feedback_payload
-            if emit_ir_path is not None:
-                data["emit_ir"] = str(emit_ir_path)
+            _attach_build_metadata(
+                data,
+                diagnostics_payload=diagnostics_payload,
+                pgo_profile_payload=pgo_profile_payload,
+                runtime_feedback_payload=runtime_feedback_payload,
+                emit_ir_path=emit_ir_path,
+            )
             payload = _json_payload(
                 "build",
                 "ok",
@@ -15662,14 +15679,13 @@ int main(int argc, char** argv) {
                 "cpu_baseline": _cpu_baseline(target_triple),
                 "cranelift_flags": "default",
             }
-            if diagnostics_payload is not None:
-                data["compile_diagnostics"] = diagnostics_payload
-            if pgo_profile_payload is not None:
-                data["pgo_profile"] = pgo_profile_payload
-            if runtime_feedback_payload is not None:
-                data["runtime_feedback"] = runtime_feedback_payload
-            if emit_ir_path is not None:
-                data["emit_ir"] = str(emit_ir_path)
+            _attach_build_metadata(
+                data,
+                diagnostics_payload=diagnostics_payload,
+                pgo_profile_payload=pgo_profile_payload,
+                runtime_feedback_payload=runtime_feedback_payload,
+                emit_ir_path=emit_ir_path,
+            )
             if link_process.stdout:
                 data["stdout"] = link_process.stdout
             if link_process.stderr:
@@ -15700,10 +15716,6 @@ int main(int argc, char** argv) {
                 "native_arch_perf": native_arch_perf_enabled,
                 "trusted": trusted,
             }
-            if pgo_profile_payload is not None:
-                data["pgo_profile"] = pgo_profile_payload
-            if runtime_feedback_payload is not None:
-                data["runtime_feedback"] = runtime_feedback_payload
             data["cache"] = _build_cache_info(
                 enabled=cache,
                 hit=cache_hit,
@@ -15716,8 +15728,13 @@ int main(int argc, char** argv) {
                 backend_daemon_cache_tier=backend_daemon_cache_tier,
                 backend_daemon_config_digest=backend_daemon_config_digest,
             )
-            if diagnostics_payload is not None:
-                data["compile_diagnostics"] = diagnostics_payload
+            _attach_build_metadata(
+                data,
+                diagnostics_payload=diagnostics_payload,
+                pgo_profile_payload=pgo_profile_payload,
+                runtime_feedback_payload=runtime_feedback_payload,
+                emit_ir_path=None,
+            )
             if link_process.stdout:
                 data["stdout"] = link_process.stdout
             if link_process.stderr:
