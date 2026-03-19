@@ -2135,6 +2135,47 @@ def test_dependent_module_closure_tracks_reverse_frontier() -> None:
     assert closure == {"leaf", "alpha", "main"}
 
 
+def test_reverse_module_dependencies_maps_dependents_once() -> None:
+    module_deps = {
+        "main": {"alpha", "beta"},
+        "alpha": {"leaf"},
+        "beta": set(),
+        "leaf": set(),
+    }
+
+    reverse = cli._reverse_module_dependencies(
+        module_deps,
+        {"main", "alpha", "beta", "leaf"},
+    )
+
+    assert reverse["leaf"] == {"alpha"}
+    assert reverse["alpha"] == {"main"}
+    assert reverse["beta"] == {"main"}
+    assert reverse["main"] == set()
+
+
+def test_dependent_module_closure_reuses_precomputed_reverse_frontier() -> None:
+    module_deps = {
+        "main": {"alpha", "beta"},
+        "alpha": {"leaf"},
+        "beta": set(),
+        "leaf": set(),
+    }
+    reverse = cli._reverse_module_dependencies(
+        module_deps,
+        {"main", "alpha", "beta", "leaf"},
+    )
+
+    closure = cli._dependent_module_closure(
+        {"leaf"},
+        module_deps,
+        {"main", "alpha", "beta", "leaf"},
+        reverse_module_deps=reverse,
+    )
+
+    assert closure == {"leaf", "alpha", "main"}
+
+
 def test_module_dependency_closure_tracks_forward_dependencies() -> None:
     module_deps = {
         "main": {"alpha", "beta"},
@@ -2146,6 +2187,23 @@ def test_module_dependency_closure_tracks_forward_dependencies() -> None:
     closure = cli._module_dependency_closure("main", module_deps)
 
     assert closure == {"main", "alpha", "beta", "leaf"}
+
+
+def test_module_dependencies_from_imports_resolves_direct_graph_edges() -> None:
+    module_graph = {
+        "main": Path("/tmp/main.py"),
+        "alpha": Path("/tmp/alpha.py"),
+        "beta": Path("/tmp/beta.py"),
+        "warnings": Path("/tmp/warnings.py"),
+    }
+
+    deps = cli._module_dependencies_from_imports(
+        "main",
+        module_graph,
+        ["alpha.helper", "beta", "molt.stdlib.warnings"],
+    )
+
+    assert deps == {"alpha", "beta", "warnings"}
 
 
 def test_module_lowering_context_payload_ignores_unrelated_func_defaults() -> None:
