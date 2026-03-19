@@ -15,24 +15,20 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 # Load intrinsics (require_intrinsic raises RuntimeError if unavailable)
 # ---------------------------------------------------------------------------
 
-_lock_new = _require_intrinsic("molt_lock_new", globals())
-_lock_acquire = _require_intrinsic("molt_lock_acquire", globals())
-_lock_release = _require_intrinsic("molt_lock_release", globals())
-_lock_locked = _require_intrinsic("molt_lock_locked", globals())
-_lock_drop = _require_intrinsic("molt_lock_drop", globals())
+_lock_new = _require_intrinsic("molt_lock_new")
+_lock_acquire = _require_intrinsic("molt_lock_acquire")
+_lock_release = _require_intrinsic("molt_lock_release")
+_lock_locked = _require_intrinsic("molt_lock_locked")
+_lock_drop = _require_intrinsic("molt_lock_drop")
 
-_thread_spawn_shared = _require_intrinsic("molt_thread_spawn_shared", globals())
-_thread_ident = _require_intrinsic("molt_thread_ident", globals())
-_thread_current_ident = _require_intrinsic("molt_thread_current_ident", globals())
-_thread_current_native_id = _require_intrinsic(
-    "molt_thread_current_native_id", globals()
-)
-_thread_registry_active_count = _require_intrinsic(
-    "molt_thread_registry_active_count", globals()
-)
-_thread_stack_size_get = _require_intrinsic("molt_thread_stack_size_get", globals())
-_thread_stack_size_set = _require_intrinsic("molt_thread_stack_size_set", globals())
-_signal_raise_signal = _require_intrinsic("molt_signal_raise_signal", globals())
+_thread_spawn_shared = _require_intrinsic("molt_thread_spawn_shared")
+_thread_ident = _require_intrinsic("molt_thread_ident")
+_thread_current_ident = _require_intrinsic("molt_thread_current_ident")
+_thread_current_native_id = _require_intrinsic("molt_thread_current_native_id")
+_thread_registry_active_count = _require_intrinsic("molt_thread_registry_active_count")
+_thread_stack_size_get = _require_intrinsic("molt_thread_stack_size_get")
+_thread_stack_size_set = _require_intrinsic("molt_thread_stack_size_set")
+_signal_raise_signal = _require_intrinsic("molt_signal_raise_signal")
 
 # ---------------------------------------------------------------------------
 # Constants
