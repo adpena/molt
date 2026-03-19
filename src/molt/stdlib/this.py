@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_THIS_PAYLOAD = _require_intrinsic("molt_this_payload", globals())
+_MOLT_THIS_PAYLOAD = _require_intrinsic("molt_this_payload")
 
 _payload = _MOLT_THIS_PAYLOAD()
 if not isinstance(_payload, tuple) or len(_payload) != 5:
