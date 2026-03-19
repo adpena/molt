@@ -6,7 +6,7 @@ import sys as _sys
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 _VERSION_INFO = getattr(_sys, "version_info", (3, 12, 0, "final", 0))
 
