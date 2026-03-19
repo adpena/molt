@@ -103,6 +103,36 @@ def test_write_namespace_module_avoids_rewriting_identical_content(
     assert writes == 1
 
 
+def test_build_module_lowering_metadata_precomputes_module_flags(
+    tmp_path: Path,
+) -> None:
+    module_graph = {
+        "app_entry": tmp_path / "app.py",
+        "pkg": tmp_path / "pkg" / "__init__.py",
+        "pkg.mod": tmp_path / "pkg" / "mod.py",
+    }
+    (
+        logical_source_path_by_module,
+        entry_override_by_module,
+        namespace_by_module,
+        (is_package_by_module),
+    ) = cli._build_module_lowering_metadata(
+        module_graph,
+        generated_module_source_paths={"pkg": "/generated/pkg/__init__.py"},
+        entry_module="app_entry",
+        namespace_module_names={"pkg"},
+    )
+
+    assert logical_source_path_by_module["pkg"] == "/generated/pkg/__init__.py"
+    assert logical_source_path_by_module["pkg.mod"] == str(module_graph["pkg.mod"])
+    assert entry_override_by_module["app_entry"] is None
+    assert entry_override_by_module["pkg.mod"] == "app_entry"
+    assert namespace_by_module["pkg"] is True
+    assert namespace_by_module["pkg.mod"] is False
+    assert is_package_by_module["pkg"] is True
+    assert is_package_by_module["pkg.mod"] is False
+
+
 def test_find_project_root_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
