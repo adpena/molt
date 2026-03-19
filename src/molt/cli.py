@@ -864,6 +864,22 @@ class _PreparedFrontendAnalysis:
     dirty_lowering_modules: set[str]
 
 
+@dataclass(frozen=True)
+class _PreparedFrontendLoweringConfig:
+    type_facts: TypeFacts | None
+    known_classes: dict[str, Any]
+    scoped_lowering_inputs: _ScopedLoweringInputs
+    module_graph_metadata: _ModuleGraphMetadata
+    frontend_module_costs: dict[str, float]
+    stdlib_like_by_module: dict[str, bool]
+    enable_phi: bool
+    module_chunk_max_ops: int
+    module_chunking: bool
+    frontend_parallel_config: _FrontendParallelConfig
+    frontend_parallel_layers: list[dict[str, Any]]
+    frontend_parallel_worker_timings: list[dict[str, Any]]
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -11823,6 +11839,134 @@ def _prepare_frontend_analysis(
     ), None
 
 
+def _prepare_frontend_lowering_config(
+    *,
+    type_facts_path: str | None,
+    type_hint_policy: TypeHintPolicy,
+    module_graph: Mapping[str, Path],
+    source_path: Path,
+    json_output: bool,
+    warnings: list[str],
+    module_deps: dict[str, set[str]],
+    module_dep_closures: dict[str, set[str]],
+    has_back_edges: bool,
+    known_modules: set[str],
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]],
+    pgo_hot_function_names: set[str],
+    generated_module_source_paths: dict[str, str],
+    entry_module: str,
+    namespace_module_names: set[str],
+    module_sources: dict[str, str],
+    is_wasm: bool,
+    target_triple: str | None,
+    frontend_parallel_details: dict[str, Any],
+    frontend_phase_timeout: float | None,
+) -> tuple[_PreparedFrontendLoweringConfig | None, dict[str, Any] | None]:
+    type_facts: TypeFacts | None = None
+    if type_facts_path is None and type_hint_policy in {"trust", "check"}:
+        type_facts, ty_ok = _collect_type_facts_for_build(
+            list(module_graph.values()), type_hint_policy, source_path
+        )
+        if type_facts is None and type_hint_policy == "trust":
+            return None, _fail(
+                "Type facts unavailable; refusing trusted build.",
+                json_output,
+                command="build",
+            )
+        if type_hint_policy == "trust" and not ty_ok:
+            return None, _fail(
+                "ty check failed; refusing trusted build.",
+                json_output,
+                command="build",
+            )
+        if type_hint_policy == "check" and not ty_ok:
+            warning = "ty check failed; continuing with guarded hints only."
+            warnings.append(warning)
+            if not json_output:
+                print(warning, file=sys.stderr)
+    if type_facts_path is not None:
+        facts_path = Path(type_facts_path)
+        if not facts_path.exists():
+            return None, _fail(
+                f"Type facts not found: {facts_path}",
+                json_output,
+                command="build",
+            )
+        try:
+            type_facts = load_type_facts(facts_path)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            return None, _fail(
+                f"Failed to load type facts: {exc}",
+                json_output,
+                command="build",
+            )
+
+    known_classes: dict[str, Any] = {}
+    scoped_lowering_inputs = _build_scoped_lowering_inputs(
+        module_graph,
+        module_deps=module_deps,
+        module_dep_closures=module_dep_closures,
+        known_modules=known_modules,
+        known_func_defaults=known_func_defaults,
+        pgo_hot_function_names=pgo_hot_function_names,
+        type_facts=cast(TypeFacts | None, type_facts),
+    )
+    module_graph_metadata = _build_module_graph_metadata(
+        module_graph,
+        generated_module_source_paths=generated_module_source_paths,
+        entry_module=entry_module,
+        namespace_module_names=namespace_module_names,
+        module_sources=module_sources,
+        module_deps=module_deps,
+    )
+    frontend_module_costs = module_graph_metadata.frontend_module_costs
+    stdlib_like_by_module = module_graph_metadata.stdlib_like_by_module
+    assert frontend_module_costs is not None
+    assert stdlib_like_by_module is not None
+
+    enable_phi = not is_wasm
+    module_chunk_max_ops = 0
+    if is_wasm:
+        module_chunk_max_ops = 2000
+        env_chunk_ops = os.environ.get("MOLT_WASM_MODULE_CHUNK_OPS")
+        if env_chunk_ops:
+            try:
+                module_chunk_max_ops = max(0, int(env_chunk_ops))
+            except ValueError:
+                warnings.append(
+                    "Invalid MOLT_WASM_MODULE_CHUNK_OPS; using default of 2000."
+                )
+    module_chunking = is_wasm and module_chunk_max_ops > 0
+    if target_triple:
+        _ensure_rustup_target(target_triple, warnings)
+
+    frontend_parallel_config = _resolve_frontend_parallel_config(
+        module_count=len(module_graph),
+        has_back_edges=has_back_edges,
+        frontend_phase_timeout=frontend_phase_timeout,
+    )
+    frontend_parallel_layers, frontend_parallel_worker_timings = (
+        _initialize_frontend_parallel_details(
+            frontend_parallel_details,
+            frontend_parallel_config=frontend_parallel_config,
+        )
+    )
+    return _PreparedFrontendLoweringConfig(
+        type_facts=type_facts,
+        known_classes=known_classes,
+        scoped_lowering_inputs=scoped_lowering_inputs,
+        module_graph_metadata=module_graph_metadata,
+        frontend_module_costs=frontend_module_costs,
+        stdlib_like_by_module=stdlib_like_by_module,
+        enable_phi=enable_phi,
+        module_chunk_max_ops=module_chunk_max_ops,
+        module_chunking=module_chunking,
+        frontend_parallel_config=frontend_parallel_config,
+        frontend_parallel_layers=frontend_parallel_layers,
+        frontend_parallel_worker_timings=frontend_parallel_worker_timings,
+    ), None
+
+
 def _prepare_backend_cache_setup(
     *,
     cache_enabled: bool,
@@ -15631,94 +15775,50 @@ def build(
     dirty_lowering_modules = prepared_frontend_analysis.dirty_lowering_modules
     if diagnostics_enabled:
         phase_starts["ir_lowering"] = time.perf_counter()
-    type_facts = None
-    if type_facts_path is None and type_hint_policy in {"trust", "check"}:
-        type_facts, ty_ok = _collect_type_facts_for_build(
-            list(module_graph.values()), type_hint_policy, source_path
+    prepared_frontend_lowering_config, prepared_frontend_lowering_config_error = (
+        _prepare_frontend_lowering_config(
+            type_facts_path=type_facts_path,
+            type_hint_policy=type_hint_policy,
+            module_graph=module_graph,
+            source_path=source_path,
+            json_output=json_output,
+            warnings=warnings,
+            module_deps=module_deps,
+            module_dep_closures=module_dep_closures,
+            has_back_edges=has_back_edges,
+            known_modules=known_modules,
+            known_func_defaults=known_func_defaults,
+            pgo_hot_function_names=pgo_hot_function_names,
+            generated_module_source_paths=generated_module_source_paths,
+            entry_module=entry_module,
+            namespace_module_names=namespace_module_names,
+            module_sources=module_sources,
+            is_wasm=is_wasm,
+            target_triple=target_triple,
+            frontend_parallel_details=frontend_parallel_details,
+            frontend_phase_timeout=frontend_phase_timeout,
         )
-        if type_facts is None and type_hint_policy == "trust":
-            return _fail(
-                "Type facts unavailable; refusing trusted build.",
-                json_output,
-                command="build",
-            )
-        if type_hint_policy == "trust" and not ty_ok:
-            return _fail(
-                "ty check failed; refusing trusted build.",
-                json_output,
-                command="build",
-            )
-        if type_hint_policy == "check" and not ty_ok:
-            warning = "ty check failed; continuing with guarded hints only."
-            warnings.append(warning)
-            if not json_output:
-                print(warning, file=sys.stderr)
-    if type_facts_path is not None:
-        facts_path = Path(type_facts_path)
-        if not facts_path.exists():
-            return _fail(
-                f"Type facts not found: {facts_path}",
-                json_output,
-                command="build",
-            )
-        try:
-            type_facts = load_type_facts(facts_path)
-        except (OSError, json.JSONDecodeError, ValueError) as exc:
-            return _fail(
-                f"Failed to load type facts: {exc}",
-                json_output,
-                command="build",
-            )
-    known_classes: dict[str, Any] = {}
-    scoped_lowering_inputs = _build_scoped_lowering_inputs(
-        module_graph,
-        module_deps=module_deps,
-        module_dep_closures=module_dep_closures,
-        known_modules=known_modules,
-        known_func_defaults=known_func_defaults,
-        pgo_hot_function_names=pgo_hot_function_names,
-        type_facts=cast(TypeFacts | None, type_facts),
     )
-    module_graph_metadata = _build_module_graph_metadata(
-        module_graph,
-        generated_module_source_paths=generated_module_source_paths,
-        entry_module=entry_module,
-        namespace_module_names=namespace_module_names,
-        module_sources=module_sources,
-        module_deps=module_deps,
+    if prepared_frontend_lowering_config_error is not None:
+        return prepared_frontend_lowering_config_error
+    assert prepared_frontend_lowering_config is not None
+    type_facts = prepared_frontend_lowering_config.type_facts
+    known_classes = prepared_frontend_lowering_config.known_classes
+    scoped_lowering_inputs = prepared_frontend_lowering_config.scoped_lowering_inputs
+    module_graph_metadata = prepared_frontend_lowering_config.module_graph_metadata
+    frontend_module_costs = prepared_frontend_lowering_config.frontend_module_costs
+    stdlib_like_by_module = prepared_frontend_lowering_config.stdlib_like_by_module
+    enable_phi = prepared_frontend_lowering_config.enable_phi
+    module_chunk_max_ops = prepared_frontend_lowering_config.module_chunk_max_ops
+    module_chunking = prepared_frontend_lowering_config.module_chunking
+    frontend_parallel_config = (
+        prepared_frontend_lowering_config.frontend_parallel_config
     )
-    frontend_module_costs = module_graph_metadata.frontend_module_costs
-    stdlib_like_by_module = module_graph_metadata.stdlib_like_by_module
-    assert frontend_module_costs is not None
-    assert stdlib_like_by_module is not None
-
-    enable_phi = not is_wasm
-    module_chunk_max_ops = 0
-    if is_wasm:
-        module_chunk_max_ops = 2000
-        env_chunk_ops = os.environ.get("MOLT_WASM_MODULE_CHUNK_OPS")
-        if env_chunk_ops:
-            try:
-                module_chunk_max_ops = max(0, int(env_chunk_ops))
-            except ValueError:
-                warnings.append(
-                    "Invalid MOLT_WASM_MODULE_CHUNK_OPS; using default of 2000."
-                )
-    module_chunking = is_wasm and module_chunk_max_ops > 0
-    if target_triple:
-        _ensure_rustup_target(target_triple, warnings)
-
-    frontend_parallel_config = _resolve_frontend_parallel_config(
-        module_count=len(module_order),
-        has_back_edges=has_back_edges,
-        frontend_phase_timeout=frontend_phase_timeout,
+    frontend_parallel_layers = (
+        prepared_frontend_lowering_config.frontend_parallel_layers
     )
-    (
-        frontend_parallel_layers,
-        frontend_parallel_worker_timings,
-    ) = _initialize_frontend_parallel_details(
-        frontend_parallel_details,
-        frontend_parallel_config=frontend_parallel_config,
+    frontend_parallel_worker_timings = (
+        prepared_frontend_lowering_config.frontend_parallel_worker_timings
     )
 
     def _record_frontend_parallel_worker_timing(
