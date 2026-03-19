@@ -1148,6 +1148,58 @@ def test_cargo_profile_dir_is_cached() -> None:
     assert info.currsize >= 1
 
 
+def test_default_molt_cache_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cli._default_molt_cache_cached.cache_clear()
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache-root"))
+
+    first = cli._default_molt_cache()
+    second = cli._default_molt_cache()
+
+    info = cli._default_molt_cache_cached.cache_info()
+    assert first == second == (tmp_path / "cache-root")
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
+def test_default_molt_home_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cli._default_molt_home_cached.cache_clear()
+    monkeypatch.setenv("MOLT_HOME", str(tmp_path / "home-root"))
+
+    first = cli._default_molt_home()
+    second = cli._default_molt_home()
+
+    info = cli._default_molt_home_cached.cache_info()
+    assert first == second == (tmp_path / "home-root")
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
+def test_default_molt_bin_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cli._default_molt_bin_cached.cache_clear()
+    monkeypatch.setenv("MOLT_BIN", str(tmp_path / "bin-root"))
+
+    first = cli._default_molt_bin()
+    second = cli._default_molt_bin()
+
+    info = cli._default_molt_bin_cached.cache_info()
+    assert first == second == (tmp_path / "bin-root")
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
+def test_wasm_runtime_root_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cli._wasm_runtime_root_cached.cache_clear()
+    monkeypatch.setenv("MOLT_WASM_RUNTIME_DIR", str(tmp_path / "wasm-root"))
+
+    first = cli._wasm_runtime_root(tmp_path)
+    second = cli._wasm_runtime_root(tmp_path)
+
+    info = cli._wasm_runtime_root_cached.cache_info()
+    assert first == second == (tmp_path / "wasm-root")
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
 def test_runtime_lib_path_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

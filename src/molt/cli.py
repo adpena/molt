@@ -8599,34 +8599,110 @@ def _safe_output_base(name: str) -> str:
     return cleaned or "molt"
 
 
-def _default_molt_home() -> Path:
-    home_override = os.environ.get("MOLT_HOME")
-    if home_override:
-        return _resolve_env_path("MOLT_HOME", Path())
-    # Keep the default home colocated with cache roots so build/clean workflows
-    # no longer depend on the legacy ~/.molt path.
-    return _default_molt_cache() / "home"
-
-
-def _default_molt_bin() -> Path:
-    return _resolve_env_path("MOLT_BIN", _default_molt_home() / "bin")
+@functools.lru_cache(maxsize=128)
+def _default_molt_cache_cached(
+    cache_override: str | None,
+    xdg_cache_home: str | None,
+    cwd_str: str,
+    home_str: str,
+    platform_name: str,
+) -> Path:
+    if cache_override:
+        path = Path(cache_override).expanduser()
+        if not path.is_absolute():
+            path = (Path(cwd_str) / path).absolute()
+        return path
+    if platform_name == "darwin":
+        base = Path(home_str) / "Library" / "Caches"
+    else:
+        if xdg_cache_home:
+            base = Path(xdg_cache_home).expanduser()
+            if not base.is_absolute():
+                base = (Path(cwd_str) / base).absolute()
+        else:
+            base = Path(home_str) / ".cache"
+    return base / "molt"
 
 
 def _default_molt_cache() -> Path:
-    cache_override = os.environ.get("MOLT_CACHE")
-    if cache_override:
-        return _resolve_env_path("MOLT_CACHE", Path())
-    if sys.platform == "darwin":
-        base = Path.home() / "Library" / "Caches"
-    else:
-        xdg = os.environ.get("XDG_CACHE_HOME")
-        if xdg:
-            base = Path(xdg).expanduser()
-            if not base.is_absolute():
-                base = (Path.cwd() / base).absolute()
-        else:
-            base = Path.home() / ".cache"
-    return base / "molt"
+    return _default_molt_cache_cached(
+        os.environ.get("MOLT_CACHE"),
+        os.environ.get("XDG_CACHE_HOME"),
+        os.fspath(Path.cwd()),
+        os.fspath(Path.home()),
+        sys.platform,
+    )
+
+
+@functools.lru_cache(maxsize=128)
+def _default_molt_home_cached(
+    home_override: str | None,
+    cache_override: str | None,
+    xdg_cache_home: str | None,
+    cwd_str: str,
+    home_str: str,
+    platform_name: str,
+) -> Path:
+    if home_override:
+        path = Path(home_override).expanduser()
+        if not path.is_absolute():
+            path = (Path(cwd_str) / path).absolute()
+        return path
+    return _default_molt_cache_cached(
+        cache_override,
+        xdg_cache_home,
+        cwd_str,
+        home_str,
+        platform_name,
+    ) / "home"
+
+
+def _default_molt_home() -> Path:
+    return _default_molt_home_cached(
+        os.environ.get("MOLT_HOME"),
+        os.environ.get("MOLT_CACHE"),
+        os.environ.get("XDG_CACHE_HOME"),
+        os.fspath(Path.cwd()),
+        os.fspath(Path.home()),
+        sys.platform,
+    )
+
+
+@functools.lru_cache(maxsize=128)
+def _default_molt_bin_cached(
+    bin_override: str | None,
+    home_override: str | None,
+    cache_override: str | None,
+    xdg_cache_home: str | None,
+    cwd_str: str,
+    home_str: str,
+    platform_name: str,
+) -> Path:
+    if bin_override:
+        path = Path(bin_override).expanduser()
+        if not path.is_absolute():
+            path = (Path(cwd_str) / path).absolute()
+        return path
+    return _default_molt_home_cached(
+        home_override,
+        cache_override,
+        xdg_cache_home,
+        cwd_str,
+        home_str,
+        platform_name,
+    ) / "bin"
+
+
+def _default_molt_bin() -> Path:
+    return _default_molt_bin_cached(
+        os.environ.get("MOLT_BIN"),
+        os.environ.get("MOLT_HOME"),
+        os.environ.get("MOLT_CACHE"),
+        os.environ.get("XDG_CACHE_HOME"),
+        os.fspath(Path.cwd()),
+        os.fspath(Path.home()),
+        sys.platform,
+    )
 
 
 @functools.lru_cache(maxsize=256)
@@ -8681,15 +8757,29 @@ def _build_state_root(project_root: Path) -> Path:
     )
 
 
-def _wasm_runtime_root(project_root: Path) -> Path:
-    env_root = os.environ.get("MOLT_WASM_RUNTIME_DIR")
+@functools.lru_cache(maxsize=128)
+def _wasm_runtime_root_cached(
+    project_root_str: str,
+    env_root: str | None,
+    ext_root: str | None,
+    cwd_str: str,
+) -> Path:
     if env_root:
         return Path(env_root).expanduser()
-    configured = os.environ.get("MOLT_EXT_ROOT")
-    external_root = Path(configured).expanduser() if configured else Path.cwd()
+    project_root = Path(project_root_str)
+    external_root = Path(ext_root).expanduser() if ext_root else Path(cwd_str)
     if external_root.is_dir():
         return external_root / "wasm"
     return project_root / "wasm"
+
+
+def _wasm_runtime_root(project_root: Path) -> Path:
+    return _wasm_runtime_root_cached(
+        os.fspath(project_root),
+        os.environ.get("MOLT_WASM_RUNTIME_DIR"),
+        os.environ.get("MOLT_EXT_ROOT"),
+        os.fspath(Path.cwd()),
+    )
 
 
 def _default_build_root(output_base: str) -> Path:
