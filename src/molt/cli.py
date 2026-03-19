@@ -2943,7 +2943,13 @@ def _topo_sort_modules(
 def _analyze_module_schedule(
     module_graph: Mapping[str, Path],
     module_deps: Mapping[str, set[str]],
-) -> tuple[list[str], dict[str, set[str]], bool, list[list[str]]]:
+) -> tuple[
+    list[str],
+    dict[str, set[str]],
+    bool,
+    list[list[str]],
+    dict[str, frozenset[str]],
+]:
     module_names = set(module_graph)
     in_degree = {name: 0 for name in module_names}
     reverse_module_deps = _reverse_module_dependencies(dict(module_deps), module_names)
@@ -2967,7 +2973,13 @@ def _analyze_module_schedule(
         remaining = sorted(name for name in module_names if name not in order)
         order.extend(remaining)
     layers = _module_dependency_layers(order, dict(module_deps))
-    return order, reverse_module_deps, has_back_edges, layers
+    module_dep_closures = _module_dependency_closures(
+        dict(module_deps),
+        module_names,
+        module_order=order,
+        has_back_edges=has_back_edges,
+    )
+    return order, reverse_module_deps, has_back_edges, layers, module_dep_closures
 
 
 def _reverse_module_dependencies(
@@ -11669,13 +11681,8 @@ def build(
         reverse_module_deps,
         has_back_edges,
         module_layers,
+        module_dep_closures,
     ) = _analyze_module_schedule(module_graph, module_deps)
-    module_dep_closures = _module_dependency_closures(
-        module_deps,
-        module_graph,
-        module_order=module_order,
-        has_back_edges=has_back_edges,
-    )
     dirty_lowering_modules = set(analysis_cache_miss_modules)
     dirty_lowering_modules.update(
         _dependent_module_closure(
