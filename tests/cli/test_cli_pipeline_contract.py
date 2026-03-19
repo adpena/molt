@@ -70,3 +70,7 @@ def test_frontend_internal_stage_transport_removed() -> None:
 
 def test_frontend_internal_execution_transport_removed() -> None:
     assert not hasattr(cli, "_PreparedFrontendExecutionContext")
+
+
+def test_frontend_stage_context_transport_removed() -> None:
+    assert not hasattr(cli, "_PreparedFrontendStageContext")

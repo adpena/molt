@@ -897,50 +897,6 @@ class _PreparedBuildDriverState:
 
 
 @dataclass(frozen=True)
-class _PreparedFrontendStageContext:
-    source_path: Path
-    entry_module: str
-    module_roots: list[Path]
-    stdlib_root: Path
-    project_root: Path
-    entry_tree: ast.AST
-    module_reasons: dict[str, set[str]]
-    diagnostics_enabled: bool
-    json_output: bool
-    target: Target
-    verbose: bool
-    out_dir: str | None
-    frontend_module_timings: list[dict[str, Any]]
-    frontend_timing_enabled: bool
-    frontend_timing_raw: str
-    frontend_timing_threshold: float
-    diagnostics_start: float
-    phase_starts: dict[str, float]
-    allocation_diagnostics_enabled: bool
-    frontend_parallel_details: dict[str, Any]
-    profile: BuildProfile
-    midend_policy_outcomes_by_function: dict[str, dict[str, Any]]
-    midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]]
-    backend_daemon_health: dict[str, Any] | None
-    backend_daemon_cached: bool | None
-    backend_daemon_cache_tier: str | None
-    backend_daemon_config_digest: str | None
-    diagnostics_path_spec: str
-    trusted: bool
-    require_linked: bool
-    linked: bool
-    linked_output: str | None
-    emit: EmitMode | None
-    output: str | None
-    emit_ir: str | None
-    type_facts_path: str | None
-    type_hint_policy: TypeHintPolicy
-    warnings: list[str]
-    pgo_hot_function_names: set[str]
-    frontend_phase_timeout: float | None
-
-
-@dataclass(frozen=True)
 class _PreparedFrontendAnalysis:
     module_graph_metadata: _ModuleGraphMetadata
     module_deps: dict[str, set[str]]
@@ -14150,7 +14106,24 @@ def _prepare_build_callbacks(
 
 def _prepare_frontend_stage_state(
     *,
-    prepared_frontend_stage_context: _PreparedFrontendStageContext,
+    prepared_build_preamble: _PreparedBuildPreamble,
+    prepared_build_roots: _PreparedBuildRoots,
+    prepared_build_config: _PreparedBuildConfig,
+    resolved_build_entry: _ResolvedBuildEntry,
+    json_output: bool,
+    target: Target,
+    verbose: bool,
+    out_dir: str | None,
+    trusted: bool,
+    require_linked: bool,
+    linked: bool,
+    linked_output: str | None,
+    emit: EmitMode | None,
+    output: str | None,
+    emit_ir: str | None,
+    type_facts_path: str | None,
+    type_hint_policy: TypeHintPolicy,
+    profile: BuildProfile,
 ) -> tuple[
     tuple[
         _PreparedEntryModuleGraph,
@@ -14164,66 +14137,40 @@ def _prepare_frontend_stage_state(
     | None,
     dict[str, Any] | None,
 ]:
-    source_path = prepared_frontend_stage_context.source_path
-    entry_module = prepared_frontend_stage_context.entry_module
-    module_roots = prepared_frontend_stage_context.module_roots
-    stdlib_root = prepared_frontend_stage_context.stdlib_root
-    project_root = prepared_frontend_stage_context.project_root
-    entry_tree = prepared_frontend_stage_context.entry_tree
-    module_reasons = prepared_frontend_stage_context.module_reasons
-    diagnostics_enabled = prepared_frontend_stage_context.diagnostics_enabled
-    json_output = prepared_frontend_stage_context.json_output
-    target = prepared_frontend_stage_context.target
-    verbose = prepared_frontend_stage_context.verbose
-    out_dir = prepared_frontend_stage_context.out_dir
-    frontend_module_timings = prepared_frontend_stage_context.frontend_module_timings
-    frontend_timing_enabled = (
-        prepared_frontend_stage_context.frontend_timing_enabled
-    )
-    frontend_timing_raw = prepared_frontend_stage_context.frontend_timing_raw
-    frontend_timing_threshold = (
-        prepared_frontend_stage_context.frontend_timing_threshold
-    )
-    diagnostics_start = prepared_frontend_stage_context.diagnostics_start
-    phase_starts = prepared_frontend_stage_context.phase_starts
+    source_path = resolved_build_entry.source_path
+    entry_module = resolved_build_entry.entry_module
+    module_roots = resolved_build_entry.module_roots
+    stdlib_root = prepared_build_preamble.stdlib_root
+    project_root = prepared_build_roots.project_root
+    entry_tree = resolved_build_entry.entry_tree
+    module_reasons = prepared_build_preamble.module_reasons
+    diagnostics_enabled = prepared_build_preamble.diagnostics_enabled
+    frontend_module_timings = prepared_build_preamble.frontend_module_timings
+    frontend_timing_enabled = prepared_build_preamble.frontend_timing_enabled
+    frontend_timing_raw = prepared_build_preamble.frontend_timing_raw
+    frontend_timing_threshold = prepared_build_preamble.frontend_timing_threshold
+    diagnostics_start = prepared_build_preamble.diagnostics_start
+    phase_starts = prepared_build_preamble.phase_starts
     allocation_diagnostics_enabled = (
-        prepared_frontend_stage_context.allocation_diagnostics_enabled
+        prepared_build_preamble.allocation_diagnostics_enabled
     )
-    frontend_parallel_details = (
-        prepared_frontend_stage_context.frontend_parallel_details
-    )
-    profile = prepared_frontend_stage_context.profile
+    frontend_parallel_details = prepared_build_preamble.frontend_parallel_details
     midend_policy_outcomes_by_function = (
-        prepared_frontend_stage_context.midend_policy_outcomes_by_function
+        prepared_build_preamble.midend_policy_outcomes_by_function
     )
     midend_pass_stats_by_function = (
-        prepared_frontend_stage_context.midend_pass_stats_by_function
+        prepared_build_preamble.midend_pass_stats_by_function
     )
-    backend_daemon_health = prepared_frontend_stage_context.backend_daemon_health
-    backend_daemon_cached = prepared_frontend_stage_context.backend_daemon_cached
-    backend_daemon_cache_tier = (
-        prepared_frontend_stage_context.backend_daemon_cache_tier
-    )
+    backend_daemon_health = prepared_build_preamble.backend_daemon_health
+    backend_daemon_cached = prepared_build_preamble.backend_daemon_cached
+    backend_daemon_cache_tier = prepared_build_preamble.backend_daemon_cache_tier
     backend_daemon_config_digest = (
-        prepared_frontend_stage_context.backend_daemon_config_digest
+        prepared_build_preamble.backend_daemon_config_digest
     )
-    diagnostics_path_spec = prepared_frontend_stage_context.diagnostics_path_spec
-    trusted = prepared_frontend_stage_context.trusted
-    require_linked = prepared_frontend_stage_context.require_linked
-    linked = prepared_frontend_stage_context.linked
-    linked_output = prepared_frontend_stage_context.linked_output
-    emit = prepared_frontend_stage_context.emit
-    output = prepared_frontend_stage_context.output
-    emit_ir = prepared_frontend_stage_context.emit_ir
-    type_facts_path = prepared_frontend_stage_context.type_facts_path
-    type_hint_policy = prepared_frontend_stage_context.type_hint_policy
-    warnings = prepared_frontend_stage_context.warnings
-    pgo_hot_function_names = (
-        prepared_frontend_stage_context.pgo_hot_function_names
-    )
-    frontend_phase_timeout = (
-        prepared_frontend_stage_context.frontend_phase_timeout
-    )
+    diagnostics_path_spec = prepared_build_preamble.diagnostics_path_spec
+    warnings = prepared_build_preamble.warnings
+    pgo_hot_function_names = prepared_build_config.pgo_hot_function_names
+    frontend_phase_timeout = prepared_build_config.frontend_phase_timeout
     if diagnostics_enabled:
         phase_starts["module_graph"] = time.perf_counter()
     prepared_module_graph, prepared_module_graph_error = _prepare_entry_module_graph(
@@ -14362,19 +14309,26 @@ def _prepare_frontend_stage_state(
 
 def _prepare_frontend_pipeline(
     *,
-    prepared_frontend_stage_context: _PreparedFrontendStageContext,
-    source_path: Path,
-    project_root: Path,
+    prepared_build_preamble: _PreparedBuildPreamble,
+    prepared_build_roots: _PreparedBuildRoots,
+    prepared_build_config: _PreparedBuildConfig,
+    resolved_build_entry: _ResolvedBuildEntry,
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
     profile: BuildProfile,
-    pgo_hot_function_names: set[str],
-    pgo_hot_function_names_sorted: tuple[str, ...],
-    frontend_phase_timeout: float | None,
-    frontend_parallel_details: dict[str, Any],
     json_output: bool,
-    warnings: list[str],
+    target: Target,
+    verbose: bool,
+    out_dir: str | None,
+    trusted: bool,
+    require_linked: bool,
+    linked: bool,
+    linked_output: str | None,
+    emit: EmitMode | None,
+    output: str | None,
+    emit_ir: str | None,
+    type_facts_path: str | None,
 ) -> tuple[
     tuple[
         _PreparedFrontendRunTicket,
@@ -14402,7 +14356,24 @@ def _prepare_frontend_pipeline(
 ]:
     prepared_frontend_stage_bundle, prepared_frontend_stage_state_error = (
         _prepare_frontend_stage_state(
-            prepared_frontend_stage_context=prepared_frontend_stage_context
+            prepared_build_preamble=prepared_build_preamble,
+            prepared_build_roots=prepared_build_roots,
+            prepared_build_config=prepared_build_config,
+            resolved_build_entry=resolved_build_entry,
+            json_output=json_output,
+            target=target,
+            verbose=verbose,
+            out_dir=out_dir,
+            trusted=trusted,
+            require_linked=require_linked,
+            linked=linked,
+            linked_output=linked_output,
+            emit=emit,
+            output=output,
+            emit_ir=emit_ir,
+            type_facts_path=type_facts_path,
+            type_hint_policy=type_hint_policy,
+            profile=profile,
         )
     )
     if prepared_frontend_stage_state_error is not None:
@@ -14418,10 +14389,10 @@ def _prepare_frontend_pipeline(
         artifacts_root,
     ) = prepared_frontend_stage_bundle
     midend_policy_outcomes_by_function = (
-        prepared_frontend_stage_context.midend_policy_outcomes_by_function
+        prepared_build_preamble.midend_policy_outcomes_by_function
     )
     midend_pass_stats_by_function = (
-        prepared_frontend_stage_context.midend_pass_stats_by_function
+        prepared_build_preamble.midend_pass_stats_by_function
     )
     frontend_parallel_worker_timings = (
         prepared_frontend_lowering_config.frontend_parallel_worker_timings
@@ -14463,7 +14434,7 @@ def _prepare_frontend_pipeline(
         syntax_error_modules=prepared_frontend_analysis.syntax_error_modules,
         module_graph=prepared_module_graph.module_graph,
         module_sources=prepared_frontend_analysis.module_sources,
-        project_root=project_root,
+        project_root=prepared_build_roots.project_root,
         module_resolution_cache=prepared_module_graph.module_resolution_cache,
         parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
@@ -14476,10 +14447,12 @@ def _prepare_frontend_pipeline(
         module_deps=prepared_frontend_analysis.module_deps,
         module_chunk_max_ops=prepared_frontend_lowering_config.module_chunk_max_ops,
         optimization_profile=profile,
-        pgo_hot_function_names=pgo_hot_function_names,
+        pgo_hot_function_names=prepared_build_config.pgo_hot_function_names,
         known_modules_sorted=prepared_build_outputs.known_modules_sorted,
         stdlib_allowlist_sorted=prepared_build_outputs.stdlib_allowlist_sorted,
-        pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+        pgo_hot_function_names_sorted=(
+            prepared_build_config.pgo_hot_function_names_sorted
+        ),
         module_dep_closures=prepared_frontend_analysis.module_dep_closures,
         module_graph_metadata=prepared_frontend_lowering_config.module_graph_metadata,
         module_path_stats=prepared_frontend_analysis.module_path_stats,
@@ -14491,12 +14464,12 @@ def _prepare_frontend_pipeline(
         known_classes=prepared_frontend_lowering_config.known_classes,
         module_trees=prepared_frontend_analysis.module_trees,
         generated_module_source_paths=prepared_build_outputs.generated_module_source_paths,
-        frontend_phase_timeout=frontend_phase_timeout,
+        frontend_phase_timeout=prepared_build_config.frontend_phase_timeout,
         record_frontend_timing=record_frontend_timing,
         fail=_fail,
         json_output=json_output,
-        warnings=warnings,
-        frontend_parallel_details=frontend_parallel_details,
+        warnings=prepared_build_preamble.warnings,
+        frontend_parallel_details=prepared_build_preamble.frontend_parallel_details,
         record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
         midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
         midend_pass_stats_by_function=midend_pass_stats_by_function,
@@ -14511,7 +14484,7 @@ def _prepare_frontend_pipeline(
             prepared_frontend_lowering_config.frontend_parallel_layers
         ),
         frontend_parallel_worker_timings=frontend_parallel_worker_timings,
-        frontend_parallel_details=frontend_parallel_details,
+        frontend_parallel_details=prepared_build_preamble.frontend_parallel_details,
         frontend_layer_execution_context=frontend_layer_execution_context,
         frontend_layer_runtime_hooks=frontend_layer_runtime_hooks,
     )
@@ -14599,73 +14572,28 @@ def _prepare_build_driver_state(
     prepared_build_roots = prepared_build_inputs.prepared_build_roots
     prepared_build_config = prepared_build_inputs.prepared_build_config
     resolved_build_entry = prepared_build_inputs.resolved_build_entry
-    prepared_frontend_stage_context = _PreparedFrontendStageContext(
-        source_path=resolved_build_entry.source_path,
-        entry_module=resolved_build_entry.entry_module,
-        module_roots=resolved_build_entry.module_roots,
-        stdlib_root=prepared_build_preamble.stdlib_root,
-        project_root=prepared_build_roots.project_root,
-        entry_tree=resolved_build_entry.entry_tree,
-        module_reasons=prepared_build_preamble.module_reasons,
-        diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
-        json_output=json_output,
-        target=target,
-        verbose=verbose,
-        out_dir=out_dir,
-        frontend_module_timings=prepared_build_preamble.frontend_module_timings,
-        frontend_timing_enabled=prepared_build_preamble.frontend_timing_enabled,
-        frontend_timing_raw=prepared_build_preamble.frontend_timing_raw,
-        frontend_timing_threshold=prepared_build_preamble.frontend_timing_threshold,
-        diagnostics_start=prepared_build_preamble.diagnostics_start,
-        phase_starts=prepared_build_preamble.phase_starts,
-        allocation_diagnostics_enabled=(
-            prepared_build_preamble.allocation_diagnostics_enabled
-        ),
-        frontend_parallel_details=prepared_build_preamble.frontend_parallel_details,
-        profile=profile,
-        midend_policy_outcomes_by_function=(
-            prepared_build_preamble.midend_policy_outcomes_by_function
-        ),
-        midend_pass_stats_by_function=(
-            prepared_build_preamble.midend_pass_stats_by_function
-        ),
-        backend_daemon_health=prepared_build_preamble.backend_daemon_health,
-        backend_daemon_cached=prepared_build_preamble.backend_daemon_cached,
-        backend_daemon_cache_tier=prepared_build_preamble.backend_daemon_cache_tier,
-        backend_daemon_config_digest=(
-            prepared_build_preamble.backend_daemon_config_digest
-        ),
-        diagnostics_path_spec=prepared_build_preamble.diagnostics_path_spec,
-        trusted=trusted,
-        require_linked=require_linked,
-        linked=linked,
-        linked_output=linked_output,
-        emit=emit,
-        output=output,
-        emit_ir=emit_ir,
-        type_facts_path=type_facts_path,
-        type_hint_policy=type_hint_policy,
-        warnings=prepared_build_preamble.warnings,
-        pgo_hot_function_names=prepared_build_config.pgo_hot_function_names,
-        frontend_phase_timeout=prepared_build_config.frontend_phase_timeout,
-    )
     prepared_frontend_pipeline_bundle, prepared_frontend_pipeline_error = (
         _prepare_frontend_pipeline(
-            prepared_frontend_stage_context=prepared_frontend_stage_context,
-            source_path=resolved_build_entry.source_path,
-            project_root=prepared_build_roots.project_root,
+            prepared_build_preamble=prepared_build_preamble,
+            prepared_build_roots=prepared_build_roots,
+            prepared_build_config=prepared_build_config,
+            resolved_build_entry=resolved_build_entry,
             parse_codec=parse_codec,
             type_hint_policy=type_hint_policy,
             fallback_policy=fallback_policy,
             profile=profile,
-            pgo_hot_function_names=prepared_build_config.pgo_hot_function_names,
-            pgo_hot_function_names_sorted=(
-                prepared_build_config.pgo_hot_function_names_sorted
-            ),
-            frontend_phase_timeout=prepared_build_config.frontend_phase_timeout,
-            frontend_parallel_details=prepared_build_preamble.frontend_parallel_details,
             json_output=json_output,
-            warnings=prepared_build_preamble.warnings,
+            target=target,
+            verbose=verbose,
+            out_dir=out_dir,
+            trusted=trusted,
+            require_linked=require_linked,
+            linked=linked,
+            linked_output=linked_output,
+            emit=emit,
+            output=output,
+            emit_ir=emit_ir,
+            type_facts_path=type_facts_path,
         )
     )
     if prepared_frontend_pipeline_error is not None:
