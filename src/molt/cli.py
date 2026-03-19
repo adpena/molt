@@ -643,6 +643,52 @@ class _FrontendLayerRuntimeHooks:
     ]
 
 
+@dataclass(frozen=True)
+class _SerialFrontendLoweringContext:
+    syntax_error_modules: Mapping[str, Any]
+    module_trees: Mapping[str, ast.AST]
+    module_sources: Mapping[str, str]
+    generated_module_source_paths: Mapping[str, str]
+    module_resolution_cache: "_ModuleResolutionCache"
+    project_root: Path | None
+    dirty_lowering_modules: Collection[str]
+    parse_codec: "ParseCodec"
+    type_hint_policy: "TypeHintPolicy"
+    fallback_policy: "FallbackPolicy"
+    type_facts: dict[str, Any] | None
+    enable_phi: bool
+    known_modules: Collection[str]
+    stdlib_allowlist: Collection[str]
+    known_func_defaults: dict[str, dict[str, Any]]
+    module_deps: dict[str, set[str]]
+    module_chunking: bool
+    module_chunk_max_ops: int
+    optimization_profile: str
+    pgo_hot_function_names: Collection[str]
+    known_modules_sorted: tuple[str, ...]
+    stdlib_allowlist_sorted: tuple[str, ...]
+    pgo_hot_function_names_sorted: tuple[str, ...]
+    module_dep_closures: dict[str, frozenset[str]]
+    scoped_lowering_inputs: "_ScopedLoweringInputs | None"
+    module_graph_metadata: "_ModuleGraphMetadata"
+    module_path_stats: Mapping[str, os.stat_result | None] | None
+    known_classes: Mapping[str, Any]
+    frontend_phase_timeout: float | None
+
+
+@dataclass(frozen=True)
+class _SerialFrontendLoweringHooks:
+    record_frontend_timing: Callable[..., None]
+    fail: Callable[[str, bool, str], dict[str, Any] | None]
+    json_output: bool
+
+
+class _ModuleLowerError(RuntimeError):
+    def __init__(self, message: str, *, timed_out: bool = False) -> None:
+        super().__init__(message)
+        self.timed_out = timed_out
+
+
 def _fresh_frontend_parallel_layer_state() -> _FrontendParallelLayerState:
     return _FrontendParallelLayerState()
 
@@ -8969,6 +9015,221 @@ def _append_frontend_serial_disabled_layer_detail(
     )
 
 
+def _resolve_tree_for_serial_frontend_module(
+    module_name: str,
+    module_path: Path,
+    *,
+    lowering_context: _SerialFrontendLoweringContext,
+) -> ast.AST:
+    if module_name in lowering_context.syntax_error_modules:
+        return _syntax_error_stub_ast(lowering_context.syntax_error_modules[module_name])
+    tree = lowering_context.module_trees.get(module_name)
+    if tree is not None:
+        return tree
+    source = lowering_context.module_sources.get(module_name)
+    if source is None:
+        try:
+            source = lowering_context.module_resolution_cache.read_module_source(module_path)
+        except (SyntaxError, UnicodeDecodeError) as exc:
+            raise _ModuleLowerError(f"Syntax error in {module_path}: {exc}") from exc
+        except OSError as exc:
+            raise _ModuleLowerError(f"Failed to read module {module_path}: {exc}") from exc
+    logical_source_path = lowering_context.generated_module_source_paths.get(
+        module_name, str(module_path)
+    )
+    try:
+        return lowering_context.module_resolution_cache.parse_module_ast(
+            module_path, source, filename=logical_source_path
+        )
+    except SyntaxError as exc:
+        raise _ModuleLowerError(f"Syntax error in {module_path}: {exc}") from exc
+
+
+def _lower_module_serial_with_context(
+    module_name: str,
+    module_path: Path,
+    *,
+    lowering_context: _SerialFrontendLoweringContext,
+) -> tuple[dict[str, Any], float, float, float]:
+    execution_view = _module_lowering_execution_view(
+        module_name,
+        module_path=module_path,
+        module_graph_metadata=lowering_context.module_graph_metadata,
+        module_deps=lowering_context.module_deps,
+        known_modules=lowering_context.known_modules,
+        known_func_defaults=lowering_context.known_func_defaults,
+        pgo_hot_function_names=lowering_context.pgo_hot_function_names,
+        type_facts=cast(TypeFacts | None, lowering_context.type_facts),
+        known_classes_snapshot=lowering_context.known_classes,
+        module_dep_closures=lowering_context.module_dep_closures,
+        path_stat_by_module=lowering_context.module_path_stats,
+        scoped_lowering_inputs=lowering_context.scoped_lowering_inputs,
+        known_modules_sorted=lowering_context.known_modules_sorted,
+        pgo_hot_function_names_sorted=lowering_context.pgo_hot_function_names_sorted,
+    )
+    metadata_view = execution_view.metadata
+    scoped_inputs = execution_view.scoped_inputs
+    logical_source_path = metadata_view.logical_source_path
+    entry_override = metadata_view.entry_override
+    is_package = metadata_view.is_package
+    module_is_namespace = metadata_view.module_is_namespace
+    path_stat = metadata_view.path_stat
+    if path_stat is None:
+        with contextlib.suppress(OSError):
+            path_stat = lowering_context.module_resolution_cache.path_stat(module_path)
+    scoped_known_classes = execution_view.scoped_known_classes
+    context_digest: str | None = None
+    if lowering_context.project_root is not None:
+        context_digest = _module_lowering_context_digest_for_module(
+            module_name,
+            module_path,
+            logical_source_path=logical_source_path,
+            entry_override=entry_override,
+            known_classes_snapshot=lowering_context.known_classes,
+            parse_codec=lowering_context.parse_codec,
+            type_hint_policy=lowering_context.type_hint_policy,
+            fallback_policy=lowering_context.fallback_policy,
+            type_facts=lowering_context.type_facts,
+            enable_phi=lowering_context.enable_phi,
+            known_modules=lowering_context.known_modules,
+            stdlib_allowlist=lowering_context.stdlib_allowlist,
+            known_func_defaults=lowering_context.known_func_defaults,
+            module_deps=lowering_context.module_deps,
+            module_is_namespace=module_is_namespace,
+            module_chunking=lowering_context.module_chunking,
+            module_chunk_max_ops=lowering_context.module_chunk_max_ops,
+            optimization_profile=lowering_context.optimization_profile,
+            pgo_hot_function_names=lowering_context.pgo_hot_function_names,
+            known_modules_sorted=lowering_context.known_modules_sorted,
+            stdlib_allowlist_sorted=lowering_context.stdlib_allowlist_sorted,
+            pgo_hot_function_names_sorted=lowering_context.pgo_hot_function_names_sorted,
+            module_dep_closures=lowering_context.module_dep_closures,
+            scoped_lowering_inputs=lowering_context.scoped_lowering_inputs,
+            scoped_inputs=scoped_inputs,
+            scoped_known_classes=scoped_known_classes,
+            is_package=is_package,
+            path_stat=path_stat,
+        )
+        if (
+            context_digest is not None
+            and module_name not in lowering_context.dirty_lowering_modules
+        ):
+            cached_payload = _read_persisted_module_lowering(
+                lowering_context.project_root,
+                module_path,
+                module_name=module_name,
+                is_package=is_package,
+                context_digest=context_digest,
+                path_stat=path_stat,
+            )
+            if cached_payload is not None:
+                return cached_payload, 0.0, 0.0, 0.0
+
+    tree = _resolve_tree_for_serial_frontend_module(
+        module_name,
+        module_path,
+        lowering_context=lowering_context,
+    )
+    gen = _module_frontend_generator(
+        module_name=module_name,
+        logical_source_path=logical_source_path,
+        entry_override=entry_override,
+        module_is_namespace=module_is_namespace,
+        parse_codec=lowering_context.parse_codec,
+        type_hint_policy=lowering_context.type_hint_policy,
+        fallback_policy=lowering_context.fallback_policy,
+        enable_phi=lowering_context.enable_phi,
+        stdlib_allowlist=lowering_context.stdlib_allowlist,
+        module_chunking=lowering_context.module_chunking,
+        module_chunk_max_ops=lowering_context.module_chunk_max_ops,
+        optimization_profile=lowering_context.optimization_profile,
+        scoped_inputs=scoped_inputs,
+        scoped_known_classes=scoped_known_classes,
+    )
+    module_frontend_start = time.perf_counter()
+    visit_s = 0.0
+    lower_s = 0.0
+    try:
+        visit_start = time.perf_counter()
+        with _phase_timeout(
+            lowering_context.frontend_phase_timeout,
+            phase_name=f"frontend visit ({module_name})",
+        ):
+            gen.visit(tree)
+        visit_s = time.perf_counter() - visit_start
+        lower_start = time.perf_counter()
+        with _phase_timeout(
+            lowering_context.frontend_phase_timeout,
+            phase_name=f"frontend IR lowering ({module_name})",
+        ):
+            ir = gen.to_json()
+        lower_s = time.perf_counter() - lower_start
+    except TimeoutError as exc:
+        raise _ModuleLowerError(str(exc), timed_out=True) from exc
+    except CompatibilityError as exc:
+        raise _ModuleLowerError(str(exc)) from exc
+    total_s = time.perf_counter() - module_frontend_start
+    payload = _module_frontend_payload(
+        gen,
+        ir,
+        visit_s=visit_s,
+        lower_s=lower_s,
+        total_s=total_s,
+    )
+    if lowering_context.project_root is not None and context_digest is not None:
+        with contextlib.suppress(OSError):
+            _write_persisted_module_lowering(
+                lowering_context.project_root,
+                module_path,
+                module_name=module_name,
+                is_package=is_package,
+                context_digest=context_digest,
+                result=payload,
+            )
+    return payload, visit_s, lower_s, total_s
+
+
+def _run_serial_frontend_lower_with_context(
+    module_name: str,
+    module_path: Path,
+    *,
+    lowering_context: _SerialFrontendLoweringContext,
+    lowering_hooks: _SerialFrontendLoweringHooks,
+) -> tuple[dict[str, Any] | None, _FrontendModuleResultTimings | None, dict[str, Any] | None]:
+    try:
+        result, visit_s, lower_s, total_s = _lower_module_serial_with_context(
+            module_name,
+            module_path,
+            lowering_context=lowering_context,
+        )
+    except _ModuleLowerError as exc:
+        lowering_hooks.record_frontend_timing(
+            module_name=module_name,
+            module_path=module_path,
+            visit_s=0.0,
+            lower_s=0.0,
+            total_s=0.0,
+            timed_out=exc.timed_out,
+            detail=str(exc),
+        )
+        return None, None, lowering_hooks.fail(
+            str(exc), lowering_hooks.json_output, command="build"
+        )
+    result_timings = _FrontendModuleResultTimings(
+        visit_s=visit_s,
+        lower_s=lower_s,
+        total_s=total_s,
+    )
+    lowering_hooks.record_frontend_timing(
+        module_name=module_name,
+        module_path=module_path,
+        visit_s=result_timings.visit_s,
+        lower_s=result_timings.lower_s,
+        total_s=result_timings.total_s,
+    )
+    return result, result_timings, None
+
+
 def _run_frontend_parallel_enabled_layers(
     module_layers: Sequence[Sequence[str]],
     *,
@@ -13240,11 +13501,6 @@ def build(
     if target_triple:
         _ensure_rustup_target(target_triple, warnings)
 
-    class _ModuleLowerError(RuntimeError):
-        def __init__(self, message: str, *, timed_out: bool = False) -> None:
-            super().__init__(message)
-            self.timed_out = timed_out
-
     def _accumulate_midend_diagnostics(
         module_name: str,
         *,
@@ -13308,205 +13564,6 @@ def build(
             if class_info is not None:
                 known_classes[class_name] = class_info
         return None
-
-    def _resolve_tree_for_module(module_name: str, module_path: Path) -> ast.AST:
-        if module_name in syntax_error_modules:
-            return _syntax_error_stub_ast(syntax_error_modules[module_name])
-        tree = module_trees.get(module_name)
-        if tree is not None:
-            return tree
-        source = module_sources.get(module_name)
-        if source is None:
-            try:
-                source = module_resolution_cache.read_module_source(module_path)
-            except (SyntaxError, UnicodeDecodeError) as exc:
-                raise _ModuleLowerError(
-                    f"Syntax error in {module_path}: {exc}"
-                ) from exc
-            except OSError as exc:
-                raise _ModuleLowerError(
-                    f"Failed to read module {module_path}: {exc}"
-                ) from exc
-        logical_source_path = generated_module_source_paths.get(
-            module_name, str(module_path)
-        )
-        try:
-            return module_resolution_cache.parse_module_ast(
-                module_path, source, filename=logical_source_path
-            )
-        except SyntaxError as exc:
-            raise _ModuleLowerError(f"Syntax error in {module_path}: {exc}") from exc
-
-    def _lower_module_serial(
-        module_name: str,
-        module_path: Path,
-    ) -> tuple[dict[str, Any], float, float, float]:
-        execution_view = _module_lowering_execution_view(
-            module_name,
-            module_path=module_path,
-            module_graph_metadata=module_graph_metadata,
-            module_deps=module_deps,
-            known_modules=known_modules,
-            known_func_defaults=known_func_defaults,
-            pgo_hot_function_names=pgo_hot_function_names,
-            type_facts=cast(TypeFacts | None, type_facts),
-            known_classes_snapshot=known_classes,
-            module_dep_closures=module_dep_closures,
-            path_stat_by_module=module_path_stats,
-            scoped_lowering_inputs=scoped_lowering_inputs,
-            known_modules_sorted=known_modules_sorted,
-            pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
-        )
-        metadata_view = execution_view.metadata
-        scoped_inputs = execution_view.scoped_inputs
-        logical_source_path = metadata_view.logical_source_path
-        entry_override = metadata_view.entry_override
-        is_package = metadata_view.is_package
-        module_is_namespace = metadata_view.module_is_namespace
-        path_stat = metadata_view.path_stat
-        if path_stat is None:
-            with contextlib.suppress(OSError):
-                path_stat = module_resolution_cache.path_stat(module_path)
-        scoped_known_classes = execution_view.scoped_known_classes
-        context_digest: str | None = None
-        if project_root is not None:
-            context_digest = _module_lowering_context_digest_for_module(
-                module_name,
-                module_path,
-                logical_source_path=logical_source_path,
-                entry_override=entry_override,
-                known_classes_snapshot=known_classes,
-                parse_codec=parse_codec,
-                type_hint_policy=type_hint_policy,
-                fallback_policy=fallback_policy,
-                type_facts=type_facts,
-                enable_phi=enable_phi,
-                known_modules=known_modules,
-                stdlib_allowlist=stdlib_allowlist,
-                known_func_defaults=known_func_defaults,
-                module_deps=module_deps,
-                module_is_namespace=module_is_namespace,
-                module_chunking=module_chunking,
-                module_chunk_max_ops=module_chunk_max_ops,
-                optimization_profile=profile,
-                pgo_hot_function_names=pgo_hot_function_names,
-                known_modules_sorted=known_modules_sorted,
-                stdlib_allowlist_sorted=stdlib_allowlist_sorted,
-                pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
-                module_dep_closures=module_dep_closures,
-                scoped_lowering_inputs=scoped_lowering_inputs,
-                scoped_inputs=scoped_inputs,
-                scoped_known_classes=scoped_known_classes,
-                is_package=is_package,
-                path_stat=path_stat,
-            )
-            if context_digest is not None and module_name not in dirty_lowering_modules:
-                cached_payload = _read_persisted_module_lowering(
-                    project_root,
-                    module_path,
-                    module_name=module_name,
-                    is_package=is_package,
-                    context_digest=context_digest,
-                    path_stat=path_stat,
-                )
-                if cached_payload is not None:
-                    return cached_payload, 0.0, 0.0, 0.0
-
-        tree = _resolve_tree_for_module(module_name, module_path)
-        gen = _module_frontend_generator(
-            module_name=module_name,
-            logical_source_path=logical_source_path,
-            entry_override=entry_override,
-            module_is_namespace=module_is_namespace,
-            parse_codec=parse_codec,
-            type_hint_policy=type_hint_policy,
-            fallback_policy=fallback_policy,
-            enable_phi=enable_phi,
-            stdlib_allowlist=stdlib_allowlist,
-            module_chunking=module_chunking,
-            module_chunk_max_ops=module_chunk_max_ops,
-            optimization_profile=profile,
-            scoped_inputs=scoped_inputs,
-            scoped_known_classes=scoped_known_classes,
-        )
-        module_frontend_start = time.perf_counter()
-        visit_s = 0.0
-        lower_s = 0.0
-        try:
-            visit_start = time.perf_counter()
-            with _phase_timeout(
-                frontend_phase_timeout,
-                phase_name=f"frontend visit ({module_name})",
-            ):
-                gen.visit(tree)
-            visit_s = time.perf_counter() - visit_start
-            lower_start = time.perf_counter()
-            with _phase_timeout(
-                frontend_phase_timeout,
-                phase_name=f"frontend IR lowering ({module_name})",
-            ):
-                ir = gen.to_json()
-            lower_s = time.perf_counter() - lower_start
-        except TimeoutError as exc:
-            raise _ModuleLowerError(str(exc), timed_out=True) from exc
-        except CompatibilityError as exc:
-            raise _ModuleLowerError(str(exc)) from exc
-        total_s = time.perf_counter() - module_frontend_start
-        payload = _module_frontend_payload(
-            gen,
-            ir,
-            visit_s=visit_s,
-            lower_s=lower_s,
-            total_s=total_s,
-        )
-        if project_root is not None and context_digest is not None:
-            with contextlib.suppress(OSError):
-                _write_persisted_module_lowering(
-                    project_root,
-                    module_path,
-                    module_name=module_name,
-                    is_package=is_package,
-                    context_digest=context_digest,
-                    result=payload,
-                )
-        return payload, visit_s, lower_s, total_s
-
-    def _run_serial_frontend_lower(
-        module_name: str,
-        module_path: Path,
-    ) -> tuple[
-        dict[str, Any] | None,
-        _FrontendModuleResultTimings | None,
-        dict[str, Any] | None,
-    ]:
-        try:
-            result, visit_s, lower_s, total_s = _lower_module_serial(
-                module_name, module_path
-            )
-        except _ModuleLowerError as exc:
-            _record_frontend_timing(
-                module_name=module_name,
-                module_path=module_path,
-                visit_s=0.0,
-                lower_s=0.0,
-                total_s=0.0,
-                timed_out=exc.timed_out,
-                detail=str(exc),
-            )
-            return None, None, _fail(str(exc), json_output, command="build")
-        result_timings = _FrontendModuleResultTimings(
-            visit_s=visit_s,
-            lower_s=lower_s,
-            total_s=total_s,
-        )
-        _record_frontend_timing(
-            module_name=module_name,
-            module_path=module_path,
-            visit_s=result_timings.visit_s,
-            lower_s=result_timings.lower_s,
-            total_s=result_timings.total_s,
-        )
-        return result, result_timings, None
 
     frontend_parallel_config = _resolve_frontend_parallel_config(
         module_count=len(module_order),
@@ -13579,6 +13636,57 @@ def build(
         stdlib_like_by_module=stdlib_like_by_module,
         known_classes=known_classes,
     )
+    serial_frontend_lowering_context = _SerialFrontendLoweringContext(
+        syntax_error_modules=syntax_error_modules,
+        module_trees=module_trees,
+        module_sources=module_sources,
+        generated_module_source_paths=generated_module_source_paths,
+        module_resolution_cache=module_resolution_cache,
+        project_root=project_root,
+        dirty_lowering_modules=dirty_lowering_modules,
+        parse_codec=parse_codec,
+        type_hint_policy=type_hint_policy,
+        fallback_policy=fallback_policy,
+        type_facts=type_facts,
+        enable_phi=enable_phi,
+        known_modules=known_modules,
+        stdlib_allowlist=stdlib_allowlist,
+        known_func_defaults=known_func_defaults,
+        module_deps=module_deps,
+        module_chunking=module_chunking,
+        module_chunk_max_ops=module_chunk_max_ops,
+        optimization_profile=profile,
+        pgo_hot_function_names=pgo_hot_function_names,
+        known_modules_sorted=known_modules_sorted,
+        stdlib_allowlist_sorted=stdlib_allowlist_sorted,
+        pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+        module_dep_closures=module_dep_closures,
+        scoped_lowering_inputs=scoped_lowering_inputs,
+        module_graph_metadata=module_graph_metadata,
+        module_path_stats=module_path_stats,
+        known_classes=known_classes,
+        frontend_phase_timeout=frontend_phase_timeout,
+    )
+    serial_frontend_lowering_hooks = _SerialFrontendLoweringHooks(
+        record_frontend_timing=_record_frontend_timing,
+        fail=_fail,
+        json_output=json_output,
+    )
+    def _run_serial_frontend_lower(
+        module_name: str,
+        module_path: Path,
+    ) -> tuple[
+        dict[str, Any] | None,
+        _FrontendModuleResultTimings | None,
+        dict[str, Any] | None,
+    ]:
+        return _run_serial_frontend_lower_with_context(
+            module_name,
+            module_path,
+            lowering_context=serial_frontend_lowering_context,
+            lowering_hooks=serial_frontend_lowering_hooks,
+        )
+
     frontend_layer_runtime_hooks = _FrontendLayerRuntimeHooks(
         warnings=warnings,
         frontend_parallel_details=frontend_parallel_details,
