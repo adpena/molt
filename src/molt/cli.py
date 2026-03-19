@@ -889,6 +889,12 @@ class _PreparedBuildInputs:
 
 
 @dataclass(frozen=True)
+class _PreparedBuildDriverState:
+    prepared_build_inputs: _PreparedBuildInputs
+    prepared_frontend_pipeline: "_PreparedFrontendPipeline"
+
+
+@dataclass(frozen=True)
 class _PreparedFrontendAnalysis:
     module_graph_metadata: _ModuleGraphMetadata
     module_deps: dict[str, set[str]]
@@ -13932,6 +13938,81 @@ def _emit_build_result(
     )
 
 
+def _finalize_build_result(
+    *,
+    output_layout: _BuildOutputLayout,
+    prepared_backend_pipeline: _PreparedBackendPipeline,
+    prepared_frontend_backend_handoff: _PreparedFrontendBackendHandoff,
+    require_linked: bool,
+    json_output: bool,
+    molt_root: Path,
+    trusted: bool,
+    capabilities_list: list[str] | None,
+    runtime_cargo_profile: str,
+    sysroot_path: Path | None,
+    profile: BuildProfile,
+    project_root: Path,
+    diagnostics_enabled: bool,
+    phase_starts: dict[str, float],
+    link_timeout: float | None,
+    warnings: list[str],
+) -> int:
+    if output_layout.is_wasm or output_layout.emit_mode == "obj":
+        prepared_non_native_result, prepared_non_native_result_error = (
+            _prepare_non_native_build_result(
+                is_wasm=output_layout.is_wasm,
+                linked=output_layout.linked,
+                require_linked=require_linked,
+                linked_output_path=output_layout.linked_output_path,
+                output_artifact=output_layout.output_artifact,
+                json_output=json_output,
+                runtime_reloc_wasm=prepared_backend_pipeline.runtime_reloc_wasm,
+                ensure_runtime_wasm_reloc=(
+                    prepared_backend_pipeline.ensure_runtime_wasm_reloc
+                ),
+                molt_root=molt_root,
+            )
+        )
+        if prepared_non_native_result_error is not None:
+            return prepared_non_native_result_error
+        assert prepared_non_native_result is not None
+        return _emit_build_result(
+            is_wasm=output_layout.is_wasm,
+            prepared_non_native_result=prepared_non_native_result,
+            prepared_native_link=None,
+            result_context=prepared_backend_pipeline.build_result_context,
+        )
+
+    prepared_native_link, prepared_native_link_error = _prepare_native_link(
+        output_artifact=output_layout.output_artifact,
+        trusted=trusted,
+        capabilities_list=capabilities_list,
+        artifacts_root=prepared_frontend_backend_handoff.artifacts_root,
+        json_output=json_output,
+        output_binary=output_layout.output_binary,
+        runtime_lib=prepared_backend_pipeline.runtime_lib,
+        molt_root=molt_root,
+        runtime_cargo_profile=runtime_cargo_profile,
+        target_triple=output_layout.target_triple,
+        sysroot_path=sysroot_path,
+        profile=profile,
+        project_root=project_root,
+        diagnostics_enabled=diagnostics_enabled,
+        phase_starts=phase_starts,
+        link_timeout=link_timeout,
+        warnings=warnings,
+    )
+    if prepared_native_link_error is not None:
+        return prepared_native_link_error
+    assert prepared_native_link is not None
+    return _emit_build_result(
+        is_wasm=output_layout.is_wasm,
+        prepared_non_native_result=None,
+        prepared_native_link=prepared_native_link,
+        result_context=prepared_backend_pipeline.build_result_context,
+    )
+
+
 def _prepare_build_callbacks(
     *,
     frontend_module_timings: list[dict[str, Any]],
@@ -14298,6 +14379,127 @@ def _prepare_frontend_pipeline(
         prepared_frontend_analysis=prepared_frontend_analysis,
         prepared_frontend_lowering_config=prepared_frontend_lowering_config,
         prepared_module_graph=prepared_module_graph,
+    ), None
+
+
+def _prepare_build_driver_state(
+    *,
+    file_path: str | None,
+    module: str | None,
+    diagnostics: bool | None,
+    diagnostics_file: str | None,
+    diagnostics_verbosity: str | None,
+    json_output: bool,
+    target: Target,
+    deterministic: bool,
+    deterministic_warn: bool,
+    sysroot: str | None,
+    profile: BuildProfile,
+    pgo_profile: str | None,
+    runtime_feedback: str | None,
+    capabilities: CapabilityInput | None,
+    respect_pythonpath: bool,
+    verbose: bool,
+    out_dir: str | None,
+    trusted: bool,
+    require_linked: bool,
+    linked: bool,
+    linked_output: str | None,
+    emit: EmitMode | None,
+    output: str | None,
+    emit_ir: str | None,
+    type_facts_path: str | None,
+    type_hint_policy: TypeHintPolicy,
+    parse_codec: ParseCodec,
+    fallback_policy: FallbackPolicy,
+) -> tuple[_PreparedBuildDriverState | None, dict[str, Any] | None]:
+    prepared_build_inputs, prepared_build_inputs_error = _prepare_build_inputs(
+        file_path=file_path,
+        module=module,
+        diagnostics=diagnostics,
+        diagnostics_file=diagnostics_file,
+        diagnostics_verbosity=diagnostics_verbosity,
+        json_output=json_output,
+        target=target,
+        deterministic=deterministic,
+        deterministic_warn=deterministic_warn,
+        sysroot=sysroot,
+        profile=profile,
+        pgo_profile=pgo_profile,
+        runtime_feedback=runtime_feedback,
+        capabilities=capabilities,
+        respect_pythonpath=respect_pythonpath,
+    )
+    if prepared_build_inputs_error is not None:
+        return None, prepared_build_inputs_error
+    assert prepared_build_inputs is not None
+    prepared_build_preamble = prepared_build_inputs.prepared_build_preamble
+    prepared_build_roots = prepared_build_inputs.prepared_build_roots
+    prepared_build_config = prepared_build_inputs.prepared_build_config
+    resolved_build_entry = prepared_build_inputs.resolved_build_entry
+    prepared_frontend_pipeline, prepared_frontend_pipeline_error = (
+        _prepare_frontend_pipeline(
+            source_path=resolved_build_entry.source_path,
+            entry_module=resolved_build_entry.entry_module,
+            module_roots=resolved_build_entry.module_roots,
+            stdlib_root=prepared_build_preamble.stdlib_root,
+            project_root=prepared_build_roots.project_root,
+            entry_tree=resolved_build_entry.entry_tree,
+            module_reasons=prepared_build_preamble.module_reasons,
+            diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
+            json_output=json_output,
+            target=target,
+            verbose=verbose,
+            out_dir=out_dir,
+            frontend_module_timings=prepared_build_preamble.frontend_module_timings,
+            frontend_timing_enabled=prepared_build_preamble.frontend_timing_enabled,
+            frontend_timing_raw=prepared_build_preamble.frontend_timing_raw,
+            frontend_timing_threshold=prepared_build_preamble.frontend_timing_threshold,
+            diagnostics_start=prepared_build_preamble.diagnostics_start,
+            phase_starts=prepared_build_preamble.phase_starts,
+            allocation_diagnostics_enabled=(
+                prepared_build_preamble.allocation_diagnostics_enabled
+            ),
+            frontend_parallel_details=prepared_build_preamble.frontend_parallel_details,
+            profile=profile,
+            midend_policy_outcomes_by_function=(
+                prepared_build_preamble.midend_policy_outcomes_by_function
+            ),
+            midend_pass_stats_by_function=(
+                prepared_build_preamble.midend_pass_stats_by_function
+            ),
+            backend_daemon_health=prepared_build_preamble.backend_daemon_health,
+            backend_daemon_cached=prepared_build_preamble.backend_daemon_cached,
+            backend_daemon_cache_tier=prepared_build_preamble.backend_daemon_cache_tier,
+            backend_daemon_config_digest=(
+                prepared_build_preamble.backend_daemon_config_digest
+            ),
+            diagnostics_path_spec=prepared_build_preamble.diagnostics_path_spec,
+            trusted=trusted,
+            require_linked=require_linked,
+            linked=linked,
+            linked_output=linked_output,
+            emit=emit,
+            output=output,
+            emit_ir=emit_ir,
+            type_facts_path=type_facts_path,
+            type_hint_policy=type_hint_policy,
+            warnings=prepared_build_preamble.warnings,
+            pgo_hot_function_names=prepared_build_config.pgo_hot_function_names,
+            parse_codec=parse_codec,
+            fallback_policy=fallback_policy,
+            pgo_hot_function_names_sorted=(
+                prepared_build_config.pgo_hot_function_names_sorted
+            ),
+            frontend_phase_timeout=prepared_build_config.frontend_phase_timeout,
+        )
+    )
+    if prepared_frontend_pipeline_error is not None:
+        return None, prepared_frontend_pipeline_error
+    assert prepared_frontend_pipeline is not None
+    return _PreparedBuildDriverState(
+        prepared_build_inputs=prepared_build_inputs,
+        prepared_frontend_pipeline=prepared_frontend_pipeline,
     ), None
 
 
@@ -17837,26 +18039,43 @@ def build(
         )
     if not file_path and not module:
         return _fail("Missing entry file or module.", json_output, command="build")
-    prepared_build_inputs, prepared_build_inputs_error = _prepare_build_inputs(
-        file_path=file_path,
-        module=module,
-        diagnostics=diagnostics,
-        diagnostics_file=diagnostics_file,
-        diagnostics_verbosity=diagnostics_verbosity,
-        json_output=json_output,
-        target=target,
-        deterministic=deterministic,
-        deterministic_warn=deterministic_warn,
-        sysroot=sysroot,
-        profile=profile,
-        pgo_profile=pgo_profile,
-        runtime_feedback=runtime_feedback,
-        capabilities=capabilities,
-        respect_pythonpath=respect_pythonpath,
+    prepared_build_driver_state, prepared_build_driver_state_error = (
+        _prepare_build_driver_state(
+            file_path=file_path,
+            module=module,
+            diagnostics=diagnostics,
+            diagnostics_file=diagnostics_file,
+            diagnostics_verbosity=diagnostics_verbosity,
+            json_output=json_output,
+            target=target,
+            deterministic=deterministic,
+            deterministic_warn=deterministic_warn,
+            sysroot=sysroot,
+            profile=profile,
+            pgo_profile=pgo_profile,
+            runtime_feedback=runtime_feedback,
+            capabilities=capabilities,
+            respect_pythonpath=respect_pythonpath,
+            verbose=verbose,
+            out_dir=out_dir,
+            trusted=trusted,
+            require_linked=require_linked,
+            linked=linked,
+            linked_output=linked_output,
+            emit=emit,
+            output=output,
+            emit_ir=emit_ir,
+            type_facts_path=type_facts_path,
+            type_hint_policy=type_hint_policy,
+            parse_codec=parse_codec,
+            fallback_policy=fallback_policy,
+        )
     )
-    if prepared_build_inputs_error is not None:
-        return prepared_build_inputs_error
-    assert prepared_build_inputs is not None
+    if prepared_build_driver_state_error is not None:
+        return prepared_build_driver_state_error
+    assert prepared_build_driver_state is not None
+    prepared_build_inputs = prepared_build_driver_state.prepared_build_inputs
+    prepared_frontend_pipeline = prepared_build_driver_state.prepared_frontend_pipeline
     prepared_build_preamble = prepared_build_inputs.prepared_build_preamble
     prepared_build_roots = prepared_build_inputs.prepared_build_roots
     prepared_build_config = prepared_build_inputs.prepared_build_config
@@ -17921,56 +18140,6 @@ def build(
     module_roots = resolved_build_entry.module_roots
     entry_source = resolved_build_entry.entry_source
     entry_tree = resolved_build_entry.entry_tree
-    prepared_frontend_pipeline, prepared_frontend_pipeline_error = (
-        _prepare_frontend_pipeline(
-            source_path=source_path,
-            entry_module=entry_module,
-            module_roots=module_roots,
-            stdlib_root=stdlib_root,
-            project_root=project_root,
-            entry_tree=entry_tree,
-            module_reasons=module_reasons,
-            diagnostics_enabled=diagnostics_enabled,
-            json_output=json_output,
-            target=target,
-            verbose=verbose,
-            out_dir=out_dir,
-            frontend_module_timings=frontend_module_timings,
-            frontend_timing_enabled=frontend_timing_enabled,
-            frontend_timing_raw=frontend_timing_raw,
-            frontend_timing_threshold=frontend_timing_threshold,
-            diagnostics_start=diagnostics_start,
-            phase_starts=phase_starts,
-            allocation_diagnostics_enabled=allocation_diagnostics_enabled,
-            frontend_parallel_details=frontend_parallel_details,
-            profile=profile,
-            midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
-            midend_pass_stats_by_function=midend_pass_stats_by_function,
-            backend_daemon_health=backend_daemon_health,
-            backend_daemon_cached=backend_daemon_cached,
-            backend_daemon_cache_tier=backend_daemon_cache_tier,
-            backend_daemon_config_digest=backend_daemon_config_digest,
-            diagnostics_path_spec=diagnostics_path_spec,
-            trusted=trusted,
-            require_linked=require_linked,
-            linked=linked,
-            linked_output=linked_output,
-            emit=emit,
-            output=output,
-            emit_ir=emit_ir,
-            type_facts_path=type_facts_path,
-            type_hint_policy=type_hint_policy,
-            warnings=warnings,
-            pgo_hot_function_names=pgo_hot_function_names,
-            parse_codec=parse_codec,
-            fallback_policy=fallback_policy,
-            pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
-            frontend_phase_timeout=frontend_phase_timeout,
-        )
-    )
-    if prepared_frontend_pipeline_error is not None:
-        return prepared_frontend_pipeline_error
-    assert prepared_frontend_pipeline is not None
     prepared_frontend_run_ticket = (
         prepared_frontend_pipeline.prepared_frontend_run_ticket
     )
@@ -18046,47 +18215,16 @@ def build(
     if prepared_backend_pipeline_error is not None:
         return prepared_backend_pipeline_error
     assert prepared_backend_pipeline is not None
-    runtime_lib = prepared_backend_pipeline.runtime_lib
-    runtime_reloc_wasm = prepared_backend_pipeline.runtime_reloc_wasm
-    ensure_runtime_wasm_reloc = prepared_backend_pipeline.ensure_runtime_wasm_reloc
-    build_result_context = prepared_backend_pipeline.build_result_context
-
-    if is_wasm or emit_mode == "obj":
-        prepared_non_native_result, prepared_non_native_result_error = (
-            _prepare_non_native_build_result(
-                is_wasm=is_wasm,
-                linked=linked,
-                require_linked=require_linked,
-                linked_output_path=linked_output_path,
-                output_artifact=output_artifact,
-                json_output=json_output,
-                runtime_reloc_wasm=runtime_reloc_wasm,
-                ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
-                molt_root=molt_root,
-            )
-        )
-        if prepared_non_native_result_error is not None:
-            return prepared_non_native_result_error
-        assert prepared_non_native_result is not None
-        linked_output_path = prepared_non_native_result.linked_output_path
-        return _emit_build_result(
-            is_wasm=is_wasm,
-            prepared_non_native_result=prepared_non_native_result,
-            prepared_native_link=None,
-            result_context=build_result_context,
-        )
-
-    prepared_native_link, prepared_native_link_error = _prepare_native_link(
-        output_artifact=output_artifact,
+    return _finalize_build_result(
+        output_layout=output_layout,
+        prepared_backend_pipeline=prepared_backend_pipeline,
+        prepared_frontend_backend_handoff=prepared_frontend_backend_handoff,
+        require_linked=require_linked,
+        json_output=json_output,
+        molt_root=molt_root,
         trusted=trusted,
         capabilities_list=capabilities_list,
-        artifacts_root=prepared_frontend_backend_handoff.artifacts_root,
-        json_output=json_output,
-        output_binary=output_binary,
-        runtime_lib=runtime_lib,
-        molt_root=molt_root,
         runtime_cargo_profile=runtime_cargo_profile,
-        target_triple=target_triple,
         sysroot_path=sysroot_path,
         profile=profile,
         project_root=project_root,
@@ -18094,16 +18232,6 @@ def build(
         phase_starts=phase_starts,
         link_timeout=link_timeout,
         warnings=warnings,
-    )
-    if prepared_native_link_error is not None:
-        return prepared_native_link_error
-    assert prepared_native_link is not None
-
-    return _emit_build_result(
-        is_wasm=is_wasm,
-        prepared_non_native_result=None,
-        prepared_native_link=prepared_native_link,
-        result_context=build_result_context,
     )
 
 
