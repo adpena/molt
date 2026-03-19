@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 # TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P2, status:planned): implement bz2 compression/decompression parity or runtime-backed hooks.
@@ -22,3 +21,5 @@ class BZ2Decompressor:
 
 
 __all__ = ["BZ2Compressor", "BZ2Decompressor"]
+
+del _MOLT_CAPABILITIES_HAS
