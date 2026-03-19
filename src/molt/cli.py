@@ -2939,6 +2939,36 @@ def _topo_sort_modules(
     return order
 
 
+def _analyze_module_schedule(
+    module_graph: Mapping[str, Path],
+    module_deps: Mapping[str, set[str]],
+) -> tuple[list[str], dict[str, set[str]], bool, list[list[str]]]:
+    module_names = set(module_graph)
+    in_degree = {name: 0 for name in module_names}
+    reverse_module_deps = _reverse_module_dependencies(dict(module_deps), module_names)
+    for name, deps in module_deps.items():
+        for dep in deps:
+            if dep in module_names and name in in_degree:
+                in_degree[name] += 1
+    ready = deque(sorted(name for name, degree in in_degree.items() if degree == 0))
+    order: list[str] = []
+    while ready:
+        name = ready.popleft()
+        order.append(name)
+        for child in sorted(reverse_module_deps.get(name, ())):
+            if child not in in_degree:
+                continue
+            in_degree[child] -= 1
+            if in_degree[child] == 0:
+                ready.append(child)
+    has_back_edges = len(order) != len(module_names)
+    if has_back_edges:
+        remaining = sorted(name for name in module_names if name not in order)
+        order.extend(remaining)
+    layers = _module_dependency_layers(order, dict(module_deps))
+    return order, reverse_module_deps, has_back_edges, layers
+
+
 def _reverse_module_dependencies(
     module_deps: dict[str, set[str]],
     module_names: Collection[str],
@@ -11620,9 +11650,13 @@ def build(
             module_imports,
         )
         known_func_defaults[module_name] = func_defaults
-    module_order = _topo_sort_modules(module_graph, module_deps)
+    (
+        module_order,
+        reverse_module_deps,
+        has_back_edges,
+        module_layers,
+    ) = _analyze_module_schedule(module_graph, module_deps)
     module_dep_closures = _module_dependency_closures(module_deps, module_graph)
-    reverse_module_deps = _reverse_module_dependencies(module_deps, module_graph)
     dirty_lowering_modules = set(analysis_cache_miss_modules)
     dirty_lowering_modules.update(
         _dependent_module_closure(
@@ -12001,7 +12035,6 @@ def build(
     )
     frontend_parallel_enabled = False
     frontend_parallel_reason = "disabled"
-    has_back_edges = _module_order_has_back_edges(module_order, module_deps)
     if frontend_parallel_workers < 2:
         frontend_parallel_reason = "workers<2"
     elif len(module_order) < 2:
@@ -12085,7 +12118,6 @@ def build(
         }
 
     if frontend_parallel_enabled:
-        module_layers = _module_dependency_layers(module_order, module_deps)
         parallel_pool_usable = True
         with ProcessPoolExecutor(max_workers=frontend_parallel_workers) as executor:
             for layer_index, layer in enumerate(module_layers):
