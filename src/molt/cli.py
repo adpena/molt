@@ -4417,6 +4417,34 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
     ).hexdigest()[:24]
 
 
+@functools.lru_cache(maxsize=1024)
+def _module_graph_cache_key(
+    entry_path: str,
+    roots: tuple[str, ...],
+    module_roots: tuple[str, ...],
+    stdlib_root: str,
+    skip_modules: tuple[str, ...],
+    stub_parents: tuple[str, ...],
+    nested_stdlib_scan_modules: tuple[str, ...],
+) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "version": 1,
+                "entry_path": str(Path(entry_path).resolve()),
+                "roots": [str(Path(path).resolve()) for path in roots],
+                "module_roots": [str(Path(path).resolve()) for path in module_roots],
+                "stdlib_root": str(Path(stdlib_root).resolve()),
+                "skip_modules": list(skip_modules),
+                "stub_parents": list(stub_parents),
+                "nested_stdlib_scan_modules": list(nested_stdlib_scan_modules),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+
+
 def _runtime_fingerprint_path(
     project_root: Path,
     artifact: Path,
@@ -6709,22 +6737,15 @@ def _module_graph_cache_path(
     nested_stdlib_scan_modules: set[str],
 ) -> Path:
     root = _build_state_root(project_root) / "module_graph_cache"
-    cache_key = hashlib.sha256(
-        json.dumps(
-            {
-                "version": 1,
-                "entry_path": str(entry_path.resolve()),
-                "roots": [str(path.resolve()) for path in roots],
-                "module_roots": [str(path.resolve()) for path in module_roots],
-                "stdlib_root": str(stdlib_root.resolve()),
-                "skip_modules": sorted(skip_modules),
-                "stub_parents": sorted(stub_parents),
-                "nested_stdlib_scan_modules": sorted(nested_stdlib_scan_modules),
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()[:24]
+    cache_key = _module_graph_cache_key(
+        os.fspath(entry_path),
+        tuple(os.fspath(path) for path in roots),
+        tuple(os.fspath(path) for path in module_roots),
+        os.fspath(stdlib_root),
+        tuple(sorted(skip_modules)),
+        tuple(sorted(stub_parents)),
+        tuple(sorted(nested_stdlib_scan_modules)),
+    )
     return root / f"{entry_path.stem}.{cache_key}.json"
 
 
