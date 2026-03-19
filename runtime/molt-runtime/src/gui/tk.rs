@@ -377,7 +377,18 @@ impl TclObj {
             TclObjKind::Scalar(text) => text.clone(),
             TclObjKind::List(items) => items
                 .iter()
-                .map(TclObj::to_string)
+                .map(|item| {
+                    let s = item.to_string();
+                    // Brace elements that contain spaces, braces, or special Tcl chars
+                    if s.contains(' ') || s.contains('{') || s.contains('}')
+                        || s.contains('"') || s.contains('\\') || s.contains('[')
+                        || s.contains(']') || s.contains('$') || s.is_empty()
+                    {
+                        format!("{{{}}}", s)
+                    } else {
+                        s
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(" "),
         }
