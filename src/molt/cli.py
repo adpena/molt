@@ -307,7 +307,7 @@ def _write_importer_module(module_names: list[str], output_dir: Path) -> Path:
         ]
     )
     path = output_dir / f"{IMPORTER_MODULE_NAME}.py"
-    path.write_text("\n".join(lines) + "\n")
+    _write_text_if_changed(path, "\n".join(lines) + "\n")
     return path
 
 
@@ -2323,7 +2323,7 @@ def _write_namespace_module(name: str, paths: list[str], output_dir: Path) -> Pa
         "",
     ]
     stub_path.parent.mkdir(parents=True, exist_ok=True)
-    stub_path.write_text("\n".join(lines))
+    _write_text_if_changed(stub_path, "\n".join(lines))
     return stub_path
 
 
@@ -3006,7 +3006,11 @@ def _scoped_known_modules(
         scoped_names = _module_dependency_closure(module_name, module_deps)
     known_modules_set = set(known_modules)
     return tuple(
-        sorted(name for name in scoped_names if name == module_name or name in known_modules_set)
+        sorted(
+            name
+            for name in scoped_names
+            if name == module_name or name in known_modules_set
+        )
     )
 
 
@@ -3017,7 +3021,9 @@ def _scoped_known_classes(
     known_classes: dict[str, Any],
     module_dep_closures: dict[str, frozenset[str]] | None = None,
 ) -> dict[str, Any]:
-    scoped_modules = module_dep_closures.get(module_name) if module_dep_closures else None
+    scoped_modules = (
+        module_dep_closures.get(module_name) if module_dep_closures else None
+    )
     if scoped_modules is None:
         scoped_modules = _module_dependency_closure(module_name, module_deps)
     return {
@@ -3036,7 +3042,9 @@ def _scoped_type_facts(
 ) -> TypeFacts | None:
     if type_facts is None:
         return None
-    scoped_modules = module_dep_closures.get(module_name) if module_dep_closures else None
+    scoped_modules = (
+        module_dep_closures.get(module_name) if module_dep_closures else None
+    )
     if scoped_modules is None:
         scoped_modules = _module_dependency_closure(module_name, module_deps)
     modules = getattr(type_facts, "modules", None)
@@ -4622,7 +4630,9 @@ def _rustc_version() -> str | None:
 
 @functools.lru_cache(maxsize=512)
 def _resolved_artifact_hash_key(path_str: str) -> str:
-    return hashlib.sha256(str(Path(path_str).resolve()).encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(str(Path(path_str).resolve()).encode("utf-8")).hexdigest()[
+        :16
+    ]
 
 
 @functools.lru_cache(maxsize=4096)
@@ -4691,11 +4701,7 @@ def _artifact_state_path_cached(
         if stem_suffix
         else f"{artifact_name}.{artifact_key}"
     )
-    return (
-        Path(build_state_root_str)
-        / subdir
-        / f"{stem}.{extension}"
-    )
+    return Path(build_state_root_str) / subdir / f"{stem}.{extension}"
 
 
 @functools.lru_cache(maxsize=512)
@@ -6250,9 +6256,7 @@ def _backend_daemon_paths_cached(
         daemon_digest = config_digest or _backend_daemon_config_digest(
             project_root, cargo_profile
         )
-        key = (
-            f"{project_root.resolve()}|{build_state_root}|{cargo_profile}|{daemon_digest}"
-        )
+        key = f"{project_root.resolve()}|{build_state_root}|{cargo_profile}|{daemon_digest}"
         suffix = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
         socket_path = socket_dir / f"moltbd.{suffix}.sock"
     daemon_root = build_state_root / "backend_daemon"
@@ -6502,7 +6506,9 @@ def _backend_daemon_skip_output_sync_flags(
         tier="module",
         stat=output_stat,
     )
-    skip_function_output = bool(function_cache_key) and _artifact_sync_state_matches_stat(
+    skip_function_output = bool(
+        function_cache_key
+    ) and _artifact_sync_state_matches_stat(
         state,
         source_key=function_cache_key or "",
         tier="function",
@@ -6575,12 +6581,16 @@ def _stage_backend_output_and_caches(
                 output_stat = output_artifact.stat()
             except OSError:
                 output_stat = None
-        output_already_synced = bool(cache_key) and output_stat is not None and (
-            _artifact_sync_state_matches_stat(
-                state,
-                source_key=cache_key or "",
-                tier="module",
-                stat=output_stat,
+        output_already_synced = (
+            bool(cache_key)
+            and output_stat is not None
+            and (
+                _artifact_sync_state_matches_stat(
+                    state,
+                    source_key=cache_key or "",
+                    tier="module",
+                    stat=output_stat,
+                )
             )
         )
 
@@ -7080,9 +7090,7 @@ def _compile_with_backend_daemon(
         cached = first.get("cached") if isinstance(first.get("cached"), bool) else None
         raw_tier = first.get("cache_tier")
         cache_tier = (
-            raw_tier.strip()
-            if isinstance(raw_tier, str) and raw_tier.strip()
-            else None
+            raw_tier.strip() if isinstance(raw_tier, str) and raw_tier.strip() else None
         )
         output_written = (
             first.get("output_written")
@@ -7838,7 +7846,11 @@ def _load_module_analysis(
     interface_changed = True
     if stale_analysis is not None:
         stale_defaults, stale_imports = stale_analysis
-        if stale_imports is not None and stale_imports == imports and stale_defaults == func_defaults:
+        if (
+            stale_imports is not None
+            and stale_imports == imports
+            and stale_defaults == func_defaults
+        ):
             interface_changed = False
     return tree, imports, func_defaults, source, False, interface_changed
 
@@ -7897,10 +7909,10 @@ def _module_lowering_context_payload(
     pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
     module_dep_closures: dict[str, frozenset[str]] | None = None,
     scoped_known_modules_by_module: Mapping[str, tuple[str, ...]] | None = None,
-    scoped_known_func_defaults_by_module: Mapping[
-        str, dict[str, dict[str, Any]]
-    ] | None = None,
-    scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_known_func_defaults_by_module: Mapping[str, dict[str, dict[str, Any]]]
+    | None = None,
+    scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]]
+    | None = None,
     scoped_type_facts_by_module: Mapping[str, TypeFacts | None] | None = None,
     path_stat: os.stat_result | None = None,
 ) -> dict[str, Any] | None:
@@ -7963,7 +7975,10 @@ def _module_lowering_context_payload(
         known_classes=known_classes_snapshot,
         module_dep_closures=module_dep_closures,
     )
-    if scoped_type_facts_by_module is not None and module_name in scoped_type_facts_by_module:
+    if (
+        scoped_type_facts_by_module is not None
+        and module_name in scoped_type_facts_by_module
+    ):
         scoped_type_facts = scoped_type_facts_by_module[module_name]
     else:
         scoped_type_facts = _scoped_type_facts(
@@ -8102,10 +8117,10 @@ def _load_cached_module_lowering_result(
     pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
     module_dep_closures: dict[str, frozenset[str]] | None = None,
     scoped_known_modules_by_module: Mapping[str, tuple[str, ...]] | None = None,
-    scoped_known_func_defaults_by_module: Mapping[
-        str, dict[str, dict[str, Any]]
-    ] | None = None,
-    scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_known_func_defaults_by_module: Mapping[str, dict[str, dict[str, Any]]]
+    | None = None,
+    scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]]
+    | None = None,
     scoped_type_facts_by_module: Mapping[str, TypeFacts | None] | None = None,
     context_digest: str | None = None,
     resolution_cache: _ModuleResolutionCache | None = None,
@@ -8186,13 +8201,16 @@ def _module_worker_payload(
     pgo_hot_function_names: Collection[str],
     module_dep_closures: dict[str, frozenset[str]],
     scoped_known_modules_by_module: Mapping[str, tuple[str, ...]] | None = None,
-    scoped_known_func_defaults_by_module: Mapping[
-        str, dict[str, dict[str, Any]]
-    ] | None = None,
-    scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_known_func_defaults_by_module: Mapping[str, dict[str, dict[str, Any]]]
+    | None = None,
+    scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]]
+    | None = None,
     scoped_type_facts_by_module: Mapping[str, TypeFacts | None] | None = None,
 ) -> dict[str, Any]:
-    if scoped_known_modules_by_module is not None and module_name in scoped_known_modules_by_module:
+    if (
+        scoped_known_modules_by_module is not None
+        and module_name in scoped_known_modules_by_module
+    ):
         scoped_known_modules = scoped_known_modules_by_module[module_name]
     else:
         scoped_known_modules = _scoped_known_modules(
@@ -8222,7 +8240,10 @@ def _module_worker_payload(
         scoped_pgo_hot_functions = _scoped_pgo_hot_function_names(
             module_name, pgo_hot_function_names
         )
-    if scoped_type_facts_by_module is not None and module_name in scoped_type_facts_by_module:
+    if (
+        scoped_type_facts_by_module is not None
+        and module_name in scoped_type_facts_by_module
+    ):
         scoped_type_facts = scoped_type_facts_by_module[module_name]
     else:
         scoped_type_facts = _scoped_type_facts(
@@ -8288,10 +8309,10 @@ def _prepare_frontend_parallel_batch(
     pgo_hot_function_names_sorted: tuple[str, ...],
     module_dep_closures: dict[str, frozenset[str]],
     scoped_known_modules_by_module: Mapping[str, tuple[str, ...]] | None = None,
-    scoped_known_func_defaults_by_module: Mapping[
-        str, dict[str, dict[str, Any]]
-    ] | None = None,
-    scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_known_func_defaults_by_module: Mapping[str, dict[str, dict[str, Any]]]
+    | None = None,
+    scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]]
+    | None = None,
     scoped_type_facts_by_module: Mapping[str, TypeFacts | None] | None = None,
     dirty_lowering_modules: Collection[str],
 ) -> tuple[
@@ -9308,13 +9329,16 @@ def _default_molt_home_cached(
         if not path.is_absolute():
             path = (Path(cwd_str) / path).absolute()
         return path
-    return _default_molt_cache_cached(
-        cache_override,
-        xdg_cache_home,
-        cwd_str,
-        home_str,
-        platform_name,
-    ) / "home"
+    return (
+        _default_molt_cache_cached(
+            cache_override,
+            xdg_cache_home,
+            cwd_str,
+            home_str,
+            platform_name,
+        )
+        / "home"
+    )
 
 
 def _default_molt_home() -> Path:
@@ -9343,14 +9367,17 @@ def _default_molt_bin_cached(
         if not path.is_absolute():
             path = (Path(cwd_str) / path).absolute()
         return path
-    return _default_molt_home_cached(
-        home_override,
-        cache_override,
-        xdg_cache_home,
-        cwd_str,
-        home_str,
-        platform_name,
-    ) / "bin"
+    return (
+        _default_molt_home_cached(
+            home_override,
+            cache_override,
+            xdg_cache_home,
+            cwd_str,
+            home_str,
+            platform_name,
+        )
+        / "bin"
+    )
 
 
 def _default_molt_bin() -> Path:
@@ -9401,11 +9428,14 @@ def _build_state_root_cached(
         if not path.is_absolute():
             path = (project_root / path).absolute()
         return path
-    return _cargo_target_root_cached(
-        project_root_str,
-        cargo_target_override,
-        cwd_str,
-    ) / ".molt_state"
+    return (
+        _cargo_target_root_cached(
+            project_root_str,
+            cargo_target_override,
+            cwd_str,
+        )
+        / ".molt_state"
+    )
 
 
 def _build_state_root(project_root: Path) -> Path:
@@ -10217,6 +10247,18 @@ def _cache_backend_ir_payload(ir: dict[str, Any]) -> bytes:
 
 def _backend_ir_text(ir: dict[str, Any]) -> str:
     return json.dumps(ir, separators=(",", ":"), default=_json_ir_default)
+
+
+def _backend_ir_bytes(ir: dict[str, Any]) -> bytes:
+    return _backend_ir_text(ir).encode("utf-8")
+
+
+def _subprocess_output_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def _function_cache_key(
@@ -11603,10 +11645,7 @@ def build(
             )
             if context_payload is not None:
                 context_digest = _module_lowering_context_digest(context_payload)
-            if (
-                context_digest is not None
-                and module_name not in dirty_lowering_modules
-            ):
+            if context_digest is not None and module_name not in dirty_lowering_modules:
                 cached_payload = _read_persisted_module_lowering(
                     project_root,
                     module_path,
@@ -12766,13 +12805,13 @@ def build(
             )
         except OSError as exc:
             return _fail(f"Failed to write IR: {exc}", json_output, command="build")
-    backend_ir_text: str | None = None
+    backend_ir_bytes: bytes | None = None
 
-    def _ensure_backend_ir_text() -> str:
-        nonlocal backend_ir_text
-        if backend_ir_text is None:
-            backend_ir_text = _backend_ir_text(ir)
-        return backend_ir_text
+    def _ensure_backend_ir_bytes() -> bytes:
+        nonlocal backend_ir_bytes
+        if backend_ir_bytes is None:
+            backend_ir_bytes = _backend_ir_bytes(ir)
+        return backend_ir_bytes
 
     runtime_lib: Path | None = None
     runtime_wasm: Path | None = None
@@ -13278,8 +13317,7 @@ def build(
                     try:
                         backend_process = subprocess.run(
                             cmd_with_output,
-                            input=_ensure_backend_ir_text(),
-                            text=True,
+                            input=_ensure_backend_ir_bytes(),
                             capture_output=True,
                             env=backend_env,
                             timeout=backend_timeout,
@@ -13291,11 +13329,13 @@ def build(
                             command="build",
                         )
                     if backend_process.returncode != 0:
+                        backend_stderr = _subprocess_output_text(backend_process.stderr)
+                        backend_stdout = _subprocess_output_text(backend_process.stdout)
                         if not json_output:
-                            if backend_process.stderr:
-                                print(backend_process.stderr, end="", file=sys.stderr)
-                            if backend_process.stdout:
-                                print(backend_process.stdout, end="")
+                            if backend_stderr:
+                                print(backend_stderr, end="", file=sys.stderr)
+                            if backend_stdout:
+                                print(backend_stdout, end="")
                         return _fail(
                             "Backend compilation failed",
                             json_output,
@@ -13303,10 +13343,12 @@ def build(
                             command="build",
                         )
                     if verbose and not json_output:
-                        if backend_process.stdout:
-                            print(backend_process.stdout, end="")
-                        if backend_process.stderr:
-                            print(backend_process.stderr, end="", file=sys.stderr)
+                        backend_stdout = _subprocess_output_text(backend_process.stdout)
+                        backend_stderr = _subprocess_output_text(backend_process.stderr)
+                        if backend_stdout:
+                            print(backend_stdout, end="")
+                        if backend_stderr:
+                            print(backend_stderr, end="", file=sys.stderr)
                     backend_output_written = True
                 if backend_output_written and not (
                     daemon_ready and backend_compiled and backend_output_exists
