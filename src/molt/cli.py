@@ -759,6 +759,14 @@ class _BuildDiagnosticsContext:
     artifacts_root: Path
 
 
+@dataclass(frozen=True)
+class _FrontendTimingRecorderConfig:
+    enabled: bool
+    raw: bool
+    threshold: float
+    json_output: bool
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -10844,6 +10852,41 @@ def _build_build_diagnostics_payload(
     return payload, out_path
 
 
+def _record_frontend_timing_item(
+    frontend_module_timings: list[dict[str, Any]],
+    *,
+    config: _FrontendTimingRecorderConfig,
+    module_name: str,
+    module_path: Path,
+    visit_s: float,
+    lower_s: float,
+    total_s: float,
+    timed_out: bool = False,
+    detail: str | None = None,
+) -> None:
+    if not config.enabled:
+        return
+    item: dict[str, Any] = {
+        "module": module_name,
+        "path": str(module_path),
+        "visit_s": round(max(0.0, visit_s), 6),
+        "lower_s": round(max(0.0, lower_s), 6),
+        "total_s": round(max(0.0, total_s), 6),
+        "timed_out": timed_out,
+    }
+    if detail:
+        item["detail"] = detail
+    frontend_module_timings.append(item)
+    if config.raw and (timed_out or total_s >= config.threshold) and not config.json_output:
+        suffix = f" timeout={detail}" if timed_out and detail else ""
+        print(
+            "frontend module timing: "
+            f"{module_name} visit={visit_s:.3f}s lower={lower_s:.3f}s "
+            f"total={total_s:.3f}s{suffix}",
+            file=sys.stderr,
+        )
+
+
 def _prepare_backend_cache_setup(
     *,
     cache_enabled: bool,
@@ -14823,31 +14866,22 @@ def build(
         timed_out: bool = False,
         detail: str | None = None,
     ) -> None:
-        if not frontend_timing_enabled:
-            return
-        item: dict[str, Any] = {
-            "module": module_name,
-            "path": str(module_path),
-            "visit_s": round(max(0.0, visit_s), 6),
-            "lower_s": round(max(0.0, lower_s), 6),
-            "total_s": round(max(0.0, total_s), 6),
-            "timed_out": timed_out,
-        }
-        if detail:
-            item["detail"] = detail
-        frontend_module_timings.append(item)
-        if (
-            frontend_timing_raw
-            and (timed_out or total_s >= frontend_timing_threshold)
-            and not json_output
-        ):
-            suffix = f" timeout={detail}" if timed_out and detail else ""
-            print(
-                "frontend module timing: "
-                f"{module_name} visit={visit_s:.3f}s lower={lower_s:.3f}s "
-                f"total={total_s:.3f}s{suffix}",
-                file=sys.stderr,
-            )
+        _record_frontend_timing_item(
+            frontend_module_timings,
+            config=_FrontendTimingRecorderConfig(
+                enabled=frontend_timing_enabled,
+                raw=frontend_timing_raw,
+                threshold=frontend_timing_threshold,
+                json_output=json_output,
+            ),
+            module_name=module_name,
+            module_path=module_path,
+            visit_s=visit_s,
+            lower_s=lower_s,
+            total_s=total_s,
+            timed_out=timed_out,
+            detail=detail,
+        )
 
     def _build_diagnostics_payload() -> tuple[dict[str, Any] | None, Path | None]:
         return _build_build_diagnostics_payload(
