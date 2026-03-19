@@ -12525,13 +12525,7 @@ def build(
                                 daemon_socket.unlink()
                         except OSError:
                             pass
-                    daemon_ready, daemon_health = _backend_daemon_wait_until_ready(
-                        daemon_socket,
-                        ready_timeout=startup_timeout,
-                        probe_timeout=None,
-                    )
-                    if daemon_health is not None:
-                        backend_daemon_health = daemon_health
+                    daemon_ready = daemon_socket.exists()
                     if not daemon_ready:
                         daemon_ready = _start_backend_daemon(
                             backend_bin,
@@ -12649,24 +12643,14 @@ def build(
                         with _build_lock(
                             molt_root, f"backend-daemon.{backend_cargo_profile}"
                         ):
-                            daemon_ready, daemon_health = (
-                                _backend_daemon_wait_until_ready(
-                                    daemon_socket,
-                                    ready_timeout=restart_timeout,
-                                    probe_timeout=None,
-                                )
+                            daemon_ready = _start_backend_daemon(
+                                backend_bin,
+                                daemon_socket,
+                                cargo_profile=backend_cargo_profile,
+                                project_root=molt_root,
+                                startup_timeout=restart_timeout,
+                                json_output=json_output,
                             )
-                            if daemon_health is not None:
-                                backend_daemon_health = daemon_health
-                            if not daemon_ready:
-                                daemon_ready = _start_backend_daemon(
-                                    backend_bin,
-                                    daemon_socket,
-                                    cargo_profile=backend_cargo_profile,
-                                    project_root=molt_root,
-                                    startup_timeout=restart_timeout,
-                                    json_output=json_output,
-                                )
                         if daemon_ready:
                             daemon_compile = _compile_with_backend_daemon(
                                 daemon_socket,

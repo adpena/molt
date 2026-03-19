@@ -2076,6 +2076,114 @@ def test_parallel_build_only_relowers_changed_frontier(
     assert worker_modes_by_module["main"] == "parallel"
 
 
+def test_build_skips_daemon_preflight_when_socket_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+    entry = project / "main.py"
+    entry.write_text("print('ok')\n")
+
+    build_state_root = tmp_path / "build-state"
+    cache_root = tmp_path / "cache"
+    backend_bin = tmp_path / "fake-backend"
+    backend_bin.write_text("")
+    daemon_socket = tmp_path / "daemon.sock"
+    daemon_socket.write_text("")
+
+    monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
+    monkeypatch.setenv("MOLT_CACHE", str(cache_root))
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli, "_resolve_frontend_parallel_module_workers", lambda: 0)
+    monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: True)
+    monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli, "_ensure_backend_binary", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        cli,
+        "_backend_daemon_socket_path",
+        lambda *args, **kwargs: daemon_socket,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_backend_daemon_wait_until_ready",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("unexpected daemon preflight wait")
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_start_backend_daemon",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("unexpected daemon restart")
+        ),
+    )
+
+    compile_calls = 0
+
+    def fake_compile_with_backend_daemon(
+        socket_path: Path,
+        *,
+        ir: dict[str, object],
+        backend_output: Path,
+        is_wasm: bool,
+        target_triple: str | None,
+        cache_key: str | None,
+        function_cache_key: str | None,
+        config_digest: str,
+        skip_module_output_if_synced: bool,
+        skip_function_output_if_synced: bool,
+        timeout: float | None,
+        request_bytes: bytes | None = None,
+    ) -> cli._BackendDaemonCompileResult:
+        del (
+            ir,
+            is_wasm,
+            target_triple,
+            cache_key,
+            function_cache_key,
+            config_digest,
+            skip_module_output_if_synced,
+            skip_function_output_if_synced,
+            timeout,
+            request_bytes,
+        )
+        nonlocal compile_calls
+        compile_calls += 1
+        assert socket_path == daemon_socket
+        backend_output.parent.mkdir(parents=True, exist_ok=True)
+        backend_output.write_bytes(b"OBJ")
+        return cli._BackendDaemonCompileResult(
+            ok=True,
+            error=None,
+            health=None,
+            cached=False,
+            cache_tier=None,
+            output_written=True,
+            output_exists=True,
+        )
+
+    monkeypatch.setattr(cli, "_compile_with_backend_daemon", fake_compile_with_backend_daemon)
+
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        rc = cli.build(
+            str(entry),
+            emit="obj",
+            output=str(tmp_path / "out.o"),
+            profile="dev",
+            deterministic=False,
+            json_output=True,
+            diagnostics=True,
+        )
+
+    assert rc == 0
+    assert compile_calls == 1
+
+
 def test_read_module_source_uses_utf8_fast_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
