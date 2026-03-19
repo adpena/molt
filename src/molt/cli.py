@@ -1055,6 +1055,17 @@ class _PreparedFrontendPipeline:
 
 
 @dataclass(frozen=True)
+class _PreparedFrontendStageState:
+    prepared_module_graph: _PreparedEntryModuleGraph
+    prepared_build_outputs: _PreparedBuildModuleOutputs
+    prepared_frontend_analysis: _PreparedFrontendAnalysis
+    prepared_frontend_lowering_config: _PreparedFrontendLoweringConfig
+    record_frontend_timing: Callable[..., None]
+    build_diagnostics_payload: Callable[[], tuple[dict[str, Any] | None, Path | None]]
+    artifacts_root: Path
+
+
+@dataclass(frozen=True)
 class _PreparedBackendBuildContext:
     entry_module: str
     parse_codec: ParseCodec
@@ -14319,10 +14330,10 @@ def _prepare_build_callbacks(
     )
 
 
-def _prepare_frontend_pipeline(
+def _prepare_frontend_stage_state(
     *,
     prepared_frontend_build_context: _PreparedFrontendBuildContext,
-) -> tuple[_PreparedFrontendPipeline | None, dict[str, Any] | None]:
+) -> tuple[_PreparedFrontendStageState | None, dict[str, Any] | None]:
     source_path = prepared_frontend_build_context.source_path
     entry_module = prepared_frontend_build_context.entry_module
     module_roots = prepared_frontend_build_context.module_roots
@@ -14380,11 +14391,6 @@ def _prepare_frontend_pipeline(
     pgo_hot_function_names = (
         prepared_frontend_build_context.pgo_hot_function_names
     )
-    parse_codec = prepared_frontend_build_context.parse_codec
-    fallback_policy = prepared_frontend_build_context.fallback_policy
-    pgo_hot_function_names_sorted = (
-        prepared_frontend_build_context.pgo_hot_function_names_sorted
-    )
     frontend_phase_timeout = (
         prepared_frontend_build_context.frontend_phase_timeout
     )
@@ -14437,8 +14443,6 @@ def _prepare_frontend_pipeline(
         diagnostics_path_spec=diagnostics_path_spec,
         artifacts_root=artifacts_root,
     )
-    record_frontend_timing = prepared_build_callbacks.record_frontend_timing
-    build_diagnostics_payload = prepared_build_callbacks.build_diagnostics_payload
     prepared_build_outputs, prepared_build_outputs_error = _prepare_build_module_outputs(
         module_graph=prepared_module_graph.module_graph,
         module_reasons=module_reasons,
@@ -14512,6 +14516,68 @@ def _prepare_frontend_pipeline(
     if prepared_frontend_lowering_config_error is not None:
         return None, prepared_frontend_lowering_config_error
     assert prepared_frontend_lowering_config is not None
+    return _PreparedFrontendStageState(
+        prepared_module_graph=prepared_module_graph,
+        prepared_build_outputs=prepared_build_outputs,
+        prepared_frontend_analysis=prepared_frontend_analysis,
+        prepared_frontend_lowering_config=prepared_frontend_lowering_config,
+        record_frontend_timing=prepared_build_callbacks.record_frontend_timing,
+        build_diagnostics_payload=prepared_build_callbacks.build_diagnostics_payload,
+        artifacts_root=artifacts_root,
+    ), None
+
+
+def _prepare_frontend_pipeline(
+    *,
+    prepared_frontend_build_context: _PreparedFrontendBuildContext,
+) -> tuple[_PreparedFrontendPipeline | None, dict[str, Any] | None]:
+    prepared_frontend_stage_state, prepared_frontend_stage_state_error = (
+        _prepare_frontend_stage_state(
+            prepared_frontend_build_context=prepared_frontend_build_context
+        )
+    )
+    if prepared_frontend_stage_state_error is not None:
+        return None, prepared_frontend_stage_state_error
+    assert prepared_frontend_stage_state is not None
+    source_path = prepared_frontend_build_context.source_path
+    project_root = prepared_frontend_build_context.project_root
+    parse_codec = prepared_frontend_build_context.parse_codec
+    type_hint_policy = prepared_frontend_build_context.type_hint_policy
+    fallback_policy = prepared_frontend_build_context.fallback_policy
+    profile = prepared_frontend_build_context.profile
+    pgo_hot_function_names = (
+        prepared_frontend_build_context.pgo_hot_function_names
+    )
+    pgo_hot_function_names_sorted = (
+        prepared_frontend_build_context.pgo_hot_function_names_sorted
+    )
+    frontend_phase_timeout = (
+        prepared_frontend_build_context.frontend_phase_timeout
+    )
+    frontend_parallel_details = (
+        prepared_frontend_build_context.frontend_parallel_details
+    )
+    warnings = prepared_frontend_build_context.warnings
+    json_output = prepared_frontend_build_context.json_output
+    midend_policy_outcomes_by_function = (
+        prepared_frontend_build_context.midend_policy_outcomes_by_function
+    )
+    midend_pass_stats_by_function = (
+        prepared_frontend_build_context.midend_pass_stats_by_function
+    )
+    prepared_module_graph = prepared_frontend_stage_state.prepared_module_graph
+    prepared_build_outputs = prepared_frontend_stage_state.prepared_build_outputs
+    prepared_frontend_analysis = (
+        prepared_frontend_stage_state.prepared_frontend_analysis
+    )
+    prepared_frontend_lowering_config = (
+        prepared_frontend_stage_state.prepared_frontend_lowering_config
+    )
+    record_frontend_timing = prepared_frontend_stage_state.record_frontend_timing
+    build_diagnostics_payload = (
+        prepared_frontend_stage_state.build_diagnostics_payload
+    )
+    artifacts_root = prepared_frontend_stage_state.artifacts_root
     frontend_parallel_worker_timings = (
         prepared_frontend_lowering_config.frontend_parallel_worker_timings
     )
