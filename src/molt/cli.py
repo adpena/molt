@@ -10045,6 +10045,17 @@ def _build_common_build_json_data(
     }
 
 
+def _attach_process_output(
+    data: MutableMapping[str, Any],
+    process: subprocess.CompletedProcess[str],
+) -> MutableMapping[str, Any]:
+    if process.stdout:
+        data["stdout"] = process.stdout
+    if process.stderr:
+        data["stderr"] = process.stderr
+    return data
+
+
 def _initialize_runtime_artifact_state(
     *,
     is_rust_transpile: bool,
@@ -15717,10 +15728,7 @@ int main(int argc, char** argv) {
                 runtime_feedback_payload=runtime_feedback_payload,
                 emit_ir_path=emit_ir_path,
             )
-            if link_process.stdout:
-                data["stdout"] = link_process.stdout
-            if link_process.stderr:
-                data["stderr"] = link_process.stderr
+            _attach_process_output(data, link_process)
             payload = _json_payload(
                 "build",
                 "ok",
@@ -15766,10 +15774,7 @@ int main(int argc, char** argv) {
                 runtime_feedback_payload=runtime_feedback_payload,
                 emit_ir_path=None,
             )
-            if link_process.stdout:
-                data["stdout"] = link_process.stdout
-            if link_process.stderr:
-                data["stderr"] = link_process.stderr
+            _attach_process_output(data, link_process)
             payload = _json_payload(
                 "build",
                 "error",
