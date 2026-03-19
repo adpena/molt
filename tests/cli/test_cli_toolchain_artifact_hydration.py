@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from molt import cli
@@ -16,6 +17,7 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
     isolated_backend = isolated_target / "dev-fast" / "molt-backend"
     canonical_backend.parent.mkdir(parents=True, exist_ok=True)
     canonical_backend.write_text("backend-binary")
+    canonical_backend.chmod(0o755)
 
     fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
     canonical_fp = cli._backend_fingerprint_path(project_root, canonical_backend, "dev-fast")
@@ -42,6 +44,7 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
         project_root=project_root,
     )
     assert isolated_backend.read_text() == "backend-binary"
+    assert os.access(isolated_backend, os.X_OK)
 
 
 def test_ensure_runtime_lib_hydrates_from_canonical_target(
