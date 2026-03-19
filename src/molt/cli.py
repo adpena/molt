@@ -978,6 +978,40 @@ class _PreparedNativeLink:
 
 
 @dataclass(frozen=True)
+class _BuildResultEmissionContext:
+    cache: bool
+    cache_hit: bool
+    cache_key: str | None
+    function_cache_key: str | None
+    cache_path: Path | None
+    function_cache_path: Path | None
+    cache_hit_tier: str | None
+    backend_daemon_cached: bool | None
+    backend_daemon_cache_tier: str | None
+    backend_daemon_config_digest: str | None
+    target: str
+    target_triple: str | None
+    source_path: Path
+    deterministic: bool
+    trusted: bool
+    capabilities_list: list[str] | None
+    capability_profiles: list[str]
+    capabilities_source: str | None
+    sysroot_path: Path | None
+    emit_mode: str
+    profile: BuildProfile
+    native_arch_perf_enabled: bool
+    pgo_profile_payload: dict[str, Any] | None
+    runtime_feedback_payload: dict[str, Any] | None
+    emit_ir_path: Path | None
+    warnings: list[str]
+    json_output: bool
+    resolved_diagnostics_verbosity: str
+    diagnostics_payload: dict[str, Any] | None
+    diagnostics_path: Path | None
+
+
+@dataclass(frozen=True)
 class _PreparedBuildCallbacks:
     record_frontend_timing: Callable[..., None]
     build_diagnostics_payload: Callable[[], tuple[dict[str, Any] | None, Path | None]]
@@ -13287,6 +13321,93 @@ def _prepare_native_link(
     ), None
 
 
+def _emit_build_result(
+    *,
+    is_wasm: bool,
+    prepared_non_native_result: _PreparedNonNativeResult | None,
+    prepared_native_link: _PreparedNativeLink | None,
+    result_context: _BuildResultEmissionContext,
+) -> int:
+    if prepared_non_native_result is not None:
+        return _emit_non_native_build_result(
+            output=prepared_non_native_result.primary_output,
+            cache=result_context.cache,
+            cache_hit=result_context.cache_hit,
+            cache_key=result_context.cache_key,
+            function_cache_key=result_context.function_cache_key,
+            cache_path=result_context.cache_path,
+            function_cache_path=result_context.function_cache_path,
+            cache_hit_tier=result_context.cache_hit_tier,
+            backend_daemon_cached=result_context.backend_daemon_cached,
+            backend_daemon_cache_tier=result_context.backend_daemon_cache_tier,
+            backend_daemon_config_digest=result_context.backend_daemon_config_digest,
+            target=result_context.target,
+            target_triple=result_context.target_triple,
+            source_path=result_context.source_path,
+            deterministic=result_context.deterministic,
+            trusted=result_context.trusted,
+            capabilities_list=result_context.capabilities_list,
+            capability_profiles=result_context.capability_profiles,
+            capabilities_source=result_context.capabilities_source,
+            sysroot_path=result_context.sysroot_path,
+            emit_mode=result_context.emit_mode,
+            profile=result_context.profile,
+            native_arch_perf_enabled=result_context.native_arch_perf_enabled,
+            diagnostics_payload=result_context.diagnostics_payload,
+            diagnostics_path=result_context.diagnostics_path,
+            pgo_profile_payload=result_context.pgo_profile_payload,
+            runtime_feedback_payload=result_context.runtime_feedback_payload,
+            emit_ir_path=result_context.emit_ir_path,
+            warnings=result_context.warnings,
+            json_output=result_context.json_output,
+            resolved_diagnostics_verbosity=result_context.resolved_diagnostics_verbosity,
+            extra_fields=prepared_non_native_result.extra_fields,
+            artifacts=prepared_non_native_result.artifacts,
+            success_messages=prepared_non_native_result.success_messages,
+        )
+    assert prepared_native_link is not None
+    return _emit_native_link_result(
+        link_process=prepared_native_link.link_process,
+        link_skipped=prepared_native_link.link_skipped,
+        link_fingerprint=prepared_native_link.link_fingerprint,
+        link_fingerprint_path=prepared_native_link.link_fingerprint_path,
+        cache=result_context.cache,
+        cache_hit=result_context.cache_hit,
+        cache_key=result_context.cache_key,
+        function_cache_key=result_context.function_cache_key,
+        cache_path=result_context.cache_path,
+        function_cache_path=result_context.function_cache_path,
+        cache_hit_tier=result_context.cache_hit_tier,
+        backend_daemon_cached=result_context.backend_daemon_cached,
+        backend_daemon_cache_tier=result_context.backend_daemon_cache_tier,
+        backend_daemon_config_digest=result_context.backend_daemon_config_digest,
+        target=result_context.target,
+        target_triple=result_context.target_triple,
+        source_path=result_context.source_path,
+        output_binary=prepared_native_link.output_binary,
+        deterministic=result_context.deterministic,
+        trusted=result_context.trusted,
+        capabilities_list=result_context.capabilities_list,
+        capability_profiles=result_context.capability_profiles,
+        capabilities_source=result_context.capabilities_source,
+        sysroot_path=result_context.sysroot_path,
+        emit_mode=result_context.emit_mode,
+        profile=result_context.profile,
+        native_arch_perf_enabled=result_context.native_arch_perf_enabled,
+        output_obj=prepared_native_link.output_obj,
+        stub_path=prepared_native_link.stub_path,
+        runtime_lib=prepared_native_link.runtime_lib,
+        diagnostics_payload=result_context.diagnostics_payload,
+        diagnostics_path=result_context.diagnostics_path,
+        pgo_profile_payload=result_context.pgo_profile_payload,
+        runtime_feedback_payload=result_context.runtime_feedback_payload,
+        emit_ir_path=result_context.emit_ir_path,
+        warnings=result_context.warnings,
+        json_output=result_context.json_output,
+        resolved_diagnostics_verbosity=result_context.resolved_diagnostics_verbosity,
+    )
+
+
 def _prepare_build_callbacks(
     *,
     frontend_module_timings: list[dict[str, Any]],
@@ -17450,6 +17571,39 @@ def build(
     backend_daemon_config_digest = (
         prepared_backend_compile.backend_daemon_config_digest
     )
+    diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
+    build_result_context = _BuildResultEmissionContext(
+        cache=cache,
+        cache_hit=cache_hit,
+        cache_key=cache_key,
+        function_cache_key=function_cache_key,
+        cache_path=cache_path,
+        function_cache_path=function_cache_path,
+        cache_hit_tier=cache_hit_tier,
+        backend_daemon_cached=backend_daemon_cached,
+        backend_daemon_cache_tier=backend_daemon_cache_tier,
+        backend_daemon_config_digest=backend_daemon_config_digest,
+        target=target,
+        target_triple=target_triple,
+        source_path=source_path,
+        deterministic=deterministic,
+        trusted=trusted,
+        capabilities_list=capabilities_list,
+        capability_profiles=capability_profiles,
+        capabilities_source=capabilities_source,
+        sysroot_path=sysroot_path,
+        emit_mode=emit_mode,
+        profile=profile,
+        native_arch_perf_enabled=native_arch_perf_enabled,
+        pgo_profile_payload=pgo_profile_payload,
+        runtime_feedback_payload=runtime_feedback_payload,
+        emit_ir_path=emit_ir_path,
+        warnings=warnings,
+        json_output=json_output,
+        resolved_diagnostics_verbosity=resolved_diagnostics_verbosity,
+        diagnostics_payload=diagnostics_payload,
+        diagnostics_path=diagnostics_path,
+    )
 
     if is_wasm or emit_mode == "obj":
         prepared_non_native_result, prepared_non_native_result_error = (
@@ -17469,42 +17623,11 @@ def build(
             return prepared_non_native_result_error
         assert prepared_non_native_result is not None
         linked_output_path = prepared_non_native_result.linked_output_path
-        diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
-        return _emit_non_native_build_result(
-            output=prepared_non_native_result.primary_output,
-            cache=cache,
-            cache_hit=cache_hit,
-            cache_key=cache_key,
-            function_cache_key=function_cache_key,
-            cache_path=cache_path,
-            function_cache_path=function_cache_path,
-            cache_hit_tier=cache_hit_tier,
-            backend_daemon_cached=backend_daemon_cached,
-            backend_daemon_cache_tier=backend_daemon_cache_tier,
-            backend_daemon_config_digest=backend_daemon_config_digest,
-            target=target,
-            target_triple=target_triple,
-            source_path=source_path,
-            deterministic=deterministic,
-            trusted=trusted,
-            capabilities_list=capabilities_list,
-            capability_profiles=capability_profiles,
-            capabilities_source=capabilities_source,
-            sysroot_path=sysroot_path,
-            emit_mode=emit_mode,
-            profile=profile,
-            native_arch_perf_enabled=native_arch_perf_enabled,
-            diagnostics_payload=diagnostics_payload,
-            diagnostics_path=diagnostics_path,
-            pgo_profile_payload=pgo_profile_payload,
-            runtime_feedback_payload=runtime_feedback_payload,
-            emit_ir_path=emit_ir_path,
-            warnings=warnings,
-            json_output=json_output,
-            resolved_diagnostics_verbosity=resolved_diagnostics_verbosity,
-            extra_fields=prepared_non_native_result.extra_fields,
-            artifacts=prepared_non_native_result.artifacts,
-            success_messages=prepared_non_native_result.success_messages,
+        return _emit_build_result(
+            is_wasm=is_wasm,
+            prepared_non_native_result=prepared_non_native_result,
+            prepared_native_link=None,
+            result_context=build_result_context,
         )
 
     prepared_native_link, prepared_native_link_error = _prepare_native_link(
@@ -17530,46 +17653,11 @@ def build(
         return prepared_native_link_error
     assert prepared_native_link is not None
 
-    diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
-    return _emit_native_link_result(
-        link_process=prepared_native_link.link_process,
-        link_skipped=prepared_native_link.link_skipped,
-        link_fingerprint=prepared_native_link.link_fingerprint,
-        link_fingerprint_path=prepared_native_link.link_fingerprint_path,
-        cache=cache,
-        cache_hit=cache_hit,
-        cache_key=cache_key,
-        function_cache_key=function_cache_key,
-        cache_path=cache_path,
-        function_cache_path=function_cache_path,
-        cache_hit_tier=cache_hit_tier,
-        backend_daemon_cached=backend_daemon_cached,
-        backend_daemon_cache_tier=backend_daemon_cache_tier,
-        backend_daemon_config_digest=backend_daemon_config_digest,
-        target=target,
-        target_triple=target_triple,
-        source_path=source_path,
-        output_binary=output_binary,
-        deterministic=deterministic,
-        trusted=trusted,
-        capabilities_list=capabilities_list,
-        capability_profiles=capability_profiles,
-        capabilities_source=capabilities_source,
-        sysroot_path=sysroot_path,
-        emit_mode=emit_mode,
-        profile=profile,
-        native_arch_perf_enabled=native_arch_perf_enabled,
-        output_obj=prepared_native_link.output_obj,
-        stub_path=prepared_native_link.stub_path,
-        runtime_lib=prepared_native_link.runtime_lib,
-        diagnostics_payload=diagnostics_payload,
-        diagnostics_path=diagnostics_path,
-        pgo_profile_payload=pgo_profile_payload,
-        runtime_feedback_payload=runtime_feedback_payload,
-        emit_ir_path=emit_ir_path,
-        warnings=warnings,
-        json_output=json_output,
-        resolved_diagnostics_verbosity=resolved_diagnostics_verbosity,
+    return _emit_build_result(
+        is_wasm=is_wasm,
+        prepared_non_native_result=None,
+        prepared_native_link=prepared_native_link,
+        result_context=build_result_context,
     )
 
 
