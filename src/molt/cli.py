@@ -4822,12 +4822,18 @@ def _artifact_needs_rebuild(
 
 
 def _is_valid_wasm_binary(path: Path) -> bool:
+    return _inspect_wasm_binary(path) == "valid"
+
+
+def _inspect_wasm_binary(path: Path) -> Literal["missing", "invalid", "valid"]:
     try:
         with path.open("rb") as handle:
             magic = handle.read(8)
     except OSError:
-        return False
-    return magic == b"\x00asm\x01\x00\x00\x00"
+        return "missing"
+    if magic != b"\x00asm\x01\x00\x00\x00":
+        return "invalid"
+    return "valid"
 
 
 def _is_valid_cached_backend_artifact(path: Path, *, is_wasm: bool) -> bool:
@@ -7775,6 +7781,7 @@ def _ensure_runtime_wasm(
     project_root: Path | None = None,
 ) -> bool:
     root = project_root or Path(__file__).resolve().parents[2]
+    requested_cargo_profile = cargo_profile
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     env = os.environ.copy()
     use_legacy_wasm_flags = os.environ.get("MOLT_WASM_LEGACY_LINK_FLAGS") == "1"
@@ -7883,14 +7890,15 @@ def _ensure_runtime_wasm(
             if not json_output:
                 print("Runtime wasm build failed", file=sys.stderr)
             return False
-        if not src.exists():
+        src_state = _inspect_wasm_binary(src)
+        if src_state == "missing":
             if not json_output:
                 print(
                     "Runtime wasm build succeeded but artifact is missing.",
                     file=sys.stderr,
                 )
             return False
-        if not _is_valid_wasm_binary(src):
+        if src_state != "valid":
             if not json_output:
                 print(
                     f"Runtime wasm build produced invalid artifact: {src}; retrying with isolated target dir.",
@@ -7922,19 +7930,20 @@ def _ensure_runtime_wasm(
                 if not json_output:
                     print("Runtime wasm recovery build failed", file=sys.stderr)
                 return False
-            if not recovery_src.exists():
+            recovery_state = _inspect_wasm_binary(recovery_src)
+            if recovery_state == "missing":
                 if not json_output:
                     print(
                         "Runtime wasm recovery build succeeded but artifact is missing.",
                         file=sys.stderr,
                     )
                 return False
-            if not _is_valid_wasm_binary(recovery_src):
+            if recovery_state != "valid":
                 fallback_profile = os.environ.get(
                     "MOLT_WASM_RUNTIME_FALLBACK_PROFILE", "release-fast"
                 ).strip()
                 can_try_fallback_profile = (
-                    cargo_profile == "release"
+                    requested_cargo_profile == "release"
                     and fallback_profile
                     and fallback_profile != cargo_profile
                     and _CARGO_PROFILE_NAME_RE.match(fallback_profile) is not None
@@ -7981,14 +7990,15 @@ def _ensure_runtime_wasm(
                     if not json_output:
                         print("Runtime wasm fallback build failed", file=sys.stderr)
                     return False
-                if not fallback_src.exists():
+                fallback_state = _inspect_wasm_binary(fallback_src)
+                if fallback_state == "missing":
                     if not json_output:
                         print(
                             "Runtime wasm fallback build succeeded but artifact is missing.",
                             file=sys.stderr,
                         )
                     return False
-                if not _is_valid_wasm_binary(fallback_src):
+                if fallback_state != "valid":
                     if not json_output:
                         print(
                             f"Runtime wasm fallback build produced invalid artifact: {fallback_src}",
@@ -8000,7 +8010,7 @@ def _ensure_runtime_wasm(
                 src = recovery_src
         runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, runtime_wasm)
-        if not _is_valid_wasm_binary(runtime_wasm):
+        if _inspect_wasm_binary(runtime_wasm) != "valid":
             if not json_output:
                 print(
                     f"Copied runtime wasm artifact is invalid: {runtime_wasm}",
