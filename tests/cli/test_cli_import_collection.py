@@ -2246,8 +2246,31 @@ def test_read_artifact_sync_state_reuses_process_cache(
     second = cli._read_artifact_sync_state(state_path)
 
     assert first == second
+    assert first is second
     assert second is not None
     assert second["source_key"] == "module-key"
+
+
+def test_read_cached_json_object_reuses_same_payload_instance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache_path = tmp_path / "cache" / "payload.json"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cli._PERSISTED_JSON_OBJECT_CACHE.clear()
+    cli._write_cached_json_object(cache_path, {"version": 1, "hash": "abc"})
+
+    first = cli._read_cached_json_object(cache_path)
+
+    def fail_read_text(*args: object, **kwargs: object) -> str:
+        raise AssertionError("unexpected cached-json file read")
+
+    monkeypatch.setattr(Path, "read_text", fail_read_text)
+    second = cli._read_cached_json_object(cache_path)
+
+    assert first == second
+    assert first is second
+    assert second is not None
+    assert second["hash"] == "abc"
 
 
 def test_stage_backend_output_and_caches_promotes_module_cache(

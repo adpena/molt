@@ -6449,7 +6449,7 @@ def _read_artifact_sync_state(path: Path) -> dict[str, Any] | None:
     if cached is not None:
         cached_size, cached_mtime_ns, cached_payload = cached
         if cached_size == stat.st_size and cached_mtime_ns == stat.st_mtime_ns:
-            return dict(cached_payload) if cached_payload is not None else None
+            return cached_payload
     try:
         text = path.read_text().strip()
     except OSError:
@@ -6464,9 +6464,8 @@ def _read_artifact_sync_state(path: Path) -> dict[str, Any] | None:
         _ARTIFACT_SYNC_STATE_CACHE[path] = (stat.st_size, stat.st_mtime_ns, None)
         return None
     payload = data if isinstance(data, dict) else None
-    payload_copy = dict(payload) if payload is not None else None
-    _ARTIFACT_SYNC_STATE_CACHE[path] = (stat.st_size, stat.st_mtime_ns, payload_copy)
-    return dict(payload_copy) if payload_copy is not None else None
+    _ARTIFACT_SYNC_STATE_CACHE[path] = (stat.st_size, stat.st_mtime_ns, payload)
+    return payload
 
 
 def _read_cached_json_object(path: Path) -> dict[str, Any] | None:
@@ -6479,20 +6478,19 @@ def _read_cached_json_object(path: Path) -> dict[str, Any] | None:
     if cached is not None:
         cached_size, cached_mtime_ns, cached_payload = cached
         if cached_size == stat.st_size and cached_mtime_ns == stat.st_mtime_ns:
-            return dict(cached_payload) if cached_payload is not None else None
+            return cached_payload
     try:
         data = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         _PERSISTED_JSON_OBJECT_CACHE[path] = (stat.st_size, stat.st_mtime_ns, None)
         return None
     payload = data if isinstance(data, dict) else None
-    payload_copy = dict(payload) if payload is not None else None
     _PERSISTED_JSON_OBJECT_CACHE[path] = (
         stat.st_size,
         stat.st_mtime_ns,
-        payload_copy,
+        payload,
     )
-    return dict(payload_copy) if payload_copy is not None else None
+    return payload
 
 
 def _write_artifact_sync_state(
