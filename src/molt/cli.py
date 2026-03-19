@@ -4329,11 +4329,37 @@ def _predict_frontend_module_cost(
     return source_cost + dep_cost
 
 
+def _build_frontend_module_costs(
+    module_names: Collection[str],
+    *,
+    module_sources: Mapping[str, str],
+    module_deps: Mapping[str, set[str]],
+) -> dict[str, float]:
+    module_costs: dict[str, float] = {}
+    for module_name in sorted(module_names):
+        source = module_sources.get(module_name, "")
+        source_cost = max(1.0, float(len(source)))
+        dep_cost = float(max(0, len(module_deps.get(module_name, set()))) * 512)
+        module_costs[module_name] = source_cost + dep_cost
+    return module_costs
+
+
+def _build_stdlib_like_module_flags(
+    module_names: Collection[str],
+) -> dict[str, bool]:
+    return {
+        module_name: _looks_like_stdlib_module_name(module_name)
+        for module_name in sorted(module_names)
+    }
+
+
 def _choose_frontend_parallel_layer_workers(
     *,
     candidates: list[str],
     module_sources: dict[str, str],
     module_deps: dict[str, set[str]],
+    module_costs: Mapping[str, float] | None = None,
+    stdlib_like_by_module: Mapping[str, bool] | None = None,
     max_workers: int,
     min_modules: int,
     min_predicted_cost: float,
@@ -4351,11 +4377,20 @@ def _choose_frontend_parallel_layer_workers(
         }
     predicted_cost_total = 0.0
     for name in candidates:
-        predicted_cost_total += _predict_frontend_module_cost(
-            name, module_sources, module_deps
-        )
+        if module_costs is not None and name in module_costs:
+            predicted_cost_total += module_costs[name]
+        else:
+            predicted_cost_total += _predict_frontend_module_cost(
+                name, module_sources, module_deps
+            )
     stdlib_candidates = sum(
-        1 for name in candidates if _looks_like_stdlib_module_name(name)
+        1
+        for name in candidates
+        if (
+            stdlib_like_by_module[name]
+            if stdlib_like_by_module is not None and name in stdlib_like_by_module
+            else _looks_like_stdlib_module_name(name)
+        )
     )
     effective_min_predicted_cost = float(min_predicted_cost)
     if stdlib_candidates > 0:
@@ -11652,6 +11687,12 @@ def build(
         pgo_hot_function_names=pgo_hot_function_names,
         type_facts=cast(TypeFacts | None, type_facts),
     )
+    frontend_module_costs = _build_frontend_module_costs(
+        module_graph,
+        module_sources=module_sources,
+        module_deps=module_deps,
+    )
+    stdlib_like_by_module = _build_stdlib_like_module_flags(module_graph)
 
     functions: list[dict[str, Any]] = []
     # Normalize code-slot IDs across modules to keep tracebacks consistent.
@@ -12061,6 +12102,8 @@ def build(
                     candidates=candidates,
                     module_sources=module_sources,
                     module_deps=module_deps,
+                    module_costs=frontend_module_costs,
+                    stdlib_like_by_module=stdlib_like_by_module,
                     max_workers=frontend_parallel_workers,
                     min_modules=frontend_parallel_min_modules,
                     min_predicted_cost=frontend_parallel_min_predicted_cost,
