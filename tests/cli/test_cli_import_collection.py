@@ -2747,6 +2747,10 @@ def test_scoped_lowering_input_view_reuses_precomputed_bundle() -> None:
         is scoped_lowering_inputs.pgo_hot_function_names_by_module["main"]
     )
     assert scoped_view.type_facts is scoped_lowering_inputs.type_facts_by_module["main"]
+    assert scoped_view.known_modules_payload == ["alpha", "main"]
+    assert scoped_view.known_modules_set == frozenset({"alpha", "main"})
+    assert scoped_view.pgo_hot_function_names_payload == ["main::hot"]
+    assert scoped_view.pgo_hot_function_names_set == frozenset({"main::hot"})
 
 
 def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
