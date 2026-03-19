@@ -3,6 +3,7 @@ import ast
 import base64
 import codecs
 from collections import deque
+import copy
 import contextlib
 from concurrent.futures import ProcessPoolExecutor
 import errno
@@ -2918,6 +2919,28 @@ def _topo_sort_modules(
         remaining = sorted(name for name in module_graph if name not in order)
         order.extend(remaining)
     return order
+
+
+def _dependent_module_closure(
+    dirty_modules: Collection[str],
+    module_deps: dict[str, set[str]],
+    module_names: Collection[str],
+) -> set[str]:
+    dependents: dict[str, set[str]] = {name: set() for name in module_names}
+    for name, deps in module_deps.items():
+        if name not in dependents:
+            dependents[name] = set()
+        for dep in deps:
+            dependents.setdefault(dep, set()).add(name)
+    closure: set[str] = {name for name in dirty_modules if name in dependents}
+    queue = deque(sorted(closure))
+    while queue:
+        module_name = queue.popleft()
+        for dependent in sorted(dependents.get(module_name, ())):
+            if dependent not in closure:
+                closure.add(dependent)
+                queue.append(dependent)
+    return closure
 
 
 @functools.lru_cache(maxsize=8)
@@ -6940,7 +6963,7 @@ def _write_cached_json_object(
         _PERSISTED_JSON_OBJECT_CACHE[path] = (
             written_stat.st_size,
             written_stat.st_mtime_ns,
-            dict(payload),
+            copy.deepcopy(payload),
         )
 
 
@@ -7420,7 +7443,13 @@ def _load_module_analysis(
     logical_source_path: str,
     resolution_cache: _ModuleResolutionCache,
     project_root: Path | None,
-) -> tuple[ast.AST | None, tuple[str, ...], dict[str, dict[str, Any]], str | None]:
+) -> tuple[
+    ast.AST | None,
+    tuple[str, ...],
+    dict[str, dict[str, Any]],
+    str | None,
+    bool,
+]:
     path_stat: os.stat_result | None = None
     if project_root is not None:
         with contextlib.suppress(OSError):
@@ -7453,7 +7482,7 @@ def _load_module_analysis(
             path_stat=path_stat,
         )
     if persisted_imports is not None and persisted_defaults is not None:
-        return None, persisted_imports, persisted_defaults, None
+        return None, persisted_imports, persisted_defaults, None, True
 
     if source is None:
         source = resolution_cache.read_module_source(path)
@@ -7476,14 +7505,14 @@ def _load_module_analysis(
         if project_root is not None:
             with contextlib.suppress(OSError):
                 _write_persisted_module_analysis(
-                project_root,
-                path,
-                module_name=module_name,
-                is_package=is_package,
-                func_defaults=func_defaults,
-                imports=imports,
-            )
-    return tree, imports, func_defaults, source
+                    project_root,
+                    path,
+                    module_name=module_name,
+                    is_package=is_package,
+                    func_defaults=func_defaults,
+                    imports=imports,
+                )
+    return tree, imports, func_defaults, source, False
 
 
 def _module_frontend_payload(
@@ -7623,7 +7652,7 @@ def _read_persisted_module_lowering(
     raw_result = payload.get("result")
     if not isinstance(raw_result, dict):
         return None
-    return cast(dict[str, Any], _decode_cached_json_value(raw_result))
+    return cast(dict[str, Any], copy.deepcopy(_decode_cached_json_value(raw_result)))
 
 
 def _write_persisted_module_lowering(
@@ -7752,6 +7781,7 @@ def _prepare_frontend_parallel_batch(
     known_modules_sorted: tuple[str, ...],
     stdlib_allowlist_sorted: tuple[str, ...],
     pgo_hot_function_names_sorted: tuple[str, ...],
+    dirty_lowering_modules: Collection[str],
 ) -> tuple[
     dict[str, dict[str, Any]],
     list[tuple[str, dict[str, Any]]],
@@ -7762,6 +7792,7 @@ def _prepare_frontend_parallel_batch(
     worker_payloads: list[tuple[str, dict[str, Any]]] = []
     context_digest_by_module: dict[str, str] = {}
     module_chunking = is_wasm and module_chunk_max_ops > 0
+    dirty_lowering = set(dirty_lowering_modules)
     for module_name in batch:
         module_path = module_graph[module_name]
         logical_source_path = generated_module_source_paths.get(
@@ -7798,35 +7829,36 @@ def _prepare_frontend_parallel_batch(
                 context_digest = _module_lowering_context_digest(context_payload)
                 if context_digest is not None:
                     context_digest_by_module[module_name] = context_digest
-        cached_result = _load_cached_module_lowering_result(
-            project_root,
-            module_name,
-            module_path,
-            logical_source_path=logical_source_path,
-            entry_override=entry_override,
-            known_classes_snapshot=known_classes_snapshot,
-            parse_codec=parse_codec,
-            type_hint_policy=type_hint_policy,
-            fallback_policy=fallback_policy,
-            type_facts=type_facts,
-            enable_phi=enable_phi,
-            known_modules=known_modules,
-            stdlib_allowlist=stdlib_allowlist,
-            known_func_defaults=known_func_defaults,
-            module_is_namespace=module_name in namespace_module_names,
-            module_chunking=module_chunking,
-            module_chunk_max_ops=module_chunk_max_ops,
-            optimization_profile=optimization_profile,
-            pgo_hot_function_names=pgo_hot_function_names,
-            known_modules_sorted=known_modules_sorted,
-            stdlib_allowlist_sorted=stdlib_allowlist_sorted,
-            pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
-            context_digest=context_digest_by_module.get(module_name),
-            resolution_cache=module_resolution_cache,
-        )
-        if cached_result is not None:
-            cached_results[module_name] = cached_result
-            continue
+        if module_name not in dirty_lowering:
+            cached_result = _load_cached_module_lowering_result(
+                project_root,
+                module_name,
+                module_path,
+                logical_source_path=logical_source_path,
+                entry_override=entry_override,
+                known_classes_snapshot=known_classes_snapshot,
+                parse_codec=parse_codec,
+                type_hint_policy=type_hint_policy,
+                fallback_policy=fallback_policy,
+                type_facts=type_facts,
+                enable_phi=enable_phi,
+                known_modules=known_modules,
+                stdlib_allowlist=stdlib_allowlist,
+                known_func_defaults=known_func_defaults,
+                module_is_namespace=module_name in namespace_module_names,
+                module_chunking=module_chunking,
+                module_chunk_max_ops=module_chunk_max_ops,
+                optimization_profile=optimization_profile,
+                pgo_hot_function_names=pgo_hot_function_names,
+                known_modules_sorted=known_modules_sorted,
+                stdlib_allowlist_sorted=stdlib_allowlist_sorted,
+                pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+                context_digest=context_digest_by_module.get(module_name),
+                resolution_cache=module_resolution_cache,
+            )
+            if cached_result is not None:
+                cached_results[module_name] = cached_result
+                continue
         source = module_sources.get(module_name)
         if source is None:
             try:
@@ -10708,9 +10740,16 @@ def build(
     known_func_defaults: dict[str, dict[str, dict[str, Any]]] = {}
     module_trees: dict[str, ast.AST] = {}
     syntax_error_modules: dict[str, ModuleSyntaxErrorInfo] = {}
+    analysis_cache_miss_modules: set[str] = set()
     for module_name, module_path in module_graph.items():
         try:
-            tree, module_imports, func_defaults, source = _load_module_analysis(
+            (
+                tree,
+                module_imports,
+                func_defaults,
+                source,
+                analysis_cache_hit,
+            ) = _load_module_analysis(
                 module_path,
                 module_name=module_name,
                 is_package=module_path.name == "__init__.py",
@@ -10722,6 +10761,8 @@ def build(
             )
             if source is not None:
                 module_sources[module_name] = source
+            if not analysis_cache_hit:
+                analysis_cache_miss_modules.add(module_name)
         except SyntaxError as exc:
             if module_name == entry_module:
                 return _fail(
@@ -10751,6 +10792,11 @@ def build(
         )
         known_func_defaults[module_name] = func_defaults
     module_order = _topo_sort_modules(module_graph, module_deps)
+    dirty_lowering_modules = _dependent_module_closure(
+        analysis_cache_miss_modules,
+        module_deps,
+        module_graph,
+    )
     if diagnostics_enabled:
         phase_starts["ir_lowering"] = time.perf_counter()
     type_facts = None
@@ -10998,7 +11044,10 @@ def build(
             )
             if context_payload is not None:
                 context_digest = _module_lowering_context_digest(context_payload)
-            if context_digest is not None:
+            if (
+                context_digest is not None
+                and module_name not in dirty_lowering_modules
+            ):
                 cached_payload = _read_persisted_module_lowering(
                     project_root,
                     module_path,
@@ -11251,6 +11300,7 @@ def build(
                             known_modules_sorted=known_modules_sorted,
                             stdlib_allowlist_sorted=stdlib_allowlist_sorted,
                             pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+                            dirty_lowering_modules=dirty_lowering_modules,
                         )
                         if batch_error is not None:
                             return _fail(batch_error, json_output, command="build")
