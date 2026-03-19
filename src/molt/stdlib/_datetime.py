@@ -26,3 +26,6 @@ __all__ = [
     "timezone",
     "tzinfo",
 ]
+
+
+globals().pop("_require_intrinsic", None)

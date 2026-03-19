@@ -12,3 +12,6 @@ __all__ = [
     "pointer",
     "sizeof",
 ]
+
+
+globals().pop("_require_intrinsic", None)

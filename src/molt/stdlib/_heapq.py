@@ -16,3 +16,6 @@ __all__ = [
     "heappushpop",
     "heapreplace",
 ]
+
+
+globals().pop("_require_intrinsic", None)

@@ -83,3 +83,6 @@ __all__ = [
     "spec_from_file_location",
     "sys",
 ]
+
+
+globals().pop("_require_intrinsic", None)

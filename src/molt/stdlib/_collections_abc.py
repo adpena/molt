@@ -1262,3 +1262,4 @@ MutableSequence.register(bytearray)
 
 # Keep public API surface aligned with CPython.
 del framelocalsproxy
+globals().pop("_require_intrinsic", None)
