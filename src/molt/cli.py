@@ -2949,6 +2949,35 @@ def _dependent_module_closure(
     return closure
 
 
+def _module_dependency_closure(
+    module_name: str,
+    module_deps: dict[str, set[str]],
+) -> set[str]:
+    closure: set[str] = {module_name}
+    queue = deque([module_name])
+    while queue:
+        current = queue.popleft()
+        for dep in sorted(module_deps.get(current, ())):
+            if dep not in closure:
+                closure.add(dep)
+                queue.append(dep)
+    return closure
+
+
+def _scoped_known_func_defaults(
+    module_name: str,
+    *,
+    module_deps: dict[str, set[str]],
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    scoped_names = _module_dependency_closure(module_name, module_deps)
+    return {
+        name: known_func_defaults[name]
+        for name in sorted(scoped_names)
+        if name in known_func_defaults
+    }
+
+
 @functools.lru_cache(maxsize=8)
 def _stdlib_allowlist_cached(project_root_text: str | None) -> frozenset[str]:
     allowlist: set[str] = set()
@@ -7598,6 +7627,7 @@ def _module_lowering_context_payload(
     known_modules: Collection[str],
     stdlib_allowlist: Collection[str],
     known_func_defaults: dict[str, dict[str, Any]],
+    module_deps: dict[str, set[str]],
     module_is_namespace: bool,
     module_chunking: bool,
     module_chunk_max_ops: int,
@@ -7619,6 +7649,11 @@ def _module_lowering_context_payload(
         stdlib_allowlist_sorted = tuple(sorted(stdlib_allowlist))
     if pgo_hot_function_names_sorted is None:
         pgo_hot_function_names_sorted = tuple(sorted(pgo_hot_function_names))
+    scoped_known_func_defaults = _scoped_known_func_defaults(
+        module_name,
+        module_deps=module_deps,
+        known_func_defaults=known_func_defaults,
+    )
     return {
         "version": 1,
         "module_name": module_name,
@@ -7636,7 +7671,7 @@ def _module_lowering_context_payload(
         "known_modules": known_modules_sorted,
         "known_classes": known_classes_snapshot,
         "stdlib_allowlist": stdlib_allowlist_sorted,
-        "known_func_defaults": known_func_defaults,
+        "known_func_defaults": scoped_known_func_defaults,
         "module_chunking": module_chunking,
         "module_chunk_max_ops": module_chunk_max_ops,
         "optimization_profile": optimization_profile,
@@ -7738,6 +7773,7 @@ def _load_cached_module_lowering_result(
     known_modules: Collection[str],
     stdlib_allowlist: Collection[str],
     known_func_defaults: dict[str, dict[str, Any]],
+    module_deps: dict[str, set[str]],
     module_is_namespace: bool,
     module_chunking: bool,
     module_chunk_max_ops: int,
@@ -7770,6 +7806,7 @@ def _load_cached_module_lowering_result(
             known_modules=known_modules,
             stdlib_allowlist=stdlib_allowlist,
             known_func_defaults=known_func_defaults,
+            module_deps=module_deps,
             module_is_namespace=module_is_namespace,
             module_chunking=module_chunking,
             module_chunk_max_ops=module_chunk_max_ops,
@@ -7813,6 +7850,7 @@ def _prepare_frontend_parallel_batch(
     known_modules: Collection[str],
     stdlib_allowlist: Collection[str],
     known_func_defaults: dict[str, dict[str, Any]],
+    module_deps: dict[str, set[str]],
     namespace_module_names: set[str],
     is_wasm: bool,
     module_chunk_max_ops: int,
@@ -7856,6 +7894,7 @@ def _prepare_frontend_parallel_batch(
                 known_modules=known_modules,
                 stdlib_allowlist=stdlib_allowlist,
                 known_func_defaults=known_func_defaults,
+                module_deps=module_deps,
                 module_is_namespace=module_name in namespace_module_names,
                 module_chunking=module_chunking,
                 module_chunk_max_ops=module_chunk_max_ops,
@@ -7885,6 +7924,7 @@ def _prepare_frontend_parallel_batch(
                 known_modules=known_modules,
                 stdlib_allowlist=stdlib_allowlist,
                 known_func_defaults=known_func_defaults,
+                module_deps=module_deps,
                 module_is_namespace=module_name in namespace_module_names,
                 module_chunking=module_chunking,
                 module_chunk_max_ops=module_chunk_max_ops,
@@ -11079,6 +11119,7 @@ def build(
                 known_modules=known_modules,
                 stdlib_allowlist=stdlib_allowlist,
                 known_func_defaults=known_func_defaults,
+                module_deps=module_deps,
                 module_is_namespace=module_name in namespace_module_names,
                 module_chunking=is_wasm and module_chunk_max_ops > 0,
                 module_chunk_max_ops=module_chunk_max_ops,
@@ -11339,6 +11380,7 @@ def build(
                             known_modules=known_modules,
                             stdlib_allowlist=stdlib_allowlist,
                             known_func_defaults=known_func_defaults,
+                            module_deps=module_deps,
                             namespace_module_names=namespace_module_names,
                             is_wasm=is_wasm,
                             module_chunk_max_ops=module_chunk_max_ops,
