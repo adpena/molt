@@ -929,6 +929,21 @@ class _PreparedNonNativeResult:
     artifacts: dict[str, str] | None
 
 
+@dataclass(frozen=True)
+class _PreparedNativeLink:
+    output_obj: Path
+    stub_path: Path
+    runtime_lib: Path
+    output_binary: Path
+    link_cmd: list[str]
+    linker_hint: str | None
+    normalized_target: str | None
+    link_fingerprint_path: Path
+    link_fingerprint: dict[str, Any]
+    link_skipped: bool
+    link_process: subprocess.CompletedProcess[str]
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -12737,6 +12752,157 @@ def _prepare_non_native_build_result(
     ), None
 
 
+def _prepare_native_link(
+    *,
+    output_artifact: Path,
+    trusted: bool,
+    capabilities_list: list[str] | None,
+    artifacts_root: Path,
+    json_output: bool,
+    output_binary: Path | None,
+    runtime_lib: Path | None,
+    molt_root: Path,
+    runtime_cargo_profile: str,
+    target_triple: str | None,
+    sysroot_path: Path | None,
+    profile: BuildProfile,
+    project_root: Path,
+    diagnostics_enabled: bool,
+    phase_starts: dict[str, float],
+    link_timeout: float | None,
+    warnings: list[str],
+) -> tuple[_PreparedNativeLink | None, dict[str, Any] | None]:
+    output_obj = output_artifact
+    main_c_content = _render_native_main_stub(
+        trusted=trusted,
+        capabilities_list=capabilities_list,
+    )
+    stub_path = artifacts_root / "main_stub.c"
+    _write_text_if_changed(stub_path, main_c_content)
+
+    if output_binary is None:
+        return None, _fail("Binary output unavailable", json_output, command="build")
+    if output_binary.parent != Path("."):
+        output_binary.parent.mkdir(parents=True, exist_ok=True)
+    resolved_runtime_lib = runtime_lib
+    if resolved_runtime_lib is None:
+        resolved_runtime_lib = _runtime_lib_path(
+            molt_root,
+            runtime_cargo_profile,
+            target_triple,
+        )
+    try:
+        link_cmd, linker_hint, normalized_target = _build_native_link_command(
+            output_obj=output_obj,
+            stub_path=stub_path,
+            runtime_lib=resolved_runtime_lib,
+            output_binary=output_binary,
+            target_triple=target_triple,
+            sysroot_path=sysroot_path,
+            profile=profile,
+        )
+    except RuntimeError as exc:
+        return None, _fail(str(exc), json_output, command="build")
+    if (
+        normalized_target is not None
+        and target_triple is not None
+        and normalized_target != target_triple
+    ):
+        warnings.append(
+            f"Zig target normalized to {normalized_target} from {target_triple}."
+        )
+
+    link_fingerprint_path = _link_fingerprint_path(
+        project_root, output_binary, profile, target_triple
+    )
+    stored_link_fingerprint = _read_runtime_fingerprint(link_fingerprint_path)
+    link_fingerprint = _link_fingerprint(
+        project_root=project_root,
+        inputs=[stub_path, output_obj, resolved_runtime_lib],
+        link_cmd=link_cmd,
+        stored_fingerprint=stored_link_fingerprint,
+    )
+    link_skipped = not _artifact_needs_rebuild(
+        output_binary,
+        link_fingerprint,
+        stored_link_fingerprint,
+    )
+    if link_skipped:
+        link_process = subprocess.CompletedProcess(
+            args=link_cmd,
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+    else:
+        if diagnostics_enabled and "link" not in phase_starts:
+            phase_starts["link"] = time.perf_counter()
+        try:
+            link_process = _run_native_link_command(
+                link_cmd=link_cmd,
+                json_output=json_output,
+                link_timeout=link_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return None, _fail("Linker timed out", json_output, command="build")
+        if link_process.returncode != 0 and linker_hint is not None:
+            try:
+                retry_process, _ = _retry_native_link_without_hint(
+                    link_cmd=link_cmd,
+                    linker_hint=linker_hint,
+                    json_output=json_output,
+                    link_timeout=link_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                return None, _fail("Linker timed out", json_output, command="build")
+            if retry_process is not None and retry_process.returncode == 0:
+                warnings.append(
+                    f"Linker fallback: -fuse-ld={linker_hint} failed; retried default linker."
+                )
+                link_process = retry_process
+        if link_process.returncode == 0 and sys.platform == "darwin" and not target_triple:
+            try:
+                link_process = _validate_darwin_link_output(
+                    link_process=link_process,
+                    link_cmd=link_cmd,
+                    linker_hint=linker_hint,
+                    output_binary=output_binary,
+                    validation_kind="magic",
+                    json_output=json_output,
+                    link_timeout=link_timeout,
+                    warnings=warnings,
+                )
+            except subprocess.TimeoutExpired:
+                return None, _fail("Linker timed out", json_output, command="build")
+        if link_process.returncode == 0 and sys.platform == "darwin" and not target_triple:
+            try:
+                link_process = _validate_darwin_link_output(
+                    link_process=link_process,
+                    link_cmd=link_cmd,
+                    linker_hint=linker_hint,
+                    output_binary=output_binary,
+                    validation_kind="dyld",
+                    json_output=json_output,
+                    link_timeout=link_timeout,
+                    warnings=warnings,
+                )
+            except subprocess.TimeoutExpired:
+                return None, _fail("Linker timed out", json_output, command="build")
+    return _PreparedNativeLink(
+        output_obj=output_obj,
+        stub_path=stub_path,
+        runtime_lib=resolved_runtime_lib,
+        output_binary=output_binary,
+        link_cmd=link_cmd,
+        linker_hint=linker_hint,
+        normalized_target=normalized_target,
+        link_fingerprint_path=link_fingerprint_path,
+        link_fingerprint=link_fingerprint,
+        link_skipped=link_skipped,
+        link_process=link_process,
+    ), None
+
+
 def _prepare_backend_cache_setup(
     *,
     cache_enabled: bool,
@@ -17043,142 +17209,35 @@ def build(
             success_messages=prepared_non_native_result.success_messages,
         )
 
-    # 3. Linking: output.o + main.c -> binary
-    output_obj = output_artifact
-    main_c_content = _render_native_main_stub(
+    prepared_native_link, prepared_native_link_error = _prepare_native_link(
+        output_artifact=output_artifact,
         trusted=trusted,
         capabilities_list=capabilities_list,
-    )
-    stub_path = artifacts_root / "main_stub.c"
-    _write_text_if_changed(stub_path, main_c_content)
-
-    if output_binary is None:
-        return _fail("Binary output unavailable", json_output, command="build")
-    if output_binary.parent != Path("."):
-        output_binary.parent.mkdir(parents=True, exist_ok=True)
-    if runtime_lib is None:
-        runtime_lib = _runtime_lib_path(
-            molt_root,
-            runtime_cargo_profile,
-            target_triple,
-        )
-    try:
-        link_cmd, linker_hint, normalized_target = _build_native_link_command(
-            output_obj=output_obj,
-            stub_path=stub_path,
-            runtime_lib=runtime_lib,
-            output_binary=output_binary,
-            target_triple=target_triple,
-            sysroot_path=sysroot_path,
-            profile=profile,
-        )
-    except RuntimeError as exc:
-        return _fail(str(exc), json_output, command="build")
-    if (
-        normalized_target is not None
-        and target_triple is not None
-        and normalized_target != target_triple
-    ):
-        warnings.append(
-            f"Zig target normalized to {normalized_target} from {target_triple}."
-        )
-
-    link_fingerprint_path = _link_fingerprint_path(
-        project_root, output_binary, profile, target_triple
-    )
-    stored_link_fingerprint = _read_runtime_fingerprint(link_fingerprint_path)
-    link_fingerprint = _link_fingerprint(
+        artifacts_root=artifacts_root,
+        json_output=json_output,
+        output_binary=output_binary,
+        runtime_lib=runtime_lib,
+        molt_root=molt_root,
+        runtime_cargo_profile=runtime_cargo_profile,
+        target_triple=target_triple,
+        sysroot_path=sysroot_path,
+        profile=profile,
         project_root=project_root,
-        inputs=[stub_path, output_obj, runtime_lib],
-        link_cmd=link_cmd,
-        stored_fingerprint=stored_link_fingerprint,
+        diagnostics_enabled=diagnostics_enabled,
+        phase_starts=phase_starts,
+        link_timeout=link_timeout,
+        warnings=warnings,
     )
-    link_skipped = not _artifact_needs_rebuild(
-        output_binary,
-        link_fingerprint,
-        stored_link_fingerprint,
-    )
-    if link_skipped:
-        link_process = subprocess.CompletedProcess(
-            args=link_cmd,
-            returncode=0,
-            stdout="",
-            stderr="",
-        )
-    else:
-        if diagnostics_enabled and "link" not in phase_starts:
-            phase_starts["link"] = time.perf_counter()
-        try:
-            link_process = _run_native_link_command(
-                link_cmd=link_cmd,
-                json_output=json_output,
-                link_timeout=link_timeout,
-            )
-        except subprocess.TimeoutExpired:
-            return _fail("Linker timed out", json_output, command="build")
-
-    if not link_skipped and link_process.returncode != 0 and linker_hint is not None:
-        try:
-            retry_process, _ = _retry_native_link_without_hint(
-                link_cmd=link_cmd,
-                linker_hint=linker_hint,
-                json_output=json_output,
-                link_timeout=link_timeout,
-            )
-        except subprocess.TimeoutExpired:
-            return _fail("Linker timed out", json_output, command="build")
-        if retry_process is not None and retry_process.returncode == 0:
-            warnings.append(
-                f"Linker fallback: -fuse-ld={linker_hint} failed; retried default linker."
-            )
-            link_process = retry_process
-
-    if (
-        not link_skipped
-        and link_process.returncode == 0
-        and sys.platform == "darwin"
-        and not target_triple
-    ):
-        try:
-            link_process = _validate_darwin_link_output(
-                link_process=link_process,
-                link_cmd=link_cmd,
-                linker_hint=linker_hint,
-                output_binary=output_binary,
-                validation_kind="magic",
-                json_output=json_output,
-                link_timeout=link_timeout,
-                warnings=warnings,
-            )
-        except subprocess.TimeoutExpired:
-            return _fail("Linker timed out", json_output, command="build")
-
-    if (
-        not link_skipped
-        and link_process.returncode == 0
-        and sys.platform == "darwin"
-        and not target_triple
-    ):
-        try:
-            link_process = _validate_darwin_link_output(
-                link_process=link_process,
-                link_cmd=link_cmd,
-                linker_hint=linker_hint,
-                output_binary=output_binary,
-                validation_kind="dyld",
-                json_output=json_output,
-                link_timeout=link_timeout,
-                warnings=warnings,
-            )
-        except subprocess.TimeoutExpired:
-            return _fail("Linker timed out", json_output, command="build")
+    if prepared_native_link_error is not None:
+        return prepared_native_link_error
+    assert prepared_native_link is not None
 
     diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
     return _emit_native_link_result(
-        link_process=link_process,
-        link_skipped=link_skipped,
-        link_fingerprint=link_fingerprint,
-        link_fingerprint_path=link_fingerprint_path,
+        link_process=prepared_native_link.link_process,
+        link_skipped=prepared_native_link.link_skipped,
+        link_fingerprint=prepared_native_link.link_fingerprint,
+        link_fingerprint_path=prepared_native_link.link_fingerprint_path,
         cache=cache,
         cache_hit=cache_hit,
         cache_key=cache_key,
@@ -17202,9 +17261,9 @@ def build(
         emit_mode=emit_mode,
         profile=profile,
         native_arch_perf_enabled=native_arch_perf_enabled,
-        output_obj=output_obj,
-        stub_path=stub_path,
-        runtime_lib=runtime_lib,
+        output_obj=prepared_native_link.output_obj,
+        stub_path=prepared_native_link.stub_path,
+        runtime_lib=prepared_native_link.runtime_lib,
         diagnostics_payload=diagnostics_payload,
         diagnostics_path=diagnostics_path,
         pgo_profile_payload=pgo_profile_payload,
