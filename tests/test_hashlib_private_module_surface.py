@@ -173,6 +173,16 @@ checks = {{
         and "sha256" in _hashlib_private._constructors
         and "blake2b" in _hashlib_private._constructors
     ),
+    "public_module_private_handles_hidden": (
+        "molt_hash_new" not in _hashlib.__dict__
+        and "molt_hash_update" not in _hashlib.__dict__
+        and "molt_hash_copy" not in _hashlib.__dict__
+        and "molt_hash_digest" not in _hashlib.__dict__
+        and "molt_hash_drop" not in _hashlib.__dict__
+        and "molt_compare_digest" not in _hashlib.__dict__
+        and "molt_pbkdf2_hmac" not in _hashlib.__dict__
+        and "molt_scrypt" not in _hashlib.__dict__
+    ),
 }}
 
 for key in sorted(checks):
@@ -203,4 +213,5 @@ def test_hashlib_private_module_surface() -> None:
         "functions": "True",
         "metadata": "True",
         "openssl_aliases": "True",
+        "public_module_private_handles_hidden": "True",
     }
