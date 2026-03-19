@@ -26,7 +26,9 @@ struct DaemonJobRequest {
     skip_module_output_if_synced: bool,
     #[serde(default)]
     skip_function_output_if_synced: bool,
-    ir: SimpleIR,
+    #[serde(default)]
+    probe_cache_only: bool,
+    ir: Option<SimpleIR>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,7 +47,13 @@ struct DaemonJobResponse {
     cached: bool,
     cache_tier: Option<String>,
     output_written: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    needs_ir: bool,
     message: Option<String>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Serialize)]
@@ -142,7 +150,10 @@ impl DaemonCache {
     }
 
     fn evict(&mut self) {
-        while self.max_bytes.is_some_and(|max_bytes| self.bytes > max_bytes) {
+        while self
+            .max_bytes
+            .is_some_and(|max_bytes| self.bytes > max_bytes)
+        {
             let Some(Reverse((stamp, old_key))) = self.order.pop() else {
                 break;
             };
@@ -175,11 +186,7 @@ impl DaemonCache {
     }
 }
 
-fn daemon_health(
-    cache: &DaemonCache,
-    stats: &DaemonStats,
-    start: Instant,
-) -> DaemonHealthResponse {
+fn daemon_health(cache: &DaemonCache, stats: &DaemonStats, start: Instant) -> DaemonHealthResponse {
     let uptime_ms = start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     DaemonHealthResponse {
         protocol_version: BACKEND_DAEMON_PROTOCOL_VERSION,
@@ -215,6 +222,7 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
                     cached: true,
                     cache_tier: Some("module".to_string()),
                     output_written,
+                    needs_ir: false,
                     message: None,
                 };
             }
@@ -225,6 +233,7 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
                     cached: false,
                     cache_tier: None,
                     output_written: false,
+                    needs_ir: false,
                     message: Some(format!("failed to write cached output: {err}")),
                 };
             }
@@ -242,6 +251,7 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
                     cached: true,
                     cache_tier: Some("function".to_string()),
                     output_written,
+                    needs_ir: false,
                     message: None,
                 };
             }
@@ -252,18 +262,43 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
                     cached: false,
                     cache_tier: None,
                     output_written: false,
+                    needs_ir: false,
                     message: Some(format!("failed to write cached output: {err}")),
                 };
             }
         }
     }
 
+    if job.probe_cache_only {
+        return DaemonJobResponse {
+            id: job.id,
+            ok: true,
+            cached: false,
+            cache_tier: None,
+            output_written: false,
+            needs_ir: true,
+            message: None,
+        };
+    }
+
+    let Some(ir) = job.ir else {
+        return DaemonJobResponse {
+            id: job.id,
+            ok: false,
+            cached: false,
+            cache_tier: None,
+            output_written: false,
+            needs_ir: false,
+            message: Some("missing ir for cache miss".to_string()),
+        };
+    };
+
     let output_bytes: Arc<[u8]> = if job.is_wasm {
         let backend = WasmBackend::new();
-        Arc::from(backend.compile(job.ir))
+        Arc::from(backend.compile(ir))
     } else {
         let backend = SimpleBackend::new_with_target(job.target_triple.as_deref());
-        Arc::from(backend.compile(job.ir))
+        Arc::from(backend.compile(ir))
     };
 
     if let Err(err) = write_output(&job.output, output_bytes.as_ref()) {
@@ -273,12 +308,12 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
             cached: false,
             cache_tier: None,
             output_written: false,
+            needs_ir: false,
             message: Some(format!("failed to write compiled output: {err}")),
         };
     }
 
-    if !cache_key.is_empty() && !function_cache_key.is_empty() && function_cache_key != cache_key
-    {
+    if !cache_key.is_empty() && !function_cache_key.is_empty() && function_cache_key != cache_key {
         cache.insert(cache_key.to_string(), Arc::clone(&output_bytes));
         cache.insert(function_cache_key.to_string(), output_bytes);
     } else if !cache_key.is_empty() {
@@ -293,6 +328,7 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
         cached: false,
         cache_tier: None,
         output_written: true,
+        needs_ir: false,
         message: None,
     }
 }
@@ -600,9 +636,12 @@ fn main() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_daemon_request_bytes, write_cached_output, DaemonCache};
-    use std::sync::Arc;
+    use super::{
+        DaemonCache, DaemonJobRequest, compile_single_job, read_daemon_request_bytes,
+        write_cached_output,
+    };
     use std::io::Cursor;
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -645,11 +684,68 @@ mod tests {
             .as_nanos();
         let output = std::env::temp_dir().join(format!("molt-backend-test-{nonce}.o"));
 
-        let written =
-            write_cached_output(output.to_str().expect("utf8 path"), b"artifact", true)
-                .expect("cache hit succeeds");
+        let written = write_cached_output(output.to_str().expect("utf8 path"), b"artifact", true)
+            .expect("cache hit succeeds");
 
         assert!(!written);
         assert!(!output.exists());
+    }
+
+    #[test]
+    fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
+        let mut cache = DaemonCache::new(None);
+        let result = compile_single_job(
+            DaemonJobRequest {
+                id: "job0".to_string(),
+                is_wasm: false,
+                target_triple: None,
+                output: "/tmp/unused.o".to_string(),
+                cache_key: "module".to_string(),
+                function_cache_key: Some("function".to_string()),
+                skip_module_output_if_synced: false,
+                skip_function_output_if_synced: false,
+                probe_cache_only: true,
+                ir: None,
+            },
+            &mut cache,
+        );
+
+        assert!(result.ok);
+        assert!(!result.cached);
+        assert!(result.needs_ir);
+        assert!(!result.output_written);
+    }
+
+    #[test]
+    fn daemon_probe_cache_only_hits_without_ir() {
+        let mut cache = DaemonCache::new(None);
+        cache.insert("module".to_string(), Arc::from(vec![1_u8, 2, 3]));
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let output = std::env::temp_dir().join(format!("molt-backend-probe-hit-{nonce}.o"));
+
+        let result = compile_single_job(
+            DaemonJobRequest {
+                id: "job0".to_string(),
+                is_wasm: false,
+                target_triple: None,
+                output: output.to_string_lossy().into_owned(),
+                cache_key: "module".to_string(),
+                function_cache_key: Some("function".to_string()),
+                skip_module_output_if_synced: false,
+                skip_function_output_if_synced: false,
+                probe_cache_only: true,
+                ir: None,
+            },
+            &mut cache,
+        );
+
+        assert!(result.ok);
+        assert!(result.cached);
+        assert!(!result.needs_ir);
+        assert!(output.exists());
+        let _ = std::fs::remove_file(output);
     }
 }

@@ -1936,6 +1936,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
             known_modules_sorted=("alpha",),
             stdlib_allowlist_sorted=(),
             pgo_hot_function_names_sorted=(),
+            module_dep_closures={"alpha": frozenset({"alpha"})},
             dirty_lowering_modules=set(),
         )
     )
@@ -2080,6 +2081,49 @@ def test_module_lowering_context_payload_ignores_unrelated_func_defaults() -> No
     assert payload is not None
     assert set(payload["known_func_defaults"]) == {"main", "alpha"}
     assert "beta" not in payload["known_func_defaults"]
+
+
+def test_module_lowering_context_payload_scopes_known_modules_and_hot_functions() -> None:
+    payload = cli._module_lowering_context_payload(
+        "main",
+        Path("/tmp/main.py"),
+        logical_source_path="/tmp/main.py",
+        entry_override=None,
+        known_classes_snapshot={},
+        parse_codec="json",
+        type_hint_policy="ignore",
+        fallback_policy="error",
+        type_facts=None,
+        enable_phi=True,
+        known_modules={"main", "alpha", "beta", "unrelated"},
+        stdlib_allowlist=set(),
+        known_func_defaults={},
+        module_deps={"main": {"alpha", "beta"}, "alpha": set(), "beta": set()},
+        module_is_namespace=False,
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names={
+            "main::hot_func",
+            "main.hot_attr",
+            "beta::irrelevant",
+            "unrelated::nope",
+        },
+        known_modules_sorted=("alpha", "beta", "main", "unrelated"),
+        stdlib_allowlist_sorted=(),
+        pgo_hot_function_names_sorted=(
+            "beta::irrelevant",
+            "main.hot_attr",
+            "main::hot_func",
+            "unrelated::nope",
+        ),
+        module_dep_closures={"main": frozenset({"main", "alpha", "beta"})},
+        path_stat=os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
+    )
+
+    assert payload is not None
+    assert tuple(payload["known_modules"]) == ("alpha", "beta", "main")
+    assert tuple(payload["pgo_hot_functions"]) == ("main.hot_attr", "main::hot_func")
 
 
 def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
@@ -3515,6 +3559,130 @@ def test_compile_with_backend_daemon_uses_preencoded_request_bytes(
     assert result.ok is True
     assert result.output_written is True
     assert result.output_exists is True
+
+
+def test_compile_with_backend_daemon_probes_cache_without_ir_on_hit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend_output = tmp_path / "output.o"
+    seen_payloads: list[dict[str, object]] = []
+
+    def _fake_request(
+        socket_path: Path,
+        data: bytes,
+        *,
+        timeout: float | None,
+    ) -> tuple[dict[str, object], None]:
+        del socket_path, timeout
+        payload = json.loads(data)
+        seen_payloads.append(payload)
+        backend_output.write_bytes(b"\x7fELF")
+        return (
+            {
+                "ok": True,
+                "jobs": [
+                    {
+                        "id": "job0",
+                        "ok": True,
+                        "cached": True,
+                        "cache_tier": "module",
+                        "output_written": True,
+                    }
+                ],
+            },
+            None,
+        )
+
+    monkeypatch.setattr(cli, "_backend_daemon_request_bytes", _fake_request)
+    result = cli._compile_with_backend_daemon(
+        Path("/tmp/fake.sock"),
+        ir={"functions": [{"name": "heavy"}]},
+        backend_output=backend_output,
+        is_wasm=False,
+        target_triple=None,
+        cache_key="module-cache",
+        function_cache_key="function-cache",
+        config_digest="digest123",
+        skip_module_output_if_synced=False,
+        skip_function_output_if_synced=False,
+        timeout=0.1,
+    )
+
+    assert result.ok is True
+    assert len(seen_payloads) == 1
+    assert seen_payloads[0]["jobs"][0]["probe_cache_only"] is True
+    assert "ir" not in seen_payloads[0]["jobs"][0]
+
+
+def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend_output = tmp_path / "output.o"
+    seen_payloads: list[dict[str, object]] = []
+
+    def _fake_request(
+        socket_path: Path,
+        data: bytes,
+        *,
+        timeout: float | None,
+    ) -> tuple[dict[str, object], None]:
+        del socket_path, timeout
+        payload = json.loads(data)
+        seen_payloads.append(payload)
+        if len(seen_payloads) == 1:
+            return (
+                {
+                    "ok": True,
+                    "jobs": [
+                        {
+                            "id": "job0",
+                            "ok": True,
+                            "cached": False,
+                            "output_written": False,
+                            "needs_ir": True,
+                        }
+                    ],
+                },
+                None,
+            )
+        backend_output.write_bytes(b"\x7fELF")
+        return (
+            {
+                "ok": True,
+                "jobs": [
+                    {
+                        "id": "job0",
+                        "ok": True,
+                        "cached": False,
+                        "output_written": True,
+                    }
+                ],
+            },
+            None,
+        )
+
+    monkeypatch.setattr(cli, "_backend_daemon_request_bytes", _fake_request)
+    result = cli._compile_with_backend_daemon(
+        Path("/tmp/fake.sock"),
+        ir={"functions": [{"name": "heavy"}]},
+        backend_output=backend_output,
+        is_wasm=False,
+        target_triple=None,
+        cache_key="module-cache",
+        function_cache_key="function-cache",
+        config_digest="digest123",
+        skip_module_output_if_synced=False,
+        skip_function_output_if_synced=False,
+        timeout=0.1,
+    )
+
+    assert result.ok is True
+    assert len(seen_payloads) == 2
+    assert seen_payloads[0]["jobs"][0]["probe_cache_only"] is True
+    assert "ir" not in seen_payloads[0]["jobs"][0]
+    assert seen_payloads[1]["jobs"][0]["ir"] == {"functions": [{"name": "heavy"}]}
 
 
 def test_compile_with_backend_daemon_reports_missing_output_in_result(
