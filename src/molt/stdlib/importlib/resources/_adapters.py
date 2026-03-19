@@ -2,9 +2,9 @@
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_require_intrinsic("molt_stdlib_probe")
 _MOLT_IMPORTLIB_RESOURCES_OPEN_MODE_IS_TEXT = _require_intrinsic(
-    "molt_importlib_resources_open_mode_is_text", globals()
+    "molt_importlib_resources_open_mode_is_text"
 )
 
 from contextlib import suppress

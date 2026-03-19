@@ -14,36 +14,36 @@ import importlib.machinery as _machinery
 if _TYPE_CHECKING:
     from importlib.machinery import ModuleSpec
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_require_intrinsic("molt_stdlib_probe")
 _MOLT_IMPORTLIB_CACHE_FROM_SOURCE = _require_intrinsic(
-    "molt_importlib_cache_from_source", globals()
+    "molt_importlib_cache_from_source"
 )
 _MOLT_IMPORTLIB_DECODE_SOURCE = _require_intrinsic(
-    "molt_importlib_decode_source", globals()
+    "molt_importlib_decode_source"
 )
 _MOLT_IMPORTLIB_SOURCE_HASH = _require_intrinsic(
-    "molt_importlib_source_hash", globals()
+    "molt_importlib_source_hash"
 )
 _MOLT_IMPORTLIB_SOURCE_FROM_CACHE = _require_intrinsic(
-    "molt_importlib_source_from_cache", globals()
+    "molt_importlib_source_from_cache"
 )
 _MOLT_IMPORTLIB_RESOLVE_NAME = _require_intrinsic(
-    "molt_importlib_resolve_name", globals()
+    "molt_importlib_resolve_name"
 )
 _MOLT_IMPORTLIB_FIND_SPEC_ORCHESTRATE = _require_intrinsic(
-    "molt_importlib_find_spec_orchestrate", globals()
+    "molt_importlib_find_spec_orchestrate"
 )
 _MOLT_IMPORTLIB_ENSURE_DEFAULT_META_PATH = _require_intrinsic(
-    "molt_importlib_ensure_default_meta_path", globals()
+    "molt_importlib_ensure_default_meta_path"
 )
 _MOLT_IMPORTLIB_MODULE_FROM_SPEC = _require_intrinsic(
-    "molt_importlib_module_from_spec", globals()
+    "molt_importlib_module_from_spec"
 )
 _MOLT_IMPORTLIB_SPEC_FROM_LOADER = _require_intrinsic(
-    "molt_importlib_spec_from_loader", globals()
+    "molt_importlib_spec_from_loader"
 )
 _MOLT_IMPORTLIB_SPEC_FROM_FILE_LOCATION = _require_intrinsic(
-    "molt_importlib_spec_from_file_location", globals()
+    "molt_importlib_spec_from_file_location"
 )
 
 

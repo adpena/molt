@@ -8,9 +8,9 @@ import contextlib as _contextlib
 import importlib.abc as _importlib_abc
 import itertools as _itertools
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_require_intrinsic("molt_stdlib_probe")
 _MOLT_IMPORTLIB_METADATA_TYPES_PAYLOAD = _require_intrinsic(
-    "molt_importlib_metadata_types_payload", globals()
+    "molt_importlib_metadata_types_payload"
 )
 
 

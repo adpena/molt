@@ -10,8 +10,8 @@ import types as types
 _WRAPPER_ASSIGNMENTS = functools.WRAPPER_ASSIGNMENTS
 _WRAPPER_UPDATES = functools.WRAPPER_UPDATES
 
-_MOLT_LRU_CACHE = _require_intrinsic("molt_functools_lru_cache", globals())
-_MOLT_UPDATE_WRAPPER = _require_intrinsic("molt_functools_update_wrapper", globals())
+_MOLT_LRU_CACHE = _require_intrinsic("molt_functools_lru_cache")
+_MOLT_UPDATE_WRAPPER = _require_intrinsic("molt_functools_update_wrapper")
 
 
 def method_cache(method):
