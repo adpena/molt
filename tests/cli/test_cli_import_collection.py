@@ -2662,6 +2662,21 @@ def test_native_arch_perf_requested_is_cached(
     assert info.currsize >= 1
 
 
+def test_backend_codegen_env_inputs_is_cached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli._backend_codegen_env_inputs_cached.cache_clear()
+    monkeypatch.setenv("MOLT_BACKEND_REGALLOC_ALGORITHM", "single_pass")
+
+    first = cli._backend_codegen_env_inputs(is_wasm=False)
+    second = cli._backend_codegen_env_inputs(is_wasm=False)
+
+    info = cli._backend_codegen_env_inputs_cached.cache_info()
+    assert first == second == {"MOLT_BACKEND_REGALLOC_ALGORITHM": "single_pass"}
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
 def test_backend_codegen_env_digest_tracks_codegen_knobs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

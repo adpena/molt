@@ -5912,23 +5912,43 @@ def _enable_native_arch_rustflags() -> bool:
     return True
 
 
+@functools.lru_cache(maxsize=64)
+def _backend_codegen_env_inputs_cached(
+    is_wasm: bool,
+    native_values: tuple[tuple[str, str], ...],
+    wasm_values: tuple[tuple[str, str], ...],
+) -> dict[str, str]:
+    payload = {key: value for key, value in native_values}
+    if is_wasm:
+        payload.update({key: value for key, value in wasm_values})
+    return {name: payload[name] for name in sorted(payload)}
+
+
 def _backend_codegen_env_inputs(
     *,
     is_wasm: bool,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     source = env if env is not None else os.environ
-    keys = list(_NATIVE_CODEGEN_ENV_KNOBS)
+    native_values = tuple(
+        (key, value)
+        for key in _NATIVE_CODEGEN_ENV_KNOBS
+        if (value := (source.get(key) or "").strip())
+    )
+    wasm_values = tuple(
+        (key, value)
+        for key in _WASM_CODEGEN_ENV_KNOBS
+        if (value := (source.get(key) or "").strip())
+    )
+    if env is None:
+        return _backend_codegen_env_inputs_cached(
+            is_wasm,
+            native_values,
+            wasm_values,
+        )
+    payload = {key: value for key, value in native_values}
     if is_wasm:
-        keys.extend(_WASM_CODEGEN_ENV_KNOBS)
-    payload: dict[str, str] = {}
-    for key in keys:
-        raw = source.get(key)
-        if raw is None:
-            continue
-        value = raw.strip()
-        if value:
-            payload[key] = value
+        payload.update({key: value for key, value in wasm_values})
     return {name: payload[name] for name in sorted(payload)}
 
 
