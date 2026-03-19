@@ -14178,6 +14178,47 @@ def _run_frontend_parallel_enabled_layers(
     return None
 
 
+def _run_frontend_pipeline(
+    *,
+    module_order: list[str],
+    module_layers: list[list[str]],
+    frontend_parallel_config: _FrontendParallelConfig,
+    frontend_parallel_layers: list[dict[str, Any]],
+    frontend_parallel_details: dict[str, Any],
+    frontend_parallel_worker_timings: list[dict[str, Any]],
+    prepared_frontend_execution: _PreparedFrontendExecution,
+) -> dict[str, Any] | None:
+    frontend_layer_execution_context = (
+        prepared_frontend_execution.frontend_layer_execution_context
+    )
+    frontend_layer_runtime_hooks = (
+        prepared_frontend_execution.frontend_layer_runtime_hooks
+    )
+    if frontend_parallel_config.enabled:
+        frontend_layer_error = _run_frontend_parallel_enabled_layers(
+            module_layers,
+            execution_context=frontend_layer_execution_context,
+            runtime_hooks=frontend_layer_runtime_hooks,
+            frontend_parallel_config=frontend_parallel_config,
+            frontend_parallel_layers=frontend_parallel_layers,
+        )
+    else:
+        frontend_layer_error = _run_frontend_serial_disabled_layers(
+            module_order,
+            execution_context=frontend_layer_execution_context,
+            runtime_hooks=frontend_layer_runtime_hooks,
+            frontend_parallel_layers=frontend_parallel_layers,
+            frontend_parallel_config=frontend_parallel_config,
+        )
+    if frontend_layer_error is not None:
+        return frontend_layer_error
+    _summarize_frontend_parallel_worker_timings(
+        frontend_parallel_details,
+        frontend_parallel_worker_timings,
+    )
+    return None
+
+
 def _run_frontend_serial_disabled_layers(
     module_order: Sequence[str],
     *,
@@ -17666,9 +17707,6 @@ def build(
     frontend_parallel_layers = (
         prepared_frontend_lowering_config.frontend_parallel_layers
     )
-    frontend_layer_execution_context = (
-        prepared_frontend_execution.frontend_layer_execution_context
-    )
     serial_frontend_lowering_context = (
         prepared_frontend_execution.serial_frontend_lowering_context
     )
@@ -17679,33 +17717,17 @@ def build(
     midend_diagnostics_state = (
         prepared_frontend_execution.midend_diagnostics_state
     )
-    frontend_layer_runtime_hooks = (
-        prepared_frontend_execution.frontend_layer_runtime_hooks
+    frontend_layer_error = _run_frontend_pipeline(
+        module_order=module_order,
+        module_layers=module_layers,
+        frontend_parallel_config=frontend_parallel_config,
+        frontend_parallel_layers=frontend_parallel_layers,
+        frontend_parallel_details=frontend_parallel_details,
+        frontend_parallel_worker_timings=frontend_parallel_worker_timings,
+        prepared_frontend_execution=prepared_frontend_execution,
     )
-
-    if frontend_parallel_config.enabled:
-        frontend_layer_error = _run_frontend_parallel_enabled_layers(
-            module_layers,
-            execution_context=frontend_layer_execution_context,
-            runtime_hooks=frontend_layer_runtime_hooks,
-            frontend_parallel_config=frontend_parallel_config,
-            frontend_parallel_layers=frontend_parallel_layers,
-        )
-    else:
-        frontend_layer_error = _run_frontend_serial_disabled_layers(
-            module_order,
-            execution_context=frontend_layer_execution_context,
-            runtime_hooks=frontend_layer_runtime_hooks,
-            frontend_parallel_layers=frontend_parallel_layers,
-            frontend_parallel_config=frontend_parallel_config,
-        )
     if frontend_layer_error is not None:
         return frontend_layer_error
-
-    _summarize_frontend_parallel_worker_timings(
-        frontend_parallel_details,
-        frontend_parallel_worker_timings,
-    )
 
     prepared_backend_ir, prepared_backend_ir_error = _prepare_backend_ir(
         entry_module=entry_module,
