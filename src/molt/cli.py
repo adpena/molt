@@ -814,6 +814,17 @@ class _ResolvedBuildEntry:
     entry_tree: ast.AST
 
 
+@dataclass(frozen=True)
+class _PreparedBuildModuleOutputs:
+    namespace_module_names: set[str]
+    generated_module_source_paths: dict[str, str]
+    output_layout: _BuildOutputLayout
+    known_modules: set[str]
+    known_modules_sorted: tuple[str, ...]
+    stdlib_allowlist_sorted: tuple[str, ...]
+    module_graph_metadata: _ModuleGraphMetadata
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -11449,6 +11460,90 @@ def _prepare_entry_module_graph(
     ), None
 
 
+def _prepare_build_module_outputs(
+    *,
+    module_graph: MutableMapping[str, Path],
+    module_reasons: MutableMapping[str, set[str]],
+    roots: Sequence[Path],
+    stdlib_root: Path,
+    stdlib_allowlist: set[str],
+    explicit_imports: Collection[str],
+    resolver_cache: "_ModuleResolutionCache",
+    artifacts_root: Path,
+    stub_parents: Collection[str],
+    entry_module: str,
+    diagnostics_enabled: bool,
+    target: str,
+    trusted: bool,
+    require_linked: bool,
+    linked: bool,
+    linked_output: str | None,
+    emit: EmitMode | None,
+    output: str | None,
+    emit_ir: str | None,
+    bin_root: Path,
+    output_root: Path,
+    output_base: str,
+    out_dir_path: Path,
+    project_root: Path,
+) -> tuple[_PreparedBuildModuleOutputs | None, str | None]:
+    support_modules = _augment_support_modules(
+        module_graph=module_graph,
+        module_reasons=module_reasons,
+        roots=roots,
+        stdlib_root=stdlib_root,
+        stdlib_allowlist=stdlib_allowlist,
+        explicit_imports=explicit_imports,
+        resolver_cache=resolver_cache,
+        artifacts_root=artifacts_root,
+        stub_parents=stub_parents,
+        entry_module=entry_module,
+        diagnostics_enabled=diagnostics_enabled,
+    )
+    namespace_module_names = set(support_modules.namespace_module_names)
+    generated_module_source_paths = support_modules.generated_module_source_paths
+    try:
+        output_layout = _resolve_build_output_layout(
+            target=target,
+            trusted=trusted,
+            require_linked=require_linked,
+            linked=linked,
+            linked_output=linked_output,
+            emit=emit,
+            output=output,
+            emit_ir=emit_ir,
+            artifacts_root=artifacts_root,
+            bin_root=bin_root,
+            output_root=output_root,
+            output_base=output_base,
+            out_dir_path=out_dir_path,
+            project_root=project_root,
+        )
+    except ValueError as exc:
+        return None, str(exc)
+    known_modules = set(module_graph.keys())
+    stdlib_allowlist.update(STUB_MODULES)
+    stdlib_allowlist.update(stub_parents)
+    stdlib_allowlist.add("molt.stdlib")
+    known_modules_sorted = tuple(sorted(known_modules))
+    stdlib_allowlist_sorted = tuple(sorted(stdlib_allowlist))
+    module_graph_metadata = _build_module_graph_metadata(
+        module_graph,
+        generated_module_source_paths=generated_module_source_paths,
+        entry_module=entry_module,
+        namespace_module_names=namespace_module_names,
+    )
+    return _PreparedBuildModuleOutputs(
+        namespace_module_names=namespace_module_names,
+        generated_module_source_paths=generated_module_source_paths,
+        output_layout=output_layout,
+        known_modules=known_modules,
+        known_modules_sorted=known_modules_sorted,
+        stdlib_allowlist_sorted=stdlib_allowlist_sorted,
+        module_graph_metadata=module_graph_metadata,
+    ), None
+
+
 def _prepare_backend_cache_setup(
     *,
     cache_enabled: bool,
@@ -15245,7 +15340,7 @@ def build(
             )
         )
 
-    support_modules = _augment_support_modules(
+    prepared_build_outputs, prepared_build_outputs_error = _prepare_build_module_outputs(
         module_graph=module_graph,
         module_reasons=module_reasons,
         roots=roots,
@@ -15257,28 +15352,28 @@ def build(
         stub_parents=stub_parents,
         entry_module=entry_module,
         diagnostics_enabled=diagnostics_enabled,
+        target=target,
+        trusted=trusted,
+        require_linked=require_linked,
+        linked=linked,
+        linked_output=linked_output,
+        emit=emit,
+        output=output,
+        emit_ir=emit_ir,
+        bin_root=bin_root,
+        output_root=output_root,
+        output_base=output_base,
+        out_dir_path=out_dir_path,
+        project_root=project_root,
     )
-    namespace_module_names = set(support_modules.namespace_module_names)
-    generated_module_source_paths = support_modules.generated_module_source_paths
-    try:
-        output_layout = _resolve_build_output_layout(
-            target=target,
-            trusted=trusted,
-            require_linked=require_linked,
-            linked=linked,
-            linked_output=linked_output,
-            emit=emit,
-            output=output,
-            emit_ir=emit_ir,
-            artifacts_root=artifacts_root,
-            bin_root=bin_root,
-            output_root=output_root,
-            output_base=output_base,
-            out_dir_path=out_dir_path,
-            project_root=project_root,
-        )
-    except ValueError as exc:
-        return _fail(str(exc), json_output, command="build")
+    if prepared_build_outputs_error is not None:
+        return _fail(prepared_build_outputs_error, json_output, command="build")
+    assert prepared_build_outputs is not None
+    namespace_module_names = prepared_build_outputs.namespace_module_names
+    generated_module_source_paths = (
+        prepared_build_outputs.generated_module_source_paths
+    )
+    output_layout = prepared_build_outputs.output_layout
     is_wasm = output_layout.is_wasm
     is_rust_transpile = output_layout.is_rust_transpile
     linked = output_layout.linked
@@ -15290,18 +15385,10 @@ def build(
     emit_ir_path = output_layout.emit_ir_path
     if diagnostics_enabled:
         phase_starts["module_analysis"] = time.perf_counter()
-    known_modules = set(module_graph.keys())
-    stdlib_allowlist.update(STUB_MODULES)
-    stdlib_allowlist.update(stub_parents)
-    stdlib_allowlist.add("molt.stdlib")
-    known_modules_sorted = tuple(sorted(known_modules))
-    stdlib_allowlist_sorted = tuple(sorted(stdlib_allowlist))
-    module_graph_metadata = _build_module_graph_metadata(
-        module_graph,
-        generated_module_source_paths=generated_module_source_paths,
-        entry_module=entry_module,
-        namespace_module_names=namespace_module_names,
-    )
+    known_modules = prepared_build_outputs.known_modules
+    known_modules_sorted = prepared_build_outputs.known_modules_sorted
+    stdlib_allowlist_sorted = prepared_build_outputs.stdlib_allowlist_sorted
+    module_graph_metadata = prepared_build_outputs.module_graph_metadata
     module_deps: dict[str, set[str]] = {}
     module_sources: dict[str, str] = {}
     known_func_defaults: dict[str, dict[str, dict[str, Any]]] = {}
