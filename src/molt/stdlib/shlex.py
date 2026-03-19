@@ -6,9 +6,9 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 __all__ = ["shlex", "split", "quote", "join"]
 
-_MOLT_SHLEX_QUOTE = _require_intrinsic("molt_shlex_quote", globals())
-_MOLT_SHLEX_SPLIT_EX = _require_intrinsic("molt_shlex_split_ex", globals())
-_MOLT_SHLEX_JOIN = _require_intrinsic("molt_shlex_join", globals())
+_MOLT_SHLEX_QUOTE = _require_intrinsic("molt_shlex_quote")
+_MOLT_SHLEX_SPLIT_EX = _require_intrinsic("molt_shlex_split_ex")
+_MOLT_SHLEX_JOIN = _require_intrinsic("molt_shlex_join")
 
 
 def quote(s: str) -> str:
