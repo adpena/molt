@@ -6,9 +6,9 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 import codecs as _py_codecs
 
-_MOLT_CODECS_DECODE = _require_intrinsic("molt_codecs_decode", globals())
-_MOLT_CODECS_ENCODE = _require_intrinsic("molt_codecs_encode", globals())
-_MOLT_CODECS_LOOKUP_NAME = _require_intrinsic("molt_codecs_lookup_name", globals())
+_MOLT_CODECS_DECODE = _require_intrinsic("molt_codecs_decode")
+_MOLT_CODECS_ENCODE = _require_intrinsic("molt_codecs_encode")
+_MOLT_CODECS_LOOKUP_NAME = _require_intrinsic("molt_codecs_lookup_name")
 
 
 class _CodecProxy:
