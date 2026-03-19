@@ -6,10 +6,10 @@ from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_molt_html_parser_new = _require_intrinsic("molt_html_parser_new", globals())
-_molt_html_parser_feed = _require_intrinsic("molt_html_parser_feed", globals())
-_molt_html_parser_close = _require_intrinsic("molt_html_parser_close", globals())
-_molt_html_parser_drop = _require_intrinsic("molt_html_parser_drop", globals())
+_molt_html_parser_new = _require_intrinsic("molt_html_parser_new")
+_molt_html_parser_feed = _require_intrinsic("molt_html_parser_feed")
+_molt_html_parser_close = _require_intrinsic("molt_html_parser_close")
+_molt_html_parser_drop = _require_intrinsic("molt_html_parser_drop")
 
 
 class HTMLParser:

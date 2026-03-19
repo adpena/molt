@@ -6,29 +6,29 @@ from collections import namedtuple
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_molt_platform_system = _require_intrinsic("molt_platform_system", globals())
-_molt_platform_node = _require_intrinsic("molt_platform_node", globals())
-_molt_platform_release = _require_intrinsic("molt_platform_release", globals())
-_molt_platform_version = _require_intrinsic("molt_platform_version", globals())
-_molt_platform_machine = _require_intrinsic("molt_platform_machine", globals())
-_molt_platform_processor = _require_intrinsic("molt_platform_processor", globals())
+_molt_platform_system = _require_intrinsic("molt_platform_system")
+_molt_platform_node = _require_intrinsic("molt_platform_node")
+_molt_platform_release = _require_intrinsic("molt_platform_release")
+_molt_platform_version = _require_intrinsic("molt_platform_version")
+_molt_platform_machine = _require_intrinsic("molt_platform_machine")
+_molt_platform_processor = _require_intrinsic("molt_platform_processor")
 _molt_platform_architecture = _require_intrinsic(
-    "molt_platform_architecture", globals()
+    "molt_platform_architecture"
 )
 _molt_platform_python_version = _require_intrinsic(
-    "molt_platform_python_version", globals()
+    "molt_platform_python_version"
 )
 _molt_platform_python_version_tuple = _require_intrinsic(
-    "molt_platform_python_version_tuple", globals()
+    "molt_platform_python_version_tuple"
 )
 _molt_platform_python_implementation = _require_intrinsic(
-    "molt_platform_python_implementation", globals()
+    "molt_platform_python_implementation"
 )
 _molt_platform_python_compiler = _require_intrinsic(
-    "molt_platform_python_compiler", globals()
+    "molt_platform_python_compiler"
 )
-_molt_platform_platform = _require_intrinsic("molt_platform_platform", globals())
-_molt_platform_uname = _require_intrinsic("molt_platform_uname", globals())
+_molt_platform_platform = _require_intrinsic("molt_platform_platform")
+_molt_platform_uname = _require_intrinsic("molt_platform_uname")
 
 uname_result = namedtuple(
     "uname_result", ["system", "node", "release", "version", "machine", "processor"]
