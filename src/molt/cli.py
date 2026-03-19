@@ -10296,6 +10296,85 @@ int main(int argc, char** argv) {
     return main_c_content
 
 
+def _build_native_link_command(
+    *,
+    output_obj: Path,
+    stub_path: Path,
+    runtime_lib: Path,
+    output_binary: Path,
+    target_triple: str | None,
+    sysroot_path: Path | None,
+    profile: str,
+) -> tuple[list[str], str | None, str | None]:
+    cc = os.environ.get("CC", "clang")
+    link_cmd = shlex.split(cc)
+    normalized_target: str | None = target_triple
+    if target_triple:
+        cross_cc = os.environ.get("MOLT_CROSS_CC")
+        target_arg = target_triple
+        if cross_cc:
+            link_cmd = shlex.split(cross_cc)
+        elif shutil.which("zig"):
+            link_cmd = ["zig", "cc"]
+            target_arg = _zig_target_query(target_triple)
+            normalized_target = target_arg
+        else:
+            raise RuntimeError(
+                f"Cross-target build requires zig or MOLT_CROSS_CC (missing for {target_triple})."
+            )
+        link_cmd.extend(["-target", target_arg])
+    if sysroot_path is not None:
+        sysroot_flag = "--sysroot"
+        if link_cmd and Path(link_cmd[0]).name.startswith("zig"):
+            sysroot_flag = "--sysroot"
+        elif (
+            target_triple and ("apple" in target_triple or "darwin" in target_triple)
+        ) or (not target_triple and sys.platform == "darwin"):
+            sysroot_flag = "-isysroot"
+        link_cmd.extend([sysroot_flag, str(sysroot_path)])
+    cflags = os.environ.get("CFLAGS", "")
+    if cflags:
+        link_cmd.extend(shlex.split(cflags))
+    linker_hint: str | None = None
+    if profile == "dev":
+        linker_hint = _resolve_dev_linker()
+        if linker_hint and not any(arg.startswith("-fuse-ld=") for arg in link_cmd):
+            link_cmd.append(f"-fuse-ld={linker_hint}")
+    if sys.platform == "darwin" and not target_triple:
+        link_cmd = _strip_arch_flags(link_cmd)
+        arch = (
+            os.environ.get("MOLT_ARCH")
+            or _detect_macos_arch(output_obj)
+            or platform.machine()
+        )
+        link_cmd.extend(["-arch", arch])
+        deployment_target = _detect_macos_deployment_target()
+        if deployment_target:
+            link_cmd.append(f"-mmacosx-version-min={deployment_target}")
+    link_cmd.extend(
+        [str(stub_path), str(output_obj), str(runtime_lib), "-o", str(output_binary)]
+    )
+    if target_triple:
+        if "apple" in target_triple or "darwin" in target_triple:
+            link_cmd.append("-Wl,-dead_strip")
+            link_cmd.append("-lc++")
+        elif "linux" in target_triple:
+            link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
+            link_cmd.append("-Wl,--gc-sections")
+            link_cmd.append("-lstdc++")
+            link_cmd.append("-lm")
+    else:
+        if sys.platform == "darwin":
+            link_cmd.append("-Wl,-dead_strip")
+            link_cmd.append("-lc++")
+        elif sys.platform.startswith("linux"):
+            link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
+            link_cmd.append("-Wl,--gc-sections")
+            link_cmd.append("-lstdc++")
+            link_cmd.append("-lm")
+    return link_cmd, linker_hint, normalized_target
+
+
 def _initialize_runtime_artifact_state(
     *,
     is_rust_transpile: bool,
@@ -15561,80 +15640,26 @@ def build(
             runtime_cargo_profile,
             target_triple,
         )
-
-    cc = os.environ.get("CC", "clang")
-    link_cmd = shlex.split(cc)
-    if target_triple:
-        cross_cc = os.environ.get("MOLT_CROSS_CC")
-        target_arg = target_triple
-        if cross_cc:
-            link_cmd = shlex.split(cross_cc)
-        elif shutil.which("zig"):
-            link_cmd = ["zig", "cc"]
-            target_arg = _zig_target_query(target_triple)
-            if target_arg != target_triple:
-                warnings.append(
-                    f"Zig target normalized to {target_arg} from {target_triple}."
-                )
-        else:
-            return _fail(
-                f"Cross-target build requires zig or MOLT_CROSS_CC (missing for {target_triple}).",
-                json_output,
-                command="build",
-            )
-        link_cmd.extend(["-target", target_arg])
-    if sysroot_path is not None:
-        sysroot_flag = "--sysroot"
-        if link_cmd and Path(link_cmd[0]).name.startswith("zig"):
-            sysroot_flag = "--sysroot"
-        elif (
-            target_triple and ("apple" in target_triple or "darwin" in target_triple)
-        ) or (not target_triple and sys.platform == "darwin"):
-            sysroot_flag = "-isysroot"
-        link_cmd.extend([sysroot_flag, str(sysroot_path)])
-    cflags = os.environ.get("CFLAGS", "")
-    if cflags:
-        link_cmd.extend(shlex.split(cflags))
-    linker_hint: str | None = None
-    if profile == "dev":
-        linker_hint = _resolve_dev_linker()
-        if linker_hint and not any(arg.startswith("-fuse-ld=") for arg in link_cmd):
-            link_cmd.append(f"-fuse-ld={linker_hint}")
-    if sys.platform == "darwin" and not target_triple:
-        link_cmd = _strip_arch_flags(link_cmd)
-        arch = (
-            os.environ.get("MOLT_ARCH")
-            or _detect_macos_arch(output_obj)
-            or platform.machine()
+    try:
+        link_cmd, linker_hint, normalized_target = _build_native_link_command(
+            output_obj=output_obj,
+            stub_path=stub_path,
+            runtime_lib=runtime_lib,
+            output_binary=output_binary,
+            target_triple=target_triple,
+            sysroot_path=sysroot_path,
+            profile=profile,
         )
-        link_cmd.extend(["-arch", arch])
-        deployment_target = _detect_macos_deployment_target()
-        if deployment_target:
-            link_cmd.append(f"-mmacosx-version-min={deployment_target}")
-    link_cmd.extend(
-        [str(stub_path), str(output_obj), str(runtime_lib), "-o", str(output_binary)]
-    )
-    # Dead code elimination: strip unreferenced functions/data from the final binary.
-    # The Cranelift backend emits per-function sections so the linker can discard
-    # unused runtime functions individually.
-    if target_triple:
-        if "apple" in target_triple or "darwin" in target_triple:
-            link_cmd.append("-Wl,-dead_strip")
-            link_cmd.append("-lc++")
-        elif "linux" in target_triple:
-            link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
-            link_cmd.append("-Wl,--gc-sections")
-            link_cmd.append("-lstdc++")
-            link_cmd.append("-lm")
-    else:
-        if sys.platform == "darwin":
-            link_cmd.append("-Wl,-dead_strip")
-            link_cmd.append("-lc++")
-        elif sys.platform.startswith("linux"):
-            link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
-            link_cmd.append("-Wl,--gc-sections")
-            link_cmd.append("-lstdc++")
-            link_cmd.append("-lm")
+    except RuntimeError as exc:
+        return _fail(str(exc), json_output, command="build")
+    if (
+        normalized_target is not None
+        and target_triple is not None
+        and normalized_target != target_triple
+    ):
+        warnings.append(
+            f"Zig target normalized to {normalized_target} from {target_triple}."
+        )
 
     link_fingerprint_path = _link_fingerprint_path(
         project_root, output_binary, profile, target_triple
