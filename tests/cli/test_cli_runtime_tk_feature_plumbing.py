@@ -165,10 +165,12 @@ def test_runtime_fingerprint_read_reuses_process_cache(
     second = cli._read_runtime_fingerprint(fingerprint_path)
 
     assert first == second == {
+        "version": 1,
         "hash": "abc",
         "rustc": "rustc-test",
         "inputs_digest": "digest",
     }
+    assert first is second
 
 
 def test_ensure_runtime_lib_passes_tk_feature_to_native_build(

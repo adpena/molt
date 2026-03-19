@@ -4566,16 +4566,16 @@ def _read_runtime_fingerprint(path: Path) -> dict[str, Any] | None:
     if not isinstance(hash_value, str) or not hash_value:
         return None
     rustc_value = data.get("rustc")
+    inputs_digest = data.get("inputs_digest")
+    if (rustc_value is None or isinstance(rustc_value, str)) and (
+        inputs_digest is None or isinstance(inputs_digest, str)
+    ):
+        return data
     if rustc_value is not None and not isinstance(rustc_value, str):
         rustc_value = None
-    inputs_digest = data.get("inputs_digest")
     if inputs_digest is not None and not isinstance(inputs_digest, str):
         inputs_digest = None
-    return {
-        "hash": hash_value,
-        "rustc": rustc_value,
-        "inputs_digest": inputs_digest,
-    }
+    return {"hash": hash_value, "rustc": rustc_value, "inputs_digest": inputs_digest}
 
 
 def _write_runtime_fingerprint(path: Path, fingerprint: dict[str, str | None]) -> None:
