@@ -448,6 +448,14 @@ class _ScopedLoweringInputs:
     type_facts_by_module: dict[str, TypeFacts | None]
 
 
+@dataclass(frozen=True)
+class _ScopedLoweringInputView:
+    known_modules: tuple[str, ...]
+    known_func_defaults: dict[str, dict[str, Any]]
+    pgo_hot_function_names: tuple[str, ...]
+    type_facts: TypeFacts | None
+
+
 def _run_command_timed(
     cmd: list[str],
     *,
@@ -3212,6 +3220,87 @@ def _build_scoped_known_classes_snapshot(
             module_dep_closures=module_dep_closures,
         )
     return scoped_known_classes_by_module
+
+
+def _scoped_lowering_input_view(
+    module_name: str,
+    *,
+    module_deps: dict[str, set[str]],
+    known_modules: Collection[str],
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]],
+    pgo_hot_function_names: Collection[str],
+    type_facts: TypeFacts | None,
+    module_dep_closures: dict[str, frozenset[str]] | None = None,
+    scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
+    known_modules_sorted: tuple[str, ...] | None = None,
+    pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
+) -> _ScopedLoweringInputView:
+    if (
+        scoped_lowering_inputs is not None
+        and module_name in scoped_lowering_inputs.known_modules_by_module
+    ):
+        scoped_known_modules = scoped_lowering_inputs.known_modules_by_module[module_name]
+    else:
+        known_modules_scope_source: Collection[str]
+        if known_modules_sorted is None:
+            known_modules_scope_source = known_modules
+        else:
+            known_modules_scope_source = known_modules_sorted
+        scoped_known_modules = _scoped_known_modules(
+            module_name,
+            module_deps=module_deps,
+            known_modules=known_modules_scope_source,
+            module_dep_closures=module_dep_closures,
+        )
+    if (
+        scoped_lowering_inputs is not None
+        and module_name in scoped_lowering_inputs.known_func_defaults_by_module
+    ):
+        scoped_known_func_defaults = (
+            scoped_lowering_inputs.known_func_defaults_by_module[module_name]
+        )
+    else:
+        scoped_known_func_defaults = _scoped_known_func_defaults(
+            module_name,
+            module_deps=module_deps,
+            known_func_defaults=known_func_defaults,
+            module_dep_closures=module_dep_closures,
+        )
+    if (
+        scoped_lowering_inputs is not None
+        and module_name in scoped_lowering_inputs.pgo_hot_function_names_by_module
+    ):
+        scoped_pgo_hot_function_names = (
+            scoped_lowering_inputs.pgo_hot_function_names_by_module[module_name]
+        )
+    else:
+        pgo_hot_functions_scope_source: Collection[str]
+        if pgo_hot_function_names_sorted is None:
+            pgo_hot_functions_scope_source = pgo_hot_function_names
+        else:
+            pgo_hot_functions_scope_source = pgo_hot_function_names_sorted
+        scoped_pgo_hot_function_names = _scoped_pgo_hot_function_names(
+            module_name,
+            pgo_hot_functions_scope_source,
+        )
+    if (
+        scoped_lowering_inputs is not None
+        and module_name in scoped_lowering_inputs.type_facts_by_module
+    ):
+        scoped_type_facts = scoped_lowering_inputs.type_facts_by_module[module_name]
+    else:
+        scoped_type_facts = _scoped_type_facts(
+            module_name,
+            module_deps=module_deps,
+            type_facts=type_facts,
+            module_dep_closures=module_dep_closures,
+        )
+    return _ScopedLoweringInputView(
+        known_modules=scoped_known_modules,
+        known_func_defaults=scoped_known_func_defaults,
+        pgo_hot_function_names=scoped_pgo_hot_function_names,
+        type_facts=scoped_type_facts,
+    )
 
 
 def _build_module_lowering_metadata(
@@ -8199,54 +8288,23 @@ def _module_lowering_context_payload(
             path_stat = module_path.stat()
         except OSError:
             return None
-    if (
-        scoped_lowering_inputs is not None
-        and module_name in scoped_lowering_inputs.known_modules_by_module
-    ):
-        known_modules_sorted = scoped_lowering_inputs.known_modules_by_module[module_name]
-    else:
-        known_modules_scope_source: Collection[str]
-        if known_modules_sorted is None:
-            known_modules_scope_source = known_modules
-        else:
-            known_modules_scope_source = known_modules_sorted
-        known_modules_sorted = _scoped_known_modules(
-            module_name,
-            module_deps=module_deps,
-            known_modules=known_modules_scope_source,
-            module_dep_closures=module_dep_closures,
-        )
+    scoped_inputs = _scoped_lowering_input_view(
+        module_name,
+        module_deps=module_deps,
+        known_modules=known_modules,
+        known_func_defaults=known_func_defaults,
+        pgo_hot_function_names=pgo_hot_function_names,
+        type_facts=cast(TypeFacts | None, type_facts),
+        module_dep_closures=module_dep_closures,
+        scoped_lowering_inputs=scoped_lowering_inputs,
+        known_modules_sorted=known_modules_sorted,
+        pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+    )
+    known_modules_sorted = scoped_inputs.known_modules
     if stdlib_allowlist_sorted is None:
         stdlib_allowlist_sorted = tuple(sorted(stdlib_allowlist))
-    if (
-        scoped_lowering_inputs is not None
-        and module_name in scoped_lowering_inputs.pgo_hot_function_names_by_module
-    ):
-        pgo_hot_function_names_sorted = scoped_lowering_inputs.pgo_hot_function_names_by_module[
-            module_name
-        ]
-    else:
-        pgo_hot_functions_scope_source: Collection[str]
-        if pgo_hot_function_names_sorted is None:
-            pgo_hot_functions_scope_source = pgo_hot_function_names
-        else:
-            pgo_hot_functions_scope_source = pgo_hot_function_names_sorted
-        pgo_hot_function_names_sorted = _scoped_pgo_hot_function_names(
-            module_name,
-            pgo_hot_functions_scope_source,
-        )
-    if (
-        scoped_lowering_inputs is not None
-        and module_name in scoped_lowering_inputs.known_func_defaults_by_module
-    ):
-        scoped_known_func_defaults = scoped_lowering_inputs.known_func_defaults_by_module[module_name]
-    else:
-        scoped_known_func_defaults = _scoped_known_func_defaults(
-            module_name,
-            module_deps=module_deps,
-            known_func_defaults=known_func_defaults,
-            module_dep_closures=module_dep_closures,
-        )
+    pgo_hot_function_names_sorted = scoped_inputs.pgo_hot_function_names
+    scoped_known_func_defaults = scoped_inputs.known_func_defaults
     if (
         scoped_known_classes_by_module is not None
         and module_name in scoped_known_classes_by_module
@@ -8259,18 +8317,7 @@ def _module_lowering_context_payload(
             known_classes=known_classes_snapshot,
             module_dep_closures=module_dep_closures,
         )
-    if (
-        scoped_lowering_inputs is not None
-        and module_name in scoped_lowering_inputs.type_facts_by_module
-    ):
-        scoped_type_facts = scoped_lowering_inputs.type_facts_by_module[module_name]
-    else:
-        scoped_type_facts = _scoped_type_facts(
-            module_name,
-            module_deps=module_deps,
-            type_facts=cast(TypeFacts | None, type_facts),
-            module_dep_closures=module_dep_closures,
-        )
+    scoped_type_facts = scoped_inputs.type_facts
     if is_package is None:
         is_package = module_path.name == "__init__.py"
     return {
@@ -8485,51 +8532,18 @@ def _module_worker_payload(
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    if (
-        scoped_lowering_inputs is not None
-        and module_name in scoped_lowering_inputs.known_modules_by_module
-    ):
-        scoped_known_modules = scoped_lowering_inputs.known_modules_by_module[module_name]
-    else:
-        scoped_known_modules = _scoped_known_modules(
-            module_name,
-            module_deps=module_deps,
-            known_modules=known_modules,
-            module_dep_closures=module_dep_closures,
-        )
-    if (
-        scoped_lowering_inputs is not None
-        and module_name in scoped_lowering_inputs.known_func_defaults_by_module
-    ):
-        scoped_known_func_defaults = scoped_lowering_inputs.known_func_defaults_by_module[module_name]
-    else:
-        scoped_known_func_defaults = _scoped_known_func_defaults(
-            module_name,
-            module_deps=module_deps,
-            known_func_defaults=known_func_defaults,
-            module_dep_closures=module_dep_closures,
-        )
-    if (
-        scoped_lowering_inputs is not None
-        and module_name in scoped_lowering_inputs.pgo_hot_function_names_by_module
-    ):
-        scoped_pgo_hot_functions = scoped_lowering_inputs.pgo_hot_function_names_by_module[module_name]
-    else:
-        scoped_pgo_hot_functions = _scoped_pgo_hot_function_names(
-            module_name, pgo_hot_function_names
-        )
-    if (
-        scoped_lowering_inputs is not None
-        and module_name in scoped_lowering_inputs.type_facts_by_module
-    ):
-        scoped_type_facts = scoped_lowering_inputs.type_facts_by_module[module_name]
-    else:
-        scoped_type_facts = _scoped_type_facts(
-            module_name,
-            module_deps=module_deps,
-            type_facts=cast(TypeFacts | None, type_facts),
-            module_dep_closures=module_dep_closures,
-        )
+    scoped_inputs = _scoped_lowering_input_view(
+        module_name,
+        module_deps=module_deps,
+        known_modules=known_modules,
+        known_func_defaults=known_func_defaults,
+        pgo_hot_function_names=pgo_hot_function_names,
+        type_facts=cast(TypeFacts | None, type_facts),
+        module_dep_closures=module_dep_closures,
+        scoped_lowering_inputs=scoped_lowering_inputs,
+        known_modules_sorted=tuple(known_modules),
+        pgo_hot_function_names_sorted=tuple(pgo_hot_function_names),
+    )
     return {
         "module_name": module_name,
         "module_path": str(module_path),
@@ -8541,7 +8555,7 @@ def _module_worker_payload(
         "module_is_namespace": module_is_namespace,
         "entry_module": entry_module,
         "enable_phi": enable_phi,
-        "known_modules": list(scoped_known_modules),
+        "known_modules": list(scoped_inputs.known_modules),
         "known_classes": (
             scoped_known_classes_by_module[module_name]
             if (
@@ -8556,12 +8570,12 @@ def _module_worker_payload(
             )
         ),
         "stdlib_allowlist": list(stdlib_allowlist_sorted),
-        "known_func_defaults": scoped_known_func_defaults,
+        "known_func_defaults": scoped_inputs.known_func_defaults,
         "module_chunking": module_chunking,
         "module_chunk_max_ops": module_chunk_max_ops,
         "optimization_profile": optimization_profile,
-        "pgo_hot_functions": list(scoped_pgo_hot_functions),
-        "type_facts": scoped_type_facts,
+        "pgo_hot_functions": list(scoped_inputs.pgo_hot_function_names),
+        "type_facts": scoped_inputs.type_facts,
     }
 
 
