@@ -10504,6 +10504,152 @@ def _write_link_fingerprint_if_needed(
             )
 
 
+def _emit_native_link_result(
+    *,
+    link_process: subprocess.CompletedProcess[str],
+    link_skipped: bool,
+    link_fingerprint: dict[str, Any] | None,
+    link_fingerprint_path: Path,
+    cache: bool,
+    cache_hit: bool,
+    cache_key: str | None,
+    function_cache_key: str | None,
+    cache_path: Path | None,
+    function_cache_path: Path | None,
+    cache_hit_tier: str | None,
+    backend_daemon_cached: bool | None,
+    backend_daemon_cache_tier: str | None,
+    backend_daemon_config_digest: str | None,
+    target: str,
+    target_triple: str | None,
+    source_path: Path,
+    output_binary: Path,
+    deterministic: bool,
+    trusted: bool,
+    capabilities_list: list[str] | None,
+    capability_profiles: list[str] | None,
+    capabilities_source: str | None,
+    sysroot_path: Path | None,
+    emit_mode: str,
+    profile: str,
+    native_arch_perf_enabled: bool,
+    output_obj: Path,
+    stub_path: Path,
+    runtime_lib: Path,
+    diagnostics_payload: dict[str, Any] | None,
+    diagnostics_path: Path | None,
+    pgo_profile_payload: Any | None,
+    runtime_feedback_payload: Any | None,
+    emit_ir_path: Path | None,
+    warnings: list[str],
+    json_output: bool,
+    resolved_diagnostics_verbosity: str,
+) -> int:
+    if link_process.returncode == 0:
+        _write_link_fingerprint_if_needed(
+            link_skipped=link_skipped,
+            link_fingerprint=link_fingerprint,
+            link_fingerprint_path=link_fingerprint_path,
+            json_output=json_output,
+        )
+        if json_output:
+            cache_info = _build_cache_info(
+                enabled=cache,
+                hit=cache_hit,
+                cache_key=cache_key,
+                function_cache_key=function_cache_key,
+                cache_path=cache_path,
+                function_cache_path=function_cache_path,
+                cache_hit_tier=cache_hit_tier,
+                backend_daemon_cached=backend_daemon_cached,
+                backend_daemon_cache_tier=backend_daemon_cache_tier,
+                backend_daemon_config_digest=backend_daemon_config_digest,
+            )
+            data = _build_native_link_success_data(
+                target=target,
+                source_path=source_path,
+                target_triple=target_triple,
+                output_binary=output_binary,
+                deterministic=deterministic,
+                trusted=trusted,
+                capabilities_list=capabilities_list,
+                capability_profiles=capability_profiles,
+                capabilities_source=capabilities_source,
+                sysroot_path=sysroot_path,
+                cache_info=cache_info,
+                emit_mode=emit_mode,
+                profile=profile,
+                native_arch_perf_enabled=native_arch_perf_enabled,
+                output_obj=output_obj,
+                stub_path=stub_path,
+                runtime_lib=runtime_lib,
+                link_skipped=link_skipped,
+            )
+            _attach_build_metadata(
+                data,
+                diagnostics_payload=diagnostics_payload,
+                pgo_profile_payload=pgo_profile_payload,
+                runtime_feedback_payload=runtime_feedback_payload,
+                emit_ir_path=emit_ir_path,
+            )
+            _attach_process_output(data, link_process)
+            _emit_build_success_json(
+                data=data,
+                warnings=warnings,
+                json_output=json_output,
+            )
+        else:
+            print(f"Successfully built {output_binary}")
+    else:
+        if json_output:
+            cache_info = _build_cache_info(
+                enabled=cache,
+                hit=cache_hit,
+                cache_key=cache_key,
+                function_cache_key=None,
+                cache_path=cache_path,
+                function_cache_path=None,
+                cache_hit_tier=cache_hit_tier,
+                backend_daemon_cached=backend_daemon_cached,
+                backend_daemon_cache_tier=backend_daemon_cache_tier,
+                backend_daemon_config_digest=backend_daemon_config_digest,
+            )
+            data = _build_native_link_error_data(
+                target=target,
+                source_path=source_path,
+                returncode=link_process.returncode,
+                emit_mode=emit_mode,
+                profile=profile,
+                native_arch_perf_enabled=native_arch_perf_enabled,
+                trusted=trusted,
+                cache_info=cache_info,
+            )
+            _attach_build_metadata(
+                data,
+                diagnostics_payload=diagnostics_payload,
+                pgo_profile_payload=pgo_profile_payload,
+                runtime_feedback_payload=runtime_feedback_payload,
+                emit_ir_path=None,
+            )
+            _attach_process_output(data, link_process)
+            payload = _json_payload(
+                "build",
+                "error",
+                data=data,
+                errors=["Linking failed"],
+            )
+            _emit_json(payload, json_output)
+        else:
+            print("Linking failed", file=sys.stderr)
+    _emit_build_diagnostics_if_present(
+        diagnostics_payload=diagnostics_payload,
+        diagnostics_path=diagnostics_path,
+        json_output=json_output,
+        verbosity=resolved_diagnostics_verbosity,
+    )
+    return link_process.returncode
+
+
 def _initialize_runtime_artifact_state(
     *,
     is_rust_transpile: bool,
@@ -15881,116 +16027,46 @@ def build(
             return _fail("Linker timed out", json_output, command="build")
 
     diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
-    if link_process.returncode == 0:
-        _write_link_fingerprint_if_needed(
-            link_skipped=link_skipped,
-            link_fingerprint=link_fingerprint,
-            link_fingerprint_path=link_fingerprint_path,
-            json_output=json_output,
-        )
-        if json_output:
-            cache_info = _build_cache_info(
-                enabled=cache,
-                hit=cache_hit,
-                cache_key=cache_key,
-                function_cache_key=function_cache_key,
-                cache_path=cache_path,
-                function_cache_path=function_cache_path,
-                cache_hit_tier=cache_hit_tier,
-                backend_daemon_cached=backend_daemon_cached,
-                backend_daemon_cache_tier=backend_daemon_cache_tier,
-                backend_daemon_config_digest=backend_daemon_config_digest,
-            )
-            data = _build_native_link_success_data(
-                target=target,
-                source_path=source_path,
-                target_triple=target_triple,
-                output_binary=output_binary,
-                deterministic=deterministic,
-                trusted=trusted,
-                capabilities_list=capabilities_list,
-                capability_profiles=capability_profiles,
-                capabilities_source=capabilities_source,
-                sysroot_path=sysroot_path,
-                cache_info=cache_info,
-                emit_mode=emit_mode,
-                profile=profile,
-                native_arch_perf_enabled=native_arch_perf_enabled,
-                output_obj=output_obj,
-                stub_path=stub_path,
-                runtime_lib=runtime_lib,
-                link_skipped=link_skipped,
-            )
-            _attach_build_metadata(
-                data,
-                diagnostics_payload=diagnostics_payload,
-                pgo_profile_payload=pgo_profile_payload,
-                runtime_feedback_payload=runtime_feedback_payload,
-                emit_ir_path=emit_ir_path,
-            )
-            _attach_process_output(data, link_process)
-            _emit_build_success_json(
-                data=data,
-                warnings=warnings,
-                json_output=json_output,
-            )
-        else:
-            print(f"Successfully built {output_binary}")
-        _emit_build_diagnostics_if_present(
-            diagnostics_payload=diagnostics_payload,
-            diagnostics_path=diagnostics_path,
-            json_output=json_output,
-            verbosity=resolved_diagnostics_verbosity,
-        )
-    else:
-        if json_output:
-            cache_info = _build_cache_info(
-                enabled=cache,
-                hit=cache_hit,
-                cache_key=cache_key,
-                function_cache_key=None,
-                cache_path=cache_path,
-                function_cache_path=None,
-                cache_hit_tier=cache_hit_tier,
-                backend_daemon_cached=backend_daemon_cached,
-                backend_daemon_cache_tier=backend_daemon_cache_tier,
-                backend_daemon_config_digest=backend_daemon_config_digest,
-            )
-            data = _build_native_link_error_data(
-                target=target,
-                source_path=source_path,
-                returncode=link_process.returncode,
-                emit_mode=emit_mode,
-                profile=profile,
-                native_arch_perf_enabled=native_arch_perf_enabled,
-                trusted=trusted,
-                cache_info=cache_info,
-            )
-            _attach_build_metadata(
-                data,
-                diagnostics_payload=diagnostics_payload,
-                pgo_profile_payload=pgo_profile_payload,
-                runtime_feedback_payload=runtime_feedback_payload,
-                emit_ir_path=None,
-            )
-            _attach_process_output(data, link_process)
-            payload = _json_payload(
-                "build",
-                "error",
-                data=data,
-                errors=["Linking failed"],
-            )
-            _emit_json(payload, json_output)
-        else:
-            print("Linking failed", file=sys.stderr)
-        _emit_build_diagnostics_if_present(
-            diagnostics_payload=diagnostics_payload,
-            diagnostics_path=diagnostics_path,
-            json_output=json_output,
-            verbosity=resolved_diagnostics_verbosity,
-        )
-
-    return link_process.returncode
+    return _emit_native_link_result(
+        link_process=link_process,
+        link_skipped=link_skipped,
+        link_fingerprint=link_fingerprint,
+        link_fingerprint_path=link_fingerprint_path,
+        cache=cache,
+        cache_hit=cache_hit,
+        cache_key=cache_key,
+        function_cache_key=function_cache_key,
+        cache_path=cache_path,
+        function_cache_path=function_cache_path,
+        cache_hit_tier=cache_hit_tier,
+        backend_daemon_cached=backend_daemon_cached,
+        backend_daemon_cache_tier=backend_daemon_cache_tier,
+        backend_daemon_config_digest=backend_daemon_config_digest,
+        target=target,
+        target_triple=target_triple,
+        source_path=source_path,
+        output_binary=output_binary,
+        deterministic=deterministic,
+        trusted=trusted,
+        capabilities_list=capabilities_list,
+        capability_profiles=capability_profiles,
+        capabilities_source=capabilities_source,
+        sysroot_path=sysroot_path,
+        emit_mode=emit_mode,
+        profile=profile,
+        native_arch_perf_enabled=native_arch_perf_enabled,
+        output_obj=output_obj,
+        stub_path=stub_path,
+        runtime_lib=runtime_lib,
+        diagnostics_payload=diagnostics_payload,
+        diagnostics_path=diagnostics_path,
+        pgo_profile_payload=pgo_profile_payload,
+        runtime_feedback_payload=runtime_feedback_payload,
+        emit_ir_path=emit_ir_path,
+        warnings=warnings,
+        json_output=json_output,
+        resolved_diagnostics_verbosity=resolved_diagnostics_verbosity,
+    )
 
 
 def run_script(
