@@ -3241,6 +3241,27 @@ def _build_scoped_known_classes_snapshot(
     return scoped_known_classes_by_module
 
 
+def _scoped_known_classes_view(
+    module_name: str,
+    *,
+    module_deps: dict[str, set[str]],
+    known_classes_snapshot: dict[str, Any],
+    module_dep_closures: dict[str, frozenset[str]] | None = None,
+    scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if (
+        scoped_known_classes_by_module is not None
+        and module_name in scoped_known_classes_by_module
+    ):
+        return scoped_known_classes_by_module[module_name]
+    return _scoped_known_classes(
+        module_name,
+        module_deps=module_deps,
+        known_classes=known_classes_snapshot,
+        module_dep_closures=module_dep_closures,
+    )
+
+
 def _scoped_lowering_input_view(
     module_name: str,
     *,
@@ -8316,6 +8337,7 @@ def _module_lowering_context_payload(
     module_dep_closures: dict[str, frozenset[str]] | None = None,
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
+    scoped_known_classes: dict[str, Any] | None = None,
     is_package: bool | None = None,
     path_stat: os.stat_result | None = None,
 ) -> dict[str, Any] | None:
@@ -8341,17 +8363,13 @@ def _module_lowering_context_payload(
         stdlib_allowlist_sorted = tuple(sorted(stdlib_allowlist))
     pgo_hot_function_names_sorted = scoped_inputs.pgo_hot_function_names
     scoped_known_func_defaults = scoped_inputs.known_func_defaults
-    if (
-        scoped_known_classes_by_module is not None
-        and module_name in scoped_known_classes_by_module
-    ):
-        scoped_known_classes = scoped_known_classes_by_module[module_name]
-    else:
-        scoped_known_classes = _scoped_known_classes(
+    if scoped_known_classes is None:
+        scoped_known_classes = _scoped_known_classes_view(
             module_name,
             module_deps=module_deps,
-            known_classes=known_classes_snapshot,
+            known_classes_snapshot=known_classes_snapshot,
             module_dep_closures=module_dep_closures,
+            scoped_known_classes_by_module=scoped_known_classes_by_module,
         )
     scoped_type_facts = scoped_inputs.type_facts
     if is_package is None:
@@ -8567,6 +8585,7 @@ def _module_worker_payload(
     module_dep_closures: dict[str, frozenset[str]],
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
+    scoped_known_classes: dict[str, Any] | None = None,
     stdlib_allowlist_payload: list[str] | None = None,
 ) -> dict[str, Any]:
     scoped_inputs = _scoped_lowering_input_view(
@@ -8583,6 +8602,14 @@ def _module_worker_payload(
     )
     if stdlib_allowlist_payload is None:
         stdlib_allowlist_payload = list(stdlib_allowlist_sorted)
+    if scoped_known_classes is None:
+        scoped_known_classes = _scoped_known_classes_view(
+            module_name,
+            module_deps=module_deps,
+            known_classes_snapshot=known_classes_snapshot,
+            module_dep_closures=module_dep_closures,
+            scoped_known_classes_by_module=scoped_known_classes_by_module,
+        )
     return {
         "module_name": module_name,
         "module_path": str(module_path),
@@ -8595,19 +8622,7 @@ def _module_worker_payload(
         "entry_module": entry_module,
         "enable_phi": enable_phi,
         "known_modules": list(scoped_inputs.known_modules),
-        "known_classes": (
-            scoped_known_classes_by_module[module_name]
-            if (
-                scoped_known_classes_by_module is not None
-                and module_name in scoped_known_classes_by_module
-            )
-            else _scoped_known_classes(
-                module_name,
-                module_deps=module_deps,
-                known_classes=known_classes_snapshot,
-                module_dep_closures=module_dep_closures,
-            )
-        ),
+        "known_classes": scoped_known_classes,
         "stdlib_allowlist": stdlib_allowlist_payload,
         "known_func_defaults": scoped_inputs.known_func_defaults,
         "module_chunking": module_chunking,
@@ -8679,6 +8694,13 @@ def _prepare_frontend_parallel_batch(
         module_is_namespace = metadata_view.module_is_namespace
         is_package = metadata_view.is_package
         path_stat = metadata_view.path_stat
+        scoped_known_classes = _scoped_known_classes_view(
+            module_name,
+            module_deps=module_deps,
+            known_classes_snapshot=known_classes_snapshot,
+            module_dep_closures=module_dep_closures,
+            scoped_known_classes_by_module=scoped_known_classes_by_module,
+        )
         if project_root is not None:
             context_payload = _module_lowering_context_payload(
                 module_name,
@@ -8706,6 +8728,7 @@ def _prepare_frontend_parallel_batch(
                 module_dep_closures=module_dep_closures,
                 scoped_lowering_inputs=scoped_lowering_inputs,
                 scoped_known_classes_by_module=scoped_known_classes_by_module,
+                scoped_known_classes=scoped_known_classes,
                 is_package=is_package,
                 path_stat=path_stat,
             )
@@ -8786,6 +8809,7 @@ def _prepare_frontend_parallel_batch(
                     module_dep_closures=module_dep_closures,
                     scoped_lowering_inputs=scoped_lowering_inputs,
                     scoped_known_classes_by_module=scoped_known_classes_by_module,
+                    scoped_known_classes=scoped_known_classes,
                 ),
             )
         )
@@ -11984,6 +12008,12 @@ def build(
         if path_stat is None:
             with contextlib.suppress(OSError):
                 path_stat = module_resolution_cache.path_stat(module_path)
+        scoped_known_classes = _scoped_known_classes_view(
+            module_name,
+            module_deps=module_deps,
+            known_classes_snapshot=known_classes,
+            module_dep_closures=module_dep_closures,
+        )
         context_digest: str | None = None
         if project_root is not None:
             context_payload = _module_lowering_context_payload(
@@ -12011,6 +12041,7 @@ def build(
                 pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
                 module_dep_closures=module_dep_closures,
                 scoped_lowering_inputs=scoped_lowering_inputs,
+                scoped_known_classes=scoped_known_classes,
                 is_package=is_package,
                 path_stat=path_stat,
             )
@@ -12030,12 +12061,6 @@ def build(
 
         tree = _resolve_tree_for_module(module_name, module_path)
         scoped_known_modules = scoped_lowering_inputs.known_modules_by_module[module_name]
-        scoped_known_classes = _scoped_known_classes(
-            module_name,
-            module_deps=module_deps,
-            known_classes=known_classes,
-            module_dep_closures=module_dep_closures,
-        )
         scoped_known_func_defaults = (
             scoped_lowering_inputs.known_func_defaults_by_module[module_name]
         )
