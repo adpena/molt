@@ -7,10 +7,10 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 __all__ = ["filter", "fnmatch", "fnmatchcase", "translate"]
 
 
-_MOLT_FNMATCH_FNMATCH = _require_intrinsic("molt_fnmatch_fnmatch", globals())
-_MOLT_FNMATCH_FNMATCHCASE = _require_intrinsic("molt_fnmatch_fnmatchcase", globals())
-_MOLT_FNMATCH_FILTER = _require_intrinsic("molt_fnmatch_filter", globals())
-_MOLT_FNMATCH_TRANSLATE = _require_intrinsic("molt_fnmatch_translate", globals())
+_MOLT_FNMATCH_FNMATCH = _require_intrinsic("molt_fnmatch_fnmatch")
+_MOLT_FNMATCH_FNMATCHCASE = _require_intrinsic("molt_fnmatch_fnmatchcase")
+_MOLT_FNMATCH_FILTER = _require_intrinsic("molt_fnmatch_filter")
+_MOLT_FNMATCH_TRANSLATE = _require_intrinsic("molt_fnmatch_translate")
 
 
 def fnmatch(name: str | bytes, pat: str | bytes) -> bool:

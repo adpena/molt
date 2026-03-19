@@ -13,13 +13,13 @@ if sys.version_info >= (3, 13):
     __all__.append("translate")
 
 
-_MOLT_GLOB_HAS_MAGIC = _require_intrinsic("molt_glob_has_magic", globals())
-_MOLT_GLOB_ESCAPE = _require_intrinsic("molt_glob_escape", globals())
-_MOLT_GLOB_GLOB = _require_intrinsic("molt_glob_glob", globals())
-_MOLT_GLOB_IGLOB = _require_intrinsic("molt_glob_iglob", globals())
-_MOLT_PATH_ISDIR = _require_intrinsic("molt_path_isdir", globals())
+_MOLT_GLOB_HAS_MAGIC = _require_intrinsic("molt_glob_has_magic")
+_MOLT_GLOB_ESCAPE = _require_intrinsic("molt_glob_escape")
+_MOLT_GLOB_GLOB = _require_intrinsic("molt_glob_glob")
+_MOLT_GLOB_IGLOB = _require_intrinsic("molt_glob_iglob")
+_MOLT_PATH_ISDIR = _require_intrinsic("molt_path_isdir")
 if sys.version_info >= (3, 13):
-    _MOLT_GLOB_TRANSLATE = _require_intrinsic("molt_glob_translate", globals())
+    _MOLT_GLOB_TRANSLATE = _require_intrinsic("molt_glob_translate")
 
 _DEPRECATED_FUNCTION_MESSAGE = (
     "{name} is deprecated and will be removed in Python {remove}. Use "
