@@ -516,6 +516,24 @@ class _ParallelWorkerSubmission:
     future: Any
 
 
+@dataclass(frozen=True)
+class _WorkerTimingSummary:
+    count: int
+    queue_ms_total: float
+    queue_ms_max: float
+    wait_ms_total: float
+    wait_ms_max: float
+    exec_ms_total: float
+    exec_ms_max: float
+    roundtrip_ms_total: float
+
+
+@dataclass(frozen=True)
+class _FrontendLayerStaticMetrics:
+    predicted_cost_total: float
+    stdlib_candidates: int
+
+
 def _run_command_timed(
     cmd: list[str],
     *,
@@ -8449,6 +8467,99 @@ def _known_classes_snapshot_copy(known_classes: Mapping[str, Any]) -> dict[str, 
     return dict(known_classes)
 
 
+def _summarize_worker_timing_items(
+    items: Sequence[Mapping[str, Any]],
+) -> _WorkerTimingSummary:
+    queue_samples = [float(item.get("queue_ms", 0.0)) for item in items]
+    wait_samples = [float(item.get("wait_ms", 0.0)) for item in items]
+    exec_samples = [float(item.get("exec_ms", 0.0)) for item in items]
+    roundtrip_samples = [float(item.get("roundtrip_ms", 0.0)) for item in items]
+    return _WorkerTimingSummary(
+        count=len(items),
+        queue_ms_total=round(sum(queue_samples), 6),
+        queue_ms_max=round(max(queue_samples, default=0.0), 6),
+        wait_ms_total=round(sum(wait_samples), 6),
+        wait_ms_max=round(max(wait_samples, default=0.0), 6),
+        exec_ms_total=round(sum(exec_samples), 6),
+        exec_ms_max=round(max(exec_samples, default=0.0), 6),
+        roundtrip_ms_total=round(sum(roundtrip_samples), 6),
+    )
+
+
+def _frontend_parallel_layer_detail(
+    *,
+    layer_index: int,
+    mode: str,
+    policy_reason: str,
+    module_count: int,
+    candidate_count: int,
+    workers: int,
+    cache_hits: int,
+    predicted_cost_total: float,
+    effective_min_predicted_cost: float,
+    stdlib_candidates: int,
+    target_cost_per_worker: float,
+    timing_summary: _WorkerTimingSummary,
+    started_ns: int,
+    finished_ns: int,
+    fallback_reason: str | None = None,
+) -> dict[str, Any]:
+    detail: dict[str, Any] = {
+        "index": layer_index,
+        "mode": mode,
+        "policy_reason": policy_reason,
+        "module_count": module_count,
+        "candidate_count": candidate_count,
+        "workers": workers,
+        "cache_hits": cache_hits,
+        "predicted_cost_total": round(predicted_cost_total, 3),
+        "effective_min_predicted_cost": round(effective_min_predicted_cost, 3),
+        "stdlib_candidates": stdlib_candidates,
+        "target_cost_per_worker": round(target_cost_per_worker, 3),
+        "queue_ms_total": timing_summary.queue_ms_total,
+        "queue_ms_max": timing_summary.queue_ms_max,
+        "wait_ms_total": timing_summary.wait_ms_total,
+        "wait_ms_max": timing_summary.wait_ms_max,
+        "exec_ms_total": timing_summary.exec_ms_total,
+        "exec_ms_max": timing_summary.exec_ms_max,
+        "roundtrip_ms_total": timing_summary.roundtrip_ms_total,
+        "elapsed_ms": _duration_ms_from_ns(started_ns, finished_ns),
+    }
+    if fallback_reason:
+        detail["fallback_reason"] = fallback_reason
+    return detail
+
+
+def _worker_timing_summary_payload(summary: _WorkerTimingSummary) -> dict[str, Any]:
+    return {
+        "count": summary.count,
+        "queue_ms_total": summary.queue_ms_total,
+        "queue_ms_max": summary.queue_ms_max,
+        "wait_ms_total": summary.wait_ms_total,
+        "wait_ms_max": summary.wait_ms_max,
+        "exec_ms_total": summary.exec_ms_total,
+        "exec_ms_max": summary.exec_ms_max,
+    }
+
+
+def _layer_cache_hit_count(items: Sequence[Mapping[str, Any]]) -> int:
+    return sum(1 for item in items if item.get("mode") == "parallel_cache_hit")
+
+
+def _frontend_layer_static_metrics(
+    module_names: Sequence[str],
+    *,
+    frontend_module_costs: Mapping[str, float],
+    stdlib_like_by_module: Mapping[str, bool],
+) -> _FrontendLayerStaticMetrics:
+    return _FrontendLayerStaticMetrics(
+        predicted_cost_total=sum(frontend_module_costs.get(name, 0.0) for name in module_names),
+        stdlib_candidates=sum(
+            1 for name in module_names if stdlib_like_by_module.get(name, False)
+        ),
+    )
+
+
 def _module_lowering_context_payload(
     module_name: str,
     module_path: Path,
@@ -12420,25 +12531,10 @@ def build(
         return item
 
     def _summarize_parallel_worker_timings() -> None:
-        queue_samples = [
-            float(item.get("queue_ms", 0.0))
-            for item in frontend_parallel_worker_timings
-        ]
-        wait_samples = [
-            float(item.get("wait_ms", 0.0)) for item in frontend_parallel_worker_timings
-        ]
-        exec_samples = [
-            float(item.get("exec_ms", 0.0)) for item in frontend_parallel_worker_timings
-        ]
-        frontend_parallel_details["worker_summary"] = {
-            "count": len(frontend_parallel_worker_timings),
-            "queue_ms_total": round(sum(queue_samples), 6),
-            "queue_ms_max": round(max(queue_samples, default=0.0), 6),
-            "wait_ms_total": round(sum(wait_samples), 6),
-            "wait_ms_max": round(max(wait_samples, default=0.0), 6),
-            "exec_ms_total": round(sum(exec_samples), 6),
-            "exec_ms_max": round(max(exec_samples, default=0.0), 6),
-        }
+        summary = _summarize_worker_timing_items(frontend_parallel_worker_timings)
+        frontend_parallel_details["worker_summary"] = _worker_timing_summary_payload(
+            summary
+        )
 
     if frontend_parallel_enabled:
         parallel_pool_usable = True
@@ -12795,54 +12891,26 @@ def build(
                             result.get("midend_pass_stats_by_function", {}),
                         ),
                     )
-                queue_samples = [
-                    float(item.get("queue_ms", 0.0)) for item in layer_worker_timings
-                ]
-                wait_samples = [
-                    float(item.get("wait_ms", 0.0)) for item in layer_worker_timings
-                ]
-                exec_samples = [
-                    float(item.get("exec_ms", 0.0)) for item in layer_worker_timings
-                ]
-                roundtrip_samples = [
-                    float(item.get("roundtrip_ms", 0.0))
-                    for item in layer_worker_timings
-                ]
-                layer_detail: dict[str, Any] = {
-                    "index": layer_index,
-                    "mode": layer_mode,
-                    "policy_reason": layer_policy_reason,
-                    "module_count": len(layer),
-                    "candidate_count": len(candidates),
-                    "workers": layer_workers,
-                    "cache_hits": sum(
-                        1
-                        for item in layer_worker_timings
-                        if item.get("mode") == "parallel_cache_hit"
-                    ),
-                    "predicted_cost_total": round(layer_predicted_cost_total, 3),
-                    "effective_min_predicted_cost": round(
-                        layer_effective_min_predicted_cost, 3
-                    ),
-                    "stdlib_candidates": layer_stdlib_candidates,
-                    "target_cost_per_worker": round(
-                        frontend_parallel_target_cost_per_worker, 3
-                    ),
-                    "queue_ms_total": round(sum(queue_samples), 6),
-                    "queue_ms_max": round(max(queue_samples, default=0.0), 6),
-                    "wait_ms_total": round(sum(wait_samples), 6),
-                    "wait_ms_max": round(max(wait_samples, default=0.0), 6),
-                    "exec_ms_total": round(sum(exec_samples), 6),
-                    "exec_ms_max": round(max(exec_samples, default=0.0), 6),
-                    "roundtrip_ms_total": round(sum(roundtrip_samples), 6),
-                    "elapsed_ms": _duration_ms_from_ns(
-                        layer_started_ns,
-                        time.time_ns(),
-                    ),
-                }
-                if layer_fallback_reason:
-                    layer_detail["fallback_reason"] = layer_fallback_reason
-                frontend_parallel_layers.append(layer_detail)
+                layer_summary = _summarize_worker_timing_items(layer_worker_timings)
+                frontend_parallel_layers.append(
+                    _frontend_parallel_layer_detail(
+                        layer_index=layer_index,
+                        mode=layer_mode,
+                        policy_reason=layer_policy_reason,
+                        module_count=len(layer),
+                        candidate_count=len(candidates),
+                        workers=layer_workers,
+                        cache_hits=_layer_cache_hit_count(layer_worker_timings),
+                        predicted_cost_total=layer_predicted_cost_total,
+                        effective_min_predicted_cost=layer_effective_min_predicted_cost,
+                        stdlib_candidates=layer_stdlib_candidates,
+                        target_cost_per_worker=frontend_parallel_target_cost_per_worker,
+                        timing_summary=layer_summary,
+                        started_ns=layer_started_ns,
+                        finished_ns=time.time_ns(),
+                        fallback_reason=layer_fallback_reason,
+                    )
+                )
         _summarize_parallel_worker_timings()
     else:
         serial_layer_started_ns = time.time_ns()
@@ -12908,58 +12976,29 @@ def build(
                     result.get("midend_pass_stats_by_function", {}),
                 ),
             )
-        queue_samples = [
-            float(item.get("queue_ms", 0.0)) for item in serial_layer_worker_timings
-        ]
-        wait_samples = [
-            float(item.get("wait_ms", 0.0)) for item in serial_layer_worker_timings
-        ]
-        exec_samples = [
-            float(item.get("exec_ms", 0.0)) for item in serial_layer_worker_timings
-        ]
-        roundtrip_samples = [
-            float(item.get("roundtrip_ms", 0.0)) for item in serial_layer_worker_timings
-        ]
+        serial_summary = _summarize_worker_timing_items(serial_layer_worker_timings)
+        serial_static_metrics = _frontend_layer_static_metrics(
+            module_order,
+            frontend_module_costs=frontend_module_costs,
+            stdlib_like_by_module=stdlib_like_by_module,
+        )
         frontend_parallel_layers.append(
-            {
-                "index": 0,
-                "mode": "serial_disabled",
-                "policy_reason": frontend_parallel_reason,
-                "module_count": len(module_order),
-                "candidate_count": len(module_order),
-                "workers": 1,
-                "predicted_cost_total": round(
-                    sum(
-                        _predict_frontend_module_cost(
-                            name,
-                            module_sources,
-                            module_deps,
-                        )
-                        for name in module_order
-                    ),
-                    3,
-                ),
-                "effective_min_predicted_cost": round(
-                    frontend_parallel_min_predicted_cost, 3
-                ),
-                "stdlib_candidates": sum(
-                    1 for name in module_order if _looks_like_stdlib_module_name(name)
-                ),
-                "target_cost_per_worker": round(
-                    frontend_parallel_target_cost_per_worker, 3
-                ),
-                "queue_ms_total": round(sum(queue_samples), 6),
-                "queue_ms_max": round(max(queue_samples, default=0.0), 6),
-                "wait_ms_total": round(sum(wait_samples), 6),
-                "wait_ms_max": round(max(wait_samples, default=0.0), 6),
-                "exec_ms_total": round(sum(exec_samples), 6),
-                "exec_ms_max": round(max(exec_samples, default=0.0), 6),
-                "roundtrip_ms_total": round(sum(roundtrip_samples), 6),
-                "elapsed_ms": _duration_ms_from_ns(
-                    serial_layer_started_ns,
-                    time.time_ns(),
-                ),
-            }
+            _frontend_parallel_layer_detail(
+                layer_index=0,
+                mode="serial_disabled",
+                policy_reason=frontend_parallel_reason,
+                module_count=len(module_order),
+                candidate_count=len(module_order),
+                workers=1,
+                cache_hits=0,
+                predicted_cost_total=serial_static_metrics.predicted_cost_total,
+                effective_min_predicted_cost=frontend_parallel_min_predicted_cost,
+                stdlib_candidates=serial_static_metrics.stdlib_candidates,
+                target_cost_per_worker=frontend_parallel_target_cost_per_worker,
+                timing_summary=serial_summary,
+                started_ns=serial_layer_started_ns,
+                finished_ns=time.time_ns(),
+            )
         )
         _summarize_parallel_worker_timings()
 
