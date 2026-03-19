@@ -1018,6 +1018,30 @@ def test_build_state_root_uses_override_relative_to_project_root(
     assert state_root == (tmp_path / "state-dir")
 
 
+def test_runtime_source_paths_are_cached(tmp_path: Path) -> None:
+    cli._runtime_source_paths_cached.cache_clear()
+
+    first = cli._runtime_source_paths(tmp_path)
+    second = cli._runtime_source_paths(tmp_path)
+
+    info = cli._runtime_source_paths_cached.cache_info()
+    assert first == second
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
+def test_backend_source_paths_are_cached(tmp_path: Path) -> None:
+    cli._backend_source_paths_cached.cache_clear()
+
+    first = cli._backend_source_paths(tmp_path)
+    second = cli._backend_source_paths(tmp_path)
+
+    info = cli._backend_source_paths_cached.cache_info()
+    assert first == second
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
 def test_load_module_imports_reuses_persisted_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

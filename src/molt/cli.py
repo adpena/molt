@@ -5641,8 +5641,10 @@ def _expand_capabilities(items: list[str]) -> tuple[list[str], list[str]]:
     return deduped, profiles
 
 
-def _runtime_source_paths(project_root: Path) -> list[Path]:
-    return [
+@functools.lru_cache(maxsize=128)
+def _runtime_source_paths_cached(project_root_str: str) -> tuple[Path, ...]:
+    project_root = Path(project_root_str)
+    return (
         project_root / "runtime/molt-runtime/src",
         project_root / "runtime/molt-runtime/Cargo.toml",
         project_root / "runtime/molt-runtime/build.rs",
@@ -5651,17 +5653,27 @@ def _runtime_source_paths(project_root: Path) -> list[Path]:
         project_root / "runtime/molt-obj-model/build.rs",
         project_root / "Cargo.toml",
         project_root / "Cargo.lock",
-    ]
+    )
 
 
-def _backend_source_paths(project_root: Path) -> list[Path]:
-    return [
+def _runtime_source_paths(project_root: Path) -> list[Path]:
+    return list(_runtime_source_paths_cached(os.fspath(project_root)))
+
+
+@functools.lru_cache(maxsize=128)
+def _backend_source_paths_cached(project_root_str: str) -> tuple[Path, ...]:
+    project_root = Path(project_root_str)
+    return (
         project_root / "runtime/molt-backend/src",
         project_root / "runtime/molt-backend/Cargo.toml",
         project_root / "runtime/molt-backend/build.rs",
         project_root / "Cargo.toml",
         project_root / "Cargo.lock",
-    ]
+    )
+
+
+def _backend_source_paths(project_root: Path) -> list[Path]:
+    return list(_backend_source_paths_cached(os.fspath(project_root)))
 
 
 def _backend_bin_path(project_root: Path, cargo_profile: str) -> Path:
