@@ -5756,40 +5756,91 @@ def _backend_daemon_socket_dir(project_root: Path) -> Path:
     return socket_dir
 
 
+@functools.lru_cache(maxsize=256)
+def _backend_daemon_paths_cached(
+    project_root_str: str,
+    cargo_profile: str,
+    config_digest: str | None,
+    explicit_socket: str,
+    socket_dir_override: str | None,
+    build_state_root_str: str,
+    tempdir_str: str,
+) -> tuple[Path, Path, Path]:
+    project_root = Path(project_root_str)
+    build_state_root = Path(build_state_root_str)
+    if explicit_socket:
+        socket_path = Path(explicit_socket).expanduser()
+        if not socket_path.is_absolute():
+            socket_path = (project_root / socket_path).absolute()
+    else:
+        default_dir = Path(tempdir_str) / "molt-backend-daemon"
+        if socket_dir_override:
+            socket_dir = Path(socket_dir_override).expanduser()
+            if not socket_dir.is_absolute():
+                socket_dir = (Path.cwd() / socket_dir).absolute()
+        else:
+            socket_dir = default_dir
+        daemon_digest = config_digest or _backend_daemon_config_digest(
+            project_root, cargo_profile
+        )
+        key = (
+            f"{project_root.resolve()}|{build_state_root}|{cargo_profile}|{daemon_digest}"
+        )
+        suffix = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+        socket_path = socket_dir / f"moltbd.{suffix}.sock"
+    daemon_root = build_state_root / "backend_daemon"
+    return (
+        socket_path,
+        daemon_root / f"molt-backend.{cargo_profile}.log",
+        daemon_root / f"molt-backend.{cargo_profile}.pid",
+    )
+
+
 def _backend_daemon_socket_path(
     project_root: Path,
     cargo_profile: str,
     *,
     config_digest: str | None = None,
 ) -> Path:
-    explicit_socket = os.environ.get("MOLT_BACKEND_DAEMON_SOCKET", "").strip()
-    if explicit_socket:
-        path = Path(explicit_socket).expanduser()
-        if not path.is_absolute():
-            path = (project_root / path).absolute()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
-    daemon_digest = config_digest or _backend_daemon_config_digest(
-        project_root, cargo_profile
+    socket_path, _log_path, _pid_path = _backend_daemon_paths_cached(
+        os.fspath(project_root),
+        cargo_profile,
+        config_digest,
+        os.environ.get("MOLT_BACKEND_DAEMON_SOCKET", "").strip(),
+        os.environ.get("MOLT_BACKEND_DAEMON_SOCKET_DIR"),
+        os.fspath(_build_state_root(project_root)),
+        tempfile.gettempdir(),
     )
-    key = (
-        f"{project_root.resolve()}|{_build_state_root(project_root)}"
-        f"|{cargo_profile}|{daemon_digest}"
-    )
-    suffix = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
-    return _backend_daemon_socket_dir(project_root) / f"moltbd.{suffix}.sock"
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    return socket_path
 
 
 def _backend_daemon_log_path(project_root: Path, cargo_profile: str) -> Path:
-    root = _build_state_root(project_root) / "backend_daemon"
-    root.mkdir(parents=True, exist_ok=True)
-    return root / f"molt-backend.{cargo_profile}.log"
+    _socket_path, log_path, _pid_path = _backend_daemon_paths_cached(
+        os.fspath(project_root),
+        cargo_profile,
+        None,
+        os.environ.get("MOLT_BACKEND_DAEMON_SOCKET", "").strip(),
+        os.environ.get("MOLT_BACKEND_DAEMON_SOCKET_DIR"),
+        os.fspath(_build_state_root(project_root)),
+        tempfile.gettempdir(),
+    )
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    return log_path
 
 
 def _backend_daemon_pid_path(project_root: Path, cargo_profile: str) -> Path:
-    root = _build_state_root(project_root) / "backend_daemon"
-    root.mkdir(parents=True, exist_ok=True)
-    return root / f"molt-backend.{cargo_profile}.pid"
+    _socket_path, _log_path, pid_path = _backend_daemon_paths_cached(
+        os.fspath(project_root),
+        cargo_profile,
+        None,
+        os.environ.get("MOLT_BACKEND_DAEMON_SOCKET", "").strip(),
+        os.environ.get("MOLT_BACKEND_DAEMON_SOCKET_DIR"),
+        os.fspath(_build_state_root(project_root)),
+        tempfile.gettempdir(),
+    )
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    return pid_path
 
 
 def _read_backend_daemon_pid(pid_path: Path) -> int | None:
