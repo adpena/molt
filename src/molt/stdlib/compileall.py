@@ -10,14 +10,11 @@ __all__ = ["compile_file", "compile_dir", "compile_path"]
 
 
 _MOLT_COMPILEALL_COMPILE_FILE = _require_intrinsic(
-    "molt_compileall_compile_file", globals()
-)
+    "molt_compileall_compile_file")
 _MOLT_COMPILEALL_COMPILE_DIR = _require_intrinsic(
-    "molt_compileall_compile_dir", globals()
-)
+    "molt_compileall_compile_dir")
 _MOLT_COMPILEALL_COMPILE_PATH = _require_intrinsic(
-    "molt_compileall_compile_path", globals()
-)
+    "molt_compileall_compile_path")
 
 
 def compile_file(

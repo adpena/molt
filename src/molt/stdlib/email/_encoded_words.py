@@ -9,8 +9,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 _MOLT_EMAIL_HEADER_ENCODE_WORD = _require_intrinsic(
-    "molt_email_header_encode_word", globals()
-)
+    "molt_email_header_encode_word")
 
 
 def decode_q(encoded: bytes) -> bytes:

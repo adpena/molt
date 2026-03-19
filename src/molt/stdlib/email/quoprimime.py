@@ -27,35 +27,25 @@ NL = "\n"
 EMPTYSTRING = ""
 
 _MOLT_EMAIL_QUOPRIMIME_HEADER_CHECK = _require_intrinsic(
-    "molt_email_quoprimime_header_check", globals()
-)
+    "molt_email_quoprimime_header_check")
 _MOLT_EMAIL_QUOPRIMIME_BODY_CHECK = _require_intrinsic(
-    "molt_email_quoprimime_body_check", globals()
-)
+    "molt_email_quoprimime_body_check")
 _MOLT_EMAIL_QUOPRIMIME_HEADER_LENGTH = _require_intrinsic(
-    "molt_email_quoprimime_header_length", globals()
-)
+    "molt_email_quoprimime_header_length")
 _MOLT_EMAIL_QUOPRIMIME_BODY_LENGTH = _require_intrinsic(
-    "molt_email_quoprimime_body_length", globals()
-)
+    "molt_email_quoprimime_body_length")
 _MOLT_EMAIL_QUOPRIMIME_QUOTE = _require_intrinsic(
-    "molt_email_quoprimime_quote", globals()
-)
+    "molt_email_quoprimime_quote")
 _MOLT_EMAIL_QUOPRIMIME_UNQUOTE = _require_intrinsic(
-    "molt_email_quoprimime_unquote", globals()
-)
+    "molt_email_quoprimime_unquote")
 _MOLT_EMAIL_QUOPRIMIME_HEADER_ENCODE = _require_intrinsic(
-    "molt_email_quoprimime_header_encode", globals()
-)
+    "molt_email_quoprimime_header_encode")
 _MOLT_EMAIL_QUOPRIMIME_HEADER_DECODE = _require_intrinsic(
-    "molt_email_quoprimime_header_decode", globals()
-)
+    "molt_email_quoprimime_header_decode")
 _MOLT_EMAIL_QUOPRIMIME_BODY_ENCODE = _require_intrinsic(
-    "molt_email_quoprimime_body_encode", globals()
-)
+    "molt_email_quoprimime_body_encode")
 _MOLT_EMAIL_QUOPRIMIME_DECODE = _require_intrinsic(
-    "molt_email_quoprimime_decode", globals()
-)
+    "molt_email_quoprimime_decode")
 
 
 def header_check(octet):
