@@ -432,6 +432,12 @@ class _BackendDaemonCompileResult(NamedTuple):
     output_exists: bool
 
 
+class _PersistedModuleGraphState(NamedTuple):
+    graph: dict[str, Path]
+    explicit_imports: set[str]
+    dirty_modules: set[str]
+
+
 def _run_command_timed(
     cmd: list[str],
     *,
@@ -4311,6 +4317,8 @@ def _discover_module_graph(
     queued_paths = {entry_path}
     resolution_cache = resolver_cache or _ModuleResolutionCache()
 
+    persisted_graph_paths: dict[str, Path] = {}
+    dirty_persisted_modules: set[str] = set()
     if project_root is not None:
         persisted_graph = _read_persisted_module_graph(
             project_root,
@@ -4324,9 +4332,15 @@ def _discover_module_graph(
             resolution_cache=resolution_cache,
         )
         if persisted_graph is not None:
-            return persisted_graph
+            if not persisted_graph.dirty_modules:
+                return persisted_graph.graph, persisted_graph.explicit_imports
+            persisted_graph_paths = dict(persisted_graph.graph)
+            dirty_persisted_modules = set(persisted_graph.dirty_modules)
 
     def resolve_candidate(candidate: str) -> Path | None:
+        persisted_path = persisted_graph_paths.get(candidate)
+        if persisted_path is not None and candidate not in dirty_persisted_modules:
+            return persisted_path
         return resolution_cache.resolve_module(
             candidate, roots, stdlib_root, stdlib_allowlist
         )
@@ -7122,7 +7136,7 @@ def _read_persisted_module_graph(
     stub_parents: set[str],
     nested_stdlib_scan_modules: set[str],
     resolution_cache: _ModuleResolutionCache | None = None,
-) -> tuple[dict[str, Path], set[str]] | None:
+) -> _PersistedModuleGraphState | None:
     cache_path = _module_graph_cache_path(
         project_root,
         entry_path,
@@ -7142,6 +7156,7 @@ def _read_persisted_module_graph(
     if not isinstance(raw_modules, list):
         return None
     graph: dict[str, Path] = {}
+    dirty_modules: set[str] = set()
     for item in raw_modules:
         if not isinstance(item, dict):
             return None
@@ -7164,16 +7179,22 @@ def _read_persisted_module_graph(
                 else path.stat()
             )
         except OSError:
-            return None
+            dirty_modules.add(module_name)
+            graph[module_name] = path
+            continue
         if stat.st_size != size or stat.st_mtime_ns != mtime_ns:
-            return None
+            dirty_modules.add(module_name)
         graph[module_name] = path
     raw_explicit_imports = payload.get("explicit_imports", [])
     if not isinstance(raw_explicit_imports, list) or not all(
         isinstance(name, str) for name in raw_explicit_imports
     ):
         return None
-    return graph, set(cast(list[str], raw_explicit_imports))
+    return _PersistedModuleGraphState(
+        graph=graph,
+        explicit_imports=set(cast(list[str], raw_explicit_imports)),
+        dirty_modules=dirty_modules,
+    )
 
 
 def _write_persisted_module_graph(
