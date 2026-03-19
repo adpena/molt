@@ -2964,18 +2964,70 @@ def _module_dependency_closure(
     return closure
 
 
+def _module_dependency_closures(
+    module_deps: dict[str, set[str]],
+    module_names: Collection[str],
+) -> dict[str, frozenset[str]]:
+    closures: dict[str, frozenset[str]] = {}
+    for module_name in sorted(module_names):
+        closures[module_name] = frozenset(
+            _module_dependency_closure(module_name, module_deps)
+        )
+    return closures
+
+
 def _scoped_known_func_defaults(
     module_name: str,
     *,
     module_deps: dict[str, set[str]],
     known_func_defaults: dict[str, dict[str, dict[str, Any]]],
+    module_dep_closures: dict[str, frozenset[str]] | None = None,
 ) -> dict[str, dict[str, dict[str, Any]]]:
-    scoped_names = _module_dependency_closure(module_name, module_deps)
+    scoped_names = module_dep_closures.get(module_name) if module_dep_closures else None
+    if scoped_names is None:
+        scoped_names = _module_dependency_closure(module_name, module_deps)
     return {
         name: known_func_defaults[name]
         for name in sorted(scoped_names)
         if name in known_func_defaults
     }
+
+
+def _scoped_known_modules(
+    module_name: str,
+    *,
+    module_deps: dict[str, set[str]],
+    known_modules: Collection[str],
+    module_dep_closures: dict[str, frozenset[str]] | None = None,
+) -> tuple[str, ...]:
+    scoped_names = module_dep_closures.get(module_name) if module_dep_closures else None
+    if scoped_names is None:
+        scoped_names = _module_dependency_closure(module_name, module_deps)
+    known_modules_set = set(known_modules)
+    return tuple(
+        sorted(name for name in scoped_names if name == module_name or name in known_modules_set)
+    )
+
+
+def _scoped_pgo_hot_function_names(
+    module_name: str,
+    pgo_hot_function_names: Collection[str],
+) -> tuple[str, ...]:
+    if not pgo_hot_function_names:
+        return ()
+    module_prefix_a = f"{module_name}::"
+    module_prefix_b = f"{module_name}."
+    init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
+    scoped = {
+        symbol
+        for symbol in pgo_hot_function_names
+        if symbol.startswith(module_prefix_a)
+        or symbol.startswith(module_prefix_b)
+        or symbol == init_symbol
+        or symbol == f"{module_name}::{init_symbol}"
+        or symbol == f"{module_name}.{init_symbol}"
+    }
+    return tuple(sorted(scoped))
 
 
 @functools.lru_cache(maxsize=8)
@@ -6531,7 +6583,7 @@ def _backend_daemon_request_payload_bytes(
 
 def _backend_daemon_compile_request_bytes(
     *,
-    ir: dict[str, Any],
+    ir: dict[str, Any] | None,
     backend_output: Path,
     is_wasm: bool,
     target_triple: str | None,
@@ -6540,21 +6592,24 @@ def _backend_daemon_compile_request_bytes(
     config_digest: str | None,
     skip_module_output_if_synced: bool,
     skip_function_output_if_synced: bool,
+    probe_cache_only: bool = False,
     include_health: bool = False,
 ) -> tuple[bytes | None, str | None]:
-    jobs: list[dict[str, Any]] = [
-        {
-            "id": "job0",
-            "is_wasm": is_wasm,
-            "target_triple": target_triple,
-            "output": str(backend_output),
-            "cache_key": cache_key or "",
-            "function_cache_key": function_cache_key or "",
-            "skip_module_output_if_synced": skip_module_output_if_synced,
-            "skip_function_output_if_synced": skip_function_output_if_synced,
-            "ir": ir,
-        }
-    ]
+    job: dict[str, Any] = {
+        "id": "job0",
+        "is_wasm": is_wasm,
+        "target_triple": target_triple,
+        "output": str(backend_output),
+        "cache_key": cache_key or "",
+        "function_cache_key": function_cache_key or "",
+        "skip_module_output_if_synced": skip_module_output_if_synced,
+        "skip_function_output_if_synced": skip_function_output_if_synced,
+    }
+    if probe_cache_only:
+        job["probe_cache_only"] = True
+    elif ir is not None:
+        job["ir"] = ir
+    jobs: list[dict[str, Any]] = [job]
     payload: dict[str, Any] = {
         "version": _BACKEND_DAEMON_PROTOCOL_VERSION,
         "jobs": jobs,
@@ -6747,8 +6802,9 @@ def _compile_with_backend_daemon(
     timeout: float | None,
     request_bytes: bytes | None = None,
 ) -> _BackendDaemonCompileResult:
-    if request_bytes is None:
-        request_bytes, encode_err = _backend_daemon_compile_request_bytes(
+    full_request_bytes = request_bytes
+    if full_request_bytes is None:
+        full_request_bytes, encode_err = _backend_daemon_compile_request_bytes(
             ir=ir,
             backend_output=backend_output,
             is_wasm=is_wasm,
@@ -6764,9 +6820,28 @@ def _compile_with_backend_daemon(
             return _BackendDaemonCompileResult(
                 False, encode_err, None, None, None, True, False
             )
-        assert request_bytes is not None
+        assert full_request_bytes is not None
+    probe_request_bytes: bytes | None = None
+    if request_bytes is None and (cache_key or function_cache_key):
+        probe_request_bytes, probe_encode_err = _backend_daemon_compile_request_bytes(
+            ir=None,
+            backend_output=backend_output,
+            is_wasm=is_wasm,
+            target_triple=target_triple,
+            cache_key=cache_key,
+            function_cache_key=function_cache_key,
+            config_digest=config_digest,
+            skip_module_output_if_synced=skip_module_output_if_synced,
+            skip_function_output_if_synced=skip_function_output_if_synced,
+            probe_cache_only=True,
+            include_health=False,
+        )
+        if probe_encode_err is not None:
+            return _BackendDaemonCompileResult(
+                False, probe_encode_err, None, None, None, True, False
+            )
     response, err = _backend_daemon_request_bytes(
-        socket_path, request_bytes, timeout=timeout
+        socket_path, probe_request_bytes or full_request_bytes, timeout=timeout
     )
     if err is not None:
         return _BackendDaemonCompileResult(False, err, None, None, None, True, False)
@@ -6830,7 +6905,77 @@ def _compile_with_backend_daemon(
         if isinstance(first.get("output_written"), bool)
         else True
     )
+    needs_ir = bool(first.get("needs_ir"))
     output_exists = not output_written
+    if needs_ir and probe_request_bytes is not None:
+        response, err = _backend_daemon_request_bytes(
+            socket_path, full_request_bytes, timeout=timeout
+        )
+        if err is not None:
+            return _BackendDaemonCompileResult(
+                False, err, health, None, None, True, False
+            )
+        if response is None:
+            return _BackendDaemonCompileResult(
+                False,
+                "backend daemon returned no response",
+                health,
+                None,
+                None,
+                True,
+                False,
+            )
+        health = _backend_daemon_health_from_response(response)
+        if not bool(response.get("ok")):
+            error = response.get("error")
+            if isinstance(error, str) and error:
+                return _BackendDaemonCompileResult(
+                    False, error, health, None, None, True, False
+                )
+            return _BackendDaemonCompileResult(
+                False,
+                "backend daemon compile request failed",
+                health,
+                None,
+                None,
+                True,
+                False,
+            )
+        response_jobs = response.get("jobs")
+        if not isinstance(response_jobs, list) or not response_jobs:
+            return _BackendDaemonCompileResult(
+                False,
+                "backend daemon response missing job results",
+                health,
+                None,
+                None,
+                True,
+                False,
+            )
+        first = response_jobs[0]
+        if not isinstance(first, dict):
+            return _BackendDaemonCompileResult(
+                False,
+                "backend daemon response had malformed job payload",
+                health,
+                None,
+                None,
+                True,
+                False,
+            )
+        cached = first.get("cached") if isinstance(first.get("cached"), bool) else None
+        raw_tier = first.get("cache_tier")
+        cache_tier = (
+            raw_tier.strip()
+            if isinstance(raw_tier, str) and raw_tier.strip()
+            else None
+        )
+        output_written = (
+            first.get("output_written")
+            if isinstance(first.get("output_written"), bool)
+            else True
+        )
+        output_exists = not output_written
     if not bool(first.get("ok")):
         message = first.get("message")
         if isinstance(message, str) and message:
@@ -7636,6 +7781,7 @@ def _module_lowering_context_payload(
     known_modules_sorted: tuple[str, ...] | None = None,
     stdlib_allowlist_sorted: tuple[str, ...] | None = None,
     pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
+    module_dep_closures: dict[str, frozenset[str]] | None = None,
     path_stat: os.stat_result | None = None,
 ) -> dict[str, Any] | None:
     if path_stat is None:
@@ -7643,16 +7789,33 @@ def _module_lowering_context_payload(
             path_stat = module_path.stat()
         except OSError:
             return None
+    known_modules_scope_source: Collection[str]
     if known_modules_sorted is None:
-        known_modules_sorted = tuple(sorted(known_modules))
+        known_modules_scope_source = known_modules
+    else:
+        known_modules_scope_source = known_modules_sorted
+    known_modules_sorted = _scoped_known_modules(
+        module_name,
+        module_deps=module_deps,
+        known_modules=known_modules_scope_source,
+        module_dep_closures=module_dep_closures,
+    )
     if stdlib_allowlist_sorted is None:
         stdlib_allowlist_sorted = tuple(sorted(stdlib_allowlist))
+    pgo_hot_functions_scope_source: Collection[str]
     if pgo_hot_function_names_sorted is None:
-        pgo_hot_function_names_sorted = tuple(sorted(pgo_hot_function_names))
+        pgo_hot_functions_scope_source = pgo_hot_function_names
+    else:
+        pgo_hot_functions_scope_source = pgo_hot_function_names_sorted
+    pgo_hot_function_names_sorted = _scoped_pgo_hot_function_names(
+        module_name,
+        pgo_hot_functions_scope_source,
+    )
     scoped_known_func_defaults = _scoped_known_func_defaults(
         module_name,
         module_deps=module_deps,
         known_func_defaults=known_func_defaults,
+        module_dep_closures=module_dep_closures,
     )
     return {
         "version": 1,
@@ -7782,6 +7945,7 @@ def _load_cached_module_lowering_result(
     known_modules_sorted: tuple[str, ...] | None = None,
     stdlib_allowlist_sorted: tuple[str, ...] | None = None,
     pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
+    module_dep_closures: dict[str, frozenset[str]] | None = None,
     context_digest: str | None = None,
     resolution_cache: _ModuleResolutionCache | None = None,
 ) -> dict[str, Any] | None:
@@ -7815,6 +7979,7 @@ def _load_cached_module_lowering_result(
             known_modules_sorted=known_modules_sorted,
             stdlib_allowlist_sorted=stdlib_allowlist_sorted,
             pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+            module_dep_closures=module_dep_closures,
             path_stat=path_stat,
         )
         if context_payload is None:
@@ -7859,6 +8024,7 @@ def _prepare_frontend_parallel_batch(
     known_modules_sorted: tuple[str, ...],
     stdlib_allowlist_sorted: tuple[str, ...],
     pgo_hot_function_names_sorted: tuple[str, ...],
+    module_dep_closures: dict[str, frozenset[str]],
     dirty_lowering_modules: Collection[str],
 ) -> tuple[
     dict[str, dict[str, Any]],
@@ -7903,6 +8069,7 @@ def _prepare_frontend_parallel_batch(
                 known_modules_sorted=known_modules_sorted,
                 stdlib_allowlist_sorted=stdlib_allowlist_sorted,
                 pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+                module_dep_closures=module_dep_closures,
             )
             if context_payload is not None:
                 context_digest = _module_lowering_context_digest(context_payload)
@@ -7933,6 +8100,7 @@ def _prepare_frontend_parallel_batch(
                 known_modules_sorted=known_modules_sorted,
                 stdlib_allowlist_sorted=stdlib_allowlist_sorted,
                 pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+                module_dep_closures=module_dep_closures,
                 context_digest=context_digest_by_module.get(module_name),
                 resolution_cache=module_resolution_cache,
             )
@@ -10876,6 +11044,7 @@ def build(
         )
         known_func_defaults[module_name] = func_defaults
     module_order = _topo_sort_modules(module_graph, module_deps)
+    module_dep_closures = _module_dependency_closures(module_deps, module_graph)
     dirty_lowering_modules = set(analysis_cache_miss_modules)
     dirty_lowering_modules.update(
         _dependent_module_closure(
@@ -11128,6 +11297,7 @@ def build(
                 known_modules_sorted=known_modules_sorted,
                 stdlib_allowlist_sorted=stdlib_allowlist_sorted,
                 pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+                module_dep_closures=module_dep_closures,
                 path_stat=path_stat,
             )
             if context_payload is not None:
@@ -11389,6 +11559,7 @@ def build(
                             known_modules_sorted=known_modules_sorted,
                             stdlib_allowlist_sorted=stdlib_allowlist_sorted,
                             pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+                            module_dep_closures=module_dep_closures,
                             dirty_lowering_modules=dirty_lowering_modules,
                         )
                         if batch_error is not None:
