@@ -9948,6 +9948,47 @@ def _write_emitted_ir(emit_ir_path: Path | None, ir: Mapping[str, Any]) -> str |
     return None
 
 
+def _build_cache_info(
+    *,
+    enabled: bool,
+    hit: bool,
+    cache_key: str | None,
+    function_cache_key: str | None,
+    cache_path: Path | None,
+    function_cache_path: Path | None,
+    cache_hit_tier: str | None,
+    backend_daemon_cached: bool | None,
+    backend_daemon_cache_tier: str | None,
+    backend_daemon_config_digest: str | None,
+) -> dict[str, Any]:
+    cache_info: dict[str, Any] = {"enabled": enabled, "hit": hit}
+    if cache_key:
+        cache_info["key"] = cache_key
+    if function_cache_key:
+        cache_info["function_key"] = function_cache_key
+    if cache_path is not None:
+        cache_info["path"] = str(cache_path)
+    if function_cache_path is not None:
+        cache_info["function_path"] = str(function_cache_path)
+    if cache_hit_tier:
+        cache_info["hit_tier"] = cache_hit_tier
+    if (
+        backend_daemon_cached is None
+        and backend_daemon_cache_tier is None
+        and backend_daemon_config_digest is None
+    ):
+        return cache_info
+    daemon_info: dict[str, Any] = {}
+    if backend_daemon_cached is not None:
+        daemon_info["cached"] = backend_daemon_cached
+    if backend_daemon_cache_tier is not None:
+        daemon_info["cache_tier"] = backend_daemon_cache_tier
+    if backend_daemon_config_digest is not None:
+        daemon_info["config_digest"] = backend_daemon_config_digest
+    cache_info["daemon"] = daemon_info
+    return cache_info
+
+
 def _initialize_runtime_artifact_state(
     *,
     is_rust_transpile: bool,
@@ -14583,23 +14624,6 @@ def build(
     function_cache_path: Path | None = None
     cache_candidates: list[tuple[str, Path]] = []
 
-    def _attach_daemon_cache_info(cache_info: dict[str, Any]) -> dict[str, Any]:
-        if (
-            backend_daemon_cached is None
-            and backend_daemon_cache_tier is None
-            and backend_daemon_config_digest is None
-        ):
-            return cache_info
-        daemon_info: dict[str, Any] = {}
-        if backend_daemon_cached is not None:
-            daemon_info["cached"] = backend_daemon_cached
-        if backend_daemon_cache_tier is not None:
-            daemon_info["cache_tier"] = backend_daemon_cache_tier
-        if backend_daemon_config_digest is not None:
-            daemon_info["config_digest"] = backend_daemon_config_digest
-        cache_info["daemon"] = daemon_info
-        return cache_info
-
     if diagnostics_enabled:
         phase_starts["cache_lookup"] = time.perf_counter()
     if cache:
@@ -15098,19 +15122,18 @@ def build(
             primary_output = linked_output_path
         diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
         if json_output:
-            cache_info: dict[str, Any] = _attach_daemon_cache_info(
-                {"enabled": cache, "hit": cache_hit}
+            cache_info = _build_cache_info(
+                enabled=cache,
+                hit=cache_hit,
+                cache_key=cache_key,
+                function_cache_key=function_cache_key,
+                cache_path=cache_path,
+                function_cache_path=function_cache_path,
+                cache_hit_tier=cache_hit_tier,
+                backend_daemon_cached=backend_daemon_cached,
+                backend_daemon_cache_tier=backend_daemon_cache_tier,
+                backend_daemon_config_digest=backend_daemon_config_digest,
             )
-            if cache_key:
-                cache_info["key"] = cache_key
-            if function_cache_key:
-                cache_info["function_key"] = function_cache_key
-            if cache_path is not None:
-                cache_info["path"] = str(cache_path)
-            if function_cache_path is not None:
-                cache_info["function_path"] = str(function_cache_path)
-            if cache_hit_tier:
-                cache_info["hit_tier"] = cache_hit_tier
             data = {
                 "target": target,
                 "target_triple": target_triple,
@@ -15167,17 +15190,18 @@ def build(
     if emit_mode == "obj":
         diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
         if json_output:
-            cache_info = _attach_daemon_cache_info({"enabled": cache, "hit": cache_hit})
-            if cache_key:
-                cache_info["key"] = cache_key
-            if function_cache_key:
-                cache_info["function_key"] = function_cache_key
-            if cache_path is not None:
-                cache_info["path"] = str(cache_path)
-            if function_cache_path is not None:
-                cache_info["function_path"] = str(function_cache_path)
-            if cache_hit_tier:
-                cache_info["hit_tier"] = cache_hit_tier
+            cache_info = _build_cache_info(
+                enabled=cache,
+                hit=cache_hit,
+                cache_key=cache_key,
+                function_cache_key=function_cache_key,
+                cache_path=cache_path,
+                function_cache_path=function_cache_path,
+                cache_hit_tier=cache_hit_tier,
+                backend_daemon_cached=backend_daemon_cached,
+                backend_daemon_cache_tier=backend_daemon_cache_tier,
+                backend_daemon_config_digest=backend_daemon_config_digest,
+            )
             data = {
                 "target": target,
                 "target_triple": target_triple,
@@ -15602,17 +15626,18 @@ int main(int argc, char** argv) {
                         file=sys.stderr,
                     )
         if json_output:
-            cache_info = _attach_daemon_cache_info({"enabled": cache, "hit": cache_hit})
-            if cache_key:
-                cache_info["key"] = cache_key
-            if function_cache_key:
-                cache_info["function_key"] = function_cache_key
-            if cache_path is not None:
-                cache_info["path"] = str(cache_path)
-            if function_cache_path is not None:
-                cache_info["function_path"] = str(function_cache_path)
-            if cache_hit_tier:
-                cache_info["hit_tier"] = cache_hit_tier
+            cache_info = _build_cache_info(
+                enabled=cache,
+                hit=cache_hit,
+                cache_key=cache_key,
+                function_cache_key=function_cache_key,
+                cache_path=cache_path,
+                function_cache_path=function_cache_path,
+                cache_hit_tier=cache_hit_tier,
+                backend_daemon_cached=backend_daemon_cached,
+                backend_daemon_cache_tier=backend_daemon_cache_tier,
+                backend_daemon_config_digest=backend_daemon_config_digest,
+            )
             data: dict[str, Any] = {
                 "target": target,
                 "target_triple": target_triple,
@@ -15679,16 +15704,20 @@ int main(int argc, char** argv) {
                 data["pgo_profile"] = pgo_profile_payload
             if runtime_feedback_payload is not None:
                 data["runtime_feedback"] = runtime_feedback_payload
-            data["cache"] = {
-                "enabled": cache,
-                "hit": cache_hit,
-                "key": cache_key,
-            }
-            _attach_daemon_cache_info(data["cache"])
+            data["cache"] = _build_cache_info(
+                enabled=cache,
+                hit=cache_hit,
+                cache_key=cache_key,
+                function_cache_key=None,
+                cache_path=cache_path,
+                function_cache_path=None,
+                cache_hit_tier=cache_hit_tier,
+                backend_daemon_cached=backend_daemon_cached,
+                backend_daemon_cache_tier=backend_daemon_cache_tier,
+                backend_daemon_config_digest=backend_daemon_config_digest,
+            )
             if diagnostics_payload is not None:
                 data["compile_diagnostics"] = diagnostics_payload
-            if cache_path is not None:
-                data["cache"]["path"] = str(cache_path)
             if link_process.stdout:
                 data["stdout"] = link_process.stdout
             if link_process.stderr:
