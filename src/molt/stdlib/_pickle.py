@@ -37,3 +37,7 @@ __all__ = [
     "load",
     "loads",
 ]
+
+del _MOLT_STDLIB_PROBE
+del _MOLT_PICKLE_DUMPS_CORE
+del _MOLT_PICKLE_LOADS_CORE

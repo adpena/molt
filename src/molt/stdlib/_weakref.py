@@ -25,3 +25,5 @@ __all__ = [
     "proxy",
     "ref",
 ]
+
+del _MOLT_WEAKREF_COUNT

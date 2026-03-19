@@ -10,3 +10,5 @@ _MOLT_WEAKSET_LEN = _require_intrinsic("molt_weakset_len")
 
 
 __all__ = ["WeakSet"]
+
+del _MOLT_WEAKSET_LEN
