@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe", globals())
-_require_intrinsic("molt_pickle_dumps_core", globals())
-_require_intrinsic("molt_pickle_loads_core", globals())
+_MOLT_STDLIB_PROBE = _require_intrinsic("molt_stdlib_probe")
+_MOLT_PICKLE_DUMPS_CORE = _require_intrinsic("molt_pickle_dumps_core")
+_MOLT_PICKLE_LOADS_CORE = _require_intrinsic("molt_pickle_loads_core")
 
 from pickle import (  # noqa: E402
     DEFAULT_PROTOCOL,
