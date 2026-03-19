@@ -8531,6 +8531,7 @@ def _module_worker_payload(
     module_dep_closures: dict[str, frozenset[str]],
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
+    stdlib_allowlist_payload: list[str] | None = None,
 ) -> dict[str, Any]:
     scoped_inputs = _scoped_lowering_input_view(
         module_name,
@@ -8544,6 +8545,8 @@ def _module_worker_payload(
         known_modules_sorted=tuple(known_modules),
         pgo_hot_function_names_sorted=tuple(pgo_hot_function_names),
     )
+    if stdlib_allowlist_payload is None:
+        stdlib_allowlist_payload = list(stdlib_allowlist_sorted)
     return {
         "module_name": module_name,
         "module_path": str(module_path),
@@ -8569,7 +8572,7 @@ def _module_worker_payload(
                 module_dep_closures=module_dep_closures,
             )
         ),
-        "stdlib_allowlist": list(stdlib_allowlist_sorted),
+        "stdlib_allowlist": stdlib_allowlist_payload,
         "known_func_defaults": scoped_inputs.known_func_defaults,
         "module_chunking": module_chunking,
         "module_chunk_max_ops": module_chunk_max_ops,
@@ -8626,6 +8629,7 @@ def _prepare_frontend_parallel_batch(
     context_digest_by_module: dict[str, str] = {}
     module_chunking = is_wasm and module_chunk_max_ops > 0
     dirty_lowering = set(dirty_lowering_modules)
+    stdlib_allowlist_payload = list(stdlib_allowlist_sorted)
     if scoped_known_classes_by_module is None:
         scoped_known_classes_by_module = _build_scoped_known_classes_snapshot(
             batch,
@@ -8761,6 +8765,7 @@ def _prepare_frontend_parallel_batch(
                     known_modules=known_modules_sorted,
                     known_classes_snapshot=known_classes_snapshot,
                     stdlib_allowlist_sorted=stdlib_allowlist_sorted,
+                    stdlib_allowlist_payload=stdlib_allowlist_payload,
                     known_func_defaults=known_func_defaults,
                     module_deps=module_deps,
                     module_chunking=module_chunking,

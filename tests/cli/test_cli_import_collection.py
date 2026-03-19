@@ -2401,6 +2401,36 @@ def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
     assert payload["pgo_hot_functions"] == ["main::hot"]
 
 
+def test_module_worker_payload_reuses_prebuilt_stdlib_allowlist() -> None:
+    stdlib_allowlist_payload = ["json"]
+    payload = cli._module_worker_payload(
+        "main",
+        module_path=Path("/tmp/main.py"),
+        logical_source_path="/tmp/main.py",
+        source="VALUE = 1\n",
+        parse_codec="json",
+        type_hint_policy="ignore",
+        fallback_policy="error",
+        module_is_namespace=False,
+        entry_module=None,
+        type_facts=None,
+        enable_phi=True,
+        known_modules=("main",),
+        known_classes_snapshot={},
+        stdlib_allowlist_sorted=("json",),
+        stdlib_allowlist_payload=stdlib_allowlist_payload,
+        known_func_defaults={},
+        module_deps={"main": set()},
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=(),
+        module_dep_closures={"main": frozenset({"main"})},
+    )
+
+    assert payload["stdlib_allowlist"] is stdlib_allowlist_payload
+
+
 def test_build_scoped_known_classes_snapshot_precomputes_parallel_views() -> None:
     scoped = cli._build_scoped_known_classes_snapshot(
         {"main", "alpha"},
