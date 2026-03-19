@@ -3454,6 +3454,58 @@ def test_choose_frontend_parallel_layer_workers_scales_workers_by_cost() -> None
     assert int(decision["workers"]) == 4
 
 
+def test_build_frontend_module_costs_precomputes_source_and_dep_costs() -> None:
+    costs = cli._build_frontend_module_costs(
+        {"a", "b"},
+        module_sources={"a": "x" * 10, "b": ""},
+        module_deps={"a": {"root"}, "b": set()},
+    )
+
+    assert costs["a"] == 10.0 + 512.0
+    assert costs["b"] == 1.0
+
+
+def test_build_stdlib_like_module_flags_precomputes_classification() -> None:
+    flags = cli._build_stdlib_like_module_flags({"warnings", "pkg.mod"})
+    assert flags["warnings"] is True
+    assert flags["pkg.mod"] is False
+
+
+def test_choose_frontend_parallel_layer_workers_uses_precomputed_costs_and_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "_predict_frontend_module_cost",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("unexpected live cost recompute")
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_looks_like_stdlib_module_name",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("unexpected stdlib classification recompute")
+        ),
+    )
+
+    decision = cli._choose_frontend_parallel_layer_workers(
+        candidates=["a", "b", "warnings"],
+        module_sources={},
+        module_deps={},
+        module_costs={"a": 40000.0, "b": 40000.0, "warnings": 40000.0},
+        stdlib_like_by_module={"a": False, "b": False, "warnings": True},
+        max_workers=8,
+        min_modules=2,
+        min_predicted_cost=1.0,
+        target_cost_per_worker=50000.0,
+    )
+
+    assert decision["enabled"] is True
+    assert decision["workers"] == 3
+    assert decision["stdlib_candidates"] == 1
+
+
 def test_module_order_has_back_edges_detects_cycles() -> None:
     order = ["a", "b"]
     assert cli._module_order_has_back_edges(order, {"a": {"b"}, "b": {"a"}})
