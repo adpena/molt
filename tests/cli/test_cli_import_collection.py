@@ -2749,6 +2749,101 @@ def test_scoped_lowering_input_view_reuses_precomputed_bundle() -> None:
     assert scoped_view.type_facts is scoped_lowering_inputs.type_facts_by_module["main"]
 
 
+def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scoped_inputs = cli._ScopedLoweringInputView(
+        known_modules=("alpha", "main"),
+        known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
+        pgo_hot_function_names=("main::hot",),
+        type_facts=None,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_scoped_lowering_input_view",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("unexpected scoped lowering recompute")
+        ),
+    )
+
+    payload = cli._module_lowering_context_payload(
+        "main",
+        Path("/tmp/main.py"),
+        logical_source_path="/tmp/main.py",
+        entry_override=None,
+        known_classes_snapshot={},
+        parse_codec="json",
+        type_hint_policy="ignore",
+        fallback_policy="error",
+        type_facts=None,
+        enable_phi=True,
+        known_modules={"main", "alpha"},
+        stdlib_allowlist=set(),
+        known_func_defaults={},
+        module_deps={"main": {"alpha"}, "alpha": set()},
+        module_is_namespace=False,
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=set(),
+        module_dep_closures={"main": frozenset({"main", "alpha"})},
+        scoped_inputs=scoped_inputs,
+        path_stat=os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
+    )
+
+    assert payload is not None
+    assert tuple(payload["known_modules"]) == ("alpha", "main")
+    assert tuple(payload["pgo_hot_functions"]) == ("main::hot",)
+    assert set(payload["known_func_defaults"]) == {"main"}
+
+
+def test_module_worker_payload_reuses_precomputed_scoped_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scoped_inputs = cli._ScopedLoweringInputView(
+        known_modules=("alpha", "main"),
+        known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
+        pgo_hot_function_names=("main::hot",),
+        type_facts=None,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_scoped_lowering_input_view",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("unexpected scoped lowering recompute")
+        ),
+    )
+
+    payload = cli._module_worker_payload(
+        "main",
+        module_path=Path("/tmp/main.py"),
+        logical_source_path="/tmp/main.py",
+        source="import alpha\n",
+        parse_codec="json",
+        type_hint_policy="ignore",
+        fallback_policy="error",
+        module_is_namespace=False,
+        entry_module=None,
+        type_facts=None,
+        enable_phi=True,
+        known_modules=("alpha", "main"),
+        known_classes_snapshot={},
+        stdlib_allowlist_sorted=("json",),
+        known_func_defaults={},
+        module_deps={"main": {"alpha"}, "alpha": set()},
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=(),
+        module_dep_closures={"main": frozenset({"main", "alpha"})},
+        scoped_inputs=scoped_inputs,
+    )
+
+    assert payload["known_modules"] == ["alpha", "main"]
+    assert payload["pgo_hot_functions"] == ["main::hot"]
+    assert set(payload["known_func_defaults"]) == {"main"}
+
+
 def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
