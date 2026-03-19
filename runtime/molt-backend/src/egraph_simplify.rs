@@ -13,7 +13,7 @@
 
 #![cfg(feature = "egraphs")]
 
-use egg::{define_language, rewrite, Id, RecExpr, Runner, Extractor, AstSize};
+use egg::{AstSize, Extractor, Id, RecExpr, Runner, define_language, rewrite};
 
 define_language! {
     /// A minimal arithmetic language for e-graph simplification.
@@ -40,29 +40,22 @@ pub fn arith_rules() -> Vec<egg::Rewrite<ArithLang, ()>> {
         // Additive identity
         rewrite!("add-zero-r"; "(+ ?x 0)" => "?x"),
         rewrite!("add-zero-l"; "(+ 0 ?x)" => "?x"),
-
         // Multiplicative identity
         rewrite!("mul-one-r"; "(* ?x 1)" => "?x"),
         rewrite!("mul-one-l"; "(* 1 ?x)" => "?x"),
-
         // Multiplicative annihilation
         rewrite!("mul-zero-r"; "(* ?x 0)" => "0"),
         rewrite!("mul-zero-l"; "(* 0 ?x)" => "0"),
-
         // Self-subtraction
         rewrite!("sub-self"; "(- ?x ?x)" => "0"),
-
         // Double negation
         rewrite!("neg-neg"; "(neg (neg ?x))" => "?x"),
-
         // Commutativity
         rewrite!("add-comm"; "(+ ?x ?y)" => "(+ ?y ?x)"),
         rewrite!("mul-comm"; "(* ?x ?y)" => "(* ?y ?x)"),
-
         // Associativity
         rewrite!("add-assoc"; "(+ (+ ?x ?y) ?z)" => "(+ ?x (+ ?y ?z))"),
         rewrite!("mul-assoc"; "(* (* ?x ?y) ?z)" => "(* ?x (* ?y ?z))"),
-
         // Distributivity (limited — can blow up e-graph if unrestricted)
         // rewrite!("distribute"; "(* ?x (+ ?y ?z))" => "(+ (* ?x ?y) (* ?x ?z))"),
     ]
@@ -84,9 +77,7 @@ pub fn simplify_arith(expr_str: &str) -> String {
         .parse()
         .unwrap_or_else(|e| panic!("Failed to parse expression '{}': {}", expr_str, e));
 
-    let runner = Runner::default()
-        .with_expr(&expr)
-        .run(&arith_rules());
+    let runner = Runner::default().with_expr(&expr).run(&arith_rules());
 
     let extractor = Extractor::new(&runner.egraph, AstSize);
     let (_, best_expr) = extractor.find_best(runner.roots[0]);

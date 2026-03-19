@@ -1357,8 +1357,7 @@ impl LuauBackend {
                             self.emit_line(&format!("return {val}"));
                         }
                     } else if args.len() > 1 {
-                        let vals: Vec<String> =
-                            args.iter().map(|a| sanitize_ident(a)).collect();
+                        let vals: Vec<String> = args.iter().map(|a| sanitize_ident(a)).collect();
                         self.emit_line(&format!("return {}", vals.join(", ")));
                     } else {
                         self.emit_line("return");
