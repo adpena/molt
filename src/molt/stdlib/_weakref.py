@@ -14,7 +14,7 @@ from weakref import (
     ref,
 )
 
-_require_intrinsic("molt_weakref_count", globals())
+_MOLT_WEAKREF_COUNT = _require_intrinsic("molt_weakref_count")
 
 __all__ = [
     "CallableProxyType",
