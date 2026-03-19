@@ -2,7 +2,7 @@
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 # TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `lib2to3.fixes.fix_map` module stub with full intrinsic-backed lowering.
