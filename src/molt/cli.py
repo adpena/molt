@@ -4641,14 +4641,24 @@ def _runtime_fingerprint(
     }
 
 
-def _runtime_cargo_features(target_triple: str | None) -> tuple[str, ...]:
+@functools.lru_cache(maxsize=32)
+def _runtime_cargo_features_cached(
+    target_triple: str | None,
+    raw: str | None,
+) -> tuple[str, ...]:
     if target_triple is not None and target_triple.startswith("wasm32"):
         return ()
-    raw = os.environ.get("MOLT_RUNTIME_TK_NATIVE")
     enabled = True if raw is None or raw.strip() == "" else _coerce_bool(raw, True)
     if not enabled:
         return ()
     return ("molt_tk_native",)
+
+
+def _runtime_cargo_features(target_triple: str | None) -> tuple[str, ...]:
+    return _runtime_cargo_features_cached(
+        target_triple,
+        os.environ.get("MOLT_RUNTIME_TK_NATIVE"),
+    )
 
 
 def _read_runtime_fingerprint(path: Path) -> dict[str, Any] | None:
@@ -5849,14 +5859,11 @@ def _resolve_cargo_profile_name(
     )
 
 
-def _resolve_wasm_cargo_profile(cargo_profile: str) -> str:
-    """Map cargo profile for WASM targets.
-
-    Uses ``wasm-release`` (thin LTO, 4 codegen-units) instead of ``release``
-    (full LTO, 1 codegen-unit) for dramatically faster WASM compilation with
-    comparable runtime performance.  Override with ``MOLT_WASM_CARGO_PROFILE``.
-    """
-    override = os.environ.get("MOLT_WASM_CARGO_PROFILE", "").strip()
+@functools.lru_cache(maxsize=32)
+def _resolve_wasm_cargo_profile_cached(
+    cargo_profile: str,
+    override: str,
+) -> str:
     if override:
         return override
     if cargo_profile == "release":
@@ -5864,12 +5871,36 @@ def _resolve_wasm_cargo_profile(cargo_profile: str) -> str:
     return cargo_profile
 
 
-def _native_arch_perf_requested() -> bool:
-    profile = os.environ.get("MOLT_PERF_PROFILE", "").strip().lower()
+def _resolve_wasm_cargo_profile(cargo_profile: str) -> str:
+    """Map cargo profile for WASM targets.
+
+    Uses ``wasm-release`` (thin LTO, 4 codegen-units) instead of ``release``
+    (full LTO, 1 codegen-unit) for dramatically faster WASM compilation with
+    comparable runtime performance.  Override with ``MOLT_WASM_CARGO_PROFILE``.
+    """
+    return _resolve_wasm_cargo_profile_cached(
+        cargo_profile,
+        os.environ.get("MOLT_WASM_CARGO_PROFILE", "").strip(),
+    )
+
+
+@functools.lru_cache(maxsize=32)
+def _native_arch_perf_requested_cached(
+    profile_raw: str,
+    native_arch_raw: str,
+) -> bool:
+    profile = profile_raw.strip().lower()
     if profile in {"native-arch", "native_arch", "native"}:
         return True
-    raw = os.environ.get("MOLT_NATIVE_ARCH_PERF", "").strip().lower()
+    raw = native_arch_raw.strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _native_arch_perf_requested() -> bool:
+    return _native_arch_perf_requested_cached(
+        os.environ.get("MOLT_PERF_PROFILE", ""),
+        os.environ.get("MOLT_NATIVE_ARCH_PERF", ""),
+    )
 
 
 def _enable_native_arch_rustflags() -> bool:

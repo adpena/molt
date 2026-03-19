@@ -9,6 +9,7 @@ import molt.cli as cli
 
 
 def test_runtime_cargo_features_native_vs_wasm(monkeypatch) -> None:
+    cli._runtime_cargo_features_cached.cache_clear()
     monkeypatch.delenv("MOLT_RUNTIME_TK_NATIVE", raising=False)
     assert cli._runtime_cargo_features(None) == ("molt_tk_native",)
     monkeypatch.setenv("MOLT_RUNTIME_TK_NATIVE", "0")
@@ -17,6 +18,19 @@ def test_runtime_cargo_features_native_vs_wasm(monkeypatch) -> None:
     assert cli._runtime_cargo_features(None) == ("molt_tk_native",)
     assert cli._runtime_cargo_features("aarch64-apple-darwin") == ("molt_tk_native",)
     assert cli._runtime_cargo_features("wasm32-wasip1") == ()
+
+
+def test_runtime_cargo_features_is_cached(monkeypatch) -> None:
+    cli._runtime_cargo_features_cached.cache_clear()
+    monkeypatch.setenv("MOLT_RUNTIME_TK_NATIVE", "1")
+
+    first = cli._runtime_cargo_features(None)
+    second = cli._runtime_cargo_features(None)
+
+    info = cli._runtime_cargo_features_cached.cache_info()
+    assert first == second == ("molt_tk_native",)
+    assert info.hits >= 1
+    assert info.currsize >= 1
 
 
 def test_runtime_fingerprint_changes_with_runtime_features(
