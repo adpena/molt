@@ -1599,6 +1599,7 @@ def test_load_module_analysis_reuses_persisted_cache(
         cached_source,
         cache_hit,
         interface_changed,
+        path_stat,
     ) = cli._load_module_analysis(
         module_path,
         module_name="pkg",
@@ -1615,6 +1616,7 @@ def test_load_module_analysis_reuses_persisted_cache(
     assert cached_source == source
     assert cache_hit is False
     assert interface_changed is True
+    assert path_stat is not None
 
     def fail_parse(*args: object, **kwargs: object) -> ast.AST:
         raise AssertionError("unexpected parse")
@@ -1627,6 +1629,7 @@ def test_load_module_analysis_reuses_persisted_cache(
         cached_source,
         cache_hit,
         interface_changed,
+        cached_path_stat,
     ) = cli._load_module_analysis(
         module_path,
         module_name="pkg",
@@ -1644,6 +1647,7 @@ def test_load_module_analysis_reuses_persisted_cache(
     assert cached_source is None
     assert cache_hit is True
     assert interface_changed is False
+    assert cached_path_stat is not None
 
 
 def test_load_module_analysis_reuses_persisted_module_analysis_imports(
@@ -1684,6 +1688,7 @@ def test_load_module_analysis_reuses_persisted_module_analysis_imports(
         cached_source,
         cache_hit,
         interface_changed,
+        cached_path_stat,
     ) = cli._load_module_analysis(
         module_path,
         module_name="pkg",
@@ -1701,6 +1706,7 @@ def test_load_module_analysis_reuses_persisted_module_analysis_imports(
     assert cached_source is None
     assert cache_hit is True
     assert interface_changed is False
+    assert cached_path_stat is not None
 
 
 def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
@@ -1746,6 +1752,7 @@ def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
         cached_source,
         cache_hit,
         interface_changed,
+        cached_path_stat,
     ) = cli._load_module_analysis(
         module_path,
         module_name="pkg",
@@ -1764,6 +1771,7 @@ def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
     assert calls == 1
     assert cache_hit is True
     assert interface_changed is False
+    assert cached_path_stat is not None
 
 
 def test_load_module_analysis_marks_body_only_edit_as_interface_stable(
@@ -1796,6 +1804,7 @@ def test_load_module_analysis_marks_body_only_edit_as_interface_stable(
         cached_source,
         cache_hit,
         interface_changed,
+        path_stat,
     ) = cli._load_module_analysis(
         module_path,
         module_name="pkg",
@@ -1813,6 +1822,7 @@ def test_load_module_analysis_marks_body_only_edit_as_interface_stable(
     assert cached_source is not None
     assert cache_hit is False
     assert interface_changed is False
+    assert path_stat is not None
 
 
 def test_persisted_module_lowering_roundtrip_respects_context_digest(
@@ -2080,6 +2090,7 @@ def test_load_cached_module_lowering_result_reuses_single_module_stat(
         module_path,
         logical_source_path=str(module_path),
         entry_override=None,
+        is_package=False,
         known_classes_snapshot={},
         parse_codec="json",
         type_hint_policy="ignore",
@@ -2274,7 +2285,7 @@ def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
             "DepClass": {"module": "alpha", "fields": {}},
             "UnrelatedClass": {"module": "unrelated", "fields": {}},
         },
-        stdlib_allowlist=("json",),
+        stdlib_allowlist_sorted=("json",),
         known_func_defaults={
             "main": {"run": {"params": 0, "defaults": []}},
             "alpha": {"helper": {"params": 1, "defaults": []}},
@@ -2372,7 +2383,7 @@ def test_module_worker_payload_scopes_type_facts() -> None:
         enable_phi=True,
         known_modules=("alpha", "main", "unrelated"),
         known_classes_snapshot={},
-        stdlib_allowlist=("json",),
+        stdlib_allowlist_sorted=("json",),
         known_func_defaults={},
         module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
         module_chunking=False,

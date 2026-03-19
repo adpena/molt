@@ -7799,6 +7799,7 @@ def _load_module_analysis(
     logical_source_path: str,
     resolution_cache: _ModuleResolutionCache,
     project_root: Path | None,
+    path_stat: os.stat_result | None = None,
 ) -> tuple[
     ast.AST | None,
     tuple[str, ...],
@@ -7806,9 +7807,9 @@ def _load_module_analysis(
     str | None,
     bool,
     bool,
+    os.stat_result | None,
 ]:
-    path_stat: os.stat_result | None = None
-    if project_root is not None:
+    if path_stat is None and project_root is not None:
         with contextlib.suppress(OSError):
             path_stat = resolution_cache.path_stat(path)
     persisted_analysis = (
@@ -7850,7 +7851,7 @@ def _load_module_analysis(
             path_stat=path_stat,
         )
     if persisted_imports is not None and persisted_defaults is not None:
-        return None, persisted_imports, persisted_defaults, None, True, False
+        return None, persisted_imports, persisted_defaults, None, True, False, path_stat
 
     if source is None:
         source = resolution_cache.read_module_source(path)
@@ -7889,7 +7890,7 @@ def _load_module_analysis(
             and stale_defaults == func_defaults
         ):
             interface_changed = False
-    return tree, imports, func_defaults, source, False, interface_changed
+    return tree, imports, func_defaults, source, False, interface_changed, path_stat
 
 
 def _module_frontend_payload(
@@ -7951,6 +7952,7 @@ def _module_lowering_context_payload(
     scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]]
     | None = None,
     scoped_type_facts_by_module: Mapping[str, TypeFacts | None] | None = None,
+    is_package: bool | None = None,
     path_stat: os.stat_result | None = None,
 ) -> dict[str, Any] | None:
     if path_stat is None:
@@ -8024,11 +8026,13 @@ def _module_lowering_context_payload(
             type_facts=cast(TypeFacts | None, type_facts),
             module_dep_closures=module_dep_closures,
         )
+    if is_package is None:
+        is_package = module_path.name == "__init__.py"
     return {
         "version": 1,
         "module_name": module_name,
         "logical_source_path": logical_source_path,
-        "is_package": module_path.name == "__init__.py",
+        "is_package": is_package,
         "module_is_namespace": module_is_namespace,
         "entry_module": entry_override,
         "size": path_stat.st_size,
@@ -8134,6 +8138,7 @@ def _load_cached_module_lowering_result(
     *,
     logical_source_path: str,
     entry_override: str | None,
+    is_package: bool,
     known_classes_snapshot: dict[str, Any],
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
@@ -8161,11 +8166,11 @@ def _load_cached_module_lowering_result(
     scoped_type_facts_by_module: Mapping[str, TypeFacts | None] | None = None,
     context_digest: str | None = None,
     resolution_cache: _ModuleResolutionCache | None = None,
+    path_stat: os.stat_result | None = None,
 ) -> dict[str, Any] | None:
     if project_root is None:
         return None
-    path_stat: os.stat_result | None = None
-    if resolution_cache is not None:
+    if path_stat is None and resolution_cache is not None:
         with contextlib.suppress(OSError):
             path_stat = resolution_cache.path_stat(module_path)
     if context_digest is None:
@@ -8197,6 +8202,7 @@ def _load_cached_module_lowering_result(
             scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
             scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
             scoped_type_facts_by_module=scoped_type_facts_by_module,
+            is_package=is_package,
             path_stat=path_stat,
         )
         if context_payload is None:
@@ -8208,7 +8214,7 @@ def _load_cached_module_lowering_result(
         project_root,
         module_path,
         module_name=module_name,
-        is_package=module_path.name == "__init__.py",
+        is_package=is_package,
         context_digest=context_digest,
         path_stat=path_stat,
     )
@@ -8229,7 +8235,7 @@ def _module_worker_payload(
     enable_phi: bool,
     known_modules: Collection[str],
     known_classes_snapshot: dict[str, Any],
-    stdlib_allowlist: Collection[str],
+    stdlib_allowlist_sorted: Collection[str],
     known_func_defaults: dict[str, dict[str, Any]],
     module_deps: dict[str, set[str]],
     module_chunking: bool,
@@ -8307,7 +8313,7 @@ def _module_worker_payload(
             known_classes=known_classes_snapshot,
             module_dep_closures=module_dep_closures,
         ),
-        "stdlib_allowlist": list(sorted(stdlib_allowlist)),
+        "stdlib_allowlist": list(stdlib_allowlist_sorted),
         "known_func_defaults": scoped_known_func_defaults,
         "module_chunking": module_chunking,
         "module_chunk_max_ops": module_chunk_max_ops,
@@ -8348,6 +8354,8 @@ def _prepare_frontend_parallel_batch(
     logical_source_path_by_module: Mapping[str, str] | None = None,
     entry_override_by_module: Mapping[str, str | None] | None = None,
     module_is_namespace_by_module: Mapping[str, bool] | None = None,
+    module_is_package_by_module: Mapping[str, bool] | None = None,
+    path_stat_by_module: Mapping[str, os.stat_result | None] | None = None,
     scoped_known_modules_by_module: Mapping[str, tuple[str, ...]] | None = None,
     scoped_known_func_defaults_by_module: Mapping[str, dict[str, dict[str, Any]]]
     | None = None,
@@ -8387,6 +8395,16 @@ def _prepare_frontend_parallel_batch(
             if module_is_namespace_by_module is not None
             else module_name in namespace_module_names
         )
+        is_package = (
+            module_is_package_by_module[module_name]
+            if module_is_package_by_module is not None
+            else module_path.name == "__init__.py"
+        )
+        path_stat = (
+            path_stat_by_module[module_name]
+            if path_stat_by_module is not None
+            else None
+        )
         if project_root is not None:
             context_payload = _module_lowering_context_payload(
                 module_name,
@@ -8416,6 +8434,8 @@ def _prepare_frontend_parallel_batch(
                 scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
                 scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
                 scoped_type_facts_by_module=scoped_type_facts_by_module,
+                is_package=is_package,
+                path_stat=path_stat,
             )
             if context_payload is not None:
                 context_digest = _module_lowering_context_digest(context_payload)
@@ -8428,6 +8448,7 @@ def _prepare_frontend_parallel_batch(
                 module_path,
                 logical_source_path=logical_source_path,
                 entry_override=entry_override,
+                is_package=is_package,
                 known_classes_snapshot=known_classes_snapshot,
                 parse_codec=parse_codec,
                 type_hint_policy=type_hint_policy,
@@ -8453,6 +8474,7 @@ def _prepare_frontend_parallel_batch(
                 scoped_type_facts_by_module=scoped_type_facts_by_module,
                 context_digest=context_digest_by_module.get(module_name),
                 resolution_cache=module_resolution_cache,
+                path_stat=path_stat,
             )
             if cached_result is not None:
                 cached_results[module_name] = cached_result
@@ -8483,7 +8505,7 @@ def _prepare_frontend_parallel_batch(
                     enable_phi=enable_phi,
                     known_modules=known_modules_sorted,
                     known_classes_snapshot=known_classes_snapshot,
-                    stdlib_allowlist=stdlib_allowlist_sorted,
+                    stdlib_allowlist_sorted=stdlib_allowlist_sorted,
                     known_func_defaults=known_func_defaults,
                     module_deps=module_deps,
                     module_chunking=module_chunking,
@@ -11361,10 +11383,22 @@ def build(
     stdlib_allowlist.add("molt.stdlib")
     known_modules_sorted = tuple(sorted(known_modules))
     stdlib_allowlist_sorted = tuple(sorted(stdlib_allowlist))
+    (
+        logical_source_path_by_module,
+        entry_override_by_module,
+        module_is_namespace_by_module,
+        module_is_package_by_module,
+    ) = _build_module_lowering_metadata(
+        module_graph,
+        generated_module_source_paths=generated_module_source_paths,
+        entry_module=entry_module,
+        namespace_module_names=namespace_module_names,
+    )
     module_deps: dict[str, set[str]] = {}
     module_sources: dict[str, str] = {}
     known_func_defaults: dict[str, dict[str, dict[str, Any]]] = {}
     module_trees: dict[str, ast.AST] = {}
+    module_path_stats: dict[str, os.stat_result | None] = {}
     syntax_error_modules: dict[str, ModuleSyntaxErrorInfo] = {}
     analysis_cache_miss_modules: set[str] = set()
     interface_changed_modules: set[str] = set()
@@ -11377,16 +11411,18 @@ def build(
                 source,
                 analysis_cache_hit,
                 interface_changed,
+                path_stat,
             ) = _load_module_analysis(
                 module_path,
                 module_name=module_name,
-                is_package=module_path.name == "__init__.py",
+                is_package=module_is_package_by_module[module_name],
                 include_nested=True,
                 source=None,
-                logical_source_path=str(module_path),
+                logical_source_path=logical_source_path_by_module[module_name],
                 resolution_cache=module_resolution_cache,
                 project_root=project_root,
             )
+            module_path_stats[module_name] = path_stat
             if source is not None:
                 module_sources[module_name] = source
             if not analysis_cache_hit:
@@ -11405,6 +11441,7 @@ def build(
             )
             module_deps[module_name] = set()
             known_func_defaults[module_name] = {}
+            module_path_stats[module_name] = None
             continue
         except OSError as exc:
             return _fail(
@@ -11485,17 +11522,6 @@ def build(
         known_func_defaults=known_func_defaults,
         pgo_hot_function_names=pgo_hot_function_names,
         type_facts=cast(TypeFacts | None, type_facts),
-    )
-    (
-        logical_source_path_by_module,
-        entry_override_by_module,
-        module_is_namespace_by_module,
-        module_is_package_by_module,
-    ) = _build_module_lowering_metadata(
-        module_graph,
-        generated_module_source_paths=generated_module_source_paths,
-        entry_module=entry_module,
-        namespace_module_names=namespace_module_names,
     )
 
     functions: list[dict[str, Any]] = []
@@ -11669,9 +11695,10 @@ def build(
         entry_override = entry_override_by_module[module_name]
         is_package = module_is_package_by_module[module_name]
         module_is_namespace = module_is_namespace_by_module[module_name]
-        path_stat: os.stat_result | None = None
-        with contextlib.suppress(OSError):
-            path_stat = module_resolution_cache.path_stat(module_path)
+        path_stat = module_path_stats.get(module_name)
+        if path_stat is None:
+            with contextlib.suppress(OSError):
+                path_stat = module_resolution_cache.path_stat(module_path)
         context_digest: str | None = None
         if project_root is not None:
             context_payload = _module_lowering_context_payload(
@@ -11702,6 +11729,7 @@ def build(
                 scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
                 scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
                 scoped_type_facts_by_module=scoped_type_facts_by_module,
+                is_package=is_package,
                 path_stat=path_stat,
             )
             if context_payload is not None:
@@ -11972,6 +12000,8 @@ def build(
                             logical_source_path_by_module=logical_source_path_by_module,
                             entry_override_by_module=entry_override_by_module,
                             module_is_namespace_by_module=module_is_namespace_by_module,
+                            module_is_package_by_module=module_is_package_by_module,
+                            path_stat_by_module=module_path_stats,
                             scoped_known_modules_by_module=scoped_known_modules_by_module,
                             scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
                             scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
