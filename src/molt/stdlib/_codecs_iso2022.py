@@ -6,7 +6,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 import codecs as _py_codecs
 
-_require_intrinsic("molt_capabilities_has", globals())
+_require_intrinsic("molt_capabilities_has")
 
 
 class _MultibyteCodec:
