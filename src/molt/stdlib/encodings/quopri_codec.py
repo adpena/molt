@@ -10,8 +10,8 @@ import quopri
 from io import BytesIO
 
 
-_MOLT_QUOPRI_ENCODE = _require_intrinsic("molt_quopri_encode", globals())
-_MOLT_QUOPRI_DECODE = _require_intrinsic("molt_quopri_decode", globals())
+_MOLT_QUOPRI_ENCODE = _require_intrinsic("molt_quopri_encode")
+_MOLT_QUOPRI_DECODE = _require_intrinsic("molt_quopri_decode")
 
 _CodecBase = getattr(codecs, "Codec", object)
 _IncrementalEncoderBase = getattr(codecs, "IncrementalEncoder", object)
