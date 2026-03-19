@@ -1096,10 +1096,6 @@ class _PreparedFrontendBackendHandoff:
 class _PreparedFrontendPipeline:
     prepared_frontend_run_ticket: _PreparedFrontendRunTicket
     prepared_frontend_backend_handoff: _PreparedFrontendBackendHandoff
-    prepared_build_outputs: _PreparedBuildModuleOutputs
-    prepared_frontend_analysis: _PreparedFrontendAnalysis
-    prepared_frontend_lowering_config: _PreparedFrontendLoweringConfig
-    prepared_module_graph: _PreparedEntryModuleGraph
 
 
 @dataclass(frozen=True)
@@ -14713,10 +14709,6 @@ def _prepare_frontend_pipeline(
     return _PreparedFrontendPipeline(
         prepared_frontend_run_ticket=prepared_frontend_run_ticket,
         prepared_frontend_backend_handoff=prepared_frontend_backend_handoff,
-        prepared_build_outputs=prepared_build_outputs,
-        prepared_frontend_analysis=prepared_frontend_analysis,
-        prepared_frontend_lowering_config=prepared_frontend_lowering_config,
-        prepared_module_graph=prepared_module_graph,
     ), None
 
 
