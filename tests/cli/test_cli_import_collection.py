@@ -705,6 +705,11 @@ def test_discover_module_graph_reuses_persisted_graph_cache(
     monkeypatch.setattr(cache, "resolve_module", fail_resolve)
     monkeypatch.setattr(cache, "read_module_source", fail_read)
 
+    def fail_read_text(*args: object, **kwargs: object) -> str:
+        raise AssertionError("unexpected persisted graph reread")
+
+    monkeypatch.setattr(Path, "read_text", fail_read_text)
+
     graph, explicit_imports = cli._discover_module_graph(
         entry,
         roots,

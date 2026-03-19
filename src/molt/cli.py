@@ -4297,6 +4297,7 @@ def _discover_module_graph(
             skip_modules=skip_modules,
             stub_parents=stub_parents,
             nested_stdlib_scan_modules=nested_stdlib_scan_modules,
+            resolution_cache=resolution_cache,
         )
         if persisted_graph is not None:
             return persisted_graph
@@ -6721,6 +6722,7 @@ def _read_persisted_module_graph(
     skip_modules: set[str],
     stub_parents: set[str],
     nested_stdlib_scan_modules: set[str],
+    resolution_cache: _ModuleResolutionCache | None = None,
 ) -> tuple[dict[str, Path], set[str]] | None:
     cache_path = _module_graph_cache_path(
         project_root,
@@ -6732,9 +6734,8 @@ def _read_persisted_module_graph(
         stub_parents=stub_parents,
         nested_stdlib_scan_modules=nested_stdlib_scan_modules,
     )
-    try:
-        payload = json.loads(cache_path.read_text())
-    except (OSError, json.JSONDecodeError):
+    payload = _read_cached_json_object(cache_path)
+    if payload is None:
         return None
     if not isinstance(payload, dict) or payload.get("version") != 1:
         return None
@@ -6758,7 +6759,11 @@ def _read_persisted_module_graph(
             return None
         path = Path(path_text)
         try:
-            stat = path.stat()
+            stat = (
+                resolution_cache.path_stat(path)
+                if resolution_cache is not None
+                else path.stat()
+            )
         except OSError:
             return None
         if stat.st_size != size or stat.st_mtime_ns != mtime_ns:
