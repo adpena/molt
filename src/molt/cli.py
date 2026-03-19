@@ -8722,6 +8722,72 @@ def _frontend_layer_static_metrics(
     )
 
 
+def _record_serial_frontend_worker_timing(
+    *,
+    record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]],
+    recorded_worker_timings: list[dict[str, Any]],
+    layer_index: int,
+    module_name: str,
+    module_path: Path,
+    mode: str,
+    total_s: float,
+) -> None:
+    total_ms = total_s * 1000.0
+    recorded_worker_timings.append(
+        record_frontend_parallel_worker_timing(
+            layer_index=layer_index,
+            module_name=module_name,
+            module_path=module_path,
+            mode=mode,
+            queue_ms=0.0,
+            wait_ms=0.0,
+            exec_ms=total_ms,
+            roundtrip_ms=total_ms,
+            worker_pid=None,
+        )
+    )
+
+
+def _append_frontend_parallel_layer_detail(
+    frontend_parallel_layers: list[dict[str, Any]],
+    *,
+    layer_index: int,
+    layer_mode: str,
+    layer_policy_reason: str,
+    module_names: Sequence[str],
+    candidate_count: int,
+    workers: int,
+    timing_items: Sequence[Mapping[str, Any]],
+    predicted_cost_total: float,
+    effective_min_predicted_cost: float,
+    stdlib_candidates: int,
+    target_cost_per_worker: float,
+    started_ns: int,
+    finished_ns: int,
+    fallback_reason: str | None = None,
+) -> None:
+    timing_summary = _summarize_worker_timing_items(timing_items)
+    frontend_parallel_layers.append(
+        _frontend_parallel_layer_detail(
+            layer_index=layer_index,
+            mode=layer_mode,
+            policy_reason=layer_policy_reason,
+            module_count=len(module_names),
+            candidate_count=candidate_count,
+            workers=workers,
+            cache_hits=_layer_cache_hit_count(timing_items),
+            predicted_cost_total=predicted_cost_total,
+            effective_min_predicted_cost=effective_min_predicted_cost,
+            stdlib_candidates=stdlib_candidates,
+            target_cost_per_worker=target_cost_per_worker,
+            timing_summary=timing_summary,
+            started_ns=started_ns,
+            finished_ns=finished_ns,
+            fallback_reason=fallback_reason,
+        )
+    )
+
+
 def _frontend_parallel_worker_timing_inputs(
     result_timings: _FrontendModuleResultTimings,
     worker_timing: Mapping[str, Any] | None,
@@ -13001,18 +13067,14 @@ def build(
                         total_s=total_s,
                     )
                     serial_mode = _frontend_serial_worker_mode(layer_mode)
-                    layer_state.recorded_worker_timings.append(
-                        _record_frontend_parallel_worker_timing(
-                            layer_index=layer_index,
-                            module_name=module_name,
-                            module_path=module_path,
-                            mode=serial_mode,
-                            queue_ms=0.0,
-                            wait_ms=0.0,
-                            exec_ms=total_s * 1000.0,
-                            roundtrip_ms=total_s * 1000.0,
-                            worker_pid=None,
-                        )
+                    _record_serial_frontend_worker_timing(
+                        record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
+                        recorded_worker_timings=layer_state.recorded_worker_timings,
+                        layer_index=layer_index,
+                        module_name=module_name,
+                        module_path=module_path,
+                        mode=serial_mode,
+                        total_s=total_s,
                     )
                     consume_error = _consume_frontend_module_result(
                         module_name=module_name,
@@ -13027,34 +13089,27 @@ def build(
                     )
                     if consume_error is not None:
                         return consume_error
-                layer_summary = _summarize_worker_timing_items(
-                    layer_state.recorded_worker_timings
-                )
-                frontend_parallel_layers.append(
-                    _frontend_parallel_layer_detail(
-                        layer_index=layer_index,
-                        mode=layer_mode,
-                        policy_reason=layer_policy_reason,
-                        module_count=len(layer),
-                        candidate_count=len(candidates),
-                        workers=layer_workers,
-                        cache_hits=_layer_cache_hit_count(
-                            layer_state.recorded_worker_timings
-                        ),
-                        predicted_cost_total=layer_predicted_cost_total,
-                        effective_min_predicted_cost=layer_effective_min_predicted_cost,
-                        stdlib_candidates=layer_stdlib_candidates,
-                        target_cost_per_worker=frontend_parallel_config.target_cost_per_worker,
-                        timing_summary=layer_summary,
-                        started_ns=layer_started_ns,
-                        finished_ns=time.time_ns(),
-                        fallback_reason=layer_state.fallback_reason,
-                    )
+                _append_frontend_parallel_layer_detail(
+                    frontend_parallel_layers,
+                    layer_index=layer_index,
+                    layer_mode=layer_mode,
+                    layer_policy_reason=layer_policy_reason,
+                    module_names=layer,
+                    candidate_count=len(candidates),
+                    workers=layer_workers,
+                    timing_items=layer_state.recorded_worker_timings,
+                    predicted_cost_total=layer_predicted_cost_total,
+                    effective_min_predicted_cost=layer_effective_min_predicted_cost,
+                    stdlib_candidates=layer_stdlib_candidates,
+                    target_cost_per_worker=frontend_parallel_config.target_cost_per_worker,
+                    started_ns=layer_started_ns,
+                    finished_ns=time.time_ns(),
+                    fallback_reason=layer_state.fallback_reason,
                 )
         _summarize_parallel_worker_timings()
     else:
         serial_layer_started_ns = time.time_ns()
-        serial_layer_worker_timings: list[dict[str, Any]] = []
+        serial_layer_state = _fresh_frontend_parallel_layer_state()
         for module_name in module_order:
             module_path = module_graph[module_name]
             try:
@@ -13084,18 +13139,14 @@ def build(
                 lower_s=lower_s,
                 total_s=total_s,
             )
-            serial_layer_worker_timings.append(
-                _record_frontend_parallel_worker_timing(
-                    layer_index=0,
-                    module_name=module_name,
-                    module_path=module_path,
-                    mode="serial_disabled",
-                    queue_ms=0.0,
-                    wait_ms=0.0,
-                    exec_ms=total_s * 1000.0,
-                    roundtrip_ms=total_s * 1000.0,
-                    worker_pid=None,
-                )
+            _record_serial_frontend_worker_timing(
+                record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
+                recorded_worker_timings=serial_layer_state.recorded_worker_timings,
+                layer_index=0,
+                module_name=module_name,
+                module_path=module_path,
+                mode="serial_disabled",
+                total_s=total_s,
             )
             consume_error = _consume_frontend_module_result(
                 module_name=module_name,
@@ -13110,29 +13161,26 @@ def build(
             )
             if consume_error is not None:
                 return consume_error
-        serial_summary = _summarize_worker_timing_items(serial_layer_worker_timings)
         serial_static_metrics = _frontend_layer_static_metrics(
             module_order,
             frontend_module_costs=frontend_module_costs,
             stdlib_like_by_module=stdlib_like_by_module,
         )
-        frontend_parallel_layers.append(
-            _frontend_parallel_layer_detail(
-                layer_index=0,
-                mode="serial_disabled",
-                policy_reason=frontend_parallel_config.reason,
-                module_count=len(module_order),
-                candidate_count=len(module_order),
-                workers=1,
-                cache_hits=0,
-                predicted_cost_total=serial_static_metrics.predicted_cost_total,
-                effective_min_predicted_cost=frontend_parallel_config.min_predicted_cost,
-                stdlib_candidates=serial_static_metrics.stdlib_candidates,
-                target_cost_per_worker=frontend_parallel_config.target_cost_per_worker,
-                timing_summary=serial_summary,
-                started_ns=serial_layer_started_ns,
-                finished_ns=time.time_ns(),
-            )
+        _append_frontend_parallel_layer_detail(
+            frontend_parallel_layers,
+            layer_index=0,
+            layer_mode="serial_disabled",
+            layer_policy_reason=frontend_parallel_config.reason,
+            module_names=module_order,
+            candidate_count=len(module_order),
+            workers=1,
+            timing_items=serial_layer_state.recorded_worker_timings,
+            predicted_cost_total=serial_static_metrics.predicted_cost_total,
+            effective_min_predicted_cost=frontend_parallel_config.min_predicted_cost,
+            stdlib_candidates=serial_static_metrics.stdlib_candidates,
+            target_cost_per_worker=frontend_parallel_config.target_cost_per_worker,
+            started_ns=serial_layer_started_ns,
+            finished_ns=time.time_ns(),
         )
         _summarize_parallel_worker_timings()
 
