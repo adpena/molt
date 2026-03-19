@@ -18215,18 +18215,7 @@ def build(
     prepared_frontend_backend_handoff = (
         prepared_frontend_pipeline.prepared_frontend_backend_handoff
     )
-    prepared_module_graph = prepared_frontend_pipeline.prepared_module_graph
-    prepared_build_outputs = prepared_frontend_pipeline.prepared_build_outputs
-    stdlib_allowlist = prepared_module_graph.stdlib_allowlist
     output_layout = prepared_frontend_backend_handoff.output_layout
-    is_wasm = output_layout.is_wasm
-    is_rust_transpile = output_layout.is_rust_transpile
-    linked = output_layout.linked
-    target_triple = output_layout.target_triple
-    emit_mode = output_layout.emit_mode
-    output_artifact = output_layout.output_artifact
-    output_binary = output_layout.output_binary
-    linked_output_path = output_layout.linked_output_path
     frontend_layer_error = _run_frontend_pipeline(
         frontend_parallel_details=prepared_build_driver_state.frontend_parallel_details,
         prepared_frontend_run_ticket=prepared_frontend_run_ticket,
