@@ -944,6 +944,12 @@ class _PreparedNativeLink:
     link_process: subprocess.CompletedProcess[str]
 
 
+@dataclass(frozen=True)
+class _PreparedBuildCallbacks:
+    record_frontend_timing: Callable[..., None]
+    build_diagnostics_payload: Callable[[], tuple[dict[str, Any] | None, Path | None]]
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -12903,6 +12909,88 @@ def _prepare_native_link(
     ), None
 
 
+def _prepare_build_callbacks(
+    *,
+    frontend_module_timings: list[dict[str, Any]],
+    frontend_timing_enabled: bool,
+    frontend_timing_raw: str,
+    frontend_timing_threshold: float,
+    json_output: bool,
+    diagnostics_enabled: bool,
+    diagnostics_start: float,
+    phase_starts: dict[str, float],
+    module_graph: Mapping[str, Path],
+    module_reasons: Mapping[str, set[str]],
+    allocation_diagnostics_enabled: bool,
+    frontend_parallel_details: dict[str, Any],
+    profile: BuildProfile,
+    midend_policy_outcomes_by_function: dict[str, dict[str, Any]],
+    midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]],
+    backend_daemon_health: dict[str, Any] | None,
+    backend_daemon_cached: bool | None,
+    backend_daemon_cache_tier: str | None,
+    backend_daemon_config_digest: str | None,
+    diagnostics_path_spec: str,
+    artifacts_root: Path,
+) -> _PreparedBuildCallbacks:
+    timing_config = _FrontendTimingRecorderConfig(
+        enabled=frontend_timing_enabled,
+        raw=frontend_timing_raw,
+        threshold=frontend_timing_threshold,
+        json_output=json_output,
+    )
+
+    def _record_frontend_timing(
+        *,
+        module_name: str,
+        module_path: Path,
+        visit_s: float,
+        lower_s: float,
+        total_s: float,
+        timed_out: bool = False,
+        detail: str | None = None,
+    ) -> None:
+        _record_frontend_timing_item(
+            frontend_module_timings,
+            config=timing_config,
+            module_name=module_name,
+            module_path=module_path,
+            visit_s=visit_s,
+            lower_s=lower_s,
+            total_s=total_s,
+            timed_out=timed_out,
+            detail=detail,
+        )
+
+    def _build_diagnostics_payload() -> tuple[dict[str, Any] | None, Path | None]:
+        return _build_build_diagnostics_payload(
+            _BuildDiagnosticsContext(
+                diagnostics_enabled=diagnostics_enabled,
+                diagnostics_start=diagnostics_start,
+                phase_starts=phase_starts,
+                module_graph=module_graph,
+                module_reasons=module_reasons,
+                frontend_module_timings=frontend_module_timings,
+                allocation_diagnostics_enabled=allocation_diagnostics_enabled,
+                frontend_parallel_details=frontend_parallel_details,
+                profile=profile,
+                midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
+                midend_pass_stats_by_function=midend_pass_stats_by_function,
+                backend_daemon_health=backend_daemon_health,
+                backend_daemon_cached=backend_daemon_cached,
+                backend_daemon_cache_tier=backend_daemon_cache_tier,
+                backend_daemon_config_digest=backend_daemon_config_digest,
+                diagnostics_path_spec=diagnostics_path_spec,
+                artifacts_root=artifacts_root,
+            )
+        )
+
+    return _PreparedBuildCallbacks(
+        record_frontend_timing=_record_frontend_timing,
+        build_diagnostics_payload=_build_diagnostics_payload,
+    )
+
+
 def _prepare_backend_cache_setup(
     *,
     cache_enabled: bool,
@@ -16583,56 +16671,31 @@ def build(
     artifacts_root, bin_root, output_root = _resolve_output_roots(
         project_root, out_dir_path, output_base
     )
-
-    def _record_frontend_timing(
-        *,
-        module_name: str,
-        module_path: Path,
-        visit_s: float,
-        lower_s: float,
-        total_s: float,
-        timed_out: bool = False,
-        detail: str | None = None,
-    ) -> None:
-        _record_frontend_timing_item(
-            frontend_module_timings,
-            config=_FrontendTimingRecorderConfig(
-                enabled=frontend_timing_enabled,
-                raw=frontend_timing_raw,
-                threshold=frontend_timing_threshold,
-                json_output=json_output,
-            ),
-            module_name=module_name,
-            module_path=module_path,
-            visit_s=visit_s,
-            lower_s=lower_s,
-            total_s=total_s,
-            timed_out=timed_out,
-            detail=detail,
-        )
-
-    def _build_diagnostics_payload() -> tuple[dict[str, Any] | None, Path | None]:
-        return _build_build_diagnostics_payload(
-            _BuildDiagnosticsContext(
-                diagnostics_enabled=diagnostics_enabled,
-                diagnostics_start=diagnostics_start,
-                phase_starts=phase_starts,
-                module_graph=module_graph,
-                module_reasons=module_reasons,
-                frontend_module_timings=frontend_module_timings,
-                allocation_diagnostics_enabled=allocation_diagnostics_enabled,
-                frontend_parallel_details=frontend_parallel_details,
-                profile=profile,
-                midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
-                midend_pass_stats_by_function=midend_pass_stats_by_function,
-                backend_daemon_health=backend_daemon_health,
-                backend_daemon_cached=backend_daemon_cached,
-                backend_daemon_cache_tier=backend_daemon_cache_tier,
-                backend_daemon_config_digest=backend_daemon_config_digest,
-                diagnostics_path_spec=diagnostics_path_spec,
-                artifacts_root=artifacts_root,
-            )
-        )
+    prepared_build_callbacks = _prepare_build_callbacks(
+        frontend_module_timings=frontend_module_timings,
+        frontend_timing_enabled=frontend_timing_enabled,
+        frontend_timing_raw=frontend_timing_raw,
+        frontend_timing_threshold=frontend_timing_threshold,
+        json_output=json_output,
+        diagnostics_enabled=diagnostics_enabled,
+        diagnostics_start=diagnostics_start,
+        phase_starts=phase_starts,
+        module_graph=module_graph,
+        module_reasons=module_reasons,
+        allocation_diagnostics_enabled=allocation_diagnostics_enabled,
+        frontend_parallel_details=frontend_parallel_details,
+        profile=profile,
+        midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
+        midend_pass_stats_by_function=midend_pass_stats_by_function,
+        backend_daemon_health=backend_daemon_health,
+        backend_daemon_cached=backend_daemon_cached,
+        backend_daemon_cache_tier=backend_daemon_cache_tier,
+        backend_daemon_config_digest=backend_daemon_config_digest,
+        diagnostics_path_spec=diagnostics_path_spec,
+        artifacts_root=artifacts_root,
+    )
+    _record_frontend_timing = prepared_build_callbacks.record_frontend_timing
+    _build_diagnostics_payload = prepared_build_callbacks.build_diagnostics_payload
 
     prepared_build_outputs, prepared_build_outputs_error = _prepare_build_module_outputs(
         module_graph=module_graph,
