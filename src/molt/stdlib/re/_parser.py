@@ -16,7 +16,7 @@ from typing import Any
 import re as _re
 
 # Avoid probe-only classification: this shim must still be intrinsic-backed.
-_require_intrinsic("molt_re_literal_advance", globals())
+_require_intrinsic("molt_re_literal_advance")
 
 error = _re.error
 

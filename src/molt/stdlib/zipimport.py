@@ -31,16 +31,16 @@ sys = _sys
 time = _time
 
 _MOLT_IMPORTLIB_FIND_IN_PATH_PACKAGE_CONTEXT = _require_intrinsic(
-    "molt_importlib_find_in_path_package_context", globals()
+    "molt_importlib_find_in_path_package_context"
 )
 _MOLT_IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD = _require_intrinsic(
-    "molt_importlib_zip_source_exec_payload", globals()
+    "molt_importlib_zip_source_exec_payload"
 )
 _MOLT_IMPORTLIB_ZIP_READ_ENTRY = _require_intrinsic(
-    "molt_importlib_zip_read_entry", globals()
+    "molt_importlib_zip_read_entry"
 )
-_MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted", globals())
-_MOLT_CAPABILITIES_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
+_MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted")
+_MOLT_CAPABILITIES_REQUIRE = _require_intrinsic("molt_capabilities_require")
 
 
 def _split_archive_path(path: str) -> tuple[str, str]:
