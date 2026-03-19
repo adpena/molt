@@ -552,6 +552,19 @@ class _FrontendLayerPolicySummary:
     stdlib_candidates: int
 
 
+@dataclass
+class _FrontendParallelLayerState:
+    results: dict[str, dict[str, Any]] = field(default_factory=dict)
+    context_digests: dict[str, str] = field(default_factory=dict)
+    worker_timings_by_module: dict[str, dict[str, Any]] = field(default_factory=dict)
+    recorded_worker_timings: list[dict[str, Any]] = field(default_factory=list)
+    fallback_reason: str | None = None
+
+
+def _fresh_frontend_parallel_layer_state() -> _FrontendParallelLayerState:
+    return _FrontendParallelLayerState()
+
+
 def _run_command_timed(
     cmd: list[str],
     *,
@@ -8577,6 +8590,51 @@ def _frontend_layer_policy_summary(
     )
 
 
+def _record_parallel_cached_module_result(
+    layer_state: _FrontendParallelLayerState,
+    module_name: str,
+    cached_result: Mapping[str, Any],
+) -> None:
+    timings = cast(Mapping[str, Any], cached_result.get("timings", {}))
+    total_ms = float(timings.get("total_s", 0.0)) * 1000.0
+    layer_state.results[module_name] = {"ok": True, **cached_result}
+    layer_state.worker_timings_by_module[module_name] = {
+        "mode": "parallel_cache_hit",
+        "queue_ms": 0.0,
+        "wait_ms": 0.0,
+        "exec_ms": round(max(0.0, total_ms), 6),
+        "roundtrip_ms": round(max(0.0, total_ms), 6),
+        "worker_pid": None,
+    }
+
+
+def _record_parallel_worker_result(
+    layer_state: _FrontendParallelLayerState,
+    *,
+    module_name: str,
+    result: Mapping[str, Any],
+    submitted_ns: int,
+    received_ns: int,
+) -> None:
+    timings = cast(Mapping[str, Any], result.get("timings", {}))
+    worker_meta = cast(Mapping[str, Any], result.get("worker", {}))
+    worker_started_ns = worker_meta.get("started_ns")
+    worker_finished_ns = worker_meta.get("finished_ns")
+    exec_ms = float(timings.get("total_s", 0.0)) * 1000.0
+    exec_from_ns = _duration_ms_from_ns(worker_started_ns, worker_finished_ns)
+    if exec_from_ns > 0.0:
+        exec_ms = exec_from_ns
+    layer_state.results[module_name] = dict(result)
+    layer_state.worker_timings_by_module[module_name] = {
+        "mode": "parallel",
+        "queue_ms": _duration_ms_from_ns(submitted_ns, worker_started_ns),
+        "wait_ms": _duration_ms_from_ns(worker_finished_ns, received_ns),
+        "exec_ms": round(max(0.0, exec_ms), 6),
+        "roundtrip_ms": _duration_ms_from_ns(submitted_ns, received_ns),
+        "worker_pid": worker_meta.get("pid"),
+    }
+
+
 def _worker_timing_summary_payload(summary: _WorkerTimingSummary) -> dict[str, Any]:
     return {
         "count": summary.count,
@@ -12650,11 +12708,7 @@ def build(
                 candidates = [
                     name for name in layer if name not in syntax_error_modules
                 ]
-                layer_results: dict[str, dict[str, Any]] = {}
-                layer_context_digest_by_module: dict[str, str] = {}
-                worker_timing_by_module: dict[str, dict[str, Any]] = {}
-                layer_worker_timings: list[dict[str, Any]] = []
-                layer_fallback_reason: str | None = None
+                layer_state = _fresh_frontend_parallel_layer_state()
                 layer_policy = _choose_frontend_parallel_layer_workers(
                     candidates=candidates,
                     module_sources=module_sources,
@@ -12741,21 +12795,13 @@ def build(
                         )
                         if batch_error is not None:
                             return _fail(batch_error, json_output, command="build")
-                        layer_context_digest_by_module.update(context_digest_by_module)
+                        layer_state.context_digests.update(context_digest_by_module)
                         for module_name, cached_result in cached_results.items():
-                            timings = cast(
-                                dict[str, Any], cached_result.get("timings", {})
+                            _record_parallel_cached_module_result(
+                                layer_state,
+                                module_name,
+                                cached_result,
                             )
-                            total_ms = float(timings.get("total_s", 0.0)) * 1000.0
-                            layer_results[module_name] = {"ok": True, **cached_result}
-                            worker_timing_by_module[module_name] = {
-                                "mode": "parallel_cache_hit",
-                                "queue_ms": 0.0,
-                                "wait_ms": 0.0,
-                                "exec_ms": round(max(0.0, total_ms), 6),
-                                "roundtrip_ms": round(max(0.0, total_ms), 6),
-                                "worker_pid": None,
-                            }
                         for module_name, payload in worker_payloads:
                             worker_submissions.append(
                                 _ParallelWorkerSubmission(
@@ -12770,41 +12816,15 @@ def build(
                             module_name = submission.module_name
                             future = submission.future
                             try:
-                                layer_results[module_name] = future.result()
+                                result = future.result()
                                 received_ns = time.time_ns()
-                                result = layer_results[module_name]
-                                timings = cast(
-                                    dict[str, Any], result.get("timings", {})
+                                _record_parallel_worker_result(
+                                    layer_state,
+                                    module_name=module_name,
+                                    result=result,
+                                    submitted_ns=submission.submitted_ns,
+                                    received_ns=received_ns,
                                 )
-                                worker_meta = cast(
-                                    dict[str, Any], result.get("worker", {})
-                                )
-                                worker_started_ns = worker_meta.get("started_ns")
-                                worker_finished_ns = worker_meta.get("finished_ns")
-                                exec_ms = float(timings.get("total_s", 0.0)) * 1000.0
-                                exec_from_ns = _duration_ms_from_ns(
-                                    worker_started_ns,
-                                    worker_finished_ns,
-                                )
-                                if exec_from_ns > 0.0:
-                                    exec_ms = exec_from_ns
-                                worker_timing_by_module[module_name] = {
-                                    "mode": "parallel",
-                                    "queue_ms": _duration_ms_from_ns(
-                                        submission.submitted_ns,
-                                        worker_started_ns,
-                                    ),
-                                    "wait_ms": _duration_ms_from_ns(
-                                        worker_finished_ns,
-                                        received_ns,
-                                    ),
-                                    "exec_ms": round(max(0.0, exec_ms), 6),
-                                    "roundtrip_ms": _duration_ms_from_ns(
-                                        submission.submitted_ns,
-                                        received_ns,
-                                    ),
-                                    "worker_pid": worker_meta.get("pid"),
-                                }
                             except Exception as exc:
                                 layer_parallel_failed = True
                                 layer_failure_detail = (
@@ -12814,15 +12834,14 @@ def build(
                         if layer_parallel_failed:
                             break
                     if layer_parallel_failed:
-                        layer_results = {}
-                        worker_timing_by_module = {}
+                        layer_state = _fresh_frontend_parallel_layer_state()
                         frontend_parallel_details["reason"] = (
                             "worker_error_fallback_serial"
                         )
                         layer_mode = "serial_fallback"
                         layer_workers = 1
                         layer_policy_reason = "worker_error_fallback_serial"
-                        layer_fallback_reason = layer_failure_detail
+                        layer_state.fallback_reason = layer_failure_detail
                         parallel_pool_usable = False
                         warnings.append(
                             "Frontend parallel lowering fallback to serial for layer: "
@@ -12835,7 +12854,7 @@ def build(
 
                 for module_name in layer:
                     module_path = module_graph[module_name]
-                    result = layer_results.get(module_name)
+                    result = layer_state.results.get(module_name)
                     if result is not None:
                         if not bool(result.get("ok")):
                             return _fail(
@@ -12848,8 +12867,9 @@ def build(
                                 json_output,
                                 command="build",
                             )
-                        result_timings = _frontend_result_timings(result)
-                        worker_timing = worker_timing_by_module.get(module_name)
+                        worker_timing = layer_state.worker_timings_by_module.get(
+                            module_name
+                        )
                         (
                             queue_ms,
                             wait_ms,
@@ -12861,7 +12881,7 @@ def build(
                             result,
                             worker_timing,
                         )
-                        layer_worker_timings.append(
+                        layer_state.recorded_worker_timings.append(
                             _record_frontend_parallel_worker_timing(
                                 layer_index=layer_index,
                                 module_name=module_name,
@@ -12874,7 +12894,7 @@ def build(
                                 worker_pid=worker_pid,
                             )
                         )
-                        context_digest = layer_context_digest_by_module.get(module_name)
+                        context_digest = layer_state.context_digests.get(module_name)
                         if (
                             project_root is not None
                             and worker_mode != "parallel_cache_hit"
@@ -12933,7 +12953,7 @@ def build(
                         serial_mode = "serial_fallback"
                     elif layer_mode == "serial_layer_policy":
                         serial_mode = "serial_layer_policy"
-                    layer_worker_timings.append(
+                    layer_state.recorded_worker_timings.append(
                         _record_frontend_parallel_worker_timing(
                             layer_index=layer_index,
                             module_name=module_name,
@@ -12958,7 +12978,9 @@ def build(
                     )
                     if consume_error is not None:
                         return consume_error
-                layer_summary = _summarize_worker_timing_items(layer_worker_timings)
+                layer_summary = _summarize_worker_timing_items(
+                    layer_state.recorded_worker_timings
+                )
                 frontend_parallel_layers.append(
                     _frontend_parallel_layer_detail(
                         layer_index=layer_index,
@@ -12967,7 +12989,9 @@ def build(
                         module_count=len(layer),
                         candidate_count=len(candidates),
                         workers=layer_workers,
-                        cache_hits=_layer_cache_hit_count(layer_worker_timings),
+                        cache_hits=_layer_cache_hit_count(
+                            layer_state.recorded_worker_timings
+                        ),
                         predicted_cost_total=layer_predicted_cost_total,
                         effective_min_predicted_cost=layer_effective_min_predicted_cost,
                         stdlib_candidates=layer_stdlib_candidates,
@@ -12975,7 +12999,7 @@ def build(
                         timing_summary=layer_summary,
                         started_ns=layer_started_ns,
                         finished_ns=time.time_ns(),
-                        fallback_reason=layer_fallback_reason,
+                        fallback_reason=layer_state.fallback_reason,
                     )
                 )
         _summarize_parallel_worker_timings()
