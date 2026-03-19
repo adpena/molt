@@ -920,6 +920,15 @@ class _BackendExecutionResult:
     backend_daemon_health: dict[str, Any] | None
 
 
+@dataclass(frozen=True)
+class _PreparedNonNativeResult:
+    primary_output: Path
+    linked_output_path: Path | None
+    success_messages: list[str]
+    extra_fields: dict[str, Any]
+    artifacts: dict[str, str] | None
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -12630,6 +12639,104 @@ def _execute_backend_compile(
     ), None
 
 
+def _prepare_non_native_build_result(
+    *,
+    is_wasm: bool,
+    linked: bool,
+    require_linked: bool,
+    linked_output_path: Path | None,
+    output_artifact: Path,
+    json_output: bool,
+    runtime_reloc_wasm: Path | None,
+    ensure_runtime_wasm_reloc: Callable[[], bool],
+    molt_root: Path,
+) -> tuple[_PreparedNonNativeResult | None, dict[str, Any] | None]:
+    if is_wasm:
+        output_wasm = output_artifact
+        resolved_linked_output = linked_output_path
+        if linked:
+            if not ensure_runtime_wasm_reloc():
+                return None, _fail(
+                    "Runtime wasm build failed",
+                    json_output,
+                    command="build",
+                )
+            if runtime_reloc_wasm is None:
+                return None, _fail(
+                    "Runtime wasm build failed",
+                    json_output,
+                    command="build",
+                )
+            if resolved_linked_output is None:
+                resolved_linked_output = output_wasm.with_name("output_linked.wasm")
+            if resolved_linked_output.parent != Path("."):
+                resolved_linked_output.parent.mkdir(parents=True, exist_ok=True)
+            tool = molt_root / "tools" / "wasm_link.py"
+            link_process = subprocess.run(
+                [
+                    sys.executable,
+                    str(tool),
+                    "--runtime",
+                    str(runtime_reloc_wasm),
+                    "--input",
+                    str(output_wasm),
+                    "--output",
+                    str(resolved_linked_output),
+                ],
+                cwd=molt_root,
+                capture_output=True,
+                text=True,
+            )
+            if link_process.returncode != 0:
+                err = link_process.stderr.strip() or link_process.stdout.strip()
+                msg = "Wasm link failed"
+                if err:
+                    msg = f"{msg}: {err}"
+                return None, _fail(msg, json_output, command="build")
+            if require_linked and resolved_linked_output is not None:
+                if output_wasm != resolved_linked_output and output_wasm.exists():
+                    try:
+                        output_wasm.unlink()
+                    except OSError as exc:
+                        return None, _fail(
+                            f"Failed to remove unlinked wasm: {exc}",
+                            json_output,
+                            command="build",
+                        )
+        primary_output = output_wasm
+        if require_linked and resolved_linked_output is not None:
+            primary_output = resolved_linked_output
+        success_messages = (
+            [f"Successfully built {primary_output}"]
+            if require_linked
+            else [f"Successfully built {output_wasm}"]
+        )
+        if resolved_linked_output is not None and not require_linked:
+            success_messages.append(f"Successfully linked {resolved_linked_output}")
+        return _PreparedNonNativeResult(
+            primary_output=primary_output,
+            linked_output_path=resolved_linked_output,
+            success_messages=success_messages,
+            extra_fields={
+                "linked": linked,
+                "require_linked": require_linked,
+                **(
+                    {"linked_output": str(resolved_linked_output)}
+                    if resolved_linked_output is not None
+                    else {}
+                ),
+            },
+            artifacts=None,
+        ), None
+    return _PreparedNonNativeResult(
+        primary_output=output_artifact,
+        linked_output_path=linked_output_path,
+        success_messages=[f"Successfully built {output_artifact}"],
+        extra_fields={},
+        artifacts={"object": str(output_artifact)},
+    ), None
+
+
 def _prepare_backend_cache_setup(
     *,
     cache_enabled: bool,
@@ -16880,70 +16987,27 @@ def build(
             )
             backend_daemon_health = backend_execution_result.backend_daemon_health
 
-    if is_wasm:
-        output_wasm = output_artifact
-        if linked:
-            if not ensure_runtime_wasm_reloc():
-                return _fail(
-                    "Runtime wasm build failed",
-                    json_output,
-                    command="build",
-                )
-            if runtime_reloc_wasm is None:
-                return _fail(
-                    "Runtime wasm build failed",
-                    json_output,
-                    command="build",
-                )
-            if linked_output_path is None:
-                linked_output_path = output_wasm.with_name("output_linked.wasm")
-            if linked_output_path.parent != Path("."):
-                linked_output_path.parent.mkdir(parents=True, exist_ok=True)
-            tool = molt_root / "tools" / "wasm_link.py"
-            link_process = subprocess.run(
-                [
-                    sys.executable,
-                    str(tool),
-                    "--runtime",
-                    str(runtime_reloc_wasm),
-                    "--input",
-                    str(output_wasm),
-                    "--output",
-                    str(linked_output_path),
-                ],
-                cwd=molt_root,
-                capture_output=True,
-                text=True,
+    if is_wasm or emit_mode == "obj":
+        prepared_non_native_result, prepared_non_native_result_error = (
+            _prepare_non_native_build_result(
+                is_wasm=is_wasm,
+                linked=linked,
+                require_linked=require_linked,
+                linked_output_path=linked_output_path,
+                output_artifact=output_artifact,
+                json_output=json_output,
+                runtime_reloc_wasm=runtime_reloc_wasm,
+                ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
+                molt_root=molt_root,
             )
-            if link_process.returncode != 0:
-                err = link_process.stderr.strip() or link_process.stdout.strip()
-                msg = "Wasm link failed"
-                if err:
-                    msg = f"{msg}: {err}"
-                return _fail(msg, json_output, command="build")
-            if require_linked and linked_output_path is not None:
-                if output_wasm != linked_output_path and output_wasm.exists():
-                    try:
-                        output_wasm.unlink()
-                    except OSError as exc:
-                        return _fail(
-                            f"Failed to remove unlinked wasm: {exc}",
-                            json_output,
-                            command="build",
-                        )
-        primary_output = output_wasm
-        if require_linked and linked_output_path is not None:
-            primary_output = linked_output_path
-        diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
-        success_messages = (
-            [f"Successfully built {primary_output}"]
-            if require_linked
-            else [f"Successfully built {output_wasm}"]
         )
-        if linked_output_path is not None and not require_linked:
-            success_messages.append(f"Successfully linked {linked_output_path}")
+        if prepared_non_native_result_error is not None:
+            return prepared_non_native_result_error
+        assert prepared_non_native_result is not None
+        linked_output_path = prepared_non_native_result.linked_output_path
+        diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
         return _emit_non_native_build_result(
-            output=primary_output,
+            output=prepared_non_native_result.primary_output,
             cache=cache,
             cache_hit=cache_hit,
             cache_key=cache_key,
@@ -16974,58 +17038,13 @@ def build(
             warnings=warnings,
             json_output=json_output,
             resolved_diagnostics_verbosity=resolved_diagnostics_verbosity,
-            extra_fields={
-                "linked": linked,
-                "require_linked": require_linked,
-                **(
-                    {"linked_output": str(linked_output_path)}
-                    if linked_output_path is not None
-                    else {}
-                ),
-            },
-            success_messages=success_messages,
-        )
-
-    output_obj = output_artifact
-    if emit_mode == "obj":
-        diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
-        return _emit_non_native_build_result(
-            output=output_obj,
-            cache=cache,
-            cache_hit=cache_hit,
-            cache_key=cache_key,
-            function_cache_key=function_cache_key,
-            cache_path=cache_path,
-            function_cache_path=function_cache_path,
-            cache_hit_tier=cache_hit_tier,
-            backend_daemon_cached=backend_daemon_cached,
-            backend_daemon_cache_tier=backend_daemon_cache_tier,
-            backend_daemon_config_digest=backend_daemon_config_digest,
-            target=target,
-            target_triple=target_triple,
-            source_path=source_path,
-            deterministic=deterministic,
-            trusted=trusted,
-            capabilities_list=capabilities_list,
-            capability_profiles=capability_profiles,
-            capabilities_source=capabilities_source,
-            sysroot_path=sysroot_path,
-            emit_mode=emit_mode,
-            profile=profile,
-            native_arch_perf_enabled=native_arch_perf_enabled,
-            diagnostics_payload=diagnostics_payload,
-            diagnostics_path=diagnostics_path,
-            pgo_profile_payload=pgo_profile_payload,
-            runtime_feedback_payload=runtime_feedback_payload,
-            emit_ir_path=emit_ir_path,
-            warnings=warnings,
-            json_output=json_output,
-            resolved_diagnostics_verbosity=resolved_diagnostics_verbosity,
-            artifacts={"object": str(output_obj)},
-            success_messages=[f"Successfully built {output_obj}"],
+            extra_fields=prepared_non_native_result.extra_fields,
+            artifacts=prepared_non_native_result.artifacts,
+            success_messages=prepared_non_native_result.success_messages,
         )
 
     # 3. Linking: output.o + main.c -> binary
+    output_obj = output_artifact
     main_c_content = _render_native_main_stub(
         trusted=trusted,
         capabilities_list=capabilities_list,
