@@ -891,52 +891,26 @@ class _PreparedBuildInputs:
 @dataclass(frozen=True)
 class _PreparedBuildDriverState:
     prepared_frontend_pipeline: "_PreparedFrontendPipeline"
-    diagnostics_enabled: bool
-    resolved_diagnostics_verbosity: str
     frontend_parallel_details: dict[str, Any]
-    phase_starts: dict[str, float]
-    backend_daemon_health: dict[str, Any] | None
-    backend_daemon_cached: bool | None
-    backend_daemon_cache_tier: str | None
-    backend_daemon_config_digest: str | None
-    warnings: list[str]
-    native_arch_perf_enabled: bool
-    project_root: Path
-    molt_root: Path
-    sysroot_path: Path | None
-    pgo_profile_summary: PgoProfileSummary | None
-    runtime_feedback_summary: RuntimeFeedbackSummary | None
-    pgo_hot_function_names: set[str]
-    pgo_profile_payload: dict[str, Any] | None
-    runtime_feedback_payload: dict[str, Any] | None
-    cargo_timeout: float | None
-    backend_timeout: float | None
-    link_timeout: float | None
-    frontend_phase_timeout: float | None
-    runtime_cargo_profile: str
-    backend_cargo_profile: str
-    capabilities_list: list[str] | None
-    capability_profiles: list[str]
-    capabilities_source: str | None
-    source_path: Path
-    entry_module: str
+    prepared_backend_build_context: "_PreparedBackendBuildContext"
+    prepared_build_finalize_context: "_PreparedBuildFinalizeContext"
 
 
 @dataclass(frozen=True)
-class _PreparedBuildExecutionContext:
-    parse_codec: ParseCodec
-    type_hint_policy: TypeHintPolicy
-    fallback_policy: FallbackPolicy
-    target: Target
-    cache_dir: str | None
-    cache: bool
-    json_output: bool
-    verbose: bool
-    deterministic: bool
-    trusted: bool
-    cache_report: bool
-    profile: BuildProfile
+class _PreparedBuildFinalizeContext:
     require_linked: bool
+    json_output: bool
+    trusted: bool
+    profile: BuildProfile
+    molt_root: Path
+    project_root: Path
+    runtime_cargo_profile: str
+    sysroot_path: Path | None
+    capabilities_list: list[str] | None
+    diagnostics_enabled: bool
+    phase_starts: dict[str, float]
+    link_timeout: float | None
+    warnings: list[str]
 
 
 @dataclass(frozen=True)
@@ -13634,63 +13608,6 @@ def _prepare_backend_compile(
     ), None
 
 
-def _prepare_backend_build_context(
-    *,
-    prepared_build_driver_state: _PreparedBuildDriverState,
-    prepared_build_execution_context: _PreparedBuildExecutionContext,
-    prepared_frontend_backend_handoff: _PreparedFrontendBackendHandoff,
-) -> _PreparedBackendBuildContext:
-    return _PreparedBackendBuildContext(
-        entry_module=prepared_build_driver_state.entry_module,
-        parse_codec=prepared_build_execution_context.parse_codec,
-        type_hint_policy=prepared_build_execution_context.type_hint_policy,
-        fallback_policy=prepared_build_execution_context.fallback_policy,
-        prepared_frontend_backend_handoff=prepared_frontend_backend_handoff,
-        profile=prepared_build_execution_context.profile,
-        pgo_hot_function_names=prepared_build_driver_state.pgo_hot_function_names,
-        frontend_phase_timeout=prepared_build_driver_state.frontend_phase_timeout,
-        json_output=prepared_build_execution_context.json_output,
-        pgo_profile_summary=prepared_build_driver_state.pgo_profile_summary,
-        runtime_feedback_summary=prepared_build_driver_state.runtime_feedback_summary,
-        diagnostics_enabled=prepared_build_driver_state.diagnostics_enabled,
-        phase_starts=prepared_build_driver_state.phase_starts,
-        molt_root=prepared_build_driver_state.molt_root,
-        runtime_cargo_profile=prepared_build_driver_state.runtime_cargo_profile,
-        target_triple=prepared_frontend_backend_handoff.output_layout.target_triple,
-        cargo_timeout=prepared_build_driver_state.cargo_timeout,
-        target=prepared_build_execution_context.target,
-        backend_cargo_profile=prepared_build_driver_state.backend_cargo_profile,
-        project_root=prepared_build_driver_state.project_root,
-        cache_dir=prepared_build_execution_context.cache_dir,
-        warnings=prepared_build_driver_state.warnings,
-        cache=prepared_build_execution_context.cache,
-        backend_timeout=prepared_build_driver_state.backend_timeout,
-        backend_daemon_config_digest=(
-            prepared_build_driver_state.backend_daemon_config_digest
-        ),
-        backend_daemon_cached=prepared_build_driver_state.backend_daemon_cached,
-        backend_daemon_cache_tier=(
-            prepared_build_driver_state.backend_daemon_cache_tier
-        ),
-        backend_daemon_health=prepared_build_driver_state.backend_daemon_health,
-        source_path=prepared_build_driver_state.source_path,
-        deterministic=prepared_build_execution_context.deterministic,
-        trusted=prepared_build_execution_context.trusted,
-        capabilities_list=prepared_build_driver_state.capabilities_list,
-        capability_profiles=prepared_build_driver_state.capability_profiles,
-        capabilities_source=prepared_build_driver_state.capabilities_source,
-        sysroot_path=prepared_build_driver_state.sysroot_path,
-        native_arch_perf_enabled=prepared_build_driver_state.native_arch_perf_enabled,
-        pgo_profile_payload=prepared_build_driver_state.pgo_profile_payload,
-        runtime_feedback_payload=prepared_build_driver_state.runtime_feedback_payload,
-        resolved_diagnostics_verbosity=(
-            prepared_build_driver_state.resolved_diagnostics_verbosity
-        ),
-        cache_report=prepared_build_execution_context.cache_report,
-        verbose=prepared_build_execution_context.verbose,
-    )
-
-
 def _prepare_backend_pipeline(
     *,
     prepared_backend_build_context: _PreparedBackendBuildContext,
@@ -14271,7 +14188,6 @@ def _finalize_build_result(
 def _execute_build_driver_state(
     *,
     prepared_build_driver_state: _PreparedBuildDriverState,
-    prepared_build_execution_context: _PreparedBuildExecutionContext,
 ) -> int:
     prepared_frontend_pipeline = prepared_build_driver_state.prepared_frontend_pipeline
     prepared_frontend_run_ticket = (
@@ -14287,10 +14203,8 @@ def _execute_build_driver_state(
     if frontend_layer_error is not None:
         return frontend_layer_error
 
-    prepared_backend_build_context = _prepare_backend_build_context(
-        prepared_build_driver_state=prepared_build_driver_state,
-        prepared_build_execution_context=prepared_build_execution_context,
-        prepared_frontend_backend_handoff=prepared_frontend_backend_handoff,
+    prepared_backend_build_context = (
+        prepared_build_driver_state.prepared_backend_build_context
     )
     prepared_backend_pipeline, prepared_backend_pipeline_error = (
         _prepare_backend_pipeline(
@@ -14304,19 +14218,37 @@ def _execute_build_driver_state(
         output_layout=prepared_frontend_backend_handoff.output_layout,
         prepared_backend_pipeline=prepared_backend_pipeline,
         prepared_frontend_backend_handoff=prepared_frontend_backend_handoff,
-        require_linked=prepared_build_execution_context.require_linked,
-        json_output=prepared_build_execution_context.json_output,
-        molt_root=prepared_build_driver_state.molt_root,
-        trusted=prepared_build_execution_context.trusted,
-        capabilities_list=prepared_build_driver_state.capabilities_list,
-        runtime_cargo_profile=prepared_build_driver_state.runtime_cargo_profile,
-        sysroot_path=prepared_build_driver_state.sysroot_path,
-        profile=prepared_build_execution_context.profile,
-        project_root=prepared_build_driver_state.project_root,
-        diagnostics_enabled=prepared_build_driver_state.diagnostics_enabled,
-        phase_starts=prepared_build_driver_state.phase_starts,
-        link_timeout=prepared_build_driver_state.link_timeout,
-        warnings=prepared_build_driver_state.warnings,
+        require_linked=(
+            prepared_build_driver_state.prepared_build_finalize_context.require_linked
+        ),
+        json_output=(
+            prepared_build_driver_state.prepared_build_finalize_context.json_output
+        ),
+        molt_root=prepared_build_driver_state.prepared_build_finalize_context.molt_root,
+        trusted=prepared_build_driver_state.prepared_build_finalize_context.trusted,
+        capabilities_list=(
+            prepared_build_driver_state.prepared_build_finalize_context.capabilities_list
+        ),
+        runtime_cargo_profile=(
+            prepared_build_driver_state.prepared_build_finalize_context.runtime_cargo_profile
+        ),
+        sysroot_path=(
+            prepared_build_driver_state.prepared_build_finalize_context.sysroot_path
+        ),
+        profile=prepared_build_driver_state.prepared_build_finalize_context.profile,
+        project_root=(
+            prepared_build_driver_state.prepared_build_finalize_context.project_root
+        ),
+        diagnostics_enabled=(
+            prepared_build_driver_state.prepared_build_finalize_context.diagnostics_enabled
+        ),
+        phase_starts=(
+            prepared_build_driver_state.prepared_build_finalize_context.phase_starts
+        ),
+        link_timeout=(
+            prepared_build_driver_state.prepared_build_finalize_context.link_timeout
+        ),
+        warnings=prepared_build_driver_state.prepared_build_finalize_context.warnings,
     )
 
 
@@ -14796,6 +14728,9 @@ def _prepare_build_driver_state(
     emit: EmitMode | None,
     output: str | None,
     emit_ir: str | None,
+    cache_dir: str | None,
+    cache: bool,
+    cache_report: bool,
     type_facts_path: str | None,
     type_hint_policy: TypeHintPolicy,
     parse_codec: ParseCodec,
@@ -14888,41 +14823,76 @@ def _prepare_build_driver_state(
     if prepared_frontend_pipeline_error is not None:
         return None, prepared_frontend_pipeline_error
     assert prepared_frontend_pipeline is not None
-    return _PreparedBuildDriverState(
-        prepared_frontend_pipeline=prepared_frontend_pipeline,
+    prepared_frontend_backend_handoff = (
+        prepared_frontend_pipeline.prepared_frontend_backend_handoff
+    )
+    prepared_backend_build_context = _PreparedBackendBuildContext(
+        entry_module=resolved_build_entry.entry_module,
+        parse_codec=parse_codec,
+        type_hint_policy=type_hint_policy,
+        fallback_policy=fallback_policy,
+        prepared_frontend_backend_handoff=prepared_frontend_backend_handoff,
+        profile=profile,
+        pgo_hot_function_names=prepared_build_config.pgo_hot_function_names,
+        frontend_phase_timeout=prepared_build_config.frontend_phase_timeout,
+        json_output=json_output,
+        pgo_profile_summary=prepared_build_config.pgo_profile_summary,
+        runtime_feedback_summary=prepared_build_config.runtime_feedback_summary,
         diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
-        resolved_diagnostics_verbosity=(
-            prepared_build_preamble.resolved_diagnostics_verbosity
-        ),
-        frontend_parallel_details=prepared_build_preamble.frontend_parallel_details,
         phase_starts=prepared_build_preamble.phase_starts,
-        backend_daemon_health=prepared_build_preamble.backend_daemon_health,
-        backend_daemon_cached=prepared_build_preamble.backend_daemon_cached,
-        backend_daemon_cache_tier=prepared_build_preamble.backend_daemon_cache_tier,
+        molt_root=prepared_build_roots.molt_root,
+        runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
+        target_triple=prepared_frontend_backend_handoff.output_layout.target_triple,
+        cargo_timeout=prepared_build_config.cargo_timeout,
+        target=target,
+        backend_cargo_profile=prepared_build_config.backend_cargo_profile,
+        project_root=prepared_build_roots.project_root,
+        cache_dir=cache_dir,
+        warnings=prepared_build_preamble.warnings,
+        cache=cache,
+        backend_timeout=prepared_build_config.backend_timeout,
         backend_daemon_config_digest=(
             prepared_build_preamble.backend_daemon_config_digest
         ),
-        warnings=prepared_build_preamble.warnings,
-        native_arch_perf_enabled=prepared_build_preamble.native_arch_perf_enabled,
-        project_root=prepared_build_roots.project_root,
-        molt_root=prepared_build_roots.molt_root,
-        sysroot_path=prepared_build_roots.sysroot_path,
-        pgo_profile_summary=prepared_build_config.pgo_profile_summary,
-        runtime_feedback_summary=prepared_build_config.runtime_feedback_summary,
-        pgo_hot_function_names=prepared_build_config.pgo_hot_function_names,
-        pgo_profile_payload=prepared_build_config.pgo_profile_payload,
-        runtime_feedback_payload=prepared_build_config.runtime_feedback_payload,
-        cargo_timeout=prepared_build_config.cargo_timeout,
-        backend_timeout=prepared_build_config.backend_timeout,
-        link_timeout=prepared_build_config.link_timeout,
-        frontend_phase_timeout=prepared_build_config.frontend_phase_timeout,
-        runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
-        backend_cargo_profile=prepared_build_config.backend_cargo_profile,
+        backend_daemon_cached=prepared_build_preamble.backend_daemon_cached,
+        backend_daemon_cache_tier=prepared_build_preamble.backend_daemon_cache_tier,
+        backend_daemon_health=prepared_build_preamble.backend_daemon_health,
+        source_path=resolved_build_entry.source_path,
+        deterministic=deterministic,
+        trusted=trusted,
         capabilities_list=prepared_build_config.capabilities_list,
         capability_profiles=prepared_build_config.capability_profiles,
         capabilities_source=prepared_build_config.capabilities_source,
-        source_path=resolved_build_entry.source_path,
-        entry_module=resolved_build_entry.entry_module,
+        sysroot_path=prepared_build_roots.sysroot_path,
+        native_arch_perf_enabled=prepared_build_preamble.native_arch_perf_enabled,
+        pgo_profile_payload=prepared_build_config.pgo_profile_payload,
+        runtime_feedback_payload=prepared_build_config.runtime_feedback_payload,
+        resolved_diagnostics_verbosity=(
+            prepared_build_preamble.resolved_diagnostics_verbosity
+        ),
+        cache_report=cache_report,
+        verbose=verbose,
+    )
+    prepared_build_finalize_context = _PreparedBuildFinalizeContext(
+        require_linked=require_linked,
+        json_output=json_output,
+        trusted=trusted,
+        profile=profile,
+        molt_root=prepared_build_roots.molt_root,
+        project_root=prepared_build_roots.project_root,
+        runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
+        sysroot_path=prepared_build_roots.sysroot_path,
+        capabilities_list=prepared_build_config.capabilities_list,
+        diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
+        phase_starts=prepared_build_preamble.phase_starts,
+        link_timeout=prepared_build_config.link_timeout,
+        warnings=prepared_build_preamble.warnings,
+    )
+    return _PreparedBuildDriverState(
+        prepared_frontend_pipeline=prepared_frontend_pipeline,
+        frontend_parallel_details=prepared_build_preamble.frontend_parallel_details,
+        prepared_backend_build_context=prepared_backend_build_context,
+        prepared_build_finalize_context=prepared_build_finalize_context,
     ), None
 
 
@@ -18488,6 +18458,9 @@ def build(
             emit=emit,
             output=output,
             emit_ir=emit_ir,
+            cache_dir=cache_dir,
+            cache=cache,
+            cache_report=cache_report,
             type_facts_path=type_facts_path,
             type_hint_policy=type_hint_policy,
             parse_codec=parse_codec,
@@ -18497,24 +18470,8 @@ def build(
     if prepared_build_driver_state_error is not None:
         return prepared_build_driver_state_error
     assert prepared_build_driver_state is not None
-    prepared_build_execution_context = _PreparedBuildExecutionContext(
-        parse_codec=parse_codec,
-        type_hint_policy=type_hint_policy,
-        fallback_policy=fallback_policy,
-        target=target,
-        cache_dir=cache_dir,
-        cache=cache,
-        json_output=json_output,
-        verbose=verbose,
-        deterministic=deterministic,
-        trusted=trusted,
-        cache_report=cache_report,
-        profile=profile,
-        require_linked=require_linked,
-    )
     return _execute_build_driver_state(
         prepared_build_driver_state=prepared_build_driver_state,
-        prepared_build_execution_context=prepared_build_execution_context,
     )
 
 
