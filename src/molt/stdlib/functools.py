@@ -41,31 +41,31 @@ WRAPPER_ASSIGNMENTS = (
 WRAPPER_UPDATES = ("__dict__",)
 
 
-_MOLT_KWD_MARK = _require_intrinsic("molt_functools_kwd_mark", globals())
-_MOLT_UPDATE_WRAPPER = _require_intrinsic("molt_functools_update_wrapper", globals())
-_MOLT_WRAPS = _require_intrinsic("molt_functools_wraps", globals())
-_MOLT_PARTIAL = _require_intrinsic("molt_functools_partial", globals())
-_MOLT_REDUCE = _require_intrinsic("molt_functools_reduce", globals())
-_MOLT_LRU_CACHE = _require_intrinsic("molt_functools_lru_cache", globals())
-_MOLT_SD_NEW = _require_intrinsic("molt_functools_singledispatch_new", globals())
+_MOLT_KWD_MARK = _require_intrinsic("molt_functools_kwd_mark")
+_MOLT_UPDATE_WRAPPER = _require_intrinsic("molt_functools_update_wrapper")
+_MOLT_WRAPS = _require_intrinsic("molt_functools_wraps")
+_MOLT_PARTIAL = _require_intrinsic("molt_functools_partial")
+_MOLT_REDUCE = _require_intrinsic("molt_functools_reduce")
+_MOLT_LRU_CACHE = _require_intrinsic("molt_functools_lru_cache")
+_MOLT_SD_NEW = _require_intrinsic("molt_functools_singledispatch_new")
 _MOLT_SD_REGISTER = _require_intrinsic(
-    "molt_functools_singledispatch_register", globals()
+    "molt_functools_singledispatch_register"
 )
-_MOLT_SD_CALL = _require_intrinsic("molt_functools_singledispatch_call", globals())
+_MOLT_SD_CALL = _require_intrinsic("molt_functools_singledispatch_call")
 _MOLT_SD_DISPATCH = _require_intrinsic(
-    "molt_functools_singledispatch_dispatch", globals()
+    "molt_functools_singledispatch_dispatch"
 )
 _MOLT_SD_REGISTRY = _require_intrinsic(
-    "molt_functools_singledispatch_registry", globals()
+    "molt_functools_singledispatch_registry"
 )
-_MOLT_SD_DROP = _require_intrinsic("molt_functools_singledispatch_drop", globals())
+_MOLT_SD_DROP = _require_intrinsic("molt_functools_singledispatch_drop")
 
 _MISSING = _MOLT_KWD_MARK()
 
 # --- Direct intrinsic bindings (no Python wrapper overhead) ---
 
-cmp_to_key = _require_intrinsic("molt_functools_cmp_to_key", globals())
-total_ordering = _require_intrinsic("molt_functools_total_ordering", globals())
+cmp_to_key = _require_intrinsic("molt_functools_cmp_to_key")
+total_ordering = _require_intrinsic("molt_functools_total_ordering")
 
 
 # --- Retained wrappers (default args, arg repacking, or Python logic) ---

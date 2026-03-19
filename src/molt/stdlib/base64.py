@@ -6,32 +6,32 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 from typing import Any
 
-_molt_base64_b64encode = _require_intrinsic("molt_base64_b64encode", globals())
-_molt_base64_b64decode = _require_intrinsic("molt_base64_b64decode", globals())
+_molt_base64_b64encode = _require_intrinsic("molt_base64_b64encode")
+_molt_base64_b64decode = _require_intrinsic("molt_base64_b64decode")
 _molt_base64_standard_b64encode = _require_intrinsic(
-    "molt_base64_standard_b64encode", globals()
+    "molt_base64_standard_b64encode"
 )
 _molt_base64_standard_b64decode = _require_intrinsic(
-    "molt_base64_standard_b64decode", globals()
+    "molt_base64_standard_b64decode"
 )
 _molt_base64_urlsafe_b64encode = _require_intrinsic(
-    "molt_base64_urlsafe_b64encode", globals()
+    "molt_base64_urlsafe_b64encode"
 )
 _molt_base64_urlsafe_b64decode = _require_intrinsic(
-    "molt_base64_urlsafe_b64decode", globals()
+    "molt_base64_urlsafe_b64decode"
 )
-_molt_base64_b32encode = _require_intrinsic("molt_base64_b32encode", globals())
-_molt_base64_b32decode = _require_intrinsic("molt_base64_b32decode", globals())
-_molt_base64_b32hexencode = _require_intrinsic("molt_base64_b32hexencode", globals())
-_molt_base64_b32hexdecode = _require_intrinsic("molt_base64_b32hexdecode", globals())
-_molt_base64_b16encode = _require_intrinsic("molt_base64_b16encode", globals())
-_molt_base64_b16decode = _require_intrinsic("molt_base64_b16decode", globals())
-_molt_base64_a85encode = _require_intrinsic("molt_base64_a85encode", globals())
-_molt_base64_a85decode = _require_intrinsic("molt_base64_a85decode", globals())
-_molt_base64_b85encode = _require_intrinsic("molt_base64_b85encode", globals())
-_molt_base64_b85decode = _require_intrinsic("molt_base64_b85decode", globals())
-_molt_base64_encodebytes = _require_intrinsic("molt_base64_encodebytes", globals())
-_molt_base64_decodebytes = _require_intrinsic("molt_base64_decodebytes", globals())
+_molt_base64_b32encode = _require_intrinsic("molt_base64_b32encode")
+_molt_base64_b32decode = _require_intrinsic("molt_base64_b32decode")
+_molt_base64_b32hexencode = _require_intrinsic("molt_base64_b32hexencode")
+_molt_base64_b32hexdecode = _require_intrinsic("molt_base64_b32hexdecode")
+_molt_base64_b16encode = _require_intrinsic("molt_base64_b16encode")
+_molt_base64_b16decode = _require_intrinsic("molt_base64_b16decode")
+_molt_base64_a85encode = _require_intrinsic("molt_base64_a85encode")
+_molt_base64_a85decode = _require_intrinsic("molt_base64_a85decode")
+_molt_base64_b85encode = _require_intrinsic("molt_base64_b85encode")
+_molt_base64_b85decode = _require_intrinsic("molt_base64_b85decode")
+_molt_base64_encodebytes = _require_intrinsic("molt_base64_encodebytes")
+_molt_base64_decodebytes = _require_intrinsic("molt_base64_decodebytes")
 
 
 __all__ = [

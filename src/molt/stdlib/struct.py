@@ -17,12 +17,12 @@ __all__ = [
 ]
 
 
-_MOLT_STRUCT_PACK = _require_intrinsic("molt_struct_pack", globals())
-_MOLT_STRUCT_UNPACK = _require_intrinsic("molt_struct_unpack", globals())
-_MOLT_STRUCT_CALCSIZE = _require_intrinsic("molt_struct_calcsize", globals())
-_MOLT_STRUCT_PACK_INTO = _require_intrinsic("molt_struct_pack_into", globals())
-_MOLT_STRUCT_UNPACK_FROM = _require_intrinsic("molt_struct_unpack_from", globals())
-_MOLT_STRUCT_ITER_UNPACK = _require_intrinsic("molt_struct_iter_unpack", globals())
+_MOLT_STRUCT_PACK = _require_intrinsic("molt_struct_pack")
+_MOLT_STRUCT_UNPACK = _require_intrinsic("molt_struct_unpack")
+_MOLT_STRUCT_CALCSIZE = _require_intrinsic("molt_struct_calcsize")
+_MOLT_STRUCT_PACK_INTO = _require_intrinsic("molt_struct_pack_into")
+_MOLT_STRUCT_UNPACK_FROM = _require_intrinsic("molt_struct_unpack_from")
+_MOLT_STRUCT_ITER_UNPACK = _require_intrinsic("molt_struct_iter_unpack")
 
 
 class error(Exception):

@@ -11,27 +11,27 @@ else:
     Any = object
 
 
-_MOLT_TIME_MONOTONIC = _require_intrinsic("molt_time_monotonic", globals())
-_MOLT_TIME_MONOTONIC_NS = _require_intrinsic("molt_time_monotonic_ns", globals())
-_MOLT_TIME_PERF_COUNTER = _require_intrinsic("molt_time_perf_counter", globals())
-_MOLT_TIME_PERF_COUNTER_NS = _require_intrinsic("molt_time_perf_counter_ns", globals())
-_MOLT_TIME_TIME = _require_intrinsic("molt_time_time", globals())
-_MOLT_TIME_TIME_NS = _require_intrinsic("molt_time_time_ns", globals())
-_MOLT_TIME_PROCESS_TIME = _require_intrinsic("molt_time_process_time", globals())
-_MOLT_TIME_PROCESS_TIME_NS = _require_intrinsic("molt_time_process_time_ns", globals())
-_MOLT_TIME_LOCALTIME = _require_intrinsic("molt_time_localtime", globals())
-_MOLT_TIME_GMTIME = _require_intrinsic("molt_time_gmtime", globals())
-_MOLT_TIME_STRFTIME = _require_intrinsic("molt_time_strftime", globals())
-_MOLT_TIME_TIMEZONE = _require_intrinsic("molt_time_timezone", globals())
-_MOLT_TIME_DAYLIGHT = _require_intrinsic("molt_time_daylight", globals())
-_MOLT_TIME_ALTZONE = _require_intrinsic("molt_time_altzone", globals())
-_MOLT_TIME_TZNAME = _require_intrinsic("molt_time_tzname", globals())
-_MOLT_TIME_ASCTIME = _require_intrinsic("molt_time_asctime", globals())
-_MOLT_TIME_MKTIME = _require_intrinsic("molt_time_mktime", globals())
-_MOLT_TIME_TIMEGM = _require_intrinsic("molt_time_timegm", globals())
-_MOLT_TIME_GET_CLOCK_INFO = _require_intrinsic("molt_time_get_clock_info", globals())
-_MOLT_ASYNC_SLEEP = _require_intrinsic("molt_async_sleep", globals())
-_MOLT_BLOCK_ON = _require_intrinsic("molt_block_on", globals())
+_MOLT_TIME_MONOTONIC = _require_intrinsic("molt_time_monotonic")
+_MOLT_TIME_MONOTONIC_NS = _require_intrinsic("molt_time_monotonic_ns")
+_MOLT_TIME_PERF_COUNTER = _require_intrinsic("molt_time_perf_counter")
+_MOLT_TIME_PERF_COUNTER_NS = _require_intrinsic("molt_time_perf_counter_ns")
+_MOLT_TIME_TIME = _require_intrinsic("molt_time_time")
+_MOLT_TIME_TIME_NS = _require_intrinsic("molt_time_time_ns")
+_MOLT_TIME_PROCESS_TIME = _require_intrinsic("molt_time_process_time")
+_MOLT_TIME_PROCESS_TIME_NS = _require_intrinsic("molt_time_process_time_ns")
+_MOLT_TIME_LOCALTIME = _require_intrinsic("molt_time_localtime")
+_MOLT_TIME_GMTIME = _require_intrinsic("molt_time_gmtime")
+_MOLT_TIME_STRFTIME = _require_intrinsic("molt_time_strftime")
+_MOLT_TIME_TIMEZONE = _require_intrinsic("molt_time_timezone")
+_MOLT_TIME_DAYLIGHT = _require_intrinsic("molt_time_daylight")
+_MOLT_TIME_ALTZONE = _require_intrinsic("molt_time_altzone")
+_MOLT_TIME_TZNAME = _require_intrinsic("molt_time_tzname")
+_MOLT_TIME_ASCTIME = _require_intrinsic("molt_time_asctime")
+_MOLT_TIME_MKTIME = _require_intrinsic("molt_time_mktime")
+_MOLT_TIME_TIMEGM = _require_intrinsic("molt_time_timegm")
+_MOLT_TIME_GET_CLOCK_INFO = _require_intrinsic("molt_time_get_clock_info")
+_MOLT_ASYNC_SLEEP = _require_intrinsic("molt_async_sleep")
+_MOLT_BLOCK_ON = _require_intrinsic("molt_block_on")
 
 _CAP_TRUSTED = None
 _CAP_HAS = None
@@ -41,8 +41,8 @@ def _ensure_capabilities() -> None:
     global _CAP_TRUSTED, _CAP_HAS
     if _CAP_TRUSTED is not None or _CAP_HAS is not None:
         return
-    _CAP_TRUSTED = _require_intrinsic("molt_capabilities_trusted", globals())
-    _CAP_HAS = _require_intrinsic("molt_capabilities_has", globals())
+    _CAP_TRUSTED = _require_intrinsic("molt_capabilities_trusted")
+    _CAP_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 __all__ = [

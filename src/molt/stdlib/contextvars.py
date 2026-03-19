@@ -7,10 +7,8 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 from typing import Any, Callable
 
-_require_intrinsic("molt_stdlib_probe", globals())
-_cancel_token_get_current = _require_intrinsic(
-    "molt_cancel_token_get_current", globals()
-)
+_require_intrinsic("molt_stdlib_probe")
+_cancel_token_get_current = _require_intrinsic("molt_cancel_token_get_current")
 
 
 __all__ = ["Context", "ContextVar", "Token", "copy_context"]
