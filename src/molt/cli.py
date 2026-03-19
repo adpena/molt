@@ -2729,22 +2729,13 @@ def _module_name_from_relative_parts(
     return ".".join(filtered)
 
 
-def _module_dependencies(
-    tree: ast.AST,
+def _module_dependencies_from_imports(
     module_name: str,
     module_graph: dict[str, Path],
-    *,
-    imports: list[str] | None = None,
+    imports: Iterable[str],
 ) -> set[str]:
     deps: set[str] = set()
-    path = module_graph.get(module_name)
-    is_package = path is not None and path.name == "__init__.py"
-    collected_imports = (
-        imports
-        if imports is not None
-        else _collect_imports(tree, module_name, is_package)
-    )
-    for name in collected_imports:
+    for name in imports:
         for candidate in _expand_module_chain_cached(name):
             if candidate == "molt" and module_name.startswith("molt."):
                 continue
@@ -2755,6 +2746,27 @@ def _module_dependencies(
                 if stdlib_candidate in module_graph and stdlib_candidate != module_name:
                     deps.add(stdlib_candidate)
     return deps
+
+
+def _module_dependencies(
+    tree: ast.AST,
+    module_name: str,
+    module_graph: dict[str, Path],
+    *,
+    imports: list[str] | None = None,
+) -> set[str]:
+    path = module_graph.get(module_name)
+    is_package = path is not None and path.name == "__init__.py"
+    collected_imports = (
+        imports
+        if imports is not None
+        else _collect_imports(tree, module_name, is_package)
+    )
+    return _module_dependencies_from_imports(
+        module_name,
+        module_graph,
+        collected_imports,
+    )
 
 
 @dataclass(frozen=True)
@@ -2908,10 +2920,9 @@ def _topo_sort_modules(
     module_graph: dict[str, Path], module_deps: dict[str, set[str]]
 ) -> list[str]:
     in_degree = {name: 0 for name in module_graph}
-    dependents: dict[str, set[str]] = {name: set() for name in module_graph}
+    dependents = _reverse_module_dependencies(module_deps, module_graph)
     for name, deps in module_deps.items():
         for dep in deps:
-            dependents[dep].add(name)
             in_degree[name] += 1
     ready = deque(sorted(name for name, degree in in_degree.items() if degree == 0))
     order: list[str] = []
@@ -2928,17 +2939,30 @@ def _topo_sort_modules(
     return order
 
 
-def _dependent_module_closure(
-    dirty_modules: Collection[str],
+def _reverse_module_dependencies(
     module_deps: dict[str, set[str]],
     module_names: Collection[str],
-) -> set[str]:
+) -> dict[str, set[str]]:
     dependents: dict[str, set[str]] = {name: set() for name in module_names}
     for name, deps in module_deps.items():
         if name not in dependents:
             dependents[name] = set()
         for dep in deps:
             dependents.setdefault(dep, set()).add(name)
+    return dependents
+
+
+def _dependent_module_closure(
+    dirty_modules: Collection[str],
+    module_deps: dict[str, set[str]],
+    module_names: Collection[str],
+    reverse_module_deps: Mapping[str, set[str]] | None = None,
+) -> set[str]:
+    dependents = (
+        reverse_module_deps
+        if reverse_module_deps is not None
+        else _reverse_module_dependencies(module_deps, module_names)
+    )
     closure: set[str] = {name for name in dirty_modules if name in dependents}
     queue = deque(sorted(closure))
     while queue:
@@ -11555,21 +11579,22 @@ def build(
             )
         if tree is not None:
             module_trees[module_name] = tree
-        module_deps[module_name] = _module_dependencies(
-            tree if tree is not None else ast.Module(body=[], type_ignores=[]),
+        module_deps[module_name] = _module_dependencies_from_imports(
             module_name,
             module_graph,
-            imports=module_imports,
+            module_imports,
         )
         known_func_defaults[module_name] = func_defaults
     module_order = _topo_sort_modules(module_graph, module_deps)
     module_dep_closures = _module_dependency_closures(module_deps, module_graph)
+    reverse_module_deps = _reverse_module_dependencies(module_deps, module_graph)
     dirty_lowering_modules = set(analysis_cache_miss_modules)
     dirty_lowering_modules.update(
         _dependent_module_closure(
             interface_changed_modules,
             module_deps,
             module_graph,
+            reverse_module_deps=reverse_module_deps,
         )
     )
     if diagnostics_enabled:
