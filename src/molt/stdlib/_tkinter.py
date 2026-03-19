@@ -519,7 +519,7 @@ def bind_command(app, name, callback):
 
 
 def destroy_widget(app, widget_path):
-    _MOLT_TK_DESTROY_WIDGET(_unwrap_app(app), widget_path)
+    return call(app, "destroy", widget_path)
 
 
 def last_error(app):
