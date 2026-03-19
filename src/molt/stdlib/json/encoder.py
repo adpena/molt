@@ -10,7 +10,7 @@ from _json import encode_basestring_ascii as c_encode_basestring_ascii  # noqa: 
 from _json import make_encoder as c_make_encoder  # noqa: F401
 from json import JSONEncoder  # noqa: F401
 
-_MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj", globals())
+_MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj")
 
 ESCAPE = re.compile(r'[\x00-\x1f\\"\b\f\n\r\t]')
 ESCAPE_ASCII = re.compile(r'([\\\\"]|[^\ -~])')

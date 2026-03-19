@@ -22,7 +22,7 @@ def _debug_spawn(message: str) -> None:
             pass
 
 
-_MOLT_ENV_GET = _require_intrinsic("molt_env_get", globals())
+_MOLT_ENV_GET = _require_intrinsic("molt_env_get")
 
 
 def _get_env(key: str, default: str = "") -> str:

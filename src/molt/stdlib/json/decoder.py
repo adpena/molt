@@ -8,7 +8,7 @@ from _json import scanstring as c_scanstring
 from json import JSONDecodeError  # noqa: F401
 from json import JSONDecoder  # noqa: F401
 
-_MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj", globals())
+_MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj")
 
 BACKSLASH = {
     '"': '"',

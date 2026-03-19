@@ -7,7 +7,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 __all__ = ["PyCompileError", "compile"]
 
 
-_MOLT_PY_COMPILE_COMPILE = _require_intrinsic("molt_py_compile_compile", globals())
+_MOLT_PY_COMPILE_COMPILE = _require_intrinsic("molt_py_compile_compile")
 
 
 class PyCompileError(Exception):
