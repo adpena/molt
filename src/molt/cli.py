@@ -8788,6 +8788,119 @@ def _append_frontend_parallel_layer_detail(
     )
 
 
+def _run_frontend_parallel_layer_batches(
+    candidates: Sequence[str],
+    *,
+    layer_workers: int,
+    executor: Any,
+    known_classes_snapshot_source: Mapping[str, Any],
+    module_graph: dict[str, Path],
+    module_sources: dict[str, str],
+    project_root: Path | None,
+    module_resolution_cache: _ModuleResolutionCache,
+    parse_codec: ParseCodec,
+    type_hint_policy: TypeHintPolicy,
+    fallback_policy: FallbackPolicy,
+    type_facts: dict[str, Any] | None,
+    enable_phi: bool,
+    known_modules: Collection[str],
+    stdlib_allowlist: Collection[str],
+    known_func_defaults: dict[str, dict[str, Any]],
+    module_deps: dict[str, set[str]],
+    module_chunk_max_ops: int,
+    optimization_profile: str,
+    pgo_hot_function_names: Collection[str],
+    known_modules_sorted: tuple[str, ...],
+    stdlib_allowlist_sorted: tuple[str, ...],
+    pgo_hot_function_names_sorted: tuple[str, ...],
+    module_dep_closures: dict[str, frozenset[str]],
+    module_graph_metadata: _ModuleGraphMetadata,
+    path_stat_by_module: Mapping[str, os.stat_result | None] | None,
+    module_chunking: bool,
+    scoped_lowering_inputs: _ScopedLoweringInputs | None,
+    dirty_lowering_modules: Collection[str],
+) -> tuple[_FrontendParallelLayerState, str | None, str | None]:
+    layer_state = _fresh_frontend_parallel_layer_state()
+    known_classes_snapshot = _known_classes_snapshot_copy(known_classes_snapshot_source)
+    scoped_known_classes_by_module = _build_scoped_known_classes_snapshot(
+        candidates,
+        module_deps=module_deps,
+        module_dep_closures=module_dep_closures,
+        known_classes_snapshot=known_classes_snapshot,
+    )
+    for batch_start in range(0, len(candidates), layer_workers):
+        batch = list(candidates[batch_start : batch_start + layer_workers])
+        worker_submissions: list[_ParallelWorkerSubmission] = []
+        (
+            cached_results,
+            worker_payloads,
+            context_digest_by_module,
+            batch_error,
+        ) = _prepare_frontend_parallel_batch(
+            batch,
+            module_graph=module_graph,
+            module_sources=module_sources,
+            project_root=project_root,
+            known_classes_snapshot=known_classes_snapshot,
+            module_resolution_cache=module_resolution_cache,
+            parse_codec=parse_codec,
+            type_hint_policy=type_hint_policy,
+            fallback_policy=fallback_policy,
+            type_facts=type_facts,
+            enable_phi=enable_phi,
+            known_modules=known_modules,
+            stdlib_allowlist=stdlib_allowlist,
+            known_func_defaults=known_func_defaults,
+            module_deps=module_deps,
+            module_chunk_max_ops=module_chunk_max_ops,
+            optimization_profile=optimization_profile,
+            pgo_hot_function_names=pgo_hot_function_names,
+            known_modules_sorted=known_modules_sorted,
+            stdlib_allowlist_sorted=stdlib_allowlist_sorted,
+            pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+            module_dep_closures=module_dep_closures,
+            module_graph_metadata=module_graph_metadata,
+            path_stat_by_module=path_stat_by_module,
+            module_chunking=module_chunking,
+            scoped_lowering_inputs=scoped_lowering_inputs,
+            scoped_known_classes_by_module=scoped_known_classes_by_module,
+            dirty_lowering_modules=dirty_lowering_modules,
+        )
+        if batch_error is not None:
+            return layer_state, batch_error, None
+        layer_state.context_digests.update(context_digest_by_module)
+        for module_name, cached_result in cached_results.items():
+            _record_parallel_cached_module_result(
+                layer_state,
+                module_name,
+                cached_result,
+            )
+        for module_name, payload in worker_payloads:
+            worker_submissions.append(
+                _ParallelWorkerSubmission(
+                    module_name=module_name,
+                    submitted_ns=time.time_ns(),
+                    future=executor.submit(_frontend_lower_module_worker, payload),
+                )
+            )
+        for submission in worker_submissions:
+            module_name = submission.module_name
+            future = submission.future
+            try:
+                result = future.result()
+                received_ns = time.time_ns()
+                _record_parallel_worker_result(
+                    layer_state,
+                    module_name=module_name,
+                    result=result,
+                    submitted_ns=submission.submitted_ns,
+                    received_ns=received_ns,
+                )
+            except Exception as exc:
+                return layer_state, None, f"{module_graph[module_name]}: {exc}"
+    return layer_state, None, None
+
+
 def _fallback_frontend_parallel_layer_to_serial(
     *,
     frontend_parallel_details: MutableMapping[str, Any],
@@ -12933,7 +13046,6 @@ def build(
                 layer_workers = layer_policy_summary.workers
                 layer_policy_reason = layer_policy_summary.reason
                 layer_mode = "serial"
-                layer_parallel_failed = False
 
                 if (
                     parallel_pool_usable
@@ -12941,33 +13053,16 @@ def build(
                     and len(candidates) > 1
                 ):
                     layer_mode = "parallel"
-                    known_classes_snapshot = _known_classes_snapshot_copy(
-                        known_classes
-                    )
-                    scoped_known_classes_by_module = (
-                        _build_scoped_known_classes_snapshot(
-                            candidates,
-                            module_deps=module_deps,
-                            module_dep_closures=module_dep_closures,
-                            known_classes_snapshot=known_classes_snapshot,
-                        )
-                    )
                     layer_workers = min(layer_workers, len(candidates))
-                    layer_failure_detail = ""
-                    for batch_start in range(0, len(candidates), layer_workers):
-                        batch = candidates[batch_start : batch_start + layer_workers]
-                        worker_submissions: list[_ParallelWorkerSubmission] = []
-                        (
-                            cached_results,
-                            worker_payloads,
-                            context_digest_by_module,
-                            batch_error,
-                        ) = _prepare_frontend_parallel_batch(
-                            batch,
+                    layer_state, batch_error, layer_failure_detail = (
+                        _run_frontend_parallel_layer_batches(
+                            candidates,
+                            layer_workers=layer_workers,
+                            executor=executor,
+                            known_classes_snapshot_source=known_classes,
                             module_graph=module_graph,
                             module_sources=module_sources,
                             project_root=project_root,
-                            known_classes_snapshot=known_classes_snapshot,
                             module_resolution_cache=module_resolution_cache,
                             parse_codec=parse_codec,
                             type_hint_policy=type_hint_policy,
@@ -12989,50 +13084,12 @@ def build(
                             path_stat_by_module=module_path_stats,
                             module_chunking=module_chunking,
                             scoped_lowering_inputs=scoped_lowering_inputs,
-                            scoped_known_classes_by_module=scoped_known_classes_by_module,
                             dirty_lowering_modules=dirty_lowering_modules,
                         )
-                        if batch_error is not None:
-                            return _fail(batch_error, json_output, command="build")
-                        layer_state.context_digests.update(context_digest_by_module)
-                        for module_name, cached_result in cached_results.items():
-                            _record_parallel_cached_module_result(
-                                layer_state,
-                                module_name,
-                                cached_result,
-                            )
-                        for module_name, payload in worker_payloads:
-                            worker_submissions.append(
-                                _ParallelWorkerSubmission(
-                                    module_name=module_name,
-                                    submitted_ns=time.time_ns(),
-                                    future=executor.submit(
-                                        _frontend_lower_module_worker, payload
-                                    ),
-                                )
-                            )
-                        for submission in worker_submissions:
-                            module_name = submission.module_name
-                            future = submission.future
-                            try:
-                                result = future.result()
-                                received_ns = time.time_ns()
-                                _record_parallel_worker_result(
-                                    layer_state,
-                                    module_name=module_name,
-                                    result=result,
-                                    submitted_ns=submission.submitted_ns,
-                                    received_ns=received_ns,
-                                )
-                            except Exception as exc:
-                                layer_parallel_failed = True
-                                layer_failure_detail = (
-                                    f"{module_graph[module_name]}: {exc}"
-                                )
-                                break
-                        if layer_parallel_failed:
-                            break
-                    if layer_parallel_failed:
+                    )
+                    if batch_error is not None:
+                        return _fail(batch_error, json_output, command="build")
+                    if layer_failure_detail is not None:
                         layer_state = _fallback_frontend_parallel_layer_to_serial(
                             frontend_parallel_details=frontend_parallel_details,
                             warnings=warnings,
