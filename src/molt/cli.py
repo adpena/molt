@@ -9154,6 +9154,43 @@ def _consume_frontend_parallel_layer_result(
     )
 
 
+def _consume_frontend_serial_layer_result(
+    *,
+    record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]],
+    integrate_module_frontend_result: Callable[..., str | None],
+    accumulate_midend_diagnostics: Callable[..., None],
+    fail: Callable[[str, bool, str], dict[str, Any] | None],
+    json_output: bool,
+    layer_state: _FrontendParallelLayerState,
+    layer_index: int,
+    module_name: str,
+    module_path: Path,
+    result: Mapping[str, Any],
+    result_timings: _FrontendModuleResultTimings,
+    serial_mode: str,
+) -> dict[str, Any] | None:
+    _record_serial_frontend_worker_timing(
+        record_frontend_parallel_worker_timing=record_frontend_parallel_worker_timing,
+        recorded_worker_timings=layer_state.recorded_worker_timings,
+        layer_index=layer_index,
+        module_name=module_name,
+        module_path=module_path,
+        mode=serial_mode,
+        total_s=result_timings.total_s,
+    )
+    return _consume_frontend_module_result(
+        module_name=module_name,
+        module_path=module_path,
+        result=result,
+        result_timings=result_timings,
+        record_frontend_timing=None,
+        integrate_module_frontend_result=integrate_module_frontend_result,
+        accumulate_midend_diagnostics=accumulate_midend_diagnostics,
+        fail=fail,
+        json_output=json_output,
+    )
+
+
 def _frontend_serial_worker_mode(layer_mode: str) -> str:
     if layer_mode == "serial_fallback":
         return "serial_fallback"
@@ -13251,26 +13288,19 @@ def build(
                         return lower_error
                     assert result is not None
                     assert result_timings is not None
-                    serial_mode = _frontend_serial_worker_mode(layer_plan.mode)
-                    _record_serial_frontend_worker_timing(
+                    consume_error = _consume_frontend_serial_layer_result(
                         record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
-                        recorded_worker_timings=layer_state.recorded_worker_timings,
-                        layer_index=layer_index,
-                        module_name=module_name,
-                        module_path=module_path,
-                        mode=serial_mode,
-                        total_s=result_timings.total_s,
-                    )
-                    consume_error = _consume_frontend_module_result(
-                        module_name=module_name,
-                        module_path=module_path,
-                        result=result,
-                        result_timings=result_timings,
-                        record_frontend_timing=None,
                         integrate_module_frontend_result=_integrate_module_frontend_result,
                         accumulate_midend_diagnostics=_accumulate_midend_diagnostics,
                         fail=_fail,
                         json_output=json_output,
+                        layer_state=layer_state,
+                        layer_index=layer_index,
+                        module_name=module_name,
+                        module_path=module_path,
+                        result=result,
+                        result_timings=result_timings,
+                        serial_mode=_frontend_serial_worker_mode(layer_plan.mode),
                     )
                     if consume_error is not None:
                         return consume_error
@@ -13305,25 +13335,19 @@ def build(
                 return lower_error
             assert result is not None
             assert result_timings is not None
-            _record_serial_frontend_worker_timing(
+            consume_error = _consume_frontend_serial_layer_result(
                 record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
-                recorded_worker_timings=serial_layer_state.recorded_worker_timings,
-                layer_index=0,
-                module_name=module_name,
-                module_path=module_path,
-                mode="serial_disabled",
-                total_s=result_timings.total_s,
-            )
-            consume_error = _consume_frontend_module_result(
-                module_name=module_name,
-                module_path=module_path,
-                result=result,
-                result_timings=result_timings,
-                record_frontend_timing=None,
                 integrate_module_frontend_result=_integrate_module_frontend_result,
                 accumulate_midend_diagnostics=_accumulate_midend_diagnostics,
                 fail=_fail,
                 json_output=json_output,
+                layer_state=serial_layer_state,
+                layer_index=0,
+                module_name=module_name,
+                module_path=module_path,
+                result=result,
+                result_timings=result_timings,
+                serial_mode="serial_disabled",
             )
             if consume_error is not None:
                 return consume_error
