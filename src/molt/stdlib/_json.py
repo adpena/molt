@@ -69,3 +69,4 @@ class make_scanner:
 del _MOLT_JSON_DUMPS_EX
 del _MOLT_JSON_DEFAULT_SEPARATORS
 del _MOLT_JSON_PARSE_SCALAR
+globals().pop("_require_intrinsic", None)

@@ -66,3 +66,4 @@ _specializations = {
 }
 
 del _PAYLOAD
+globals().pop("_require_intrinsic", None)

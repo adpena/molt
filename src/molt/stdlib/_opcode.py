@@ -16,3 +16,6 @@ get_specialization_stats = _require_intrinsic(
     "molt_opcode_get_specialization_stats"
 )
 stack_effect = _require_intrinsic("molt_opcode_stack_effect")
+
+
+globals().pop("_require_intrinsic", None)

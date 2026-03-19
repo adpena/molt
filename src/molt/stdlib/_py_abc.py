@@ -15,3 +15,6 @@ def get_cache_token():
 
 
 __all__ = ["ABCMeta", "WeakSet", "get_cache_token"]
+
+
+globals().pop("_require_intrinsic", None)
