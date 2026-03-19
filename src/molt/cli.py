@@ -6184,6 +6184,66 @@ def _artifact_state_path(
     )
 
 
+def _artifact_state_path_for_build_state_root(
+    build_state_root: Path,
+    artifact: Path,
+    *,
+    subdir: str,
+    stem_suffix: str,
+    extension: str,
+) -> Path:
+    return _artifact_state_path_cached(
+        os.fspath(build_state_root),
+        os.fspath(artifact),
+        artifact.name,
+        subdir,
+        stem_suffix,
+        extension,
+    )
+
+
+def _canonical_target_root(project_root: Path) -> Path:
+    return _cargo_target_root_cached(
+        os.fspath(project_root),
+        None,
+        os.fspath(Path.cwd()),
+    )
+
+
+def _canonical_build_state_root(project_root: Path) -> Path:
+    return _build_state_root_cached(
+        os.fspath(project_root),
+        os.environ.get("MOLT_BUILD_STATE_DIR"),
+        None,
+        os.fspath(Path.cwd()),
+    )
+
+
+def _maybe_hydrate_artifact_from_canonical_target(
+    *,
+    artifact: Path,
+    fingerprint: dict[str, str | None] | None,
+    fingerprint_path: Path,
+    candidate_artifact: Path,
+    candidate_fingerprint_path: Path,
+) -> bool:
+    if fingerprint is None:
+        return False
+    if artifact.resolve() == candidate_artifact.resolve():
+        return False
+    candidate_fingerprint = _read_runtime_fingerprint(candidate_fingerprint_path)
+    if _artifact_needs_rebuild(candidate_artifact, fingerprint, candidate_fingerprint):
+        return False
+    try:
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_copy_file(candidate_artifact, artifact)
+        fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+        _write_runtime_fingerprint(fingerprint_path, fingerprint)
+    except OSError:
+        return False
+    return True
+
+
 def _hash_runtime_file(path: Path, root: Path, hasher: Any) -> None:
     try:
         rel_path = path.relative_to(root)
@@ -15975,6 +16035,25 @@ def _ensure_backend_binary(
             stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
         if not _artifact_needs_rebuild(backend_bin, fingerprint, stored_fingerprint):
             return True
+        canonical_target_root = _canonical_target_root(project_root)
+        canonical_backend_bin = canonical_target_root / _cargo_profile_dir(
+            cargo_profile
+        ) / backend_bin.name
+        canonical_fingerprint_path = _artifact_state_path_for_build_state_root(
+            _canonical_build_state_root(project_root),
+            canonical_backend_bin,
+            subdir="backend_fingerprints",
+            stem_suffix=f"{cargo_profile}",
+            extension="fingerprint",
+        )
+        if _maybe_hydrate_artifact_from_canonical_target(
+            artifact=backend_bin,
+            fingerprint=fingerprint,
+            fingerprint_path=fingerprint_path,
+            candidate_artifact=canonical_backend_bin,
+            candidate_fingerprint_path=canonical_fingerprint_path,
+        ):
+            return True
         if not json_output:
             print("Backend sources changed; rebuilding backend...")
         cmd = [
@@ -16052,6 +16131,33 @@ def _ensure_runtime_lib(
         if stored_fingerprint is None:
             stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
         if not _artifact_needs_rebuild(runtime_lib, fingerprint, stored_fingerprint):
+            return True
+        canonical_target_root = _canonical_target_root(project_root)
+        profile_dir = _cargo_profile_dir(cargo_profile)
+        if target_triple:
+            canonical_runtime_lib = (
+                canonical_target_root
+                / target_triple
+                / profile_dir
+                / runtime_lib.name
+            )
+        else:
+            canonical_runtime_lib = canonical_target_root / profile_dir / runtime_lib.name
+        target_label = (target_triple or "native").replace(os.sep, "_").replace(":", "_")
+        canonical_fingerprint_path = _artifact_state_path_for_build_state_root(
+            _canonical_build_state_root(project_root),
+            canonical_runtime_lib,
+            subdir="runtime_fingerprints",
+            stem_suffix=f"{cargo_profile}.{target_label}",
+            extension="fingerprint",
+        )
+        if _maybe_hydrate_artifact_from_canonical_target(
+            artifact=runtime_lib,
+            fingerprint=fingerprint,
+            fingerprint_path=fingerprint_path,
+            candidate_artifact=canonical_runtime_lib,
+            candidate_fingerprint_path=canonical_fingerprint_path,
+        ):
             return True
         if not json_output:
             print("Runtime sources changed; rebuilding runtime...")
