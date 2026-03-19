@@ -71,3 +71,4 @@ class MultibyteStreamWriter:
 
 
 del _MOLT_CAPABILITIES_HAS
+globals().pop("_require_intrinsic", None)

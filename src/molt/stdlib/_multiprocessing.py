@@ -25,3 +25,6 @@ class SemLock:
 flags = {}
 
 __all__ = ["SemLock", "flags", "sem_unlink"]
+
+
+globals().pop("_require_intrinsic", None)

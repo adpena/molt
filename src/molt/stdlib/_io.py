@@ -43,3 +43,6 @@ __all__ = [
     "UnsupportedOperation",
     "open",
 ]
+
+
+globals().pop("_require_intrinsic", None)

@@ -21,3 +21,6 @@ class md5(_hashlib._Hash):
 MD5Type = md5
 
 __all__ = ["MD5Type", "_GIL_MINSIZE", "md5"]
+
+
+globals().pop("_require_intrinsic", None)
