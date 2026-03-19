@@ -5889,18 +5889,23 @@ def _materialize_cached_backend_artifact(
     source_key: str,
     cache_path: Path | None,
     warnings: list[str],
+    state_path: Path | None = None,
+    state: dict[str, Any] | None = None,
+    output_stat: os.stat_result | None = None,
 ) -> bool:
-    state_path = _artifact_sync_state_path(project_root, output_artifact)
-    state = _read_artifact_sync_state(state_path)
-    with contextlib.suppress(OSError):
-        stat = output_artifact.stat()
-        if _artifact_sync_state_matches_stat(
-            state,
-            source_key=source_key,
-            tier=tier,
-            stat=stat,
-        ):
-            return True
+    if state_path is None:
+        state_path = _artifact_sync_state_path(project_root, output_artifact)
+        state = _read_artifact_sync_state(state_path)
+    if output_stat is None:
+        with contextlib.suppress(OSError):
+            output_stat = output_artifact.stat()
+    if output_stat is not None and _artifact_sync_state_matches_stat(
+        state,
+        source_key=source_key,
+        tier=tier,
+        stat=output_stat,
+    ):
+        return True
     try:
         _atomic_link_or_copy_file(candidate, output_artifact)
         if (
@@ -5933,25 +5938,29 @@ def _backend_daemon_skip_output_sync_flags(
     *,
     cache_key: str | None,
     function_cache_key: str | None,
+    state_path: Path | None = None,
+    state: dict[str, Any] | None = None,
+    output_stat: os.stat_result | None = None,
 ) -> tuple[bool, bool]:
-    state = _read_artifact_sync_state(
-        _artifact_sync_state_path(project_root, output_artifact)
-    )
-    try:
-        stat = output_artifact.stat()
-    except OSError:
-        return False, False
+    if state_path is None:
+        state_path = _artifact_sync_state_path(project_root, output_artifact)
+        state = _read_artifact_sync_state(state_path)
+    if output_stat is None:
+        try:
+            output_stat = output_artifact.stat()
+        except OSError:
+            return False, False
     skip_module_output = bool(cache_key) and _artifact_sync_state_matches_stat(
         state,
         source_key=cache_key or "",
         tier="module",
-        stat=stat,
+        stat=output_stat,
     )
     skip_function_output = bool(function_cache_key) and _artifact_sync_state_matches_stat(
         state,
         source_key=function_cache_key or "",
         tier="function",
-        stat=stat,
+        stat=output_stat,
     )
     return skip_module_output, skip_function_output
 
@@ -5982,6 +5991,9 @@ def _stage_backend_output_and_caches(
     function_cache_path: Path | None,
     warnings: list[str],
     output_already_synced: bool | None = None,
+    state_path: Path | None = None,
+    state: dict[str, Any] | None = None,
+    output_stat: os.stat_result | None = None,
 ) -> str | None:
     try:
         if output_artifact.parent != Path("."):
@@ -6008,20 +6020,23 @@ def _stage_backend_output_and_caches(
         else:
             staged_source = cache_path
 
-    state_path = _artifact_sync_state_path(project_root, output_artifact)
+    if state_path is None:
+        state_path = _artifact_sync_state_path(project_root, output_artifact)
     if output_already_synced is None:
         state = _read_artifact_sync_state(state_path)
-        try:
-            stat = output_artifact.stat()
-        except OSError:
-            output_already_synced = False
-        else:
-            output_already_synced = bool(cache_key) and _artifact_sync_state_matches_stat(
+        if output_stat is None:
+            try:
+                output_stat = output_artifact.stat()
+            except OSError:
+                output_stat = None
+        output_already_synced = bool(cache_key) and output_stat is not None and (
+            _artifact_sync_state_matches_stat(
                 state,
                 source_key=cache_key or "",
                 tier="module",
-                stat=stat,
+                stat=output_stat,
             )
+        )
 
     try:
         if output_already_synced:
@@ -11669,6 +11684,12 @@ def build(
                 cache_candidates.append(("function", function_cache_path))
 
             def _try_cache_candidates() -> tuple[bool, str | None]:
+                state_path = _artifact_sync_state_path(project_root, output_artifact)
+                state = _read_artifact_sync_state(state_path)
+                try:
+                    output_stat: os.stat_result | None = output_artifact.stat()
+                except OSError:
+                    output_stat = None
                 for tier, candidate in cache_candidates:
                     if not candidate.exists():
                         continue
@@ -11689,6 +11710,9 @@ def build(
                         else (function_cache_key or cache_key or ""),
                         cache_path=cache_path,
                         warnings=warnings,
+                        state_path=state_path,
+                        state=state,
+                        output_stat=output_stat,
                     ):
                         return True, tier
                 return False, None
@@ -11696,6 +11720,12 @@ def build(
             cache_hit, cache_hit_tier = _try_cache_candidates()
 
     def _try_cache_candidates_locked() -> tuple[bool, str | None]:
+        state_path = _artifact_sync_state_path(project_root, output_artifact)
+        state = _read_artifact_sync_state(state_path)
+        try:
+            output_stat: os.stat_result | None = output_artifact.stat()
+        except OSError:
+            output_stat = None
         for tier, candidate in cache_candidates:
             if not candidate.exists():
                 continue
@@ -11714,6 +11744,9 @@ def build(
                 else (function_cache_key or cache_key or ""),
                 cache_path=cache_path,
                 warnings=warnings,
+                state_path=state_path,
+                state=state,
+                output_stat=output_stat,
             ):
                 return True, tier
         return False, None
@@ -11875,7 +11908,20 @@ def build(
                 backend_output_written = True
                 daemon_error: str | None = None
                 backend_daemon_request_bytes_cached: bytes | None = None
+                output_sync_state_path: Path | None = None
+                output_sync_state: dict[str, Any] | None = None
+                output_artifact_stat: os.stat_result | None = None
                 if daemon_ready and daemon_socket is not None:
+                    output_sync_state_path = _artifact_sync_state_path(
+                        project_root, output_artifact
+                    )
+                    output_sync_state = _read_artifact_sync_state(
+                        output_sync_state_path
+                    )
+                    try:
+                        output_artifact_stat = output_artifact.stat()
+                    except OSError:
+                        output_artifact_stat = None
                     (
                         skip_module_output_if_synced,
                         skip_function_output_if_synced,
@@ -11888,6 +11934,9 @@ def build(
                             if cache and function_cache_key != cache_key
                             else None
                         ),
+                        state_path=output_sync_state_path,
+                        state=output_sync_state,
+                        output_stat=output_artifact_stat,
                     )
                     backend_daemon_request_bytes_cached, request_encode_err = (
                         _backend_daemon_compile_request_bytes(
@@ -12077,6 +12126,9 @@ def build(
                             if daemon_ready and cache and cache_key
                             else None
                         ),
+                        state_path=output_sync_state_path,
+                        state=output_sync_state,
+                        output_stat=output_artifact_stat,
                     )
                     if stage_error is not None:
                         return _fail(stage_error, json_output, command="build")

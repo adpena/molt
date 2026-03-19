@@ -2447,6 +2447,43 @@ def test_backend_daemon_skip_output_sync_flags_stats_artifact_once(
     assert calls == 1
 
 
+def test_backend_daemon_skip_output_sync_flags_uses_known_sync_state_without_reread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_artifact = tmp_path / "dist" / "output.o"
+    output_artifact.parent.mkdir(parents=True)
+    output_artifact.write_bytes(b"artifact")
+    state_path = cli._artifact_sync_state_path(tmp_path, output_artifact)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    cli._write_artifact_sync_state(
+        state_path,
+        source_key="module-key",
+        tier="module",
+        artifact=output_artifact,
+    )
+    state = cli._read_artifact_sync_state(state_path)
+    assert state is not None
+    output_stat = output_artifact.stat()
+
+    def fail_read(path: Path) -> dict[str, object] | None:
+        raise AssertionError(f"unexpected sync-state read: {path}")
+
+    monkeypatch.setattr(cli, "_read_artifact_sync_state", fail_read)
+
+    skip_module, skip_function = cli._backend_daemon_skip_output_sync_flags(
+        tmp_path,
+        output_artifact,
+        cache_key="module-key",
+        function_cache_key="function-key",
+        state_path=state_path,
+        state=state,
+        output_stat=output_stat,
+    )
+
+    assert skip_module is True
+    assert skip_function is False
+
+
 def test_read_artifact_sync_state_reuses_process_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2880,6 +2917,50 @@ def test_materialize_cached_backend_artifact_prefers_link_or_copy_for_output_syn
     assert warnings == []
     assert output_artifact.read_bytes() == b"artifact"
     assert (candidate, output_artifact) in link_calls
+
+
+def test_materialize_cached_backend_artifact_uses_known_sync_state_without_reread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = tmp_path / "cache" / "module.o"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"artifact")
+    output_artifact = tmp_path / "dist" / "output.o"
+    output_artifact.parent.mkdir(parents=True)
+    output_artifact.write_bytes(b"artifact")
+    state_path = cli._artifact_sync_state_path(tmp_path, output_artifact)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    cli._write_artifact_sync_state(
+        state_path,
+        source_key="module-key",
+        tier="module",
+        artifact=output_artifact,
+    )
+    state = cli._read_artifact_sync_state(state_path)
+    assert state is not None
+    output_stat = output_artifact.stat()
+    warnings: list[str] = []
+
+    def fail_read(path: Path) -> dict[str, object] | None:
+        raise AssertionError(f"unexpected sync-state read: {path}")
+
+    monkeypatch.setattr(cli, "_read_artifact_sync_state", fail_read)
+
+    ok = cli._materialize_cached_backend_artifact(
+        tmp_path,
+        candidate,
+        output_artifact,
+        tier="module",
+        source_key="module-key",
+        cache_path=candidate,
+        warnings=warnings,
+        state_path=state_path,
+        state=state,
+        output_stat=output_stat,
+    )
+
+    assert ok is True
+    assert warnings == []
 
 
 def test_temporary_backend_output_path_uses_expected_suffix_and_cleans_up(
