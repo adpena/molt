@@ -6,19 +6,19 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 from typing import Any, Iterator
 import warnings as _warnings
 
-_require_intrinsic("molt_stdlib_probe", globals())
-_molt_re_compile = _require_intrinsic("molt_re_compile", globals())
-_molt_re_execute = _require_intrinsic("molt_re_execute", globals())
-_molt_re_finditer_collect = _require_intrinsic("molt_re_finditer_collect", globals())
-_molt_re_pattern_info = _require_intrinsic("molt_re_pattern_info", globals())
-_molt_re_strip_verbose = _require_intrinsic("molt_re_strip_verbose", globals())
-_molt_re_fullmatch_check = _require_intrinsic("molt_re_fullmatch_check", globals())
+_require_intrinsic("molt_stdlib_probe")
+_molt_re_compile = _require_intrinsic("molt_re_compile")
+_molt_re_execute = _require_intrinsic("molt_re_execute")
+_molt_re_finditer_collect = _require_intrinsic("molt_re_finditer_collect")
+_molt_re_pattern_info = _require_intrinsic("molt_re_pattern_info")
+_molt_re_strip_verbose = _require_intrinsic("molt_re_strip_verbose")
+_molt_re_fullmatch_check = _require_intrinsic("molt_re_fullmatch_check")
 _molt_re_expand_replacement = _require_intrinsic(
-    "molt_re_expand_replacement", globals()
+    "molt_re_expand_replacement"
 )
-_molt_re_group_values = _require_intrinsic("molt_re_group_values", globals())
-_molt_re_split = _require_intrinsic("molt_re_split", globals())
-_molt_re_sub = _require_intrinsic("molt_re_sub", globals())
+_molt_re_group_values = _require_intrinsic("molt_re_group_values")
+_molt_re_split = _require_intrinsic("molt_re_split")
+_molt_re_sub = _require_intrinsic("molt_re_sub")
 
 __all__ = [
     "NOFLAG",

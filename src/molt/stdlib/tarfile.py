@@ -4,16 +4,16 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_molt_tarfile_open = _require_intrinsic("molt_tarfile_open", globals())
-_molt_tarfile_close = _require_intrinsic("molt_tarfile_close", globals())
-_molt_tarfile_drop = _require_intrinsic("molt_tarfile_drop", globals())
-_molt_tarfile_getmembers = _require_intrinsic("molt_tarfile_getmembers", globals())
-_molt_tarfile_getnames = _require_intrinsic("molt_tarfile_getnames", globals())
-_molt_tarfile_extract = _require_intrinsic("molt_tarfile_extract", globals())
-_molt_tarfile_extractall = _require_intrinsic("molt_tarfile_extractall", globals())
-_molt_tarfile_extractfile = _require_intrinsic("molt_tarfile_extractfile", globals())
-_molt_tarfile_add = _require_intrinsic("molt_tarfile_add", globals())
-_molt_tarfile_is_tarfile = _require_intrinsic("molt_tarfile_is_tarfile", globals())
+_molt_tarfile_open = _require_intrinsic("molt_tarfile_open")
+_molt_tarfile_close = _require_intrinsic("molt_tarfile_close")
+_molt_tarfile_drop = _require_intrinsic("molt_tarfile_drop")
+_molt_tarfile_getmembers = _require_intrinsic("molt_tarfile_getmembers")
+_molt_tarfile_getnames = _require_intrinsic("molt_tarfile_getnames")
+_molt_tarfile_extract = _require_intrinsic("molt_tarfile_extract")
+_molt_tarfile_extractall = _require_intrinsic("molt_tarfile_extractall")
+_molt_tarfile_extractfile = _require_intrinsic("molt_tarfile_extractfile")
+_molt_tarfile_add = _require_intrinsic("molt_tarfile_add")
+_molt_tarfile_is_tarfile = _require_intrinsic("molt_tarfile_is_tarfile")
 
 
 class TarError(Exception):

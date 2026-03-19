@@ -22,19 +22,19 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Handle-based intrinsics
 # ---------------------------------------------------------------------------
-_PARSER_NEW = _require_intrinsic("molt_argparse_parser_new", globals())
-_ADD_ARGUMENT = _require_intrinsic("molt_argparse_add_argument", globals())
-_PARSE_ARGS = _require_intrinsic("molt_argparse_parse_args", globals())
-_FORMAT_HELP = _require_intrinsic("molt_argparse_format_help", globals())
-_FORMAT_USAGE = _require_intrinsic("molt_argparse_format_usage", globals())
-_ERROR = _require_intrinsic("molt_argparse_error", globals())
-_ADD_SUBPARSERS = _require_intrinsic("molt_argparse_add_subparsers", globals())
-_ADD_PARSER = _require_intrinsic("molt_argparse_add_parser", globals())
+_PARSER_NEW = _require_intrinsic("molt_argparse_parser_new")
+_ADD_ARGUMENT = _require_intrinsic("molt_argparse_add_argument")
+_PARSE_ARGS = _require_intrinsic("molt_argparse_parse_args")
+_FORMAT_HELP = _require_intrinsic("molt_argparse_format_help")
+_FORMAT_USAGE = _require_intrinsic("molt_argparse_format_usage")
+_ERROR = _require_intrinsic("molt_argparse_error")
+_ADD_SUBPARSERS = _require_intrinsic("molt_argparse_add_subparsers")
+_ADD_PARSER = _require_intrinsic("molt_argparse_add_parser")
 _ADD_MUTUALLY_EXCLUSIVE = _require_intrinsic(
-    "molt_argparse_add_mutually_exclusive", globals()
+    "molt_argparse_add_mutually_exclusive"
 )
-_GROUP_ADD_ARGUMENT = _require_intrinsic("molt_argparse_group_add_argument", globals())
-_PARSER_DROP = _require_intrinsic("molt_argparse_parser_drop", globals())
+_GROUP_ADD_ARGUMENT = _require_intrinsic("molt_argparse_group_add_argument")
+_PARSER_DROP = _require_intrinsic("molt_argparse_parser_drop")
 
 _UNSET = object()
 

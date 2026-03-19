@@ -27,24 +27,24 @@ def _ensure_caps() -> None:
     global _CAP_REQUIRE
     if _CAP_REQUIRE is not None:
         return
-    _CAP_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
+    _CAP_REQUIRE = _require_intrinsic("molt_capabilities_require")
 
 
 def _ensure_io_intrinsics() -> None:
     global _MOLT_FILE_OPEN_EX, _MOLT_FILE_READ, _MOLT_FILE_CLOSE
     if _MOLT_FILE_OPEN_EX is None:
-        _MOLT_FILE_OPEN_EX = _require_intrinsic("molt_file_open_ex", globals())
+        _MOLT_FILE_OPEN_EX = _require_intrinsic("molt_file_open_ex")
     if _MOLT_FILE_READ is None:
-        _MOLT_FILE_READ = _require_intrinsic("molt_file_read", globals())
+        _MOLT_FILE_READ = _require_intrinsic("molt_file_read")
     if _MOLT_FILE_CLOSE is None:
-        _MOLT_FILE_CLOSE = _require_intrinsic("molt_file_close", globals())
+        _MOLT_FILE_CLOSE = _require_intrinsic("molt_file_close")
 
 
 def _ensure_io_class() -> None:
     global _MOLT_IO_CLASS
     if _MOLT_IO_CLASS is not None:
         return
-    _MOLT_IO_CLASS = _require_intrinsic("molt_io_class", globals())
+    _MOLT_IO_CLASS = _require_intrinsic("molt_io_class")
 
 
 def _io_class(name: str):

@@ -55,33 +55,33 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Load all intrinsics at module import time (hard-fail if unavailable).
 # ---------------------------------------------------------------------------
-_MOLT_THREADPOOL_NEW = _require_intrinsic("molt_concurrent_threadpool_new", globals())
-_MOLT_THREADPOOL_DROP = _require_intrinsic("molt_concurrent_threadpool_drop", globals())
+_MOLT_THREADPOOL_NEW = _require_intrinsic("molt_concurrent_threadpool_new")
+_MOLT_THREADPOOL_DROP = _require_intrinsic("molt_concurrent_threadpool_drop")
 _MOLT_THREADPOOL_SUBMIT = _require_intrinsic(
-    "molt_concurrent_threadpool_submit", globals()
+    "molt_concurrent_threadpool_submit"
 )
 _MOLT_THREADPOOL_SHUTDOWN = _require_intrinsic(
-    "molt_concurrent_threadpool_shutdown", globals()
+    "molt_concurrent_threadpool_shutdown"
 )
 _MOLT_FUTURE_ADD_DONE_CALLBACK = _require_intrinsic(
-    "molt_concurrent_future_add_done_callback", globals()
+    "molt_concurrent_future_add_done_callback"
 )
-_MOLT_FUTURE_CANCEL = _require_intrinsic("molt_concurrent_future_cancel", globals())
+_MOLT_FUTURE_CANCEL = _require_intrinsic("molt_concurrent_future_cancel")
 _MOLT_FUTURE_CANCELLED = _require_intrinsic(
-    "molt_concurrent_future_cancelled", globals()
+    "molt_concurrent_future_cancelled"
 )
-_MOLT_FUTURE_DONE = _require_intrinsic("molt_concurrent_future_done", globals())
-_MOLT_FUTURE_DROP = _require_intrinsic("molt_concurrent_future_drop", globals())
+_MOLT_FUTURE_DONE = _require_intrinsic("molt_concurrent_future_done")
+_MOLT_FUTURE_DROP = _require_intrinsic("molt_concurrent_future_drop")
 _MOLT_FUTURE_EXCEPTION = _require_intrinsic(
-    "molt_concurrent_future_exception", globals()
+    "molt_concurrent_future_exception"
 )
-_MOLT_FUTURE_RESULT = _require_intrinsic("molt_concurrent_future_result", globals())
-_MOLT_FUTURE_RUNNING = _require_intrinsic("molt_concurrent_future_running", globals())
-_MOLT_WAIT = _require_intrinsic("molt_concurrent_wait", globals())
-_MOLT_AS_COMPLETED = _require_intrinsic("molt_concurrent_as_completed", globals())
-_MOLT_ALL_COMPLETED = _require_intrinsic("molt_concurrent_all_completed", globals())
-_MOLT_FIRST_COMPLETED = _require_intrinsic("molt_concurrent_first_completed", globals())
-_MOLT_FIRST_EXCEPTION = _require_intrinsic("molt_concurrent_first_exception", globals())
+_MOLT_FUTURE_RESULT = _require_intrinsic("molt_concurrent_future_result")
+_MOLT_FUTURE_RUNNING = _require_intrinsic("molt_concurrent_future_running")
+_MOLT_WAIT = _require_intrinsic("molt_concurrent_wait")
+_MOLT_AS_COMPLETED = _require_intrinsic("molt_concurrent_as_completed")
+_MOLT_ALL_COMPLETED = _require_intrinsic("molt_concurrent_all_completed")
+_MOLT_FIRST_COMPLETED = _require_intrinsic("molt_concurrent_first_completed")
+_MOLT_FIRST_EXCEPTION = _require_intrinsic("molt_concurrent_first_exception")
 
 
 # ---------------------------------------------------------------------------

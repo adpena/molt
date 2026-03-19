@@ -6,27 +6,27 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 from typing import Any, Callable, Iterable
 
-_MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj", globals())
+_MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj")
 _MOLT_JSON_ENCODE_BASESTRING = _require_intrinsic(
-    "molt_json_encode_basestring_obj", globals()
+    "molt_json_encode_basestring_obj"
 )
 _MOLT_JSON_ENCODE_BASESTRING_ASCII = _require_intrinsic(
-    "molt_json_encode_basestring_ascii_obj", globals()
+    "molt_json_encode_basestring_ascii_obj"
 )
-_MOLT_JSON_DETECT_ENCODING = _require_intrinsic("molt_json_detect_encoding", globals())
-_MOLT_JSON_LOADS_EX = _require_intrinsic("molt_json_loads_ex", globals())
-_MOLT_JSON_DUMPS_EX = _require_intrinsic("molt_json_dumps_ex", globals())
-_MOLT_JSON_RAW_DECODE_EX = _require_intrinsic("molt_json_raw_decode_ex", globals())
-_MOLT_JSON_CALC_LINENO_COL = _require_intrinsic("molt_json_calc_lineno_col", globals())
-_MOLT_JSON_COERCE_TEXT = _require_intrinsic("molt_json_coerce_text", globals())
+_MOLT_JSON_DETECT_ENCODING = _require_intrinsic("molt_json_detect_encoding")
+_MOLT_JSON_LOADS_EX = _require_intrinsic("molt_json_loads_ex")
+_MOLT_JSON_DUMPS_EX = _require_intrinsic("molt_json_dumps_ex")
+_MOLT_JSON_RAW_DECODE_EX = _require_intrinsic("molt_json_raw_decode_ex")
+_MOLT_JSON_CALC_LINENO_COL = _require_intrinsic("molt_json_calc_lineno_col")
+_MOLT_JSON_COERCE_TEXT = _require_intrinsic("molt_json_coerce_text")
 _MOLT_JSON_DEFAULT_SEPARATORS = _require_intrinsic(
-    "molt_json_default_separators", globals()
+    "molt_json_default_separators"
 )
 _MOLT_JSON_FORMAT_DECODE_ERROR = _require_intrinsic(
-    "molt_json_format_decode_error", globals()
+    "molt_json_format_decode_error"
 )
 _MOLT_JSON_PARSE_ERROR_MSG = _require_intrinsic(
-    "molt_json_parse_error_msg", globals()
+    "molt_json_parse_error_msg"
 )
 
 

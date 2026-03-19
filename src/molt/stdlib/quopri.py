@@ -12,12 +12,12 @@ MAXLINESIZE = 76
 HEX = b"0123456789ABCDEF"
 EMPTYSTRING = b""
 
-_MOLT_QUOPRI_ENCODE = _require_intrinsic("molt_quopri_encode", globals())
-_MOLT_QUOPRI_DECODE = _require_intrinsic("molt_quopri_decode", globals())
-_MOLT_QUOPRI_NEEDS_QUOTING = _require_intrinsic("molt_quopri_needs_quoting", globals())
-_MOLT_QUOPRI_QUOTE = _require_intrinsic("molt_quopri_quote", globals())
-_MOLT_QUOPRI_ISHEX = _require_intrinsic("molt_quopri_ishex", globals())
-_MOLT_QUOPRI_UNHEX = _require_intrinsic("molt_quopri_unhex", globals())
+_MOLT_QUOPRI_ENCODE = _require_intrinsic("molt_quopri_encode")
+_MOLT_QUOPRI_DECODE = _require_intrinsic("molt_quopri_decode")
+_MOLT_QUOPRI_NEEDS_QUOTING = _require_intrinsic("molt_quopri_needs_quoting")
+_MOLT_QUOPRI_QUOTE = _require_intrinsic("molt_quopri_quote")
+_MOLT_QUOPRI_ISHEX = _require_intrinsic("molt_quopri_ishex")
+_MOLT_QUOPRI_UNHEX = _require_intrinsic("molt_quopri_unhex")
 
 
 def _expect_bytes(value, name: str) -> bytes:

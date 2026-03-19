@@ -38,14 +38,14 @@ _EOCD_SIG = b"PK\x05\x06"
 _ZIP64_EOCD_SIG = b"PK\x06\x06"
 _ZIP64_LOCATOR_SIG = b"PK\x06\x07"
 
-_MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted", globals())
-_MOLT_CAPABILITIES_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
-_MOLT_ZIPFILE_CRC32 = _require_intrinsic("molt_zipfile_crc32", globals())
+_MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted")
+_MOLT_CAPABILITIES_REQUIRE = _require_intrinsic("molt_capabilities_require")
+_MOLT_ZIPFILE_CRC32 = _require_intrinsic("molt_zipfile_crc32")
 _MOLT_ZIPFILE_PARSE_CENTRAL_DIRECTORY = _require_intrinsic(
-    "molt_zipfile_parse_central_directory", globals()
+    "molt_zipfile_parse_central_directory"
 )
 _MOLT_ZIPFILE_BUILD_ZIP64_EXTRA = _require_intrinsic(
-    "molt_zipfile_build_zip64_extra", globals()
+    "molt_zipfile_build_zip64_extra"
 )
 
 
@@ -355,10 +355,10 @@ def _zip64_extra(size: int, comp_size: int, offset: int | None) -> bytes:
     return _MOLT_ZIPFILE_BUILD_ZIP64_EXTRA(size, comp_size, offset)
 
 
-_MOLT_DEFLATE_RAW = _require_intrinsic("molt_deflate_raw", globals())
-_MOLT_INFLATE_RAW = _require_intrinsic("molt_inflate_raw", globals())
+_MOLT_DEFLATE_RAW = _require_intrinsic("molt_deflate_raw")
+_MOLT_INFLATE_RAW = _require_intrinsic("molt_inflate_raw")
 _MOLT_ZIPFILE_NORMALIZE_MEMBER_PATH = _require_intrinsic(
-    "molt_zipfile_normalize_member_path", globals()
+    "molt_zipfile_normalize_member_path"
 )
 
 

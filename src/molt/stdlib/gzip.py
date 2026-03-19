@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_GZIP_COMPRESS = _require_intrinsic("molt_gzip_compress", globals())
-_MOLT_GZIP_DECOMPRESS = _require_intrinsic("molt_gzip_decompress", globals())
-_MOLT_GZIP_OPEN = _require_intrinsic("molt_gzip_open", globals())
-_MOLT_GZIP_READ = _require_intrinsic("molt_gzip_read", globals())
-_MOLT_GZIP_WRITE = _require_intrinsic("molt_gzip_write", globals())
-_MOLT_GZIP_FLUSH = _require_intrinsic("molt_gzip_flush", globals())
-_MOLT_GZIP_CLOSE = _require_intrinsic("molt_gzip_close", globals())
-_MOLT_GZIP_DROP = _require_intrinsic("molt_gzip_drop", globals())
+_MOLT_GZIP_COMPRESS = _require_intrinsic("molt_gzip_compress")
+_MOLT_GZIP_DECOMPRESS = _require_intrinsic("molt_gzip_decompress")
+_MOLT_GZIP_OPEN = _require_intrinsic("molt_gzip_open")
+_MOLT_GZIP_READ = _require_intrinsic("molt_gzip_read")
+_MOLT_GZIP_WRITE = _require_intrinsic("molt_gzip_write")
+_MOLT_GZIP_FLUSH = _require_intrinsic("molt_gzip_flush")
+_MOLT_GZIP_CLOSE = _require_intrinsic("molt_gzip_close")
+_MOLT_GZIP_DROP = _require_intrinsic("molt_gzip_drop")
 
 
 class BadGzipFile(OSError):

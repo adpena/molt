@@ -20,21 +20,21 @@ __all__ = [
 ]
 
 
-_MOLT_SHUTIL_COPYFILE = _require_intrinsic("molt_shutil_copyfile", globals())
-_MOLT_SHUTIL_WHICH = _require_intrinsic("molt_shutil_which", globals())
-_MOLT_SHUTIL_RMTREE = _require_intrinsic("molt_shutil_rmtree", globals())
-_MOLT_SHUTIL_CHOWN = _require_intrinsic("molt_shutil_chown", globals())
-_MOLT_SHUTIL_COPY = _require_intrinsic("molt_shutil_copy", globals())
-_MOLT_SHUTIL_COPY2 = _require_intrinsic("molt_shutil_copy2", globals())
-_MOLT_SHUTIL_COPYTREE = _require_intrinsic("molt_shutil_copytree", globals())
-_MOLT_SHUTIL_DISK_USAGE = _require_intrinsic("molt_shutil_disk_usage", globals())
+_MOLT_SHUTIL_COPYFILE = _require_intrinsic("molt_shutil_copyfile")
+_MOLT_SHUTIL_WHICH = _require_intrinsic("molt_shutil_which")
+_MOLT_SHUTIL_RMTREE = _require_intrinsic("molt_shutil_rmtree")
+_MOLT_SHUTIL_CHOWN = _require_intrinsic("molt_shutil_chown")
+_MOLT_SHUTIL_COPY = _require_intrinsic("molt_shutil_copy")
+_MOLT_SHUTIL_COPY2 = _require_intrinsic("molt_shutil_copy2")
+_MOLT_SHUTIL_COPYTREE = _require_intrinsic("molt_shutil_copytree")
+_MOLT_SHUTIL_DISK_USAGE = _require_intrinsic("molt_shutil_disk_usage")
 _MOLT_SHUTIL_GET_TERMINAL_SIZE = _require_intrinsic(
-    "molt_shutil_get_terminal_size", globals()
+    "molt_shutil_get_terminal_size"
 )
-_MOLT_SHUTIL_MAKE_ARCHIVE = _require_intrinsic("molt_shutil_make_archive", globals())
-_MOLT_SHUTIL_MOVE = _require_intrinsic("molt_shutil_move", globals())
+_MOLT_SHUTIL_MAKE_ARCHIVE = _require_intrinsic("molt_shutil_make_archive")
+_MOLT_SHUTIL_MOVE = _require_intrinsic("molt_shutil_move")
 _MOLT_SHUTIL_UNPACK_ARCHIVE = _require_intrinsic(
-    "molt_shutil_unpack_archive", globals()
+    "molt_shutil_unpack_archive"
 )
 
 

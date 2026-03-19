@@ -64,39 +64,27 @@ CORO_CLOSED = "CORO_CLOSED"
 
 # --- Direct intrinsic bindings (no Python wrapper overhead) ---
 
-cleandoc = _require_intrinsic("molt_inspect_cleandoc", globals())
-currentframe = _require_intrinsic("molt_inspect_currentframe", globals())
-getdoc = _require_intrinsic("molt_inspect_getdoc", globals())
-isfunction = _require_intrinsic("molt_inspect_isfunction", globals())
-isclass = _require_intrinsic("molt_inspect_isclass", globals())
-ismodule = _require_intrinsic("molt_inspect_ismodule", globals())
-iscoroutine = _require_intrinsic("molt_inspect_iscoroutine", globals())
-iscoroutinefunction = _require_intrinsic(
-    "molt_inspect_iscoroutinefunction", globals()
-)
-isasyncgenfunction = _require_intrinsic(
-    "molt_inspect_isasyncgenfunction", globals()
-)
-isgeneratorfunction = _require_intrinsic(
-    "molt_inspect_isgeneratorfunction", globals()
-)
-isawaitable = _require_intrinsic("molt_inspect_isawaitable", globals())
-getgeneratorstate = _require_intrinsic(
-    "molt_inspect_getgeneratorstate", globals()
-)
-getasyncgenstate = _require_intrinsic(
-    "molt_inspect_getasyncgenstate", globals()
-)
-getcoroutinestate = _require_intrinsic(
-    "molt_inspect_getcoroutinestate", globals()
-)
-getgeneratorlocals = _require_intrinsic("molt_gen_locals", globals())
-getasyncgenlocals = _require_intrinsic("molt_asyncgen_locals", globals())
+cleandoc = _require_intrinsic("molt_inspect_cleandoc")
+currentframe = _require_intrinsic("molt_inspect_currentframe")
+getdoc = _require_intrinsic("molt_inspect_getdoc")
+isfunction = _require_intrinsic("molt_inspect_isfunction")
+isclass = _require_intrinsic("molt_inspect_isclass")
+ismodule = _require_intrinsic("molt_inspect_ismodule")
+iscoroutine = _require_intrinsic("molt_inspect_iscoroutine")
+iscoroutinefunction = _require_intrinsic("molt_inspect_iscoroutinefunction")
+isasyncgenfunction = _require_intrinsic("molt_inspect_isasyncgenfunction")
+isgeneratorfunction = _require_intrinsic("molt_inspect_isgeneratorfunction")
+isawaitable = _require_intrinsic("molt_inspect_isawaitable")
+getgeneratorstate = _require_intrinsic("molt_inspect_getgeneratorstate")
+getasyncgenstate = _require_intrinsic("molt_inspect_getasyncgenstate")
+getcoroutinestate = _require_intrinsic("molt_inspect_getcoroutinestate")
+getgeneratorlocals = _require_intrinsic("molt_gen_locals")
+getasyncgenlocals = _require_intrinsic("molt_asyncgen_locals")
 
 # --- Intrinsics used by retained wrappers ---
 
 _MOLT_INSPECT_SIGNATURE_DATA = _require_intrinsic(
-    "molt_inspect_signature_data", globals()
+    "molt_inspect_signature_data"
 )
 
 
