@@ -8373,18 +8373,56 @@ def _default_molt_cache() -> Path:
     return base / "molt"
 
 
+@functools.lru_cache(maxsize=256)
+def _cargo_target_root_cached(
+    project_root_str: str,
+    cargo_target_override: str | None,
+    cwd_str: str,
+) -> Path:
+    project_root = Path(project_root_str)
+    if not cargo_target_override:
+        return project_root / "target"
+    path = Path(cargo_target_override).expanduser()
+    if not path.is_absolute():
+        path = (Path(cwd_str) / path).absolute()
+    return path
+
+
 def _cargo_target_root(project_root: Path) -> Path:
-    return _resolve_env_path("CARGO_TARGET_DIR", project_root / "target")
+    return _cargo_target_root_cached(
+        os.fspath(project_root),
+        os.environ.get("CARGO_TARGET_DIR"),
+        os.fspath(Path.cwd()),
+    )
 
 
-def _build_state_root(project_root: Path) -> Path:
-    override = os.environ.get("MOLT_BUILD_STATE_DIR")
-    if override:
-        path = Path(override).expanduser()
+@functools.lru_cache(maxsize=256)
+def _build_state_root_cached(
+    project_root_str: str,
+    build_state_override: str | None,
+    cargo_target_override: str | None,
+    cwd_str: str,
+) -> Path:
+    project_root = Path(project_root_str)
+    if build_state_override:
+        path = Path(build_state_override).expanduser()
         if not path.is_absolute():
             path = (project_root / path).absolute()
         return path
-    return _cargo_target_root(project_root) / ".molt_state"
+    return _cargo_target_root_cached(
+        project_root_str,
+        cargo_target_override,
+        cwd_str,
+    ) / ".molt_state"
+
+
+def _build_state_root(project_root: Path) -> Path:
+    return _build_state_root_cached(
+        os.fspath(project_root),
+        os.environ.get("MOLT_BUILD_STATE_DIR"),
+        os.environ.get("CARGO_TARGET_DIR"),
+        os.fspath(Path.cwd()),
+    )
 
 
 def _wasm_runtime_root(project_root: Path) -> Path:

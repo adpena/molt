@@ -907,6 +907,53 @@ def test_module_graph_cache_path_uses_cached_graph_key(
     assert info.hits >= 1
 
 
+def test_cargo_target_root_is_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli._cargo_target_root_cached.cache_clear()
+    monkeypatch.setenv("CARGO_TARGET_DIR", "external-target")
+    monkeypatch.chdir(tmp_path)
+
+    first = cli._cargo_target_root(tmp_path)
+    second = cli._cargo_target_root(tmp_path)
+
+    info = cli._cargo_target_root_cached.cache_info()
+    assert first == second == (tmp_path / "external-target")
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
+def test_build_state_root_is_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli._build_state_root_cached.cache_clear()
+    cli._cargo_target_root_cached.cache_clear()
+    monkeypatch.setenv("CARGO_TARGET_DIR", "external-target")
+    monkeypatch.chdir(tmp_path)
+
+    first = cli._build_state_root(tmp_path)
+    second = cli._build_state_root(tmp_path)
+
+    info = cli._build_state_root_cached.cache_info()
+    assert first == second == (tmp_path / "external-target" / ".molt_state")
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
+def test_build_state_root_uses_override_relative_to_project_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli._build_state_root_cached.cache_clear()
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", "state-dir")
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.chdir(other)
+
+    state_root = cli._build_state_root(tmp_path)
+
+    assert state_root == (tmp_path / "state-dir")
+
+
 def test_load_module_imports_reuses_persisted_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
