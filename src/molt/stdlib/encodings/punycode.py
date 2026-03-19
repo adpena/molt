@@ -7,9 +7,9 @@ import codecs
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
-_punycode_encode = _require_intrinsic("molt_punycode_encode", globals())
-_punycode_decode = _require_intrinsic("molt_punycode_decode", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
+_punycode_encode = _require_intrinsic("molt_punycode_encode")
+_punycode_decode = _require_intrinsic("molt_punycode_decode")
 
 
 def punycode_encode(text):
