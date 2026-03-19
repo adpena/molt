@@ -3594,6 +3594,37 @@ def test_build_stdlib_like_module_flags_precomputes_classification() -> None:
     assert flags["pkg.mod"] is False
 
 
+def test_build_module_graph_metadata_bundles_related_views(tmp_path: Path) -> None:
+    module_graph = {
+        "app_entry": tmp_path / "app.py",
+        "pkg": tmp_path / "pkg" / "__init__.py",
+    }
+    (
+        logical_source_path_by_module,
+        entry_override_by_module,
+        module_is_namespace_by_module,
+        module_is_package_by_module,
+        frontend_module_costs,
+        stdlib_like_by_module,
+    ) = cli._build_module_graph_metadata(
+        module_graph,
+        generated_module_source_paths={"pkg": "/generated/pkg/__init__.py"},
+        entry_module="app_entry",
+        namespace_module_names={"pkg"},
+        module_sources={"app_entry": "print('ok')\n", "pkg": ""},
+        module_deps={"app_entry": {"pkg"}, "pkg": set()},
+    )
+
+    assert logical_source_path_by_module["pkg"] == "/generated/pkg/__init__.py"
+    assert entry_override_by_module["app_entry"] is None
+    assert module_is_namespace_by_module["pkg"] is True
+    assert module_is_package_by_module["pkg"] is True
+    assert frontend_module_costs is not None
+    assert frontend_module_costs["app_entry"] == 12.0 + 512.0
+    assert stdlib_like_by_module is not None
+    assert stdlib_like_by_module["pkg"] is False
+
+
 def test_choose_frontend_parallel_layer_workers_uses_precomputed_costs_and_flags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

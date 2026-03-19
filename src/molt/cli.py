@@ -4409,6 +4409,55 @@ def _build_stdlib_like_module_flags(
     }
 
 
+def _build_module_graph_metadata(
+    module_graph: Mapping[str, Path],
+    *,
+    generated_module_source_paths: Mapping[str, str],
+    entry_module: str,
+    namespace_module_names: Collection[str],
+    module_sources: Mapping[str, str] | None = None,
+    module_deps: Mapping[str, set[str]] | None = None,
+) -> tuple[
+    dict[str, str],
+    dict[str, str | None],
+    dict[str, bool],
+    dict[str, bool],
+    dict[str, float] | None,
+    dict[str, bool] | None,
+]:
+    (
+        logical_source_path_by_module,
+        entry_override_by_module,
+        module_is_namespace_by_module,
+        module_is_package_by_module,
+    ) = _build_module_lowering_metadata(
+        module_graph,
+        generated_module_source_paths=generated_module_source_paths,
+        entry_module=entry_module,
+        namespace_module_names=namespace_module_names,
+    )
+    frontend_module_costs = None
+    if module_sources is not None and module_deps is not None:
+        frontend_module_costs = _build_frontend_module_costs(
+            module_graph,
+            module_sources=module_sources,
+            module_deps=module_deps,
+        )
+    stdlib_like_by_module = (
+        _build_stdlib_like_module_flags(module_graph)
+        if module_deps is not None
+        else None
+    )
+    return (
+        logical_source_path_by_module,
+        entry_override_by_module,
+        module_is_namespace_by_module,
+        module_is_package_by_module,
+        frontend_module_costs,
+        stdlib_like_by_module,
+    )
+
+
 def _choose_frontend_parallel_layer_workers(
     *,
     candidates: list[str],
@@ -11607,7 +11656,9 @@ def build(
         entry_override_by_module,
         module_is_namespace_by_module,
         module_is_package_by_module,
-    ) = _build_module_lowering_metadata(
+        _frontend_module_costs_unused,
+        _stdlib_like_by_module_unused,
+    ) = _build_module_graph_metadata(
         module_graph,
         generated_module_source_paths=generated_module_source_paths,
         entry_module=entry_module,
@@ -11747,12 +11798,23 @@ def build(
         pgo_hot_function_names=pgo_hot_function_names,
         type_facts=cast(TypeFacts | None, type_facts),
     )
-    frontend_module_costs = _build_frontend_module_costs(
+    (
+        _logical_source_path_by_module_reused,
+        _entry_override_by_module_reused,
+        _module_is_namespace_by_module_reused,
+        _module_is_package_by_module_reused,
+        frontend_module_costs,
+        stdlib_like_by_module,
+    ) = _build_module_graph_metadata(
         module_graph,
+        generated_module_source_paths=generated_module_source_paths,
+        entry_module=entry_module,
+        namespace_module_names=namespace_module_names,
         module_sources=module_sources,
         module_deps=module_deps,
     )
-    stdlib_like_by_module = _build_stdlib_like_module_flags(module_graph)
+    assert frontend_module_costs is not None
+    assert stdlib_like_by_module is not None
 
     functions: list[dict[str, Any]] = []
     # Normalize code-slot IDs across modules to keep tracebacks consistent.
