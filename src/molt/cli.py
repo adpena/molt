@@ -913,6 +913,13 @@ class _PreparedBackendDispatch:
     backend_daemon_config_digest: str | None
 
 
+@dataclass(frozen=True)
+class _BackendExecutionResult:
+    backend_daemon_cached: bool | None
+    backend_daemon_cache_tier: str | None
+    backend_daemon_health: dict[str, Any] | None
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -12366,6 +12373,263 @@ def _prepare_backend_dispatch(
     ), None
 
 
+def _execute_backend_compile(
+    *,
+    cache: bool,
+    cache_path: Path | None,
+    function_cache_path: Path | None,
+    artifacts_root: Path,
+    is_wasm: bool,
+    diagnostics_enabled: bool,
+    phase_starts: dict[str, float],
+    daemon_ready: bool,
+    daemon_socket: Path | None,
+    project_root: Path,
+    output_artifact: Path,
+    cache_key: str | None,
+    function_cache_key: str | None,
+    cache_setup: _BackendCacheSetup,
+    target_triple: str | None,
+    backend_daemon_config_digest: str | None,
+    ir: Mapping[str, Any],
+    json_output: bool,
+    warnings: list[str],
+    verbose: bool,
+    backend_bin: Path,
+    backend_env: dict[str, str] | None,
+    backend_timeout: float | None,
+    molt_root: Path,
+    backend_cargo_profile: str,
+    _ensure_backend_ir_bytes: Callable[[], bytes],
+    cache_hit: bool,
+    backend_daemon_cached: bool | None,
+    backend_daemon_cache_tier: str | None,
+    backend_daemon_health: dict[str, Any] | None,
+) -> tuple[_BackendExecutionResult | None, dict[str, Any] | None]:
+    backend_output_ctx: ContextManager[Path]
+    if cache and cache_path is not None:
+        backend_output_ctx = nullcontext(cache_path)
+    else:
+        backend_output_ctx = _temporary_backend_output_path(
+            artifacts_root,
+            is_wasm=is_wasm,
+        )
+    with backend_output_ctx as backend_output:
+        backend_compiled = False
+        backend_output_written = True
+        backend_output_exists = False
+        daemon_error: str | None = None
+        backend_daemon_request_bytes_cached: bytes | None = None
+        output_sync_state_path: Path | None = None
+        output_sync_state: dict[str, Any] | None = None
+        output_artifact_stat: os.stat_result | None = None
+        skip_module_output_if_synced = False
+        skip_function_output_if_synced = False
+        if daemon_ready and daemon_socket is not None:
+            output_sync_state_path = _artifact_sync_state_path(
+                project_root, output_artifact
+            )
+            output_sync_state = _read_artifact_sync_state(output_sync_state_path)
+            try:
+                output_artifact_stat = output_artifact.stat()
+            except OSError:
+                output_artifact_stat = None
+            (
+                skip_module_output_if_synced,
+                skip_function_output_if_synced,
+            ) = _backend_daemon_skip_output_sync_flags(
+                project_root,
+                output_artifact,
+                cache_key=cache_key if cache else None,
+                function_cache_key=(
+                    function_cache_key
+                    if cache and function_cache_key != cache_key
+                    else None
+                ),
+                state_path=output_sync_state_path,
+                state=output_sync_state,
+                output_stat=output_artifact_stat,
+            )
+            backend_daemon_request_bytes_cached, request_encode_err = (
+                _backend_daemon_compile_request_bytes(
+                    ir=ir,
+                    backend_output=backend_output,
+                    is_wasm=is_wasm,
+                    target_triple=target_triple,
+                    cache_key=cache_key,
+                    function_cache_key=function_cache_key,
+                    config_digest=backend_daemon_config_digest,
+                    skip_module_output_if_synced=skip_module_output_if_synced,
+                    skip_function_output_if_synced=skip_function_output_if_synced,
+                )
+            )
+            if request_encode_err is not None:
+                return None, _fail(
+                    request_encode_err,
+                    json_output,
+                    command="build",
+                )
+            if diagnostics_enabled and "backend_daemon_compile" not in phase_starts:
+                phase_starts["backend_daemon_compile"] = time.perf_counter()
+            daemon_compile = _compile_with_backend_daemon(
+                daemon_socket,
+                ir=ir,
+                backend_output=backend_output,
+                is_wasm=is_wasm,
+                target_triple=target_triple,
+                cache_key=cache_key,
+                function_cache_key=function_cache_key,
+                config_digest=backend_daemon_config_digest,
+                skip_module_output_if_synced=skip_module_output_if_synced,
+                skip_function_output_if_synced=skip_function_output_if_synced,
+                timeout=None,
+                request_bytes=backend_daemon_request_bytes_cached,
+            )
+            backend_compiled = daemon_compile.ok
+            backend_output_written = daemon_compile.output_written
+            daemon_error = daemon_compile.error
+            backend_output_exists = daemon_compile.output_exists
+            if daemon_compile.cached is not None:
+                backend_daemon_cached = daemon_compile.cached
+            if daemon_compile.cache_tier is not None:
+                backend_daemon_cache_tier = daemon_compile.cache_tier
+            daemon_health = daemon_compile.health
+            if daemon_health is not None:
+                backend_daemon_health = daemon_health
+            if not backend_compiled and _backend_daemon_retryable_error(daemon_error):
+                if diagnostics_enabled and "backend_daemon_restart" not in phase_starts:
+                    phase_starts["backend_daemon_restart"] = time.perf_counter()
+                restart_timeout = _backend_daemon_start_timeout()
+                with _build_lock(molt_root, f"backend-daemon.{backend_cargo_profile}"):
+                    daemon_ready = _start_backend_daemon(
+                        backend_bin,
+                        daemon_socket,
+                        cargo_profile=backend_cargo_profile,
+                        project_root=molt_root,
+                        startup_timeout=restart_timeout,
+                        json_output=json_output,
+                    )
+                if daemon_ready:
+                    daemon_compile = _compile_with_backend_daemon(
+                        daemon_socket,
+                        ir=ir,
+                        backend_output=backend_output,
+                        is_wasm=is_wasm,
+                        target_triple=target_triple,
+                        cache_key=cache_key,
+                        function_cache_key=function_cache_key,
+                        config_digest=backend_daemon_config_digest,
+                        skip_module_output_if_synced=skip_module_output_if_synced,
+                        skip_function_output_if_synced=skip_function_output_if_synced,
+                        timeout=None,
+                        request_bytes=backend_daemon_request_bytes_cached,
+                    )
+                    backend_compiled = daemon_compile.ok
+                    backend_output_written = daemon_compile.output_written
+                    daemon_error = daemon_compile.error
+                    backend_output_exists = daemon_compile.output_exists
+                    if daemon_compile.cached is not None:
+                        backend_daemon_cached = daemon_compile.cached
+                    if daemon_compile.cache_tier is not None:
+                        backend_daemon_cache_tier = daemon_compile.cache_tier
+                    daemon_health = daemon_compile.health
+                    if daemon_health is not None:
+                        backend_daemon_health = daemon_health
+            if (
+                not backend_compiled
+                and verbose
+                and not json_output
+                and daemon_error
+            ):
+                print(
+                    "Backend daemon compile failed; falling back to one-shot mode: "
+                    f"{daemon_error}",
+                    file=sys.stderr,
+                )
+        if not backend_compiled:
+            if diagnostics_enabled and "backend_subprocess_compile" not in phase_starts:
+                phase_starts["backend_subprocess_compile"] = time.perf_counter()
+            cmd = [str(backend_bin)]
+            if is_wasm:
+                cmd.extend(["--target", "wasm"])
+            elif target_triple:
+                cmd.extend(["--target-triple", target_triple])
+            cmd_with_output = cmd + ["--output", str(backend_output)]
+            try:
+                backend_process = subprocess.run(
+                    cmd_with_output,
+                    input=_ensure_backend_ir_bytes(),
+                    capture_output=True,
+                    env=backend_env,
+                    timeout=backend_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                return None, _fail(
+                    "Backend compilation timed out",
+                    json_output,
+                    command="build",
+                )
+            if backend_process.returncode != 0:
+                backend_stderr = _subprocess_output_text(backend_process.stderr)
+                backend_stdout = _subprocess_output_text(backend_process.stdout)
+                if not json_output:
+                    if backend_stderr:
+                        print(backend_stderr, end="", file=sys.stderr)
+                    if backend_stdout:
+                        print(backend_stdout, end="")
+                return None, _fail(
+                    "Backend compilation failed",
+                    json_output,
+                    backend_process.returncode or 1,
+                    command="build",
+                )
+            if verbose and not json_output:
+                backend_stdout = _subprocess_output_text(backend_process.stdout)
+                backend_stderr = _subprocess_output_text(backend_process.stderr)
+                if backend_stdout:
+                    print(backend_stdout, end="")
+                if backend_stderr:
+                    print(backend_stderr, end="", file=sys.stderr)
+            backend_output_written = True
+        if backend_output_written and not (
+            daemon_ready and backend_compiled and backend_output_exists
+        ):
+            if not backend_output.exists():
+                return None, _fail(
+                    "Backend output missing", json_output, command="build"
+                )
+        if backend_output_written:
+            if diagnostics_enabled and "backend_artifact_stage" not in phase_starts:
+                phase_starts["backend_artifact_stage"] = time.perf_counter()
+            if cache and cache_path is not None:
+                if diagnostics_enabled and "backend_cache_write" not in phase_starts:
+                    phase_starts["backend_cache_write"] = time.perf_counter()
+            stage_error = _stage_backend_output_and_caches(
+                project_root,
+                backend_output,
+                output_artifact,
+                cache_path=cache_path if cache else None,
+                cache_key=cache_key if cache else None,
+                function_cache_path=function_cache_path if cache else None,
+                warnings=warnings,
+                output_already_synced=(
+                    skip_module_output_if_synced
+                    if daemon_ready and cache and cache_key
+                    else None
+                ),
+                state_path=output_sync_state_path,
+                state=output_sync_state,
+                output_stat=output_artifact_stat,
+            )
+            if stage_error is not None:
+                return None, _fail(stage_error, json_output, command="build")
+    return _BackendExecutionResult(
+        backend_daemon_cached=backend_daemon_cached,
+        backend_daemon_cache_tier=backend_daemon_cache_tier,
+        backend_daemon_health=backend_daemon_health,
+    ), None
+
+
 def _prepare_backend_cache_setup(
     *,
     cache_enabled: bool,
@@ -16575,245 +16839,46 @@ def build(
             )
             if diagnostics_enabled and "backend_dispatch" not in phase_starts:
                 phase_starts["backend_dispatch"] = time.perf_counter()
-
-            backend_output_ctx: ContextManager[Path]
-            if cache and cache_path is not None:
-                backend_output_ctx = nullcontext(cache_path)
-            else:
-                backend_output_ctx = _temporary_backend_output_path(
-                    artifacts_root,
-                    is_wasm=is_wasm,
-                )
-            with backend_output_ctx as backend_output:
-                backend_compiled = False
-                backend_output_written = True
-                backend_output_exists = False
-                daemon_error: str | None = None
-                backend_daemon_request_bytes_cached: bytes | None = None
-                output_sync_state_path: Path | None = None
-                output_sync_state: dict[str, Any] | None = None
-                output_artifact_stat: os.stat_result | None = None
-                if daemon_ready and daemon_socket is not None:
-                    output_sync_state_path = _artifact_sync_state_path(
-                        project_root, output_artifact
-                    )
-                    output_sync_state = _read_artifact_sync_state(
-                        output_sync_state_path
-                    )
-                    try:
-                        output_artifact_stat = output_artifact.stat()
-                    except OSError:
-                        output_artifact_stat = None
-                    (
-                        skip_module_output_if_synced,
-                        skip_function_output_if_synced,
-                    ) = _backend_daemon_skip_output_sync_flags(
-                        project_root,
-                        output_artifact,
-                        cache_key=cache_key if cache else None,
-                        function_cache_key=(
-                            function_cache_key
-                            if cache and function_cache_key != cache_key
-                            else None
-                        ),
-                        state_path=output_sync_state_path,
-                        state=output_sync_state,
-                        output_stat=output_artifact_stat,
-                    )
-                    backend_daemon_request_bytes_cached, request_encode_err = (
-                        _backend_daemon_compile_request_bytes(
-                            ir=ir,
-                            backend_output=backend_output,
-                            is_wasm=is_wasm,
-                            target_triple=target_triple,
-                            cache_key=cache_key,
-                            function_cache_key=function_cache_key,
-                            config_digest=backend_daemon_config_digest,
-                            skip_module_output_if_synced=skip_module_output_if_synced,
-                            skip_function_output_if_synced=skip_function_output_if_synced,
-                        )
-                    )
-                    if request_encode_err is not None:
-                        return _fail(
-                            request_encode_err,
-                            json_output,
-                            command="build",
-                        )
-                    if (
-                        diagnostics_enabled
-                        and "backend_daemon_compile" not in phase_starts
-                    ):
-                        phase_starts["backend_daemon_compile"] = time.perf_counter()
-                    daemon_compile = _compile_with_backend_daemon(
-                        daemon_socket,
-                        ir=ir,
-                        backend_output=backend_output,
-                        is_wasm=is_wasm,
-                        target_triple=target_triple,
-                        cache_key=cache_key,
-                        function_cache_key=function_cache_key,
-                        config_digest=backend_daemon_config_digest,
-                        skip_module_output_if_synced=skip_module_output_if_synced,
-                        skip_function_output_if_synced=skip_function_output_if_synced,
-                        timeout=None,
-                        request_bytes=backend_daemon_request_bytes_cached,
-                    )
-                    backend_compiled = daemon_compile.ok
-                    backend_output_written = daemon_compile.output_written
-                    daemon_error = daemon_compile.error
-                    backend_output_exists = daemon_compile.output_exists
-                    if daemon_compile.cached is not None:
-                        backend_daemon_cached = daemon_compile.cached
-                    if daemon_compile.cache_tier is not None:
-                        backend_daemon_cache_tier = daemon_compile.cache_tier
-                    daemon_health = daemon_compile.health
-                    if daemon_health is not None:
-                        backend_daemon_health = daemon_health
-                    if not backend_compiled and _backend_daemon_retryable_error(
-                        daemon_error
-                    ):
-                        if (
-                            diagnostics_enabled
-                            and "backend_daemon_restart" not in phase_starts
-                        ):
-                            phase_starts["backend_daemon_restart"] = time.perf_counter()
-                        restart_timeout = _backend_daemon_start_timeout()
-                        with _build_lock(
-                            molt_root, f"backend-daemon.{backend_cargo_profile}"
-                        ):
-                            daemon_ready = _start_backend_daemon(
-                                backend_bin,
-                                daemon_socket,
-                                cargo_profile=backend_cargo_profile,
-                                project_root=molt_root,
-                                startup_timeout=restart_timeout,
-                                json_output=json_output,
-                            )
-                        if daemon_ready:
-                            daemon_compile = _compile_with_backend_daemon(
-                                daemon_socket,
-                                ir=ir,
-                                backend_output=backend_output,
-                                is_wasm=is_wasm,
-                                target_triple=target_triple,
-                                cache_key=cache_key,
-                                function_cache_key=function_cache_key,
-                                config_digest=backend_daemon_config_digest,
-                                skip_module_output_if_synced=skip_module_output_if_synced,
-                                skip_function_output_if_synced=(
-                                    skip_function_output_if_synced
-                                ),
-                                timeout=None,
-                                request_bytes=backend_daemon_request_bytes_cached,
-                            )
-                            backend_compiled = daemon_compile.ok
-                            backend_output_written = daemon_compile.output_written
-                            daemon_error = daemon_compile.error
-                            backend_output_exists = daemon_compile.output_exists
-                            if daemon_compile.cached is not None:
-                                backend_daemon_cached = daemon_compile.cached
-                            if daemon_compile.cache_tier is not None:
-                                backend_daemon_cache_tier = daemon_compile.cache_tier
-                            daemon_health = daemon_compile.health
-                            if daemon_health is not None:
-                                backend_daemon_health = daemon_health
-                    if (
-                        not backend_compiled
-                        and verbose
-                        and not json_output
-                        and daemon_error
-                    ):
-                        print(
-                            "Backend daemon compile failed; falling back to one-shot mode: "
-                            f"{daemon_error}",
-                            file=sys.stderr,
-                        )
-                if not backend_compiled:
-                    if (
-                        diagnostics_enabled
-                        and "backend_subprocess_compile" not in phase_starts
-                    ):
-                        phase_starts["backend_subprocess_compile"] = time.perf_counter()
-                    cmd = [str(backend_bin)]
-                    if is_wasm:
-                        cmd.extend(["--target", "wasm"])
-                    elif target_triple:
-                        cmd.extend(["--target-triple", target_triple])
-                    cmd_with_output = cmd + ["--output", str(backend_output)]
-                    try:
-                        backend_process = subprocess.run(
-                            cmd_with_output,
-                            input=_ensure_backend_ir_bytes(),
-                            capture_output=True,
-                            env=backend_env,
-                            timeout=backend_timeout,
-                        )
-                    except subprocess.TimeoutExpired:
-                        return _fail(
-                            "Backend compilation timed out",
-                            json_output,
-                            command="build",
-                        )
-                    if backend_process.returncode != 0:
-                        backend_stderr = _subprocess_output_text(backend_process.stderr)
-                        backend_stdout = _subprocess_output_text(backend_process.stdout)
-                        if not json_output:
-                            if backend_stderr:
-                                print(backend_stderr, end="", file=sys.stderr)
-                            if backend_stdout:
-                                print(backend_stdout, end="")
-                        return _fail(
-                            "Backend compilation failed",
-                            json_output,
-                            backend_process.returncode or 1,
-                            command="build",
-                        )
-                    if verbose and not json_output:
-                        backend_stdout = _subprocess_output_text(backend_process.stdout)
-                        backend_stderr = _subprocess_output_text(backend_process.stderr)
-                        if backend_stdout:
-                            print(backend_stdout, end="")
-                        if backend_stderr:
-                            print(backend_stderr, end="", file=sys.stderr)
-                    backend_output_written = True
-                if backend_output_written and not (
-                    daemon_ready and backend_compiled and backend_output_exists
-                ):
-                    if not backend_output.exists():
-                        return _fail(
-                            "Backend output missing", json_output, command="build"
-                        )
-                if backend_output_written:
-                    if (
-                        diagnostics_enabled
-                        and "backend_artifact_stage" not in phase_starts
-                    ):
-                        phase_starts["backend_artifact_stage"] = time.perf_counter()
-                    if cache and cache_path is not None:
-                        if (
-                            diagnostics_enabled
-                            and "backend_cache_write" not in phase_starts
-                        ):
-                            phase_starts["backend_cache_write"] = time.perf_counter()
-                    stage_error = _stage_backend_output_and_caches(
-                        project_root,
-                        backend_output,
-                        output_artifact,
-                        cache_path=cache_path if cache else None,
-                        cache_key=cache_key if cache else None,
-                        function_cache_path=function_cache_path if cache else None,
-                        warnings=warnings,
-                        output_already_synced=(
-                            skip_module_output_if_synced
-                            if daemon_ready and cache and cache_key
-                            else None
-                        ),
-                        state_path=output_sync_state_path,
-                        state=output_sync_state,
-                        output_stat=output_artifact_stat,
-                    )
-                    if stage_error is not None:
-                        return _fail(stage_error, json_output, command="build")
+            backend_execution_result, backend_execution_error = _execute_backend_compile(
+                cache=cache,
+                cache_path=cache_path,
+                function_cache_path=function_cache_path,
+                artifacts_root=artifacts_root,
+                is_wasm=is_wasm,
+                diagnostics_enabled=diagnostics_enabled,
+                phase_starts=phase_starts,
+                daemon_ready=daemon_ready,
+                daemon_socket=daemon_socket,
+                project_root=project_root,
+                output_artifact=output_artifact,
+                cache_key=cache_key,
+                function_cache_key=function_cache_key,
+                cache_setup=cache_setup,
+                target_triple=target_triple,
+                backend_daemon_config_digest=backend_daemon_config_digest,
+                ir=ir,
+                json_output=json_output,
+                warnings=warnings,
+                verbose=verbose,
+                backend_bin=backend_bin,
+                backend_env=backend_env,
+                backend_timeout=backend_timeout,
+                molt_root=molt_root,
+                backend_cargo_profile=backend_cargo_profile,
+                _ensure_backend_ir_bytes=_ensure_backend_ir_bytes,
+                cache_hit=cache_hit,
+                backend_daemon_cached=backend_daemon_cached,
+                backend_daemon_cache_tier=backend_daemon_cache_tier,
+                backend_daemon_health=backend_daemon_health,
+            )
+            if backend_execution_error is not None:
+                return backend_execution_error
+            assert backend_execution_result is not None
+            backend_daemon_cached = backend_execution_result.backend_daemon_cached
+            backend_daemon_cache_tier = (
+                backend_execution_result.backend_daemon_cache_tier
+            )
+            backend_daemon_health = backend_execution_result.backend_daemon_health
 
     if is_wasm:
         output_wasm = output_artifact
