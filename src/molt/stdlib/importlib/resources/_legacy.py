@@ -2,9 +2,9 @@
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_require_intrinsic("molt_stdlib_probe")
 _MOLT_IMPORTLIB_RESOURCES_NORMALIZE_PATH = _require_intrinsic(
-    "molt_importlib_resources_normalize_path", globals()
+    "molt_importlib_resources_normalize_path"
 )
 
 import functools  # noqa: F401

@@ -2,7 +2,7 @@
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_require_intrinsic("molt_stdlib_probe")
 
 import abc
 import warnings
@@ -13,10 +13,10 @@ from . import machinery
 from ._abc import Loader
 
 _MOLT_IMPORTLIB_IMPORT_OPTIONAL = _require_intrinsic(
-    "molt_importlib_import_optional", globals()
+    "molt_importlib_import_optional"
 )
 _MOLT_IMPORTLIB_IMPORT_OR_FALLBACK = _require_intrinsic(
-    "molt_importlib_import_or_fallback", globals()
+    "molt_importlib_import_or_fallback"
 )
 
 _RESOURCE_ABC_EXPORTS = frozenset(

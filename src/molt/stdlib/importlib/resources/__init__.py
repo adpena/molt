@@ -15,72 +15,72 @@ from . import abc
 from . import readers  # noqa: F401
 from .abc import ResourceReader
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_require_intrinsic("molt_stdlib_probe")
 _MOLT_IMPORTLIB_RESOURCES_PATH_PAYLOAD = _require_intrinsic(
-    "molt_importlib_resources_path_payload", globals()
+    "molt_importlib_resources_path_payload"
 )
 _MOLT_IMPORTLIB_RESOURCES_PACKAGE_INFO = _require_intrinsic(
-    "molt_importlib_resources_package_info", globals()
+    "molt_importlib_resources_package_info"
 )
 _MOLT_IMPORTLIB_RESOURCES_OPEN_RESOURCE_BYTES_FROM_PACKAGE = _require_intrinsic(
-    "molt_importlib_resources_open_resource_bytes_from_package", globals()
+    "molt_importlib_resources_open_resource_bytes_from_package"
 )
 _MOLT_IMPORTLIB_RESOURCES_CONTENTS_FROM_PACKAGE = _require_intrinsic(
-    "molt_importlib_resources_contents_from_package", globals()
+    "molt_importlib_resources_contents_from_package"
 )
 _MOLT_IMPORTLIB_RESOURCES_IS_RESOURCE_FROM_PACKAGE = _require_intrinsic(
-    "molt_importlib_resources_is_resource_from_package", globals()
+    "molt_importlib_resources_is_resource_from_package"
 )
 _MOLT_IMPORTLIB_RESOURCES_RESOURCE_PATH_FROM_PACKAGE = _require_intrinsic(
-    "molt_importlib_resources_resource_path_from_package", globals()
+    "molt_importlib_resources_resource_path_from_package"
 )
 _MOLT_IMPORTLIB_RESOURCES_READ_TEXT_FROM_PACKAGE = _require_intrinsic(
-    "molt_importlib_resources_read_text_from_package", globals()
+    "molt_importlib_resources_read_text_from_package"
 )
 _MOLT_IMPORTLIB_RESOURCES_AS_FILE_ENTER = _require_intrinsic(
-    "molt_importlib_resources_as_file_enter", globals()
+    "molt_importlib_resources_as_file_enter"
 )
 _MOLT_IMPORTLIB_RESOURCES_AS_FILE_EXIT = _require_intrinsic(
-    "molt_importlib_resources_as_file_exit", globals()
+    "molt_importlib_resources_as_file_exit"
 )
 _MOLT_IMPORTLIB_RESOURCES_MODULE_NAME = _require_intrinsic(
-    "molt_importlib_resources_module_name", globals()
+    "molt_importlib_resources_module_name"
 )
 _MOLT_IMPORTLIB_RESOURCES_LOADER_READER = _require_intrinsic(
-    "molt_importlib_resources_loader_reader", globals()
+    "molt_importlib_resources_loader_reader"
 )
 _MOLT_IMPORTLIB_RESOURCES_FILES_PAYLOAD = _require_intrinsic(
-    "molt_importlib_resources_files_payload", globals()
+    "molt_importlib_resources_files_payload"
 )
 _MOLT_IMPORTLIB_RESOURCES_READER_FILES_TRAVERSABLE = _require_intrinsic(
-    "molt_importlib_resources_reader_files_traversable", globals()
+    "molt_importlib_resources_reader_files_traversable"
 )
 _MOLT_IMPORTLIB_RESOURCES_READER_ROOTS = _require_intrinsic(
-    "molt_importlib_resources_reader_roots", globals()
+    "molt_importlib_resources_reader_roots"
 )
 _MOLT_IMPORTLIB_RESOURCES_READER_CONTENTS = _require_intrinsic(
-    "molt_importlib_resources_reader_contents", globals()
+    "molt_importlib_resources_reader_contents"
 )
 _MOLT_IMPORTLIB_RESOURCES_READER_RESOURCE_PATH = _require_intrinsic(
-    "molt_importlib_resources_reader_resource_path", globals()
+    "molt_importlib_resources_reader_resource_path"
 )
 _MOLT_IMPORTLIB_RESOURCES_READER_IS_RESOURCE = _require_intrinsic(
-    "molt_importlib_resources_reader_is_resource", globals()
+    "molt_importlib_resources_reader_is_resource"
 )
 _MOLT_IMPORTLIB_RESOURCES_READER_OPEN_RESOURCE_BYTES = _require_intrinsic(
-    "molt_importlib_resources_reader_open_resource_bytes", globals()
+    "molt_importlib_resources_reader_open_resource_bytes"
 )
 _MOLT_IMPORTLIB_RESOURCES_READER_CHILD_NAMES = _require_intrinsic(
-    "molt_importlib_resources_reader_child_names", globals()
+    "molt_importlib_resources_reader_child_names"
 )
 _MOLT_IMPORTLIB_RESOURCES_READER_EXISTS = _require_intrinsic(
-    "molt_importlib_resources_reader_exists", globals()
+    "molt_importlib_resources_reader_exists"
 )
 _MOLT_IMPORTLIB_RESOURCES_READER_IS_DIR = _require_intrinsic(
-    "molt_importlib_resources_reader_is_dir", globals()
+    "molt_importlib_resources_reader_is_dir"
 )
 _MOLT_IMPORTLIB_VALIDATE_RESOURCE_NAME = _require_intrinsic(
-    "molt_importlib_validate_resource_name", globals()
+    "molt_importlib_validate_resource_name"
 )
 
 Package = _Union[str, object]

@@ -6,7 +6,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 import collections as collections
 
-_MOLT_OPERATOR_TRUTH = _require_intrinsic("molt_operator_truth", globals())
+_MOLT_OPERATOR_TRUTH = _require_intrinsic("molt_operator_truth")
 
 
 class FreezableDefaultDict(collections.defaultdict):

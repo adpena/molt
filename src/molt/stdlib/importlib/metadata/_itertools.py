@@ -6,7 +6,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 from itertools import filterfalse as filterfalse
 
-_MOLT_FILTERFALSE = _require_intrinsic("molt_itertools_filterfalse", globals())
+_MOLT_FILTERFALSE = _require_intrinsic("molt_itertools_filterfalse")
 
 
 def always_iterable(obj, base_type=(str, bytes)):
