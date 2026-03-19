@@ -9864,6 +9864,40 @@ def _build_isolate_import_ops(
     return import_ops
 
 
+def _finalize_backend_ir(
+    *,
+    functions: Sequence[dict[str, Any]],
+    pgo_profile_summary: Any | None,
+    runtime_feedback_summary: Any | None,
+) -> dict[str, Any]:
+    ir: dict[str, Any] = {"functions": list(functions)}
+    if pgo_profile_summary is not None:
+        ir["profile"] = {
+            "version": pgo_profile_summary.version,
+            "hash": pgo_profile_summary.hash,
+            "hot_functions": pgo_profile_summary.hot_functions,
+        }
+    if runtime_feedback_summary is not None:
+        ir["runtime_feedback"] = {
+            "schema_version": runtime_feedback_summary.schema_version,
+            "hash": runtime_feedback_summary.hash,
+            "hot_functions": runtime_feedback_summary.hot_functions,
+        }
+    return ir
+
+
+def _write_emitted_ir(emit_ir_path: Path | None, ir: Mapping[str, Any]) -> str | None:
+    if emit_ir_path is None:
+        return None
+    try:
+        emit_ir_path.write_text(
+            json.dumps(ir, indent=2, default=_json_ir_default) + "\n"
+        )
+    except OSError as exc:
+        return f"Failed to write IR: {exc}"
+    return None
+
+
 def _run_frontend_parallel_enabled_layers(
     module_layers: Sequence[Sequence[str]],
     *,
@@ -14350,28 +14384,16 @@ def build(
     functions.append(
         {"name": "molt_isolate_import", "params": ["p0"], "ops": import_ops}
     )
-    ir = {"functions": functions}
-    if pgo_profile_summary is not None:
-        ir["profile"] = {
-            "version": pgo_profile_summary.version,
-            "hash": pgo_profile_summary.hash,
-            "hot_functions": pgo_profile_summary.hot_functions,
-        }
-    if runtime_feedback_summary is not None:
-        ir["runtime_feedback"] = {
-            "schema_version": runtime_feedback_summary.schema_version,
-            "hash": runtime_feedback_summary.hash,
-            "hot_functions": runtime_feedback_summary.hot_functions,
-        }
+    ir = _finalize_backend_ir(
+        functions=functions,
+        pgo_profile_summary=pgo_profile_summary,
+        runtime_feedback_summary=runtime_feedback_summary,
+    )
     if diagnostics_enabled:
         phase_starts["runtime_setup"] = time.perf_counter()
-    if emit_ir_path is not None:
-        try:
-            emit_ir_path.write_text(
-                json.dumps(ir, indent=2, default=_json_ir_default) + "\n"
-            )
-        except OSError as exc:
-            return _fail(f"Failed to write IR: {exc}", json_output, command="build")
+    emit_ir_error = _write_emitted_ir(emit_ir_path, ir)
+    if emit_ir_error is not None:
+        return _fail(emit_ir_error, json_output, command="build")
     backend_ir_bytes: bytes | None = None
 
     def _ensure_backend_ir_bytes() -> bytes:
