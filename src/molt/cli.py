@@ -1013,6 +1013,50 @@ class _PreparedFrontendExecution:
 
 
 @dataclass(frozen=True)
+class _PreparedFrontendExecutionContext:
+    syntax_error_modules: dict[str, "ModuleSyntaxErrorInfo"]
+    module_graph: dict[str, Path]
+    module_sources: dict[str, str]
+    project_root: Path
+    module_resolution_cache: "_ModuleResolutionCache"
+    parse_codec: ParseCodec
+    type_hint_policy: TypeHintPolicy
+    fallback_policy: FallbackPolicy
+    type_facts: TypeFacts | None
+    enable_phi: bool
+    known_modules: set[str]
+    stdlib_allowlist: set[str]
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]]
+    module_deps: dict[str, set[str]]
+    module_chunk_max_ops: int
+    optimization_profile: BuildProfile
+    pgo_hot_function_names: set[str]
+    known_modules_sorted: tuple[str, ...]
+    stdlib_allowlist_sorted: tuple[str, ...]
+    pgo_hot_function_names_sorted: tuple[str, ...]
+    module_dep_closures: dict[str, set[str]]
+    module_graph_metadata: _ModuleGraphMetadata
+    module_path_stats: dict[str, os.stat_result | None]
+    module_chunking: bool
+    scoped_lowering_inputs: _ScopedLoweringInputs
+    dirty_lowering_modules: set[str]
+    frontend_module_costs: dict[str, float]
+    stdlib_like_by_module: dict[str, bool]
+    known_classes: dict[str, Any]
+    module_trees: dict[str, ast.AST]
+    generated_module_source_paths: dict[str, str]
+    frontend_phase_timeout: float | None
+    record_frontend_timing: Callable[..., None]
+    fail: Callable[..., int]
+    json_output: bool
+    warnings: list[str]
+    frontend_parallel_details: dict[str, Any]
+    record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]]
+    midend_policy_outcomes_by_function: dict[str, dict[str, Any]]
+    midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]]
+
+
+@dataclass(frozen=True)
 class _PreparedFrontendRunTicket:
     module_order: list[str]
     module_layers: list[list[str]]
@@ -12700,47 +12744,92 @@ def _prepare_frontend_lowering_config(
 
 def _prepare_frontend_execution(
     *,
-    syntax_error_modules: dict[str, ModuleSyntaxErrorInfo],
-    module_graph: Mapping[str, Path],
-    module_sources: dict[str, str],
-    project_root: Path,
-    module_resolution_cache: "_ModuleResolutionCache",
-    parse_codec: ParseCodec,
-    type_hint_policy: TypeHintPolicy,
-    fallback_policy: FallbackPolicy,
-    type_facts: TypeFacts | None,
-    enable_phi: bool,
-    known_modules: set[str],
-    stdlib_allowlist: set[str],
-    known_func_defaults: dict[str, dict[str, dict[str, Any]]],
-    module_deps: dict[str, set[str]],
-    module_chunk_max_ops: int,
-    optimization_profile: BuildProfile,
-    pgo_hot_function_names: set[str],
-    known_modules_sorted: tuple[str, ...],
-    stdlib_allowlist_sorted: tuple[str, ...],
-    pgo_hot_function_names_sorted: tuple[str, ...],
-    module_dep_closures: dict[str, set[str]],
-    module_graph_metadata: _ModuleGraphMetadata,
-    module_path_stats: dict[str, os.stat_result | None],
-    module_chunking: bool,
-    scoped_lowering_inputs: _ScopedLoweringInputs,
-    dirty_lowering_modules: set[str],
-    frontend_module_costs: dict[str, float],
-    stdlib_like_by_module: dict[str, bool],
-    known_classes: dict[str, Any],
-    module_trees: dict[str, ast.AST],
-    generated_module_source_paths: dict[str, str],
-    frontend_phase_timeout: float | None,
-    record_frontend_timing: Callable[..., None],
-    fail: Callable[..., int],
-    json_output: bool,
-    warnings: list[str],
-    frontend_parallel_details: dict[str, Any],
-    record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]],
-    midend_policy_outcomes_by_function: dict[str, dict[str, Any]],
-    midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]],
+    prepared_frontend_execution_context: _PreparedFrontendExecutionContext,
 ) -> _PreparedFrontendExecution:
+    syntax_error_modules = (
+        prepared_frontend_execution_context.syntax_error_modules
+    )
+    module_graph = prepared_frontend_execution_context.module_graph
+    module_sources = prepared_frontend_execution_context.module_sources
+    project_root = prepared_frontend_execution_context.project_root
+    module_resolution_cache = (
+        prepared_frontend_execution_context.module_resolution_cache
+    )
+    parse_codec = prepared_frontend_execution_context.parse_codec
+    type_hint_policy = prepared_frontend_execution_context.type_hint_policy
+    fallback_policy = prepared_frontend_execution_context.fallback_policy
+    type_facts = prepared_frontend_execution_context.type_facts
+    enable_phi = prepared_frontend_execution_context.enable_phi
+    known_modules = prepared_frontend_execution_context.known_modules
+    stdlib_allowlist = prepared_frontend_execution_context.stdlib_allowlist
+    known_func_defaults = (
+        prepared_frontend_execution_context.known_func_defaults
+    )
+    module_deps = prepared_frontend_execution_context.module_deps
+    module_chunk_max_ops = (
+        prepared_frontend_execution_context.module_chunk_max_ops
+    )
+    optimization_profile = (
+        prepared_frontend_execution_context.optimization_profile
+    )
+    pgo_hot_function_names = (
+        prepared_frontend_execution_context.pgo_hot_function_names
+    )
+    known_modules_sorted = (
+        prepared_frontend_execution_context.known_modules_sorted
+    )
+    stdlib_allowlist_sorted = (
+        prepared_frontend_execution_context.stdlib_allowlist_sorted
+    )
+    pgo_hot_function_names_sorted = (
+        prepared_frontend_execution_context.pgo_hot_function_names_sorted
+    )
+    module_dep_closures = (
+        prepared_frontend_execution_context.module_dep_closures
+    )
+    module_graph_metadata = (
+        prepared_frontend_execution_context.module_graph_metadata
+    )
+    module_path_stats = prepared_frontend_execution_context.module_path_stats
+    module_chunking = prepared_frontend_execution_context.module_chunking
+    scoped_lowering_inputs = (
+        prepared_frontend_execution_context.scoped_lowering_inputs
+    )
+    dirty_lowering_modules = (
+        prepared_frontend_execution_context.dirty_lowering_modules
+    )
+    frontend_module_costs = (
+        prepared_frontend_execution_context.frontend_module_costs
+    )
+    stdlib_like_by_module = (
+        prepared_frontend_execution_context.stdlib_like_by_module
+    )
+    known_classes = prepared_frontend_execution_context.known_classes
+    module_trees = prepared_frontend_execution_context.module_trees
+    generated_module_source_paths = (
+        prepared_frontend_execution_context.generated_module_source_paths
+    )
+    frontend_phase_timeout = (
+        prepared_frontend_execution_context.frontend_phase_timeout
+    )
+    record_frontend_timing = (
+        prepared_frontend_execution_context.record_frontend_timing
+    )
+    fail = prepared_frontend_execution_context.fail
+    json_output = prepared_frontend_execution_context.json_output
+    warnings = prepared_frontend_execution_context.warnings
+    frontend_parallel_details = (
+        prepared_frontend_execution_context.frontend_parallel_details
+    )
+    record_frontend_parallel_worker_timing = (
+        prepared_frontend_execution_context.record_frontend_parallel_worker_timing
+    )
+    midend_policy_outcomes_by_function = (
+        prepared_frontend_execution_context.midend_policy_outcomes_by_function
+    )
+    midend_pass_stats_by_function = (
+        prepared_frontend_execution_context.midend_pass_stats_by_function
+    )
     frontend_layer_execution_context = _FrontendLayerExecutionContext(
         syntax_error_modules=syntax_error_modules,
         module_graph=module_graph,
@@ -14609,7 +14698,7 @@ def _prepare_frontend_pipeline(
         frontend_parallel_worker_timings.append(item)
         return item
 
-    prepared_frontend_execution = _prepare_frontend_execution(
+    prepared_frontend_execution_context = _PreparedFrontendExecutionContext(
         syntax_error_modules=prepared_frontend_analysis.syntax_error_modules,
         module_graph=prepared_module_graph.module_graph,
         module_sources=prepared_frontend_analysis.module_sources,
@@ -14650,6 +14739,9 @@ def _prepare_frontend_pipeline(
         record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
         midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
         midend_pass_stats_by_function=midend_pass_stats_by_function,
+    )
+    prepared_frontend_execution = _prepare_frontend_execution(
+        prepared_frontend_execution_context=prepared_frontend_execution_context
     )
     prepared_frontend_run_ticket = _PreparedFrontendRunTicket(
         module_order=prepared_frontend_analysis.module_order,
