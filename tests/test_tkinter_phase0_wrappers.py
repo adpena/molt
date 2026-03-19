@@ -1086,6 +1086,14 @@ checks["tkinter_winfo_children_returns_widgets"] = (
     and message in root_children
     and label in frame_children
 )
+destroy_call_start = len(root._tk_app._handle["calls"])
+button.destroy()
+destroy_calls = root._tk_app._handle["calls"][destroy_call_start:]
+checks["tkinter_destroy_routes_through_tk_call"] = (
+    ("destroy", button._w) in destroy_calls
+    and button not in root.winfo_children()
+    and root.children.get(button._name) is None
+)
 configure_event = tkinter._event_from_subst_args(
     button,
     (
@@ -2365,6 +2373,7 @@ def test_tkinter_phase0_wrappers_support_headless_intrinsic_stubs() -> None:
         "tkinter_deletecommand_runtime_notified",
         "tkinter_dialog_alias_exports_present",
         "tkinter_dialog_module_compat_symbols_present",
+        "tkinter_destroy_routes_through_tk_call",
         "tkinter_event_subst_payload_maps_width_height",
         "tkinter_filedialog_compat_cancel_returns_none",
         "tkinter_filedialog_compat_classes_route_to_wrappers",

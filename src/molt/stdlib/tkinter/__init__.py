@@ -878,7 +878,7 @@ class Misc:
 
     def destroy(self):
         _require_gui_window_capability()
-        _TK_DESTROY_WIDGET(self._tk_app, self._w)
+        self.call("destroy", self._w)
 
     def last_error(self):
         _require_gui_window_capability()

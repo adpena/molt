@@ -3104,6 +3104,11 @@ fn run_tcl_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64, u
     }
     let script = TclObj::new_list(command.into_iter());
 
+    // Trace Tcl commands for debugging layout issues
+    if std::env::var("MOLT_TRACE_TCL").is_ok() {
+        eprintln!("[tcl] {}", script.to_string());
+    }
+
     let mut registry = tk_registry().lock().unwrap();
     let app = app_mut_from_registry(py, &mut registry, handle)?;
     let Some(interp) = app.interpreter.as_ref() else {
