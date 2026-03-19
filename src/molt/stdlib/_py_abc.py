@@ -7,7 +7,7 @@ from _abc import get_cache_token as _abc_get_cache_token
 from _weakrefset import WeakSet
 from abc import ABCMeta
 
-_require_intrinsic("molt_capabilities_has", globals())
+_require_intrinsic("molt_capabilities_has")
 
 
 def get_cache_token():
