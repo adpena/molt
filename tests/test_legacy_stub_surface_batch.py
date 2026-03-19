@@ -48,6 +48,7 @@ for module_name, path_text in (
     ("molt_test__cgi", {str(STDLIB_ROOT / "cgi.py")!r}),
     ("molt_test__cgitb", {str(STDLIB_ROOT / "cgitb.py")!r}),
     ("molt_test__crypt", {str(STDLIB_ROOT / "crypt.py")!r}),
+    ("molt_test__mailcap", {str(STDLIB_ROOT / "mailcap.py")!r}),
 ):
     module = _load_module(module_name, path_text)
     try:
@@ -79,4 +80,5 @@ def test_legacy_private_stub_surfaces_hide_capability_anchor() -> None:
         ["molt_test__cgi", "True", "True", "True"],
         ["molt_test__cgitb", "True", "True", "True"],
         ["molt_test__crypt", "True", "True", "True"],
+        ["molt_test__mailcap", "True", "True", "True"],
     ]

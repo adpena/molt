@@ -7,12 +7,12 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 import re as _re
 import sys as _sys
 
-_require_intrinsic("molt_stdlib_probe", globals())
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_STDLIB_PROBE = _require_intrinsic("molt_stdlib_probe")
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 def _warnings_intrinsic(name: str):
-    return _require_intrinsic(name, globals())
+    return _require_intrinsic(name)
 
 
 def _molt_warnings_warn(*args):
@@ -93,6 +93,9 @@ _VALID_ACTIONS = {
     "once",
     "off",
 }
+
+del _MOLT_STDLIB_PROBE
+del _MOLT_CAPABILITIES_HAS
 
 
 def _normalize_category(category: Any) -> type:
