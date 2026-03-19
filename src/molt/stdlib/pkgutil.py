@@ -10,9 +10,9 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 __all__ = ["ModuleInfo", "iter_modules", "walk_packages"]
 
 
-_MOLT_PKGUTIL_ITER_MODULES = _require_intrinsic("molt_pkgutil_iter_modules", globals())
+_MOLT_PKGUTIL_ITER_MODULES = _require_intrinsic("molt_pkgutil_iter_modules")
 _MOLT_PKGUTIL_WALK_PACKAGES = _require_intrinsic(
-    "molt_pkgutil_walk_packages", globals()
+    "molt_pkgutil_walk_packages"
 )
 
 

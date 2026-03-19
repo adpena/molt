@@ -11,16 +11,16 @@ import sys
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe", globals())
-_MOLT_FILE_OPEN_EX = _require_intrinsic("molt_file_open_ex", globals())
-_MOLT_PATH_EXISTS = _require_intrinsic("molt_path_exists", globals())
-_MOLT_PATH_ISABS = _require_intrinsic("molt_path_isabs", globals())
-_MOLT_PATH_JOIN = _require_intrinsic("molt_path_join", globals())
+_require_intrinsic("molt_stdlib_probe")
+_MOLT_FILE_OPEN_EX = _require_intrinsic("molt_file_open_ex")
+_MOLT_PATH_EXISTS = _require_intrinsic("molt_path_exists")
+_MOLT_PATH_ISABS = _require_intrinsic("molt_path_isabs")
+_MOLT_PATH_JOIN = _require_intrinsic("molt_path_join")
 _MOLT_LINECACHE_LOADER_GET_SOURCE = _require_intrinsic(
-    "molt_linecache_loader_get_source", globals()
+    "molt_linecache_loader_get_source"
 )
 _MOLT_LINECACHE_DETECT_ENCODING = _require_intrinsic(
-    "molt_linecache_detect_encoding", globals()
+    "molt_linecache_detect_encoding"
 )
 
 

@@ -6,18 +6,18 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 # --- intrinsic bindings ---
 
-_MOLT_DIFFLIB_RATIO = _require_intrinsic("molt_difflib_ratio", globals())
-_MOLT_DIFFLIB_QUICK_RATIO = _require_intrinsic("molt_difflib_quick_ratio", globals())
+_MOLT_DIFFLIB_RATIO = _require_intrinsic("molt_difflib_ratio")
+_MOLT_DIFFLIB_QUICK_RATIO = _require_intrinsic("molt_difflib_quick_ratio")
 _MOLT_DIFFLIB_GET_MATCHING_BLOCKS = _require_intrinsic(
-    "molt_difflib_get_matching_blocks", globals()
+    "molt_difflib_get_matching_blocks"
 )
-_MOLT_DIFFLIB_GET_OPCODES = _require_intrinsic("molt_difflib_get_opcodes", globals())
-_MOLT_DIFFLIB_IS_JUNK = _require_intrinsic("molt_difflib_is_junk", globals())
-_MOLT_DIFFLIB_NDIFF = _require_intrinsic("molt_difflib_ndiff", globals())
-_MOLT_DIFFLIB_UNIFIED_DIFF = _require_intrinsic("molt_difflib_unified_diff", globals())
-_MOLT_DIFFLIB_CONTEXT_DIFF = _require_intrinsic("molt_difflib_context_diff", globals())
+_MOLT_DIFFLIB_GET_OPCODES = _require_intrinsic("molt_difflib_get_opcodes")
+_MOLT_DIFFLIB_IS_JUNK = _require_intrinsic("molt_difflib_is_junk")
+_MOLT_DIFFLIB_NDIFF = _require_intrinsic("molt_difflib_ndiff")
+_MOLT_DIFFLIB_UNIFIED_DIFF = _require_intrinsic("molt_difflib_unified_diff")
+_MOLT_DIFFLIB_CONTEXT_DIFF = _require_intrinsic("molt_difflib_context_diff")
 _MOLT_DIFFLIB_GET_CLOSE_MATCHES = _require_intrinsic(
-    "molt_difflib_get_close_matches", globals()
+    "molt_difflib_get_close_matches"
 )
 
 

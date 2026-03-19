@@ -6,11 +6,11 @@ from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_ATEXIT_REGISTER = _require_intrinsic("molt_atexit_register", globals())
-_MOLT_ATEXIT_UNREGISTER = _require_intrinsic("molt_atexit_unregister", globals())
-_MOLT_ATEXIT_CLEAR = _require_intrinsic("molt_atexit_clear", globals())
-_MOLT_ATEXIT_RUN_EXITFUNCS = _require_intrinsic("molt_atexit_run_exitfuncs", globals())
-_MOLT_ATEXIT_NCALLBACKS = _require_intrinsic("molt_atexit_ncallbacks", globals())
+_MOLT_ATEXIT_REGISTER = _require_intrinsic("molt_atexit_register")
+_MOLT_ATEXIT_UNREGISTER = _require_intrinsic("molt_atexit_unregister")
+_MOLT_ATEXIT_CLEAR = _require_intrinsic("molt_atexit_clear")
+_MOLT_ATEXIT_RUN_EXITFUNCS = _require_intrinsic("molt_atexit_run_exitfuncs")
+_MOLT_ATEXIT_NCALLBACKS = _require_intrinsic("molt_atexit_ncallbacks")
 
 
 def _normalize_no_args(
