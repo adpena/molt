@@ -106,6 +106,7 @@ for name, type_name, is_callable in rows:
     print(f"ROW|{{name}}|{{type_name}}|{{is_callable}}")
 
 checks = {{
+    "anchor_hidden": "molt_types_bootstrap" not in mod.__dict__,
     "shape": (
         mod.FunctionType is _host_types.FunctionType
         and mod.ModuleType is _host_types.ModuleType
@@ -169,4 +170,4 @@ def test__types_public_surface_matches_expected_shape() -> None:
         ("UnionType", "type", "True"),
         ("WrapperDescriptorType", "type", "True"),
     ]
-    assert checks == {"shape": "True"}
+    assert checks == {"anchor_hidden": "True", "shape": "True"}
