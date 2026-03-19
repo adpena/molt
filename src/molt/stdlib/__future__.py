@@ -70,7 +70,7 @@ _FALLBACK_FEATURE_ROWS = (
 
 def _load_feature_rows():
     try:
-        future_features = _require_intrinsic("molt_future_features", globals())
+        future_features = _require_intrinsic("molt_future_features")
     except RuntimeError:
         return list(_FALLBACK_FEATURE_ROWS)
     rows = list(future_features())
