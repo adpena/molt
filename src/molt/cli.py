@@ -780,6 +780,12 @@ class _BuildOutputLayout:
     emit_ir_path: Path | None
 
 
+@dataclass(frozen=True)
+class _SupportModuleAugmentation:
+    namespace_module_names: frozenset[str]
+    generated_module_source_paths: dict[str, str]
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -11011,6 +11017,83 @@ def _resolve_build_output_layout(
     )
 
 
+def _augment_support_modules(
+    *,
+    module_graph: MutableMapping[str, Path],
+    module_reasons: MutableMapping[str, set[str]],
+    roots: Sequence[Path],
+    stdlib_root: Path,
+    stdlib_allowlist: set[str],
+    explicit_imports: Collection[str],
+    resolver_cache: "_ModuleResolutionCache",
+    artifacts_root: Path,
+    stub_parents: Collection[str],
+    entry_module: str,
+    diagnostics_enabled: bool,
+) -> _SupportModuleAugmentation:
+    namespace_parents = _collect_namespace_parents(
+        module_graph,
+        roots,
+        stdlib_root,
+        stdlib_allowlist,
+        explicit_imports,
+        resolver_cache=resolver_cache,
+    )
+    namespace_modules: dict[str, Path] = {}
+    if namespace_parents:
+        for name in sorted(namespace_parents):
+            paths = _namespace_paths(
+                name,
+                _roots_for_module(name, roots, stdlib_root, stdlib_allowlist),
+            )
+            if not paths:
+                continue
+            stub_path = _write_namespace_module(name, paths, artifacts_root)
+            namespace_modules[name] = stub_path
+        if namespace_modules:
+            module_graph.update(namespace_modules)
+            if diagnostics_enabled:
+                for name in namespace_modules:
+                    _record_module_reason(module_reasons, name, "namespace_stub")
+    generated_module_source_paths: dict[str, str] = {
+        name: _logical_generated_module_path(name) for name in namespace_modules
+    }
+    for stub in stub_parents:
+        if stub != entry_module:
+            module_graph.pop(stub, None)
+    if IMPORTER_MODULE_NAME not in module_graph:
+        importer_names = sorted(
+            {
+                name
+                for name in module_graph
+                if name not in {IMPORTER_MODULE_NAME, "builtins"}
+            }.union(stub_parents)
+        )
+        importer_path = _write_importer_module(importer_names, artifacts_root)
+        module_graph[IMPORTER_MODULE_NAME] = importer_path
+        if diagnostics_enabled:
+            _record_module_reason(
+                module_reasons, IMPORTER_MODULE_NAME, "importer_generated"
+            )
+    if IMPORTER_MODULE_NAME in module_graph:
+        generated_module_source_paths.setdefault(
+            IMPORTER_MODULE_NAME, _logical_generated_module_path(IMPORTER_MODULE_NAME)
+        )
+    machinery_path = _resolve_module_path("importlib.machinery", [stdlib_root])
+    if machinery_path is not None:
+        module_graph.setdefault("importlib.machinery", machinery_path)
+        if diagnostics_enabled and "importlib.machinery" in module_graph:
+            _record_module_reason(
+                module_reasons,
+                "importlib.machinery",
+                "machinery_support",
+            )
+    return _SupportModuleAugmentation(
+        namespace_module_names=frozenset(namespace_modules),
+        generated_module_source_paths=generated_module_source_paths,
+    )
+
+
 def _prepare_backend_cache_setup(
     *,
     cache_enabled: bool,
@@ -14962,14 +15045,6 @@ def build(
         else:
             for name, path in spawn_graph.items():
                 module_graph.setdefault(name, path)
-    namespace_parents = _collect_namespace_parents(
-        module_graph,
-        roots,
-        stdlib_root,
-        stdlib_allowlist,
-        explicit_imports,
-        resolver_cache=module_resolution_cache,
-    )
     if verbose and not json_output:
         print(f"Project root: {project_root}")
         print(f"Module roots: {', '.join(str(root) for root in module_roots)}")
@@ -15030,26 +15105,21 @@ def build(
             )
         )
 
-    namespace_modules: dict[str, Path] = {}
-    if namespace_parents:
-        for name in sorted(namespace_parents):
-            paths = _namespace_paths(
-                name,
-                _roots_for_module(name, roots, stdlib_root, stdlib_allowlist),
-            )
-            if not paths:
-                continue
-            stub_path = _write_namespace_module(name, paths, artifacts_root)
-            namespace_modules[name] = stub_path
-        if namespace_modules:
-            module_graph.update(namespace_modules)
-            if diagnostics_enabled:
-                for name in namespace_modules:
-                    _record_module_reason(module_reasons, name, "namespace_stub")
-    namespace_module_names = set(namespace_modules)
-    generated_module_source_paths: dict[str, str] = {
-        name: _logical_generated_module_path(name) for name in namespace_modules
-    }
+    support_modules = _augment_support_modules(
+        module_graph=module_graph,
+        module_reasons=module_reasons,
+        roots=roots,
+        stdlib_root=stdlib_root,
+        stdlib_allowlist=stdlib_allowlist,
+        explicit_imports=explicit_imports,
+        resolver_cache=module_resolution_cache,
+        artifacts_root=artifacts_root,
+        stub_parents=stub_parents,
+        entry_module=entry_module,
+        diagnostics_enabled=diagnostics_enabled,
+    )
+    namespace_module_names = set(support_modules.namespace_module_names)
+    generated_module_source_paths = support_modules.generated_module_source_paths
     try:
         output_layout = _resolve_build_output_layout(
             target=target,
@@ -15078,36 +15148,6 @@ def build(
     output_binary = output_layout.output_binary
     linked_output_path = output_layout.linked_output_path
     emit_ir_path = output_layout.emit_ir_path
-    for stub in stub_parents:
-        if stub != entry_module:
-            module_graph.pop(stub, None)
-    if IMPORTER_MODULE_NAME not in module_graph:
-        importer_names = sorted(
-            {
-                name
-                for name in module_graph
-                if name not in {IMPORTER_MODULE_NAME, "builtins"}
-            }.union(stub_parents)
-        )
-        importer_path = _write_importer_module(importer_names, artifacts_root)
-        module_graph[IMPORTER_MODULE_NAME] = importer_path
-        if diagnostics_enabled:
-            _record_module_reason(
-                module_reasons, IMPORTER_MODULE_NAME, "importer_generated"
-            )
-    if IMPORTER_MODULE_NAME in module_graph:
-        generated_module_source_paths.setdefault(
-            IMPORTER_MODULE_NAME, _logical_generated_module_path(IMPORTER_MODULE_NAME)
-        )
-    machinery_path = _resolve_module_path("importlib.machinery", [stdlib_root])
-    if machinery_path is not None:
-        module_graph.setdefault("importlib.machinery", machinery_path)
-        if diagnostics_enabled and "importlib.machinery" in module_graph:
-            _record_module_reason(
-                module_reasons,
-                "importlib.machinery",
-                "machinery_support",
-            )
     if diagnostics_enabled:
         phase_starts["module_analysis"] = time.perf_counter()
     known_modules = set(module_graph.keys())
