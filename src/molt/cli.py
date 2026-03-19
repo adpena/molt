@@ -794,6 +794,17 @@ class _ModuleGraphAugmentation:
     stub_parents: set[str]
 
 
+@dataclass(frozen=True)
+class _PreparedEntryModuleGraph:
+    stdlib_allowlist: set[str]
+    roots: list[Path]
+    module_resolution_cache: "_ModuleResolutionCache"
+    module_graph: dict[str, Path]
+    explicit_imports: set[str]
+    stub_parents: set[str]
+    spawn_enabled: bool
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -11232,6 +11243,94 @@ def _augment_module_graph_for_entry_and_runtime(
     ), None
 
 
+def _prepare_entry_module_graph(
+    *,
+    source_path: Path,
+    entry_module: str,
+    module_roots: list[Path],
+    stdlib_root: Path,
+    project_root: Path | None,
+    entry_tree: ast.AST,
+    diagnostics_enabled: bool,
+    module_reasons: MutableMapping[str, set[str]],
+    json_output: bool,
+    target: str,
+) -> tuple[_PreparedEntryModuleGraph | None, dict[str, Any] | None]:
+    stdlib_allowlist = _stdlib_allowlist()
+    roots = module_roots + [stdlib_root]
+    module_resolution_cache = _ModuleResolutionCache()
+    module_graph, explicit_imports = _discover_module_graph(
+        source_path,
+        roots,
+        module_roots,
+        stdlib_root,
+        project_root,
+        stdlib_allowlist,
+        skip_modules=STUB_MODULES,
+        stub_parents=STUB_PARENT_MODULES,
+        resolver_cache=module_resolution_cache,
+    )
+    if diagnostics_enabled:
+        for name in module_graph:
+            _record_module_reason(module_reasons, name, "entry_closure")
+    package_before = set(module_graph)
+    _collect_package_parents(
+        module_graph,
+        roots,
+        stdlib_root,
+        stdlib_allowlist,
+        resolver_cache=module_resolution_cache,
+    )
+    if diagnostics_enabled:
+        _record_new_module_reasons(
+            module_graph,
+            package_before,
+            module_reasons,
+            "package_parent",
+        )
+    core_before = set(module_graph)
+    _ensure_core_stdlib_modules(module_graph, stdlib_root)
+    if diagnostics_enabled:
+        _record_new_module_reasons(
+            module_graph,
+            core_before,
+            module_reasons,
+            "core_required",
+        )
+    intrinsic_enforced = _enforce_intrinsic_stdlib(
+        module_graph, stdlib_root, json_output
+    )
+    if intrinsic_enforced is not None:
+        return None, intrinsic_enforced
+    augmentation, augmentation_error = _augment_module_graph_for_entry_and_runtime(
+        source_path=source_path,
+        entry_module=entry_module,
+        module_roots=module_roots,
+        stdlib_root=stdlib_root,
+        roots=roots,
+        project_root=project_root,
+        stdlib_allowlist=stdlib_allowlist,
+        entry_tree=entry_tree,
+        module_resolution_cache=module_resolution_cache,
+        module_graph=module_graph,
+        module_reasons=module_reasons,
+        diagnostics_enabled=diagnostics_enabled,
+        json_output=json_output,
+        target=target,
+    )
+    if augmentation_error is not None:
+        return None, augmentation_error
+    return _PreparedEntryModuleGraph(
+        stdlib_allowlist=stdlib_allowlist,
+        roots=roots,
+        module_resolution_cache=module_resolution_cache,
+        module_graph=dict(module_graph),
+        explicit_imports=augmentation.explicit_imports,
+        stub_parents=augmentation.stub_parents,
+        spawn_enabled=augmentation.spawn_enabled,
+    ), None
+
+
 def _prepare_backend_cache_setup(
     *,
     cache_enabled: bool,
@@ -15037,73 +15136,28 @@ def build(
                 module_roots.append(root)
                 entry_module = _module_name_from_path(source_path, [root], stdlib_root)
     module_roots = list(dict.fromkeys(root.resolve() for root in module_roots))
-    stdlib_allowlist = _stdlib_allowlist()
-    roots = module_roots + [stdlib_root]
-    module_resolution_cache = _ModuleResolutionCache()
-    module_graph, explicit_imports = _discover_module_graph(
-        source_path,
-        roots,
-        module_roots,
-        stdlib_root,
-        project_root,
-        stdlib_allowlist,
-        skip_modules=STUB_MODULES,
-        stub_parents=STUB_PARENT_MODULES,
-        resolver_cache=module_resolution_cache,
-    )
-    if diagnostics_enabled:
-        for name in module_graph:
-            _record_module_reason(module_reasons, name, "entry_closure")
-    package_before = set(module_graph)
-    _collect_package_parents(
-        module_graph,
-        roots,
-        stdlib_root,
-        stdlib_allowlist,
-        resolver_cache=module_resolution_cache,
-    )
-    if diagnostics_enabled:
-        _record_new_module_reasons(
-            module_graph,
-            package_before,
-            module_reasons,
-            "package_parent",
-        )
-    core_before = set(module_graph)
-    _ensure_core_stdlib_modules(module_graph, stdlib_root)
-    if diagnostics_enabled:
-        _record_new_module_reasons(
-            module_graph,
-            core_before,
-            module_reasons,
-            "core_required",
-        )
-    intrinsic_enforced = _enforce_intrinsic_stdlib(
-        module_graph, stdlib_root, json_output
-    )
-    if intrinsic_enforced is not None:
-        return intrinsic_enforced
-    augmentation, augmentation_error = _augment_module_graph_for_entry_and_runtime(
+    prepared_module_graph, prepared_module_graph_error = _prepare_entry_module_graph(
         source_path=source_path,
         entry_module=entry_module,
         module_roots=module_roots,
         stdlib_root=stdlib_root,
-        roots=roots,
         project_root=project_root,
-        stdlib_allowlist=stdlib_allowlist,
         entry_tree=entry_tree,
-        module_resolution_cache=module_resolution_cache,
-        module_graph=module_graph,
         module_reasons=module_reasons,
         diagnostics_enabled=diagnostics_enabled,
         json_output=json_output,
         target=target,
     )
-    if augmentation_error is not None:
-        return augmentation_error
-    spawn_enabled = augmentation.spawn_enabled
-    explicit_imports = augmentation.explicit_imports
-    stub_parents = augmentation.stub_parents
+    if prepared_module_graph_error is not None:
+        return prepared_module_graph_error
+    assert prepared_module_graph is not None
+    stdlib_allowlist = prepared_module_graph.stdlib_allowlist
+    roots = prepared_module_graph.roots
+    module_resolution_cache = prepared_module_graph.module_resolution_cache
+    module_graph = prepared_module_graph.module_graph
+    explicit_imports = prepared_module_graph.explicit_imports
+    stub_parents = prepared_module_graph.stub_parents
+    spawn_enabled = prepared_module_graph.spawn_enabled
     if verbose and not json_output:
         print(f"Project root: {project_root}")
         print(f"Module roots: {', '.join(str(root) for root in module_roots)}")
