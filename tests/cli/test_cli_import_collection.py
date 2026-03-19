@@ -761,6 +761,58 @@ def test_backend_fingerprint_path_uses_cached_artifact_hash(
     assert info.hits >= 1
 
 
+def test_resolved_module_cache_key_is_cached(tmp_path: Path) -> None:
+    module_path = tmp_path / "pkg" / "mod.py"
+    cli._resolved_module_cache_key.cache_clear()
+
+    first = cli._resolved_module_cache_key(
+        str(module_path), "pkg.mod", "mod", "module_analysis_cache"
+    )
+    second = cli._resolved_module_cache_key(
+        str(module_path), "pkg.mod", "mod", "module_analysis_cache"
+    )
+
+    info = cli._resolved_module_cache_key.cache_info()
+    assert first == second
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
+def test_module_analysis_cache_path_uses_cached_module_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "pkg" / "mod.py"
+    cli._resolved_module_cache_key.cache_clear()
+
+    calls = 0
+    original = cli._resolved_module_cache_key
+
+    def wrapped(path_str: str, *parts: str) -> str:
+        nonlocal calls
+        calls += 1
+        return original(path_str, *parts)
+
+    monkeypatch.setattr(cli, "_resolved_module_cache_key", wrapped, raising=True)
+
+    first = cli._module_analysis_cache_path(
+        tmp_path,
+        module_path,
+        module_name="pkg.mod",
+        is_package=False,
+    )
+    second = cli._module_analysis_cache_path(
+        tmp_path,
+        module_path,
+        module_name="pkg.mod",
+        is_package=False,
+    )
+
+    info = original.cache_info()
+    assert first == second
+    assert calls == 2
+    assert info.hits >= 1
+
+
 def test_load_module_imports_reuses_persisted_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
