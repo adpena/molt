@@ -13,13 +13,18 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+_MOLT_SITE_HELP0 = _require_intrinsic("molt_site_help0")
+_MOLT_SITE_HELP1 = _require_intrinsic("molt_site_help1")
+_MOLT_SITE_QUITTER_CALL = _require_intrinsic("molt_site_quitter_call")
+
+
 class _Helper:
     def __call__(self, *args: object, **kwds: object) -> None:
         del kwds
         if not args:
-            _require_intrinsic("molt_site_help0")()
+            _MOLT_SITE_HELP0()
             return None
-        _require_intrinsic("molt_site_help1")(args[0])
+        _MOLT_SITE_HELP1(args[0])
         return None
 
 
@@ -49,7 +54,7 @@ class Quitter:
         return f"Use {self._name}() or Ctrl-D (i.e. EOF) to exit"
 
     def __call__(self, code: object = None) -> None:
-        _require_intrinsic("molt_site_quitter_call")(code)
+        _MOLT_SITE_QUITTER_CALL(code)
         return None
 
 

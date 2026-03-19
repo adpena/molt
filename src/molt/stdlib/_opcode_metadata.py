@@ -11,7 +11,7 @@ if _sys.version_info < (3, 14):
     raise ModuleNotFoundError("No module named '_opcode_metadata'")
 
 _MOLT_OPCODE_METADATA_PAYLOAD_314_JSON = _require_intrinsic(
-    "molt_opcode_metadata_payload_314_json", globals()
+    "molt_opcode_metadata_payload_314_json"
 )
 
 
