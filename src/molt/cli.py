@@ -921,6 +921,17 @@ class _BackendExecutionResult:
 
 
 @dataclass(frozen=True)
+class _PreparedBackendCompile:
+    cache_enabled: bool
+    cache_hit: bool
+    cache_hit_tier: str | None
+    backend_daemon_cached: bool | None
+    backend_daemon_cache_tier: str | None
+    backend_daemon_health: dict[str, Any] | None
+    backend_daemon_config_digest: str | None
+
+
+@dataclass(frozen=True)
 class _PreparedNonNativeResult:
     primary_output: Path
     linked_output_path: Path | None
@@ -12660,6 +12671,166 @@ def _execute_backend_compile(
     ), None
 
 
+def _prepare_backend_compile(
+    *,
+    diagnostics_enabled: bool,
+    phase_starts: dict[str, float],
+    cache_report: bool,
+    verbose: bool,
+    json_output: bool,
+    cache_setup: _BackendCacheSetup,
+    cache_hit: bool,
+    cache_hit_tier: str | None,
+    cache_key: str | None,
+    function_cache_key: str | None,
+    cache_path: Path | None,
+    function_cache_path: Path | None,
+    project_root: Path,
+    warnings: list[str],
+    is_wasm: bool,
+    output_artifact: Path,
+    linked: bool,
+    deterministic: bool,
+    profile: BuildProfile,
+    runtime_state: _RuntimeArtifactState,
+    runtime_cargo_profile: str,
+    cargo_timeout: float | None,
+    molt_root: Path,
+    target_triple: str | None,
+    backend_cargo_profile: str,
+    backend_timeout: float | None,
+    backend_daemon_config_digest: str | None,
+    ensure_runtime_wasm_shared: Callable[[], bool],
+    ensure_runtime_wasm_reloc: Callable[[], bool],
+    artifacts_root: Path,
+    ir: Mapping[str, Any],
+    _ensure_backend_ir_bytes: Callable[[], bytes],
+    backend_daemon_cached: bool | None,
+    backend_daemon_cache_tier: str | None,
+    backend_daemon_health: dict[str, Any] | None,
+) -> tuple[_PreparedBackendCompile | None, dict[str, Any] | None]:
+    if diagnostics_enabled:
+        phase_starts["cache_lookup"] = time.perf_counter()
+    cache_enabled = cache_setup.cache_enabled
+
+    if (verbose or cache_report) and not json_output:
+        if not cache_enabled:
+            print("Cache: disabled")
+        elif cache_key:
+            cache_state = "hit" if cache_hit else "miss"
+            cache_detail = f" ({cache_key})" if cache_key else ""
+            if cache_hit and cache_hit_tier:
+                cache_detail = f"{cache_detail} [{cache_hit_tier}]"
+            print(f"Cache: {cache_state}{cache_detail}")
+
+    compile_lock = (
+        _build_lock(project_root, f"compile.{cache_key}")
+        if cache_enabled and cache_key is not None
+        else nullcontext()
+    )
+    with compile_lock:
+        if not cache_hit and cache_enabled:
+            cache_hit, cache_hit_tier = _try_cached_backend_candidates(
+                project_root=project_root,
+                cache_candidates=cache_setup.cache_candidates,
+                output_artifact=output_artifact,
+                is_wasm=is_wasm,
+                cache_key=cache_key,
+                function_cache_key=function_cache_key,
+                cache_path=cache_path,
+                warnings=warnings,
+            )
+
+        if not cache_hit:
+            if diagnostics_enabled:
+                now = time.perf_counter()
+                if "backend_codegen" not in phase_starts:
+                    phase_starts["backend_codegen"] = now
+                if "backend_prepare" not in phase_starts:
+                    phase_starts["backend_prepare"] = now
+            prepared_backend_dispatch, prepared_backend_dispatch_error = (
+                _prepare_backend_dispatch(
+                    is_wasm=is_wasm,
+                    linked=linked,
+                    deterministic=deterministic,
+                    profile=profile,
+                    runtime_state=runtime_state,
+                    runtime_cargo_profile=runtime_cargo_profile,
+                    cargo_timeout=cargo_timeout,
+                    molt_root=molt_root,
+                    target_triple=target_triple,
+                    backend_cargo_profile=backend_cargo_profile,
+                    diagnostics_enabled=diagnostics_enabled,
+                    phase_starts=phase_starts,
+                    json_output=json_output,
+                    backend_daemon_config_digest=backend_daemon_config_digest,
+                    ensure_runtime_wasm_shared=ensure_runtime_wasm_shared,
+                    ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
+                    warnings=warnings,
+                )
+            )
+            if prepared_backend_dispatch_error is not None:
+                return None, prepared_backend_dispatch_error
+            assert prepared_backend_dispatch is not None
+            if diagnostics_enabled and "backend_dispatch" not in phase_starts:
+                phase_starts["backend_dispatch"] = time.perf_counter()
+            backend_execution_result, backend_execution_error = _execute_backend_compile(
+                cache=cache_enabled,
+                cache_path=cache_path,
+                function_cache_path=function_cache_path,
+                artifacts_root=artifacts_root,
+                is_wasm=is_wasm,
+                diagnostics_enabled=diagnostics_enabled,
+                phase_starts=phase_starts,
+                daemon_ready=prepared_backend_dispatch.daemon_ready,
+                daemon_socket=prepared_backend_dispatch.daemon_socket,
+                project_root=project_root,
+                output_artifact=output_artifact,
+                cache_key=cache_key,
+                function_cache_key=function_cache_key,
+                cache_setup=cache_setup,
+                target_triple=target_triple,
+                backend_daemon_config_digest=(
+                    prepared_backend_dispatch.backend_daemon_config_digest
+                ),
+                ir=ir,
+                json_output=json_output,
+                warnings=warnings,
+                verbose=verbose,
+                backend_bin=prepared_backend_dispatch.backend_bin,
+                backend_env=prepared_backend_dispatch.backend_env,
+                backend_timeout=backend_timeout,
+                molt_root=molt_root,
+                backend_cargo_profile=backend_cargo_profile,
+                _ensure_backend_ir_bytes=_ensure_backend_ir_bytes,
+                cache_hit=cache_hit,
+                backend_daemon_cached=backend_daemon_cached,
+                backend_daemon_cache_tier=backend_daemon_cache_tier,
+                backend_daemon_health=backend_daemon_health,
+            )
+            if backend_execution_error is not None:
+                return None, backend_execution_error
+            assert backend_execution_result is not None
+            backend_daemon_cached = backend_execution_result.backend_daemon_cached
+            backend_daemon_cache_tier = (
+                backend_execution_result.backend_daemon_cache_tier
+            )
+            backend_daemon_health = backend_execution_result.backend_daemon_health
+            backend_daemon_config_digest = (
+                prepared_backend_dispatch.backend_daemon_config_digest
+            )
+
+    return _PreparedBackendCompile(
+        cache_enabled=cache_enabled,
+        cache_hit=cache_hit,
+        cache_hit_tier=cache_hit_tier,
+        backend_daemon_cached=backend_daemon_cached,
+        backend_daemon_cache_tier=backend_daemon_cache_tier,
+        backend_daemon_health=backend_daemon_health,
+        backend_daemon_config_digest=backend_daemon_config_digest,
+    ), None
+
+
 def _prepare_non_native_build_result(
     *,
     is_wasm: bool,
@@ -17100,121 +17271,58 @@ def build(
     function_cache_path = prepared_backend_setup.function_cache_path
     cache_candidates = prepared_backend_setup.cache_candidates
 
-    if diagnostics_enabled:
-        phase_starts["cache_lookup"] = time.perf_counter()
     cache_setup = prepared_backend_setup.cache_setup
-    cache = cache_setup.cache_enabled
-
-    if (verbose or cache_report) and not json_output:
-        if not cache:
-            print("Cache: disabled")
-        elif cache_key:
-            cache_state = "hit" if cache_hit else "miss"
-            cache_detail = f" ({cache_key})" if cache_key else ""
-            if cache_hit and cache_hit_tier:
-                cache_detail = f"{cache_detail} [{cache_hit_tier}]"
-            print(f"Cache: {cache_state}{cache_detail}")
-
-    compile_lock = (
-        _build_lock(project_root, f"compile.{cache_key}")
-        if cache and cache_key is not None
-        else nullcontext()
+    prepared_backend_compile, prepared_backend_compile_error = (
+        _prepare_backend_compile(
+            diagnostics_enabled=diagnostics_enabled,
+            phase_starts=phase_starts,
+            cache_report=cache_report,
+            verbose=verbose,
+            json_output=json_output,
+            cache_setup=cache_setup,
+            cache_hit=cache_hit,
+            cache_hit_tier=cache_hit_tier,
+            cache_key=cache_key,
+            function_cache_key=function_cache_key,
+            cache_path=cache_path,
+            function_cache_path=function_cache_path,
+            project_root=project_root,
+            warnings=warnings,
+            is_wasm=is_wasm,
+            output_artifact=output_artifact,
+            linked=linked,
+            deterministic=deterministic,
+            profile=profile,
+            runtime_state=runtime_state,
+            runtime_cargo_profile=runtime_cargo_profile,
+            cargo_timeout=cargo_timeout,
+            molt_root=molt_root,
+            target_triple=target_triple,
+            backend_cargo_profile=backend_cargo_profile,
+            backend_timeout=backend_timeout,
+            backend_daemon_config_digest=backend_daemon_config_digest,
+            ensure_runtime_wasm_shared=ensure_runtime_wasm_shared,
+            ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
+            artifacts_root=artifacts_root,
+            ir=ir,
+            _ensure_backend_ir_bytes=_ensure_backend_ir_bytes,
+            backend_daemon_cached=backend_daemon_cached,
+            backend_daemon_cache_tier=backend_daemon_cache_tier,
+            backend_daemon_health=backend_daemon_health,
+        )
     )
-    with compile_lock:
-        if not cache_hit and cache:
-            cache_hit, cache_hit_tier = _try_cached_backend_candidates(
-                project_root=project_root,
-                cache_candidates=cache_setup.cache_candidates,
-                output_artifact=output_artifact,
-                is_wasm=is_wasm,
-                cache_key=cache_key,
-                function_cache_key=function_cache_key,
-                cache_path=cache_path,
-                warnings=warnings,
-            )
-
-        # 2. Backend: JSON IR -> output.o / output.wasm
-        if not cache_hit:
-            if diagnostics_enabled:
-                now = time.perf_counter()
-                if "backend_codegen" not in phase_starts:
-                    phase_starts["backend_codegen"] = now
-                if "backend_prepare" not in phase_starts:
-                    phase_starts["backend_prepare"] = now
-            prepared_backend_dispatch, prepared_backend_dispatch_error = (
-                _prepare_backend_dispatch(
-                    is_wasm=is_wasm,
-                    linked=linked,
-                    deterministic=deterministic,
-                    profile=profile,
-                    runtime_state=runtime_state,
-                    runtime_cargo_profile=runtime_cargo_profile,
-                    cargo_timeout=cargo_timeout,
-                    molt_root=molt_root,
-                    target_triple=target_triple,
-                    backend_cargo_profile=backend_cargo_profile,
-                    diagnostics_enabled=diagnostics_enabled,
-                    phase_starts=phase_starts,
-                    json_output=json_output,
-                    backend_daemon_config_digest=backend_daemon_config_digest,
-                    ensure_runtime_wasm_shared=ensure_runtime_wasm_shared,
-                    ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
-                    warnings=warnings,
-                )
-            )
-            if prepared_backend_dispatch_error is not None:
-                return prepared_backend_dispatch_error
-            assert prepared_backend_dispatch is not None
-            backend_env = prepared_backend_dispatch.backend_env
-            reloc_requested = prepared_backend_dispatch.reloc_requested
-            backend_bin = prepared_backend_dispatch.backend_bin
-            daemon_socket = prepared_backend_dispatch.daemon_socket
-            daemon_ready = prepared_backend_dispatch.daemon_ready
-            backend_daemon_config_digest = (
-                prepared_backend_dispatch.backend_daemon_config_digest
-            )
-            if diagnostics_enabled and "backend_dispatch" not in phase_starts:
-                phase_starts["backend_dispatch"] = time.perf_counter()
-            backend_execution_result, backend_execution_error = _execute_backend_compile(
-                cache=cache,
-                cache_path=cache_path,
-                function_cache_path=function_cache_path,
-                artifacts_root=artifacts_root,
-                is_wasm=is_wasm,
-                diagnostics_enabled=diagnostics_enabled,
-                phase_starts=phase_starts,
-                daemon_ready=daemon_ready,
-                daemon_socket=daemon_socket,
-                project_root=project_root,
-                output_artifact=output_artifact,
-                cache_key=cache_key,
-                function_cache_key=function_cache_key,
-                cache_setup=cache_setup,
-                target_triple=target_triple,
-                backend_daemon_config_digest=backend_daemon_config_digest,
-                ir=ir,
-                json_output=json_output,
-                warnings=warnings,
-                verbose=verbose,
-                backend_bin=backend_bin,
-                backend_env=backend_env,
-                backend_timeout=backend_timeout,
-                molt_root=molt_root,
-                backend_cargo_profile=backend_cargo_profile,
-                _ensure_backend_ir_bytes=_ensure_backend_ir_bytes,
-                cache_hit=cache_hit,
-                backend_daemon_cached=backend_daemon_cached,
-                backend_daemon_cache_tier=backend_daemon_cache_tier,
-                backend_daemon_health=backend_daemon_health,
-            )
-            if backend_execution_error is not None:
-                return backend_execution_error
-            assert backend_execution_result is not None
-            backend_daemon_cached = backend_execution_result.backend_daemon_cached
-            backend_daemon_cache_tier = (
-                backend_execution_result.backend_daemon_cache_tier
-            )
-            backend_daemon_health = backend_execution_result.backend_daemon_health
+    if prepared_backend_compile_error is not None:
+        return prepared_backend_compile_error
+    assert prepared_backend_compile is not None
+    cache = prepared_backend_compile.cache_enabled
+    cache_hit = prepared_backend_compile.cache_hit
+    cache_hit_tier = prepared_backend_compile.cache_hit_tier
+    backend_daemon_cached = prepared_backend_compile.backend_daemon_cached
+    backend_daemon_cache_tier = prepared_backend_compile.backend_daemon_cache_tier
+    backend_daemon_health = prepared_backend_compile.backend_daemon_health
+    backend_daemon_config_digest = (
+        prepared_backend_compile.backend_daemon_config_digest
+    )
 
     if is_wasm or emit_mode == "obj":
         prepared_non_native_result, prepared_non_native_result_error = (
