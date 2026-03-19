@@ -6,18 +6,16 @@ import socket as _socket_mod
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_socket_constants", globals())
-_MOLT_OS_CLOSE = _require_intrinsic("molt_os_close", globals())
-_MOLT_OS_DUP = _require_intrinsic("molt_os_dup", globals())
-_MOLT_SOCKET_GETPROTOBYNAME = _require_intrinsic(
-    "molt_socket_getprotobyname", globals()
-)
-_MOLT_GETHOSTBYNAME_EX = _require_intrinsic("molt_socket_gethostbyname_ex", globals())
-_MOLT_IF_NAMEINDEX = _require_intrinsic("molt_socket_if_nameindex", globals())
-_MOLT_IF_NAMETOINDEX = _require_intrinsic("molt_socket_if_nametoindex", globals())
-_MOLT_IF_INDEXTONAME = _require_intrinsic("molt_socket_if_indextoname", globals())
-_MOLT_CMSG_LEN = _require_intrinsic("molt_socket_cmsg_len", globals())
-_MOLT_CMSG_SPACE = _require_intrinsic("molt_socket_cmsg_space", globals())
+_MOLT_SOCKET_CONSTANTS = _require_intrinsic("molt_socket_constants")
+_MOLT_OS_CLOSE = _require_intrinsic("molt_os_close")
+_MOLT_OS_DUP = _require_intrinsic("molt_os_dup")
+_MOLT_SOCKET_GETPROTOBYNAME = _require_intrinsic("molt_socket_getprotobyname")
+_MOLT_GETHOSTBYNAME_EX = _require_intrinsic("molt_socket_gethostbyname_ex")
+_MOLT_IF_NAMEINDEX = _require_intrinsic("molt_socket_if_nameindex")
+_MOLT_IF_NAMETOINDEX = _require_intrinsic("molt_socket_if_nametoindex")
+_MOLT_IF_INDEXTONAME = _require_intrinsic("molt_socket_if_indextoname")
+_MOLT_CMSG_LEN = _require_intrinsic("molt_socket_cmsg_len")
+_MOLT_CMSG_SPACE = _require_intrinsic("molt_socket_cmsg_space")
 
 
 def _unsupported(name: str):
@@ -98,7 +96,7 @@ def _if_indextoname(index: int):
     return _MOLT_IF_INDEXTONAME(index)
 
 
-_MOLT_SOCKET_SETHOSTNAME = _require_intrinsic("molt_socket_sethostname", globals())
+_MOLT_SOCKET_SETHOSTNAME = _require_intrinsic("molt_socket_sethostname")
 
 
 def _sethostname(name: str):
