@@ -61,6 +61,7 @@ var = _private.ContextVar("answer", default=41)
 token = var.set(42)
 ctx = _private.copy_context()
 checks = {{
+    "anchor_hidden": "molt_cancel_token_get_current" not in _private.__dict__,
     "behavior": (
         var.get() == 42
         and ctx.get(var) == 42
@@ -102,4 +103,8 @@ def test__contextvars_public_surface_matches_expected_shape() -> None:
         ("Token", "type", "True"),
         ("copy_context", "function", "True"),
     ]
-    assert checks == {"behavior": "True", "reset": "True"}
+    assert checks == {
+        "anchor_hidden": "True",
+        "behavior": "True",
+        "reset": "True",
+    }

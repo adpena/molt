@@ -63,3 +63,5 @@ __all__ = [
     "UnionType",
     "WrapperDescriptorType",
 ]
+
+del _MOLT_TYPES_BOOTSTRAP

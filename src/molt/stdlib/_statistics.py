@@ -9,5 +9,13 @@ _MOLT_STATISTICS_NORMAL_DIST_INV_CDF = _require_intrinsic(
 )
 
 
-def _normal_dist_inv_cdf(p, mu, sigma):
-    return float(_MOLT_STATISTICS_NORMAL_DIST_INV_CDF(p, mu, sigma))
+def _normal_dist_inv_cdf(
+    p,
+    mu,
+    sigma,
+    _normal_dist_inv_cdf_intrinsic=_MOLT_STATISTICS_NORMAL_DIST_INV_CDF,
+):
+    return float(_normal_dist_inv_cdf_intrinsic(p, mu, sigma))
+
+
+del _MOLT_STATISTICS_NORMAL_DIST_INV_CDF

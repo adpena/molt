@@ -96,6 +96,14 @@ queue = _private.SimpleQueue()
 queue.put("alpha")
 queue.put("beta")
 checks = {{
+    "anchors_hidden": (
+        "molt_queue_new" not in _private.__dict__
+        and "molt_queue_qsize" not in _private.__dict__
+        and "molt_queue_empty" not in _private.__dict__
+        and "molt_queue_put" not in _private.__dict__
+        and "molt_queue_get" not in _private.__dict__
+        and "molt_queue_drop" not in _private.__dict__
+    ),
     "behavior": (
         queue.qsize() == 2
         and queue.empty() is False
@@ -139,4 +147,8 @@ def test__queue_public_surface_matches_expected_shape() -> None:
         ("Empty", "type", "True"),
         ("SimpleQueue", "type", "True"),
     ]
-    assert checks == {"behavior": "True", "empty": "True"}
+    assert checks == {
+        "anchors_hidden": "True",
+        "behavior": "True",
+        "empty": "True",
+    }

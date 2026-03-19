@@ -54,6 +54,7 @@ rows = [
 for name, type_name, is_callable in rows:
     print(f"ROW|{{name}}|{{type_name}}|{{is_callable}}")
 
+print(f"CHECK|anchor_hidden|{{'molt_statistics_normal_dist_inv_cdf' not in _private.__dict__}}")
 print(f"CHECK|behavior|{{_private._normal_dist_inv_cdf(0.5, 0.0, 1.0) == 1.5}}")
 """
 
@@ -80,4 +81,4 @@ def _run_probe() -> tuple[list[tuple[str, str, str]], dict[str, str]]:
 def test__statistics_public_surface_matches_expected_shape() -> None:
     rows, checks = _run_probe()
     assert rows == []
-    assert checks == {"behavior": "True"}
+    assert checks == {"anchor_hidden": "True", "behavior": "True"}

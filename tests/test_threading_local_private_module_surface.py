@@ -75,6 +75,7 @@ for name, type_name, is_callable in rows:
     print(f"ROW|{{name}}|{{type_name}}|{{is_callable}}")
 
 checks = {{
+    "anchor_hidden": "molt_capabilities_has" not in _private.__dict__,
     "behavior": (
         _private.current_thread() == "thread"
         and _private.RLock().__class__.__name__ == "_RLock"
@@ -115,4 +116,4 @@ def test__threading_local_public_surface_matches_expected_shape() -> None:
         ("local", "type", "True"),
         ("ref", "type", "True"),
     ]
-    assert checks == {"behavior": "True"}
+    assert checks == {"anchor_hidden": "True", "behavior": "True"}
