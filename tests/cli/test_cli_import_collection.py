@@ -12,6 +12,7 @@ import sys
 import molt.cli as cli
 import pytest
 from molt.frontend import MoltValue
+from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -2202,6 +2203,136 @@ def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
     assert payload["pgo_hot_functions"] == ["main::hot"]
 
 
+def test_module_lowering_context_payload_scopes_type_facts() -> None:
+    type_facts = TypeFacts(
+        modules={
+            "main": ModuleFacts(
+                globals={"VALUE": Fact(type="int", trust="trusted")},
+                functions={"run": FunctionFacts(locals={"x": Fact(type="int", trust="trusted")})},
+            ),
+            "alpha": ModuleFacts(
+                globals={"DEP": Fact(type="str", trust="trusted")},
+            ),
+            "unrelated": ModuleFacts(
+                globals={"NOPE": Fact(type="bytes", trust="trusted")},
+            ),
+        }
+    )
+
+    payload = cli._module_lowering_context_payload(
+        "main",
+        Path("/tmp/main.py"),
+        logical_source_path="/tmp/main.py",
+        entry_override=None,
+        known_classes_snapshot={},
+        parse_codec="json",
+        type_hint_policy="trust",
+        fallback_policy="error",
+        type_facts=type_facts,
+        enable_phi=True,
+        known_modules={"main", "alpha", "unrelated"},
+        stdlib_allowlist=set(),
+        known_func_defaults={},
+        module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
+        module_is_namespace=False,
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=set(),
+        known_modules_sorted=("alpha", "main", "unrelated"),
+        stdlib_allowlist_sorted=(),
+        pgo_hot_function_names_sorted=(),
+        module_dep_closures={"main": frozenset({"main", "alpha"})},
+        path_stat=os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
+    )
+
+    assert payload is not None
+    scoped = payload["type_facts"]
+    assert isinstance(scoped, TypeFacts)
+    assert set(scoped.modules) == {"main", "alpha"}
+
+
+def test_module_worker_payload_scopes_type_facts() -> None:
+    type_facts = TypeFacts(
+        modules={
+            "main": ModuleFacts(globals={"VALUE": Fact(type="int", trust="trusted")}),
+            "alpha": ModuleFacts(globals={"DEP": Fact(type="str", trust="trusted")}),
+            "unrelated": ModuleFacts(globals={"NOPE": Fact(type="bytes", trust="trusted")}),
+        }
+    )
+
+    payload = cli._module_worker_payload(
+        "main",
+        module_path=Path("/tmp/main.py"),
+        logical_source_path="/tmp/main.py",
+        source="import alpha\n",
+        parse_codec="json",
+        type_hint_policy="trust",
+        fallback_policy="error",
+        module_is_namespace=False,
+        entry_module=None,
+        type_facts=type_facts,
+        enable_phi=True,
+        known_modules=("alpha", "main", "unrelated"),
+        known_classes_snapshot={},
+        stdlib_allowlist=("json",),
+        known_func_defaults={},
+        module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=(),
+        module_dep_closures={"main": frozenset({"main", "alpha"})},
+    )
+
+    scoped = payload["type_facts"]
+    assert isinstance(scoped, TypeFacts)
+    assert set(scoped.modules) == {"main", "alpha"}
+
+
+def test_build_scoped_lowering_inputs_precomputes_scoped_views() -> None:
+    type_facts = TypeFacts(
+        modules={
+            "main": ModuleFacts(globals={"VALUE": Fact(type="int", trust="trusted")}),
+            "alpha": ModuleFacts(globals={"DEP": Fact(type="str", trust="trusted")}),
+            "unrelated": ModuleFacts(globals={"NOPE": Fact(type="bytes", trust="trusted")}),
+        }
+    )
+
+    (
+        scoped_known_modules_by_module,
+        scoped_known_func_defaults_by_module,
+        scoped_pgo_hot_function_names_by_module,
+        scoped_type_facts_by_module,
+    ) = cli._build_scoped_lowering_inputs(
+        {"main", "alpha", "unrelated"},
+        module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
+        module_dep_closures={
+            "main": frozenset({"main", "alpha"}),
+            "alpha": frozenset({"alpha"}),
+            "unrelated": frozenset({"unrelated"}),
+        },
+        known_modules={"main", "alpha", "unrelated"},
+        known_func_defaults={
+            "main": {"run": {"params": 0, "defaults": []}},
+            "alpha": {"helper": {"params": 1, "defaults": []}},
+            "unrelated": {"unused": {"params": 0, "defaults": []}},
+        },
+        pgo_hot_function_names={"main::hot", "unrelated::cold"},
+        type_facts=type_facts,
+    )
+
+    assert scoped_known_modules_by_module["main"] == ("alpha", "main")
+    assert set(scoped_known_func_defaults_by_module["main"]) == {"main", "alpha"}
+    assert scoped_pgo_hot_function_names_by_module["main"] == ("main::hot",)
+    scoped_main_facts = scoped_type_facts_by_module["main"]
+    assert isinstance(scoped_main_facts, TypeFacts)
+    assert set(scoped_main_facts.modules) == {
+        "main",
+        "alpha",
+    }
+
+
 def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3759,6 +3890,66 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
     assert seen_payloads[0]["jobs"][0]["probe_cache_only"] is True
     assert "ir" not in seen_payloads[0]["jobs"][0]
     assert seen_payloads[1]["jobs"][0]["ir"] == {"functions": [{"name": "heavy"}]}
+
+
+def test_compile_with_backend_daemon_defers_full_encode_until_probe_miss(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend_output = tmp_path / "output.o"
+    calls: list[tuple[bool, bool]] = []
+
+    original = cli._backend_daemon_compile_request_bytes
+
+    def wrapped_compile_request_bytes(**kwargs: object) -> tuple[bytes | None, str | None]:
+        calls.append((bool(kwargs.get("probe_cache_only")), kwargs.get("ir") is not None))
+        return original(**kwargs)
+
+    def _fake_request(
+        socket_path: Path,
+        data: bytes,
+        *,
+        timeout: float | None,
+    ) -> tuple[dict[str, object], None]:
+        del socket_path, timeout
+        payload = json.loads(data)
+        if payload["jobs"][0].get("probe_cache_only"):
+            backend_output.write_bytes(b"\x7fELF")
+            return (
+                {
+                    "ok": True,
+                    "jobs": [
+                        {
+                            "id": "job0",
+                            "ok": True,
+                            "cached": True,
+                            "cache_tier": "module",
+                            "output_written": True,
+                        }
+                    ],
+                },
+                None,
+            )
+        raise AssertionError("full IR request should not be sent on cache hit")
+
+    monkeypatch.setattr(cli, "_backend_daemon_compile_request_bytes", wrapped_compile_request_bytes)
+    monkeypatch.setattr(cli, "_backend_daemon_request_bytes", _fake_request)
+    result = cli._compile_with_backend_daemon(
+        Path("/tmp/fake.sock"),
+        ir={"functions": [{"name": "heavy"}]},
+        backend_output=backend_output,
+        is_wasm=False,
+        target_triple=None,
+        cache_key="module-cache",
+        function_cache_key="function-cache",
+        config_digest="digest123",
+        skip_module_output_if_synced=False,
+        skip_function_output_if_synced=False,
+        timeout=0.1,
+    )
+
+    assert result.ok is True
+    assert calls == [(True, False)]
 
 
 def test_compile_with_backend_daemon_reports_missing_output_in_result(

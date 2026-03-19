@@ -54,6 +54,7 @@ from packaging.requirements import InvalidRequirement, Requirement
 from molt.compat import CompatibilityError
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import (
+    TypeFacts,
     collect_type_facts_from_paths,
     load_type_facts,
     write_type_facts,
@@ -3024,6 +3025,84 @@ def _scoped_known_classes(
         for class_name, class_info in known_classes.items()
         if isinstance(class_info, dict) and class_info.get("module") in scoped_modules
     }
+
+
+def _scoped_type_facts(
+    module_name: str,
+    *,
+    module_deps: dict[str, set[str]],
+    type_facts: TypeFacts | None,
+    module_dep_closures: dict[str, frozenset[str]] | None = None,
+) -> TypeFacts | None:
+    if type_facts is None:
+        return None
+    scoped_modules = module_dep_closures.get(module_name) if module_dep_closures else None
+    if scoped_modules is None:
+        scoped_modules = _module_dependency_closure(module_name, module_deps)
+    modules = getattr(type_facts, "modules", None)
+    if not isinstance(modules, dict):
+        return type_facts
+    filtered_modules = {
+        name: module for name, module in modules.items() if name in scoped_modules
+    }
+    if len(filtered_modules) == len(modules):
+        return type_facts
+    return TypeFacts(
+        schema_version=type_facts.schema_version,
+        created_at=type_facts.created_at,
+        tool=type_facts.tool,
+        strict=type_facts.strict,
+        modules=filtered_modules,
+    )
+
+
+def _build_scoped_lowering_inputs(
+    module_names: Collection[str],
+    *,
+    module_deps: dict[str, set[str]],
+    module_dep_closures: dict[str, frozenset[str]],
+    known_modules: Collection[str],
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]],
+    pgo_hot_function_names: Collection[str],
+    type_facts: TypeFacts | None,
+) -> tuple[
+    dict[str, tuple[str, ...]],
+    dict[str, dict[str, dict[str, Any]]],
+    dict[str, tuple[str, ...]],
+    dict[str, TypeFacts | None],
+]:
+    scoped_known_modules_by_module: dict[str, tuple[str, ...]] = {}
+    scoped_known_func_defaults_by_module: dict[str, dict[str, dict[str, Any]]] = {}
+    scoped_pgo_hot_function_names_by_module: dict[str, tuple[str, ...]] = {}
+    scoped_type_facts_by_module: dict[str, TypeFacts | None] = {}
+    for module_name in sorted(module_names):
+        scoped_known_modules_by_module[module_name] = _scoped_known_modules(
+            module_name,
+            module_deps=module_deps,
+            known_modules=known_modules,
+            module_dep_closures=module_dep_closures,
+        )
+        scoped_known_func_defaults_by_module[module_name] = _scoped_known_func_defaults(
+            module_name,
+            module_deps=module_deps,
+            known_func_defaults=known_func_defaults,
+            module_dep_closures=module_dep_closures,
+        )
+        scoped_pgo_hot_function_names_by_module[module_name] = (
+            _scoped_pgo_hot_function_names(module_name, pgo_hot_function_names)
+        )
+        scoped_type_facts_by_module[module_name] = _scoped_type_facts(
+            module_name,
+            module_deps=module_deps,
+            type_facts=type_facts,
+            module_dep_closures=module_dep_closures,
+        )
+    return (
+        scoped_known_modules_by_module,
+        scoped_known_func_defaults_by_module,
+        scoped_pgo_hot_function_names_by_module,
+        scoped_type_facts_by_module,
+    )
 
 
 def _scoped_pgo_hot_function_names(
@@ -6820,24 +6899,6 @@ def _compile_with_backend_daemon(
     request_bytes: bytes | None = None,
 ) -> _BackendDaemonCompileResult:
     full_request_bytes = request_bytes
-    if full_request_bytes is None:
-        full_request_bytes, encode_err = _backend_daemon_compile_request_bytes(
-            ir=ir,
-            backend_output=backend_output,
-            is_wasm=is_wasm,
-            target_triple=target_triple,
-            cache_key=cache_key,
-            function_cache_key=function_cache_key,
-            config_digest=config_digest,
-            skip_module_output_if_synced=skip_module_output_if_synced,
-            skip_function_output_if_synced=skip_function_output_if_synced,
-            include_health=False,
-        )
-        if encode_err is not None:
-            return _BackendDaemonCompileResult(
-                False, encode_err, None, None, None, True, False
-            )
-        assert full_request_bytes is not None
     probe_request_bytes: bytes | None = None
     if request_bytes is None and (cache_key or function_cache_key):
         probe_request_bytes, probe_encode_err = _backend_daemon_compile_request_bytes(
@@ -6857,6 +6918,24 @@ def _compile_with_backend_daemon(
             return _BackendDaemonCompileResult(
                 False, probe_encode_err, None, None, None, True, False
             )
+    elif full_request_bytes is None:
+        full_request_bytes, encode_err = _backend_daemon_compile_request_bytes(
+            ir=ir,
+            backend_output=backend_output,
+            is_wasm=is_wasm,
+            target_triple=target_triple,
+            cache_key=cache_key,
+            function_cache_key=function_cache_key,
+            config_digest=config_digest,
+            skip_module_output_if_synced=skip_module_output_if_synced,
+            skip_function_output_if_synced=skip_function_output_if_synced,
+            include_health=False,
+        )
+        if encode_err is not None:
+            return _BackendDaemonCompileResult(
+                False, encode_err, None, None, None, True, False
+            )
+        assert full_request_bytes is not None
     response, err = _backend_daemon_request_bytes(
         socket_path, probe_request_bytes or full_request_bytes, timeout=timeout
     )
@@ -6925,6 +7004,24 @@ def _compile_with_backend_daemon(
     needs_ir = bool(first.get("needs_ir"))
     output_exists = not output_written
     if needs_ir and probe_request_bytes is not None:
+        if full_request_bytes is None:
+            full_request_bytes, encode_err = _backend_daemon_compile_request_bytes(
+                ir=ir,
+                backend_output=backend_output,
+                is_wasm=is_wasm,
+                target_triple=target_triple,
+                cache_key=cache_key,
+                function_cache_key=function_cache_key,
+                config_digest=config_digest,
+                skip_module_output_if_synced=skip_module_output_if_synced,
+                skip_function_output_if_synced=skip_function_output_if_synced,
+                include_health=False,
+            )
+            if encode_err is not None:
+                return _BackendDaemonCompileResult(
+                    False, encode_err, health, None, None, True, False
+                )
+            assert full_request_bytes is not None
         response, err = _backend_daemon_request_bytes(
             socket_path, full_request_bytes, timeout=timeout
         )
@@ -7799,6 +7896,12 @@ def _module_lowering_context_payload(
     stdlib_allowlist_sorted: tuple[str, ...] | None = None,
     pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
     module_dep_closures: dict[str, frozenset[str]] | None = None,
+    scoped_known_modules_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_known_func_defaults_by_module: Mapping[
+        str, dict[str, dict[str, Any]]
+    ] | None = None,
+    scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_type_facts_by_module: Mapping[str, TypeFacts | None] | None = None,
     path_stat: os.stat_result | None = None,
 ) -> dict[str, Any] | None:
     if path_stat is None:
@@ -7806,40 +7909,69 @@ def _module_lowering_context_payload(
             path_stat = module_path.stat()
         except OSError:
             return None
-    known_modules_scope_source: Collection[str]
-    if known_modules_sorted is None:
-        known_modules_scope_source = known_modules
+    if (
+        scoped_known_modules_by_module is not None
+        and module_name in scoped_known_modules_by_module
+    ):
+        known_modules_sorted = scoped_known_modules_by_module[module_name]
     else:
-        known_modules_scope_source = known_modules_sorted
-    known_modules_sorted = _scoped_known_modules(
-        module_name,
-        module_deps=module_deps,
-        known_modules=known_modules_scope_source,
-        module_dep_closures=module_dep_closures,
-    )
+        known_modules_scope_source: Collection[str]
+        if known_modules_sorted is None:
+            known_modules_scope_source = known_modules
+        else:
+            known_modules_scope_source = known_modules_sorted
+        known_modules_sorted = _scoped_known_modules(
+            module_name,
+            module_deps=module_deps,
+            known_modules=known_modules_scope_source,
+            module_dep_closures=module_dep_closures,
+        )
     if stdlib_allowlist_sorted is None:
         stdlib_allowlist_sorted = tuple(sorted(stdlib_allowlist))
-    pgo_hot_functions_scope_source: Collection[str]
-    if pgo_hot_function_names_sorted is None:
-        pgo_hot_functions_scope_source = pgo_hot_function_names
+    if (
+        scoped_pgo_hot_function_names_by_module is not None
+        and module_name in scoped_pgo_hot_function_names_by_module
+    ):
+        pgo_hot_function_names_sorted = scoped_pgo_hot_function_names_by_module[
+            module_name
+        ]
     else:
-        pgo_hot_functions_scope_source = pgo_hot_function_names_sorted
-    pgo_hot_function_names_sorted = _scoped_pgo_hot_function_names(
-        module_name,
-        pgo_hot_functions_scope_source,
-    )
-    scoped_known_func_defaults = _scoped_known_func_defaults(
-        module_name,
-        module_deps=module_deps,
-        known_func_defaults=known_func_defaults,
-        module_dep_closures=module_dep_closures,
-    )
+        pgo_hot_functions_scope_source: Collection[str]
+        if pgo_hot_function_names_sorted is None:
+            pgo_hot_functions_scope_source = pgo_hot_function_names
+        else:
+            pgo_hot_functions_scope_source = pgo_hot_function_names_sorted
+        pgo_hot_function_names_sorted = _scoped_pgo_hot_function_names(
+            module_name,
+            pgo_hot_functions_scope_source,
+        )
+    if (
+        scoped_known_func_defaults_by_module is not None
+        and module_name in scoped_known_func_defaults_by_module
+    ):
+        scoped_known_func_defaults = scoped_known_func_defaults_by_module[module_name]
+    else:
+        scoped_known_func_defaults = _scoped_known_func_defaults(
+            module_name,
+            module_deps=module_deps,
+            known_func_defaults=known_func_defaults,
+            module_dep_closures=module_dep_closures,
+        )
     scoped_known_classes = _scoped_known_classes(
         module_name,
         module_deps=module_deps,
         known_classes=known_classes_snapshot,
         module_dep_closures=module_dep_closures,
     )
+    if scoped_type_facts_by_module is not None and module_name in scoped_type_facts_by_module:
+        scoped_type_facts = scoped_type_facts_by_module[module_name]
+    else:
+        scoped_type_facts = _scoped_type_facts(
+            module_name,
+            module_deps=module_deps,
+            type_facts=cast(TypeFacts | None, type_facts),
+            module_dep_closures=module_dep_closures,
+        )
     return {
         "version": 1,
         "module_name": module_name,
@@ -7852,7 +7984,7 @@ def _module_lowering_context_payload(
         "parse_codec": parse_codec,
         "type_hint_policy": type_hint_policy,
         "fallback_policy": fallback_policy,
-        "type_facts": type_facts,
+        "type_facts": scoped_type_facts,
         "enable_phi": enable_phi,
         "known_modules": known_modules_sorted,
         "known_classes": scoped_known_classes,
@@ -7969,6 +8101,12 @@ def _load_cached_module_lowering_result(
     stdlib_allowlist_sorted: tuple[str, ...] | None = None,
     pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
     module_dep_closures: dict[str, frozenset[str]] | None = None,
+    scoped_known_modules_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_known_func_defaults_by_module: Mapping[
+        str, dict[str, dict[str, Any]]
+    ] | None = None,
+    scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_type_facts_by_module: Mapping[str, TypeFacts | None] | None = None,
     context_digest: str | None = None,
     resolution_cache: _ModuleResolutionCache | None = None,
 ) -> dict[str, Any] | None:
@@ -8003,6 +8141,10 @@ def _load_cached_module_lowering_result(
             stdlib_allowlist_sorted=stdlib_allowlist_sorted,
             pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
             module_dep_closures=module_dep_closures,
+            scoped_known_modules_by_module=scoped_known_modules_by_module,
+            scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
+            scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
+            scoped_type_facts_by_module=scoped_type_facts_by_module,
             path_stat=path_stat,
         )
         if context_payload is None:
@@ -8043,7 +8185,52 @@ def _module_worker_payload(
     optimization_profile: str,
     pgo_hot_function_names: Collection[str],
     module_dep_closures: dict[str, frozenset[str]],
+    scoped_known_modules_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_known_func_defaults_by_module: Mapping[
+        str, dict[str, dict[str, Any]]
+    ] | None = None,
+    scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_type_facts_by_module: Mapping[str, TypeFacts | None] | None = None,
 ) -> dict[str, Any]:
+    if scoped_known_modules_by_module is not None and module_name in scoped_known_modules_by_module:
+        scoped_known_modules = scoped_known_modules_by_module[module_name]
+    else:
+        scoped_known_modules = _scoped_known_modules(
+            module_name,
+            module_deps=module_deps,
+            known_modules=known_modules,
+            module_dep_closures=module_dep_closures,
+        )
+    if (
+        scoped_known_func_defaults_by_module is not None
+        and module_name in scoped_known_func_defaults_by_module
+    ):
+        scoped_known_func_defaults = scoped_known_func_defaults_by_module[module_name]
+    else:
+        scoped_known_func_defaults = _scoped_known_func_defaults(
+            module_name,
+            module_deps=module_deps,
+            known_func_defaults=known_func_defaults,
+            module_dep_closures=module_dep_closures,
+        )
+    if (
+        scoped_pgo_hot_function_names_by_module is not None
+        and module_name in scoped_pgo_hot_function_names_by_module
+    ):
+        scoped_pgo_hot_functions = scoped_pgo_hot_function_names_by_module[module_name]
+    else:
+        scoped_pgo_hot_functions = _scoped_pgo_hot_function_names(
+            module_name, pgo_hot_function_names
+        )
+    if scoped_type_facts_by_module is not None and module_name in scoped_type_facts_by_module:
+        scoped_type_facts = scoped_type_facts_by_module[module_name]
+    else:
+        scoped_type_facts = _scoped_type_facts(
+            module_name,
+            module_deps=module_deps,
+            type_facts=cast(TypeFacts | None, type_facts),
+            module_dep_closures=module_dep_closures,
+        )
     return {
         "module_name": module_name,
         "module_path": str(module_path),
@@ -8055,14 +8242,7 @@ def _module_worker_payload(
         "module_is_namespace": module_is_namespace,
         "entry_module": entry_module,
         "enable_phi": enable_phi,
-        "known_modules": list(
-            _scoped_known_modules(
-                module_name,
-                module_deps=module_deps,
-                known_modules=known_modules,
-                module_dep_closures=module_dep_closures,
-            )
-        ),
+        "known_modules": list(scoped_known_modules),
         "known_classes": _scoped_known_classes(
             module_name,
             module_deps=module_deps,
@@ -8070,19 +8250,12 @@ def _module_worker_payload(
             module_dep_closures=module_dep_closures,
         ),
         "stdlib_allowlist": list(sorted(stdlib_allowlist)),
-        "known_func_defaults": _scoped_known_func_defaults(
-            module_name,
-            module_deps=module_deps,
-            known_func_defaults=known_func_defaults,
-            module_dep_closures=module_dep_closures,
-        ),
+        "known_func_defaults": scoped_known_func_defaults,
         "module_chunking": module_chunking,
         "module_chunk_max_ops": module_chunk_max_ops,
         "optimization_profile": optimization_profile,
-        "pgo_hot_functions": list(
-            _scoped_pgo_hot_function_names(module_name, pgo_hot_function_names)
-        ),
-        "type_facts": type_facts,
+        "pgo_hot_functions": list(scoped_pgo_hot_functions),
+        "type_facts": scoped_type_facts,
     }
 
 
@@ -8114,6 +8287,12 @@ def _prepare_frontend_parallel_batch(
     stdlib_allowlist_sorted: tuple[str, ...],
     pgo_hot_function_names_sorted: tuple[str, ...],
     module_dep_closures: dict[str, frozenset[str]],
+    scoped_known_modules_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_known_func_defaults_by_module: Mapping[
+        str, dict[str, dict[str, Any]]
+    ] | None = None,
+    scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_type_facts_by_module: Mapping[str, TypeFacts | None] | None = None,
     dirty_lowering_modules: Collection[str],
 ) -> tuple[
     dict[str, dict[str, Any]],
@@ -8159,6 +8338,10 @@ def _prepare_frontend_parallel_batch(
                 stdlib_allowlist_sorted=stdlib_allowlist_sorted,
                 pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
                 module_dep_closures=module_dep_closures,
+                scoped_known_modules_by_module=scoped_known_modules_by_module,
+                scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
+                scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
+                scoped_type_facts_by_module=scoped_type_facts_by_module,
             )
             if context_payload is not None:
                 context_digest = _module_lowering_context_digest(context_payload)
@@ -8190,6 +8373,10 @@ def _prepare_frontend_parallel_batch(
                 stdlib_allowlist_sorted=stdlib_allowlist_sorted,
                 pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
                 module_dep_closures=module_dep_closures,
+                scoped_known_modules_by_module=scoped_known_modules_by_module,
+                scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
+                scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
+                scoped_type_facts_by_module=scoped_type_facts_by_module,
                 context_digest=context_digest_by_module.get(module_name),
                 resolution_cache=module_resolution_cache,
             )
@@ -8230,6 +8417,10 @@ def _prepare_frontend_parallel_batch(
                     optimization_profile=optimization_profile,
                     pgo_hot_function_names=pgo_hot_function_names_sorted,
                     module_dep_closures=module_dep_closures,
+                    scoped_known_modules_by_module=scoped_known_modules_by_module,
+                    scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
+                    scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
+                    scoped_type_facts_by_module=scoped_type_facts_by_module,
                 ),
             )
         )
@@ -11185,6 +11376,20 @@ def build(
                 json_output,
                 command="build",
             )
+    (
+        scoped_known_modules_by_module,
+        scoped_known_func_defaults_by_module,
+        scoped_pgo_hot_function_names_by_module,
+        scoped_type_facts_by_module,
+    ) = _build_scoped_lowering_inputs(
+        module_graph,
+        module_deps=module_deps,
+        module_dep_closures=module_dep_closures,
+        known_modules=known_modules,
+        known_func_defaults=known_func_defaults,
+        pgo_hot_function_names=pgo_hot_function_names,
+        type_facts=cast(TypeFacts | None, type_facts),
+    )
 
     functions: list[dict[str, Any]] = []
     # Normalize code-slot IDs across modules to keep tracebacks consistent.
@@ -11390,6 +11595,10 @@ def build(
                 stdlib_allowlist_sorted=stdlib_allowlist_sorted,
                 pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
                 module_dep_closures=module_dep_closures,
+                scoped_known_modules_by_module=scoped_known_modules_by_module,
+                scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
+                scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
+                scoped_type_facts_by_module=scoped_type_facts_by_module,
                 path_stat=path_stat,
             )
             if context_payload is not None:
@@ -11652,6 +11861,10 @@ def build(
                             stdlib_allowlist_sorted=stdlib_allowlist_sorted,
                             pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
                             module_dep_closures=module_dep_closures,
+                            scoped_known_modules_by_module=scoped_known_modules_by_module,
+                            scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
+                            scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
+                            scoped_type_facts_by_module=scoped_type_facts_by_module,
                             dirty_lowering_modules=dirty_lowering_modules,
                         )
                         if batch_error is not None:
