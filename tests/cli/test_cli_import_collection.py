@@ -1393,7 +1393,7 @@ def test_load_module_analysis_reuses_persisted_cache(
     source = cli._read_module_source(module_path)
     cache = cli._ModuleResolutionCache()
 
-    tree, imports, func_defaults, cached_source = cli._load_module_analysis(
+    tree, imports, func_defaults, cached_source, cache_hit = cli._load_module_analysis(
         module_path,
         module_name="pkg",
         is_package=False,
@@ -1407,12 +1407,13 @@ def test_load_module_analysis_reuses_persisted_cache(
     assert imports == ("warnings",)
     assert "f" in func_defaults
     assert cached_source == source
+    assert cache_hit is False
 
     def fail_parse(*args: object, **kwargs: object) -> ast.AST:
         raise AssertionError("unexpected parse")
 
     monkeypatch.setattr(cache, "parse_module_ast", fail_parse)
-    cached_tree, cached_imports, cached_defaults, cached_source = (
+    cached_tree, cached_imports, cached_defaults, cached_source, cache_hit = (
         cli._load_module_analysis(
             module_path,
             module_name="pkg",
@@ -1429,6 +1430,7 @@ def test_load_module_analysis_reuses_persisted_cache(
     assert cached_imports == ("warnings",)
     assert cached_defaults == func_defaults
     assert cached_source is None
+    assert cache_hit is True
 
 
 def test_load_module_analysis_reuses_persisted_module_analysis_imports(
@@ -1462,7 +1464,7 @@ def test_load_module_analysis_reuses_persisted_module_analysis_imports(
         ),
     )
 
-    cached_tree, cached_imports, cached_defaults, cached_source = (
+    cached_tree, cached_imports, cached_defaults, cached_source, cache_hit = (
         cli._load_module_analysis(
             module_path,
             module_name="pkg",
@@ -1479,6 +1481,7 @@ def test_load_module_analysis_reuses_persisted_module_analysis_imports(
     assert cached_imports == ("warnings",)
     assert "f" in cached_defaults
     assert cached_source is None
+    assert cache_hit is True
 
 
 def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
@@ -1517,7 +1520,7 @@ def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
         ),
     )
 
-    cached_tree, cached_imports, cached_defaults, cached_source = (
+    cached_tree, cached_imports, cached_defaults, cached_source, cache_hit = (
         cli._load_module_analysis(
             module_path,
             module_name="pkg",
@@ -1535,6 +1538,7 @@ def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
     assert "f" in cached_defaults
     assert cached_source is None
     assert calls == 1
+    assert cache_hit is True
 
 
 def test_persisted_module_lowering_roundtrip_respects_context_digest(
@@ -1630,6 +1634,55 @@ def test_persisted_module_lowering_reuses_process_cache(
     )
 
     assert first == second
+    assert first is not second
+
+
+def test_persisted_module_lowering_returns_isolated_mutable_results(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg.py"
+    module_path.write_text("x = 1\n")
+    context_digest = cli._module_lowering_context_digest({"module": "pkg", "v": 1})
+    assert context_digest is not None
+    cli._PERSISTED_JSON_OBJECT_CACHE.clear()
+    cli._write_persisted_module_lowering(
+        tmp_path,
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        context_digest=context_digest,
+        result={
+            "functions": [
+                {"name": "molt_main", "ops": [{"kind": "code_slot_set", "value": 1}]}
+            ],
+            "func_code_ids": {"molt_main": 1},
+            "local_class_names": [],
+            "local_classes": {},
+            "midend_policy_outcomes_by_function": {},
+            "midend_pass_stats_by_function": {},
+            "timings": {"visit_s": 0.0, "lower_s": 0.0, "total_s": 0.0},
+        },
+    )
+
+    first = cli._read_persisted_module_lowering(
+        tmp_path,
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        context_digest=context_digest,
+    )
+    second = cli._read_persisted_module_lowering(
+        tmp_path,
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        context_digest=context_digest,
+    )
+
+    assert first is not None
+    assert second is not None
+    first["functions"][0]["ops"][0]["value"] = 99
+    assert second["functions"][0]["ops"][0]["value"] == 1
 
 
 def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
@@ -1694,6 +1747,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
             known_modules_sorted=("alpha",),
             stdlib_allowlist_sorted=(),
             pgo_hot_function_names_sorted=(),
+            dirty_lowering_modules=set(),
         )
     )
 
@@ -1770,6 +1824,23 @@ def test_load_cached_module_lowering_result_reuses_single_module_stat(
     assert result is not None
     assert result["functions"] == []
     assert calls == 1
+
+
+def test_dependent_module_closure_tracks_reverse_frontier() -> None:
+    module_deps = {
+        "main": {"alpha", "beta"},
+        "alpha": {"leaf"},
+        "beta": set(),
+        "leaf": set(),
+    }
+
+    closure = cli._dependent_module_closure(
+        {"leaf"},
+        module_deps,
+        {"main", "alpha", "beta", "leaf"},
+    )
+
+    assert closure == {"leaf", "alpha", "main"}
 
 
 def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
@@ -1887,6 +1958,122 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
         for item in compile_diagnostics["frontend_parallel"]["worker_timings"]
     }
     assert "parallel_cache_hit" in worker_modes
+
+
+def test_parallel_build_only_relowers_changed_frontier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+    entry = project / "main.py"
+    entry.write_text("import alpha\nimport beta\nprint(alpha.VALUE + beta.VALUE)\n")
+    alpha = project / "alpha.py"
+    alpha.write_text("VALUE = 1\n")
+    (project / "beta.py").write_text("VALUE = 2\n")
+
+    build_state_root = tmp_path / "build-state"
+    cache_root = tmp_path / "cache"
+    backend_bin = tmp_path / "fake-backend"
+    backend_bin.write_text("")
+
+    monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
+    monkeypatch.setenv("MOLT_CACHE", str(cache_root))
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli, "_resolve_frontend_parallel_module_workers", lambda: 2)
+    monkeypatch.setattr(cli, "_resolve_frontend_parallel_min_modules", lambda: 2)
+    monkeypatch.setattr(
+        cli, "_resolve_frontend_parallel_min_predicted_cost", lambda: 0.0
+    )
+    monkeypatch.setattr(
+        cli, "_resolve_frontend_parallel_target_cost_per_worker", lambda: 1.0
+    )
+    monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
+    monkeypatch.setattr(cli, "_module_order_has_back_edges", lambda *args: False)
+    monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli, "_ensure_backend_binary", lambda *args, **kwargs: True)
+
+    original_run = cli.subprocess.run
+
+    def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        if cmd and str(cmd[0]) == str(backend_bin):
+            output = Path(cmd[cmd.index("--output") + 1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"OBJ")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return original_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    class _FakeFuture:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self._payload = payload
+
+        def result(self) -> dict[str, object]:
+            return cli._frontend_lower_module_worker(self._payload)
+
+    class _FakeExecutor:
+        def __init__(self, *, max_workers: int) -> None:
+            self.max_workers = max_workers
+
+        def __enter__(self) -> "_FakeExecutor":
+            return self
+
+        def __exit__(
+            self,
+            exc_type: object,
+            exc: object,
+            tb: object,
+        ) -> bool:
+            return False
+
+        def submit(self, fn: object, payload: dict[str, object]) -> _FakeFuture:
+            assert fn is cli._frontend_lower_module_worker
+            return _FakeFuture(payload)
+
+    monkeypatch.setattr(cli, "ProcessPoolExecutor", _FakeExecutor)
+
+    first_stdout = io.StringIO()
+    with contextlib.redirect_stdout(first_stdout):
+        rc = cli.build(
+            str(entry),
+            emit="obj",
+            output=str(tmp_path / "first.o"),
+            profile="dev",
+            deterministic=False,
+            json_output=True,
+            diagnostics=True,
+        )
+    assert rc == 0
+
+    alpha.write_text("VALUE = 10\n")
+
+    second_stdout = io.StringIO()
+    with contextlib.redirect_stdout(second_stdout):
+        rc = cli.build(
+            str(entry),
+            emit="obj",
+            output=str(tmp_path / "second.o"),
+            profile="dev",
+            deterministic=False,
+            json_output=True,
+            diagnostics=True,
+        )
+    assert rc == 0
+
+    payload = json.loads(second_stdout.getvalue())
+    compile_diagnostics = payload["data"]["compile_diagnostics"]
+    worker_modes_by_module = {
+        item["module"]: item["mode"]
+        for item in compile_diagnostics["frontend_parallel"]["worker_timings"]
+    }
+
+    assert worker_modes_by_module["beta"] == "parallel_cache_hit"
+    assert worker_modes_by_module["alpha"] == "parallel"
+    assert worker_modes_by_module["main"] == "parallel"
 
 
 def test_read_module_source_uses_utf8_fast_path(
