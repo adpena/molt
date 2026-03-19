@@ -5697,11 +5697,32 @@ def _backend_source_paths(project_root: Path) -> list[Path]:
     return list(_backend_source_paths_cached(os.fspath(project_root)))
 
 
-def _backend_bin_path(project_root: Path, cargo_profile: str) -> Path:
+@functools.lru_cache(maxsize=256)
+def _backend_bin_path_cached(
+    project_root_str: str,
+    cargo_profile: str,
+    cargo_target_override: str | None,
+    cwd_str: str,
+    os_name: str,
+) -> Path:
     profile_dir = _cargo_profile_dir(cargo_profile)
-    target_root = _cargo_target_root(project_root)
-    exe_suffix = ".exe" if os.name == "nt" else ""
+    target_root = _cargo_target_root_cached(
+        project_root_str,
+        cargo_target_override,
+        cwd_str,
+    )
+    exe_suffix = ".exe" if os_name == "nt" else ""
     return target_root / profile_dir / f"molt-backend{exe_suffix}"
+
+
+def _backend_bin_path(project_root: Path, cargo_profile: str) -> Path:
+    return _backend_bin_path_cached(
+        os.fspath(project_root),
+        cargo_profile,
+        os.environ.get("CARGO_TARGET_DIR"),
+        os.fspath(Path.cwd()),
+        os.name,
+    )
 
 
 def _resolve_backend_profile(
