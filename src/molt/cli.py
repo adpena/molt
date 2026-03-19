@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
     Any,
+    Callable,
     Collection,
     ContextManager,
     Iterable,
@@ -531,6 +532,23 @@ class _WorkerTimingSummary:
 @dataclass(frozen=True)
 class _FrontendLayerStaticMetrics:
     predicted_cost_total: float
+    stdlib_candidates: int
+
+
+@dataclass(frozen=True)
+class _FrontendModuleResultTimings:
+    visit_s: float
+    lower_s: float
+    total_s: float
+
+
+@dataclass(frozen=True)
+class _FrontendLayerPolicySummary:
+    enabled: bool
+    workers: int
+    reason: str
+    predicted_cost_total: float
+    effective_min_predicted_cost: float
     stdlib_candidates: int
 
 
@@ -8530,6 +8548,35 @@ def _frontend_parallel_layer_detail(
     return detail
 
 
+def _frontend_result_timings(result: Mapping[str, Any]) -> _FrontendModuleResultTimings:
+    timings = cast(Mapping[str, Any], result.get("timings", {}))
+    return _FrontendModuleResultTimings(
+        visit_s=float(timings.get("visit_s", 0.0)),
+        lower_s=float(timings.get("lower_s", 0.0)),
+        total_s=float(timings.get("total_s", 0.0)),
+    )
+
+
+def _frontend_layer_policy_summary(
+    layer_policy: Mapping[str, Any],
+    *,
+    default_min_predicted_cost: float,
+) -> _FrontendLayerPolicySummary:
+    return _FrontendLayerPolicySummary(
+        enabled=bool(layer_policy.get("enabled")),
+        workers=int(layer_policy.get("workers", 1)),
+        reason=str(layer_policy.get("reason", "serial")),
+        predicted_cost_total=float(layer_policy.get("predicted_cost_total", 0.0)),
+        effective_min_predicted_cost=float(
+            layer_policy.get(
+                "effective_min_predicted_cost",
+                default_min_predicted_cost,
+            )
+        ),
+        stdlib_candidates=int(layer_policy.get("stdlib_candidates", 0)),
+    )
+
+
 def _worker_timing_summary_payload(summary: _WorkerTimingSummary) -> dict[str, Any]:
     return {
         "count": summary.count,
@@ -8558,6 +8605,65 @@ def _frontend_layer_static_metrics(
             1 for name in module_names if stdlib_like_by_module.get(name, False)
         ),
     )
+
+
+def _frontend_parallel_worker_timing_inputs(
+    result: Mapping[str, Any],
+    worker_timing: Mapping[str, Any] | None,
+) -> tuple[float, float, float, float, str, int | None]:
+    total_ms = _frontend_result_timings(result).total_s * 1000.0
+    queue_ms = float((worker_timing or {}).get("queue_ms", 0.0))
+    wait_ms = float((worker_timing or {}).get("wait_ms", 0.0))
+    exec_ms = float((worker_timing or {}).get("exec_ms", total_ms))
+    roundtrip_ms = float(
+        (worker_timing or {}).get("roundtrip_ms", max(queue_ms + wait_ms, exec_ms))
+    )
+    worker_mode = str((worker_timing or {}).get("mode", "parallel"))
+    worker_pid_raw = (worker_timing or {}).get("worker_pid")
+    worker_pid = worker_pid_raw if isinstance(worker_pid_raw, int) else None
+    return queue_ms, wait_ms, exec_ms, roundtrip_ms, worker_mode, worker_pid
+
+
+def _consume_frontend_module_result(
+    module_name: str,
+    module_path: Path,
+    result: Mapping[str, Any],
+    *,
+    record_frontend_timing: Callable[..., None],
+    integrate_module_frontend_result: Callable[..., str | None],
+    accumulate_midend_diagnostics: Callable[..., None],
+    fail: Callable[[str, bool, str], dict[str, Any] | None],
+    json_output: bool,
+) -> dict[str, Any] | None:
+    timings = _frontend_result_timings(result)
+    record_frontend_timing(
+        module_name=module_name,
+        module_path=module_path,
+        visit_s=timings.visit_s,
+        lower_s=timings.lower_s,
+        total_s=timings.total_s,
+    )
+    integration_error = integrate_module_frontend_result(
+        module_name,
+        ir_functions=cast(list[dict[str, Any]], result["functions"]),
+        func_code_ids=cast(dict[str, int], result["func_code_ids"]),
+        local_class_names=cast(list[str], result["local_class_names"]),
+        local_classes=cast(dict[str, Any], result["local_classes"]),
+    )
+    if integration_error is not None:
+        return fail(integration_error, json_output, command="build")
+    accumulate_midend_diagnostics(
+        module_name,
+        policy_outcomes_by_func=cast(
+            dict[str, dict[str, Any]],
+            result.get("midend_policy_outcomes_by_function", {}),
+        ),
+        pass_stats_by_func=cast(
+            dict[str, dict[str, dict[str, Any]]],
+            result.get("midend_pass_stats_by_function", {}),
+        ),
+    )
+    return None
 
 
 def _module_lowering_context_payload(
@@ -12560,24 +12666,25 @@ def build(
                     min_predicted_cost=frontend_parallel_min_predicted_cost,
                     target_cost_per_worker=frontend_parallel_target_cost_per_worker,
                 )
-                layer_predicted_cost_total = float(
-                    layer_policy.get("predicted_cost_total", 0.0)
+                layer_policy_summary = _frontend_layer_policy_summary(
+                    layer_policy,
+                    default_min_predicted_cost=frontend_parallel_min_predicted_cost,
                 )
-                layer_effective_min_predicted_cost = float(
-                    layer_policy.get(
-                        "effective_min_predicted_cost",
-                        frontend_parallel_min_predicted_cost,
-                    )
+                layer_predicted_cost_total = (
+                    layer_policy_summary.predicted_cost_total
                 )
-                layer_stdlib_candidates = int(layer_policy.get("stdlib_candidates", 0))
-                layer_workers = int(layer_policy.get("workers", 1))
-                layer_policy_reason = str(layer_policy.get("reason", "serial"))
+                layer_effective_min_predicted_cost = (
+                    layer_policy_summary.effective_min_predicted_cost
+                )
+                layer_stdlib_candidates = layer_policy_summary.stdlib_candidates
+                layer_workers = layer_policy_summary.workers
+                layer_policy_reason = layer_policy_summary.reason
                 layer_mode = "serial"
                 layer_parallel_failed = False
 
                 if (
                     parallel_pool_usable
-                    and bool(layer_policy.get("enabled"))
+                    and layer_policy_summary.enabled
                     and len(candidates) > 1
                 ):
                     layer_mode = "parallel"
@@ -12730,10 +12837,6 @@ def build(
                     module_path = module_graph[module_name]
                     result = layer_results.get(module_name)
                     if result is not None:
-                        timings = cast(dict[str, Any], result.get("timings", {}))
-                        visit_s = float(timings.get("visit_s", 0.0))
-                        lower_s = float(timings.get("lower_s", 0.0))
-                        total_s = float(timings.get("total_s", 0.0))
                         if not bool(result.get("ok")):
                             return _fail(
                                 str(
@@ -12745,26 +12848,18 @@ def build(
                                 json_output,
                                 command="build",
                             )
-                        _record_frontend_timing(
-                            module_name=module_name,
-                            module_path=module_path,
-                            visit_s=visit_s,
-                            lower_s=lower_s,
-                            total_s=total_s,
-                        )
-                        worker_timing = worker_timing_by_module.get(module_name, {})
-                        queue_ms = float(worker_timing.get("queue_ms", 0.0))
-                        wait_ms = float(worker_timing.get("wait_ms", 0.0))
-                        exec_ms = float(worker_timing.get("exec_ms", total_s * 1000.0))
-                        roundtrip_ms = float(
-                            worker_timing.get(
-                                "roundtrip_ms", max(queue_ms + wait_ms, exec_ms)
-                            )
-                        )
-                        worker_mode = str(worker_timing.get("mode", "parallel"))
-                        worker_pid_raw = worker_timing.get("worker_pid")
-                        worker_pid = (
-                            worker_pid_raw if isinstance(worker_pid_raw, int) else None
+                        result_timings = _frontend_result_timings(result)
+                        worker_timing = worker_timing_by_module.get(module_name)
+                        (
+                            queue_ms,
+                            wait_ms,
+                            exec_ms,
+                            roundtrip_ms,
+                            worker_mode,
+                            worker_pid,
+                        ) = _frontend_parallel_worker_timing_inputs(
+                            result,
+                            worker_timing,
                         )
                         layer_worker_timings.append(
                             _record_frontend_parallel_worker_timing(
@@ -12798,34 +12893,18 @@ def build(
                                         if key != "ok"
                                     },
                                 )
-                        integration_error = _integrate_module_frontend_result(
-                            module_name,
-                            ir_functions=cast(
-                                list[dict[str, Any]], result["functions"]
-                            ),
-                            func_code_ids=cast(dict[str, int], result["func_code_ids"]),
-                            local_class_names=cast(
-                                list[str], result["local_class_names"]
-                            ),
-                            local_classes=cast(dict[str, Any], result["local_classes"]),
+                        consume_error = _consume_frontend_module_result(
+                            module_name=module_name,
+                            module_path=module_path,
+                            result=result,
+                            record_frontend_timing=_record_frontend_timing,
+                            integrate_module_frontend_result=_integrate_module_frontend_result,
+                            accumulate_midend_diagnostics=_accumulate_midend_diagnostics,
+                            fail=_fail,
+                            json_output=json_output,
                         )
-                        if integration_error is not None:
-                            return _fail(
-                                integration_error,
-                                json_output,
-                                command="build",
-                            )
-                        _accumulate_midend_diagnostics(
-                            module_name,
-                            policy_outcomes_by_func=cast(
-                                dict[str, dict[str, Any]],
-                                result.get("midend_policy_outcomes_by_function", {}),
-                            ),
-                            pass_stats_by_func=cast(
-                                dict[str, dict[str, dict[str, Any]]],
-                                result.get("midend_pass_stats_by_function", {}),
-                            ),
-                        )
+                        if consume_error is not None:
+                            return consume_error
                         continue
                     try:
                         result, visit_s, lower_s, total_s = _lower_module_serial(
@@ -12867,30 +12946,18 @@ def build(
                             worker_pid=None,
                         )
                     )
-                    integration_error = _integrate_module_frontend_result(
-                        module_name,
-                        ir_functions=cast(list[dict[str, Any]], result["functions"]),
-                        func_code_ids=cast(dict[str, int], result["func_code_ids"]),
-                        local_class_names=cast(list[str], result["local_class_names"]),
-                        local_classes=cast(dict[str, Any], result["local_classes"]),
+                    consume_error = _consume_frontend_module_result(
+                        module_name=module_name,
+                        module_path=module_path,
+                        result=result,
+                        record_frontend_timing=lambda **_: None,
+                        integrate_module_frontend_result=_integrate_module_frontend_result,
+                        accumulate_midend_diagnostics=_accumulate_midend_diagnostics,
+                        fail=_fail,
+                        json_output=json_output,
                     )
-                    if integration_error is not None:
-                        return _fail(
-                            integration_error,
-                            json_output,
-                            command="build",
-                        )
-                    _accumulate_midend_diagnostics(
-                        module_name,
-                        policy_outcomes_by_func=cast(
-                            dict[str, dict[str, Any]],
-                            result.get("midend_policy_outcomes_by_function", {}),
-                        ),
-                        pass_stats_by_func=cast(
-                            dict[str, dict[str, dict[str, Any]]],
-                            result.get("midend_pass_stats_by_function", {}),
-                        ),
-                    )
+                    if consume_error is not None:
+                        return consume_error
                 layer_summary = _summarize_worker_timing_items(layer_worker_timings)
                 frontend_parallel_layers.append(
                     _frontend_parallel_layer_detail(
@@ -12952,30 +13019,18 @@ def build(
                     worker_pid=None,
                 )
             )
-            integration_error = _integrate_module_frontend_result(
-                module_name,
-                ir_functions=cast(list[dict[str, Any]], result["functions"]),
-                func_code_ids=cast(dict[str, int], result["func_code_ids"]),
-                local_class_names=cast(list[str], result["local_class_names"]),
-                local_classes=cast(dict[str, Any], result["local_classes"]),
+            consume_error = _consume_frontend_module_result(
+                module_name=module_name,
+                module_path=module_path,
+                result=result,
+                record_frontend_timing=lambda **_: None,
+                integrate_module_frontend_result=_integrate_module_frontend_result,
+                accumulate_midend_diagnostics=_accumulate_midend_diagnostics,
+                fail=_fail,
+                json_output=json_output,
             )
-            if integration_error is not None:
-                return _fail(
-                    integration_error,
-                    json_output,
-                    command="build",
-                )
-            _accumulate_midend_diagnostics(
-                module_name,
-                policy_outcomes_by_func=cast(
-                    dict[str, dict[str, Any]],
-                    result.get("midend_policy_outcomes_by_function", {}),
-                ),
-                pass_stats_by_func=cast(
-                    dict[str, dict[str, dict[str, Any]]],
-                    result.get("midend_pass_stats_by_function", {}),
-                ),
-            )
+            if consume_error is not None:
+                return consume_error
         serial_summary = _summarize_worker_timing_items(serial_layer_worker_timings)
         serial_static_metrics = _frontend_layer_static_metrics(
             module_order,
