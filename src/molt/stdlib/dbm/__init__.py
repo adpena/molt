@@ -8,8 +8,7 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic(
-    "molt_import_smoke_runtime_ready", globals()
-)
+    "molt_import_smoke_runtime_ready")
 _MOLT_IMPORT_SMOKE_RUNTIME_READY()
 
 from dbm.dumb import error as _dumb_error

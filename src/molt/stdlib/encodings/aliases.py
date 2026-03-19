@@ -19,8 +19,7 @@ Contents:
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _molt_encodings_aliases_map = _require_intrinsic(
-    "molt_encodings_aliases_map", globals()
-)
+    "molt_encodings_aliases_map")
 
 # Use the Rust-backed intrinsic to generate the canonical alias map.  The
 # intrinsic is guaranteed to be present in Molt binaries and returns the same
