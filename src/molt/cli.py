@@ -8723,10 +8723,10 @@ def _frontend_layer_static_metrics(
 
 
 def _frontend_parallel_worker_timing_inputs(
-    result: Mapping[str, Any],
+    result_timings: _FrontendModuleResultTimings,
     worker_timing: Mapping[str, Any] | None,
 ) -> tuple[float, float, float, float, str, int | None]:
-    total_ms = _frontend_result_timings(result).total_s * 1000.0
+    total_ms = result_timings.total_s * 1000.0
     queue_ms = float((worker_timing or {}).get("queue_ms", 0.0))
     wait_ms = float((worker_timing or {}).get("wait_ms", 0.0))
     exec_ms = float((worker_timing or {}).get("exec_ms", total_ms))
@@ -8744,20 +8744,22 @@ def _consume_frontend_module_result(
     module_path: Path,
     result: Mapping[str, Any],
     *,
-    record_frontend_timing: Callable[..., None],
+    result_timings: _FrontendModuleResultTimings | None = None,
+    record_frontend_timing: Callable[..., None] | None,
     integrate_module_frontend_result: Callable[..., str | None],
     accumulate_midend_diagnostics: Callable[..., None],
     fail: Callable[[str, bool, str], dict[str, Any] | None],
     json_output: bool,
 ) -> dict[str, Any] | None:
-    timings = _frontend_result_timings(result)
-    record_frontend_timing(
-        module_name=module_name,
-        module_path=module_path,
-        visit_s=timings.visit_s,
-        lower_s=timings.lower_s,
-        total_s=timings.total_s,
-    )
+    timings = result_timings or _frontend_result_timings(result)
+    if record_frontend_timing is not None:
+        record_frontend_timing(
+            module_name=module_name,
+            module_path=module_path,
+            visit_s=timings.visit_s,
+            lower_s=timings.lower_s,
+            total_s=timings.total_s,
+        )
     integration_error = integrate_module_frontend_result(
         module_name,
         ir_functions=cast(list[dict[str, Any]], result["functions"]),
@@ -8779,6 +8781,14 @@ def _consume_frontend_module_result(
         ),
     )
     return None
+
+
+def _frontend_serial_worker_mode(layer_mode: str) -> str:
+    if layer_mode == "serial_fallback":
+        return "serial_fallback"
+    if layer_mode == "serial_layer_policy":
+        return "serial_layer_policy"
+    return "serial"
 
 
 def _module_lowering_context_payload(
@@ -12902,6 +12912,7 @@ def build(
                                 json_output,
                                 command="build",
                             )
+                        result_timings = _frontend_result_timings(result)
                         worker_timing = layer_state.worker_timings_by_module.get(
                             module_name
                         )
@@ -12913,7 +12924,7 @@ def build(
                             worker_mode,
                             worker_pid,
                         ) = _frontend_parallel_worker_timing_inputs(
-                            result,
+                            result_timings,
                             worker_timing,
                         )
                         layer_state.recorded_worker_timings.append(
@@ -12952,6 +12963,7 @@ def build(
                             module_name=module_name,
                             module_path=module_path,
                             result=result,
+                            result_timings=result_timings,
                             record_frontend_timing=_record_frontend_timing,
                             integrate_module_frontend_result=_integrate_module_frontend_result,
                             accumulate_midend_diagnostics=_accumulate_midend_diagnostics,
@@ -12983,11 +12995,12 @@ def build(
                         lower_s=lower_s,
                         total_s=total_s,
                     )
-                    serial_mode = "serial"
-                    if layer_mode == "serial_fallback":
-                        serial_mode = "serial_fallback"
-                    elif layer_mode == "serial_layer_policy":
-                        serial_mode = "serial_layer_policy"
+                    result_timings = _FrontendModuleResultTimings(
+                        visit_s=visit_s,
+                        lower_s=lower_s,
+                        total_s=total_s,
+                    )
+                    serial_mode = _frontend_serial_worker_mode(layer_mode)
                     layer_state.recorded_worker_timings.append(
                         _record_frontend_parallel_worker_timing(
                             layer_index=layer_index,
@@ -13005,7 +13018,8 @@ def build(
                         module_name=module_name,
                         module_path=module_path,
                         result=result,
-                        record_frontend_timing=lambda **_: None,
+                        result_timings=result_timings,
+                        record_frontend_timing=None,
                         integrate_module_frontend_result=_integrate_module_frontend_result,
                         accumulate_midend_diagnostics=_accumulate_midend_diagnostics,
                         fail=_fail,
@@ -13065,6 +13079,11 @@ def build(
                 lower_s=lower_s,
                 total_s=total_s,
             )
+            result_timings = _FrontendModuleResultTimings(
+                visit_s=visit_s,
+                lower_s=lower_s,
+                total_s=total_s,
+            )
             serial_layer_worker_timings.append(
                 _record_frontend_parallel_worker_timing(
                     layer_index=0,
@@ -13082,7 +13101,8 @@ def build(
                 module_name=module_name,
                 module_path=module_path,
                 result=result,
-                record_frontend_timing=lambda **_: None,
+                result_timings=result_timings,
+                record_frontend_timing=None,
                 integrate_module_frontend_result=_integrate_module_frontend_result,
                 accumulate_midend_diagnostics=_accumulate_midend_diagnostics,
                 fail=_fail,
