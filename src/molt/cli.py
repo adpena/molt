@@ -583,6 +583,13 @@ class _FrontendLayerPlan:
     mode: str
 
 
+@dataclass(frozen=True)
+class _FrontendLayerRunResult:
+    layer_state: _FrontendParallelLayerState
+    layer_plan: _FrontendLayerPlan
+    parallel_pool_usable: bool
+
+
 def _fresh_frontend_parallel_layer_state() -> _FrontendParallelLayerState:
     return _FrontendParallelLayerState()
 
@@ -9237,6 +9244,166 @@ def _run_frontend_serial_layer_modules(
     return None
 
 
+def _run_frontend_layer(
+    layer: Sequence[str],
+    *,
+    layer_index: int,
+    executor: Any | None,
+    syntax_error_modules: Mapping[str, Any],
+    module_graph: dict[str, Path],
+    module_sources: dict[str, str],
+    project_root: Path | None,
+    module_resolution_cache: _ModuleResolutionCache,
+    parse_codec: ParseCodec,
+    type_hint_policy: TypeHintPolicy,
+    fallback_policy: FallbackPolicy,
+    type_facts: dict[str, Any] | None,
+    enable_phi: bool,
+    known_modules: Collection[str],
+    stdlib_allowlist: Collection[str],
+    known_func_defaults: dict[str, dict[str, Any]],
+    module_deps: dict[str, set[str]],
+    module_chunk_max_ops: int,
+    optimization_profile: str,
+    pgo_hot_function_names: Collection[str],
+    known_modules_sorted: tuple[str, ...],
+    stdlib_allowlist_sorted: tuple[str, ...],
+    pgo_hot_function_names_sorted: tuple[str, ...],
+    module_dep_closures: dict[str, frozenset[str]],
+    module_graph_metadata: _ModuleGraphMetadata,
+    path_stat_by_module: Mapping[str, os.stat_result | None] | None,
+    module_chunking: bool,
+    scoped_lowering_inputs: _ScopedLoweringInputs | None,
+    dirty_lowering_modules: Collection[str],
+    frontend_module_costs: Mapping[str, float],
+    stdlib_like_by_module: Mapping[str, bool],
+    frontend_parallel_config: _FrontendParallelConfig,
+    parallel_pool_usable: bool,
+    known_classes: Mapping[str, Any],
+    warnings: list[str],
+    frontend_parallel_details: MutableMapping[str, Any],
+    record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]],
+    record_frontend_timing: Callable[..., None],
+    integrate_module_frontend_result: Callable[..., str | None],
+    accumulate_midend_diagnostics: Callable[..., None],
+    fail: Callable[[str, bool, str], dict[str, Any] | None],
+    json_output: bool,
+    run_serial_frontend_lower: Callable[
+        [str, Path],
+        tuple[dict[str, Any] | None, _FrontendModuleResultTimings | None, dict[str, Any] | None],
+    ],
+) -> tuple[_FrontendLayerRunResult | None, dict[str, Any] | None]:
+    layer_state = _fresh_frontend_parallel_layer_state()
+    layer_plan = _frontend_layer_plan(
+        layer,
+        syntax_error_modules=syntax_error_modules,
+        module_sources=module_sources,
+        module_deps=module_deps,
+        frontend_module_costs=frontend_module_costs,
+        stdlib_like_by_module=stdlib_like_by_module,
+        frontend_parallel_config=frontend_parallel_config,
+        parallel_pool_usable=parallel_pool_usable,
+    )
+    if layer_plan.mode == "parallel":
+        assert executor is not None
+        layer_state, batch_error, layer_failure_detail = (
+            _run_frontend_parallel_layer_batches(
+                layer_plan.candidates,
+                layer_workers=layer_plan.workers,
+                executor=executor,
+                known_classes_snapshot_source=known_classes,
+                module_graph=module_graph,
+                module_sources=module_sources,
+                project_root=project_root,
+                module_resolution_cache=module_resolution_cache,
+                parse_codec=parse_codec,
+                type_hint_policy=type_hint_policy,
+                fallback_policy=fallback_policy,
+                type_facts=type_facts,
+                enable_phi=enable_phi,
+                known_modules=known_modules,
+                stdlib_allowlist=stdlib_allowlist,
+                known_func_defaults=known_func_defaults,
+                module_deps=module_deps,
+                module_chunk_max_ops=module_chunk_max_ops,
+                optimization_profile=optimization_profile,
+                pgo_hot_function_names=pgo_hot_function_names,
+                known_modules_sorted=known_modules_sorted,
+                stdlib_allowlist_sorted=stdlib_allowlist_sorted,
+                pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+                module_dep_closures=module_dep_closures,
+                module_graph_metadata=module_graph_metadata,
+                path_stat_by_module=path_stat_by_module,
+                module_chunking=module_chunking,
+                scoped_lowering_inputs=scoped_lowering_inputs,
+                dirty_lowering_modules=dirty_lowering_modules,
+            )
+        )
+        if batch_error is not None:
+            return None, fail(batch_error, json_output, command="build")
+        if layer_failure_detail is not None:
+            layer_state = _fallback_frontend_parallel_layer_to_serial(
+                frontend_parallel_details=frontend_parallel_details,
+                warnings=warnings,
+                failure_detail=layer_failure_detail,
+            )
+            layer_plan = _FrontendLayerPlan(
+                candidates=layer_plan.candidates,
+                predicted_cost_total=layer_plan.predicted_cost_total,
+                effective_min_predicted_cost=layer_plan.effective_min_predicted_cost,
+                stdlib_candidates=layer_plan.stdlib_candidates,
+                workers=1,
+                policy_reason="worker_error_fallback_serial",
+                mode="serial_fallback",
+            )
+            parallel_pool_usable = False
+
+    for module_name in layer:
+        module_path = module_graph[module_name]
+        result = layer_state.results.get(module_name)
+        if result is not None:
+            consume_error = _consume_frontend_parallel_layer_result(
+                layer_state=layer_state,
+                record_frontend_parallel_worker_timing=record_frontend_parallel_worker_timing,
+                record_frontend_timing=record_frontend_timing,
+                integrate_module_frontend_result=integrate_module_frontend_result,
+                accumulate_midend_diagnostics=accumulate_midend_diagnostics,
+                fail=fail,
+                json_output=json_output,
+                project_root=project_root,
+                layer_index=layer_index,
+                module_name=module_name,
+                module_path=module_path,
+                result=result,
+            )
+            if consume_error is not None:
+                return None, consume_error
+            continue
+        serial_error = _run_frontend_serial_layer_modules(
+            [module_name],
+            module_graph=module_graph,
+            run_serial_frontend_lower=run_serial_frontend_lower,
+            record_frontend_parallel_worker_timing=record_frontend_parallel_worker_timing,
+            integrate_module_frontend_result=integrate_module_frontend_result,
+            accumulate_midend_diagnostics=accumulate_midend_diagnostics,
+            fail=fail,
+            json_output=json_output,
+            layer_state=layer_state,
+            layer_index=layer_index,
+            serial_mode=_frontend_serial_worker_mode(layer_plan.mode),
+        )
+        if serial_error is not None:
+            return None, serial_error
+    return (
+        _FrontendLayerRunResult(
+            layer_state=layer_state,
+            layer_plan=layer_plan,
+            parallel_pool_usable=parallel_pool_usable,
+        ),
+        None,
+    )
+
+
 def _frontend_serial_worker_mode(layer_mode: str) -> str:
     if layer_mode == "serial_fallback":
         return "serial_fallback"
@@ -13241,106 +13408,57 @@ def build(
         with ProcessPoolExecutor(max_workers=frontend_parallel_config.workers) as executor:
             for layer_index, layer in enumerate(module_layers):
                 layer_started_ns = time.time_ns()
-                layer_state = _fresh_frontend_parallel_layer_state()
-                layer_plan = _frontend_layer_plan(
+                layer_run_result, layer_error = _run_frontend_layer(
                     layer,
+                    layer_index=layer_index,
+                    executor=executor,
                     syntax_error_modules=syntax_error_modules,
+                    module_graph=module_graph,
                     module_sources=module_sources,
+                    project_root=project_root,
+                    module_resolution_cache=module_resolution_cache,
+                    parse_codec=parse_codec,
+                    type_hint_policy=type_hint_policy,
+                    fallback_policy=fallback_policy,
+                    type_facts=type_facts,
+                    enable_phi=enable_phi,
+                    known_modules=known_modules,
+                    stdlib_allowlist=stdlib_allowlist,
+                    known_func_defaults=known_func_defaults,
                     module_deps=module_deps,
+                    module_chunk_max_ops=module_chunk_max_ops,
+                    optimization_profile=profile,
+                    pgo_hot_function_names=pgo_hot_function_names,
+                    known_modules_sorted=known_modules_sorted,
+                    stdlib_allowlist_sorted=stdlib_allowlist_sorted,
+                    pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+                    module_dep_closures=module_dep_closures,
+                    module_graph_metadata=module_graph_metadata,
+                    path_stat_by_module=module_path_stats,
+                    module_chunking=module_chunking,
+                    scoped_lowering_inputs=scoped_lowering_inputs,
+                    dirty_lowering_modules=dirty_lowering_modules,
                     frontend_module_costs=frontend_module_costs,
                     stdlib_like_by_module=stdlib_like_by_module,
                     frontend_parallel_config=frontend_parallel_config,
                     parallel_pool_usable=parallel_pool_usable,
+                    known_classes=known_classes,
+                    warnings=warnings,
+                    frontend_parallel_details=frontend_parallel_details,
+                    record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
+                    record_frontend_timing=_record_frontend_timing,
+                    integrate_module_frontend_result=_integrate_module_frontend_result,
+                    accumulate_midend_diagnostics=_accumulate_midend_diagnostics,
+                    fail=_fail,
+                    json_output=json_output,
+                    run_serial_frontend_lower=_run_serial_frontend_lower,
                 )
-                if layer_plan.mode == "parallel":
-                    layer_state, batch_error, layer_failure_detail = (
-                        _run_frontend_parallel_layer_batches(
-                            layer_plan.candidates,
-                            layer_workers=layer_plan.workers,
-                            executor=executor,
-                            known_classes_snapshot_source=known_classes,
-                            module_graph=module_graph,
-                            module_sources=module_sources,
-                            project_root=project_root,
-                            module_resolution_cache=module_resolution_cache,
-                            parse_codec=parse_codec,
-                            type_hint_policy=type_hint_policy,
-                            fallback_policy=fallback_policy,
-                            type_facts=type_facts,
-                            enable_phi=enable_phi,
-                            known_modules=known_modules,
-                            stdlib_allowlist=stdlib_allowlist,
-                            known_func_defaults=known_func_defaults,
-                            module_deps=module_deps,
-                            module_chunk_max_ops=module_chunk_max_ops,
-                            optimization_profile=profile,
-                            pgo_hot_function_names=pgo_hot_function_names,
-                            known_modules_sorted=known_modules_sorted,
-                            stdlib_allowlist_sorted=stdlib_allowlist_sorted,
-                            pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
-                            module_dep_closures=module_dep_closures,
-                            module_graph_metadata=module_graph_metadata,
-                            path_stat_by_module=module_path_stats,
-                            module_chunking=module_chunking,
-                            scoped_lowering_inputs=scoped_lowering_inputs,
-                            dirty_lowering_modules=dirty_lowering_modules,
-                        )
-                    )
-                    if batch_error is not None:
-                        return _fail(batch_error, json_output, command="build")
-                    if layer_failure_detail is not None:
-                        layer_state = _fallback_frontend_parallel_layer_to_serial(
-                            frontend_parallel_details=frontend_parallel_details,
-                            warnings=warnings,
-                            failure_detail=layer_failure_detail,
-                        )
-                        layer_plan = _FrontendLayerPlan(
-                            candidates=layer_plan.candidates,
-                            predicted_cost_total=layer_plan.predicted_cost_total,
-                            effective_min_predicted_cost=layer_plan.effective_min_predicted_cost,
-                            stdlib_candidates=layer_plan.stdlib_candidates,
-                            workers=1,
-                            policy_reason="worker_error_fallback_serial",
-                            mode="serial_fallback",
-                        )
-                        parallel_pool_usable = False
-
-                for module_name in layer:
-                    module_path = module_graph[module_name]
-                    result = layer_state.results.get(module_name)
-                    if result is not None:
-                        consume_error = _consume_frontend_parallel_layer_result(
-                            layer_state=layer_state,
-                            record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
-                            record_frontend_timing=_record_frontend_timing,
-                            integrate_module_frontend_result=_integrate_module_frontend_result,
-                            accumulate_midend_diagnostics=_accumulate_midend_diagnostics,
-                            fail=_fail,
-                            json_output=json_output,
-                            project_root=project_root,
-                            layer_index=layer_index,
-                            module_name=module_name,
-                            module_path=module_path,
-                            result=result,
-                        )
-                        if consume_error is not None:
-                            return consume_error
-                        continue
-                    serial_error = _run_frontend_serial_layer_modules(
-                        [module_name],
-                        module_graph=module_graph,
-                        run_serial_frontend_lower=_run_serial_frontend_lower,
-                        record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
-                        integrate_module_frontend_result=_integrate_module_frontend_result,
-                        accumulate_midend_diagnostics=_accumulate_midend_diagnostics,
-                        fail=_fail,
-                        json_output=json_output,
-                        layer_state=layer_state,
-                        layer_index=layer_index,
-                        serial_mode=_frontend_serial_worker_mode(layer_plan.mode),
-                    )
-                    if serial_error is not None:
-                        return serial_error
+                if layer_error is not None:
+                    return layer_error
+                assert layer_run_result is not None
+                layer_state = layer_run_result.layer_state
+                layer_plan = layer_run_result.layer_plan
+                parallel_pool_usable = layer_run_result.parallel_pool_usable
                 _append_frontend_parallel_layer_detail(
                     frontend_parallel_layers,
                     layer_index=layer_index,
