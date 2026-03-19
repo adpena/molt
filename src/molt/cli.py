@@ -7510,11 +7510,7 @@ def _ensure_backend_binary(
     fingerprint_path = _backend_fingerprint_path(
         project_root, backend_bin, cargo_profile
     )
-    stored_fingerprint = (
-        _read_runtime_fingerprint(fingerprint_path)
-        if fingerprint_path.exists()
-        else None
-    )
+    stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
     fingerprint = _backend_fingerprint(
         project_root,
         cargo_profile=cargo_profile,
@@ -7523,7 +7519,7 @@ def _ensure_backend_binary(
     )
     lock_name = f"backend.{cargo_profile}"
     with _build_lock(project_root, lock_name):
-        if stored_fingerprint is None and fingerprint_path.exists():
+        if stored_fingerprint is None:
             stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
         if not _artifact_needs_rebuild(backend_bin, fingerprint, stored_fingerprint):
             return True
@@ -7589,11 +7585,7 @@ def _ensure_runtime_lib(
     fingerprint_path = _runtime_fingerprint_path(
         project_root, runtime_lib, cargo_profile, target_triple
     )
-    stored_fingerprint = (
-        _read_runtime_fingerprint(fingerprint_path)
-        if fingerprint_path.exists()
-        else None
-    )
+    stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
     fingerprint = _runtime_fingerprint(
         project_root,
         cargo_profile=cargo_profile,
@@ -7605,7 +7597,7 @@ def _ensure_runtime_lib(
     lock_target = target_triple or "native"
     lock_name = f"runtime.{cargo_profile}.{lock_target}"
     with _build_lock(project_root, lock_name):
-        if stored_fingerprint is None and fingerprint_path.exists():
+        if stored_fingerprint is None:
             stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
         if not _artifact_needs_rebuild(runtime_lib, fingerprint, stored_fingerprint):
             return True
@@ -7776,11 +7768,7 @@ def _ensure_runtime_wasm(
     fingerprint_path = _runtime_fingerprint_path(
         root, runtime_wasm, cargo_profile, "wasm32-wasip1"
     )
-    stored_fingerprint = (
-        _read_runtime_fingerprint(fingerprint_path)
-        if fingerprint_path.exists()
-        else None
-    )
+    stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
     fingerprint = _runtime_fingerprint(
         root,
         cargo_profile=cargo_profile,
@@ -7792,7 +7780,7 @@ def _ensure_runtime_wasm(
     lock_suffix = "reloc" if reloc else "shared"
     lock_name = f"runtime.{cargo_profile}.wasm32-wasip1.{lock_suffix}"
     with _build_lock(root, lock_name):
-        if stored_fingerprint is None and fingerprint_path.exists():
+        if stored_fingerprint is None:
             stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
         needs_rebuild = _artifact_needs_rebuild(
             runtime_wasm, fingerprint, stored_fingerprint
@@ -12426,11 +12414,7 @@ int main(int argc, char** argv) {
     link_fingerprint_path = _link_fingerprint_path(
         project_root, output_binary, profile, target_triple
     )
-    stored_link_fingerprint = (
-        _read_runtime_fingerprint(link_fingerprint_path)
-        if link_fingerprint_path.exists()
-        else None
-    )
+    stored_link_fingerprint = _read_runtime_fingerprint(link_fingerprint_path)
     link_fingerprint = _link_fingerprint(
         project_root=project_root,
         inputs=[stub_path, output_obj, runtime_lib],

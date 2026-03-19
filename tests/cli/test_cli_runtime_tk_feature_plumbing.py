@@ -238,3 +238,82 @@ def test_ensure_runtime_lib_passes_tk_feature_to_native_build(
     assert "--features" in seen_cmds[0]
     feature_index = seen_cmds[0].index("--features")
     assert seen_cmds[0][feature_index + 1] == "molt_tk_native"
+
+
+def test_ensure_runtime_lib_does_not_probe_fingerprint_exists(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_lib = tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    fingerprint_path = tmp_path / "runtime.fingerprint.json"
+    seen_cmds: list[list[str]] = []
+    original_exists = Path.exists
+
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint",
+        lambda *args, **kwargs: {"hash": "new", "rustc": "rustc-test"},
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint_path",
+        lambda *args, **kwargs: fingerprint_path,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_read_runtime_fingerprint",
+        lambda path: None if path == fingerprint_path else None,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_build_lock",
+        lambda *args, **kwargs: contextlib.nullcontext(),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+    )
+    monkeypatch.setattr(cli, "_maybe_enable_sccache", lambda _env: None, raising=True)
+    monkeypatch.setattr(
+        cli, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
+    )
+
+    def guarded_exists(self: Path) -> bool:
+        if self == fingerprint_path:
+            raise AssertionError("unexpected fingerprint exists probe")
+        return original_exists(self)
+
+    monkeypatch.setattr(Path, "exists", guarded_exists, raising=True)
+
+    def fake_run_cargo(
+        cmd: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        timeout: float | None,
+        json_output: bool,
+        label: str,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, env, timeout, json_output, label
+        seen_cmds.append(list(cmd))
+        runtime_lib.parent.mkdir(parents=True, exist_ok=True)
+        runtime_lib.write_bytes(b"runtime")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(
+        cli, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
+    )
+
+    assert cli._ensure_runtime_lib(
+        runtime_lib,
+        target_triple=None,
+        json_output=True,
+        cargo_profile="dev-fast",
+        project_root=project_root,
+        cargo_timeout=0.1,
+    )
+    assert seen_cmds
