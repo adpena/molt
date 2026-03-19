@@ -3235,13 +3235,6 @@ pub unsafe extern "C" fn molt_set_attr_generic(
             }
             if type_id == TYPE_ID_DATACLASS {
                 let desc_ptr = dataclass_desc_ptr(obj_ptr);
-                if !desc_ptr.is_null() && (*desc_ptr).frozen {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "cannot assign to frozen dataclass field",
-                    );
-                }
                 let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) else {
                     return MoltObject::none().bits() as i64;
                 };

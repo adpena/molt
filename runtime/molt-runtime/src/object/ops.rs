@@ -866,10 +866,17 @@ pub extern "C" fn molt_dataclass_set(obj_bits: u64, index_bits: u64, val_bits: u
                 }
                 let desc_ptr = dataclass_desc_ptr(ptr);
                 if !desc_ptr.is_null() && (*desc_ptr).frozen {
-                    return raise_exception::<_>(
+                    let field_name = if idx >= 0 {
+                        (&(*desc_ptr).field_names)
+                            .get(idx as usize)
+                            .map(|name| name.as_str())
+                            .unwrap_or("<field>")
+                    } else {
+                        "<field>"
+                    };
+                    return raise_frozen_instance_error(
                         _py,
-                        "TypeError",
-                        "cannot assign to frozen dataclass field",
+                        &format!("cannot assign to field '{field_name}'"),
                     );
                 }
                 let fields = dataclass_fields_mut(ptr);
@@ -891,6 +898,50 @@ pub extern "C" fn molt_dataclass_set(obj_bits: u64, index_bits: u64, val_bits: u
         }
         MoltObject::none().bits()
     })
+}
+
+fn raise_frozen_instance_error(_py: &PyToken<'_>, message: &str) -> u64 {
+    let module_name_ptr = alloc_string(_py, b"dataclasses");
+    if module_name_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let module_name_bits = MoltObject::from_ptr(module_name_ptr).bits();
+    let module_bits = crate::molt_module_import(module_name_bits);
+    dec_ref_bits(_py, module_name_bits);
+    if exception_pending(_py) {
+        return MoltObject::none().bits();
+    }
+    let Some(name_bits) = attr_name_bits_from_bytes(_py, b"FrozenInstanceError") else {
+        dec_ref_bits(_py, module_bits);
+        return MoltObject::none().bits();
+    };
+    let missing = missing_bits(_py);
+    let class_bits = molt_getattr_builtin(module_bits, name_bits, missing);
+    dec_ref_bits(_py, name_bits);
+    dec_ref_bits(_py, module_bits);
+    if exception_pending(_py) {
+        return MoltObject::none().bits();
+    }
+    if class_bits == missing {
+        return raise_exception::<u64>(_py, "RuntimeError", "FrozenInstanceError unavailable");
+    }
+    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        dec_ref_bits(_py, class_bits);
+        return raise_exception::<u64>(_py, "TypeError", "FrozenInstanceError class is invalid");
+    };
+    let message_ptr = alloc_string(_py, message.as_bytes());
+    if message_ptr.is_null() {
+        dec_ref_bits(_py, class_bits);
+        return MoltObject::none().bits();
+    }
+    let message_bits = MoltObject::from_ptr(message_ptr).bits();
+    let exc_bits = unsafe { call_class_init_with_args(_py, class_ptr, &[message_bits]) };
+    dec_ref_bits(_py, message_bits);
+    dec_ref_bits(_py, class_bits);
+    if exception_pending(_py) {
+        return MoltObject::none().bits();
+    }
+    crate::molt_raise(exc_bits)
 }
 
 pub(crate) unsafe fn dataclass_set_class_raw(

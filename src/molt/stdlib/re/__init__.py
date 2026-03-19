@@ -101,18 +101,30 @@ def purge() -> None:
 
 
 class Match:
-    __slots__ = ("_pattern", "_string", "_start", "_end", "_group_spans")
+    __slots__ = (
+        "_pattern",
+        "_string",
+        "_pos",
+        "_endpos",
+        "_start",
+        "_end",
+        "_group_spans",
+    )
 
     def __init__(
         self,
         pattern: "Pattern",
         string: str,
+        pos: int,
+        endpos: int,
         start: int,
         end: int,
         group_spans: tuple[tuple[int, int] | None, ...],
     ) -> None:
         self._pattern = pattern
         self._string = string
+        self._pos = pos
+        self._endpos = endpos
         self._start = start
         self._end = end
         self._group_spans = group_spans
@@ -169,11 +181,11 @@ class Match:
 
     @property
     def pos(self) -> int:
-        return self._start
+        return self._pos
 
     @property
     def endpos(self) -> int:
-        return self._end
+        return self._endpos
 
     @property
     def lastindex(self) -> int | None:
@@ -259,7 +271,7 @@ class Pattern:
         if raw is None:
             return
         for item in raw:
-            yield Match(self, text, item[0], item[1], item[2])
+            yield Match(self, text, start, end, item[0], item[1], item[2])
 
     def findall(
         self, string: str, pos: int = 0, endpos: int | None = None
@@ -303,7 +315,7 @@ class Pattern:
         raw = _molt_re_execute(self._handle, text, start, end, mode)
         if raw is None:
             return None
-        return Match(self, text, raw[0], raw[1], raw[2])
+        return Match(self, text, start, end, raw[0], raw[1], raw[2])
 
 
 # ---------------------------------------------------------------------------

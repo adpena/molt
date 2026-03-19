@@ -23,6 +23,19 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
 - Compatibility target: near-Nuitka CPython coverage + interoperability for
   Molt-supported semantics, without violating Molt break-policy constraints.
 
+## Current Validation Note (2026-03-19)
+- Targeted correctness recovery landed for three immediate blockers:
+  - persisted analysis cache serialization for `bytes` defaults;
+  - `re.Match.pos` / `endpos` metadata parity;
+  - frozen dataclass assignment raising `FrozenInstanceError`.
+- Fresh targeted differential evidence is green for:
+  - `tests/differential/basic/re_parity.py`
+  - `tests/differential/basic/dataclasses_parity.py`
+  - representative builtins-symbol cases that previously failed during build.
+- Benchmark state is partially refreshed:
+  - native `bench_sum` now has a fresh artifact in `bench/results/bench_native_bench_sum_20260319.json`, but only when benchmarking with `MOLT_BACKEND_DAEMON=0`; backend-daemon lock contention is still blocking the default release bench lane on this host.
+  - linked wasm targeted artifacts are refreshed in `bench/results/bench_wasm_targeted_20260319.json`; build/link succeeds, but runtime still fails on missing `importlib.machinery`.
+
 ## Optimization Program Kickoff (2026-02-11)
 - Week 1 observability is complete and Week 0 baseline-lock artifacts are captured.
 - Canonical optimization scope: [OPTIMIZATIONS_PLAN.md](OPTIMIZATIONS_PLAN.md).
