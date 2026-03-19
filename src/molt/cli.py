@@ -4484,6 +4484,11 @@ def _artifact_state_path_cached(
     )
 
 
+@functools.lru_cache(maxsize=512)
+def _build_state_subdir_cached(build_state_root_str: str, subdir: str) -> Path:
+    return Path(build_state_root_str) / subdir
+
+
 def _artifact_state_path(
     project_root: Path,
     artifact: Path,
@@ -4492,8 +4497,9 @@ def _artifact_state_path(
     stem_suffix: str,
     extension: str,
 ) -> Path:
+    build_state_root = os.fspath(_build_state_root(project_root))
     return _artifact_state_path_cached(
-        os.fspath(_build_state_root(project_root)),
+        build_state_root,
         os.fspath(artifact),
         artifact.name,
         subdir,
@@ -6917,7 +6923,10 @@ def _import_scan_cache_path(
     is_package: bool,
     include_nested: bool,
 ) -> Path:
-    root = _build_state_root(project_root) / "import_scan_cache"
+    root = _build_state_subdir_cached(
+        os.fspath(_build_state_root(project_root)),
+        "import_scan_cache",
+    )
     cache_key = _resolved_module_cache_key(
         os.fspath(path),
         module_name,
@@ -6935,7 +6944,10 @@ def _module_analysis_cache_path(
     module_name: str,
     is_package: bool | None = None,
 ) -> Path:
-    root = _build_state_root(project_root) / kind
+    root = _build_state_subdir_cached(
+        os.fspath(_build_state_root(project_root)),
+        kind,
+    )
     package_kind = "pkg" if is_package else "mod" if is_package is not None else "-"
     cache_key = _resolved_module_cache_key(
         os.fspath(path),
@@ -6953,7 +6965,10 @@ def _module_lowering_cache_path(
     module_name: str,
     is_package: bool,
 ) -> Path:
-    root = _build_state_root(project_root) / "module_lowering_cache"
+    root = _build_state_subdir_cached(
+        os.fspath(_build_state_root(project_root)),
+        "module_lowering_cache",
+    )
     cache_key = _resolved_module_cache_key(
         os.fspath(path),
         module_name,
@@ -6973,7 +6988,10 @@ def _module_graph_cache_path(
     stub_parents: set[str],
     nested_stdlib_scan_modules: set[str],
 ) -> Path:
-    root = _build_state_root(project_root) / "module_graph_cache"
+    root = _build_state_subdir_cached(
+        os.fspath(_build_state_root(project_root)),
+        "module_graph_cache",
+    )
     cache_key = _module_graph_cache_key(
         os.fspath(entry_path),
         tuple(os.fspath(path) for path in roots),

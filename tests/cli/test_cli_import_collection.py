@@ -825,6 +825,53 @@ def test_artifact_sync_state_path_uses_cached_artifact_state_path(
     assert info.hits >= 1
 
 
+def test_build_state_subdir_is_cached(tmp_path: Path) -> None:
+    cli._build_state_subdir_cached.cache_clear()
+
+    build_state_root = cli._build_state_root(tmp_path)
+    first = cli._build_state_subdir_cached(str(build_state_root), "module_graph_cache")
+    second = cli._build_state_subdir_cached(str(build_state_root), "module_graph_cache")
+
+    info = cli._build_state_subdir_cached.cache_info()
+    assert first == second == (build_state_root / "module_graph_cache")
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
+def test_module_analysis_cache_path_uses_cached_build_state_subdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli._build_state_subdir_cached.cache_clear()
+
+    calls = 0
+    original = cli._build_state_subdir_cached
+
+    def wrapped(build_state_root_str: str, subdir: str) -> Path:
+        nonlocal calls
+        calls += 1
+        return original(build_state_root_str, subdir)
+
+    monkeypatch.setattr(cli, "_build_state_subdir_cached", wrapped, raising=True)
+
+    first = cli._module_analysis_cache_path(
+        tmp_path,
+        tmp_path / "pkg.py",
+        module_name="pkg",
+        is_package=False,
+    )
+    second = cli._module_analysis_cache_path(
+        tmp_path,
+        tmp_path / "pkg.py",
+        module_name="pkg",
+        is_package=False,
+    )
+
+    info = original.cache_info()
+    assert first == second
+    assert calls == 2
+    assert info.hits >= 1
+
+
 def test_resolved_module_cache_key_is_cached(tmp_path: Path) -> None:
     module_path = tmp_path / "pkg" / "mod.py"
     cli._resolved_module_cache_key.cache_clear()
