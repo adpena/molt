@@ -9191,6 +9191,52 @@ def _consume_frontend_serial_layer_result(
     )
 
 
+def _run_frontend_serial_layer_modules(
+    module_names: Sequence[str],
+    *,
+    module_graph: Mapping[str, Path],
+    run_serial_frontend_lower: Callable[
+        [str, Path],
+        tuple[dict[str, Any] | None, _FrontendModuleResultTimings | None, dict[str, Any] | None],
+    ],
+    record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]],
+    integrate_module_frontend_result: Callable[..., str | None],
+    accumulate_midend_diagnostics: Callable[..., None],
+    fail: Callable[[str, bool, str], dict[str, Any] | None],
+    json_output: bool,
+    layer_state: _FrontendParallelLayerState,
+    layer_index: int,
+    serial_mode: str,
+) -> dict[str, Any] | None:
+    for module_name in module_names:
+        module_path = module_graph[module_name]
+        result, result_timings, lower_error = run_serial_frontend_lower(
+            module_name,
+            module_path,
+        )
+        if lower_error is not None:
+            return lower_error
+        assert result is not None
+        assert result_timings is not None
+        consume_error = _consume_frontend_serial_layer_result(
+            record_frontend_parallel_worker_timing=record_frontend_parallel_worker_timing,
+            integrate_module_frontend_result=integrate_module_frontend_result,
+            accumulate_midend_diagnostics=accumulate_midend_diagnostics,
+            fail=fail,
+            json_output=json_output,
+            layer_state=layer_state,
+            layer_index=layer_index,
+            module_name=module_name,
+            module_path=module_path,
+            result=result,
+            result_timings=result_timings,
+            serial_mode=serial_mode,
+        )
+        if consume_error is not None:
+            return consume_error
+    return None
+
+
 def _frontend_serial_worker_mode(layer_mode: str) -> str:
     if layer_mode == "serial_fallback":
         return "serial_fallback"
@@ -13280,15 +13326,10 @@ def build(
                         if consume_error is not None:
                             return consume_error
                         continue
-                    result, result_timings, lower_error = _run_serial_frontend_lower(
-                        module_name,
-                        module_path,
-                    )
-                    if lower_error is not None:
-                        return lower_error
-                    assert result is not None
-                    assert result_timings is not None
-                    consume_error = _consume_frontend_serial_layer_result(
+                    serial_error = _run_frontend_serial_layer_modules(
+                        [module_name],
+                        module_graph=module_graph,
+                        run_serial_frontend_lower=_run_serial_frontend_lower,
                         record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
                         integrate_module_frontend_result=_integrate_module_frontend_result,
                         accumulate_midend_diagnostics=_accumulate_midend_diagnostics,
@@ -13296,14 +13337,10 @@ def build(
                         json_output=json_output,
                         layer_state=layer_state,
                         layer_index=layer_index,
-                        module_name=module_name,
-                        module_path=module_path,
-                        result=result,
-                        result_timings=result_timings,
                         serial_mode=_frontend_serial_worker_mode(layer_plan.mode),
                     )
-                    if consume_error is not None:
-                        return consume_error
+                    if serial_error is not None:
+                        return serial_error
                 _append_frontend_parallel_layer_detail(
                     frontend_parallel_layers,
                     layer_index=layer_index,
@@ -13325,32 +13362,21 @@ def build(
     else:
         serial_layer_started_ns = time.time_ns()
         serial_layer_state = _fresh_frontend_parallel_layer_state()
-        for module_name in module_order:
-            module_path = module_graph[module_name]
-            result, result_timings, lower_error = _run_serial_frontend_lower(
-                module_name,
-                module_path,
-            )
-            if lower_error is not None:
-                return lower_error
-            assert result is not None
-            assert result_timings is not None
-            consume_error = _consume_frontend_serial_layer_result(
-                record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
-                integrate_module_frontend_result=_integrate_module_frontend_result,
-                accumulate_midend_diagnostics=_accumulate_midend_diagnostics,
-                fail=_fail,
-                json_output=json_output,
-                layer_state=serial_layer_state,
-                layer_index=0,
-                module_name=module_name,
-                module_path=module_path,
-                result=result,
-                result_timings=result_timings,
-                serial_mode="serial_disabled",
-            )
-            if consume_error is not None:
-                return consume_error
+        serial_error = _run_frontend_serial_layer_modules(
+            module_order,
+            module_graph=module_graph,
+            run_serial_frontend_lower=_run_serial_frontend_lower,
+            record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
+            integrate_module_frontend_result=_integrate_module_frontend_result,
+            accumulate_midend_diagnostics=_accumulate_midend_diagnostics,
+            fail=_fail,
+            json_output=json_output,
+            layer_state=serial_layer_state,
+            layer_index=0,
+            serial_mode="serial_disabled",
+        )
+        if serial_error is not None:
+            return serial_error
         serial_static_metrics = _frontend_layer_static_metrics(
             module_order,
             frontend_module_costs=frontend_module_costs,
