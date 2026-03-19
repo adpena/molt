@@ -774,77 +774,75 @@ def _ensure_intrinsics() -> None:
     global _MOLT_MODULE_IMPORT
     if _MOLT_IMPORTLIB_SOURCE_EXEC_PAYLOAD is not None:
         return
-    _require_intrinsic("molt_stdlib_probe", globals())
+    _require_intrinsic("molt_stdlib_probe")
     _MOLT_IMPORTLIB_SOURCE_EXEC_PAYLOAD = _require_intrinsic(
-        "molt_importlib_source_exec_payload", globals()
+        "molt_importlib_source_exec_payload"
     )
     _MOLT_IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD = _require_intrinsic(
-        "molt_importlib_zip_source_exec_payload", globals()
+        "molt_importlib_zip_source_exec_payload"
     )
-    _MOLT_IMPORTLIB_READ_FILE = _require_intrinsic(
-        "molt_importlib_read_file", globals()
-    )
+    _MOLT_IMPORTLIB_READ_FILE = _require_intrinsic("molt_importlib_read_file")
     _MOLT_IMPORTLIB_COERCE_MODULE_NAME = _require_intrinsic(
-        "molt_importlib_coerce_module_name", globals()
+        "molt_importlib_coerce_module_name"
     )
     _MOLT_IMPORTLIB_PATHFINDER_FIND_SPEC = _require_intrinsic(
-        "molt_importlib_pathfinder_find_spec", globals()
+        "molt_importlib_pathfinder_find_spec"
     )
     _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC = _require_intrinsic(
-        "molt_importlib_filefinder_find_spec", globals()
+        "molt_importlib_filefinder_find_spec"
     )
     _MOLT_IMPORTLIB_FILEFINDER_INVALIDATE = _require_intrinsic(
-        "molt_importlib_filefinder_invalidate", globals()
+        "molt_importlib_filefinder_invalidate"
     )
     _MOLT_IMPORTLIB_EXEC_RESTRICTED_SOURCE = _require_intrinsic(
-        "molt_importlib_exec_restricted_source", globals()
+        "molt_importlib_exec_restricted_source"
     )
     _MOLT_IMPORTLIB_EXEC_EXTENSION = _require_intrinsic(
-        "molt_importlib_exec_extension", globals()
+        "molt_importlib_exec_extension"
     )
     _MOLT_IMPORTLIB_EXEC_SOURCELESS = _require_intrinsic(
-        "molt_importlib_exec_sourceless", globals()
+        "molt_importlib_exec_sourceless"
     )
     _MOLT_IMPORTLIB_EXTENSION_LOADER_PAYLOAD = _require_intrinsic(
-        "molt_importlib_extension_loader_payload", globals()
+        "molt_importlib_extension_loader_payload"
     )
     _MOLT_IMPORTLIB_SOURCELESS_LOADER_PAYLOAD = _require_intrinsic(
-        "molt_importlib_sourceless_loader_payload", globals()
+        "molt_importlib_sourceless_loader_payload"
     )
     _MOLT_IMPORTLIB_MODULE_SPEC_IS_PACKAGE = _require_intrinsic(
-        "molt_importlib_module_spec_is_package", globals()
+        "molt_importlib_module_spec_is_package"
     )
     _MOLT_IMPORTLIB_RESOURCES_READER_RESOURCE_PATH_FROM_ROOTS = _require_intrinsic(
-        "molt_importlib_resources_reader_resource_path_from_roots", globals()
+        "molt_importlib_resources_reader_resource_path_from_roots"
     )
     _MOLT_IMPORTLIB_RESOURCES_READER_OPEN_RESOURCE_BYTES_FROM_ROOTS = (
         _require_intrinsic(
-            "molt_importlib_resources_reader_open_resource_bytes_from_roots", globals()
+            "molt_importlib_resources_reader_open_resource_bytes_from_roots"
         )
     )
     _MOLT_IMPORTLIB_RESOURCES_READER_IS_RESOURCE_FROM_ROOTS = _require_intrinsic(
-        "molt_importlib_resources_reader_is_resource_from_roots", globals()
+        "molt_importlib_resources_reader_is_resource_from_roots"
     )
     _MOLT_IMPORTLIB_RESOURCES_READER_CONTENTS_FROM_ROOTS = _require_intrinsic(
-        "molt_importlib_resources_reader_contents_from_roots", globals()
+        "molt_importlib_resources_reader_contents_from_roots"
     )
     _MOLT_IMPORTLIB_PATH_IS_ARCHIVE_MEMBER = _require_intrinsic(
-        "molt_importlib_path_is_archive_member", globals()
+        "molt_importlib_path_is_archive_member"
     )
     _MOLT_IMPORTLIB_PACKAGE_ROOT_FROM_ORIGIN = _require_intrinsic(
-        "molt_importlib_package_root_from_origin", globals()
+        "molt_importlib_package_root_from_origin"
     )
     _MOLT_IMPORTLIB_VALIDATE_RESOURCE_NAME = _require_intrinsic(
-        "molt_importlib_validate_resource_name", globals()
+        "molt_importlib_validate_resource_name"
     )
     _MOLT_IMPORTLIB_SET_MODULE_STATE = _require_intrinsic(
-        "molt_importlib_set_module_state", globals()
+        "molt_importlib_set_module_state"
     )
     _MOLT_IMPORTLIB_STABILIZE_MODULE_STATE = _require_intrinsic(
-        "molt_importlib_stabilize_module_state", globals()
+        "molt_importlib_stabilize_module_state"
     )
-    _MOLT_EXCEPTION_CLEAR = _require_intrinsic("molt_exception_clear", globals())
-    _MOLT_MODULE_IMPORT = _require_intrinsic("molt_module_import", globals())
+    _MOLT_EXCEPTION_CLEAR = _require_intrinsic("molt_exception_clear")
+    _MOLT_MODULE_IMPORT = _require_intrinsic("molt_module_import")
 
 
 __all__ = [

@@ -10,13 +10,12 @@ __all__ = [
     "URLError",
 ]
 
-_MOLT_URLERROR_INIT = _require_intrinsic("molt_urllib_error_urlerror_init", globals())
-_MOLT_URLERROR_STR = _require_intrinsic("molt_urllib_error_urlerror_str", globals())
-_MOLT_HTTPERROR_INIT = _require_intrinsic("molt_urllib_error_httperror_init", globals())
-_MOLT_HTTPERROR_STR = _require_intrinsic("molt_urllib_error_httperror_str", globals())
+_MOLT_URLERROR_INIT = _require_intrinsic("molt_urllib_error_urlerror_init")
+_MOLT_URLERROR_STR = _require_intrinsic("molt_urllib_error_urlerror_str")
+_MOLT_HTTPERROR_INIT = _require_intrinsic("molt_urllib_error_httperror_init")
+_MOLT_HTTPERROR_STR = _require_intrinsic("molt_urllib_error_httperror_str")
 _MOLT_CONTENT_TOO_SHORT_INIT = _require_intrinsic(
     "molt_urllib_error_content_too_short_init",
-    globals(),
 )
 
 

@@ -13,10 +13,10 @@ __all__ = [
     "sizeof",
 ]
 
-_MOLT_CTYPES_REQUIRE_FFI = _require_intrinsic("molt_ctypes_require_ffi", globals())
-_MOLT_CTYPES_COERCE_VALUE = _require_intrinsic("molt_ctypes_coerce_value", globals())
-_MOLT_CTYPES_DEFAULT_VALUE = _require_intrinsic("molt_ctypes_default_value", globals())
-_MOLT_CTYPES_SIZEOF = _require_intrinsic("molt_ctypes_sizeof", globals())
+_MOLT_CTYPES_REQUIRE_FFI = _require_intrinsic("molt_ctypes_require_ffi")
+_MOLT_CTYPES_COERCE_VALUE = _require_intrinsic("molt_ctypes_coerce_value")
+_MOLT_CTYPES_DEFAULT_VALUE = _require_intrinsic("molt_ctypes_default_value")
+_MOLT_CTYPES_SIZEOF = _require_intrinsic("molt_ctypes_sizeof")
 
 # TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): expand ctypes intrinsic coverage beyond the core scalar/structure/array/pointer subset.
 

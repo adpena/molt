@@ -24,16 +24,14 @@ __all__ = [
     "urlopen",
 ]
 
-_MOLT_REQUEST_INIT = _require_intrinsic("molt_urllib_request_request_init", globals())
-_MOLT_OPENER_INIT = _require_intrinsic("molt_urllib_request_opener_init", globals())
+_MOLT_REQUEST_INIT = _require_intrinsic("molt_urllib_request_request_init")
+_MOLT_OPENER_INIT = _require_intrinsic("molt_urllib_request_opener_init")
 _MOLT_OPENER_ADD_HANDLER = _require_intrinsic(
     "molt_urllib_request_add_handler",
-    globals(),
 )
-_MOLT_OPENER_OPEN = _require_intrinsic("molt_urllib_request_open", globals())
+_MOLT_OPENER_OPEN = _require_intrinsic("molt_urllib_request_open")
 _MOLT_PROCESS_HTTP_ERROR = _require_intrinsic(
     "molt_urllib_request_process_http_error",
-    globals(),
 )
 
 

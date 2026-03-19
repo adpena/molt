@@ -14,41 +14,41 @@ from typing import Any as _Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_require_intrinsic("molt_stdlib_probe")
 _MOLT_SOCKETSERVER_SERVE_FOREVER = _require_intrinsic(
-    "molt_socketserver_serve_forever", globals()
+    "molt_socketserver_serve_forever"
 )
 _MOLT_SOCKETSERVER_HANDLE_REQUEST = _require_intrinsic(
-    "molt_socketserver_handle_request", globals()
+    "molt_socketserver_handle_request"
 )
 _MOLT_SOCKETSERVER_SHUTDOWN = _require_intrinsic(
-    "molt_socketserver_shutdown", globals()
+    "molt_socketserver_shutdown"
 )
 _MOLT_SOCKETSERVER_REGISTER = _require_intrinsic(
-    "molt_socketserver_register", globals()
+    "molt_socketserver_register"
 )
 _MOLT_SOCKETSERVER_UNREGISTER = _require_intrinsic(
-    "molt_socketserver_unregister", globals()
+    "molt_socketserver_unregister"
 )
 _MOLT_SOCKETSERVER_DISPATCH_BEGIN = _require_intrinsic(
-    "molt_socketserver_dispatch_begin", globals()
+    "molt_socketserver_dispatch_begin"
 )
 _MOLT_SOCKETSERVER_DISPATCH_POLL = _require_intrinsic(
-    "molt_socketserver_dispatch_poll", globals()
+    "molt_socketserver_dispatch_poll"
 )
 _MOLT_SOCKETSERVER_DISPATCH_CANCEL = _require_intrinsic(
-    "molt_socketserver_dispatch_cancel", globals()
+    "molt_socketserver_dispatch_cancel"
 )
 _MOLT_SOCKETSERVER_GET_REQUEST_POLL = _require_intrinsic(
-    "molt_socketserver_get_request_poll", globals()
+    "molt_socketserver_get_request_poll"
 )
 _MOLT_SOCKETSERVER_SET_RESPONSE = _require_intrinsic(
-    "molt_socketserver_set_response", globals()
+    "molt_socketserver_set_response"
 )
 
 
 # CPython exports `time` as the monotonic builtin.
-time = _require_intrinsic("molt_time_monotonic", globals())
+time = _require_intrinsic("molt_time_monotonic")
 
 if type(BufferedIOBase).__name__ != "ABCMeta":
 

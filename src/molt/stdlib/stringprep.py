@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_stringprep_in_table = _require_intrinsic("molt_stringprep_in_table", globals())
-_stringprep_map_table_b3 = _require_intrinsic("molt_stringprep_map_table_b3", globals())
+_stringprep_in_table = _require_intrinsic("molt_stringprep_in_table")
+_stringprep_map_table_b3 = _require_intrinsic("molt_stringprep_map_table_b3")
 
 
 def in_table_a1(code):

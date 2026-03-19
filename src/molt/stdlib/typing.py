@@ -17,9 +17,9 @@ def _typing_cast(_tp: object, value: object) -> object:
     return value
 
 
-_require_intrinsic("molt_stdlib_probe", globals())
-_MOLT_GENERIC_ALIAS_NEW = _require_intrinsic("molt_generic_alias_new", globals())
-_MOLT_TYPING_TYPE_PARAM = _require_intrinsic("molt_typing_type_param", globals())
+_require_intrinsic("molt_stdlib_probe")
+_MOLT_GENERIC_ALIAS_NEW = _require_intrinsic("molt_generic_alias_new")
+_MOLT_TYPING_TYPE_PARAM = _require_intrinsic("molt_typing_type_param")
 
 
 TYPE_CHECKING = False
@@ -797,9 +797,9 @@ class Generic:
         return _GenericAlias(cls, params, "Generic")
 
 
-_MOLT_PROTOCOL_CHECK = _require_intrinsic("molt_protocol_check", globals())
+_MOLT_PROTOCOL_CHECK = _require_intrinsic("molt_protocol_check")
 _MOLT_PROTOCOL_GET_STRUCTURAL_MEMBERS = _require_intrinsic(
-    "molt_protocol_get_structural_members", globals()
+    "molt_protocol_get_structural_members"
 )
 
 
