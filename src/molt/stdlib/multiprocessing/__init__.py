@@ -15,7 +15,7 @@ import multiprocessing._core as _core
 from multiprocessing._api_surface import apply_module_api_surface as _apply_api_surface
 
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 class ProcessError(Exception):
