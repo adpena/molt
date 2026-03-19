@@ -8,8 +8,7 @@ import socket
 from typing import Any
 
 _MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic(
-    "molt_import_smoke_runtime_ready", globals()
-)
+    "molt_import_smoke_runtime_ready")
 _MOLT_IMPORT_SMOKE_RUNTIME_READY()
 
 # TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): lower SMTP client transport and protocol handling into Rust intrinsics and add STARTTLS/auth/LMTP parity.

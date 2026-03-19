@@ -7,8 +7,7 @@ import ast
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_SYMTABLE_RUNTIME_READY = _require_intrinsic(
-    "molt_symtable_runtime_ready", globals()
-)
+    "molt_symtable_runtime_ready")
 
 _FUNCTION_NODE_TYPES = tuple(
     cls
