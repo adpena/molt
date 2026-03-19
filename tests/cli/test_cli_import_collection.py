@@ -1070,6 +1070,25 @@ def test_backend_source_paths_are_cached(tmp_path: Path) -> None:
     assert info.currsize >= 1
 
 
+def test_backend_bin_path_is_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli._backend_bin_path_cached.cache_clear()
+    cli._cargo_target_root_cached.cache_clear()
+    monkeypatch.setenv("CARGO_TARGET_DIR", "external-target")
+    monkeypatch.chdir(tmp_path)
+
+    first = cli._backend_bin_path(tmp_path, "dev-fast")
+    second = cli._backend_bin_path(tmp_path, "dev-fast")
+
+    info = cli._backend_bin_path_cached.cache_info()
+    assert first == second == (
+        tmp_path / "external-target" / "dev-fast" / "molt-backend"
+    )
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
 def test_load_module_imports_reuses_persisted_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
