@@ -19,14 +19,8 @@ def test_frontend_run_ticket_owns_runtime_execution_surfaces() -> None:
 
 
 def test_build_driver_state_no_longer_carries_frontend_runtime_detail_sideband() -> None:
-    assert [field.name for field in fields(cli._PreparedBuildDriverState)] == [
-        "prepared_frontend_run_ticket",
-        "prepared_backend_build_context",
-    ]
-
-
-def test_backend_build_context_owns_backend_finalize_surfaces() -> None:
-    field_names = [field.name for field in fields(cli._PreparedBackendBuildContext)]
+    field_names = [field.name for field in fields(cli._PreparedBuildDriverState)]
+    assert "prepared_frontend_run_ticket" in field_names
     for name in (
         "output_layout",
         "artifacts_root",
@@ -50,6 +44,11 @@ def test_backend_build_context_owns_backend_finalize_surfaces() -> None:
         "build_diagnostics_payload",
     ):
         assert name in field_names
+
+
+def test_backend_build_context_alias_points_to_driver_state() -> None:
+    assert hasattr(cli, "_PreparedBackendBuildContext")
+    assert cli._PreparedBackendBuildContext is cli._PreparedBuildDriverState
 
 
 def test_backend_pipeline_transport_removed() -> None:
