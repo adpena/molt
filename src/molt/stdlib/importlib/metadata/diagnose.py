@@ -8,7 +8,7 @@ import sys
 
 from . import Distribution
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 def inspect(path: str) -> None:
