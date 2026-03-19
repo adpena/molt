@@ -7,9 +7,9 @@ from typing import Callable, Iterator
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_TOKENIZE_RUNTIME_READY = _require_intrinsic(
-    "molt_tokenize_runtime_ready", globals()
+    "molt_tokenize_runtime_ready"
 )
-_MOLT_TOKENIZE_SCAN = _require_intrinsic("molt_tokenize_scan", globals())
+_MOLT_TOKENIZE_SCAN = _require_intrinsic("molt_tokenize_scan")
 
 ENDMARKER = 0
 NAME = 1
@@ -39,8 +39,12 @@ class TokenInfo:
         self.line = line
 
 
-def tokenize(readline: Callable[[], bytes]) -> Iterator[TokenInfo]:
-    _MOLT_TOKENIZE_RUNTIME_READY()
+def tokenize(
+    readline: Callable[[], bytes],
+    _runtime_ready_intrinsic=_MOLT_TOKENIZE_RUNTIME_READY,
+    _tokenize_scan_intrinsic=_MOLT_TOKENIZE_SCAN,
+) -> Iterator[TokenInfo]:
+    _runtime_ready_intrinsic()
     chunks: list[bytes] = []
     while True:
         chunk = readline()
@@ -50,7 +54,7 @@ def tokenize(readline: Callable[[], bytes]) -> Iterator[TokenInfo]:
     source = b"".join(chunks).decode("utf-8", errors="replace")
     yield TokenInfo(ENCODING, "utf-8", (0, 0), (0, 0), "")
 
-    raw_tokens = _MOLT_TOKENIZE_SCAN(source)
+    raw_tokens = _tokenize_scan_intrinsic(source)
     for tok in raw_tokens:
         yield TokenInfo(tok[0], tok[1], tok[2], tok[3], tok[4])
 
@@ -67,3 +71,6 @@ __all__ = [
     "TokenInfo",
     "tokenize",
 ]
+
+del _MOLT_TOKENIZE_RUNTIME_READY
+del _MOLT_TOKENIZE_SCAN

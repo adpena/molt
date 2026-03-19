@@ -20,9 +20,9 @@ from _abc import (
     _reset_caches,
 )
 
-_MOLT_ABC_BOOTSTRAP = _require_intrinsic("molt_abc_bootstrap", globals())
+_MOLT_ABC_BOOTSTRAP = _require_intrinsic("molt_abc_bootstrap")
 _MOLT_ABC_UPDATE_ABSTRACTMETHODS = _require_intrinsic(
-    "molt_abc_update_abstractmethods", globals()
+    "molt_abc_update_abstractmethods"
 )
 
 classmethod = _builtins.classmethod
@@ -168,7 +168,9 @@ class ABCMeta(type):
         _reset_caches(cls)
 
 
-def update_abstractmethods(cls):
+def update_abstractmethods(
+    cls, _update_abstractmethods_intrinsic=_MOLT_ABC_UPDATE_ABSTRACTMETHODS
+):
     """Recalculate the set of abstract methods of an abstract class.
 
     If a class has had one of its abstract methods implemented after the
@@ -184,7 +186,7 @@ def update_abstractmethods(cls):
 
     If cls is not an instance of ABCMeta, does nothing.
     """
-    updated = _MOLT_ABC_UPDATE_ABSTRACTMETHODS(cls)
+    updated = _update_abstractmethods_intrinsic(cls)
     if updated is None:
         raise RuntimeError("molt_abc_update_abstractmethods returned invalid value")
     return updated
@@ -196,3 +198,7 @@ class ABC(metaclass=ABCMeta):
     """
 
     __slots__ = ()
+
+
+del _MOLT_ABC_BOOTSTRAP
+del _MOLT_ABC_UPDATE_ABSTRACTMETHODS
