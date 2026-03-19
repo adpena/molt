@@ -572,6 +572,17 @@ class _FrontendParallelConfig:
     reason: str
 
 
+@dataclass(frozen=True)
+class _FrontendLayerPlan:
+    candidates: tuple[str, ...]
+    predicted_cost_total: float
+    effective_min_predicted_cost: float
+    stdlib_candidates: int
+    workers: int
+    policy_reason: str
+    mode: str
+
+
 def _fresh_frontend_parallel_layer_state() -> _FrontendParallelLayerState:
     return _FrontendParallelLayerState()
 
@@ -8692,6 +8703,53 @@ def _frontend_parallel_policy_payload(
     }
 
 
+def _frontend_layer_plan(
+    layer: Sequence[str],
+    *,
+    syntax_error_modules: Mapping[str, Any],
+    module_sources: dict[str, str],
+    module_deps: dict[str, set[str]],
+    frontend_module_costs: Mapping[str, float],
+    stdlib_like_by_module: Mapping[str, bool],
+    frontend_parallel_config: _FrontendParallelConfig,
+    parallel_pool_usable: bool,
+) -> _FrontendLayerPlan:
+    candidates = tuple(name for name in layer if name not in syntax_error_modules)
+    policy = _choose_frontend_parallel_layer_workers(
+        candidates=list(candidates),
+        module_sources=module_sources,
+        module_deps=module_deps,
+        module_costs=frontend_module_costs,
+        stdlib_like_by_module=stdlib_like_by_module,
+        max_workers=frontend_parallel_config.workers,
+        min_modules=frontend_parallel_config.min_modules,
+        min_predicted_cost=frontend_parallel_config.min_predicted_cost,
+        target_cost_per_worker=frontend_parallel_config.target_cost_per_worker,
+    )
+    policy_summary = _frontend_layer_policy_summary(
+        policy,
+        default_min_predicted_cost=frontend_parallel_config.min_predicted_cost,
+    )
+    mode = "serial"
+    policy_reason = policy_summary.reason
+    workers = policy_summary.workers
+    if parallel_pool_usable and policy_summary.enabled and len(candidates) > 1:
+        mode = "parallel"
+        workers = min(workers, len(candidates))
+    elif len(candidates) > 1 and not parallel_pool_usable:
+        mode = "serial_layer_policy"
+        policy_reason = "pool_unavailable_after_error"
+    return _FrontendLayerPlan(
+        candidates=candidates,
+        predicted_cost_total=policy_summary.predicted_cost_total,
+        effective_min_predicted_cost=policy_summary.effective_min_predicted_cost,
+        stdlib_candidates=policy_summary.stdlib_candidates,
+        workers=workers,
+        policy_reason=policy_reason,
+        mode=mode,
+    )
+
+
 def _worker_timing_summary_payload(summary: _WorkerTimingSummary) -> dict[str, Any]:
     return {
         "count": summary.count,
@@ -13017,47 +13075,22 @@ def build(
         with ProcessPoolExecutor(max_workers=frontend_parallel_config.workers) as executor:
             for layer_index, layer in enumerate(module_layers):
                 layer_started_ns = time.time_ns()
-                candidates = [
-                    name for name in layer if name not in syntax_error_modules
-                ]
                 layer_state = _fresh_frontend_parallel_layer_state()
-                layer_policy = _choose_frontend_parallel_layer_workers(
-                    candidates=candidates,
+                layer_plan = _frontend_layer_plan(
+                    layer,
+                    syntax_error_modules=syntax_error_modules,
                     module_sources=module_sources,
                     module_deps=module_deps,
-                    module_costs=frontend_module_costs,
+                    frontend_module_costs=frontend_module_costs,
                     stdlib_like_by_module=stdlib_like_by_module,
-                    max_workers=frontend_parallel_config.workers,
-                    min_modules=frontend_parallel_config.min_modules,
-                    min_predicted_cost=frontend_parallel_config.min_predicted_cost,
-                    target_cost_per_worker=frontend_parallel_config.target_cost_per_worker,
+                    frontend_parallel_config=frontend_parallel_config,
+                    parallel_pool_usable=parallel_pool_usable,
                 )
-                layer_policy_summary = _frontend_layer_policy_summary(
-                    layer_policy,
-                    default_min_predicted_cost=frontend_parallel_config.min_predicted_cost,
-                )
-                layer_predicted_cost_total = (
-                    layer_policy_summary.predicted_cost_total
-                )
-                layer_effective_min_predicted_cost = (
-                    layer_policy_summary.effective_min_predicted_cost
-                )
-                layer_stdlib_candidates = layer_policy_summary.stdlib_candidates
-                layer_workers = layer_policy_summary.workers
-                layer_policy_reason = layer_policy_summary.reason
-                layer_mode = "serial"
-
-                if (
-                    parallel_pool_usable
-                    and layer_policy_summary.enabled
-                    and len(candidates) > 1
-                ):
-                    layer_mode = "parallel"
-                    layer_workers = min(layer_workers, len(candidates))
+                if layer_plan.mode == "parallel":
                     layer_state, batch_error, layer_failure_detail = (
                         _run_frontend_parallel_layer_batches(
-                            candidates,
-                            layer_workers=layer_workers,
+                            layer_plan.candidates,
+                            layer_workers=layer_plan.workers,
                             executor=executor,
                             known_classes_snapshot_source=known_classes,
                             module_graph=module_graph,
@@ -13095,14 +13128,16 @@ def build(
                             warnings=warnings,
                             failure_detail=layer_failure_detail,
                         )
-                        layer_mode = "serial_fallback"
-                        layer_workers = 1
-                        layer_policy_reason = "worker_error_fallback_serial"
+                        layer_plan = _FrontendLayerPlan(
+                            candidates=layer_plan.candidates,
+                            predicted_cost_total=layer_plan.predicted_cost_total,
+                            effective_min_predicted_cost=layer_plan.effective_min_predicted_cost,
+                            stdlib_candidates=layer_plan.stdlib_candidates,
+                            workers=1,
+                            policy_reason="worker_error_fallback_serial",
+                            mode="serial_fallback",
+                        )
                         parallel_pool_usable = False
-                elif len(candidates) > 1:
-                    if not parallel_pool_usable:
-                        layer_policy_reason = "pool_unavailable_after_error"
-                    layer_mode = "serial_layer_policy"
 
                 for module_name in layer:
                     module_path = module_graph[module_name]
@@ -13177,7 +13212,7 @@ def build(
                         return lower_error
                     assert result is not None
                     assert result_timings is not None
-                    serial_mode = _frontend_serial_worker_mode(layer_mode)
+                    serial_mode = _frontend_serial_worker_mode(layer_plan.mode)
                     _record_serial_frontend_worker_timing(
                         record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
                         recorded_worker_timings=layer_state.recorded_worker_timings,
@@ -13203,15 +13238,15 @@ def build(
                 _append_frontend_parallel_layer_detail(
                     frontend_parallel_layers,
                     layer_index=layer_index,
-                    layer_mode=layer_mode,
-                    layer_policy_reason=layer_policy_reason,
+                    layer_mode=layer_plan.mode,
+                    layer_policy_reason=layer_plan.policy_reason,
                     module_names=layer,
-                    candidate_count=len(candidates),
-                    workers=layer_workers,
+                    candidate_count=len(layer_plan.candidates),
+                    workers=layer_plan.workers,
                     timing_items=layer_state.recorded_worker_timings,
-                    predicted_cost_total=layer_predicted_cost_total,
-                    effective_min_predicted_cost=layer_effective_min_predicted_cost,
-                    stdlib_candidates=layer_stdlib_candidates,
+                    predicted_cost_total=layer_plan.predicted_cost_total,
+                    effective_min_predicted_cost=layer_plan.effective_min_predicted_cost,
+                    stdlib_candidates=layer_plan.stdlib_candidates,
                     target_cost_per_worker=frontend_parallel_config.target_cost_per_worker,
                     started_ns=layer_started_ns,
                     finished_ns=time.time_ns(),
