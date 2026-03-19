@@ -9027,6 +9027,40 @@ def _frontend_parallel_worker_timing_inputs(
     return queue_ms, wait_ms, exec_ms, roundtrip_ms, worker_mode, worker_pid
 
 
+def _record_parallel_layer_module_timing(
+    *,
+    layer_state: _FrontendParallelLayerState,
+    record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]],
+    layer_index: int,
+    module_name: str,
+    module_path: Path,
+    result_timings: _FrontendModuleResultTimings,
+    worker_timing: Mapping[str, Any] | None,
+) -> str:
+    (
+        queue_ms,
+        wait_ms,
+        exec_ms,
+        roundtrip_ms,
+        worker_mode,
+        worker_pid,
+    ) = _frontend_parallel_worker_timing_inputs(result_timings, worker_timing)
+    layer_state.recorded_worker_timings.append(
+        record_frontend_parallel_worker_timing(
+            layer_index=layer_index,
+            module_name=module_name,
+            module_path=module_path,
+            mode=worker_mode,
+            queue_ms=queue_ms,
+            wait_ms=wait_ms,
+            exec_ms=exec_ms,
+            roundtrip_ms=roundtrip_ms,
+            worker_pid=worker_pid,
+        )
+    )
+    return worker_mode
+
+
 def _consume_frontend_module_result(
     module_name: str,
     module_path: Path,
@@ -9069,6 +9103,55 @@ def _consume_frontend_module_result(
         ),
     )
     return None
+
+
+def _consume_frontend_parallel_layer_result(
+    *,
+    layer_state: _FrontendParallelLayerState,
+    record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]],
+    record_frontend_timing: Callable[..., None],
+    integrate_module_frontend_result: Callable[..., str | None],
+    accumulate_midend_diagnostics: Callable[..., None],
+    fail: Callable[[str, bool, str], dict[str, Any] | None],
+    json_output: bool,
+    project_root: Path | None,
+    layer_index: int,
+    module_name: str,
+    module_path: Path,
+    result: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    result_error = _frontend_parallel_result_error(module_name, result)
+    if result_error is not None:
+        return fail(result_error, json_output, command="build")
+    result_timings = _frontend_result_timings(result)
+    worker_mode = _record_parallel_layer_module_timing(
+        layer_state=layer_state,
+        record_frontend_parallel_worker_timing=record_frontend_parallel_worker_timing,
+        layer_index=layer_index,
+        module_name=module_name,
+        module_path=module_path,
+        result_timings=result_timings,
+        worker_timing=layer_state.worker_timings_by_module.get(module_name),
+    )
+    _write_parallel_persisted_module_lowering(
+        project_root=project_root,
+        module_path=module_path,
+        module_name=module_name,
+        worker_mode=worker_mode,
+        context_digest=layer_state.context_digests.get(module_name),
+        result=result,
+    )
+    return _consume_frontend_module_result(
+        module_name=module_name,
+        module_path=module_path,
+        result=result,
+        result_timings=result_timings,
+        record_frontend_timing=record_frontend_timing,
+        integrate_module_frontend_result=integrate_module_frontend_result,
+        accumulate_midend_diagnostics=accumulate_midend_diagnostics,
+        fail=fail,
+        json_output=json_output,
+    )
 
 
 def _frontend_serial_worker_mode(layer_mode: str) -> str:
@@ -13143,63 +13226,19 @@ def build(
                     module_path = module_graph[module_name]
                     result = layer_state.results.get(module_name)
                     if result is not None:
-                        result_error = _frontend_parallel_result_error(
-                            module_name,
-                            result,
-                        )
-                        if result_error is not None:
-                            return _fail(
-                                result_error,
-                                json_output,
-                                command="build",
-                            )
-                        result_timings = _frontend_result_timings(result)
-                        worker_timing = layer_state.worker_timings_by_module.get(
-                            module_name
-                        )
-                        (
-                            queue_ms,
-                            wait_ms,
-                            exec_ms,
-                            roundtrip_ms,
-                            worker_mode,
-                            worker_pid,
-                        ) = _frontend_parallel_worker_timing_inputs(
-                            result_timings,
-                            worker_timing,
-                        )
-                        layer_state.recorded_worker_timings.append(
-                            _record_frontend_parallel_worker_timing(
-                                layer_index=layer_index,
-                                module_name=module_name,
-                                module_path=module_path,
-                                mode=worker_mode,
-                                queue_ms=queue_ms,
-                                wait_ms=wait_ms,
-                                exec_ms=exec_ms,
-                                roundtrip_ms=roundtrip_ms,
-                                worker_pid=worker_pid,
-                            )
-                        )
-                        context_digest = layer_state.context_digests.get(module_name)
-                        _write_parallel_persisted_module_lowering(
-                            project_root=project_root,
-                            module_path=module_path,
-                            module_name=module_name,
-                            worker_mode=worker_mode,
-                            context_digest=context_digest,
-                            result=result,
-                        )
-                        consume_error = _consume_frontend_module_result(
-                            module_name=module_name,
-                            module_path=module_path,
-                            result=result,
-                            result_timings=result_timings,
+                        consume_error = _consume_frontend_parallel_layer_result(
+                            layer_state=layer_state,
+                            record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
                             record_frontend_timing=_record_frontend_timing,
                             integrate_module_frontend_result=_integrate_module_frontend_result,
                             accumulate_midend_diagnostics=_accumulate_midend_diagnostics,
                             fail=_fail,
                             json_output=json_output,
+                            project_root=project_root,
+                            layer_index=layer_index,
+                            module_name=module_name,
+                            module_path=module_path,
+                            result=result,
                         )
                         if consume_error is not None:
                             return consume_error
