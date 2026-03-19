@@ -5,7 +5,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 __all__ = ["_normal_dist_inv_cdf"]
 
 _MOLT_STATISTICS_NORMAL_DIST_INV_CDF = _require_intrinsic(
-    "molt_statistics_normal_dist_inv_cdf", globals()
+    "molt_statistics_normal_dist_inv_cdf"
 )
 
 
