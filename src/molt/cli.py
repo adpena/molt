@@ -825,6 +825,28 @@ class _PreparedBuildModuleOutputs:
     module_graph_metadata: _ModuleGraphMetadata
 
 
+@dataclass(frozen=True)
+class _PreparedBuildConfig:
+    pgo_profile_summary: PgoProfileSummary | None
+    pgo_profile_path: Path | None
+    runtime_feedback_summary: RuntimeFeedbackSummary | None
+    runtime_feedback_path: Path | None
+    pgo_hot_function_names: set[str]
+    pgo_hot_function_names_sorted: tuple[str, ...]
+    pgo_profile_payload: dict[str, Any] | None
+    runtime_feedback_payload: dict[str, Any] | None
+    cargo_timeout: float | None
+    backend_timeout: float | None
+    link_timeout: float | None
+    frontend_phase_timeout: float | None
+    backend_profile: BuildProfile
+    runtime_cargo_profile: str
+    backend_cargo_profile: str
+    capabilities_list: list[str] | None
+    capability_profiles: list[str]
+    capabilities_source: str | None
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -2586,6 +2608,139 @@ def _resolve_build_entry(
         module_roots=list(dict.fromkeys(root.resolve() for root in module_roots)),
         entry_source=entry_source,
         entry_tree=entry_tree,
+    ), None
+
+
+def _prepare_build_config(
+    *,
+    project_root: Path,
+    warnings: list[str],
+    json_output: bool,
+    profile: BuildProfile,
+    pgo_profile: str | None,
+    runtime_feedback: str | None,
+    capabilities: CapabilityInput | None,
+) -> tuple[_PreparedBuildConfig | None, dict[str, Any] | None]:
+    pgo_profile_summary: PgoProfileSummary | None = None
+    pgo_profile_path: Path | None = None
+    runtime_feedback_summary: RuntimeFeedbackSummary | None = None
+    runtime_feedback_path: Path | None = None
+    pgo_hot_function_names: set[str] = set()
+    if pgo_profile:
+        summary, resolved, err = _load_pgo_profile(
+            project_root,
+            pgo_profile,
+            warnings,
+            json_output,
+            command="build",
+        )
+        if err is not None:
+            return None, err
+        pgo_profile_summary = summary
+        pgo_profile_path = resolved
+    if pgo_profile_summary is not None:
+        pgo_hot_function_names = {
+            symbol.strip()
+            for symbol in pgo_profile_summary.hot_functions
+            if isinstance(symbol, str) and symbol.strip()
+        }
+    if runtime_feedback:
+        summary, resolved, err = _load_runtime_feedback(
+            project_root,
+            runtime_feedback,
+            warnings,
+            json_output,
+            command="build",
+        )
+        if err is not None:
+            return None, err
+        runtime_feedback_summary = summary
+        runtime_feedback_path = resolved
+    if runtime_feedback_summary is not None:
+        pgo_hot_function_names.update(
+            symbol.strip()
+            for symbol in runtime_feedback_summary.hot_functions
+            if isinstance(symbol, str) and symbol.strip()
+        )
+    pgo_hot_function_names_sorted = tuple(sorted(pgo_hot_function_names))
+    pgo_profile_payload: dict[str, Any] | None = None
+    if pgo_profile_summary is not None and pgo_profile_path is not None:
+        pgo_profile_payload = {
+            "path": str(pgo_profile_path),
+            "version": pgo_profile_summary.version,
+            "hash": pgo_profile_summary.hash,
+            "hot_functions": pgo_profile_summary.hot_functions,
+        }
+    runtime_feedback_payload: dict[str, Any] | None = None
+    if runtime_feedback_summary is not None and runtime_feedback_path is not None:
+        runtime_feedback_payload = {
+            "path": str(runtime_feedback_path),
+            "schema_version": runtime_feedback_summary.schema_version,
+            "hash": runtime_feedback_summary.hash,
+            "hot_functions": runtime_feedback_summary.hot_functions,
+        }
+
+    cargo_timeout, timeout_err = _resolve_timeout_env("MOLT_CARGO_TIMEOUT")
+    if timeout_err:
+        return None, _fail(timeout_err, json_output, command="build")
+    backend_timeout, timeout_err = _resolve_timeout_env("MOLT_BACKEND_TIMEOUT")
+    if timeout_err:
+        return None, _fail(timeout_err, json_output, command="build")
+    link_timeout, timeout_err = _resolve_timeout_env("MOLT_LINK_TIMEOUT")
+    if timeout_err:
+        return None, _fail(timeout_err, json_output, command="build")
+    frontend_phase_timeout, timeout_err = _resolve_timeout_env(
+        "MOLT_FRONTEND_PHASE_TIMEOUT"
+    )
+    if timeout_err:
+        return None, _fail(timeout_err, json_output, command="build")
+
+    backend_profile, profile_err = _resolve_backend_profile(profile)
+    if profile_err:
+        return None, _fail(profile_err, json_output, command="build")
+    runtime_cargo_profile, runtime_profile_err = _resolve_cargo_profile_name(profile)
+    if runtime_profile_err:
+        return None, _fail(runtime_profile_err, json_output, command="build")
+    backend_cargo_profile, backend_profile_err = _resolve_cargo_profile_name(
+        backend_profile
+    )
+    if backend_profile_err:
+        return None, _fail(backend_profile_err, json_output, command="build")
+
+    capabilities_list: list[str] | None = None
+    capabilities_source = None
+    capability_profiles: list[str] = []
+    if capabilities is not None:
+        parsed, profiles, source, errors = _parse_capabilities(capabilities)
+        if errors:
+            return None, _fail(
+                "Invalid capabilities: " + ", ".join(errors),
+                json_output,
+                command="build",
+            )
+        capabilities_list = parsed
+        capability_profiles = profiles
+        capabilities_source = source
+
+    return _PreparedBuildConfig(
+        pgo_profile_summary=pgo_profile_summary,
+        pgo_profile_path=pgo_profile_path,
+        runtime_feedback_summary=runtime_feedback_summary,
+        runtime_feedback_path=runtime_feedback_path,
+        pgo_hot_function_names=pgo_hot_function_names,
+        pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+        pgo_profile_payload=pgo_profile_payload,
+        runtime_feedback_payload=runtime_feedback_payload,
+        cargo_timeout=cargo_timeout,
+        backend_timeout=backend_timeout,
+        link_timeout=link_timeout,
+        frontend_phase_timeout=frontend_phase_timeout,
+        backend_profile=backend_profile,
+        runtime_cargo_profile=runtime_cargo_profile,
+        backend_cargo_profile=backend_cargo_profile,
+        capabilities_list=capabilities_list,
+        capability_profiles=capability_profiles,
+        capabilities_source=capabilities_source,
     ), None
 
 
@@ -15142,103 +15297,38 @@ def build(
             json_output,
             command="build",
         )
-    pgo_profile_summary: PgoProfileSummary | None = None
-    pgo_profile_path: Path | None = None
-    runtime_feedback_summary: RuntimeFeedbackSummary | None = None
-    runtime_feedback_path: Path | None = None
-    pgo_hot_function_names: set[str] = set()
-    if pgo_profile:
-        summary, resolved, err = _load_pgo_profile(
-            project_root,
-            pgo_profile,
-            warnings,
-            json_output,
-            command="build",
-        )
-        if err is not None:
-            return err
-        pgo_profile_summary = summary
-        pgo_profile_path = resolved
-    if pgo_profile_summary is not None:
-        pgo_hot_function_names = {
-            symbol.strip()
-            for symbol in pgo_profile_summary.hot_functions
-            if isinstance(symbol, str) and symbol.strip()
-        }
-    pgo_hot_function_names_sorted = tuple(sorted(pgo_hot_function_names))
-    if runtime_feedback:
-        summary, resolved, err = _load_runtime_feedback(
-            project_root,
-            runtime_feedback,
-            warnings,
-            json_output,
-            command="build",
-        )
-        if err is not None:
-            return err
-        runtime_feedback_summary = summary
-        runtime_feedback_path = resolved
-    if runtime_feedback_summary is not None:
-        pgo_hot_function_names.update(
-            symbol.strip()
-            for symbol in runtime_feedback_summary.hot_functions
-            if isinstance(symbol, str) and symbol.strip()
-        )
-    pgo_profile_payload: dict[str, Any] | None = None
-    if pgo_profile_summary is not None and pgo_profile_path is not None:
-        pgo_profile_payload = {
-            "path": str(pgo_profile_path),
-            "version": pgo_profile_summary.version,
-            "hash": pgo_profile_summary.hash,
-            "hot_functions": pgo_profile_summary.hot_functions,
-        }
-    runtime_feedback_payload: dict[str, Any] | None = None
-    if runtime_feedback_summary is not None and runtime_feedback_path is not None:
-        runtime_feedback_payload = {
-            "path": str(runtime_feedback_path),
-            "schema_version": runtime_feedback_summary.schema_version,
-            "hash": runtime_feedback_summary.hash,
-            "hot_functions": runtime_feedback_summary.hot_functions,
-        }
-    cargo_timeout, timeout_err = _resolve_timeout_env("MOLT_CARGO_TIMEOUT")
-    if timeout_err:
-        return _fail(timeout_err, json_output, command="build")
-    backend_timeout, timeout_err = _resolve_timeout_env("MOLT_BACKEND_TIMEOUT")
-    if timeout_err:
-        return _fail(timeout_err, json_output, command="build")
-    link_timeout, timeout_err = _resolve_timeout_env("MOLT_LINK_TIMEOUT")
-    if timeout_err:
-        return _fail(timeout_err, json_output, command="build")
-    frontend_phase_timeout, timeout_err = _resolve_timeout_env(
-        "MOLT_FRONTEND_PHASE_TIMEOUT"
+    prepared_build_config, prepared_build_config_error = _prepare_build_config(
+        project_root=project_root,
+        warnings=warnings,
+        json_output=json_output,
+        profile=profile,
+        pgo_profile=pgo_profile,
+        runtime_feedback=runtime_feedback,
+        capabilities=capabilities,
     )
-    if timeout_err:
-        return _fail(timeout_err, json_output, command="build")
-    backend_profile, profile_err = _resolve_backend_profile(profile)
-    if profile_err:
-        return _fail(profile_err, json_output, command="build")
-    runtime_cargo_profile, runtime_profile_err = _resolve_cargo_profile_name(profile)
-    if runtime_profile_err:
-        return _fail(runtime_profile_err, json_output, command="build")
-    backend_cargo_profile, backend_profile_err = _resolve_cargo_profile_name(
-        backend_profile
+    if prepared_build_config_error is not None:
+        return prepared_build_config_error
+    assert prepared_build_config is not None
+    pgo_profile_summary = prepared_build_config.pgo_profile_summary
+    pgo_profile_path = prepared_build_config.pgo_profile_path
+    runtime_feedback_summary = prepared_build_config.runtime_feedback_summary
+    runtime_feedback_path = prepared_build_config.runtime_feedback_path
+    pgo_hot_function_names = prepared_build_config.pgo_hot_function_names
+    pgo_hot_function_names_sorted = (
+        prepared_build_config.pgo_hot_function_names_sorted
     )
-    if backend_profile_err:
-        return _fail(backend_profile_err, json_output, command="build")
-    capabilities_list: list[str] | None = None
-    capabilities_source = None
-    capability_profiles: list[str] = []
-    if capabilities is not None:
-        parsed, profiles, source, errors = _parse_capabilities(capabilities)
-        if errors:
-            return _fail(
-                "Invalid capabilities: " + ", ".join(errors),
-                json_output,
-                command="build",
-            )
-        capabilities_list = parsed
-        capability_profiles = profiles
-        capabilities_source = source
+    pgo_profile_payload = prepared_build_config.pgo_profile_payload
+    runtime_feedback_payload = prepared_build_config.runtime_feedback_payload
+    cargo_timeout = prepared_build_config.cargo_timeout
+    backend_timeout = prepared_build_config.backend_timeout
+    link_timeout = prepared_build_config.link_timeout
+    frontend_phase_timeout = prepared_build_config.frontend_phase_timeout
+    backend_profile = prepared_build_config.backend_profile
+    runtime_cargo_profile = prepared_build_config.runtime_cargo_profile
+    backend_cargo_profile = prepared_build_config.backend_cargo_profile
+    capabilities_list = prepared_build_config.capabilities_list
+    capability_profiles = prepared_build_config.capability_profiles
+    capabilities_source = prepared_build_config.capabilities_source
     resolved_build_entry, resolved_build_entry_error = _resolve_build_entry(
         file_path=file_path,
         module=module,
