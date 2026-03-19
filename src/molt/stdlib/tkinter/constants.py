@@ -6,7 +6,7 @@ from ._support import has_gui_capability as _has_gui_capability
 from ._support import tk_available as _tk_available
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
-_MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available", globals())
+_MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available")
 
 NO = 0
 FALSE = 0

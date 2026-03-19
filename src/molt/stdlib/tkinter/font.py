@@ -3,7 +3,7 @@
 import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_TK_CALL = _require_intrinsic("molt_tk_call", globals())
+_MOLT_TK_CALL = _require_intrinsic("molt_tk_call")
 
 NORMAL = "normal"
 ROMAN = "roman"

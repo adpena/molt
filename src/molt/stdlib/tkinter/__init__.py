@@ -18,30 +18,26 @@ _EventTypeBase = _enum.Enum
 
 def _lazy_intrinsic(name):
     def _call(*args, **kwargs):
-        return _require_intrinsic(name, globals())(*args, **kwargs)
+        return _require_intrinsic(name)(*args, **kwargs)
 
     return _call
 
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
-_MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available", globals())
-_MOLT_TK_EVENT_SUBST_PARSE = _require_intrinsic("molt_tk_event_subst_parse", globals())
-_molt_tk_event_int = _require_intrinsic("molt_tk_event_int", globals())
+_MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available")
+_MOLT_TK_EVENT_SUBST_PARSE = _require_intrinsic("molt_tk_event_subst_parse")
+_molt_tk_event_int = _require_intrinsic("molt_tk_event_int")
 _molt_tk_event_build_from_args = _require_intrinsic(
-    "molt_tk_event_build_from_args", globals()
-)
+    "molt_tk_event_build_from_args")
 _molt_tk_event_state_decode = _require_intrinsic(
-    "molt_tk_event_state_decode", globals()
-)
-_molt_tk_splitdict = _require_intrinsic("molt_tk_splitdict", globals())
-_molt_tk_flatten_args = _require_intrinsic("molt_tk_flatten_args", globals())
-_molt_tk_cnfmerge = _require_intrinsic("molt_tk_cnfmerge", globals())
+    "molt_tk_event_state_decode")
+_molt_tk_splitdict = _require_intrinsic("molt_tk_splitdict")
+_molt_tk_flatten_args = _require_intrinsic("molt_tk_flatten_args")
+_molt_tk_cnfmerge = _require_intrinsic("molt_tk_cnfmerge")
 _molt_tk_normalize_option = _require_intrinsic(
-    "molt_tk_normalize_option", globals()
-)
+    "molt_tk_normalize_option")
 _molt_tk_normalize_delay_ms = _require_intrinsic(
-    "molt_tk_normalize_delay_ms", globals()
-)
+    "molt_tk_normalize_delay_ms")
 
 
 NO_VALUE = object()

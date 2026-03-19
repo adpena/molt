@@ -3,7 +3,7 @@
 import tkinter as _tkinter
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_TK_COMMONDIALOG_SHOW = _require_intrinsic("molt_tk_commondialog_show", globals())
+_MOLT_TK_COMMONDIALOG_SHOW = _require_intrinsic("molt_tk_commondialog_show")
 
 
 def _prepare_intrinsic_options(options):
