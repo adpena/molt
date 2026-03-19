@@ -2676,6 +2676,12 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
             cli._module_dependency_layers(
                 cli._topo_sort_modules(module_graph, module_deps), module_deps
             ),
+            cli._module_dependency_closures(
+                module_deps,
+                module_graph,
+                module_order=cli._topo_sort_modules(module_graph, module_deps),
+                has_back_edges=False,
+            ),
         ),
     )
     monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
@@ -2805,6 +2811,12 @@ def test_parallel_build_only_relowers_changed_frontier(
             cli._module_dependency_layers(
                 cli._topo_sort_modules(module_graph, module_deps), module_deps
             ),
+            cli._module_dependency_closures(
+                module_deps,
+                module_graph,
+                module_order=cli._topo_sort_modules(module_graph, module_deps),
+                has_back_edges=False,
+            ),
         ),
     )
     monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
@@ -2929,6 +2941,12 @@ def test_parallel_build_allows_scoped_type_facts(
             False,
             cli._module_dependency_layers(
                 cli._topo_sort_modules(module_graph, module_deps), module_deps
+            ),
+            cli._module_dependency_closures(
+                module_deps,
+                module_graph,
+                module_order=cli._topo_sort_modules(module_graph, module_deps),
+                has_back_edges=False,
             ),
         ),
     )
@@ -3496,9 +3514,11 @@ def test_analyze_module_schedule_reuses_reverse_edges_and_layers() -> None:
         "e": {"b"},
     }
 
-    order, reverse_deps, has_back_edges, layers = cli._analyze_module_schedule(
-        module_graph,
-        deps,
+    order, reverse_deps, has_back_edges, layers, closures = (
+        cli._analyze_module_schedule(
+            module_graph,
+            deps,
+        )
     )
 
     assert order == ["a", "b", "c", "e", "d"]
@@ -3507,6 +3527,9 @@ def test_analyze_module_schedule_reuses_reverse_edges_and_layers() -> None:
     assert reverse_deps["c"] == {"d"}
     assert has_back_edges is False
     assert layers == [["a"], ["b", "c"], ["e", "d"]]
+    assert closures["a"] == frozenset({"a"})
+    assert closures["b"] == frozenset({"a", "b"})
+    assert closures["d"] == frozenset({"a", "b", "c", "d"})
 
 
 def test_choose_frontend_parallel_layer_workers_applies_policy_gates() -> None:
@@ -3619,9 +3642,11 @@ def test_analyze_module_schedule_marks_cycles_and_appends_remaining() -> None:
     }
     deps = {"a": {"b"}, "b": {"a"}}
 
-    order, reverse_deps, has_back_edges, layers = cli._analyze_module_schedule(
-        module_graph,
-        deps,
+    order, reverse_deps, has_back_edges, layers, closures = (
+        cli._analyze_module_schedule(
+            module_graph,
+            deps,
+        )
     )
 
     assert set(order) == {"a", "b"}
@@ -3629,6 +3654,8 @@ def test_analyze_module_schedule_marks_cycles_and_appends_remaining() -> None:
     assert reverse_deps["b"] == {"a"}
     assert has_back_edges is True
     assert sum(len(layer) for layer in layers) == 2
+    assert closures["a"] == frozenset({"a", "b"})
+    assert closures["b"] == frozenset({"a", "b"})
 
 
 def test_frontend_lower_module_worker_smoke(tmp_path: Path) -> None:
