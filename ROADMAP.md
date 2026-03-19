@@ -1151,7 +1151,7 @@ complete. M-GPU-1 is the earliest actionable item and has no GPU hardware depend
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_compression` top-level stub with full intrinsic-backed lowering.
 - Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_contextvars` now re-exports Molt's intrinsic-backed `contextvars` surface with CPython-shaped private-module names (`Context`, `ContextVar`, `Token`, `copy_context`).
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_crypt` top-level stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_csv` top-level stub with full intrinsic-backed lowering.
+- Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_csv` now re-exports Molt's intrinsic-backed csv surface with CPython-shaped private-module names (`Dialect`, `Error`, `reader`, `writer`, dialect registry helpers, and quote constants).
 - Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_ctypes` now re-exports Molt's intrinsic-backed scalar/structure/pointer ctypes subset for CPython-compatible private-module imports.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_curses_panel` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_curses` top-level stub with full intrinsic-backed lowering.
