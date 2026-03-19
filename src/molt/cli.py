@@ -880,6 +880,16 @@ class _PreparedFrontendLoweringConfig:
     frontend_parallel_worker_timings: list[dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class _PreparedFrontendExecution:
+    frontend_layer_execution_context: _FrontendLayerExecutionContext
+    serial_frontend_lowering_context: _SerialFrontendLoweringContext
+    serial_frontend_lowering_hooks: _SerialFrontendLoweringHooks
+    integration_state: _FrontendIntegrationState
+    midend_diagnostics_state: _MidendDiagnosticsState
+    frontend_layer_runtime_hooks: _FrontendLayerRuntimeHooks
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -11967,6 +11977,167 @@ def _prepare_frontend_lowering_config(
     ), None
 
 
+def _prepare_frontend_execution(
+    *,
+    syntax_error_modules: dict[str, ModuleSyntaxErrorInfo],
+    module_graph: Mapping[str, Path],
+    module_sources: dict[str, str],
+    project_root: Path,
+    module_resolution_cache: "_ModuleResolutionCache",
+    parse_codec: ParseCodec,
+    type_hint_policy: TypeHintPolicy,
+    fallback_policy: FallbackPolicy,
+    type_facts: TypeFacts | None,
+    enable_phi: bool,
+    known_modules: set[str],
+    stdlib_allowlist: set[str],
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]],
+    module_deps: dict[str, set[str]],
+    module_chunk_max_ops: int,
+    optimization_profile: BuildProfile,
+    pgo_hot_function_names: set[str],
+    known_modules_sorted: tuple[str, ...],
+    stdlib_allowlist_sorted: tuple[str, ...],
+    pgo_hot_function_names_sorted: tuple[str, ...],
+    module_dep_closures: dict[str, set[str]],
+    module_graph_metadata: _ModuleGraphMetadata,
+    module_path_stats: dict[str, os.stat_result | None],
+    module_chunking: bool,
+    scoped_lowering_inputs: _ScopedLoweringInputs,
+    dirty_lowering_modules: set[str],
+    frontend_module_costs: dict[str, float],
+    stdlib_like_by_module: dict[str, bool],
+    known_classes: dict[str, Any],
+    module_trees: dict[str, ast.AST],
+    generated_module_source_paths: dict[str, str],
+    frontend_phase_timeout: float | None,
+    record_frontend_timing: Callable[..., None],
+    fail: Callable[..., int],
+    json_output: bool,
+    warnings: list[str],
+    frontend_parallel_details: dict[str, Any],
+    record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]],
+    midend_policy_outcomes_by_function: dict[str, dict[str, Any]],
+    midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]],
+) -> _PreparedFrontendExecution:
+    frontend_layer_execution_context = _FrontendLayerExecutionContext(
+        syntax_error_modules=syntax_error_modules,
+        module_graph=module_graph,
+        module_sources=module_sources,
+        project_root=project_root,
+        module_resolution_cache=module_resolution_cache,
+        parse_codec=parse_codec,
+        type_hint_policy=type_hint_policy,
+        fallback_policy=fallback_policy,
+        type_facts=type_facts,
+        enable_phi=enable_phi,
+        known_modules=known_modules,
+        stdlib_allowlist=stdlib_allowlist,
+        known_func_defaults=known_func_defaults,
+        module_deps=module_deps,
+        module_chunk_max_ops=module_chunk_max_ops,
+        optimization_profile=optimization_profile,
+        pgo_hot_function_names=pgo_hot_function_names,
+        known_modules_sorted=known_modules_sorted,
+        stdlib_allowlist_sorted=stdlib_allowlist_sorted,
+        pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+        module_dep_closures=module_dep_closures,
+        module_graph_metadata=module_graph_metadata,
+        path_stat_by_module=module_path_stats,
+        module_chunking=module_chunking,
+        scoped_lowering_inputs=scoped_lowering_inputs,
+        dirty_lowering_modules=dirty_lowering_modules,
+        frontend_module_costs=frontend_module_costs,
+        stdlib_like_by_module=stdlib_like_by_module,
+        known_classes=known_classes,
+    )
+    serial_frontend_lowering_context = _SerialFrontendLoweringContext(
+        syntax_error_modules=syntax_error_modules,
+        module_trees=module_trees,
+        module_sources=module_sources,
+        generated_module_source_paths=generated_module_source_paths,
+        module_resolution_cache=module_resolution_cache,
+        project_root=project_root,
+        dirty_lowering_modules=dirty_lowering_modules,
+        parse_codec=parse_codec,
+        type_hint_policy=type_hint_policy,
+        fallback_policy=fallback_policy,
+        type_facts=type_facts,
+        enable_phi=enable_phi,
+        known_modules=known_modules,
+        stdlib_allowlist=stdlib_allowlist,
+        known_func_defaults=known_func_defaults,
+        module_deps=module_deps,
+        module_chunking=module_chunking,
+        module_chunk_max_ops=module_chunk_max_ops,
+        optimization_profile=optimization_profile,
+        pgo_hot_function_names=pgo_hot_function_names,
+        known_modules_sorted=known_modules_sorted,
+        stdlib_allowlist_sorted=stdlib_allowlist_sorted,
+        pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+        module_dep_closures=module_dep_closures,
+        scoped_lowering_inputs=scoped_lowering_inputs,
+        module_graph_metadata=module_graph_metadata,
+        module_path_stats=module_path_stats,
+        known_classes=known_classes,
+        frontend_phase_timeout=frontend_phase_timeout,
+    )
+    serial_frontend_lowering_hooks = _SerialFrontendLoweringHooks(
+        record_frontend_timing=record_frontend_timing,
+        fail=fail,
+        json_output=json_output,
+    )
+    integration_state = _FrontendIntegrationState(
+        functions=[],
+        known_classes=known_classes,
+    )
+    midend_diagnostics_state = _MidendDiagnosticsState(
+        policy_outcomes_by_function=midend_policy_outcomes_by_function,
+        pass_stats_by_function=midend_pass_stats_by_function,
+    )
+
+    def _run_serial_frontend_lower(
+        module_name: str,
+        module_path: Path,
+    ) -> tuple[
+        dict[str, Any] | None,
+        _FrontendModuleResultTimings | None,
+        dict[str, Any] | None,
+    ]:
+        return _run_serial_frontend_lower_with_context(
+            module_name,
+            module_path,
+            lowering_context=serial_frontend_lowering_context,
+            lowering_hooks=serial_frontend_lowering_hooks,
+        )
+
+    frontend_layer_runtime_hooks = _FrontendLayerRuntimeHooks(
+        warnings=warnings,
+        frontend_parallel_details=frontend_parallel_details,
+        record_frontend_parallel_worker_timing=record_frontend_parallel_worker_timing,
+        record_frontend_timing=record_frontend_timing,
+        integrate_module_frontend_result=functools.partial(
+            _integrate_module_frontend_result_with_state,
+            integration_state,
+        ),
+        accumulate_midend_diagnostics=functools.partial(
+            _accumulate_midend_diagnostics_with_state,
+            midend_diagnostics_state,
+        ),
+        fail=fail,
+        json_output=json_output,
+        run_serial_frontend_lower=_run_serial_frontend_lower,
+    )
+    return _PreparedFrontendExecution(
+        frontend_layer_execution_context=frontend_layer_execution_context,
+        serial_frontend_lowering_context=serial_frontend_lowering_context,
+        serial_frontend_lowering_hooks=serial_frontend_lowering_hooks,
+        integration_state=integration_state,
+        midend_diagnostics_state=midend_diagnostics_state,
+        frontend_layer_runtime_hooks=frontend_layer_runtime_hooks,
+    )
+
+
 def _prepare_backend_cache_setup(
     *,
     cache_enabled: bool,
@@ -15848,7 +16019,7 @@ def build(
         frontend_parallel_worker_timings.append(item)
         return item
 
-    frontend_layer_execution_context = _FrontendLayerExecutionContext(
+    prepared_frontend_execution = _prepare_frontend_execution(
         syntax_error_modules=syntax_error_modules,
         module_graph=module_graph,
         module_sources=module_sources,
@@ -15871,92 +16042,45 @@ def build(
         pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
         module_dep_closures=module_dep_closures,
         module_graph_metadata=module_graph_metadata,
-        path_stat_by_module=module_path_stats,
+        module_path_stats=module_path_stats,
         module_chunking=module_chunking,
         scoped_lowering_inputs=scoped_lowering_inputs,
         dirty_lowering_modules=dirty_lowering_modules,
         frontend_module_costs=frontend_module_costs,
         stdlib_like_by_module=stdlib_like_by_module,
         known_classes=known_classes,
-    )
-    serial_frontend_lowering_context = _SerialFrontendLoweringContext(
-        syntax_error_modules=syntax_error_modules,
         module_trees=module_trees,
-        module_sources=module_sources,
         generated_module_source_paths=generated_module_source_paths,
-        module_resolution_cache=module_resolution_cache,
-        project_root=project_root,
-        dirty_lowering_modules=dirty_lowering_modules,
-        parse_codec=parse_codec,
-        type_hint_policy=type_hint_policy,
-        fallback_policy=fallback_policy,
-        type_facts=type_facts,
-        enable_phi=enable_phi,
-        known_modules=known_modules,
-        stdlib_allowlist=stdlib_allowlist,
-        known_func_defaults=known_func_defaults,
-        module_deps=module_deps,
-        module_chunking=module_chunking,
-        module_chunk_max_ops=module_chunk_max_ops,
-        optimization_profile=profile,
-        pgo_hot_function_names=pgo_hot_function_names,
-        known_modules_sorted=known_modules_sorted,
-        stdlib_allowlist_sorted=stdlib_allowlist_sorted,
-        pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
-        module_dep_closures=module_dep_closures,
-        scoped_lowering_inputs=scoped_lowering_inputs,
-        module_graph_metadata=module_graph_metadata,
-        module_path_stats=module_path_stats,
-        known_classes=known_classes,
         frontend_phase_timeout=frontend_phase_timeout,
-    )
-    serial_frontend_lowering_hooks = _SerialFrontendLoweringHooks(
         record_frontend_timing=_record_frontend_timing,
         fail=_fail,
         json_output=json_output,
+        warnings=warnings,
+        frontend_parallel_details=frontend_parallel_details,
+        record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
+        midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
+        midend_pass_stats_by_function=midend_pass_stats_by_function,
     )
-    integration_state = _FrontendIntegrationState(functions=[], known_classes=known_classes)
-    midend_diagnostics_state = _MidendDiagnosticsState(
-        policy_outcomes_by_function=midend_policy_outcomes_by_function,
-        pass_stats_by_function=midend_pass_stats_by_function,
+    frontend_layer_execution_context = (
+        prepared_frontend_execution.frontend_layer_execution_context
+    )
+    serial_frontend_lowering_context = (
+        prepared_frontend_execution.serial_frontend_lowering_context
+    )
+    serial_frontend_lowering_hooks = (
+        prepared_frontend_execution.serial_frontend_lowering_hooks
+    )
+    integration_state = prepared_frontend_execution.integration_state
+    midend_diagnostics_state = (
+        prepared_frontend_execution.midend_diagnostics_state
     )
     functions = integration_state.functions
     global_code_ids = integration_state.global_code_ids
 
     def _register_global_code_id(symbol: str) -> int:
         return _register_global_code_id_with_state(integration_state, symbol)
-
-    def _run_serial_frontend_lower(
-        module_name: str,
-        module_path: Path,
-    ) -> tuple[
-        dict[str, Any] | None,
-        _FrontendModuleResultTimings | None,
-        dict[str, Any] | None,
-    ]:
-        return _run_serial_frontend_lower_with_context(
-            module_name,
-            module_path,
-            lowering_context=serial_frontend_lowering_context,
-            lowering_hooks=serial_frontend_lowering_hooks,
-        )
-
-    frontend_layer_runtime_hooks = _FrontendLayerRuntimeHooks(
-        warnings=warnings,
-        frontend_parallel_details=frontend_parallel_details,
-        record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
-        record_frontend_timing=_record_frontend_timing,
-        integrate_module_frontend_result=functools.partial(
-            _integrate_module_frontend_result_with_state,
-            integration_state,
-        ),
-        accumulate_midend_diagnostics=functools.partial(
-            _accumulate_midend_diagnostics_with_state,
-            midend_diagnostics_state,
-        ),
-        fail=_fail,
-        json_output=json_output,
-        run_serial_frontend_lower=_run_serial_frontend_lower,
+    frontend_layer_runtime_hooks = (
+        prepared_frontend_execution.frontend_layer_runtime_hooks
     )
 
     if frontend_parallel_config.enabled:
