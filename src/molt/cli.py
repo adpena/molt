@@ -903,6 +903,16 @@ class _PreparedBackendSetup:
     cache_candidates: list[tuple[str, Path]]
 
 
+@dataclass(frozen=True)
+class _PreparedBackendDispatch:
+    backend_env: dict[str, str] | None
+    reloc_requested: bool
+    backend_bin: Path
+    daemon_socket: Path | None
+    daemon_ready: bool
+    backend_daemon_config_digest: str | None
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -12220,6 +12230,142 @@ def _prepare_backend_setup(
     ), None
 
 
+def _prepare_backend_dispatch(
+    *,
+    is_wasm: bool,
+    linked: bool,
+    deterministic: bool,
+    profile: BuildProfile,
+    runtime_state: _RuntimeArtifactState,
+    runtime_cargo_profile: str,
+    cargo_timeout: float | None,
+    molt_root: Path,
+    target_triple: str | None,
+    backend_cargo_profile: str,
+    diagnostics_enabled: bool,
+    phase_starts: dict[str, float],
+    json_output: bool,
+    backend_daemon_config_digest: str | None,
+    ensure_runtime_wasm_shared: Callable[[], bool],
+    ensure_runtime_wasm_reloc: Callable[[], bool],
+    warnings: list[str],
+) -> tuple[_PreparedBackendDispatch | None, dict[str, Any] | None]:
+    backend_env = os.environ.copy() if is_wasm else None
+    if deterministic or profile == "release":
+        os.environ.setdefault("SOURCE_DATE_EPOCH", "315532800")
+    reloc_requested = is_wasm and (linked or os.environ.get("MOLT_WASM_LINK") == "1")
+    runtime_wasm = runtime_state.runtime_wasm
+    runtime_reloc_wasm = runtime_state.runtime_reloc_wasm
+    if is_wasm and backend_env is not None:
+        if "MOLT_WASM_DATA_BASE" not in backend_env:
+            if not ensure_runtime_wasm_shared():
+                return None, _fail(
+                    "Runtime wasm build failed",
+                    json_output,
+                    command="build",
+                )
+        if runtime_wasm is not None and runtime_wasm.exists():
+            data_base_candidates: list[int] = []
+            data_end = _read_wasm_data_end(runtime_wasm)
+            if data_end is not None:
+                data_base_candidates.append((data_end + 7) & ~7)
+            memory_min = _read_wasm_memory_min_bytes(runtime_wasm)
+            if memory_min is not None:
+                data_base_candidates.append((memory_min + 7) & ~7)
+            if data_base_candidates:
+                backend_env["MOLT_WASM_DATA_BASE"] = str(max(data_base_candidates))
+            else:
+                warnings.append(
+                    "Failed to read runtime memory layout; using default data base."
+                )
+        if "MOLT_WASM_TABLE_BASE" not in backend_env:
+            table_probe_path = runtime_wasm
+            if reloc_requested:
+                if linked and not ensure_runtime_wasm_reloc():
+                    return None, _fail(
+                        "Runtime wasm build failed",
+                        json_output,
+                        command="build",
+                    )
+                if (
+                    linked
+                    and runtime_reloc_wasm is not None
+                    and runtime_reloc_wasm.exists()
+                ):
+                    table_probe_path = runtime_reloc_wasm
+            if table_probe_path is not None and table_probe_path.exists():
+                table_base = _read_wasm_table_min(table_probe_path)
+                if table_base is not None:
+                    backend_env["MOLT_WASM_TABLE_BASE"] = str(table_base)
+                else:
+                    warnings.append(
+                        "Failed to read runtime table size; using default table base."
+                    )
+    if reloc_requested and backend_env is not None:
+        backend_env["MOLT_WASM_LINK"] = "1"
+
+    backend_bin = _backend_bin_path(molt_root, backend_cargo_profile)
+    if not _ensure_backend_binary(
+        backend_bin,
+        cargo_timeout=cargo_timeout,
+        json_output=json_output,
+        cargo_profile=backend_cargo_profile,
+        project_root=molt_root,
+    ):
+        return None, _fail("Backend build failed", json_output, command="build")
+    if not backend_bin.exists():
+        return None, _fail("Backend binary missing", json_output, command="build")
+
+    daemon_socket: Path | None = None
+    daemon_ready = False
+    daemon_config_digest = backend_daemon_config_digest
+    if _backend_daemon_enabled():
+        daemon_config_digest = _backend_daemon_config_digest(
+            molt_root, backend_cargo_profile
+        )
+        if diagnostics_enabled and "backend_daemon_setup" not in phase_starts:
+            phase_starts["backend_daemon_setup"] = time.perf_counter()
+        daemon_socket = _backend_daemon_socket_path(
+            molt_root,
+            backend_cargo_profile,
+            config_digest=daemon_config_digest,
+        )
+        startup_timeout = _backend_daemon_start_timeout()
+        with _build_lock(molt_root, f"backend-daemon.{backend_cargo_profile}"):
+            pid_path = _backend_daemon_pid_path(molt_root, backend_cargo_profile)
+            existing_pid = _read_backend_daemon_pid(pid_path)
+            if (
+                existing_pid is not None
+                and _pid_alive(existing_pid)
+                and _backend_daemon_binary_is_newer(backend_bin, pid_path)
+            ):
+                _terminate_backend_daemon_pid(existing_pid, grace=1.0)
+                _remove_backend_daemon_pid(pid_path)
+                try:
+                    if daemon_socket.exists():
+                        daemon_socket.unlink()
+                except OSError:
+                    pass
+            daemon_ready = daemon_socket.exists()
+            if not daemon_ready:
+                daemon_ready = _start_backend_daemon(
+                    backend_bin,
+                    daemon_socket,
+                    cargo_profile=backend_cargo_profile,
+                    project_root=molt_root,
+                    startup_timeout=startup_timeout,
+                    json_output=json_output,
+                )
+    return _PreparedBackendDispatch(
+        backend_env=backend_env,
+        reloc_requested=reloc_requested,
+        backend_bin=backend_bin,
+        daemon_socket=daemon_socket,
+        daemon_ready=daemon_ready,
+        backend_daemon_config_digest=daemon_config_digest,
+    ), None
+
+
 def _prepare_backend_cache_setup(
     *,
     cache_enabled: bool,
@@ -16395,114 +16541,38 @@ def build(
                     phase_starts["backend_codegen"] = now
                 if "backend_prepare" not in phase_starts:
                     phase_starts["backend_prepare"] = now
-            backend_env = os.environ.copy() if is_wasm else None
-            # Supply-chain: pin SOURCE_DATE_EPOCH for deterministic/release builds
-            if deterministic or profile == "release":
-                os.environ.setdefault("SOURCE_DATE_EPOCH", "315532800")
-            reloc_requested = is_wasm and (
-                linked or os.environ.get("MOLT_WASM_LINK") == "1"
+            prepared_backend_dispatch, prepared_backend_dispatch_error = (
+                _prepare_backend_dispatch(
+                    is_wasm=is_wasm,
+                    linked=linked,
+                    deterministic=deterministic,
+                    profile=profile,
+                    runtime_state=runtime_state,
+                    runtime_cargo_profile=runtime_cargo_profile,
+                    cargo_timeout=cargo_timeout,
+                    molt_root=molt_root,
+                    target_triple=target_triple,
+                    backend_cargo_profile=backend_cargo_profile,
+                    diagnostics_enabled=diagnostics_enabled,
+                    phase_starts=phase_starts,
+                    json_output=json_output,
+                    backend_daemon_config_digest=backend_daemon_config_digest,
+                    ensure_runtime_wasm_shared=ensure_runtime_wasm_shared,
+                    ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
+                    warnings=warnings,
+                )
             )
-            if is_wasm and backend_env is not None:
-                if "MOLT_WASM_DATA_BASE" not in backend_env:
-                    if not ensure_runtime_wasm_shared():
-                        return _fail(
-                            "Runtime wasm build failed",
-                            json_output,
-                            command="build",
-                        )
-                if runtime_wasm is not None and runtime_wasm.exists():
-                    data_base_candidates: list[int] = []
-                    data_end = _read_wasm_data_end(runtime_wasm)
-                    if data_end is not None:
-                        data_base_candidates.append((data_end + 7) & ~7)
-                    memory_min = _read_wasm_memory_min_bytes(runtime_wasm)
-                    if memory_min is not None:
-                        data_base_candidates.append((memory_min + 7) & ~7)
-                    if data_base_candidates:
-                        backend_env["MOLT_WASM_DATA_BASE"] = str(
-                            max(data_base_candidates)
-                        )
-                    else:
-                        warnings.append(
-                            "Failed to read runtime memory layout; using default data base."
-                        )
-                if "MOLT_WASM_TABLE_BASE" not in backend_env:
-                    table_probe_path = runtime_wasm
-                    if reloc_requested:
-                        if linked and not ensure_runtime_wasm_reloc():
-                            return _fail(
-                                "Runtime wasm build failed",
-                                json_output,
-                                command="build",
-                            )
-                        if (
-                            linked
-                            and runtime_reloc_wasm is not None
-                            and runtime_reloc_wasm.exists()
-                        ):
-                            table_probe_path = runtime_reloc_wasm
-                    if table_probe_path is not None and table_probe_path.exists():
-                        table_base = _read_wasm_table_min(table_probe_path)
-                        if table_base is not None:
-                            backend_env["MOLT_WASM_TABLE_BASE"] = str(table_base)
-                        else:
-                            warnings.append(
-                                "Failed to read runtime table size; using default table base."
-                            )
-            if reloc_requested and backend_env is not None:
-                backend_env["MOLT_WASM_LINK"] = "1"
-            backend_bin = _backend_bin_path(molt_root, backend_cargo_profile)
-            if not _ensure_backend_binary(
-                backend_bin,
-                cargo_timeout=cargo_timeout,
-                json_output=json_output,
-                cargo_profile=backend_cargo_profile,
-                project_root=molt_root,
-            ):
-                return _fail("Backend build failed", json_output, command="build")
-            if not backend_bin.exists():
-                return _fail("Backend binary missing", json_output, command="build")
-            daemon_socket: Path | None = None
-            daemon_ready = False
-            if _backend_daemon_enabled():
-                backend_daemon_config_digest = _backend_daemon_config_digest(
-                    molt_root, backend_cargo_profile
-                )
-                if diagnostics_enabled and "backend_daemon_setup" not in phase_starts:
-                    phase_starts["backend_daemon_setup"] = time.perf_counter()
-                daemon_socket = _backend_daemon_socket_path(
-                    molt_root,
-                    backend_cargo_profile,
-                    config_digest=backend_daemon_config_digest,
-                )
-                startup_timeout = _backend_daemon_start_timeout()
-                with _build_lock(molt_root, f"backend-daemon.{backend_cargo_profile}"):
-                    pid_path = _backend_daemon_pid_path(
-                        molt_root, backend_cargo_profile
-                    )
-                    existing_pid = _read_backend_daemon_pid(pid_path)
-                    if (
-                        existing_pid is not None
-                        and _pid_alive(existing_pid)
-                        and _backend_daemon_binary_is_newer(backend_bin, pid_path)
-                    ):
-                        _terminate_backend_daemon_pid(existing_pid, grace=1.0)
-                        _remove_backend_daemon_pid(pid_path)
-                        try:
-                            if daemon_socket.exists():
-                                daemon_socket.unlink()
-                        except OSError:
-                            pass
-                    daemon_ready = daemon_socket.exists()
-                    if not daemon_ready:
-                        daemon_ready = _start_backend_daemon(
-                            backend_bin,
-                            daemon_socket,
-                            cargo_profile=backend_cargo_profile,
-                            project_root=molt_root,
-                            startup_timeout=startup_timeout,
-                            json_output=json_output,
-                        )
+            if prepared_backend_dispatch_error is not None:
+                return prepared_backend_dispatch_error
+            assert prepared_backend_dispatch is not None
+            backend_env = prepared_backend_dispatch.backend_env
+            reloc_requested = prepared_backend_dispatch.reloc_requested
+            backend_bin = prepared_backend_dispatch.backend_bin
+            daemon_socket = prepared_backend_dispatch.daemon_socket
+            daemon_ready = prepared_backend_dispatch.daemon_ready
+            backend_daemon_config_digest = (
+                prepared_backend_dispatch.backend_daemon_config_digest
+            )
             if diagnostics_enabled and "backend_dispatch" not in phase_starts:
                 phase_starts["backend_dispatch"] = time.perf_counter()
 
