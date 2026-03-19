@@ -14,7 +14,7 @@ import sys
 import time
 import unittest
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 class _AlwaysEq:

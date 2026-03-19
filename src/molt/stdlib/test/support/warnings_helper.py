@@ -11,7 +11,7 @@ import re
 import sys
 import warnings
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 def import_deprecated(name: str):
