@@ -428,6 +428,7 @@ class _BackendDaemonCompileResult(NamedTuple):
     cached: bool | None
     cache_tier: str | None
     output_written: bool
+    output_exists: bool
 
 
 def _run_command_timed(
@@ -6487,14 +6488,14 @@ def _compile_with_backend_daemon(
         )
         if encode_err is not None:
             return _BackendDaemonCompileResult(
-                False, encode_err, None, None, None, True
+                False, encode_err, None, None, None, True, False
             )
         assert request_bytes is not None
     response, err = _backend_daemon_request_bytes(
         socket_path, request_bytes, timeout=timeout
     )
     if err is not None:
-        return _BackendDaemonCompileResult(False, err, None, None, None, True)
+        return _BackendDaemonCompileResult(False, err, None, None, None, True, False)
     if response is None:
         return _BackendDaemonCompileResult(
             False,
@@ -6503,12 +6504,15 @@ def _compile_with_backend_daemon(
             None,
             None,
             True,
+            False,
         )
     health = _backend_daemon_health_from_response(response)
     if not bool(response.get("ok")):
         error = response.get("error")
         if isinstance(error, str) and error:
-            return _BackendDaemonCompileResult(False, error, health, None, None, True)
+            return _BackendDaemonCompileResult(
+                False, error, health, None, None, True, False
+            )
         return _BackendDaemonCompileResult(
             False,
             "backend daemon compile request failed",
@@ -6516,6 +6520,7 @@ def _compile_with_backend_daemon(
             None,
             None,
             True,
+            False,
         )
     response_jobs = response.get("jobs")
     if not isinstance(response_jobs, list) or not response_jobs:
@@ -6526,6 +6531,7 @@ def _compile_with_backend_daemon(
             None,
             None,
             True,
+            False,
         )
     first = response_jobs[0]
     if not isinstance(first, dict):
@@ -6536,6 +6542,7 @@ def _compile_with_backend_daemon(
             None,
             None,
             True,
+            False,
         )
     cached: bool | None = (
         first.get("cached") if isinstance(first.get("cached"), bool) else None
@@ -6549,11 +6556,12 @@ def _compile_with_backend_daemon(
         if isinstance(first.get("output_written"), bool)
         else True
     )
+    output_exists = not output_written
     if not bool(first.get("ok")):
         message = first.get("message")
         if isinstance(message, str) and message:
             return _BackendDaemonCompileResult(
-                False, message, health, cached, cache_tier, output_written
+                False, message, health, cached, cache_tier, output_written, False
             )
         return _BackendDaemonCompileResult(
             False,
@@ -6562,6 +6570,7 @@ def _compile_with_backend_daemon(
             cached,
             cache_tier,
             output_written,
+            False,
         )
     if output_written and not backend_output.exists():
         return _BackendDaemonCompileResult(
@@ -6571,7 +6580,9 @@ def _compile_with_backend_daemon(
             cached,
             cache_tier,
             output_written,
+            False,
         )
+    output_exists = True
     return _BackendDaemonCompileResult(
         True,
         None,
@@ -6579,6 +6590,7 @@ def _compile_with_backend_daemon(
         cached,
         cache_tier,
         output_written,
+        output_exists,
     )
 
 
@@ -12088,6 +12100,7 @@ def build(
             with backend_output_ctx as backend_output:
                 backend_compiled = False
                 backend_output_written = True
+                backend_output_exists = False
                 daemon_error: str | None = None
                 backend_daemon_request_bytes_cached: bytes | None = None
                 output_sync_state_path: Path | None = None
@@ -12161,6 +12174,7 @@ def build(
                     backend_compiled = daemon_compile.ok
                     backend_output_written = daemon_compile.output_written
                     daemon_error = daemon_compile.error
+                    backend_output_exists = daemon_compile.output_exists
                     if daemon_compile.cached is not None:
                         backend_daemon_cached = daemon_compile.cached
                     if daemon_compile.cache_tier is not None:
@@ -12218,6 +12232,7 @@ def build(
                             backend_compiled = daemon_compile.ok
                             backend_output_written = daemon_compile.output_written
                             daemon_error = daemon_compile.error
+                            backend_output_exists = daemon_compile.output_exists
                             if daemon_compile.cached is not None:
                                 backend_daemon_cached = daemon_compile.cached
                             if daemon_compile.cache_tier is not None:
@@ -12281,8 +12296,13 @@ def build(
                         if backend_process.stderr:
                             print(backend_process.stderr, end="", file=sys.stderr)
                     backend_output_written = True
-                if backend_output_written and not backend_output.exists():
-                    return _fail("Backend output missing", json_output, command="build")
+                if backend_output_written and not (
+                    daemon_ready and backend_compiled and backend_output_exists
+                ):
+                    if not backend_output.exists():
+                        return _fail(
+                            "Backend output missing", json_output, command="build"
+                        )
                 if backend_output_written:
                     if (
                         diagnostics_enabled

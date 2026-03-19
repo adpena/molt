@@ -2418,6 +2418,7 @@ def test_compile_with_backend_daemon_surfaces_cache_telemetry(
     assert result.cached is True
     assert result.cache_tier == "function"
     assert result.output_written is True
+    assert result.output_exists is True
     assert captured_payload.get("config_digest") == "digest123"
     assert "include_health" not in captured_payload
 
@@ -2473,6 +2474,7 @@ def test_compile_with_backend_daemon_allows_cached_hit_without_output_write(
     assert result.cached is True
     assert result.cache_tier == "module"
     assert result.output_written is False
+    assert result.output_exists is True
     assert "include_health" not in captured_payload
 
 
@@ -2525,6 +2527,7 @@ def test_compile_with_backend_daemon_accepts_response_without_health(
 
     assert result.ok is True
     assert result.health is None
+    assert result.output_exists is True
     assert "include_health" not in captured_payload
     assert backend_output.exists()
     assert captured_payload["jobs"][0]["skip_module_output_if_synced"] is False
@@ -2582,6 +2585,52 @@ def test_compile_with_backend_daemon_uses_preencoded_request_bytes(
 
     assert result.ok is True
     assert result.output_written is True
+    assert result.output_exists is True
+
+
+def test_compile_with_backend_daemon_reports_missing_output_in_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_request(
+        socket_path: Path,
+        data: bytes,
+        *,
+        timeout: float | None,
+    ) -> tuple[dict[str, object], None]:
+        del socket_path, data, timeout
+        return (
+            {
+                "ok": True,
+                "jobs": [
+                    {
+                        "id": "job0",
+                        "ok": True,
+                        "output_written": True,
+                    }
+                ],
+            },
+            None,
+        )
+
+    monkeypatch.setattr(cli, "_backend_daemon_request_bytes", _fake_request)
+    result = cli._compile_with_backend_daemon(
+        Path("/tmp/fake.sock"),
+        ir={"functions": []},
+        backend_output=Path("/tmp/definitely-missing-output.o"),
+        is_wasm=False,
+        target_triple=None,
+        cache_key=None,
+        function_cache_key=None,
+        config_digest=None,
+        skip_module_output_if_synced=False,
+        skip_function_output_if_synced=False,
+        timeout=0.1,
+    )
+
+    assert result.ok is False
+    assert result.error == "backend daemon reported success but output is missing"
+    assert result.output_written is True
+    assert result.output_exists is False
 
 
 def test_backend_daemon_request_bytes_accumulates_partial_chunks(
