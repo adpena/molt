@@ -726,6 +726,18 @@ class _RuntimeArtifactState:
     runtime_reloc_wasm_ready: bool = False
 
 
+@dataclass(frozen=True)
+class _BackendCacheSetup:
+    cache_enabled: bool
+    cache_key: str | None
+    function_cache_key: str | None
+    cache_path: Path | None
+    function_cache_path: Path | None
+    cache_candidates: tuple[tuple[str, Path], ...]
+    cache_hit: bool
+    cache_hit_tier: str | None
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -10744,6 +10756,106 @@ def _emit_non_native_build_result(
     return 0
 
 
+def _prepare_backend_cache_setup(
+    *,
+    cache_enabled: bool,
+    ir: Mapping[str, Any],
+    target: str,
+    target_triple: str | None,
+    profile: str,
+    runtime_cargo_profile: str,
+    backend_cargo_profile: str,
+    emit_mode: str,
+    is_wasm: bool,
+    linked: bool,
+    project_root: Path | None,
+    cache_dir: str | None,
+    output_artifact: Path,
+    warnings: list[str],
+) -> _BackendCacheSetup:
+    if not cache_enabled:
+        return _BackendCacheSetup(
+            cache_enabled=False,
+            cache_key=None,
+            function_cache_key=None,
+            cache_path=None,
+            function_cache_path=None,
+            cache_candidates=(),
+            cache_hit=False,
+            cache_hit_tier=None,
+        )
+    cache_variant_parts = [
+        f"profile={profile}",
+        f"runtime_cargo={runtime_cargo_profile}",
+        f"backend_cargo={backend_cargo_profile}",
+        f"emit={emit_mode}",
+        f"codegen_env={_backend_codegen_env_digest(is_wasm=is_wasm)}",
+    ]
+    if linked:
+        cache_variant_parts.append("linked=1")
+    cache_variant = ";".join(cache_variant_parts)
+    module_cache_payload, backend_cache_payload = _cache_payloads_for_ir(ir)
+    cache_key = _cache_key(
+        ir,
+        target,
+        target_triple,
+        cache_variant,
+        payload=module_cache_payload,
+    )
+    function_cache_key = _function_cache_key(
+        ir,
+        target,
+        target_triple,
+        cache_variant,
+        payload=backend_cache_payload,
+    )
+    cache_root = _resolve_cache_root(project_root, cache_dir)
+    try:
+        cache_root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        warnings.append(f"Cache disabled: {exc}")
+        return _BackendCacheSetup(
+            cache_enabled=False,
+            cache_key=cache_key,
+            function_cache_key=function_cache_key,
+            cache_path=None,
+            function_cache_path=None,
+            cache_candidates=(),
+            cache_hit=False,
+            cache_hit_tier=None,
+        )
+    ext = "wasm" if is_wasm else "o"
+    cache_path = cache_root / f"{cache_key}.{ext}"
+    function_cache_path = None
+    if function_cache_key and function_cache_key != cache_key:
+        function_cache_path = cache_root / f"{function_cache_key}.{ext}"
+    cache_candidates: list[tuple[str, Path]] = []
+    if cache_path is not None:
+        cache_candidates.append(("module", cache_path))
+    if function_cache_path is not None and function_cache_path != cache_path:
+        cache_candidates.append(("function", function_cache_path))
+    cache_hit, cache_hit_tier = _try_cached_backend_candidates(
+        project_root=project_root,
+        cache_candidates=cache_candidates,
+        output_artifact=output_artifact,
+        is_wasm=is_wasm,
+        cache_key=cache_key,
+        function_cache_key=function_cache_key,
+        cache_path=cache_path,
+        warnings=warnings,
+    )
+    return _BackendCacheSetup(
+        cache_enabled=True,
+        cache_key=cache_key,
+        function_cache_key=function_cache_key,
+        cache_path=cache_path,
+        function_cache_path=function_cache_path,
+        cache_candidates=tuple(cache_candidates),
+        cache_hit=cache_hit,
+        cache_hit_tier=cache_hit_tier,
+    )
+
+
 def _initialize_runtime_artifact_state(
     *,
     is_rust_transpile: bool,
@@ -15381,59 +15493,30 @@ def build(
 
     if diagnostics_enabled:
         phase_starts["cache_lookup"] = time.perf_counter()
-    if cache:
-        cache_variant_parts = [
-            f"profile={profile}",
-            f"runtime_cargo={runtime_cargo_profile}",
-            f"backend_cargo={backend_cargo_profile}",
-            f"emit={emit_mode}",
-            f"codegen_env={_backend_codegen_env_digest(is_wasm=is_wasm)}",
-        ]
-        if linked:
-            cache_variant_parts.append("linked=1")
-        cache_variant = ";".join(cache_variant_parts)
-        module_cache_payload, backend_cache_payload = _cache_payloads_for_ir(ir)
-        cache_key = _cache_key(
-            ir,
-            target,
-            target_triple,
-            cache_variant,
-            payload=module_cache_payload,
-        )
-        function_cache_key = _function_cache_key(
-            ir,
-            target,
-            target_triple,
-            cache_variant,
-            payload=backend_cache_payload,
-        )
-        cache_root = _resolve_cache_root(project_root, cache_dir)
-        try:
-            cache_root.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            warnings.append(f"Cache disabled: {exc}")
-            cache = False
-        else:
-            ext = "wasm" if is_wasm else "o"
-            cache_path = cache_root / f"{cache_key}.{ext}"
-
-            if function_cache_key and function_cache_key != cache_key:
-                function_cache_path = cache_root / f"{function_cache_key}.{ext}"
-
-            if cache_path is not None:
-                cache_candidates.append(("module", cache_path))
-            if function_cache_path is not None and function_cache_path != cache_path:
-                cache_candidates.append(("function", function_cache_path))
-            cache_hit, cache_hit_tier = _try_cached_backend_candidates(
-                project_root=project_root,
-                cache_candidates=cache_candidates,
-                output_artifact=output_artifact,
-                is_wasm=is_wasm,
-                cache_key=cache_key,
-                function_cache_key=function_cache_key,
-                cache_path=cache_path,
-                warnings=warnings,
-            )
+    cache_setup = _prepare_backend_cache_setup(
+        cache_enabled=cache,
+        ir=ir,
+        target=target,
+        target_triple=target_triple,
+        profile=profile,
+        runtime_cargo_profile=runtime_cargo_profile,
+        backend_cargo_profile=backend_cargo_profile,
+        emit_mode=emit_mode,
+        is_wasm=is_wasm,
+        linked=linked,
+        project_root=project_root,
+        cache_dir=cache_dir,
+        output_artifact=output_artifact,
+        warnings=warnings,
+    )
+    cache = cache_setup.cache_enabled
+    cache_key = cache_setup.cache_key
+    function_cache_key = cache_setup.function_cache_key
+    cache_path = cache_setup.cache_path
+    function_cache_path = cache_setup.function_cache_path
+    cache_candidates = list(cache_setup.cache_candidates)
+    cache_hit = cache_setup.cache_hit
+    cache_hit_tier = cache_setup.cache_hit_tier
 
     if (verbose or cache_report) and not json_output:
         if not cache:
@@ -15454,7 +15537,7 @@ def build(
         if not cache_hit and cache:
             cache_hit, cache_hit_tier = _try_cached_backend_candidates(
                 project_root=project_root,
-                cache_candidates=cache_candidates,
+                cache_candidates=cache_setup.cache_candidates,
                 output_artifact=output_artifact,
                 is_wasm=is_wasm,
                 cache_key=cache_key,
