@@ -717,6 +717,15 @@ class _EntryFrontendLoweringContext:
     frontend_phase_timeout: float | None
 
 
+@dataclass
+class _RuntimeArtifactState:
+    runtime_lib: Path | None = None
+    runtime_wasm: Path | None = None
+    runtime_reloc_wasm: Path | None = None
+    runtime_wasm_ready: bool = False
+    runtime_reloc_wasm_ready: bool = False
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -9898,6 +9907,88 @@ def _write_emitted_ir(emit_ir_path: Path | None, ir: Mapping[str, Any]) -> str |
     return None
 
 
+def _initialize_runtime_artifact_state(
+    *,
+    is_rust_transpile: bool,
+    is_wasm: bool,
+    emit_mode: str,
+    molt_root: Path,
+    runtime_cargo_profile: str,
+    target_triple: str | None,
+) -> _RuntimeArtifactState:
+    state = _RuntimeArtifactState()
+    if is_rust_transpile:
+        return state
+    if is_wasm:
+        state.runtime_wasm = _runtime_wasm_artifact_path(molt_root, "molt_runtime.wasm")
+        state.runtime_reloc_wasm = _runtime_wasm_artifact_path(
+            molt_root, "molt_runtime_reloc.wasm"
+        )
+        return state
+    if emit_mode == "bin":
+        state.runtime_lib = _runtime_lib_path(
+            molt_root,
+            runtime_cargo_profile,
+            target_triple,
+        )
+    return state
+
+
+def _ensure_runtime_lib_ready(
+    runtime_state: _RuntimeArtifactState,
+    *,
+    target_triple: str | None,
+    json_output: bool,
+    runtime_cargo_profile: str,
+    molt_root: Path,
+    cargo_timeout: float | None,
+) -> bool:
+    runtime_lib = runtime_state.runtime_lib
+    if runtime_lib is None:
+        return True
+    return _ensure_runtime_lib(
+        runtime_lib,
+        target_triple,
+        json_output,
+        runtime_cargo_profile,
+        molt_root,
+        cargo_timeout,
+    )
+
+
+def _ensure_runtime_wasm_artifact(
+    runtime_state: _RuntimeArtifactState,
+    *,
+    reloc: bool,
+    json_output: bool,
+    cargo_profile: str,
+    cargo_timeout: float | None,
+    project_root: Path,
+) -> bool:
+    runtime_path = (
+        runtime_state.runtime_reloc_wasm if reloc else runtime_state.runtime_wasm
+    )
+    ready = (
+        runtime_state.runtime_reloc_wasm_ready if reloc else runtime_state.runtime_wasm_ready
+    )
+    if runtime_path is None or ready:
+        return True
+    if not _ensure_runtime_wasm(
+        runtime_path,
+        reloc=reloc,
+        json_output=json_output,
+        cargo_profile=cargo_profile,
+        cargo_timeout=cargo_timeout,
+        project_root=project_root,
+    ):
+        return False
+    if reloc:
+        runtime_state.runtime_reloc_wasm_ready = True
+    else:
+        runtime_state.runtime_wasm_ready = True
+    return True
+
+
 def _run_frontend_parallel_enabled_layers(
     module_layers: Sequence[Sequence[str]],
     *,
@@ -14402,65 +14493,46 @@ def build(
             backend_ir_bytes = _backend_ir_bytes(ir)
         return backend_ir_bytes
 
-    runtime_lib: Path | None = None
-    runtime_wasm: Path | None = None
-    runtime_reloc_wasm: Path | None = None
-    runtime_wasm_ready = False
-    runtime_reloc_wasm_ready = False
-    if is_rust_transpile:
-        pass  # Transpiler targets do not need a runtime library.
-    elif is_wasm:
-        runtime_wasm = _runtime_wasm_artifact_path(molt_root, "molt_runtime.wasm")
-        runtime_reloc_wasm = _runtime_wasm_artifact_path(
-            molt_root, "molt_runtime_reloc.wasm"
-        )
-    elif emit_mode == "bin":
-        runtime_lib = _runtime_lib_path(
-            molt_root,
-            runtime_cargo_profile,
-            target_triple,
-        )
-        if not _ensure_runtime_lib(
-            runtime_lib,
-            target_triple,
-            json_output,
-            runtime_cargo_profile,
-            molt_root,
-            cargo_timeout,
-        ):
+    runtime_state = _initialize_runtime_artifact_state(
+        is_rust_transpile=is_rust_transpile,
+        is_wasm=is_wasm,
+        emit_mode=emit_mode,
+        molt_root=molt_root,
+        runtime_cargo_profile=runtime_cargo_profile,
+        target_triple=target_triple,
+    )
+    runtime_lib = runtime_state.runtime_lib
+    runtime_wasm = runtime_state.runtime_wasm
+    runtime_reloc_wasm = runtime_state.runtime_reloc_wasm
+    if runtime_lib is not None and not _ensure_runtime_lib_ready(
+        runtime_state,
+        target_triple=target_triple,
+        json_output=json_output,
+        runtime_cargo_profile=runtime_cargo_profile,
+        molt_root=molt_root,
+        cargo_timeout=cargo_timeout,
+    ):
             return _fail("Runtime build failed", json_output, command="build")
 
     def ensure_runtime_wasm_shared() -> bool:
-        nonlocal runtime_wasm_ready
-        if runtime_wasm is None or runtime_wasm_ready:
-            return True
-        if not _ensure_runtime_wasm(
-            runtime_wasm,
+        return _ensure_runtime_wasm_artifact(
+            runtime_state,
             reloc=False,
             json_output=json_output,
             cargo_profile=runtime_cargo_profile,
             cargo_timeout=cargo_timeout,
             project_root=molt_root,
-        ):
-            return False
-        runtime_wasm_ready = True
-        return True
+        )
 
     def ensure_runtime_wasm_reloc() -> bool:
-        nonlocal runtime_reloc_wasm_ready
-        if runtime_reloc_wasm is None or runtime_reloc_wasm_ready:
-            return True
-        if not _ensure_runtime_wasm(
-            runtime_reloc_wasm,
+        return _ensure_runtime_wasm_artifact(
+            runtime_state,
             reloc=True,
             json_output=json_output,
             cargo_profile=runtime_cargo_profile,
             cargo_timeout=cargo_timeout,
             project_root=molt_root,
-        ):
-            return False
-        runtime_reloc_wasm_ready = True
-        return True
+        )
 
     cache_hit = False
     cache_hit_tier: str | None = None
