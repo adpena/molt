@@ -786,6 +786,14 @@ class _SupportModuleAugmentation:
     generated_module_source_paths: dict[str, str]
 
 
+@dataclass(frozen=True)
+class _ModuleGraphAugmentation:
+    spawn_enabled: bool
+    entry_module_import_alias: str | None
+    explicit_imports: set[str]
+    stub_parents: set[str]
+
+
 class _ModuleLowerError(RuntimeError):
     def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
@@ -11094,6 +11102,136 @@ def _augment_support_modules(
     )
 
 
+def _augment_module_graph_for_entry_and_runtime(
+    *,
+    source_path: Path,
+    entry_module: str,
+    module_roots: Sequence[Path],
+    stdlib_root: Path,
+    roots: Sequence[Path],
+    project_root: Path | None,
+    stdlib_allowlist: set[str],
+    entry_tree: ast.AST,
+    module_resolution_cache: "_ModuleResolutionCache",
+    module_graph: MutableMapping[str, Path],
+    module_reasons: MutableMapping[str, set[str]],
+    diagnostics_enabled: bool,
+    json_output: bool,
+    target: str,
+) -> tuple[_ModuleGraphAugmentation, dict[str, Any] | None]:
+    entry_module_import_alias: str | None = None
+    source_parent = source_path.parent.resolve()
+    alias_roots = [root for root in module_roots if root != source_parent]
+    if alias_roots:
+        alias_name = _module_name_from_path(source_path, alias_roots, stdlib_root)
+        if alias_name and alias_name != entry_module:
+            entry_module_import_alias = alias_name
+    entry_imports = set(
+        _collect_imports(entry_tree, entry_module, source_path.name == "__init__.py")
+    )
+    explicit_imports = set(entry_imports)
+    stub_skip_modules = STUB_MODULES - entry_imports
+    stub_parents = STUB_PARENT_MODULES - entry_imports
+    if (
+        entry_module_import_alias
+        and entry_module_import_alias not in module_graph
+        and source_path is not None
+    ):
+        module_graph[entry_module_import_alias] = source_path
+        if diagnostics_enabled:
+            _record_module_reason(
+                module_reasons, entry_module_import_alias, "entry_alias"
+            )
+    core_paths = [
+        path
+        for name in (
+            "builtins",
+            "sys",
+            "types",
+            "importlib",
+            "importlib.util",
+            "importlib.machinery",
+        )
+        if (path := module_graph.get(name)) is not None
+    ]
+    for core_path in core_paths:
+        core_graph, _ = _discover_module_graph(
+            core_path,
+            roots,
+            module_roots,
+            stdlib_root,
+            project_root,
+            stdlib_allowlist,
+            skip_modules=stub_skip_modules,
+            stub_parents=stub_parents,
+            nested_stdlib_scan_modules=set(),
+            resolver_cache=module_resolution_cache,
+        )
+        if diagnostics_enabled:
+            _merge_module_graph_with_reason(
+                module_graph,
+                core_graph,
+                module_reasons,
+                "core_closure",
+            )
+        else:
+            for name, path in core_graph.items():
+                module_graph.setdefault(name, path)
+    spawn_enabled = False
+    spawn_required = target != "wasm" and _requires_spawn_entry_override(
+        module_graph, explicit_imports
+    )
+    if spawn_required:
+        spawn_path = module_resolution_cache.resolve_module(
+            ENTRY_OVERRIDE_SPAWN,
+            roots,
+            stdlib_root,
+            stdlib_allowlist,
+        )
+        if spawn_path is None:
+            return _ModuleGraphAugmentation(
+                spawn_enabled=False,
+                entry_module_import_alias=entry_module_import_alias,
+                explicit_imports=explicit_imports,
+                stub_parents=stub_parents,
+            ), _fail(
+                (
+                    f"Missing required stdlib module: {ENTRY_OVERRIDE_SPAWN}. "
+                    "multiprocessing spawn entry override cannot be lowered."
+                ),
+                json_output,
+                command="build",
+            )
+        spawn_enabled = True
+        spawn_graph, _ = _discover_module_graph(
+            spawn_path,
+            roots,
+            module_roots,
+            stdlib_root,
+            project_root,
+            stdlib_allowlist,
+            skip_modules=stub_skip_modules,
+            stub_parents=stub_parents,
+            resolver_cache=module_resolution_cache,
+        )
+        if diagnostics_enabled:
+            _merge_module_graph_with_reason(
+                module_graph,
+                spawn_graph,
+                module_reasons,
+                "spawn_closure",
+            )
+        else:
+            for name, path in spawn_graph.items():
+                module_graph.setdefault(name, path)
+    return _ModuleGraphAugmentation(
+        spawn_enabled=spawn_enabled,
+        entry_module_import_alias=entry_module_import_alias,
+        explicit_imports=explicit_imports,
+        stub_parents=stub_parents,
+    ), None
+
+
 def _prepare_backend_cache_setup(
     *,
     cache_enabled: bool,
@@ -14808,7 +14946,6 @@ def build(
         module_roots.extend(_vendor_roots(root))
     source_path: Path | None = None
     entry_module: str | None = None
-    entry_module_import_alias: str | None = None
     if file_path:
         source_path = Path(file_path).resolve()
         if not source_path.exists():
@@ -14900,18 +15037,6 @@ def build(
                 module_roots.append(root)
                 entry_module = _module_name_from_path(source_path, [root], stdlib_root)
     module_roots = list(dict.fromkeys(root.resolve() for root in module_roots))
-    if source_path is not None and entry_module is not None:
-        source_parent = source_path.parent.resolve()
-        alias_roots = [root for root in module_roots if root != source_parent]
-        if alias_roots:
-            alias_name = _module_name_from_path(source_path, alias_roots, stdlib_root)
-            if alias_name and alias_name != entry_module:
-                entry_module_import_alias = alias_name
-    entry_imports = set(
-        _collect_imports(entry_tree, entry_module, source_path.name == "__init__.py")
-    )
-    stub_skip_modules = STUB_MODULES - entry_imports
-    stub_parents = STUB_PARENT_MODULES - entry_imports
     stdlib_allowlist = _stdlib_allowlist()
     roots = module_roots + [stdlib_root]
     module_resolution_cache = _ModuleResolutionCache()
@@ -14922,23 +15047,13 @@ def build(
         stdlib_root,
         project_root,
         stdlib_allowlist,
-        skip_modules=stub_skip_modules,
-        stub_parents=stub_parents,
+        skip_modules=STUB_MODULES,
+        stub_parents=STUB_PARENT_MODULES,
         resolver_cache=module_resolution_cache,
     )
     if diagnostics_enabled:
         for name in module_graph:
             _record_module_reason(module_reasons, name, "entry_closure")
-    if (
-        entry_module_import_alias
-        and entry_module_import_alias not in module_graph
-        and source_path is not None
-    ):
-        module_graph[entry_module_import_alias] = source_path
-        if diagnostics_enabled:
-            _record_module_reason(
-                module_reasons, entry_module_import_alias, "entry_alias"
-            )
     package_before = set(module_graph)
     _collect_package_parents(
         module_graph,
@@ -14968,83 +15083,27 @@ def build(
     )
     if intrinsic_enforced is not None:
         return intrinsic_enforced
-    core_paths = [
-        path
-        for name in (
-            "builtins",
-            "sys",
-            "types",
-            "importlib",
-            "importlib.util",
-            "importlib.machinery",
-        )
-        if (path := module_graph.get(name)) is not None
-    ]
-    for core_path in core_paths:
-        core_graph, _ = _discover_module_graph(
-            core_path,
-            roots,
-            module_roots,
-            stdlib_root,
-            project_root,
-            stdlib_allowlist,
-            skip_modules=stub_skip_modules,
-            stub_parents=stub_parents,
-            nested_stdlib_scan_modules=set(),
-            resolver_cache=module_resolution_cache,
-        )
-        if diagnostics_enabled:
-            _merge_module_graph_with_reason(
-                module_graph,
-                core_graph,
-                module_reasons,
-                "core_closure",
-            )
-        else:
-            for name, path in core_graph.items():
-                module_graph.setdefault(name, path)
-    spawn_enabled = False
-    spawn_required = target != "wasm" and _requires_spawn_entry_override(
-        module_graph, explicit_imports
+    augmentation, augmentation_error = _augment_module_graph_for_entry_and_runtime(
+        source_path=source_path,
+        entry_module=entry_module,
+        module_roots=module_roots,
+        stdlib_root=stdlib_root,
+        roots=roots,
+        project_root=project_root,
+        stdlib_allowlist=stdlib_allowlist,
+        entry_tree=entry_tree,
+        module_resolution_cache=module_resolution_cache,
+        module_graph=module_graph,
+        module_reasons=module_reasons,
+        diagnostics_enabled=diagnostics_enabled,
+        json_output=json_output,
+        target=target,
     )
-    if spawn_required:
-        spawn_path = module_resolution_cache.resolve_module(
-            ENTRY_OVERRIDE_SPAWN,
-            roots,
-            stdlib_root,
-            stdlib_allowlist,
-        )
-        if spawn_path is None:
-            return _fail(
-                (
-                    f"Missing required stdlib module: {ENTRY_OVERRIDE_SPAWN}. "
-                    "multiprocessing spawn entry override cannot be lowered."
-                ),
-                json_output,
-                command="build",
-            )
-        spawn_enabled = True
-        spawn_graph, _ = _discover_module_graph(
-            spawn_path,
-            roots,
-            module_roots,
-            stdlib_root,
-            project_root,
-            stdlib_allowlist,
-            skip_modules=stub_skip_modules,
-            stub_parents=stub_parents,
-            resolver_cache=module_resolution_cache,
-        )
-        if diagnostics_enabled:
-            _merge_module_graph_with_reason(
-                module_graph,
-                spawn_graph,
-                module_reasons,
-                "spawn_closure",
-            )
-        else:
-            for name, path in spawn_graph.items():
-                module_graph.setdefault(name, path)
+    if augmentation_error is not None:
+        return augmentation_error
+    spawn_enabled = augmentation.spawn_enabled
+    explicit_imports = augmentation.explicit_imports
+    stub_parents = augmentation.stub_parents
     if verbose and not json_output:
         print(f"Project root: {project_root}")
         print(f"Module roots: {', '.join(str(root) for root in module_roots)}")
