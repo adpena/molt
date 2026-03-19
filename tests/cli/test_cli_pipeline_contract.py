@@ -52,44 +52,8 @@ def test_backend_build_context_owns_backend_finalize_surfaces() -> None:
         assert name in field_names
 
 
-def test_backend_pipeline_owns_result_emission_surfaces() -> None:
-    field_names = [field.name for field in fields(cli._PreparedBackendPipeline)]
-    for name in (
-        "runtime_lib",
-        "runtime_reloc_wasm",
-        "ensure_runtime_wasm_reloc",
-        "cache",
-        "cache_hit",
-        "cache_key",
-        "function_cache_key",
-        "cache_path",
-        "function_cache_path",
-        "cache_hit_tier",
-        "backend_daemon_cached",
-        "backend_daemon_cache_tier",
-        "backend_daemon_config_digest",
-        "target",
-        "target_triple",
-        "source_path",
-        "deterministic",
-        "trusted",
-        "capabilities_list",
-        "capability_profiles",
-        "capabilities_source",
-        "sysroot_path",
-        "emit_mode",
-        "profile",
-        "native_arch_perf_enabled",
-        "pgo_profile_payload",
-        "runtime_feedback_payload",
-        "emit_ir_path",
-        "warnings",
-        "json_output",
-        "resolved_diagnostics_verbosity",
-        "diagnostics_payload",
-        "diagnostics_path",
-    ):
-        assert name in field_names
+def test_backend_pipeline_transport_removed() -> None:
+    assert not hasattr(cli, "_PreparedBackendPipeline")
 
 
 def test_frontend_pipeline_transport_removed() -> None:
