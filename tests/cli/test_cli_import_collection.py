@@ -1243,6 +1243,31 @@ def test_resolve_cache_root_is_cached(
     assert info.currsize >= 1
 
 
+def test_resolve_out_dir_is_cached(tmp_path: Path) -> None:
+    cli._resolve_out_dir_cached.cache_clear()
+
+    first = cli._resolve_out_dir(tmp_path, "dist")
+    second = cli._resolve_out_dir(tmp_path, "dist")
+
+    info = cli._resolve_out_dir_cached.cache_info()
+    assert first == second == (tmp_path / "dist")
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
+def test_resolve_sysroot_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cli._resolve_sysroot_cached.cache_clear()
+    monkeypatch.setenv("MOLT_SYSROOT", "sdk-root")
+
+    first = cli._resolve_sysroot(tmp_path, None)
+    second = cli._resolve_sysroot(tmp_path, None)
+
+    info = cli._resolve_sysroot_cached.cache_info()
+    assert first == second == (tmp_path / "sdk-root")
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
 def test_runtime_lib_path_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
