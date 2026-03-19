@@ -848,6 +848,31 @@ class _PreparedBuildConfig:
 
 
 @dataclass(frozen=True)
+class _PreparedBuildPreamble:
+    diagnostics_path_spec: str
+    diagnostics_enabled: bool
+    resolved_diagnostics_verbosity: str
+    allocation_diagnostics_enabled: bool
+    frontend_timing_raw: str
+    frontend_timing_enabled: bool
+    frontend_timing_threshold: float
+    frontend_module_timings: list[dict[str, Any]]
+    midend_policy_outcomes_by_function: dict[str, dict[str, Any]]
+    midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]]
+    frontend_parallel_details: dict[str, Any]
+    diagnostics_start: float
+    phase_starts: dict[str, float]
+    backend_daemon_health: dict[str, Any] | None
+    backend_daemon_cached: bool | None
+    backend_daemon_cache_tier: str | None
+    backend_daemon_config_digest: str | None
+    module_reasons: dict[str, set[str]]
+    stdlib_root: Path
+    warnings: list[str]
+    native_arch_perf_enabled: bool
+
+
+@dataclass(frozen=True)
 class _PreparedFrontendAnalysis:
     module_graph_metadata: _ModuleGraphMetadata
     module_deps: dict[str, set[str]]
@@ -2911,6 +2936,115 @@ def _prepare_build_config(
         capabilities_list=capabilities_list,
         capability_profiles=capability_profiles,
         capabilities_source=capabilities_source,
+    ), None
+
+
+def _prepare_build_preamble(
+    *,
+    diagnostics: bool | None,
+    diagnostics_file: str | None,
+    diagnostics_verbosity: str | None,
+    json_output: bool,
+    target: Target,
+) -> tuple[_PreparedBuildPreamble | None, dict[str, Any] | None]:
+    diagnostics_path_spec = (
+        diagnostics_file.strip() if isinstance(diagnostics_file, str) else ""
+    )
+    diagnostics_enabled = (
+        _build_diagnostics_enabled() if diagnostics is None else diagnostics
+    )
+    if diagnostics is False and diagnostics_path_spec:
+        return None, _fail(
+            "--diagnostics-file requires diagnostics to be enabled.",
+            json_output,
+            command="build",
+        )
+    if diagnostics_path_spec:
+        diagnostics_enabled = True
+    elif diagnostics_enabled:
+        diagnostics_path_spec = os.environ.get("MOLT_BUILD_DIAGNOSTICS_FILE", "").strip()
+    resolved_diagnostics_verbosity = _resolve_build_diagnostics_verbosity(
+        diagnostics_verbosity or os.environ.get("MOLT_BUILD_DIAGNOSTICS_VERBOSITY")
+    )
+    allocation_diagnostics_enabled = _build_allocation_diagnostics_enabled()
+    if allocation_diagnostics_enabled and not tracemalloc.is_tracing():
+        tracemalloc.start(25)
+    frontend_timing_raw = os.environ.get("MOLT_FRONTEND_TIMINGS", "").strip()
+    frontend_timing_enabled = diagnostics_enabled or bool(frontend_timing_raw)
+    frontend_timing_threshold = 0.0
+    if frontend_timing_raw and frontend_timing_raw.lower() not in {
+        "1",
+        "true",
+        "yes",
+        "all",
+    }:
+        try:
+            frontend_timing_threshold = max(0.0, float(frontend_timing_raw))
+        except ValueError:
+            frontend_timing_threshold = 0.0
+    frontend_module_timings: list[dict[str, Any]] = []
+    midend_policy_outcomes_by_function: dict[str, dict[str, Any]] = {}
+    midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]] = {}
+    frontend_parallel_details: dict[str, Any] = {
+        "enabled": False,
+        "workers": 0,
+        "mode": "serial",
+        "reason": "disabled",
+        "policy": {},
+        "layers": [],
+        "worker_timings": [],
+        "worker_summary": {
+            "count": 0,
+            "queue_ms_total": 0.0,
+            "queue_ms_max": 0.0,
+            "wait_ms_total": 0.0,
+            "wait_ms_max": 0.0,
+            "exec_ms_total": 0.0,
+            "exec_ms_max": 0.0,
+        },
+    }
+    diagnostics_start = time.perf_counter()
+    phase_starts: dict[str, float] = {}
+    backend_daemon_health: dict[str, Any] | None = None
+    backend_daemon_cached: bool | None = None
+    backend_daemon_cache_tier: str | None = None
+    backend_daemon_config_digest: str | None = None
+    module_reasons: dict[str, set[str]] = {}
+    if diagnostics_enabled:
+        phase_starts["resolve_entry"] = diagnostics_start
+    stdlib_root = _stdlib_root_path()
+    warnings: list[str] = []
+    native_arch_perf_enabled = False
+    if _native_arch_perf_requested():
+        if target != "native":
+            warnings.append(
+                "Native-arch perf profile requested, but non-native target selected; ignoring."
+            )
+        else:
+            _enable_native_arch_rustflags()
+            native_arch_perf_enabled = True
+    return _PreparedBuildPreamble(
+        diagnostics_path_spec=diagnostics_path_spec,
+        diagnostics_enabled=diagnostics_enabled,
+        resolved_diagnostics_verbosity=resolved_diagnostics_verbosity,
+        allocation_diagnostics_enabled=allocation_diagnostics_enabled,
+        frontend_timing_raw=frontend_timing_raw,
+        frontend_timing_enabled=frontend_timing_enabled,
+        frontend_timing_threshold=frontend_timing_threshold,
+        frontend_module_timings=frontend_module_timings,
+        midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
+        midend_pass_stats_by_function=midend_pass_stats_by_function,
+        frontend_parallel_details=frontend_parallel_details,
+        diagnostics_start=diagnostics_start,
+        phase_starts=phase_starts,
+        backend_daemon_health=backend_daemon_health,
+        backend_daemon_cached=backend_daemon_cached,
+        backend_daemon_cache_tier=backend_daemon_cache_tier,
+        backend_daemon_config_digest=backend_daemon_config_digest,
+        module_reasons=module_reasons,
+        stdlib_root=stdlib_root,
+        warnings=warnings,
+        native_arch_perf_enabled=native_arch_perf_enabled,
     ), None
 
 
@@ -16981,86 +17115,47 @@ def build(
         )
     if not file_path and not module:
         return _fail("Missing entry file or module.", json_output, command="build")
-
-    diagnostics_path_spec = (
-        diagnostics_file.strip() if isinstance(diagnostics_file, str) else ""
+    prepared_build_preamble, prepared_build_preamble_error = _prepare_build_preamble(
+        diagnostics=diagnostics,
+        diagnostics_file=diagnostics_file,
+        diagnostics_verbosity=diagnostics_verbosity,
+        json_output=json_output,
+        target=target,
     )
-    diagnostics_enabled = (
-        _build_diagnostics_enabled() if diagnostics is None else diagnostics
+    if prepared_build_preamble_error is not None:
+        return prepared_build_preamble_error
+    assert prepared_build_preamble is not None
+    diagnostics_path_spec = prepared_build_preamble.diagnostics_path_spec
+    diagnostics_enabled = prepared_build_preamble.diagnostics_enabled
+    resolved_diagnostics_verbosity = (
+        prepared_build_preamble.resolved_diagnostics_verbosity
     )
-    if diagnostics is False and diagnostics_path_spec:
-        return _fail(
-            "--diagnostics-file requires diagnostics to be enabled.",
-            json_output,
-            command="build",
-        )
-    if diagnostics_path_spec:
-        diagnostics_enabled = True
-    elif diagnostics_enabled:
-        diagnostics_path_spec = os.environ.get(
-            "MOLT_BUILD_DIAGNOSTICS_FILE", ""
-        ).strip()
-    resolved_diagnostics_verbosity = _resolve_build_diagnostics_verbosity(
-        diagnostics_verbosity or os.environ.get("MOLT_BUILD_DIAGNOSTICS_VERBOSITY")
+    allocation_diagnostics_enabled = (
+        prepared_build_preamble.allocation_diagnostics_enabled
     )
-    allocation_diagnostics_enabled = _build_allocation_diagnostics_enabled()
-    if allocation_diagnostics_enabled and not tracemalloc.is_tracing():
-        tracemalloc.start(25)
-    frontend_timing_raw = os.environ.get("MOLT_FRONTEND_TIMINGS", "").strip()
-    frontend_timing_enabled = diagnostics_enabled or bool(frontend_timing_raw)
-    frontend_timing_threshold = 0.0
-    if frontend_timing_raw and frontend_timing_raw.lower() not in {
-        "1",
-        "true",
-        "yes",
-        "all",
-    }:
-        try:
-            frontend_timing_threshold = max(0.0, float(frontend_timing_raw))
-        except ValueError:
-            frontend_timing_threshold = 0.0
-    frontend_module_timings: list[dict[str, Any]] = []
-    midend_policy_outcomes_by_function: dict[str, dict[str, Any]] = {}
-    midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]] = {}
-    frontend_parallel_details: dict[str, Any] = {
-        "enabled": False,
-        "workers": 0,
-        "mode": "serial",
-        "reason": "disabled",
-        "policy": {},
-        "layers": [],
-        "worker_timings": [],
-        "worker_summary": {
-            "count": 0,
-            "queue_ms_total": 0.0,
-            "queue_ms_max": 0.0,
-            "wait_ms_total": 0.0,
-            "wait_ms_max": 0.0,
-            "exec_ms_total": 0.0,
-            "exec_ms_max": 0.0,
-        },
-    }
-    diagnostics_start = time.perf_counter()
-    phase_starts: dict[str, float] = {}
-    backend_daemon_health: dict[str, Any] | None = None
-    backend_daemon_cached: bool | None = None
-    backend_daemon_cache_tier: str | None = None
-    backend_daemon_config_digest: str | None = None
-    module_reasons: dict[str, set[str]] = {}
-    if diagnostics_enabled:
-        phase_starts["resolve_entry"] = diagnostics_start
-
-    stdlib_root = _stdlib_root_path()
-    warnings: list[str] = []
-    native_arch_perf_enabled = False
-    if _native_arch_perf_requested():
-        if target != "native":
-            warnings.append(
-                "Native-arch perf profile requested, but non-native target selected; ignoring."
-            )
-        else:
-            _enable_native_arch_rustflags()
-            native_arch_perf_enabled = True
+    frontend_timing_raw = prepared_build_preamble.frontend_timing_raw
+    frontend_timing_enabled = prepared_build_preamble.frontend_timing_enabled
+    frontend_timing_threshold = prepared_build_preamble.frontend_timing_threshold
+    frontend_module_timings = prepared_build_preamble.frontend_module_timings
+    midend_policy_outcomes_by_function = (
+        prepared_build_preamble.midend_policy_outcomes_by_function
+    )
+    midend_pass_stats_by_function = (
+        prepared_build_preamble.midend_pass_stats_by_function
+    )
+    frontend_parallel_details = prepared_build_preamble.frontend_parallel_details
+    diagnostics_start = prepared_build_preamble.diagnostics_start
+    phase_starts = prepared_build_preamble.phase_starts
+    backend_daemon_health = prepared_build_preamble.backend_daemon_health
+    backend_daemon_cached = prepared_build_preamble.backend_daemon_cached
+    backend_daemon_cache_tier = prepared_build_preamble.backend_daemon_cache_tier
+    backend_daemon_config_digest = (
+        prepared_build_preamble.backend_daemon_config_digest
+    )
+    module_reasons = prepared_build_preamble.module_reasons
+    stdlib_root = prepared_build_preamble.stdlib_root
+    warnings = prepared_build_preamble.warnings
+    native_arch_perf_enabled = prepared_build_preamble.native_arch_perf_enabled
     cwd_root = _find_project_root(Path.cwd())
     project_root = (
         _find_project_root(Path(file_path).resolve()) if file_path else cwd_root
