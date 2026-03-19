@@ -611,11 +611,11 @@ class HeaderRegistry:
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+_require_intrinsic("molt_capabilities_has")
 _MOLT_EMAIL_HEADERREGISTRY_VALUE = _require_intrinsic(
-    "molt_email_headerregistry_value", globals()
+    "molt_email_headerregistry_value"
 )
 _MOLT_EMAIL_ADDRESS_ADDR_SPEC = _require_intrinsic(
-    "molt_email_address_addr_spec", globals()
+    "molt_email_address_addr_spec"
 )
-_MOLT_EMAIL_ADDRESS_FORMAT = _require_intrinsic("molt_email_address_format", globals())
+_MOLT_EMAIL_ADDRESS_FORMAT = _require_intrinsic("molt_email_address_format")
