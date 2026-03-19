@@ -7672,8 +7672,22 @@ def _backend_daemon_enabled() -> bool:
     )
 
 
-def _backend_daemon_start_timeout() -> None:
-    return None
+@functools.lru_cache(maxsize=32)
+def _backend_daemon_start_timeout_cached(raw: str) -> float | None:
+    value = raw.strip()
+    if not value:
+        return 15.0
+    try:
+        parsed = float(value)
+    except ValueError:
+        return 15.0
+    return parsed if parsed > 0 else None
+
+
+def _backend_daemon_start_timeout() -> float | None:
+    return _backend_daemon_start_timeout_cached(
+        os.environ.get("MOLT_BACKEND_DAEMON_START_TIMEOUT", "")
+    )
 
 
 def _backend_daemon_socket_dir(project_root: Path) -> Path:

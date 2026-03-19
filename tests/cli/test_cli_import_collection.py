@@ -1650,6 +1650,78 @@ def test_load_module_analysis_reuses_persisted_cache(
     assert cached_path_stat is not None
 
 
+def test_load_module_analysis_persists_bytes_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "pkg.py"
+    module_path.write_text("def f(blob=b'abc'):\n    return blob\n")
+    source = cli._read_module_source(module_path)
+    cache = cli._ModuleResolutionCache()
+
+    (
+        tree,
+        imports,
+        func_defaults,
+        cached_source,
+        cache_hit,
+        interface_changed,
+        path_stat,
+    ) = cli._load_module_analysis(
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        include_nested=True,
+        source=source,
+        logical_source_path=str(module_path),
+        resolution_cache=cache,
+        project_root=tmp_path,
+    )
+
+    assert tree is not None
+    assert imports == ()
+    assert func_defaults == {
+        "f": {
+            "params": 1,
+            "defaults": [{"const": True, "value": b"abc"}],
+        }
+    }
+    assert cached_source == source
+    assert cache_hit is False
+    assert interface_changed is True
+    assert path_stat is not None
+
+    def fail_parse(*args: object, **kwargs: object) -> ast.AST:
+        raise AssertionError("unexpected parse")
+
+    monkeypatch.setattr(cache, "parse_module_ast", fail_parse)
+    (
+        cached_tree,
+        cached_imports,
+        cached_defaults,
+        cached_source,
+        cache_hit,
+        interface_changed,
+        cached_path_stat,
+    ) = cli._load_module_analysis(
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        include_nested=True,
+        source=None,
+        logical_source_path=str(module_path),
+        resolution_cache=cache,
+        project_root=tmp_path,
+    )
+
+    assert cached_tree is None
+    assert cached_imports == ()
+    assert cached_defaults == func_defaults
+    assert cached_source is None
+    assert cache_hit is True
+    assert interface_changed is False
+    assert cached_path_stat is not None
+
+
 def test_load_module_analysis_reuses_persisted_module_analysis_imports(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4460,7 +4532,24 @@ def test_backend_daemon_request_payload_bytes_is_unbounded() -> None:
     assert err is None
 
 
-def test_backend_daemon_start_timeout_is_unbounded() -> None:
+def test_backend_daemon_start_timeout_defaults_to_finite_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MOLT_BACKEND_DAEMON_START_TIMEOUT", raising=False)
+    assert cli._backend_daemon_start_timeout() == 15.0
+
+
+def test_backend_daemon_start_timeout_accepts_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_BACKEND_DAEMON_START_TIMEOUT", "2.5")
+    assert cli._backend_daemon_start_timeout() == 2.5
+
+
+def test_backend_daemon_start_timeout_can_be_unbounded_explicitly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_BACKEND_DAEMON_START_TIMEOUT", "0")
     assert cli._backend_daemon_start_timeout() is None
 
 
