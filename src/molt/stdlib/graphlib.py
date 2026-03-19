@@ -6,16 +6,16 @@ from types import GenericAlias
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_GRAPHLIB_NEW = _require_intrinsic("molt_graphlib_new", globals())
-_MOLT_GRAPHLIB_ADD = _require_intrinsic("molt_graphlib_add", globals())
-_MOLT_GRAPHLIB_PREPARE = _require_intrinsic("molt_graphlib_prepare", globals())
-_MOLT_GRAPHLIB_GET_READY = _require_intrinsic("molt_graphlib_get_ready", globals())
-_MOLT_GRAPHLIB_IS_ACTIVE = _require_intrinsic("molt_graphlib_is_active", globals())
-_MOLT_GRAPHLIB_DONE = _require_intrinsic("molt_graphlib_done", globals())
+_MOLT_GRAPHLIB_NEW = _require_intrinsic("molt_graphlib_new")
+_MOLT_GRAPHLIB_ADD = _require_intrinsic("molt_graphlib_add")
+_MOLT_GRAPHLIB_PREPARE = _require_intrinsic("molt_graphlib_prepare")
+_MOLT_GRAPHLIB_GET_READY = _require_intrinsic("molt_graphlib_get_ready")
+_MOLT_GRAPHLIB_IS_ACTIVE = _require_intrinsic("molt_graphlib_is_active")
+_MOLT_GRAPHLIB_DONE = _require_intrinsic("molt_graphlib_done")
 _MOLT_GRAPHLIB_STATIC_ORDER = _require_intrinsic(
-    "molt_graphlib_static_order", globals()
+    "molt_graphlib_static_order"
 )
-_MOLT_GRAPHLIB_DROP = _require_intrinsic("molt_graphlib_drop", globals())
+_MOLT_GRAPHLIB_DROP = _require_intrinsic("molt_graphlib_drop")
 
 __all__ = ["TopologicalSorter", "CycleError"]
 

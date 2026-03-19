@@ -13,12 +13,12 @@ __all__ = [
     "yiq_to_rgb",
 ]
 
-_MOLT_RGB_TO_HLS = _require_intrinsic("molt_colorsys_rgb_to_hls", globals())
-_MOLT_HLS_TO_RGB = _require_intrinsic("molt_colorsys_hls_to_rgb", globals())
-_MOLT_RGB_TO_HSV = _require_intrinsic("molt_colorsys_rgb_to_hsv", globals())
-_MOLT_HSV_TO_RGB = _require_intrinsic("molt_colorsys_hsv_to_rgb", globals())
-_MOLT_RGB_TO_YIQ = _require_intrinsic("molt_colorsys_rgb_to_yiq", globals())
-_MOLT_YIQ_TO_RGB = _require_intrinsic("molt_colorsys_yiq_to_rgb", globals())
+_MOLT_RGB_TO_HLS = _require_intrinsic("molt_colorsys_rgb_to_hls")
+_MOLT_HLS_TO_RGB = _require_intrinsic("molt_colorsys_hls_to_rgb")
+_MOLT_RGB_TO_HSV = _require_intrinsic("molt_colorsys_rgb_to_hsv")
+_MOLT_HSV_TO_RGB = _require_intrinsic("molt_colorsys_hsv_to_rgb")
+_MOLT_RGB_TO_YIQ = _require_intrinsic("molt_colorsys_rgb_to_yiq")
+_MOLT_YIQ_TO_RGB = _require_intrinsic("molt_colorsys_yiq_to_rgb")
 
 
 def _require_tuple3_float(out: object, name: str) -> tuple[float, float, float]:

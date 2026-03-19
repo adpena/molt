@@ -8,8 +8,8 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 __all__ = ["gettext", "ngettext"]
 
-_MOLT_GETTEXT_GETTEXT = _require_intrinsic("molt_gettext_gettext", globals())
-_MOLT_GETTEXT_NGETTEXT = _require_intrinsic("molt_gettext_ngettext", globals())
+_MOLT_GETTEXT_GETTEXT = _require_intrinsic("molt_gettext_gettext")
+_MOLT_GETTEXT_NGETTEXT = _require_intrinsic("molt_gettext_ngettext")
 
 
 def gettext(message: object) -> object:
