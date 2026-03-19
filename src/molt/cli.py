@@ -10375,6 +10375,56 @@ def _build_native_link_command(
     return link_cmd, linker_hint, normalized_target
 
 
+def _run_native_link_command(
+    *,
+    link_cmd: Sequence[str],
+    json_output: bool,
+    link_timeout: float | None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        list(link_cmd),
+        capture_output=json_output,
+        text=True,
+        timeout=link_timeout,
+    )
+
+
+def _retry_native_link_without_hint(
+    *,
+    link_cmd: Sequence[str],
+    linker_hint: str | None,
+    json_output: bool,
+    link_timeout: float | None,
+) -> tuple[subprocess.CompletedProcess[str] | None, list[str]]:
+    if linker_hint is None:
+        return None, list(link_cmd)
+    retry_cmd = [arg for arg in link_cmd if arg != f"-fuse-ld={linker_hint}"]
+    if retry_cmd == list(link_cmd):
+        return None, retry_cmd
+    retry_process = _run_native_link_command(
+        link_cmd=retry_cmd,
+        json_output=json_output,
+        link_timeout=link_timeout,
+    )
+    return retry_process, retry_cmd
+
+
+def _darwin_link_validation_failure(
+    *,
+    output_binary: Path,
+    kind: str,
+) -> str | None:
+    if kind == "magic":
+        detail = _darwin_binary_magic_error(output_binary)
+        if detail is None:
+            return None
+        return "Generated binary failed Mach-O header validation.\n" + detail + "\n"
+    detail = _darwin_binary_imports_validation_error(output_binary)
+    if detail is None:
+        return None
+    return "Generated binary failed dyld import validation.\n" + detail + "\n"
+
+
 def _initialize_runtime_artifact_state(
     *,
     is_rust_transpile: bool,
@@ -15687,32 +15737,29 @@ def build(
         if diagnostics_enabled and "link" not in phase_starts:
             phase_starts["link"] = time.perf_counter()
         try:
-            link_process = subprocess.run(
-                link_cmd,
-                capture_output=json_output,
-                text=True,
-                timeout=link_timeout,
+            link_process = _run_native_link_command(
+                link_cmd=link_cmd,
+                json_output=json_output,
+                link_timeout=link_timeout,
             )
         except subprocess.TimeoutExpired:
             return _fail("Linker timed out", json_output, command="build")
 
     if not link_skipped and link_process.returncode != 0 and linker_hint is not None:
-        retry_cmd = [arg for arg in link_cmd if arg != f"-fuse-ld={linker_hint}"]
-        if retry_cmd != link_cmd:
-            try:
-                retry_process = subprocess.run(
-                    retry_cmd,
-                    capture_output=json_output,
-                    text=True,
-                    timeout=link_timeout,
-                )
-            except subprocess.TimeoutExpired:
-                return _fail("Linker timed out", json_output, command="build")
-            if retry_process.returncode == 0:
-                warnings.append(
-                    f"Linker fallback: -fuse-ld={linker_hint} failed; retried default linker."
-                )
-                link_process = retry_process
+        try:
+            retry_process, _ = _retry_native_link_without_hint(
+                link_cmd=link_cmd,
+                linker_hint=linker_hint,
+                json_output=json_output,
+                link_timeout=link_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return _fail("Linker timed out", json_output, command="build")
+        if retry_process is not None and retry_process.returncode == 0:
+            warnings.append(
+                f"Linker fallback: -fuse-ld={linker_hint} failed; retried default linker."
+            )
+            link_process = retry_process
 
     if (
         not link_skipped
@@ -15720,25 +15767,30 @@ def build(
         and sys.platform == "darwin"
         and not target_triple
     ):
-        magic_error = _darwin_binary_magic_error(output_binary)
+        magic_error = _darwin_link_validation_failure(
+            output_binary=output_binary,
+            kind="magic",
+        )
         if (
             magic_error is not None
             and linker_hint is not None
             and any(arg == f"-fuse-ld={linker_hint}" for arg in link_cmd)
         ):
-            retry_cmd = [arg for arg in link_cmd if arg != f"-fuse-ld={linker_hint}"]
-            if retry_cmd != link_cmd:
-                try:
-                    retry_process = subprocess.run(
-                        retry_cmd,
-                        capture_output=json_output,
-                        text=True,
-                        timeout=link_timeout,
-                    )
-                except subprocess.TimeoutExpired:
-                    return _fail("Linker timed out", json_output, command="build")
+            try:
+                retry_process, _ = _retry_native_link_without_hint(
+                    link_cmd=link_cmd,
+                    linker_hint=linker_hint,
+                    json_output=json_output,
+                    link_timeout=link_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                return _fail("Linker timed out", json_output, command="build")
+            if retry_process is not None:
                 if retry_process.returncode == 0:
-                    retry_magic_error = _darwin_binary_magic_error(output_binary)
+                    retry_magic_error = _darwin_link_validation_failure(
+                        output_binary=output_binary,
+                        kind="magic",
+                    )
                     if retry_magic_error is None:
                         warnings.append(
                             "Linker fallback: "
@@ -15755,9 +15807,8 @@ def build(
         if magic_error is not None:
             failure_stderr = (
                 (link_process.stderr or "")
-                + "\nGenerated binary failed Mach-O header validation.\n"
-                + magic_error
                 + "\n"
+                + magic_error
             )
             link_process = subprocess.CompletedProcess(
                 args=link_cmd,
@@ -15772,26 +15823,29 @@ def build(
         and sys.platform == "darwin"
         and not target_triple
     ):
-        dyld_validation_error = _darwin_binary_imports_validation_error(output_binary)
+        dyld_validation_error = _darwin_link_validation_failure(
+            output_binary=output_binary,
+            kind="dyld",
+        )
         if (
             dyld_validation_error is not None
             and linker_hint is not None
             and any(arg == f"-fuse-ld={linker_hint}" for arg in link_cmd)
         ):
-            retry_cmd = [arg for arg in link_cmd if arg != f"-fuse-ld={linker_hint}"]
-            if retry_cmd != link_cmd:
-                try:
-                    retry_process = subprocess.run(
-                        retry_cmd,
-                        capture_output=json_output,
-                        text=True,
-                        timeout=link_timeout,
-                    )
-                except subprocess.TimeoutExpired:
-                    return _fail("Linker timed out", json_output, command="build")
+            try:
+                retry_process, _ = _retry_native_link_without_hint(
+                    link_cmd=link_cmd,
+                    linker_hint=linker_hint,
+                    json_output=json_output,
+                    link_timeout=link_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                return _fail("Linker timed out", json_output, command="build")
+            if retry_process is not None:
                 if retry_process.returncode == 0:
-                    retry_validation_error = _darwin_binary_imports_validation_error(
-                        output_binary
+                    retry_validation_error = _darwin_link_validation_failure(
+                        output_binary=output_binary,
+                        kind="dyld",
                     )
                     if retry_validation_error is None:
                         warnings.append(
@@ -15809,9 +15863,8 @@ def build(
         if dyld_validation_error is not None:
             failure_stderr = (
                 (link_process.stderr or "")
-                + "\nGenerated binary failed dyld import validation.\n"
-                + dyld_validation_error
                 + "\n"
+                + dyld_validation_error
             )
             link_process = subprocess.CompletedProcess(
                 args=link_cmd,
