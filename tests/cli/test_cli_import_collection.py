@@ -2601,12 +2601,7 @@ def test_build_scoped_lowering_inputs_precomputes_scoped_views() -> None:
         }
     )
 
-    (
-        scoped_known_modules_by_module,
-        scoped_known_func_defaults_by_module,
-        scoped_pgo_hot_function_names_by_module,
-        scoped_type_facts_by_module,
-    ) = cli._build_scoped_lowering_inputs(
+    scoped_lowering_inputs = cli._build_scoped_lowering_inputs(
         {"main", "alpha", "unrelated"},
         module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
         module_dep_closures={
@@ -2624,10 +2619,15 @@ def test_build_scoped_lowering_inputs_precomputes_scoped_views() -> None:
         type_facts=type_facts,
     )
 
-    assert scoped_known_modules_by_module["main"] == ("alpha", "main")
-    assert set(scoped_known_func_defaults_by_module["main"]) == {"main", "alpha"}
-    assert scoped_pgo_hot_function_names_by_module["main"] == ("main::hot",)
-    scoped_main_facts = scoped_type_facts_by_module["main"]
+    assert scoped_lowering_inputs.known_modules_by_module["main"] == ("alpha", "main")
+    assert set(scoped_lowering_inputs.known_func_defaults_by_module["main"]) == {
+        "main",
+        "alpha",
+    }
+    assert scoped_lowering_inputs.pgo_hot_function_names_by_module["main"] == (
+        "main::hot",
+    )
+    scoped_main_facts = scoped_lowering_inputs.type_facts_by_module["main"]
     assert isinstance(scoped_main_facts, TypeFacts)
     assert set(scoped_main_facts.modules) == {
         "main",

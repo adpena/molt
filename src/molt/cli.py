@@ -440,6 +440,14 @@ class _PersistedModuleGraphState(NamedTuple):
     dirty_modules: set[str]
 
 
+@dataclass(frozen=True)
+class _ScopedLoweringInputs:
+    known_modules_by_module: dict[str, tuple[str, ...]]
+    known_func_defaults_by_module: dict[str, dict[str, dict[str, Any]]]
+    pgo_hot_function_names_by_module: dict[str, tuple[str, ...]]
+    type_facts_by_module: dict[str, TypeFacts | None]
+
+
 def _run_command_timed(
     cmd: list[str],
     *,
@@ -3153,12 +3161,7 @@ def _build_scoped_lowering_inputs(
     known_func_defaults: dict[str, dict[str, dict[str, Any]]],
     pgo_hot_function_names: Collection[str],
     type_facts: TypeFacts | None,
-) -> tuple[
-    dict[str, tuple[str, ...]],
-    dict[str, dict[str, dict[str, Any]]],
-    dict[str, tuple[str, ...]],
-    dict[str, TypeFacts | None],
-]:
+) -> _ScopedLoweringInputs:
     scoped_known_modules_by_module: dict[str, tuple[str, ...]] = {}
     scoped_known_func_defaults_by_module: dict[str, dict[str, dict[str, Any]]] = {}
     scoped_pgo_hot_function_names_by_module: dict[str, tuple[str, ...]] = {}
@@ -3185,11 +3188,11 @@ def _build_scoped_lowering_inputs(
             type_facts=type_facts,
             module_dep_closures=module_dep_closures,
         )
-    return (
-        scoped_known_modules_by_module,
-        scoped_known_func_defaults_by_module,
-        scoped_pgo_hot_function_names_by_module,
-        scoped_type_facts_by_module,
+    return _ScopedLoweringInputs(
+        known_modules_by_module=scoped_known_modules_by_module,
+        known_func_defaults_by_module=scoped_known_func_defaults_by_module,
+        pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
+        type_facts_by_module=scoped_type_facts_by_module,
     )
 
 
@@ -8186,13 +8189,8 @@ def _module_lowering_context_payload(
     stdlib_allowlist_sorted: tuple[str, ...] | None = None,
     pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
     module_dep_closures: dict[str, frozenset[str]] | None = None,
-    scoped_known_modules_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
-    scoped_known_func_defaults_by_module: Mapping[str, dict[str, dict[str, Any]]]
-    | None = None,
-    scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]]
-    | None = None,
-    scoped_type_facts_by_module: Mapping[str, TypeFacts | None] | None = None,
     is_package: bool | None = None,
     path_stat: os.stat_result | None = None,
 ) -> dict[str, Any] | None:
@@ -8202,10 +8200,10 @@ def _module_lowering_context_payload(
         except OSError:
             return None
     if (
-        scoped_known_modules_by_module is not None
-        and module_name in scoped_known_modules_by_module
+        scoped_lowering_inputs is not None
+        and module_name in scoped_lowering_inputs.known_modules_by_module
     ):
-        known_modules_sorted = scoped_known_modules_by_module[module_name]
+        known_modules_sorted = scoped_lowering_inputs.known_modules_by_module[module_name]
     else:
         known_modules_scope_source: Collection[str]
         if known_modules_sorted is None:
@@ -8221,10 +8219,10 @@ def _module_lowering_context_payload(
     if stdlib_allowlist_sorted is None:
         stdlib_allowlist_sorted = tuple(sorted(stdlib_allowlist))
     if (
-        scoped_pgo_hot_function_names_by_module is not None
-        and module_name in scoped_pgo_hot_function_names_by_module
+        scoped_lowering_inputs is not None
+        and module_name in scoped_lowering_inputs.pgo_hot_function_names_by_module
     ):
-        pgo_hot_function_names_sorted = scoped_pgo_hot_function_names_by_module[
+        pgo_hot_function_names_sorted = scoped_lowering_inputs.pgo_hot_function_names_by_module[
             module_name
         ]
     else:
@@ -8238,10 +8236,10 @@ def _module_lowering_context_payload(
             pgo_hot_functions_scope_source,
         )
     if (
-        scoped_known_func_defaults_by_module is not None
-        and module_name in scoped_known_func_defaults_by_module
+        scoped_lowering_inputs is not None
+        and module_name in scoped_lowering_inputs.known_func_defaults_by_module
     ):
-        scoped_known_func_defaults = scoped_known_func_defaults_by_module[module_name]
+        scoped_known_func_defaults = scoped_lowering_inputs.known_func_defaults_by_module[module_name]
     else:
         scoped_known_func_defaults = _scoped_known_func_defaults(
             module_name,
@@ -8262,10 +8260,10 @@ def _module_lowering_context_payload(
             module_dep_closures=module_dep_closures,
         )
     if (
-        scoped_type_facts_by_module is not None
-        and module_name in scoped_type_facts_by_module
+        scoped_lowering_inputs is not None
+        and module_name in scoped_lowering_inputs.type_facts_by_module
     ):
-        scoped_type_facts = scoped_type_facts_by_module[module_name]
+        scoped_type_facts = scoped_lowering_inputs.type_facts_by_module[module_name]
     else:
         scoped_type_facts = _scoped_type_facts(
             module_name,
@@ -8405,13 +8403,8 @@ def _load_cached_module_lowering_result(
     stdlib_allowlist_sorted: tuple[str, ...] | None = None,
     pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
     module_dep_closures: dict[str, frozenset[str]] | None = None,
-    scoped_known_modules_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
-    scoped_known_func_defaults_by_module: Mapping[str, dict[str, dict[str, Any]]]
-    | None = None,
-    scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]]
-    | None = None,
-    scoped_type_facts_by_module: Mapping[str, TypeFacts | None] | None = None,
     context_digest: str | None = None,
     resolution_cache: _ModuleResolutionCache | None = None,
     path_stat: os.stat_result | None = None,
@@ -8446,11 +8439,8 @@ def _load_cached_module_lowering_result(
             stdlib_allowlist_sorted=stdlib_allowlist_sorted,
             pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
             module_dep_closures=module_dep_closures,
-            scoped_known_modules_by_module=scoped_known_modules_by_module,
+            scoped_lowering_inputs=scoped_lowering_inputs,
             scoped_known_classes_by_module=scoped_known_classes_by_module,
-            scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
-            scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
-            scoped_type_facts_by_module=scoped_type_facts_by_module,
             is_package=is_package,
             path_stat=path_stat,
         )
@@ -8492,19 +8482,14 @@ def _module_worker_payload(
     optimization_profile: str,
     pgo_hot_function_names: Collection[str],
     module_dep_closures: dict[str, frozenset[str]],
-    scoped_known_modules_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
-    scoped_known_func_defaults_by_module: Mapping[str, dict[str, dict[str, Any]]]
-    | None = None,
-    scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]]
-    | None = None,
-    scoped_type_facts_by_module: Mapping[str, TypeFacts | None] | None = None,
 ) -> dict[str, Any]:
     if (
-        scoped_known_modules_by_module is not None
-        and module_name in scoped_known_modules_by_module
+        scoped_lowering_inputs is not None
+        and module_name in scoped_lowering_inputs.known_modules_by_module
     ):
-        scoped_known_modules = scoped_known_modules_by_module[module_name]
+        scoped_known_modules = scoped_lowering_inputs.known_modules_by_module[module_name]
     else:
         scoped_known_modules = _scoped_known_modules(
             module_name,
@@ -8513,10 +8498,10 @@ def _module_worker_payload(
             module_dep_closures=module_dep_closures,
         )
     if (
-        scoped_known_func_defaults_by_module is not None
-        and module_name in scoped_known_func_defaults_by_module
+        scoped_lowering_inputs is not None
+        and module_name in scoped_lowering_inputs.known_func_defaults_by_module
     ):
-        scoped_known_func_defaults = scoped_known_func_defaults_by_module[module_name]
+        scoped_known_func_defaults = scoped_lowering_inputs.known_func_defaults_by_module[module_name]
     else:
         scoped_known_func_defaults = _scoped_known_func_defaults(
             module_name,
@@ -8525,19 +8510,19 @@ def _module_worker_payload(
             module_dep_closures=module_dep_closures,
         )
     if (
-        scoped_pgo_hot_function_names_by_module is not None
-        and module_name in scoped_pgo_hot_function_names_by_module
+        scoped_lowering_inputs is not None
+        and module_name in scoped_lowering_inputs.pgo_hot_function_names_by_module
     ):
-        scoped_pgo_hot_functions = scoped_pgo_hot_function_names_by_module[module_name]
+        scoped_pgo_hot_functions = scoped_lowering_inputs.pgo_hot_function_names_by_module[module_name]
     else:
         scoped_pgo_hot_functions = _scoped_pgo_hot_function_names(
             module_name, pgo_hot_function_names
         )
     if (
-        scoped_type_facts_by_module is not None
-        and module_name in scoped_type_facts_by_module
+        scoped_lowering_inputs is not None
+        and module_name in scoped_lowering_inputs.type_facts_by_module
     ):
-        scoped_type_facts = scoped_type_facts_by_module[module_name]
+        scoped_type_facts = scoped_lowering_inputs.type_facts_by_module[module_name]
     else:
         scoped_type_facts = _scoped_type_facts(
             module_name,
@@ -8613,13 +8598,8 @@ def _prepare_frontend_parallel_batch(
     module_is_namespace_by_module: Mapping[str, bool] | None = None,
     module_is_package_by_module: Mapping[str, bool] | None = None,
     path_stat_by_module: Mapping[str, os.stat_result | None] | None = None,
-    scoped_known_modules_by_module: Mapping[str, tuple[str, ...]] | None = None,
+    scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
-    scoped_known_func_defaults_by_module: Mapping[str, dict[str, dict[str, Any]]]
-    | None = None,
-    scoped_pgo_hot_function_names_by_module: Mapping[str, tuple[str, ...]]
-    | None = None,
-    scoped_type_facts_by_module: Mapping[str, TypeFacts | None] | None = None,
     dirty_lowering_modules: Collection[str],
 ) -> tuple[
     dict[str, dict[str, Any]],
@@ -8695,11 +8675,8 @@ def _prepare_frontend_parallel_batch(
                 stdlib_allowlist_sorted=stdlib_allowlist_sorted,
                 pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
                 module_dep_closures=module_dep_closures,
-                scoped_known_modules_by_module=scoped_known_modules_by_module,
+                scoped_lowering_inputs=scoped_lowering_inputs,
                 scoped_known_classes_by_module=scoped_known_classes_by_module,
-                scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
-                scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
-                scoped_type_facts_by_module=scoped_type_facts_by_module,
                 is_package=is_package,
                 path_stat=path_stat,
             )
@@ -8734,11 +8711,8 @@ def _prepare_frontend_parallel_batch(
                 stdlib_allowlist_sorted=stdlib_allowlist_sorted,
                 pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
                 module_dep_closures=module_dep_closures,
-                scoped_known_modules_by_module=scoped_known_modules_by_module,
+                scoped_lowering_inputs=scoped_lowering_inputs,
                 scoped_known_classes_by_module=scoped_known_classes_by_module,
-                scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
-                scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
-                scoped_type_facts_by_module=scoped_type_facts_by_module,
                 context_digest=context_digest_by_module.get(module_name),
                 resolution_cache=module_resolution_cache,
                 path_stat=path_stat,
@@ -8780,11 +8754,8 @@ def _prepare_frontend_parallel_batch(
                     optimization_profile=optimization_profile,
                     pgo_hot_function_names=pgo_hot_function_names_sorted,
                     module_dep_closures=module_dep_closures,
-                    scoped_known_modules_by_module=scoped_known_modules_by_module,
+                    scoped_lowering_inputs=scoped_lowering_inputs,
                     scoped_known_classes_by_module=scoped_known_classes_by_module,
-                    scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
-                    scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
-                    scoped_type_facts_by_module=scoped_type_facts_by_module,
                 ),
             )
         )
@@ -11784,12 +11755,7 @@ def build(
                 command="build",
             )
     known_classes: dict[str, Any] = {}
-    (
-        scoped_known_modules_by_module,
-        scoped_known_func_defaults_by_module,
-        scoped_pgo_hot_function_names_by_module,
-        scoped_type_facts_by_module,
-    ) = _build_scoped_lowering_inputs(
+    scoped_lowering_inputs = _build_scoped_lowering_inputs(
         module_graph,
         module_deps=module_deps,
         module_dep_closures=module_dep_closures,
@@ -12017,10 +11983,7 @@ def build(
                 stdlib_allowlist_sorted=stdlib_allowlist_sorted,
                 pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
                 module_dep_closures=module_dep_closures,
-                scoped_known_modules_by_module=scoped_known_modules_by_module,
-                scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
-                scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
-                scoped_type_facts_by_module=scoped_type_facts_by_module,
+                scoped_lowering_inputs=scoped_lowering_inputs,
                 is_package=is_package,
                 path_stat=path_stat,
             )
@@ -12039,16 +12002,20 @@ def build(
                     return cached_payload, 0.0, 0.0, 0.0
 
         tree = _resolve_tree_for_module(module_name, module_path)
-        scoped_known_modules = scoped_known_modules_by_module[module_name]
+        scoped_known_modules = scoped_lowering_inputs.known_modules_by_module[module_name]
         scoped_known_classes = _scoped_known_classes(
             module_name,
             module_deps=module_deps,
             known_classes=known_classes,
             module_dep_closures=module_dep_closures,
         )
-        scoped_known_func_defaults = scoped_known_func_defaults_by_module[module_name]
-        scoped_pgo_hot_functions = scoped_pgo_hot_function_names_by_module[module_name]
-        scoped_type_facts = scoped_type_facts_by_module[module_name]
+        scoped_known_func_defaults = (
+            scoped_lowering_inputs.known_func_defaults_by_module[module_name]
+        )
+        scoped_pgo_hot_functions = (
+            scoped_lowering_inputs.pgo_hot_function_names_by_module[module_name]
+        )
+        scoped_type_facts = scoped_lowering_inputs.type_facts_by_module[module_name]
         gen = SimpleTIRGenerator(
             parse_codec=parse_codec,
             type_hint_policy=type_hint_policy,
@@ -12302,11 +12269,8 @@ def build(
                             module_is_namespace_by_module=module_is_namespace_by_module,
                             module_is_package_by_module=module_is_package_by_module,
                             path_stat_by_module=module_path_stats,
-                            scoped_known_modules_by_module=scoped_known_modules_by_module,
+                            scoped_lowering_inputs=scoped_lowering_inputs,
                             scoped_known_classes_by_module=scoped_known_classes_by_module,
-                            scoped_known_func_defaults_by_module=scoped_known_func_defaults_by_module,
-                            scoped_pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
-                            scoped_type_facts_by_module=scoped_type_facts_by_module,
                             dirty_lowering_modules=dirty_lowering_modules,
                         )
                         if batch_error is not None:
