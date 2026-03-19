@@ -7920,6 +7920,8 @@ def _atomic_copy_file(src: Path, dst: Path) -> None:
     tmp_path = dst.with_name(f".{dst.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         shutil.copyfile(src, tmp_path)
+        with contextlib.suppress(OSError):
+            shutil.copymode(src, tmp_path)
         tmp_path.replace(dst)
     finally:
         try:
