@@ -21,16 +21,16 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 # ---------------------------------------------------------------------------
 
 _MOLT_ASYNCIO_RUNNING_LOOP_GET = _require_intrinsic(
-    "molt_asyncio_running_loop_get", globals()
+    "molt_asyncio_running_loop_get"
 )
 _MOLT_ASYNCIO_RUNNING_LOOP_SET = _require_intrinsic(
-    "molt_asyncio_running_loop_set", globals()
+    "molt_asyncio_running_loop_set"
 )
 _MOLT_ASYNCIO_EVENT_LOOP_GET = _require_intrinsic(
-    "molt_asyncio_event_loop_get", globals()
+    "molt_asyncio_event_loop_get"
 )
 _MOLT_ASYNCIO_EVENT_LOOP_POLICY_GET = _require_intrinsic(
-    "molt_asyncio_event_loop_policy_get", globals()
+    "molt_asyncio_event_loop_policy_get"
 )
 
 # ---------------------------------------------------------------------------
@@ -38,18 +38,18 @@ _MOLT_ASYNCIO_EVENT_LOOP_POLICY_GET = _require_intrinsic(
 # ---------------------------------------------------------------------------
 
 _MOLT_ASYNCIO_TASK_REGISTRY_CURRENT = _require_intrinsic(
-    "molt_asyncio_task_registry_current", globals()
+    "molt_asyncio_task_registry_current"
 )
 _MOLT_ASYNCIO_TASK_REGISTRY_CURRENT_FOR_LOOP = _require_intrinsic(
-    "molt_asyncio_task_registry_current_for_loop", globals()
+    "molt_asyncio_task_registry_current_for_loop"
 )
-_MOLT_ASYNCIO_ENTER_TASK = _require_intrinsic("molt_asyncio_enter_task", globals())
-_MOLT_ASYNCIO_LEAVE_TASK = _require_intrinsic("molt_asyncio_leave_task", globals())
+_MOLT_ASYNCIO_ENTER_TASK = _require_intrinsic("molt_asyncio_enter_task")
+_MOLT_ASYNCIO_LEAVE_TASK = _require_intrinsic("molt_asyncio_leave_task")
 _MOLT_ASYNCIO_REGISTER_TASK = _require_intrinsic(
-    "molt_asyncio_register_task", globals()
+    "molt_asyncio_register_task"
 )
 _MOLT_ASYNCIO_UNREGISTER_TASK = _require_intrinsic(
-    "molt_asyncio_unregister_task", globals()
+    "molt_asyncio_unregister_task"
 )
 
 # ---------------------------------------------------------------------------
