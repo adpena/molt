@@ -9577,6 +9577,74 @@ def _append_module_code_slot_ops(
     return next_var
 
 
+def _build_isolate_bootstrap_ops(
+    *,
+    code_slot_count: int,
+    version_ops: Sequence[dict[str, Any]],
+    module_code_ops: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        {"kind": "code_slots_init", "value": code_slot_count},
+        *version_ops,
+        *module_code_ops,
+        {"kind": "ret_void"},
+    ]
+
+
+def _build_isolate_import_ops(
+    *,
+    module_order: Sequence[str],
+    register_global_code_id: Callable[[str], int],
+) -> list[dict[str, Any]]:
+    import_ops: list[dict[str, Any]] = []
+    import_var_idx = 0
+
+    def import_var() -> str:
+        nonlocal import_var_idx
+        name = f"v{import_var_idx}"
+        import_var_idx += 1
+        return name
+
+    name_var = "p0"
+    module_var = import_var()
+    import_ops.append({"kind": "module_cache_get", "args": [name_var], "out": module_var})
+    none_var = import_var()
+    import_ops.append({"kind": "const_none", "out": none_var})
+    is_none_var = import_var()
+    import_ops.append({"kind": "is", "args": [module_var, none_var], "out": is_none_var})
+    import_ops.append({"kind": "if", "args": [is_none_var]})
+    if module_order:
+        for idx, module_name in enumerate(module_order):
+            match_name_var = import_var()
+            import_ops.append(
+                {"kind": "const_str", "s_value": module_name, "out": match_name_var}
+            )
+            match_var = import_var()
+            import_ops.append(
+                {"kind": "string_eq", "args": [name_var, match_name_var], "out": match_var}
+            )
+            import_ops.append({"kind": "if", "args": [match_var]})
+            init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
+            init_out = import_var()
+            import_ops.append(
+                {
+                    "kind": "call",
+                    "s_value": init_symbol,
+                    "args": [],
+                    "out": init_out,
+                    "value": register_global_code_id(init_symbol),
+                }
+            )
+            if idx < len(module_order) - 1:
+                import_ops.append({"kind": "else"})
+        import_ops.extend({"kind": "end_if"} for _ in module_order)
+    import_ops.append({"kind": "end_if"})
+    loaded_var = import_var()
+    import_ops.append({"kind": "module_cache_get", "args": [name_var], "out": loaded_var})
+    import_ops.append({"kind": "ret", "args": [loaded_var]})
+    return import_ops
+
+
 def _run_frontend_parallel_enabled_layers(
     module_layers: Sequence[Sequence[str]],
     *,
@@ -14184,71 +14252,18 @@ def build(
         ]
     entry_ops.insert(1, {"kind": "code_slots_init", "value": len(global_code_ids)})
     functions.append({"name": "molt_main", "params": [], "ops": entry_ops})
-    isolate_bootstrap_ops = [
-        {"kind": "code_slots_init", "value": len(global_code_ids)},
-        *version_ops,
-        *module_code_ops,
-        {"kind": "ret_void"},
-    ]
+    isolate_bootstrap_ops = _build_isolate_bootstrap_ops(
+        code_slot_count=len(global_code_ids),
+        version_ops=version_ops,
+        module_code_ops=module_code_ops,
+    )
     functions.append(
         {"name": "molt_isolate_bootstrap", "params": [], "ops": isolate_bootstrap_ops}
     )
-    import_ops: list[dict[str, Any]] = []
-    import_var_idx = 0
-
-    def _import_var() -> str:
-        nonlocal import_var_idx
-        name = f"v{import_var_idx}"
-        import_var_idx += 1
-        return name
-
-    name_var = "p0"
-    module_var = _import_var()
-    import_ops.append(
-        {"kind": "module_cache_get", "args": [name_var], "out": module_var}
+    import_ops = _build_isolate_import_ops(
+        module_order=module_order,
+        register_global_code_id=_register_global_code_id,
     )
-    none_var = _import_var()
-    import_ops.append({"kind": "const_none", "out": none_var})
-    is_none_var = _import_var()
-    import_ops.append(
-        {"kind": "is", "args": [module_var, none_var], "out": is_none_var}
-    )
-    import_ops.append({"kind": "if", "args": [is_none_var]})
-    if module_order:
-        for idx, module_name in enumerate(module_order):
-            match_name_var = _import_var()
-            import_ops.append(
-                {"kind": "const_str", "s_value": module_name, "out": match_name_var}
-            )
-            match_var = _import_var()
-            import_ops.append(
-                {
-                    "kind": "string_eq",
-                    "args": [name_var, match_name_var],
-                    "out": match_var,
-                }
-            )
-            import_ops.append({"kind": "if", "args": [match_var]})
-            init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
-            init_out = _import_var()
-            import_ops.append(
-                {
-                    "kind": "call",
-                    "s_value": init_symbol,
-                    "args": [],
-                    "out": init_out,
-                    "value": _register_global_code_id(init_symbol),
-                }
-            )
-            if idx < len(module_order) - 1:
-                import_ops.append({"kind": "else"})
-        import_ops.extend({"kind": "end_if"} for _ in module_order)
-    import_ops.append({"kind": "end_if"})
-    loaded_var = _import_var()
-    import_ops.append(
-        {"kind": "module_cache_get", "args": [name_var], "out": loaded_var}
-    )
-    import_ops.append({"kind": "ret", "args": [loaded_var]})
     functions.append(
         {"name": "molt_isolate_import", "params": ["p0"], "ops": import_ops}
     )
