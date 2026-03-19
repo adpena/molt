@@ -2631,6 +2631,37 @@ def test_backend_daemon_enabled_is_cached(
     assert info.currsize >= 1
 
 
+def test_resolve_wasm_cargo_profile_is_cached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli._resolve_wasm_cargo_profile_cached.cache_clear()
+    monkeypatch.setenv("MOLT_WASM_CARGO_PROFILE", "")
+
+    first = cli._resolve_wasm_cargo_profile("release")
+    second = cli._resolve_wasm_cargo_profile("release")
+
+    info = cli._resolve_wasm_cargo_profile_cached.cache_info()
+    assert first == second == "wasm-release"
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
+def test_native_arch_perf_requested_is_cached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli._native_arch_perf_requested_cached.cache_clear()
+    monkeypatch.setenv("MOLT_PERF_PROFILE", "native")
+
+    first = cli._native_arch_perf_requested()
+    second = cli._native_arch_perf_requested()
+
+    info = cli._native_arch_perf_requested_cached.cache_info()
+    assert first is True
+    assert second is True
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
 def test_backend_codegen_env_digest_tracks_codegen_knobs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
