@@ -10008,6 +10008,43 @@ def _attach_build_metadata(
     return data
 
 
+def _build_common_build_json_data(
+    *,
+    target: str,
+    target_triple: str | None,
+    source_path: Path,
+    output: Path,
+    deterministic: bool,
+    trusted: bool,
+    capabilities_list: list[str] | None,
+    capability_profiles: list[str] | None,
+    capabilities_source: str | None,
+    sysroot_path: Path | None,
+    cache_info: Mapping[str, Any],
+    emit_mode: str,
+    profile: str,
+    native_arch_perf_enabled: bool,
+) -> dict[str, Any]:
+    return {
+        "target": target,
+        "target_triple": target_triple,
+        "entry": str(source_path),
+        "output": str(output),
+        "deterministic": deterministic,
+        "trusted": trusted,
+        "capabilities": capabilities_list,
+        "capability_profiles": capability_profiles,
+        "capabilities_source": capabilities_source,
+        "sysroot": str(sysroot_path) if sysroot_path is not None else None,
+        "cache": dict(cache_info),
+        "emit": emit_mode,
+        "profile": profile,
+        "native_arch_perf": native_arch_perf_enabled,
+        "cpu_baseline": _cpu_baseline(target_triple),
+        "cranelift_flags": "default",
+    }
+
+
 def _initialize_runtime_artifact_state(
     *,
     is_rust_transpile: bool,
@@ -15153,26 +15190,24 @@ def build(
                 backend_daemon_cache_tier=backend_daemon_cache_tier,
                 backend_daemon_config_digest=backend_daemon_config_digest,
             )
-            data = {
-                "target": target,
-                "target_triple": target_triple,
-                "entry": str(source_path),
-                "output": str(primary_output),
-                "deterministic": deterministic,
-                "trusted": trusted,
-                "capabilities": capabilities_list,
-                "capability_profiles": capability_profiles,
-                "capabilities_source": capabilities_source,
-                "sysroot": str(sysroot_path) if sysroot_path is not None else None,
-                "cache": cache_info,
-                "emit": emit_mode,
-                "profile": profile,
-                "native_arch_perf": native_arch_perf_enabled,
-                "cpu_baseline": _cpu_baseline(target_triple),
-                "cranelift_flags": "default",
-                "linked": linked,
-                "require_linked": require_linked,
-            }
+            data = _build_common_build_json_data(
+                target=target,
+                target_triple=target_triple,
+                source_path=source_path,
+                output=primary_output,
+                deterministic=deterministic,
+                trusted=trusted,
+                capabilities_list=capabilities_list,
+                capability_profiles=capability_profiles,
+                capabilities_source=capabilities_source,
+                sysroot_path=sysroot_path,
+                cache_info=cache_info,
+                emit_mode=emit_mode,
+                profile=profile,
+                native_arch_perf_enabled=native_arch_perf_enabled,
+            )
+            data["linked"] = linked
+            data["require_linked"] = require_linked
             _attach_build_metadata(
                 data,
                 diagnostics_payload=diagnostics_payload,
@@ -15220,25 +15255,23 @@ def build(
                 backend_daemon_cache_tier=backend_daemon_cache_tier,
                 backend_daemon_config_digest=backend_daemon_config_digest,
             )
-            data = {
-                "target": target,
-                "target_triple": target_triple,
-                "entry": str(source_path),
-                "output": str(output_obj),
-                "deterministic": deterministic,
-                "trusted": trusted,
-                "capabilities": capabilities_list,
-                "capability_profiles": capability_profiles,
-                "capabilities_source": capabilities_source,
-                "sysroot": str(sysroot_path) if sysroot_path is not None else None,
-                "cache": cache_info,
-                "emit": emit_mode,
-                "profile": profile,
-                "native_arch_perf": native_arch_perf_enabled,
-                "cpu_baseline": _cpu_baseline(target_triple),
-                "cranelift_flags": "default",
-                "artifacts": {"object": str(output_obj)},
-            }
+            data = _build_common_build_json_data(
+                target=target,
+                target_triple=target_triple,
+                source_path=source_path,
+                output=output_obj,
+                deterministic=deterministic,
+                trusted=trusted,
+                capabilities_list=capabilities_list,
+                capability_profiles=capability_profiles,
+                capabilities_source=capabilities_source,
+                sysroot_path=sysroot_path,
+                cache_info=cache_info,
+                emit_mode=emit_mode,
+                profile=profile,
+                native_arch_perf_enabled=native_arch_perf_enabled,
+            )
+            data["artifacts"] = {"object": str(output_obj)}
             _attach_build_metadata(
                 data,
                 diagnostics_payload=diagnostics_payload,
@@ -15655,30 +15688,28 @@ int main(int argc, char** argv) {
                 backend_daemon_cache_tier=backend_daemon_cache_tier,
                 backend_daemon_config_digest=backend_daemon_config_digest,
             )
-            data: dict[str, Any] = {
-                "target": target,
-                "target_triple": target_triple,
-                "entry": str(source_path),
-                "output": str(output_binary),
-                "artifacts": {
-                    "object": str(output_obj),
-                    "stub": str(stub_path),
-                    "runtime": str(runtime_lib),
-                },
-                "deterministic": deterministic,
-                "trusted": trusted,
-                "capabilities": capabilities_list,
-                "capability_profiles": capability_profiles,
-                "capabilities_source": capabilities_source,
-                "sysroot": str(sysroot_path) if sysroot_path is not None else None,
-                "cache": cache_info,
-                "link": {"skipped": link_skipped},
-                "emit": emit_mode,
-                "profile": profile,
-                "native_arch_perf": native_arch_perf_enabled,
-                "cpu_baseline": _cpu_baseline(target_triple),
-                "cranelift_flags": "default",
+            data = _build_common_build_json_data(
+                target=target,
+                target_triple=target_triple,
+                source_path=source_path,
+                output=output_binary,
+                deterministic=deterministic,
+                trusted=trusted,
+                capabilities_list=capabilities_list,
+                capability_profiles=capability_profiles,
+                capabilities_source=capabilities_source,
+                sysroot_path=sysroot_path,
+                cache_info=cache_info,
+                emit_mode=emit_mode,
+                profile=profile,
+                native_arch_perf_enabled=native_arch_perf_enabled,
+            )
+            data["artifacts"] = {
+                "object": str(output_obj),
+                "stub": str(stub_path),
+                "runtime": str(runtime_lib),
             }
+            data["link"] = {"skipped": link_skipped}
             _attach_build_metadata(
                 data,
                 diagnostics_payload=diagnostics_payload,
