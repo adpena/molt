@@ -757,6 +757,70 @@ def test_backend_fingerprint_path_uses_cached_artifact_hash(
 
     info = original.cache_info()
     assert first == second
+    assert calls == 1
+    assert info.currsize >= 1
+
+
+def test_artifact_state_path_is_cached(tmp_path: Path) -> None:
+    artifact = tmp_path / "dist" / "output.o"
+    cli._artifact_state_path_cached.cache_clear()
+
+    first = cli._artifact_state_path(
+        tmp_path,
+        artifact,
+        subdir="backend_fingerprints",
+        stem_suffix="dev-fast",
+        extension="fingerprint",
+    )
+    second = cli._artifact_state_path(
+        tmp_path,
+        artifact,
+        subdir="backend_fingerprints",
+        stem_suffix="dev-fast",
+        extension="fingerprint",
+    )
+
+    info = cli._artifact_state_path_cached.cache_info()
+    assert first == second
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
+def test_artifact_sync_state_path_uses_cached_artifact_state_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = tmp_path / "dist" / "output.o"
+    cli._artifact_state_path_cached.cache_clear()
+
+    calls = 0
+    original = cli._artifact_state_path_cached
+
+    def wrapped(
+        build_state_root_str: str,
+        artifact_path_str: str,
+        artifact_name: str,
+        subdir: str,
+        stem_suffix: str,
+        extension: str,
+    ) -> Path:
+        nonlocal calls
+        calls += 1
+        return original(
+            build_state_root_str,
+            artifact_path_str,
+            artifact_name,
+            subdir,
+            stem_suffix,
+            extension,
+        )
+
+    monkeypatch.setattr(cli, "_artifact_state_path_cached", wrapped, raising=True)
+
+    first = cli._artifact_sync_state_path(tmp_path, artifact)
+    second = cli._artifact_sync_state_path(tmp_path, artifact)
+
+    info = original.cache_info()
+    assert first == second
     assert calls == 2
     assert info.hits >= 1
 

@@ -4452,9 +4452,53 @@ def _runtime_fingerprint_path(
     target_triple: str | None,
 ) -> Path:
     target = (target_triple or "native").replace(os.sep, "_").replace(":", "_")
-    root = _build_state_root(project_root) / "runtime_fingerprints"
-    artifact_key = _resolved_artifact_hash_key(os.fspath(artifact))
-    return root / f"{artifact.name}.{cargo_profile}.{target}.{artifact_key}.fingerprint"
+    return _artifact_state_path(
+        project_root,
+        artifact,
+        subdir="runtime_fingerprints",
+        stem_suffix=f"{cargo_profile}.{target}",
+        extension="fingerprint",
+    )
+
+
+@functools.lru_cache(maxsize=4096)
+def _artifact_state_path_cached(
+    build_state_root_str: str,
+    artifact_path_str: str,
+    artifact_name: str,
+    subdir: str,
+    stem_suffix: str,
+    extension: str,
+) -> Path:
+    artifact_key = _resolved_artifact_hash_key(artifact_path_str)
+    stem = (
+        f"{artifact_name}.{stem_suffix}.{artifact_key}"
+        if stem_suffix
+        else f"{artifact_name}.{artifact_key}"
+    )
+    return (
+        Path(build_state_root_str)
+        / subdir
+        / f"{stem}.{extension}"
+    )
+
+
+def _artifact_state_path(
+    project_root: Path,
+    artifact: Path,
+    *,
+    subdir: str,
+    stem_suffix: str,
+    extension: str,
+) -> Path:
+    return _artifact_state_path_cached(
+        os.fspath(_build_state_root(project_root)),
+        os.fspath(artifact),
+        artifact.name,
+        subdir,
+        stem_suffix,
+        extension,
+    )
 
 
 def _hash_runtime_file(path: Path, root: Path, hasher: Any) -> None:
@@ -6543,9 +6587,13 @@ def _backend_fingerprint_path(
     artifact: Path,
     cargo_profile: str,
 ) -> Path:
-    root = _build_state_root(project_root) / "backend_fingerprints"
-    artifact_key = _resolved_artifact_hash_key(os.fspath(artifact))
-    return root / f"{artifact.name}.{cargo_profile}.{artifact_key}.fingerprint"
+    return _artifact_state_path(
+        project_root,
+        artifact,
+        subdir="backend_fingerprints",
+        stem_suffix=f"{cargo_profile}",
+        extension="fingerprint",
+    )
 
 
 def _link_fingerprint_path(
@@ -6555,15 +6603,23 @@ def _link_fingerprint_path(
     target_triple: str | None,
 ) -> Path:
     target = (target_triple or "native").replace(os.sep, "_").replace(":", "_")
-    root = _build_state_root(project_root) / "link_fingerprints"
-    artifact_key = _resolved_artifact_hash_key(os.fspath(artifact))
-    return root / f"{artifact.name}.{profile}.{target}.{artifact_key}.fingerprint"
+    return _artifact_state_path(
+        project_root,
+        artifact,
+        subdir="link_fingerprints",
+        stem_suffix=f"{profile}.{target}",
+        extension="fingerprint",
+    )
 
 
 def _artifact_sync_state_path(project_root: Path, artifact: Path) -> Path:
-    root = _build_state_root(project_root) / "artifact_sync"
-    artifact_key = _resolved_artifact_hash_key(os.fspath(artifact))
-    return root / f"{artifact.name}.{artifact_key}.json"
+    return _artifact_state_path(
+        project_root,
+        artifact,
+        subdir="artifact_sync",
+        stem_suffix="",
+        extension="json",
+    )
 
 
 def _read_artifact_sync_state(path: Path) -> dict[str, Any] | None:
