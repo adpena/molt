@@ -3993,6 +3993,40 @@ def test_module_lowering_metadata_view_reuses_precomputed_maps(tmp_path: Path) -
     assert view.path_stat is path_stat
 
 
+def test_module_lowering_execution_view_bundles_metadata_and_scoped_state(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "main.py"
+    module_path.write_text("import alpha\n")
+    metadata = cli._build_module_graph_metadata(
+        {"main": module_path, "alpha": tmp_path / "alpha.py"},
+        generated_module_source_paths={"main": "generated/main.py"},
+        entry_module="main",
+        namespace_module_names=set(),
+    )
+    execution_view = cli._module_lowering_execution_view(
+        "main",
+        module_path=module_path,
+        module_graph_metadata=metadata,
+        module_deps={"main": {"alpha"}, "alpha": set()},
+        known_modules={"main", "alpha"},
+        known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
+        pgo_hot_function_names={"main::hot"},
+        type_facts=None,
+        known_classes_snapshot={"MainClass": {"module": "main", "fields": {}}},
+        module_dep_closures={"main": frozenset({"main", "alpha"})},
+        path_stat_by_module={"main": module_path.stat()},
+        known_modules_sorted=("alpha", "main"),
+        pgo_hot_function_names_sorted=("main::hot",),
+    )
+
+    assert execution_view.metadata.logical_source_path == "generated/main.py"
+    assert execution_view.metadata.path_stat is not None
+    assert execution_view.scoped_inputs.known_modules == ("alpha", "main")
+    assert execution_view.scoped_inputs.pgo_hot_function_names == ("main::hot",)
+    assert set(execution_view.scoped_known_classes) == {"MainClass"}
+
+
 def test_choose_frontend_parallel_layer_workers_uses_precomputed_costs_and_flags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -502,6 +502,13 @@ class _ModuleLoweringMetadataView:
     path_stat: os.stat_result | None
 
 
+@dataclass(frozen=True)
+class _ModuleLoweringExecutionView:
+    metadata: _ModuleLoweringMetadataView
+    scoped_inputs: _ScopedLoweringInputView
+    scoped_known_classes: dict[str, Any]
+
+
 def _run_command_timed(
     cmd: list[str],
     *,
@@ -4635,6 +4642,56 @@ def _module_lowering_metadata_view(
             if path_stat_by_module is not None
             else None
         ),
+    )
+
+
+def _module_lowering_execution_view(
+    module_name: str,
+    *,
+    module_path: Path,
+    module_graph_metadata: _ModuleGraphMetadata,
+    module_deps: dict[str, set[str]],
+    known_modules: Collection[str],
+    known_func_defaults: dict[str, dict[str, Any]],
+    pgo_hot_function_names: Collection[str],
+    type_facts: TypeFacts | None,
+    known_classes_snapshot: dict[str, Any],
+    module_dep_closures: dict[str, frozenset[str]],
+    path_stat_by_module: Mapping[str, os.stat_result | None] | None = None,
+    scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
+    known_modules_sorted: tuple[str, ...] | None = None,
+    pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
+    scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
+) -> _ModuleLoweringExecutionView:
+    metadata = _module_lowering_metadata_view(
+        module_name,
+        module_path=module_path,
+        module_graph_metadata=module_graph_metadata,
+        path_stat_by_module=path_stat_by_module,
+    )
+    scoped_inputs = _scoped_lowering_input_view(
+        module_name,
+        module_deps=module_deps,
+        known_modules=known_modules,
+        known_func_defaults=known_func_defaults,
+        pgo_hot_function_names=pgo_hot_function_names,
+        type_facts=type_facts,
+        module_dep_closures=module_dep_closures,
+        scoped_lowering_inputs=scoped_lowering_inputs,
+        known_modules_sorted=known_modules_sorted,
+        pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+    )
+    scoped_known_classes = _scoped_known_classes_view(
+        module_name,
+        module_deps=module_deps,
+        known_classes_snapshot=known_classes_snapshot,
+        module_dep_closures=module_dep_closures,
+        scoped_known_classes_by_module=scoped_known_classes_by_module,
+    )
+    return _ModuleLoweringExecutionView(
+        metadata=metadata,
+        scoped_inputs=scoped_inputs,
+        scoped_known_classes=scoped_known_classes,
     )
 
 
@@ -8831,36 +8888,31 @@ def _prepare_frontend_parallel_batch(
         )
     for module_name in batch:
         module_path = module_graph[module_name]
-        metadata_view = _module_lowering_metadata_view(
+        execution_view = _module_lowering_execution_view(
             module_name,
             module_path=module_path,
             module_graph_metadata=module_graph_metadata,
-            path_stat_by_module=path_stat_by_module,
-        )
-        scoped_inputs = _scoped_lowering_input_view(
-            module_name,
             module_deps=module_deps,
             known_modules=known_modules,
             known_func_defaults=known_func_defaults,
             pgo_hot_function_names=pgo_hot_function_names,
             type_facts=cast(TypeFacts | None, type_facts),
+            known_classes_snapshot=known_classes_snapshot,
             module_dep_closures=module_dep_closures,
+            path_stat_by_module=path_stat_by_module,
             scoped_lowering_inputs=scoped_lowering_inputs,
             known_modules_sorted=known_modules_sorted,
             pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+            scoped_known_classes_by_module=scoped_known_classes_by_module,
         )
+        metadata_view = execution_view.metadata
+        scoped_inputs = execution_view.scoped_inputs
         logical_source_path = metadata_view.logical_source_path
         entry_override = metadata_view.entry_override
         module_is_namespace = metadata_view.module_is_namespace
         is_package = metadata_view.is_package
         path_stat = metadata_view.path_stat
-        scoped_known_classes = _scoped_known_classes_view(
-            module_name,
-            module_deps=module_deps,
-            known_classes_snapshot=known_classes_snapshot,
-            module_dep_closures=module_dep_closures,
-            scoped_known_classes_by_module=scoped_known_classes_by_module,
-        )
+        scoped_known_classes = execution_view.scoped_known_classes
         if project_root is not None:
             context_digest = _module_lowering_context_digest_for_module(
                 module_name,
@@ -12156,24 +12208,24 @@ def build(
         module_name: str,
         module_path: Path,
     ) -> tuple[dict[str, Any], float, float, float]:
-        metadata_view = _module_lowering_metadata_view(
+        execution_view = _module_lowering_execution_view(
             module_name,
             module_path=module_path,
             module_graph_metadata=module_graph_metadata,
-            path_stat_by_module=module_path_stats,
-        )
-        scoped_inputs = _scoped_lowering_input_view(
-            module_name,
             module_deps=module_deps,
             known_modules=known_modules,
             known_func_defaults=known_func_defaults,
             pgo_hot_function_names=pgo_hot_function_names,
             type_facts=cast(TypeFacts | None, type_facts),
+            known_classes_snapshot=known_classes,
             module_dep_closures=module_dep_closures,
+            path_stat_by_module=module_path_stats,
             scoped_lowering_inputs=scoped_lowering_inputs,
             known_modules_sorted=known_modules_sorted,
             pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
         )
+        metadata_view = execution_view.metadata
+        scoped_inputs = execution_view.scoped_inputs
         logical_source_path = metadata_view.logical_source_path
         entry_override = metadata_view.entry_override
         is_package = metadata_view.is_package
@@ -12182,12 +12234,7 @@ def build(
         if path_stat is None:
             with contextlib.suppress(OSError):
                 path_stat = module_resolution_cache.path_stat(module_path)
-        scoped_known_classes = _scoped_known_classes_view(
-            module_name,
-            module_deps=module_deps,
-            known_classes_snapshot=known_classes,
-            module_dep_closures=module_dep_closures,
-        )
+        scoped_known_classes = execution_view.scoped_known_classes
         context_digest: str | None = None
         if project_root is not None:
             context_digest = _module_lowering_context_digest_for_module(
