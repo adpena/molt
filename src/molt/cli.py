@@ -891,7 +891,6 @@ class _PreparedBuildInputs:
 @dataclass(frozen=True)
 class _PreparedBuildDriverState:
     prepared_frontend_pipeline: "_PreparedFrontendPipeline"
-    frontend_parallel_details: dict[str, Any]
     prepared_backend_build_context: "_PreparedBackendBuildContext"
     prepared_build_finalize_context: "_PreparedBuildFinalizeContext"
 
@@ -1007,16 +1006,6 @@ class _PreparedFrontendLoweringConfig:
 
 
 @dataclass(frozen=True)
-class _PreparedFrontendExecution:
-    frontend_layer_execution_context: _FrontendLayerExecutionContext
-    serial_frontend_lowering_context: _SerialFrontendLoweringContext
-    serial_frontend_lowering_hooks: _SerialFrontendLoweringHooks
-    integration_state: _FrontendIntegrationState
-    midend_diagnostics_state: _MidendDiagnosticsState
-    frontend_layer_runtime_hooks: _FrontendLayerRuntimeHooks
-
-
-@dataclass(frozen=True)
 class _PreparedFrontendExecutionContext:
     syntax_error_modules: dict[str, "ModuleSyntaxErrorInfo"]
     module_graph: dict[str, Path]
@@ -1067,7 +1056,9 @@ class _PreparedFrontendRunTicket:
     frontend_parallel_config: _FrontendParallelConfig
     frontend_parallel_layers: list[dict[str, Any]]
     frontend_parallel_worker_timings: list[dict[str, Any]]
-    prepared_frontend_execution: _PreparedFrontendExecution
+    frontend_parallel_details: dict[str, Any]
+    frontend_layer_execution_context: _FrontendLayerExecutionContext
+    frontend_layer_runtime_hooks: _FrontendLayerRuntimeHooks
 
 
 @dataclass(frozen=True)
@@ -12749,7 +12740,12 @@ def _prepare_frontend_lowering_config(
 def _prepare_frontend_execution(
     *,
     prepared_frontend_execution_context: _PreparedFrontendExecutionContext,
-) -> _PreparedFrontendExecution:
+) -> tuple[
+    _FrontendLayerExecutionContext,
+    _FrontendLayerRuntimeHooks,
+    _FrontendIntegrationState,
+    _MidendDiagnosticsState,
+]:
     syntax_error_modules = (
         prepared_frontend_execution_context.syntax_error_modules
     )
@@ -12942,13 +12938,11 @@ def _prepare_frontend_execution(
         json_output=json_output,
         run_serial_frontend_lower=_run_serial_frontend_lower,
     )
-    return _PreparedFrontendExecution(
-        frontend_layer_execution_context=frontend_layer_execution_context,
-        serial_frontend_lowering_context=serial_frontend_lowering_context,
-        serial_frontend_lowering_hooks=serial_frontend_lowering_hooks,
-        integration_state=integration_state,
-        midend_diagnostics_state=midend_diagnostics_state,
-        frontend_layer_runtime_hooks=frontend_layer_runtime_hooks,
+    return (
+        frontend_layer_execution_context,
+        frontend_layer_runtime_hooks,
+        integration_state,
+        midend_diagnostics_state,
     )
 
 
@@ -14210,7 +14204,6 @@ def _execute_build_driver_state(
         prepared_frontend_pipeline.prepared_frontend_backend_handoff
     )
     frontend_layer_error = _run_frontend_pipeline(
-        frontend_parallel_details=prepared_build_driver_state.frontend_parallel_details,
         prepared_frontend_run_ticket=prepared_frontend_run_ticket,
     )
     if frontend_layer_error is not None:
@@ -14669,7 +14662,12 @@ def _prepare_frontend_pipeline(
         midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
         midend_pass_stats_by_function=midend_pass_stats_by_function,
     )
-    prepared_frontend_execution = _prepare_frontend_execution(
+    (
+        frontend_layer_execution_context,
+        frontend_layer_runtime_hooks,
+        integration_state,
+        midend_diagnostics_state,
+    ) = _prepare_frontend_execution(
         prepared_frontend_execution_context=prepared_frontend_execution_context
     )
     prepared_frontend_run_ticket = _PreparedFrontendRunTicket(
@@ -14682,7 +14680,9 @@ def _prepare_frontend_pipeline(
             prepared_frontend_lowering_config.frontend_parallel_layers
         ),
         frontend_parallel_worker_timings=frontend_parallel_worker_timings,
-        prepared_frontend_execution=prepared_frontend_execution,
+        frontend_parallel_details=frontend_parallel_details,
+        frontend_layer_execution_context=frontend_layer_execution_context,
+        frontend_layer_runtime_hooks=frontend_layer_runtime_hooks,
     )
     prepared_frontend_backend_handoff = _PreparedFrontendBackendHandoff(
         module_graph=prepared_module_graph.module_graph,
@@ -14700,8 +14700,8 @@ def _prepare_frontend_pipeline(
         enable_phi=prepared_frontend_lowering_config.enable_phi,
         module_chunk_max_ops=prepared_frontend_lowering_config.module_chunk_max_ops,
         module_chunking=prepared_frontend_lowering_config.module_chunking,
-        integration_state=prepared_frontend_execution.integration_state,
-        diagnostics_state=prepared_frontend_execution.midend_diagnostics_state,
+        integration_state=integration_state,
+        diagnostics_state=midend_diagnostics_state,
         record_frontend_timing=record_frontend_timing,
         build_diagnostics_payload=build_diagnostics_payload,
         artifacts_root=artifacts_root,
@@ -14912,7 +14912,6 @@ def _prepare_build_driver_state(
     )
     return _PreparedBuildDriverState(
         prepared_frontend_pipeline=prepared_frontend_pipeline,
-        frontend_parallel_details=prepared_build_preamble.frontend_parallel_details,
         prepared_backend_build_context=prepared_backend_build_context,
         prepared_build_finalize_context=prepared_build_finalize_context,
     ), None
@@ -15149,7 +15148,6 @@ def _run_frontend_parallel_enabled_layers(
 
 def _run_frontend_pipeline(
     *,
-    frontend_parallel_details: dict[str, Any],
     prepared_frontend_run_ticket: _PreparedFrontendRunTicket,
 ) -> dict[str, Any] | None:
     frontend_parallel_config = (
@@ -15158,14 +15156,11 @@ def _run_frontend_pipeline(
     frontend_parallel_layers = (
         prepared_frontend_run_ticket.frontend_parallel_layers
     )
-    prepared_frontend_execution = (
-        prepared_frontend_run_ticket.prepared_frontend_execution
-    )
     frontend_layer_execution_context = (
-        prepared_frontend_execution.frontend_layer_execution_context
+        prepared_frontend_run_ticket.frontend_layer_execution_context
     )
     frontend_layer_runtime_hooks = (
-        prepared_frontend_execution.frontend_layer_runtime_hooks
+        prepared_frontend_run_ticket.frontend_layer_runtime_hooks
     )
     if frontend_parallel_config.enabled:
         frontend_layer_error = _run_frontend_parallel_enabled_layers(
@@ -15186,7 +15181,7 @@ def _run_frontend_pipeline(
     if frontend_layer_error is not None:
         return frontend_layer_error
     _summarize_frontend_parallel_worker_timings(
-        frontend_parallel_details,
+        prepared_frontend_run_ticket.frontend_parallel_details,
         prepared_frontend_run_ticket.frontend_parallel_worker_timings,
     )
     return None
