@@ -56,6 +56,53 @@ def test_write_importer_module_uses_constant_time_membership(tmp_path: Path) -> 
     assert "_TOP_LEVEL_BY_MODULE.get(resolved, resolved)" in text
 
 
+def test_write_importer_module_avoids_rewriting_identical_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path_type = type(tmp_path)
+    original_write_text = path_type.write_text
+    writes = 0
+
+    def wrapped_write_text(
+        self: Path, data: str, *args: object, **kwargs: object
+    ) -> int:
+        nonlocal writes
+        if self == tmp_path / f"{cli.IMPORTER_MODULE_NAME}.py":
+            writes += 1
+        return original_write_text(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(path_type, "write_text", wrapped_write_text)
+
+    cli._write_importer_module(["pkg.alpha", "solo"], tmp_path)
+    cli._write_importer_module(["pkg.alpha", "solo"], tmp_path)
+
+    assert writes == 1
+
+
+def test_write_namespace_module_avoids_rewriting_identical_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path_type = type(tmp_path)
+    original_write_text = path_type.write_text
+    writes = 0
+    expected_path = tmp_path / "namespace_demo_pkg.py"
+
+    def wrapped_write_text(
+        self: Path, data: str, *args: object, **kwargs: object
+    ) -> int:
+        nonlocal writes
+        if self == expected_path:
+            writes += 1
+        return original_write_text(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(path_type, "write_text", wrapped_write_text)
+
+    cli._write_namespace_module("demo.pkg", ["/tmp/demo/pkg"], tmp_path)
+    cli._write_namespace_module("demo.pkg", ["/tmp/demo/pkg"], tmp_path)
+
+    assert writes == 1
+
+
 def test_find_project_root_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -741,7 +788,9 @@ def test_discover_module_graph_reuses_persisted_paths_for_unchanged_modules(
         stdlib_allowlist_arg: set[str],
     ) -> Path | None:
         resolved_candidates.append(candidate)
-        return original_resolve(candidate, roots_arg, stdlib_root_arg, stdlib_allowlist_arg)
+        return original_resolve(
+            candidate, roots_arg, stdlib_root_arg, stdlib_allowlist_arg
+        )
 
     monkeypatch.setattr(cache, "read_module_source", wrapped_read)
     monkeypatch.setattr(cache, "resolve_module", wrapped_resolve)
@@ -1183,7 +1232,9 @@ def test_lock_check_cache_path_is_cached(
     second = cli._lock_check_cache_path(tmp_path, "cargo")
 
     info = cli._lock_check_cache_path_cached.cache_info()
-    assert first == second == (tmp_path / "external-target" / "lock_checks" / "cargo.json")
+    assert (
+        first == second == (tmp_path / "external-target" / "lock_checks" / "cargo.json")
+    )
     assert info.hits >= 1
     assert info.currsize >= 1
 
@@ -1237,8 +1288,8 @@ def test_backend_bin_path_is_cached(
     second = cli._backend_bin_path(tmp_path, "dev-fast")
 
     info = cli._backend_bin_path_cached.cache_info()
-    assert first == second == (
-        tmp_path / "external-target" / "dev-fast" / "molt-backend"
+    assert (
+        first == second == (tmp_path / "external-target" / "dev-fast" / "molt-backend")
     )
     assert info.hits >= 1
     assert info.currsize >= 1
@@ -1272,7 +1323,9 @@ def test_resolve_env_path_is_cached(
     assert info.currsize >= 1
 
 
-def test_default_molt_cache_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_molt_cache_is_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     cli._default_molt_cache_cached.cache_clear()
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache-root"))
 
@@ -1285,7 +1338,9 @@ def test_default_molt_cache_is_cached(tmp_path: Path, monkeypatch: pytest.Monkey
     assert info.currsize >= 1
 
 
-def test_default_molt_home_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_molt_home_is_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     cli._default_molt_home_cached.cache_clear()
     monkeypatch.setenv("MOLT_HOME", str(tmp_path / "home-root"))
 
@@ -1298,7 +1353,9 @@ def test_default_molt_home_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert info.currsize >= 1
 
 
-def test_default_molt_bin_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_molt_bin_is_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     cli._default_molt_bin_cached.cache_clear()
     monkeypatch.setenv("MOLT_BIN", str(tmp_path / "bin-root"))
 
@@ -1311,7 +1368,9 @@ def test_default_molt_bin_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert info.currsize >= 1
 
 
-def test_wasm_runtime_root_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wasm_runtime_root_is_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     cli._wasm_runtime_root_cached.cache_clear()
     monkeypatch.setenv("MOLT_WASM_RUNTIME_DIR", str(tmp_path / "wasm-root"))
 
@@ -1346,9 +1405,7 @@ def test_default_build_root_is_cached(
     second = cli._default_build_root("hello/world.py")
 
     info = cli._default_build_root_cached.cache_info()
-    assert first == second == (
-        tmp_path / "home-root" / "build" / "hello_world.py"
-    )
+    assert first == second == (tmp_path / "home-root" / "build" / "hello_world.py")
     assert info.hits >= 1
     assert info.currsize >= 1
 
@@ -1379,7 +1436,9 @@ def test_resolve_out_dir_is_cached(tmp_path: Path) -> None:
     assert info.currsize >= 1
 
 
-def test_resolve_sysroot_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_sysroot_is_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     cli._resolve_sysroot_cached.cache_clear()
     monkeypatch.setenv("MOLT_SYSROOT", "sdk-root")
 
@@ -1404,8 +1463,10 @@ def test_runtime_lib_path_is_cached(
     second = cli._runtime_lib_path(tmp_path, "dev-fast", None)
 
     info = cli._runtime_lib_path_cached.cache_info()
-    assert first == second == (
-        tmp_path / "external-target" / "dev-fast" / "libmolt_runtime.a"
+    assert (
+        first
+        == second
+        == (tmp_path / "external-target" / "dev-fast" / "libmolt_runtime.a")
     )
     assert info.hits >= 1
     assert info.currsize >= 1
@@ -1536,17 +1597,15 @@ def test_load_module_analysis_reuses_persisted_cache(
         cached_source,
         cache_hit,
         interface_changed,
-    ) = (
-        cli._load_module_analysis(
-            module_path,
-            module_name="pkg",
-            is_package=False,
-            include_nested=True,
-            source=None,
-            logical_source_path=str(module_path),
-            resolution_cache=cache,
-            project_root=tmp_path,
-        )
+    ) = cli._load_module_analysis(
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        include_nested=True,
+        source=None,
+        logical_source_path=str(module_path),
+        resolution_cache=cache,
+        project_root=tmp_path,
     )
 
     assert cached_tree is None
@@ -1595,17 +1654,15 @@ def test_load_module_analysis_reuses_persisted_module_analysis_imports(
         cached_source,
         cache_hit,
         interface_changed,
-    ) = (
-        cli._load_module_analysis(
-            module_path,
-            module_name="pkg",
-            is_package=False,
-            include_nested=True,
-            source=None,
-            logical_source_path=str(module_path),
-            resolution_cache=cache,
-            project_root=tmp_path,
-        )
+    ) = cli._load_module_analysis(
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        include_nested=True,
+        source=None,
+        logical_source_path=str(module_path),
+        resolution_cache=cache,
+        project_root=tmp_path,
     )
 
     assert cached_tree is None
@@ -1659,17 +1716,15 @@ def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
         cached_source,
         cache_hit,
         interface_changed,
-    ) = (
-        cli._load_module_analysis(
-            module_path,
-            module_name="pkg",
-            is_package=False,
-            include_nested=True,
-            source=None,
-            logical_source_path=str(module_path),
-            resolution_cache=cache,
-            project_root=tmp_path,
-        )
+    ) = cli._load_module_analysis(
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        include_nested=True,
+        source=None,
+        logical_source_path=str(module_path),
+        resolution_cache=cache,
+        project_root=tmp_path,
     )
 
     assert cached_tree is None
@@ -1882,14 +1937,18 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
     project_root = tmp_path
     context_payload_calls = 0
 
-    def fake_context_payload(*args: object, **kwargs: object) -> dict[str, object] | None:
+    def fake_context_payload(
+        *args: object, **kwargs: object
+    ) -> dict[str, object] | None:
         del args, kwargs
         nonlocal context_payload_calls
         context_payload_calls += 1
         return {"module": "alpha"}
 
     monkeypatch.setattr(cli, "_module_lowering_context_payload", fake_context_payload)
-    monkeypatch.setattr(cli, "_module_lowering_context_digest", lambda payload: "digest")
+    monkeypatch.setattr(
+        cli, "_module_lowering_context_digest", lambda payload: "digest"
+    )
 
     def fake_read(
         root: Path,
@@ -2084,7 +2143,9 @@ def test_module_lowering_context_payload_ignores_unrelated_func_defaults() -> No
     assert "beta" not in payload["known_func_defaults"]
 
 
-def test_module_lowering_context_payload_scopes_known_modules_and_hot_functions() -> None:
+def test_module_lowering_context_payload_scopes_known_modules_and_hot_functions() -> (
+    None
+):
     payload = cli._module_lowering_context_payload(
         "main",
         Path("/tmp/main.py"),
@@ -2208,7 +2269,11 @@ def test_module_lowering_context_payload_scopes_type_facts() -> None:
         modules={
             "main": ModuleFacts(
                 globals={"VALUE": Fact(type="int", trust="trusted")},
-                functions={"run": FunctionFacts(locals={"x": Fact(type="int", trust="trusted")})},
+                functions={
+                    "run": FunctionFacts(
+                        locals={"x": Fact(type="int", trust="trusted")}
+                    )
+                },
             ),
             "alpha": ModuleFacts(
                 globals={"DEP": Fact(type="str", trust="trusted")},
@@ -2257,7 +2322,9 @@ def test_module_worker_payload_scopes_type_facts() -> None:
         modules={
             "main": ModuleFacts(globals={"VALUE": Fact(type="int", trust="trusted")}),
             "alpha": ModuleFacts(globals={"DEP": Fact(type="str", trust="trusted")}),
-            "unrelated": ModuleFacts(globals={"NOPE": Fact(type="bytes", trust="trusted")}),
+            "unrelated": ModuleFacts(
+                globals={"NOPE": Fact(type="bytes", trust="trusted")}
+            ),
         }
     )
 
@@ -2295,7 +2362,9 @@ def test_build_scoped_lowering_inputs_precomputes_scoped_views() -> None:
         modules={
             "main": ModuleFacts(globals={"VALUE": Fact(type="int", trust="trusted")}),
             "alpha": ModuleFacts(globals={"DEP": Fact(type="str", trust="trusted")}),
-            "unrelated": ModuleFacts(globals={"NOPE": Fact(type="bytes", trust="trusted")}),
+            "unrelated": ModuleFacts(
+                globals={"NOPE": Fact(type="bytes", trust="trusted")}
+            ),
         }
     )
 
@@ -2304,11 +2373,11 @@ def test_build_scoped_lowering_inputs_precomputes_scoped_views() -> None:
         scoped_known_func_defaults_by_module,
         scoped_pgo_hot_function_names_by_module,
         scoped_type_facts_by_module,
-        ) = cli._build_scoped_lowering_inputs(
-            {"main", "alpha", "unrelated"},
-            module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
-            module_dep_closures={
-                "main": frozenset({"main", "alpha"}),
+    ) = cli._build_scoped_lowering_inputs(
+        {"main", "alpha", "unrelated"},
+        module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
+        module_dep_closures={
+            "main": frozenset({"main", "alpha"}),
             "alpha": frozenset({"alpha"}),
             "unrelated": frozenset({"unrelated"}),
         },
@@ -2642,7 +2711,9 @@ def test_parallel_build_allows_scoped_type_facts(
         modules={
             "main": ModuleFacts(globals={"ENTRY": Fact(type="int", trust="trusted")}),
             "alpha": ModuleFacts(globals={"VALUE": Fact(type="int", trust="trusted")}),
-            "unrelated": ModuleFacts(globals={"NOPE": Fact(type="bytes", trust="trusted")}),
+            "unrelated": ModuleFacts(
+                globals={"NOPE": Fact(type="bytes", trust="trusted")}
+            ),
         }
     )
     monkeypatch.setattr(
@@ -2673,6 +2744,62 @@ def test_parallel_build_allows_scoped_type_facts(
     compile_diagnostics = json.loads(stdout.getvalue())["data"]["compile_diagnostics"]
     assert compile_diagnostics["frontend_parallel"]["enabled"] is True
     assert compile_diagnostics["frontend_parallel"]["reason"] == "enabled"
+
+
+def test_build_one_shot_backend_compile_uses_bytes_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+    entry = project / "main.py"
+    entry.write_text("print('ok')\n")
+
+    build_state_root = tmp_path / "build-state"
+    cache_root = tmp_path / "cache"
+    backend_bin = tmp_path / "fake-backend"
+    backend_bin.write_text("")
+
+    monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
+    monkeypatch.setenv("MOLT_CACHE", str(cache_root))
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli, "_resolve_frontend_parallel_module_workers", lambda: 0)
+    monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
+    monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli, "_ensure_backend_binary", lambda *args, **kwargs: True)
+
+    original_run = cli.subprocess.run
+    backend_inputs: list[bytes] = []
+
+    def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        if cmd and str(cmd[0]) == str(backend_bin):
+            backend_input = kwargs.get("input")
+            assert isinstance(backend_input, bytes)
+            assert kwargs.get("text") in (None, False)
+            backend_inputs.append(backend_input)
+            output = Path(cmd[cmd.index("--output") + 1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"OBJ")
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+        return original_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    rc = cli.build(
+        str(entry),
+        emit="obj",
+        output=str(tmp_path / "out.o"),
+        profile="dev",
+        deterministic=False,
+        json_output=False,
+    )
+
+    assert rc == 0
+    assert len(backend_inputs) == 1
+    assert backend_inputs[0].startswith(b"{")
 
 
 def test_build_skips_daemon_preflight_when_socket_exists(
@@ -2765,7 +2892,9 @@ def test_build_skips_daemon_preflight_when_socket_exists(
             output_exists=True,
         )
 
-    monkeypatch.setattr(cli, "_compile_with_backend_daemon", fake_compile_with_backend_daemon)
+    monkeypatch.setattr(
+        cli, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
+    )
 
     stdout = io.StringIO()
     with contextlib.redirect_stdout(stdout):
@@ -4010,8 +4139,12 @@ def test_compile_with_backend_daemon_defers_full_encode_until_probe_miss(
 
     original = cli._backend_daemon_compile_request_bytes
 
-    def wrapped_compile_request_bytes(**kwargs: object) -> tuple[bytes | None, str | None]:
-        calls.append((bool(kwargs.get("probe_cache_only")), kwargs.get("ir") is not None))
+    def wrapped_compile_request_bytes(
+        **kwargs: object,
+    ) -> tuple[bytes | None, str | None]:
+        calls.append(
+            (bool(kwargs.get("probe_cache_only")), kwargs.get("ir") is not None)
+        )
         return original(**kwargs)
 
     def _fake_request(
@@ -4041,7 +4174,9 @@ def test_compile_with_backend_daemon_defers_full_encode_until_probe_miss(
             )
         raise AssertionError("full IR request should not be sent on cache hit")
 
-    monkeypatch.setattr(cli, "_backend_daemon_compile_request_bytes", wrapped_compile_request_bytes)
+    monkeypatch.setattr(
+        cli, "_backend_daemon_compile_request_bytes", wrapped_compile_request_bytes
+    )
     monkeypatch.setattr(cli, "_backend_daemon_request_bytes", _fake_request)
     result = cli._compile_with_backend_daemon(
         Path("/tmp/fake.sock"),
