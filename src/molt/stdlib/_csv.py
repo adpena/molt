@@ -17,7 +17,7 @@ from csv import register_dialect
 from csv import unregister_dialect
 from csv import writer
 
-_MOLT_CSV_RUNTIME_READY = _require_intrinsic("molt_csv_runtime_ready", globals())
+_MOLT_CSV_RUNTIME_READY = _require_intrinsic("molt_csv_runtime_ready")
 _MOLT_CSV_RUNTIME_READY()
 
 __all__ = [
