@@ -327,60 +327,60 @@ class NormalDist:
         self._mu, self._sigma = state
 
 
-_MOLT_STATISTICS_MEAN = _require_intrinsic("molt_statistics_mean", globals())
-_MOLT_STATISTICS_FMEAN = _require_intrinsic("molt_statistics_fmean", globals())
-_MOLT_STATISTICS_STDEV = _require_intrinsic("molt_statistics_stdev", globals())
-_MOLT_STATISTICS_VARIANCE = _require_intrinsic("molt_statistics_variance", globals())
-_MOLT_STATISTICS_PVARIANCE = _require_intrinsic("molt_statistics_pvariance", globals())
-_MOLT_STATISTICS_PSTDEV = _require_intrinsic("molt_statistics_pstdev", globals())
-_MOLT_STATISTICS_MEDIAN = _require_intrinsic("molt_statistics_median", globals())
+_MOLT_STATISTICS_MEAN = _require_intrinsic("molt_statistics_mean")
+_MOLT_STATISTICS_FMEAN = _require_intrinsic("molt_statistics_fmean")
+_MOLT_STATISTICS_STDEV = _require_intrinsic("molt_statistics_stdev")
+_MOLT_STATISTICS_VARIANCE = _require_intrinsic("molt_statistics_variance")
+_MOLT_STATISTICS_PVARIANCE = _require_intrinsic("molt_statistics_pvariance")
+_MOLT_STATISTICS_PSTDEV = _require_intrinsic("molt_statistics_pstdev")
+_MOLT_STATISTICS_MEDIAN = _require_intrinsic("molt_statistics_median")
 _MOLT_STATISTICS_MEDIAN_LOW = _require_intrinsic(
-    "molt_statistics_median_low", globals()
+    "molt_statistics_median_low"
 )
 _MOLT_STATISTICS_MEDIAN_HIGH = _require_intrinsic(
-    "molt_statistics_median_high", globals()
+    "molt_statistics_median_high"
 )
 _MOLT_STATISTICS_MEDIAN_GROUPED = _require_intrinsic(
-    "molt_statistics_median_grouped", globals()
+    "molt_statistics_median_grouped"
 )
-_MOLT_STATISTICS_MODE = _require_intrinsic("molt_statistics_mode", globals())
-_MOLT_STATISTICS_MULTIMODE = _require_intrinsic("molt_statistics_multimode", globals())
-_MOLT_STATISTICS_QUANTILES = _require_intrinsic("molt_statistics_quantiles", globals())
+_MOLT_STATISTICS_MODE = _require_intrinsic("molt_statistics_mode")
+_MOLT_STATISTICS_MULTIMODE = _require_intrinsic("molt_statistics_multimode")
+_MOLT_STATISTICS_QUANTILES = _require_intrinsic("molt_statistics_quantiles")
 _MOLT_STATISTICS_HARMONIC_MEAN = _require_intrinsic(
-    "molt_statistics_harmonic_mean", globals()
+    "molt_statistics_harmonic_mean"
 )
 _MOLT_STATISTICS_GEOMETRIC_MEAN = _require_intrinsic(
-    "molt_statistics_geometric_mean", globals()
+    "molt_statistics_geometric_mean"
 )
 _MOLT_STATISTICS_COVARIANCE = _require_intrinsic(
-    "molt_statistics_covariance", globals()
+    "molt_statistics_covariance"
 )
 _MOLT_STATISTICS_CORRELATION = _require_intrinsic(
-    "molt_statistics_correlation", globals()
+    "molt_statistics_correlation"
 )
 _MOLT_STATISTICS_LINEAR_REGRESSION = _require_intrinsic(
-    "molt_statistics_linear_regression", globals()
+    "molt_statistics_linear_regression"
 )
 _MOLT_STATISTICS_NORMAL_DIST_NEW = _require_intrinsic(
-    "molt_statistics_normal_dist_new", globals()
+    "molt_statistics_normal_dist_new"
 )
 _MOLT_STATISTICS_NORMAL_DIST_SAMPLES = _require_intrinsic(
-    "molt_statistics_normal_dist_samples", globals()
+    "molt_statistics_normal_dist_samples"
 )
 _MOLT_STATISTICS_NORMAL_DIST_PDF = _require_intrinsic(
-    "molt_statistics_normal_dist_pdf", globals()
+    "molt_statistics_normal_dist_pdf"
 )
 _MOLT_STATISTICS_NORMAL_DIST_CDF = _require_intrinsic(
-    "molt_statistics_normal_dist_cdf", globals()
+    "molt_statistics_normal_dist_cdf"
 )
 _MOLT_STATISTICS_NORMAL_DIST_INV_CDF = _require_intrinsic(
-    "molt_statistics_normal_dist_inv_cdf", globals()
+    "molt_statistics_normal_dist_inv_cdf"
 )
 _MOLT_STATISTICS_NORMAL_DIST_ZSCORE = _require_intrinsic(
-    "molt_statistics_normal_dist_zscore", globals()
+    "molt_statistics_normal_dist_zscore"
 )
 _MOLT_STATISTICS_NORMAL_DIST_OVERLAP = _require_intrinsic(
-    "molt_statistics_normal_dist_overlap", globals()
+    "molt_statistics_normal_dist_overlap"
 )
 
 # TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete Python 3.12+ statistics API/PEP parity beyond function surface lowering (for example NormalDist and remaining edge-case text parity).

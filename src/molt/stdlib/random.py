@@ -9,46 +9,46 @@ from collections.abc import Sequence as _Sequence
 from itertools import accumulate as _accumulate
 import os as _os
 
-_molt_random_new = _require_intrinsic("molt_random_new", globals())
-_molt_random_seed = _require_intrinsic("molt_random_seed", globals())
-_molt_random_random = _require_intrinsic("molt_random_random", globals())
-_molt_random_getrandbits = _require_intrinsic("molt_random_getrandbits", globals())
-_molt_random_randbelow = _require_intrinsic("molt_random_randbelow", globals())
-_molt_random_getstate = _require_intrinsic("molt_random_getstate", globals())
-_molt_random_setstate = _require_intrinsic("molt_random_setstate", globals())
-_molt_random_shuffle = _require_intrinsic("molt_random_shuffle", globals())
-_molt_random_gauss = _require_intrinsic("molt_random_gauss", globals())
-_molt_random_uniform = _require_intrinsic("molt_random_uniform", globals())
-_molt_random_triangular = _require_intrinsic("molt_random_triangular", globals())
-_molt_random_expovariate = _require_intrinsic("molt_random_expovariate", globals())
-_molt_random_normalvariate = _require_intrinsic("molt_random_normalvariate", globals())
+_molt_random_new = _require_intrinsic("molt_random_new")
+_molt_random_seed = _require_intrinsic("molt_random_seed")
+_molt_random_random = _require_intrinsic("molt_random_random")
+_molt_random_getrandbits = _require_intrinsic("molt_random_getrandbits")
+_molt_random_randbelow = _require_intrinsic("molt_random_randbelow")
+_molt_random_getstate = _require_intrinsic("molt_random_getstate")
+_molt_random_setstate = _require_intrinsic("molt_random_setstate")
+_molt_random_shuffle = _require_intrinsic("molt_random_shuffle")
+_molt_random_gauss = _require_intrinsic("molt_random_gauss")
+_molt_random_uniform = _require_intrinsic("molt_random_uniform")
+_molt_random_triangular = _require_intrinsic("molt_random_triangular")
+_molt_random_expovariate = _require_intrinsic("molt_random_expovariate")
+_molt_random_normalvariate = _require_intrinsic("molt_random_normalvariate")
 _molt_random_lognormvariate = _require_intrinsic(
-    "molt_random_lognormvariate", globals()
+    "molt_random_lognormvariate"
 )
 _molt_random_vonmisesvariate = _require_intrinsic(
-    "molt_random_vonmisesvariate", globals()
+    "molt_random_vonmisesvariate"
 )
-_molt_random_paretovariate = _require_intrinsic("molt_random_paretovariate", globals())
+_molt_random_paretovariate = _require_intrinsic("molt_random_paretovariate")
 _molt_random_weibullvariate = _require_intrinsic(
-    "molt_random_weibullvariate", globals()
+    "molt_random_weibullvariate"
 )
-_molt_random_gammavariate = _require_intrinsic("molt_random_gammavariate", globals())
-_molt_random_betavariate = _require_intrinsic("molt_random_betavariate", globals())
-_molt_random_choices = _require_intrinsic("molt_random_choices", globals())
-_molt_random_sample = _require_intrinsic("molt_random_sample", globals())
+_molt_random_gammavariate = _require_intrinsic("molt_random_gammavariate")
+_molt_random_betavariate = _require_intrinsic("molt_random_betavariate")
+_molt_random_choices = _require_intrinsic("molt_random_choices")
+_molt_random_sample = _require_intrinsic("molt_random_sample")
 _molt_random_binomialvariate = _require_intrinsic(
-    "molt_random_binomialvariate", globals()
+    "molt_random_binomialvariate"
 )
-_molt_random_randrange = _require_intrinsic("molt_random_randrange", globals())
-_molt_random_randbytes = _require_intrinsic("molt_random_randbytes", globals())
+_molt_random_randrange = _require_intrinsic("molt_random_randrange")
+_molt_random_randbytes = _require_intrinsic("molt_random_randbytes")
 
-_molt_math_log2 = _require_intrinsic("molt_math_log2", globals())
-_molt_math_floor = _require_intrinsic("molt_math_floor", globals())
-_molt_math_fabs = _require_intrinsic("molt_math_fabs", globals())
-_molt_math_sqrt = _require_intrinsic("molt_math_sqrt", globals())
-_molt_math_lgamma = _require_intrinsic("molt_math_lgamma", globals())
-_molt_math_log = _require_intrinsic("molt_math_log", globals())
-_molt_math_isfinite = _require_intrinsic("molt_math_isfinite", globals())
+_molt_math_log2 = _require_intrinsic("molt_math_log2")
+_molt_math_floor = _require_intrinsic("molt_math_floor")
+_molt_math_fabs = _require_intrinsic("molt_math_fabs")
+_molt_math_sqrt = _require_intrinsic("molt_math_sqrt")
+_molt_math_lgamma = _require_intrinsic("molt_math_lgamma")
+_molt_math_log = _require_intrinsic("molt_math_log")
+_molt_math_isfinite = _require_intrinsic("molt_math_isfinite")
 
 _urandom = _os.urandom
 
