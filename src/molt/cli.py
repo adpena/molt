@@ -12753,6 +12753,43 @@ def build(
                 )
         return payload, visit_s, lower_s, total_s
 
+    def _run_serial_frontend_lower(
+        module_name: str,
+        module_path: Path,
+    ) -> tuple[
+        dict[str, Any] | None,
+        _FrontendModuleResultTimings | None,
+        dict[str, Any] | None,
+    ]:
+        try:
+            result, visit_s, lower_s, total_s = _lower_module_serial(
+                module_name, module_path
+            )
+        except _ModuleLowerError as exc:
+            _record_frontend_timing(
+                module_name=module_name,
+                module_path=module_path,
+                visit_s=0.0,
+                lower_s=0.0,
+                total_s=0.0,
+                timed_out=exc.timed_out,
+                detail=str(exc),
+            )
+            return None, None, _fail(str(exc), json_output, command="build")
+        result_timings = _FrontendModuleResultTimings(
+            visit_s=visit_s,
+            lower_s=lower_s,
+            total_s=total_s,
+        )
+        _record_frontend_timing(
+            module_name=module_name,
+            module_path=module_path,
+            visit_s=result_timings.visit_s,
+            lower_s=result_timings.lower_s,
+            total_s=result_timings.total_s,
+        )
+        return result, result_timings, None
+
     frontend_parallel_config = _resolve_frontend_parallel_config(
         module_count=len(module_order),
         has_back_edges=has_back_edges,
@@ -13039,33 +13076,14 @@ def build(
                         if consume_error is not None:
                             return consume_error
                         continue
-                    try:
-                        result, visit_s, lower_s, total_s = _lower_module_serial(
-                            module_name, module_path
-                        )
-                    except _ModuleLowerError as exc:
-                        _record_frontend_timing(
-                            module_name=module_name,
-                            module_path=module_path,
-                            visit_s=0.0,
-                            lower_s=0.0,
-                            total_s=0.0,
-                            timed_out=exc.timed_out,
-                            detail=str(exc),
-                        )
-                        return _fail(str(exc), json_output, command="build")
-                    _record_frontend_timing(
-                        module_name=module_name,
-                        module_path=module_path,
-                        visit_s=visit_s,
-                        lower_s=lower_s,
-                        total_s=total_s,
+                    result, result_timings, lower_error = _run_serial_frontend_lower(
+                        module_name,
+                        module_path,
                     )
-                    result_timings = _FrontendModuleResultTimings(
-                        visit_s=visit_s,
-                        lower_s=lower_s,
-                        total_s=total_s,
-                    )
+                    if lower_error is not None:
+                        return lower_error
+                    assert result is not None
+                    assert result_timings is not None
                     serial_mode = _frontend_serial_worker_mode(layer_mode)
                     _record_serial_frontend_worker_timing(
                         record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
@@ -13074,7 +13092,7 @@ def build(
                         module_name=module_name,
                         module_path=module_path,
                         mode=serial_mode,
-                        total_s=total_s,
+                        total_s=result_timings.total_s,
                     )
                     consume_error = _consume_frontend_module_result(
                         module_name=module_name,
@@ -13112,33 +13130,14 @@ def build(
         serial_layer_state = _fresh_frontend_parallel_layer_state()
         for module_name in module_order:
             module_path = module_graph[module_name]
-            try:
-                result, visit_s, lower_s, total_s = _lower_module_serial(
-                    module_name, module_path
-                )
-            except _ModuleLowerError as exc:
-                _record_frontend_timing(
-                    module_name=module_name,
-                    module_path=module_path,
-                    visit_s=0.0,
-                    lower_s=0.0,
-                    total_s=0.0,
-                    timed_out=exc.timed_out,
-                    detail=str(exc),
-                )
-                return _fail(str(exc), json_output, command="build")
-            _record_frontend_timing(
-                module_name=module_name,
-                module_path=module_path,
-                visit_s=visit_s,
-                lower_s=lower_s,
-                total_s=total_s,
+            result, result_timings, lower_error = _run_serial_frontend_lower(
+                module_name,
+                module_path,
             )
-            result_timings = _FrontendModuleResultTimings(
-                visit_s=visit_s,
-                lower_s=lower_s,
-                total_s=total_s,
-            )
+            if lower_error is not None:
+                return lower_error
+            assert result is not None
+            assert result_timings is not None
             _record_serial_frontend_worker_timing(
                 record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
                 recorded_worker_timings=serial_layer_state.recorded_worker_timings,
@@ -13146,7 +13145,7 @@ def build(
                 module_name=module_name,
                 module_path=module_path,
                 mode="serial_disabled",
-                total_s=total_s,
+                total_s=result_timings.total_s,
             )
             consume_error = _consume_frontend_module_result(
                 module_name=module_name,
