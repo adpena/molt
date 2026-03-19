@@ -1565,7 +1565,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_colorize` top-level stub with full intrinsic-backed lowering.
 - Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_compat_pickle` now ships the canonical CPython compatibility mapping tables in-repo for private-module imports without host dependencies.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_compression` top-level stub with full intrinsic-backed lowering.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_contextvars` top-level stub with full intrinsic-backed lowering.
+- Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_contextvars` now re-exports Molt's intrinsic-backed `contextvars` surface with CPython-shaped private-module names (`Context`, `ContextVar`, `Token`, `copy_context`).
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_crypt` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_csv` top-level stub with full intrinsic-backed lowering.
 - Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_ctypes` now re-exports Molt's intrinsic-backed scalar/structure/pointer ctypes subset for CPython-compatible private-module imports.
@@ -1578,7 +1578,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_functools` now exposes an intrinsic-backed compatibility surface for `Placeholder`, `cmp_to_key`, `partial`, and `reduce` over Molt's `functools` runtime.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_gdbm` top-level stub with full intrinsic-backed lowering.
 - DONE(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:done): `_hashlib` now exposes intrinsic-backed hash/HMAC compatibility helpers, OpenSSL-style constructor aliases, and key derivation entrypoints through Molt `hashlib`/`hmac`.
-- TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_heapq` top-level stub with full intrinsic-backed lowering.
+- Implemented(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): `_heapq` now re-exports Molt's intrinsic-backed heap operations (`heapify`, `heappush`, `heappop`, `heapreplace`, `heappushpop`) for CPython-compatible private-module imports.
 - DONE(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:done): `_hmac` now exposes intrinsic-backed HMAC helpers, one-shot digest entrypoints, and CPython-compatible unknown-hash errors via Molt `hmac`.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_imp` top-level stub with full intrinsic-backed lowering.
 - TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_interpchannels` top-level stub with full intrinsic-backed lowering.
