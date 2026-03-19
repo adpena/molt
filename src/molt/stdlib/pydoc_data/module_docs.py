@@ -2,7 +2,7 @@
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 # STDLIB_GAP(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `pydoc_data.module_docs` module stub with full intrinsic-backed lowering.
