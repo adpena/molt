@@ -2558,6 +2558,7 @@ def test_resolve_backend_profile_defaults_to_selected_build_profile(
 def test_resolve_backend_profile_env_override_and_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    cli._resolve_backend_profile_cached.cache_clear()
     monkeypatch.setenv("MOLT_BACKEND_PROFILE", "release")
     profile, error = cli._resolve_backend_profile("dev")
     assert profile == "release"
@@ -2572,6 +2573,7 @@ def test_resolve_backend_profile_env_override_and_validation(
 def test_resolve_cargo_profile_name_defaults_and_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    cli._resolve_cargo_profile_name_cached.cache_clear()
     monkeypatch.delenv("MOLT_DEV_CARGO_PROFILE", raising=False)
     profile, error = cli._resolve_cargo_profile_name("dev")
     assert profile == "dev-fast"
@@ -2611,6 +2613,22 @@ def test_backend_daemon_request_payload_bytes_is_unbounded() -> None:
 
 def test_backend_daemon_start_timeout_is_unbounded() -> None:
     assert cli._backend_daemon_start_timeout() is None
+
+
+def test_backend_daemon_enabled_is_cached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli._backend_daemon_enabled_cached.cache_clear()
+    monkeypatch.setenv("MOLT_BACKEND_DAEMON", "1")
+
+    first = cli._backend_daemon_enabled()
+    second = cli._backend_daemon_enabled()
+
+    info = cli._backend_daemon_enabled_cached.cache_info()
+    assert first is True
+    assert second is True
+    assert info.hits >= 1
+    assert info.currsize >= 1
 
 
 def test_backend_codegen_env_digest_tracks_codegen_knobs(
