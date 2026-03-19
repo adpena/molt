@@ -7736,11 +7736,11 @@ def _backend_daemon_enabled() -> bool:
 def _backend_daemon_start_timeout_cached(raw: str) -> float | None:
     value = raw.strip()
     if not value:
-        return 15.0
+        return 2.0
     try:
         parsed = float(value)
     except ValueError:
-        return 15.0
+        return 2.0
     return parsed if parsed > 0 else None
 
 

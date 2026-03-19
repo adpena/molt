@@ -4536,7 +4536,7 @@ def test_backend_daemon_start_timeout_defaults_to_finite_bound(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("MOLT_BACKEND_DAEMON_START_TIMEOUT", raising=False)
-    assert cli._backend_daemon_start_timeout() == 15.0
+    assert cli._backend_daemon_start_timeout() == 2.0
 
 
 def test_backend_daemon_start_timeout_accepts_env_override(
