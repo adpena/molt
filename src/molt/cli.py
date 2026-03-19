@@ -10650,6 +10650,100 @@ def _emit_native_link_result(
     return link_process.returncode
 
 
+def _emit_non_native_build_result(
+    *,
+    output: Path,
+    cache: bool,
+    cache_hit: bool,
+    cache_key: str | None,
+    function_cache_key: str | None,
+    cache_path: Path | None,
+    function_cache_path: Path | None,
+    cache_hit_tier: str | None,
+    backend_daemon_cached: bool | None,
+    backend_daemon_cache_tier: str | None,
+    backend_daemon_config_digest: str | None,
+    target: str,
+    target_triple: str | None,
+    source_path: Path,
+    deterministic: bool,
+    trusted: bool,
+    capabilities_list: list[str] | None,
+    capability_profiles: list[str] | None,
+    capabilities_source: str | None,
+    sysroot_path: Path | None,
+    emit_mode: str,
+    profile: str,
+    native_arch_perf_enabled: bool,
+    diagnostics_payload: dict[str, Any] | None,
+    diagnostics_path: Path | None,
+    pgo_profile_payload: Any | None,
+    runtime_feedback_payload: Any | None,
+    emit_ir_path: Path | None,
+    warnings: list[str],
+    json_output: bool,
+    resolved_diagnostics_verbosity: str,
+    artifacts: Mapping[str, Any] | None = None,
+    extra_fields: Mapping[str, Any] | None = None,
+    success_messages: Sequence[str] = (),
+) -> int:
+    if json_output:
+        cache_info = _build_cache_info(
+            enabled=cache,
+            hit=cache_hit,
+            cache_key=cache_key,
+            function_cache_key=function_cache_key,
+            cache_path=cache_path,
+            function_cache_path=function_cache_path,
+            cache_hit_tier=cache_hit_tier,
+            backend_daemon_cached=backend_daemon_cached,
+            backend_daemon_cache_tier=backend_daemon_cache_tier,
+            backend_daemon_config_digest=backend_daemon_config_digest,
+        )
+        data = _build_common_build_json_data(
+            target=target,
+            target_triple=target_triple,
+            source_path=source_path,
+            output=output,
+            deterministic=deterministic,
+            trusted=trusted,
+            capabilities_list=capabilities_list,
+            capability_profiles=capability_profiles,
+            capabilities_source=capabilities_source,
+            sysroot_path=sysroot_path,
+            cache_info=cache_info,
+            emit_mode=emit_mode,
+            profile=profile,
+            native_arch_perf_enabled=native_arch_perf_enabled,
+        )
+        if artifacts is not None:
+            data["artifacts"] = dict(artifacts)
+        if extra_fields is not None:
+            data.update(extra_fields)
+        _attach_build_metadata(
+            data,
+            diagnostics_payload=diagnostics_payload,
+            pgo_profile_payload=pgo_profile_payload,
+            runtime_feedback_payload=runtime_feedback_payload,
+            emit_ir_path=emit_ir_path,
+        )
+        _emit_build_success_json(
+            data=data,
+            warnings=warnings,
+            json_output=json_output,
+        )
+    else:
+        for message in success_messages:
+            print(message)
+    _emit_build_diagnostics_if_present(
+        diagnostics_payload=diagnostics_payload,
+        diagnostics_path=diagnostics_path,
+        json_output=json_output,
+        verbosity=resolved_diagnostics_verbosity,
+    )
+    return 0
+
+
 def _initialize_runtime_artifact_state(
     *,
     is_rust_transpile: bool,
@@ -15782,120 +15876,95 @@ def build(
         if require_linked and linked_output_path is not None:
             primary_output = linked_output_path
         diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
-        if json_output:
-            cache_info = _build_cache_info(
-                enabled=cache,
-                hit=cache_hit,
-                cache_key=cache_key,
-                function_cache_key=function_cache_key,
-                cache_path=cache_path,
-                function_cache_path=function_cache_path,
-                cache_hit_tier=cache_hit_tier,
-                backend_daemon_cached=backend_daemon_cached,
-                backend_daemon_cache_tier=backend_daemon_cache_tier,
-                backend_daemon_config_digest=backend_daemon_config_digest,
-            )
-            data = _build_common_build_json_data(
-                target=target,
-                target_triple=target_triple,
-                source_path=source_path,
-                output=primary_output,
-                deterministic=deterministic,
-                trusted=trusted,
-                capabilities_list=capabilities_list,
-                capability_profiles=capability_profiles,
-                capabilities_source=capabilities_source,
-                sysroot_path=sysroot_path,
-                cache_info=cache_info,
-                emit_mode=emit_mode,
-                profile=profile,
-                native_arch_perf_enabled=native_arch_perf_enabled,
-            )
-            data["linked"] = linked
-            data["require_linked"] = require_linked
-            _attach_build_metadata(
-                data,
-                diagnostics_payload=diagnostics_payload,
-                pgo_profile_payload=pgo_profile_payload,
-                runtime_feedback_payload=runtime_feedback_payload,
-                emit_ir_path=emit_ir_path,
-            )
-            if linked_output_path is not None:
-                data["linked_output"] = str(linked_output_path)
-            _emit_build_success_json(
-                data=data,
-                warnings=warnings,
-                json_output=json_output,
-            )
-        else:
-            if require_linked:
-                print(f"Successfully built {primary_output}")
-            else:
-                print(f"Successfully built {output_wasm}")
-            if linked_output_path is not None and not require_linked:
-                print(f"Successfully linked {linked_output_path}")
-        _emit_build_diagnostics_if_present(
+        success_messages = (
+            [f"Successfully built {primary_output}"]
+            if require_linked
+            else [f"Successfully built {output_wasm}"]
+        )
+        if linked_output_path is not None and not require_linked:
+            success_messages.append(f"Successfully linked {linked_output_path}")
+        return _emit_non_native_build_result(
+            output=primary_output,
+            cache=cache,
+            cache_hit=cache_hit,
+            cache_key=cache_key,
+            function_cache_key=function_cache_key,
+            cache_path=cache_path,
+            function_cache_path=function_cache_path,
+            cache_hit_tier=cache_hit_tier,
+            backend_daemon_cached=backend_daemon_cached,
+            backend_daemon_cache_tier=backend_daemon_cache_tier,
+            backend_daemon_config_digest=backend_daemon_config_digest,
+            target=target,
+            target_triple=target_triple,
+            source_path=source_path,
+            deterministic=deterministic,
+            trusted=trusted,
+            capabilities_list=capabilities_list,
+            capability_profiles=capability_profiles,
+            capabilities_source=capabilities_source,
+            sysroot_path=sysroot_path,
+            emit_mode=emit_mode,
+            profile=profile,
+            native_arch_perf_enabled=native_arch_perf_enabled,
             diagnostics_payload=diagnostics_payload,
             diagnostics_path=diagnostics_path,
+            pgo_profile_payload=pgo_profile_payload,
+            runtime_feedback_payload=runtime_feedback_payload,
+            emit_ir_path=emit_ir_path,
+            warnings=warnings,
             json_output=json_output,
-            verbosity=resolved_diagnostics_verbosity,
+            resolved_diagnostics_verbosity=resolved_diagnostics_verbosity,
+            extra_fields={
+                "linked": linked,
+                "require_linked": require_linked,
+                **(
+                    {"linked_output": str(linked_output_path)}
+                    if linked_output_path is not None
+                    else {}
+                ),
+            },
+            success_messages=success_messages,
         )
-        return 0
 
     output_obj = output_artifact
     if emit_mode == "obj":
         diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
-        if json_output:
-            cache_info = _build_cache_info(
-                enabled=cache,
-                hit=cache_hit,
-                cache_key=cache_key,
-                function_cache_key=function_cache_key,
-                cache_path=cache_path,
-                function_cache_path=function_cache_path,
-                cache_hit_tier=cache_hit_tier,
-                backend_daemon_cached=backend_daemon_cached,
-                backend_daemon_cache_tier=backend_daemon_cache_tier,
-                backend_daemon_config_digest=backend_daemon_config_digest,
-            )
-            data = _build_common_build_json_data(
-                target=target,
-                target_triple=target_triple,
-                source_path=source_path,
-                output=output_obj,
-                deterministic=deterministic,
-                trusted=trusted,
-                capabilities_list=capabilities_list,
-                capability_profiles=capability_profiles,
-                capabilities_source=capabilities_source,
-                sysroot_path=sysroot_path,
-                cache_info=cache_info,
-                emit_mode=emit_mode,
-                profile=profile,
-                native_arch_perf_enabled=native_arch_perf_enabled,
-            )
-            data["artifacts"] = {"object": str(output_obj)}
-            _attach_build_metadata(
-                data,
-                diagnostics_payload=diagnostics_payload,
-                pgo_profile_payload=pgo_profile_payload,
-                runtime_feedback_payload=runtime_feedback_payload,
-                emit_ir_path=emit_ir_path,
-            )
-            _emit_build_success_json(
-                data=data,
-                warnings=warnings,
-                json_output=json_output,
-            )
-        else:
-            print(f"Successfully built {output_obj}")
-        _emit_build_diagnostics_if_present(
+        return _emit_non_native_build_result(
+            output=output_obj,
+            cache=cache,
+            cache_hit=cache_hit,
+            cache_key=cache_key,
+            function_cache_key=function_cache_key,
+            cache_path=cache_path,
+            function_cache_path=function_cache_path,
+            cache_hit_tier=cache_hit_tier,
+            backend_daemon_cached=backend_daemon_cached,
+            backend_daemon_cache_tier=backend_daemon_cache_tier,
+            backend_daemon_config_digest=backend_daemon_config_digest,
+            target=target,
+            target_triple=target_triple,
+            source_path=source_path,
+            deterministic=deterministic,
+            trusted=trusted,
+            capabilities_list=capabilities_list,
+            capability_profiles=capability_profiles,
+            capabilities_source=capabilities_source,
+            sysroot_path=sysroot_path,
+            emit_mode=emit_mode,
+            profile=profile,
+            native_arch_perf_enabled=native_arch_perf_enabled,
             diagnostics_payload=diagnostics_payload,
             diagnostics_path=diagnostics_path,
+            pgo_profile_payload=pgo_profile_payload,
+            runtime_feedback_payload=runtime_feedback_payload,
+            emit_ir_path=emit_ir_path,
+            warnings=warnings,
             json_output=json_output,
-            verbosity=resolved_diagnostics_verbosity,
+            resolved_diagnostics_verbosity=resolved_diagnostics_verbosity,
+            artifacts={"object": str(output_obj)},
+            success_messages=[f"Successfully built {output_obj}"],
         )
-        return 0
 
     # 3. Linking: output.o + main.c -> binary
     main_c_content = _render_native_main_stub(
