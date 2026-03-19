@@ -11376,6 +11376,7 @@ def build(
                 json_output,
                 command="build",
             )
+    known_classes: dict[str, Any] = {}
     (
         scoped_known_modules_by_module,
         scoped_known_func_defaults_by_module,
@@ -11456,7 +11457,6 @@ def build(
                 )
     if target_triple:
         _ensure_rustup_target(target_triple, warnings)
-    known_classes: dict[str, Any] = {}
 
     class _ModuleLowerError(RuntimeError):
         def __init__(self, message: str, *, timed_out: bool = False) -> None:
@@ -11619,24 +11619,34 @@ def build(
                     return cached_payload, 0.0, 0.0, 0.0
 
         tree = _resolve_tree_for_module(module_name, module_path)
+        scoped_known_modules = scoped_known_modules_by_module[module_name]
+        scoped_known_classes = _scoped_known_classes(
+            module_name,
+            module_deps=module_deps,
+            known_classes=known_classes,
+            module_dep_closures=module_dep_closures,
+        )
+        scoped_known_func_defaults = scoped_known_func_defaults_by_module[module_name]
+        scoped_pgo_hot_functions = scoped_pgo_hot_function_names_by_module[module_name]
+        scoped_type_facts = scoped_type_facts_by_module[module_name]
         gen = SimpleTIRGenerator(
             parse_codec=parse_codec,
             type_hint_policy=type_hint_policy,
             fallback_policy=fallback_policy,
             source_path=logical_source_path,
-            type_facts=type_facts,
+            type_facts=scoped_type_facts,
             module_name=module_name,
             module_is_namespace=module_name in namespace_module_names,
             entry_module=entry_override,
             enable_phi=enable_phi,
-            known_modules=known_modules,
-            known_classes=known_classes,
+            known_modules=set(scoped_known_modules),
+            known_classes=scoped_known_classes,
             stdlib_allowlist=stdlib_allowlist,
-            known_func_defaults=known_func_defaults,
+            known_func_defaults=scoped_known_func_defaults,
             module_chunking=is_wasm and module_chunk_max_ops > 0,
             module_chunk_max_ops=module_chunk_max_ops,
             optimization_profile=profile,
-            pgo_hot_functions=pgo_hot_function_names,
+            pgo_hot_functions=set(scoped_pgo_hot_functions),
         )
         module_frontend_start = time.perf_counter()
         visit_s = 0.0
@@ -11700,8 +11710,6 @@ def build(
         frontend_parallel_reason = "module_count<2"
     elif has_back_edges:
         frontend_parallel_reason = "dependency_back_edge"
-    elif type_facts is not None:
-        frontend_parallel_reason = "type_facts_present"
     elif frontend_phase_timeout is not None:
         frontend_parallel_reason = "phase_timeout_configured"
     else:

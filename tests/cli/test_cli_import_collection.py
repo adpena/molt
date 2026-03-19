@@ -2304,11 +2304,11 @@ def test_build_scoped_lowering_inputs_precomputes_scoped_views() -> None:
         scoped_known_func_defaults_by_module,
         scoped_pgo_hot_function_names_by_module,
         scoped_type_facts_by_module,
-    ) = cli._build_scoped_lowering_inputs(
-        {"main", "alpha", "unrelated"},
-        module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
-        module_dep_closures={
-            "main": frozenset({"main", "alpha"}),
+        ) = cli._build_scoped_lowering_inputs(
+            {"main", "alpha", "unrelated"},
+            module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
+            module_dep_closures={
+                "main": frozenset({"main", "alpha"}),
             "alpha": frozenset({"alpha"}),
             "unrelated": frozenset({"unrelated"}),
         },
@@ -2564,6 +2564,115 @@ def test_parallel_build_only_relowers_changed_frontier(
     assert worker_modes_by_module["beta"] == "parallel_cache_hit"
     assert worker_modes_by_module["alpha"] == "parallel"
     assert worker_modes_by_module["main"] == "parallel_cache_hit"
+
+
+def test_parallel_build_allows_scoped_type_facts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+    entry = project / "main.py"
+    entry.write_text("import alpha\nprint(alpha.VALUE)\n")
+    (project / "alpha.py").write_text("VALUE = 1\n")
+
+    build_state_root = tmp_path / "build-state"
+    cache_root = tmp_path / "cache"
+    backend_bin = tmp_path / "fake-backend"
+    backend_bin.write_text("")
+
+    monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
+    monkeypatch.setenv("MOLT_CACHE", str(cache_root))
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli, "_resolve_frontend_parallel_module_workers", lambda: 2)
+    monkeypatch.setattr(cli, "_resolve_frontend_parallel_min_modules", lambda: 2)
+    monkeypatch.setattr(
+        cli, "_resolve_frontend_parallel_min_predicted_cost", lambda: 0.0
+    )
+    monkeypatch.setattr(
+        cli, "_resolve_frontend_parallel_target_cost_per_worker", lambda: 1.0
+    )
+    monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
+    monkeypatch.setattr(cli, "_module_order_has_back_edges", lambda *args: False)
+    monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli, "_ensure_backend_binary", lambda *args, **kwargs: True)
+
+    original_run = cli.subprocess.run
+
+    def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        if cmd and str(cmd[0]) == str(backend_bin):
+            output = Path(cmd[cmd.index("--output") + 1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"OBJ")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return original_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    captured_payloads: list[dict[str, object]] = []
+
+    class _FakeFuture:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self._payload = payload
+
+        def result(self) -> dict[str, object]:
+            return cli._frontend_lower_module_worker(self._payload)
+
+    class _FakeExecutor:
+        def __init__(self, *, max_workers: int) -> None:
+            self.max_workers = max_workers
+
+        def __enter__(self) -> "_FakeExecutor":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
+
+        def submit(self, fn: object, payload: dict[str, object]) -> _FakeFuture:
+            assert fn is cli._frontend_lower_module_worker
+            captured_payloads.append(payload)
+            return _FakeFuture(payload)
+
+    monkeypatch.setattr(cli, "ProcessPoolExecutor", _FakeExecutor)
+
+    type_facts = TypeFacts(
+        modules={
+            "main": ModuleFacts(globals={"ENTRY": Fact(type="int", trust="trusted")}),
+            "alpha": ModuleFacts(globals={"VALUE": Fact(type="int", trust="trusted")}),
+            "unrelated": ModuleFacts(globals={"NOPE": Fact(type="bytes", trust="trusted")}),
+        }
+    )
+    monkeypatch.setattr(
+        cli,
+        "_collect_type_facts_for_build",
+        lambda *args, **kwargs: (type_facts, True),
+    )
+
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        rc = cli.build(
+            str(entry),
+            emit="obj",
+            output=str(tmp_path / "typed.o"),
+            profile="dev",
+            deterministic=False,
+            json_output=True,
+            diagnostics=True,
+            type_hint_policy="trust",
+        )
+
+    assert rc == 0
+    assert captured_payloads
+    for payload in captured_payloads:
+        scoped = payload["type_facts"]
+        assert isinstance(scoped, TypeFacts)
+        assert "unrelated" not in scoped.modules
+    compile_diagnostics = json.loads(stdout.getvalue())["data"]["compile_diagnostics"]
+    assert compile_diagnostics["frontend_parallel"]["enabled"] is True
+    assert compile_diagnostics["frontend_parallel"]["reason"] == "enabled"
 
 
 def test_build_skips_daemon_preflight_when_socket_exists(
