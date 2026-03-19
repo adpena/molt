@@ -29,5 +29,15 @@ def test_build_driver_state_no_longer_carries_frontend_runtime_detail_sideband()
     assert [field.name for field in fields(cli._PreparedBuildDriverState)] == [
         "prepared_frontend_pipeline",
         "prepared_backend_build_context",
-        "prepared_build_finalize_context",
     ]
+
+
+def test_backend_build_context_owns_backend_finalize_surfaces() -> None:
+    field_names = [field.name for field in fields(cli._PreparedBackendBuildContext)]
+    for name in (
+        "output_layout",
+        "artifacts_root",
+        "require_linked",
+        "link_timeout",
+    ):
+        assert name in field_names

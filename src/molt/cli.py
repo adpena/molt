@@ -892,24 +892,6 @@ class _PreparedBuildInputs:
 class _PreparedBuildDriverState:
     prepared_frontend_pipeline: "_PreparedFrontendPipeline"
     prepared_backend_build_context: "_PreparedBackendBuildContext"
-    prepared_build_finalize_context: "_PreparedBuildFinalizeContext"
-
-
-@dataclass(frozen=True)
-class _PreparedBuildFinalizeContext:
-    require_linked: bool
-    json_output: bool
-    trusted: bool
-    profile: BuildProfile
-    molt_root: Path
-    project_root: Path
-    runtime_cargo_profile: str
-    sysroot_path: Path | None
-    capabilities_list: list[str] | None
-    diagnostics_enabled: bool
-    phase_starts: dict[str, float]
-    link_timeout: float | None
-    warnings: list[str]
 
 
 @dataclass(frozen=True)
@@ -1143,6 +1125,10 @@ class _PreparedBackendBuildContext:
     resolved_diagnostics_verbosity: str
     cache_report: bool
     verbose: bool
+    output_layout: _BuildOutputLayout
+    artifacts_root: Path
+    require_linked: bool
+    link_timeout: float | None
 
 
 @dataclass(frozen=True)
@@ -14119,37 +14105,24 @@ def _emit_build_result(
 
 def _finalize_build_result(
     *,
-    output_layout: _BuildOutputLayout,
+    prepared_backend_build_context: _PreparedBackendBuildContext,
     prepared_backend_pipeline: _PreparedBackendPipeline,
-    prepared_frontend_backend_handoff: _PreparedFrontendBackendHandoff,
-    require_linked: bool,
-    json_output: bool,
-    molt_root: Path,
-    trusted: bool,
-    capabilities_list: list[str] | None,
-    runtime_cargo_profile: str,
-    sysroot_path: Path | None,
-    profile: BuildProfile,
-    project_root: Path,
-    diagnostics_enabled: bool,
-    phase_starts: dict[str, float],
-    link_timeout: float | None,
-    warnings: list[str],
 ) -> int:
+    output_layout = prepared_backend_build_context.output_layout
     if output_layout.is_wasm or output_layout.emit_mode == "obj":
         prepared_non_native_result, prepared_non_native_result_error = (
             _prepare_non_native_build_result(
                 is_wasm=output_layout.is_wasm,
                 linked=output_layout.linked,
-                require_linked=require_linked,
+                require_linked=prepared_backend_build_context.require_linked,
                 linked_output_path=output_layout.linked_output_path,
                 output_artifact=output_layout.output_artifact,
-                json_output=json_output,
+                json_output=prepared_backend_build_context.json_output,
                 runtime_reloc_wasm=prepared_backend_pipeline.runtime_reloc_wasm,
                 ensure_runtime_wasm_reloc=(
                     prepared_backend_pipeline.ensure_runtime_wasm_reloc
                 ),
-                molt_root=molt_root,
+                molt_root=prepared_backend_build_context.molt_root,
             )
         )
         if prepared_non_native_result_error is not None:
@@ -14164,22 +14137,22 @@ def _finalize_build_result(
 
     prepared_native_link, prepared_native_link_error = _prepare_native_link(
         output_artifact=output_layout.output_artifact,
-        trusted=trusted,
-        capabilities_list=capabilities_list,
-        artifacts_root=prepared_frontend_backend_handoff.artifacts_root,
-        json_output=json_output,
+        trusted=prepared_backend_build_context.trusted,
+        capabilities_list=prepared_backend_build_context.capabilities_list,
+        artifacts_root=prepared_backend_build_context.artifacts_root,
+        json_output=prepared_backend_build_context.json_output,
         output_binary=output_layout.output_binary,
         runtime_lib=prepared_backend_pipeline.runtime_lib,
-        molt_root=molt_root,
-        runtime_cargo_profile=runtime_cargo_profile,
+        molt_root=prepared_backend_build_context.molt_root,
+        runtime_cargo_profile=prepared_backend_build_context.runtime_cargo_profile,
         target_triple=output_layout.target_triple,
-        sysroot_path=sysroot_path,
-        profile=profile,
-        project_root=project_root,
-        diagnostics_enabled=diagnostics_enabled,
-        phase_starts=phase_starts,
-        link_timeout=link_timeout,
-        warnings=warnings,
+        sysroot_path=prepared_backend_build_context.sysroot_path,
+        profile=prepared_backend_build_context.profile,
+        project_root=prepared_backend_build_context.project_root,
+        diagnostics_enabled=prepared_backend_build_context.diagnostics_enabled,
+        phase_starts=prepared_backend_build_context.phase_starts,
+        link_timeout=prepared_backend_build_context.link_timeout,
+        warnings=prepared_backend_build_context.warnings,
     )
     if prepared_native_link_error is not None:
         return prepared_native_link_error
@@ -14200,9 +14173,6 @@ def _execute_build_driver_state(
     prepared_frontend_run_ticket = (
         prepared_frontend_pipeline.prepared_frontend_run_ticket
     )
-    prepared_frontend_backend_handoff = (
-        prepared_frontend_pipeline.prepared_frontend_backend_handoff
-    )
     frontend_layer_error = _run_frontend_pipeline(
         prepared_frontend_run_ticket=prepared_frontend_run_ticket,
     )
@@ -14221,40 +14191,8 @@ def _execute_build_driver_state(
         return prepared_backend_pipeline_error
     assert prepared_backend_pipeline is not None
     return _finalize_build_result(
-        output_layout=prepared_frontend_backend_handoff.output_layout,
+        prepared_backend_build_context=prepared_backend_build_context,
         prepared_backend_pipeline=prepared_backend_pipeline,
-        prepared_frontend_backend_handoff=prepared_frontend_backend_handoff,
-        require_linked=(
-            prepared_build_driver_state.prepared_build_finalize_context.require_linked
-        ),
-        json_output=(
-            prepared_build_driver_state.prepared_build_finalize_context.json_output
-        ),
-        molt_root=prepared_build_driver_state.prepared_build_finalize_context.molt_root,
-        trusted=prepared_build_driver_state.prepared_build_finalize_context.trusted,
-        capabilities_list=(
-            prepared_build_driver_state.prepared_build_finalize_context.capabilities_list
-        ),
-        runtime_cargo_profile=(
-            prepared_build_driver_state.prepared_build_finalize_context.runtime_cargo_profile
-        ),
-        sysroot_path=(
-            prepared_build_driver_state.prepared_build_finalize_context.sysroot_path
-        ),
-        profile=prepared_build_driver_state.prepared_build_finalize_context.profile,
-        project_root=(
-            prepared_build_driver_state.prepared_build_finalize_context.project_root
-        ),
-        diagnostics_enabled=(
-            prepared_build_driver_state.prepared_build_finalize_context.diagnostics_enabled
-        ),
-        phase_starts=(
-            prepared_build_driver_state.prepared_build_finalize_context.phase_starts
-        ),
-        link_timeout=(
-            prepared_build_driver_state.prepared_build_finalize_context.link_timeout
-        ),
-        warnings=prepared_build_driver_state.prepared_build_finalize_context.warnings,
     )
 
 
@@ -14894,26 +14832,14 @@ def _prepare_build_driver_state(
         ),
         cache_report=cache_report,
         verbose=verbose,
-    )
-    prepared_build_finalize_context = _PreparedBuildFinalizeContext(
+        output_layout=prepared_frontend_backend_handoff.output_layout,
+        artifacts_root=prepared_frontend_backend_handoff.artifacts_root,
         require_linked=require_linked,
-        json_output=json_output,
-        trusted=trusted,
-        profile=profile,
-        molt_root=prepared_build_roots.molt_root,
-        project_root=prepared_build_roots.project_root,
-        runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
-        sysroot_path=prepared_build_roots.sysroot_path,
-        capabilities_list=prepared_build_config.capabilities_list,
-        diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
-        phase_starts=prepared_build_preamble.phase_starts,
         link_timeout=prepared_build_config.link_timeout,
-        warnings=prepared_build_preamble.warnings,
     )
     return _PreparedBuildDriverState(
         prepared_frontend_pipeline=prepared_frontend_pipeline,
         prepared_backend_build_context=prepared_backend_build_context,
-        prepared_build_finalize_context=prepared_build_finalize_context,
     ), None
 
 
