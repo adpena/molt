@@ -8854,28 +8854,53 @@ def _resolve_cache_root(project_root: Path, cache_dir: str | None) -> Path:
     )
 
 
-def _resolve_out_dir(project_root: Path, out_dir: str | Path | None) -> Path | None:
+@functools.lru_cache(maxsize=256)
+def _resolve_out_dir_cached(
+    project_root_str: str,
+    out_dir: str | None,
+) -> Path | None:
     if not out_dir:
         return None
+    project_root = Path(project_root_str)
     path = Path(out_dir).expanduser()
     if not path.is_absolute():
         path = (project_root / path).absolute()
+    return path
+
+
+def _resolve_out_dir(project_root: Path, out_dir: str | Path | None) -> Path | None:
+    if not out_dir:
+        return None
+    path = _resolve_out_dir_cached(os.fspath(project_root), os.fspath(out_dir))
+    assert path is not None
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def _resolve_sysroot(project_root: Path, sysroot: str | None) -> Path | None:
-    raw = (
-        sysroot
-        or os.environ.get("MOLT_SYSROOT")
-        or os.environ.get("MOLT_CROSS_SYSROOT")
-    )
+@functools.lru_cache(maxsize=256)
+def _resolve_sysroot_cached(
+    project_root_str: str,
+    sysroot: str | None,
+    env_sysroot: str | None,
+    env_cross_sysroot: str | None,
+) -> Path | None:
+    raw = sysroot or env_sysroot or env_cross_sysroot
     if not raw:
         return None
+    project_root = Path(project_root_str)
     path = Path(raw).expanduser()
     if not path.is_absolute():
         path = (project_root / path).absolute()
     return path
+
+
+def _resolve_sysroot(project_root: Path, sysroot: str | None) -> Path | None:
+    return _resolve_sysroot_cached(
+        os.fspath(project_root),
+        sysroot,
+        os.environ.get("MOLT_SYSROOT"),
+        os.environ.get("MOLT_CROSS_SYSROOT"),
+    )
 
 
 def _pgo_hotspot_entries(
