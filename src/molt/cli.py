@@ -5725,6 +5725,39 @@ def _backend_bin_path(project_root: Path, cargo_profile: str) -> Path:
     )
 
 
+@functools.lru_cache(maxsize=256)
+def _runtime_lib_path_cached(
+    project_root_str: str,
+    cargo_profile: str,
+    target_triple: str | None,
+    cargo_target_override: str | None,
+    cwd_str: str,
+) -> Path:
+    profile_dir = _cargo_profile_dir(cargo_profile)
+    target_root = _cargo_target_root_cached(
+        project_root_str,
+        cargo_target_override,
+        cwd_str,
+    )
+    if target_triple:
+        return target_root / target_triple / profile_dir / "libmolt_runtime.a"
+    return target_root / profile_dir / "libmolt_runtime.a"
+
+
+def _runtime_lib_path(
+    project_root: Path,
+    cargo_profile: str,
+    target_triple: str | None,
+) -> Path:
+    return _runtime_lib_path_cached(
+        os.fspath(project_root),
+        cargo_profile,
+        target_triple,
+        os.environ.get("CARGO_TARGET_DIR"),
+        os.fspath(Path.cwd()),
+    )
+
+
 def _resolve_backend_profile(
     default_profile: BuildProfile,
 ) -> tuple[BuildProfile, str | None]:
@@ -11810,14 +11843,11 @@ def build(
         runtime_wasm = _wasm_runtime_root(molt_root) / "molt_runtime.wasm"
         runtime_reloc_wasm = _wasm_runtime_root(molt_root) / "molt_runtime_reloc.wasm"
     elif emit_mode == "bin":
-        profile_dir = _cargo_profile_dir(runtime_cargo_profile)
-        target_root = _cargo_target_root(molt_root)
-        if target_triple:
-            runtime_lib = (
-                target_root / target_triple / profile_dir / "libmolt_runtime.a"
-            )
-        else:
-            runtime_lib = target_root / profile_dir / "libmolt_runtime.a"
+        runtime_lib = _runtime_lib_path(
+            molt_root,
+            runtime_cargo_profile,
+            target_triple,
+        )
         if not _ensure_runtime_lib(
             runtime_lib,
             target_triple,
@@ -12697,14 +12727,11 @@ int main(int argc, char** argv) {
     if output_binary.parent != Path("."):
         output_binary.parent.mkdir(parents=True, exist_ok=True)
     if runtime_lib is None:
-        profile_dir = _cargo_profile_dir(runtime_cargo_profile)
-        target_root = _cargo_target_root(molt_root)
-        if target_triple:
-            runtime_lib = (
-                target_root / target_triple / profile_dir / "libmolt_runtime.a"
-            )
-        else:
-            runtime_lib = target_root / profile_dir / "libmolt_runtime.a"
+        runtime_lib = _runtime_lib_path(
+            molt_root,
+            runtime_cargo_profile,
+            target_triple,
+        )
 
     cc = os.environ.get("CC", "clang")
     link_cmd = shlex.split(cc)
@@ -14684,15 +14711,13 @@ def extension_build(
     runtime_cargo_profile, runtime_profile_err = _resolve_cargo_profile_name("release")
     if runtime_profile_err:
         return _fail(runtime_profile_err, json_output, command="extension-build")
-    profile_dir = _cargo_profile_dir(runtime_cargo_profile)
-    target_root = _cargo_target_root(molt_root)
     if runtime_target_triple:
         _ensure_rustup_target(runtime_target_triple, warnings)
-        runtime_lib = (
-            target_root / runtime_target_triple / profile_dir / "libmolt_runtime.a"
-        )
-    else:
-        runtime_lib = target_root / profile_dir / "libmolt_runtime.a"
+    runtime_lib = _runtime_lib_path(
+        molt_root,
+        runtime_cargo_profile,
+        runtime_target_triple,
+    )
     if not _ensure_runtime_lib(
         runtime_lib,
         runtime_target_triple,
