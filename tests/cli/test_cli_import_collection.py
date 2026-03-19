@@ -1018,6 +1018,34 @@ def test_build_state_root_uses_override_relative_to_project_root(
     assert state_root == (tmp_path / "state-dir")
 
 
+def test_lock_check_cache_path_is_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli._lock_check_cache_path_cached.cache_clear()
+    monkeypatch.setenv("CARGO_TARGET_DIR", "external-target")
+
+    first = cli._lock_check_cache_path(tmp_path, "cargo")
+    second = cli._lock_check_cache_path(tmp_path, "cargo")
+
+    info = cli._lock_check_cache_path_cached.cache_info()
+    assert first == second == (tmp_path / "external-target" / "lock_checks" / "cargo.json")
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
+def test_build_lock_dir_is_cached(tmp_path: Path) -> None:
+    cli._build_lock_dir_cached.cache_clear()
+
+    build_state_root = cli._build_state_root(tmp_path)
+    first = cli._build_lock_dir_cached(str(tmp_path), str(build_state_root))
+    second = cli._build_lock_dir_cached(str(tmp_path), str(build_state_root))
+
+    info = cli._build_lock_dir_cached.cache_info()
+    assert first == second == (build_state_root / "build_locks")
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
 def test_runtime_source_paths_are_cached(tmp_path: Path) -> None:
     cli._runtime_source_paths_cached.cache_clear()
 
