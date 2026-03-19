@@ -5,7 +5,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 from ._support import tk_unavailable_message as _tk_unavailable_message
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 _MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available", globals())
 
 
