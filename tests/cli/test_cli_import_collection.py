@@ -895,6 +895,56 @@ def test_load_module_analysis_reuses_persisted_cache(
     assert cached_source is None
 
 
+def test_load_module_analysis_reuses_persisted_module_analysis_imports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "pkg.py"
+    module_path.write_text("import warnings\n\ndef f(a, *, b=1):\n    return a + b\n")
+    source = cli._read_module_source(module_path)
+    cache = cli._ModuleResolutionCache()
+
+    cli._load_module_analysis(
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        include_nested=True,
+        source=source,
+        logical_source_path=str(module_path),
+        resolution_cache=cache,
+        project_root=tmp_path,
+    )
+
+    def fail_import_scan(*args: object, **kwargs: object) -> tuple[str, ...] | None:
+        raise AssertionError("unexpected persisted import-scan read")
+
+    monkeypatch.setattr(cli, "_read_persisted_import_scan", fail_import_scan)
+    monkeypatch.setattr(
+        cache,
+        "parse_module_ast",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("unexpected parse")
+        ),
+    )
+
+    cached_tree, cached_imports, cached_defaults, cached_source = (
+        cli._load_module_analysis(
+            module_path,
+            module_name="pkg",
+            is_package=False,
+            include_nested=True,
+            source=None,
+            logical_source_path=str(module_path),
+            resolution_cache=cache,
+            project_root=tmp_path,
+        )
+    )
+
+    assert cached_tree is None
+    assert cached_imports == ("warnings",)
+    assert "f" in cached_defaults
+    assert cached_source is None
+
+
 def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
