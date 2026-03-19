@@ -26,6 +26,10 @@ def test_backend_build_context_alias_removed() -> None:
     assert not hasattr(cli, "_PreparedBackendBuildContext")
 
 
+def test_build_inputs_transport_removed() -> None:
+    assert not hasattr(cli, "_PreparedBuildInputs")
+
+
 def test_backend_pipeline_transport_removed() -> None:
     assert not hasattr(cli, "_PreparedBackendPipeline")
 
