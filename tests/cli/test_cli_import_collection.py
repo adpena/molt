@@ -2454,6 +2454,28 @@ def test_build_scoped_known_classes_snapshot_precomputes_parallel_views() -> Non
     assert set(scoped["alpha"]) == {"DepClass"}
 
 
+def test_scoped_known_classes_view_reuses_precomputed_snapshot() -> None:
+    scoped = {
+        "main": {
+            "MainClass": {"module": "main", "fields": {}},
+            "DepClass": {"module": "alpha", "fields": {}},
+        }
+    }
+
+    resolved = cli._scoped_known_classes_view(
+        "main",
+        module_deps={"main": {"alpha"}, "alpha": set()},
+        known_classes_snapshot={
+            "MainClass": {"module": "main", "fields": {}},
+            "DepClass": {"module": "alpha", "fields": {}},
+        },
+        module_dep_closures={"main": frozenset({"main", "alpha"})},
+        scoped_known_classes_by_module=scoped,
+    )
+
+    assert resolved is scoped["main"]
+
+
 def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
