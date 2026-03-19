@@ -10155,6 +10155,147 @@ def _build_native_link_error_data(
     }
 
 
+def _native_main_stub_snippets(
+    *,
+    trusted: bool,
+    capabilities_list: Sequence[str] | None,
+) -> tuple[str, str, str, str]:
+    trusted_snippet = ""
+    trusted_call = ""
+    if trusted:
+        trusted_snippet = """
+static void molt_set_trusted() {
+#ifdef _WIN32
+    _putenv_s("MOLT_TRUSTED", "1");
+#else
+    setenv("MOLT_TRUSTED", "1", 1);
+#endif
+}
+"""
+        trusted_call = "    molt_set_trusted();\n"
+    capabilities_snippet = ""
+    capabilities_call = ""
+    if capabilities_list is not None:
+        caps_literal = json.dumps(",".join(capabilities_list))
+        capabilities_snippet = f"""
+static void molt_set_capabilities() {{
+#ifdef _WIN32
+    _putenv_s("MOLT_CAPABILITIES", {caps_literal});
+#else
+    setenv("MOLT_CAPABILITIES", {caps_literal}, 1);
+#endif
+}}
+"""
+        capabilities_call = "    molt_set_capabilities();\n"
+    return trusted_snippet, trusted_call, capabilities_snippet, capabilities_call
+
+
+def _render_native_main_stub(
+    *,
+    trusted: bool,
+    capabilities_list: Sequence[str] | None,
+) -> str:
+    trusted_snippet, trusted_call, capabilities_snippet, capabilities_call = (
+        _native_main_stub_snippets(
+            trusted=trusted,
+            capabilities_list=capabilities_list,
+        )
+    )
+    main_c_content = """
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#ifdef _WIN32
+#include <wchar.h>
+#endif
+extern unsigned long long molt_runtime_init();
+extern void molt_runtime_ensure_gil();
+extern unsigned long long molt_runtime_shutdown();
+extern void molt_set_argv(int argc, const char** argv);
+#ifdef _WIN32
+extern void molt_set_argv_utf16(int argc, const wchar_t** argv);
+#endif
+extern void molt_main();
+extern unsigned long long molt_exception_pending();
+extern unsigned long long molt_exception_last();
+extern unsigned long long molt_raise(unsigned long long exc_bits);
+extern void molt_dec_ref(unsigned long long bits);
+extern int molt_json_parse_scalar(const char* ptr, long len, unsigned long long* out);
+extern int molt_msgpack_parse_scalar(const char* ptr, long len, unsigned long long* out);
+extern int molt_cbor_parse_scalar(const char* ptr, long len, unsigned long long* out);
+extern long molt_get_attr_generic(void* obj, const char* attr, long len);
+extern unsigned long long molt_alloc(long size);
+extern long molt_block_on(void* task);
+extern long molt_async_sleep(void* obj);
+extern void molt_spawn(void* task);
+extern void* molt_chan_new(unsigned long long capacity);
+extern long molt_chan_send(void* chan, long val);
+extern long molt_chan_recv(void* chan);
+extern long molt_chan_try_send(void* chan, long val);
+extern long molt_chan_try_recv(void* chan);
+extern long molt_chan_send_blocking(void* chan, long val);
+extern long molt_chan_recv_blocking(void* chan);
+extern void molt_print_obj(unsigned long long val);
+extern void molt_profile_dump();
+/* MOLT_TRUSTED_SNIPPET */
+/* MOLT_CAPABILITIES_SNIPPET */
+
+static int molt_finish() {
+    unsigned long long pending = molt_exception_pending();
+    const char* debug_exc = getenv("MOLT_DEBUG_MAIN_EXCEPTION");
+    if (debug_exc != NULL && debug_exc[0] != '\\0' && strcmp(debug_exc, "0") != 0) {
+        fprintf(stderr, "molt main finish pending=%d\\n", pending != 0);
+    }
+    if (pending != 0) {
+        unsigned long long exc = molt_exception_last();
+        molt_raise(exc);
+        molt_dec_ref(exc);
+        molt_runtime_shutdown();
+        return 1;
+    }
+    const char* profile = getenv("MOLT_PROFILE");
+    if (profile != NULL && profile[0] != '\\0' && strcmp(profile, "0") != 0) {
+        molt_profile_dump();
+    }
+    molt_runtime_shutdown();
+    return 0;
+}
+
+#ifdef _WIN32
+int wmain(int argc, wchar_t** argv) {
+    /* MOLT_TRUSTED_CALL */
+    /* MOLT_CAPABILITIES_CALL */
+    molt_runtime_init();
+    molt_runtime_ensure_gil();
+    molt_set_argv_utf16(argc, (const wchar_t**)argv);
+    molt_main();
+    return molt_finish();
+}
+#else
+int main(int argc, char** argv) {
+    /* MOLT_TRUSTED_CALL */
+    /* MOLT_CAPABILITIES_CALL */
+    molt_runtime_init();
+    molt_runtime_ensure_gil();
+    molt_set_argv(argc, (const char**)argv);
+    molt_main();
+    return molt_finish();
+}
+#endif
+"""
+    main_c_content = main_c_content.replace(
+        "/* MOLT_TRUSTED_SNIPPET */", trusted_snippet
+    )
+    main_c_content = main_c_content.replace(
+        "/* MOLT_CAPABILITIES_SNIPPET */", capabilities_snippet
+    )
+    main_c_content = main_c_content.replace("/* MOLT_TRUSTED_CALL */", trusted_call)
+    main_c_content = main_c_content.replace(
+        "/* MOLT_CAPABILITIES_CALL */", capabilities_call
+    )
+    return main_c_content
+
+
 def _initialize_runtime_artifact_state(
     *,
     is_rust_transpile: bool,
@@ -15403,124 +15544,9 @@ def build(
         return 0
 
     # 3. Linking: output.o + main.c -> binary
-    trusted_snippet = ""
-    trusted_call = ""
-    if trusted:
-        trusted_snippet = """
-static void molt_set_trusted() {
-#ifdef _WIN32
-    _putenv_s("MOLT_TRUSTED", "1");
-#else
-    setenv("MOLT_TRUSTED", "1", 1);
-#endif
-}
-"""
-        trusted_call = "    molt_set_trusted();\n"
-    capabilities_snippet = ""
-    capabilities_call = ""
-    if capabilities_list is not None:
-        caps_literal = json.dumps(",".join(capabilities_list))
-        capabilities_snippet = f"""
-static void molt_set_capabilities() {{
-#ifdef _WIN32
-    _putenv_s("MOLT_CAPABILITIES", {caps_literal});
-#else
-    setenv("MOLT_CAPABILITIES", {caps_literal}, 1);
-#endif
-}}
-"""
-        capabilities_call = "    molt_set_capabilities();\n"
-    main_c_content = """
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#ifdef _WIN32
-#include <wchar.h>
-#endif
-extern unsigned long long molt_runtime_init();
-extern void molt_runtime_ensure_gil();
-extern unsigned long long molt_runtime_shutdown();
-extern void molt_set_argv(int argc, const char** argv);
-#ifdef _WIN32
-extern void molt_set_argv_utf16(int argc, const wchar_t** argv);
-#endif
-extern void molt_main();
-extern unsigned long long molt_exception_pending();
-extern unsigned long long molt_exception_last();
-extern unsigned long long molt_raise(unsigned long long exc_bits);
-extern void molt_dec_ref(unsigned long long bits);
-extern int molt_json_parse_scalar(const char* ptr, long len, unsigned long long* out);
-extern int molt_msgpack_parse_scalar(const char* ptr, long len, unsigned long long* out);
-extern int molt_cbor_parse_scalar(const char* ptr, long len, unsigned long long* out);
-extern long molt_get_attr_generic(void* obj, const char* attr, long len);
-extern unsigned long long molt_alloc(long size);
-extern long molt_block_on(void* task);
-extern long molt_async_sleep(void* obj);
-extern void molt_spawn(void* task);
-extern void* molt_chan_new(unsigned long long capacity);
-extern long molt_chan_send(void* chan, long val);
-extern long molt_chan_recv(void* chan);
-extern long molt_chan_try_send(void* chan, long val);
-extern long molt_chan_try_recv(void* chan);
-extern long molt_chan_send_blocking(void* chan, long val);
-extern long molt_chan_recv_blocking(void* chan);
-extern void molt_print_obj(unsigned long long val);
-extern void molt_profile_dump();
-/* MOLT_TRUSTED_SNIPPET */
-/* MOLT_CAPABILITIES_SNIPPET */
-
-static int molt_finish() {
-    unsigned long long pending = molt_exception_pending();
-    const char* debug_exc = getenv("MOLT_DEBUG_MAIN_EXCEPTION");
-    if (debug_exc != NULL && debug_exc[0] != '\\0' && strcmp(debug_exc, "0") != 0) {
-        fprintf(stderr, "molt main finish pending=%d\\n", pending != 0);
-    }
-    if (pending != 0) {
-        unsigned long long exc = molt_exception_last();
-        molt_raise(exc);
-        molt_dec_ref(exc);
-        molt_runtime_shutdown();
-        return 1;
-    }
-    const char* profile = getenv("MOLT_PROFILE");
-    if (profile != NULL && profile[0] != '\\0' && strcmp(profile, "0") != 0) {
-        molt_profile_dump();
-    }
-    molt_runtime_shutdown();
-    return 0;
-}
-
-#ifdef _WIN32
-int wmain(int argc, wchar_t** argv) {
-    /* MOLT_TRUSTED_CALL */
-    /* MOLT_CAPABILITIES_CALL */
-    molt_runtime_init();
-    molt_runtime_ensure_gil();
-    molt_set_argv_utf16(argc, (const wchar_t**)argv);
-    molt_main();
-    return molt_finish();
-}
-#else
-int main(int argc, char** argv) {
-    /* MOLT_TRUSTED_CALL */
-    /* MOLT_CAPABILITIES_CALL */
-    molt_runtime_init();
-    molt_runtime_ensure_gil();
-    molt_set_argv(argc, (const char**)argv);
-    molt_main();
-    return molt_finish();
-}
-#endif
-"""
-    main_c_content = main_c_content.replace(
-        "/* MOLT_TRUSTED_SNIPPET */", trusted_snippet
-    )
-    main_c_content = main_c_content.replace(
-        "/* MOLT_CAPABILITIES_SNIPPET */", capabilities_snippet
-    )
-    main_c_content = main_c_content.replace("/* MOLT_TRUSTED_CALL */", trusted_call)
-    main_c_content = main_c_content.replace(
-        "/* MOLT_CAPABILITIES_CALL */", capabilities_call
+    main_c_content = _render_native_main_stub(
+        trusted=trusted,
+        capabilities_list=capabilities_list,
     )
     stub_path = artifacts_root / "main_stub.c"
     _write_text_if_changed(stub_path, main_c_content)
