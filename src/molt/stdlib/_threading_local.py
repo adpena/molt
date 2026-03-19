@@ -7,7 +7,7 @@ from threading import RLock as _ThreadRLock
 from threading import current_thread, local
 from weakref import ReferenceType as ref
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 def RLock(*args, **kwargs):
