@@ -233,6 +233,10 @@ import _tkinter as tk_core
 
 print(f"CHECK|_tkinter_tk_available_false|{tk_core.tk_available() is False}")
 print(f"CHECK|tkinter_tk_available_false|{tk_root.tk_available() is False}")
+print(
+    "CHECK|_tkinter_private_intrinsics_hidden|"
+    f"{not any(name.startswith('molt_') for name in tk_core.__dict__)}"
+)
 
 
 class _Event:
@@ -2301,7 +2305,11 @@ def test_tkinter_phase0_wrappers_keep_deterministic_error_contracts() -> None:
             continue
         _, key, raw = line.split("|", 2)
         checks[key] = raw == "True"
-    expected_checks = {"_tkinter_tk_available_false", "tkinter_tk_available_false"}
+    expected_checks = {
+        "_tkinter_private_intrinsics_hidden",
+        "_tkinter_tk_available_false",
+        "tkinter_tk_available_false",
+    }
     missing_checks = sorted(expected_checks - checks.keys())
     assert not missing_checks, (
         f"missing expected unavailable-lane checks: {missing_checks}"
