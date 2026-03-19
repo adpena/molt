@@ -15,7 +15,7 @@ except RuntimeError as exc:
     if "intrinsic unavailable" not in str(exc):
         raise
 
-_MOLT_TK_CALL = _require_intrinsic("molt_tk_call", globals())
+_MOLT_TK_CALL = _require_intrinsic("molt_tk_call")
 
 # CPython-compatible symbolic constants.
 WINDOW = "window"

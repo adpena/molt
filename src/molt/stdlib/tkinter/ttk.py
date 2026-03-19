@@ -4,8 +4,8 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 from ._support import require_gui_capability as _require_gui_capability
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
-_MOLT_TK_EVENT_SUBST_PARSE = _require_intrinsic("molt_tk_event_subst_parse", globals())
-_molt_tk_convert_stringval = _require_intrinsic("molt_tk_convert_stringval", globals())
+_MOLT_TK_EVENT_SUBST_PARSE = _require_intrinsic("molt_tk_event_subst_parse")
+_molt_tk_convert_stringval = _require_intrinsic("molt_tk_convert_stringval")
 tkinter = _tkinter
 _SUBST_FORMAT = (
     "%#",
