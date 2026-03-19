@@ -10056,6 +10056,36 @@ def _attach_process_output(
     return data
 
 
+def _emit_build_success_json(
+    *,
+    data: Mapping[str, Any],
+    warnings: Sequence[str],
+    json_output: bool,
+) -> None:
+    payload = _json_payload(
+        "build",
+        "ok",
+        data=dict(data),
+        warnings=list(warnings),
+    )
+    _emit_json(payload, json_output)
+
+
+def _emit_build_diagnostics_if_present(
+    *,
+    diagnostics_payload: dict[str, Any] | None,
+    diagnostics_path: Path | None,
+    json_output: bool,
+    verbosity: str,
+) -> None:
+    _emit_build_diagnostics(
+        diagnostics=diagnostics_payload,
+        diagnostics_path=diagnostics_path,
+        json_output=json_output,
+        verbosity=verbosity,
+    )
+
+
 def _initialize_runtime_artifact_state(
     *,
     is_rust_transpile: bool,
@@ -15228,13 +15258,11 @@ def build(
             )
             if linked_output_path is not None:
                 data["linked_output"] = str(linked_output_path)
-            payload = _json_payload(
-                "build",
-                "ok",
+            _emit_build_success_json(
                 data=data,
                 warnings=warnings,
+                json_output=json_output,
             )
-            _emit_json(payload, json_output)
         else:
             if require_linked:
                 print(f"Successfully built {primary_output}")
@@ -15242,8 +15270,8 @@ def build(
                 print(f"Successfully built {output_wasm}")
             if linked_output_path is not None and not require_linked:
                 print(f"Successfully linked {linked_output_path}")
-        _emit_build_diagnostics(
-            diagnostics=diagnostics_payload,
+        _emit_build_diagnostics_if_present(
+            diagnostics_payload=diagnostics_payload,
             diagnostics_path=diagnostics_path,
             json_output=json_output,
             verbosity=resolved_diagnostics_verbosity,
@@ -15290,17 +15318,15 @@ def build(
                 runtime_feedback_payload=runtime_feedback_payload,
                 emit_ir_path=emit_ir_path,
             )
-            payload = _json_payload(
-                "build",
-                "ok",
+            _emit_build_success_json(
                 data=data,
                 warnings=warnings,
+                json_output=json_output,
             )
-            _emit_json(payload, json_output)
         else:
             print(f"Successfully built {output_obj}")
-        _emit_build_diagnostics(
-            diagnostics=diagnostics_payload,
+        _emit_build_diagnostics_if_present(
+            diagnostics_payload=diagnostics_payload,
             diagnostics_path=diagnostics_path,
             json_output=json_output,
             verbosity=resolved_diagnostics_verbosity,
@@ -15729,17 +15755,15 @@ int main(int argc, char** argv) {
                 emit_ir_path=emit_ir_path,
             )
             _attach_process_output(data, link_process)
-            payload = _json_payload(
-                "build",
-                "ok",
+            _emit_build_success_json(
                 data=data,
                 warnings=warnings,
+                json_output=json_output,
             )
-            _emit_json(payload, json_output)
         else:
             print(f"Successfully built {output_binary}")
-        _emit_build_diagnostics(
-            diagnostics=diagnostics_payload,
+        _emit_build_diagnostics_if_present(
+            diagnostics_payload=diagnostics_payload,
             diagnostics_path=diagnostics_path,
             json_output=json_output,
             verbosity=resolved_diagnostics_verbosity,
@@ -15784,8 +15808,8 @@ int main(int argc, char** argv) {
             _emit_json(payload, json_output)
         else:
             print("Linking failed", file=sys.stderr)
-        _emit_build_diagnostics(
-            diagnostics=diagnostics_payload,
+        _emit_build_diagnostics_if_present(
+            diagnostics_payload=diagnostics_payload,
             diagnostics_path=diagnostics_path,
             json_output=json_output,
             verbosity=resolved_diagnostics_verbosity,
