@@ -7,9 +7,9 @@ import importlib.util as _util
 import marshal
 import sys
 
-_require_intrinsic("molt_capabilities_has", globals())
+_require_intrinsic("molt_capabilities_has")
 _MOLT_IMPORTLIB_FROZEN_EXTERNAL_PAYLOAD = _require_intrinsic(
-    "molt_importlib_frozen_external_payload", globals()
+    "molt_importlib_frozen_external_payload"
 )
 
 

@@ -6,10 +6,8 @@ import importlib.machinery as _machinery
 import importlib.util as _util
 import sys
 
-_require_intrinsic("molt_capabilities_has", globals())
-_MOLT_IMPORTLIB_FROZEN_PAYLOAD = _require_intrinsic(
-    "molt_importlib_frozen_payload", globals()
-)
+_require_intrinsic("molt_capabilities_has")
+_MOLT_IMPORTLIB_FROZEN_PAYLOAD = _require_intrinsic("molt_importlib_frozen_payload")
 
 
 def _load_payload() -> dict[str, object]:
