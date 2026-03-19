@@ -590,6 +590,59 @@ class _FrontendLayerRunResult:
     parallel_pool_usable: bool
 
 
+@dataclass(frozen=True)
+class _FrontendLayerExecutionContext:
+    syntax_error_modules: Mapping[str, Any]
+    module_graph: dict[str, Path]
+    module_sources: dict[str, str]
+    project_root: Path | None
+    module_resolution_cache: "_ModuleResolutionCache"
+    parse_codec: "ParseCodec"
+    type_hint_policy: "TypeHintPolicy"
+    fallback_policy: "FallbackPolicy"
+    type_facts: dict[str, Any] | None
+    enable_phi: bool
+    known_modules: Collection[str]
+    stdlib_allowlist: Collection[str]
+    known_func_defaults: dict[str, dict[str, Any]]
+    module_deps: dict[str, set[str]]
+    module_chunk_max_ops: int
+    optimization_profile: str
+    pgo_hot_function_names: Collection[str]
+    known_modules_sorted: tuple[str, ...]
+    stdlib_allowlist_sorted: tuple[str, ...]
+    pgo_hot_function_names_sorted: tuple[str, ...]
+    module_dep_closures: dict[str, frozenset[str]]
+    module_graph_metadata: "_ModuleGraphMetadata"
+    path_stat_by_module: Mapping[str, os.stat_result | None] | None
+    module_chunking: bool
+    scoped_lowering_inputs: "_ScopedLoweringInputs | None"
+    dirty_lowering_modules: Collection[str]
+    frontend_module_costs: Mapping[str, float]
+    stdlib_like_by_module: Mapping[str, bool]
+    known_classes: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class _FrontendLayerRuntimeHooks:
+    warnings: list[str]
+    frontend_parallel_details: MutableMapping[str, Any]
+    record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]]
+    record_frontend_timing: Callable[..., None]
+    integrate_module_frontend_result: Callable[..., str | None]
+    accumulate_midend_diagnostics: Callable[..., None]
+    fail: Callable[[str, bool, str], dict[str, Any] | None]
+    json_output: bool
+    run_serial_frontend_lower: Callable[
+        [str, Path],
+        tuple[
+            dict[str, Any] | None,
+            "_FrontendModuleResultTimings | None",
+            dict[str, Any] | None,
+        ],
+    ]
+
+
 def _fresh_frontend_parallel_layer_state() -> _FrontendParallelLayerState:
     return _FrontendParallelLayerState()
 
@@ -8919,49 +8972,10 @@ def _append_frontend_serial_disabled_layer_detail(
 def _run_frontend_parallel_enabled_layers(
     module_layers: Sequence[Sequence[str]],
     *,
+    execution_context: _FrontendLayerExecutionContext,
+    runtime_hooks: _FrontendLayerRuntimeHooks,
     frontend_parallel_config: _FrontendParallelConfig,
-    syntax_error_modules: Mapping[str, Any],
-    module_graph: dict[str, Path],
-    module_sources: dict[str, str],
-    project_root: Path | None,
-    module_resolution_cache: _ModuleResolutionCache,
-    parse_codec: ParseCodec,
-    type_hint_policy: TypeHintPolicy,
-    fallback_policy: FallbackPolicy,
-    type_facts: dict[str, Any] | None,
-    enable_phi: bool,
-    known_modules: Collection[str],
-    stdlib_allowlist: Collection[str],
-    known_func_defaults: dict[str, dict[str, Any]],
-    module_deps: dict[str, set[str]],
-    module_chunk_max_ops: int,
-    optimization_profile: str,
-    pgo_hot_function_names: Collection[str],
-    known_modules_sorted: tuple[str, ...],
-    stdlib_allowlist_sorted: tuple[str, ...],
-    pgo_hot_function_names_sorted: tuple[str, ...],
-    module_dep_closures: dict[str, frozenset[str]],
-    module_graph_metadata: _ModuleGraphMetadata,
-    path_stat_by_module: Mapping[str, os.stat_result | None] | None,
-    module_chunking: bool,
-    scoped_lowering_inputs: _ScopedLoweringInputs | None,
-    dirty_lowering_modules: Collection[str],
-    frontend_module_costs: Mapping[str, float],
-    stdlib_like_by_module: Mapping[str, bool],
-    known_classes: Mapping[str, Any],
-    warnings: list[str],
-    frontend_parallel_details: MutableMapping[str, Any],
     frontend_parallel_layers: list[dict[str, Any]],
-    record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]],
-    record_frontend_timing: Callable[..., None],
-    integrate_module_frontend_result: Callable[..., str | None],
-    accumulate_midend_diagnostics: Callable[..., None],
-    fail: Callable[[str, bool, str], dict[str, Any] | None],
-    json_output: bool,
-    run_serial_frontend_lower: Callable[
-        [str, Path],
-        tuple[dict[str, Any] | None, _FrontendModuleResultTimings | None, dict[str, Any] | None],
-    ],
 ) -> dict[str, Any] | None:
     parallel_pool_usable = True
     with ProcessPoolExecutor(max_workers=frontend_parallel_config.workers) as executor:
@@ -8971,46 +8985,10 @@ def _run_frontend_parallel_enabled_layers(
                 layer,
                 layer_index=layer_index,
                 executor=executor,
-                syntax_error_modules=syntax_error_modules,
-                module_graph=module_graph,
-                module_sources=module_sources,
-                project_root=project_root,
-                module_resolution_cache=module_resolution_cache,
-                parse_codec=parse_codec,
-                type_hint_policy=type_hint_policy,
-                fallback_policy=fallback_policy,
-                type_facts=type_facts,
-                enable_phi=enable_phi,
-                known_modules=known_modules,
-                stdlib_allowlist=stdlib_allowlist,
-                known_func_defaults=known_func_defaults,
-                module_deps=module_deps,
-                module_chunk_max_ops=module_chunk_max_ops,
-                optimization_profile=optimization_profile,
-                pgo_hot_function_names=pgo_hot_function_names,
-                known_modules_sorted=known_modules_sorted,
-                stdlib_allowlist_sorted=stdlib_allowlist_sorted,
-                pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
-                module_dep_closures=module_dep_closures,
-                module_graph_metadata=module_graph_metadata,
-                path_stat_by_module=path_stat_by_module,
-                module_chunking=module_chunking,
-                scoped_lowering_inputs=scoped_lowering_inputs,
-                dirty_lowering_modules=dirty_lowering_modules,
-                frontend_module_costs=frontend_module_costs,
-                stdlib_like_by_module=stdlib_like_by_module,
+                execution_context=execution_context,
+                runtime_hooks=runtime_hooks,
                 frontend_parallel_config=frontend_parallel_config,
                 parallel_pool_usable=parallel_pool_usable,
-                known_classes=known_classes,
-                warnings=warnings,
-                frontend_parallel_details=frontend_parallel_details,
-                record_frontend_parallel_worker_timing=record_frontend_parallel_worker_timing,
-                record_frontend_timing=record_frontend_timing,
-                integrate_module_frontend_result=integrate_module_frontend_result,
-                accumulate_midend_diagnostics=accumulate_midend_diagnostics,
-                fail=fail,
-                json_output=json_output,
-                run_serial_frontend_lower=run_serial_frontend_lower,
             )
             if layer_error is not None:
                 return layer_error
@@ -9041,32 +9019,22 @@ def _run_frontend_parallel_enabled_layers(
 def _run_frontend_serial_disabled_layers(
     module_order: Sequence[str],
     *,
-    module_graph: Mapping[str, Path],
+    execution_context: _FrontendLayerExecutionContext,
+    runtime_hooks: _FrontendLayerRuntimeHooks,
     frontend_parallel_layers: list[dict[str, Any]],
-    frontend_module_costs: Mapping[str, float],
-    stdlib_like_by_module: Mapping[str, bool],
     frontend_parallel_config: _FrontendParallelConfig,
-    record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]],
-    integrate_module_frontend_result: Callable[..., str | None],
-    accumulate_midend_diagnostics: Callable[..., None],
-    fail: Callable[[str, bool, str], dict[str, Any] | None],
-    json_output: bool,
-    run_serial_frontend_lower: Callable[
-        [str, Path],
-        tuple[dict[str, Any] | None, _FrontendModuleResultTimings | None, dict[str, Any] | None],
-    ],
 ) -> dict[str, Any] | None:
     serial_layer_started_ns = time.time_ns()
     serial_layer_state = _fresh_frontend_parallel_layer_state()
     serial_error = _run_frontend_serial_layer_modules(
         module_order,
-        module_graph=module_graph,
-        run_serial_frontend_lower=run_serial_frontend_lower,
-        record_frontend_parallel_worker_timing=record_frontend_parallel_worker_timing,
-        integrate_module_frontend_result=integrate_module_frontend_result,
-        accumulate_midend_diagnostics=accumulate_midend_diagnostics,
-        fail=fail,
-        json_output=json_output,
+        module_graph=execution_context.module_graph,
+        run_serial_frontend_lower=runtime_hooks.run_serial_frontend_lower,
+        record_frontend_parallel_worker_timing=runtime_hooks.record_frontend_parallel_worker_timing,
+        integrate_module_frontend_result=runtime_hooks.integrate_module_frontend_result,
+        accumulate_midend_diagnostics=runtime_hooks.accumulate_midend_diagnostics,
+        fail=runtime_hooks.fail,
+        json_output=runtime_hooks.json_output,
         layer_state=serial_layer_state,
         layer_index=0,
         serial_mode="serial_disabled",
@@ -9077,8 +9045,8 @@ def _run_frontend_serial_disabled_layers(
         frontend_parallel_layers,
         module_order=module_order,
         serial_layer_state=serial_layer_state,
-        frontend_module_costs=frontend_module_costs,
-        stdlib_like_by_module=stdlib_like_by_module,
+        frontend_module_costs=execution_context.frontend_module_costs,
+        stdlib_like_by_module=execution_context.stdlib_like_by_module,
         frontend_parallel_config=frontend_parallel_config,
         serial_layer_started_ns=serial_layer_started_ns,
     )
@@ -9481,58 +9449,19 @@ def _run_frontend_layer(
     *,
     layer_index: int,
     executor: Any | None,
-    syntax_error_modules: Mapping[str, Any],
-    module_graph: dict[str, Path],
-    module_sources: dict[str, str],
-    project_root: Path | None,
-    module_resolution_cache: _ModuleResolutionCache,
-    parse_codec: ParseCodec,
-    type_hint_policy: TypeHintPolicy,
-    fallback_policy: FallbackPolicy,
-    type_facts: dict[str, Any] | None,
-    enable_phi: bool,
-    known_modules: Collection[str],
-    stdlib_allowlist: Collection[str],
-    known_func_defaults: dict[str, dict[str, Any]],
-    module_deps: dict[str, set[str]],
-    module_chunk_max_ops: int,
-    optimization_profile: str,
-    pgo_hot_function_names: Collection[str],
-    known_modules_sorted: tuple[str, ...],
-    stdlib_allowlist_sorted: tuple[str, ...],
-    pgo_hot_function_names_sorted: tuple[str, ...],
-    module_dep_closures: dict[str, frozenset[str]],
-    module_graph_metadata: _ModuleGraphMetadata,
-    path_stat_by_module: Mapping[str, os.stat_result | None] | None,
-    module_chunking: bool,
-    scoped_lowering_inputs: _ScopedLoweringInputs | None,
-    dirty_lowering_modules: Collection[str],
-    frontend_module_costs: Mapping[str, float],
-    stdlib_like_by_module: Mapping[str, bool],
+    execution_context: _FrontendLayerExecutionContext,
+    runtime_hooks: _FrontendLayerRuntimeHooks,
     frontend_parallel_config: _FrontendParallelConfig,
     parallel_pool_usable: bool,
-    known_classes: Mapping[str, Any],
-    warnings: list[str],
-    frontend_parallel_details: MutableMapping[str, Any],
-    record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]],
-    record_frontend_timing: Callable[..., None],
-    integrate_module_frontend_result: Callable[..., str | None],
-    accumulate_midend_diagnostics: Callable[..., None],
-    fail: Callable[[str, bool, str], dict[str, Any] | None],
-    json_output: bool,
-    run_serial_frontend_lower: Callable[
-        [str, Path],
-        tuple[dict[str, Any] | None, _FrontendModuleResultTimings | None, dict[str, Any] | None],
-    ],
 ) -> tuple[_FrontendLayerRunResult | None, dict[str, Any] | None]:
     layer_state = _fresh_frontend_parallel_layer_state()
     layer_plan = _frontend_layer_plan(
         layer,
-        syntax_error_modules=syntax_error_modules,
-        module_sources=module_sources,
-        module_deps=module_deps,
-        frontend_module_costs=frontend_module_costs,
-        stdlib_like_by_module=stdlib_like_by_module,
+        syntax_error_modules=execution_context.syntax_error_modules,
+        module_sources=execution_context.module_sources,
+        module_deps=execution_context.module_deps,
+        frontend_module_costs=execution_context.frontend_module_costs,
+        stdlib_like_by_module=execution_context.stdlib_like_by_module,
         frontend_parallel_config=frontend_parallel_config,
         parallel_pool_usable=parallel_pool_usable,
     )
@@ -9543,40 +9472,42 @@ def _run_frontend_layer(
                 layer_plan.candidates,
                 layer_workers=layer_plan.workers,
                 executor=executor,
-                known_classes_snapshot_source=known_classes,
-                module_graph=module_graph,
-                module_sources=module_sources,
-                project_root=project_root,
-                module_resolution_cache=module_resolution_cache,
-                parse_codec=parse_codec,
-                type_hint_policy=type_hint_policy,
-                fallback_policy=fallback_policy,
-                type_facts=type_facts,
-                enable_phi=enable_phi,
-                known_modules=known_modules,
-                stdlib_allowlist=stdlib_allowlist,
-                known_func_defaults=known_func_defaults,
-                module_deps=module_deps,
-                module_chunk_max_ops=module_chunk_max_ops,
-                optimization_profile=optimization_profile,
-                pgo_hot_function_names=pgo_hot_function_names,
-                known_modules_sorted=known_modules_sorted,
-                stdlib_allowlist_sorted=stdlib_allowlist_sorted,
-                pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
-                module_dep_closures=module_dep_closures,
-                module_graph_metadata=module_graph_metadata,
-                path_stat_by_module=path_stat_by_module,
-                module_chunking=module_chunking,
-                scoped_lowering_inputs=scoped_lowering_inputs,
-                dirty_lowering_modules=dirty_lowering_modules,
+                known_classes_snapshot_source=execution_context.known_classes,
+                module_graph=execution_context.module_graph,
+                module_sources=execution_context.module_sources,
+                project_root=execution_context.project_root,
+                module_resolution_cache=execution_context.module_resolution_cache,
+                parse_codec=execution_context.parse_codec,
+                type_hint_policy=execution_context.type_hint_policy,
+                fallback_policy=execution_context.fallback_policy,
+                type_facts=execution_context.type_facts,
+                enable_phi=execution_context.enable_phi,
+                known_modules=execution_context.known_modules,
+                stdlib_allowlist=execution_context.stdlib_allowlist,
+                known_func_defaults=execution_context.known_func_defaults,
+                module_deps=execution_context.module_deps,
+                module_chunk_max_ops=execution_context.module_chunk_max_ops,
+                optimization_profile=execution_context.optimization_profile,
+                pgo_hot_function_names=execution_context.pgo_hot_function_names,
+                known_modules_sorted=execution_context.known_modules_sorted,
+                stdlib_allowlist_sorted=execution_context.stdlib_allowlist_sorted,
+                pgo_hot_function_names_sorted=execution_context.pgo_hot_function_names_sorted,
+                module_dep_closures=execution_context.module_dep_closures,
+                module_graph_metadata=execution_context.module_graph_metadata,
+                path_stat_by_module=execution_context.path_stat_by_module,
+                module_chunking=execution_context.module_chunking,
+                scoped_lowering_inputs=execution_context.scoped_lowering_inputs,
+                dirty_lowering_modules=execution_context.dirty_lowering_modules,
             )
         )
         if batch_error is not None:
-            return None, fail(batch_error, json_output, command="build")
+            return None, runtime_hooks.fail(
+                batch_error, runtime_hooks.json_output, command="build"
+            )
         if layer_failure_detail is not None:
             layer_state = _fallback_frontend_parallel_layer_to_serial(
-                frontend_parallel_details=frontend_parallel_details,
-                warnings=warnings,
+                frontend_parallel_details=runtime_hooks.frontend_parallel_details,
+                warnings=runtime_hooks.warnings,
                 failure_detail=layer_failure_detail,
             )
             layer_plan = _FrontendLayerPlan(
@@ -9591,18 +9522,18 @@ def _run_frontend_layer(
             parallel_pool_usable = False
 
     for module_name in layer:
-        module_path = module_graph[module_name]
+        module_path = execution_context.module_graph[module_name]
         result = layer_state.results.get(module_name)
         if result is not None:
             consume_error = _consume_frontend_parallel_layer_result(
                 layer_state=layer_state,
-                record_frontend_parallel_worker_timing=record_frontend_parallel_worker_timing,
-                record_frontend_timing=record_frontend_timing,
-                integrate_module_frontend_result=integrate_module_frontend_result,
-                accumulate_midend_diagnostics=accumulate_midend_diagnostics,
-                fail=fail,
-                json_output=json_output,
-                project_root=project_root,
+                record_frontend_parallel_worker_timing=runtime_hooks.record_frontend_parallel_worker_timing,
+                record_frontend_timing=runtime_hooks.record_frontend_timing,
+                integrate_module_frontend_result=runtime_hooks.integrate_module_frontend_result,
+                accumulate_midend_diagnostics=runtime_hooks.accumulate_midend_diagnostics,
+                fail=runtime_hooks.fail,
+                json_output=runtime_hooks.json_output,
+                project_root=execution_context.project_root,
                 layer_index=layer_index,
                 module_name=module_name,
                 module_path=module_path,
@@ -9613,13 +9544,13 @@ def _run_frontend_layer(
             continue
         serial_error = _run_frontend_serial_layer_modules(
             [module_name],
-            module_graph=module_graph,
-            run_serial_frontend_lower=run_serial_frontend_lower,
-            record_frontend_parallel_worker_timing=record_frontend_parallel_worker_timing,
-            integrate_module_frontend_result=integrate_module_frontend_result,
-            accumulate_midend_diagnostics=accumulate_midend_diagnostics,
-            fail=fail,
-            json_output=json_output,
+            module_graph=execution_context.module_graph,
+            run_serial_frontend_lower=runtime_hooks.run_serial_frontend_lower,
+            record_frontend_parallel_worker_timing=runtime_hooks.record_frontend_parallel_worker_timing,
+            integrate_module_frontend_result=runtime_hooks.integrate_module_frontend_result,
+            accumulate_midend_diagnostics=runtime_hooks.accumulate_midend_diagnostics,
+            fail=runtime_hooks.fail,
+            json_output=runtime_hooks.json_output,
             layer_state=layer_state,
             layer_index=layer_index,
             serial_mode=_frontend_serial_worker_mode(layer_plan.mode),
@@ -13617,64 +13548,64 @@ def build(
         frontend_parallel_worker_timings.append(item)
         return item
 
+    frontend_layer_execution_context = _FrontendLayerExecutionContext(
+        syntax_error_modules=syntax_error_modules,
+        module_graph=module_graph,
+        module_sources=module_sources,
+        project_root=project_root,
+        module_resolution_cache=module_resolution_cache,
+        parse_codec=parse_codec,
+        type_hint_policy=type_hint_policy,
+        fallback_policy=fallback_policy,
+        type_facts=type_facts,
+        enable_phi=enable_phi,
+        known_modules=known_modules,
+        stdlib_allowlist=stdlib_allowlist,
+        known_func_defaults=known_func_defaults,
+        module_deps=module_deps,
+        module_chunk_max_ops=module_chunk_max_ops,
+        optimization_profile=profile,
+        pgo_hot_function_names=pgo_hot_function_names,
+        known_modules_sorted=known_modules_sorted,
+        stdlib_allowlist_sorted=stdlib_allowlist_sorted,
+        pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+        module_dep_closures=module_dep_closures,
+        module_graph_metadata=module_graph_metadata,
+        path_stat_by_module=module_path_stats,
+        module_chunking=module_chunking,
+        scoped_lowering_inputs=scoped_lowering_inputs,
+        dirty_lowering_modules=dirty_lowering_modules,
+        frontend_module_costs=frontend_module_costs,
+        stdlib_like_by_module=stdlib_like_by_module,
+        known_classes=known_classes,
+    )
+    frontend_layer_runtime_hooks = _FrontendLayerRuntimeHooks(
+        warnings=warnings,
+        frontend_parallel_details=frontend_parallel_details,
+        record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
+        record_frontend_timing=_record_frontend_timing,
+        integrate_module_frontend_result=_integrate_module_frontend_result,
+        accumulate_midend_diagnostics=_accumulate_midend_diagnostics,
+        fail=_fail,
+        json_output=json_output,
+        run_serial_frontend_lower=_run_serial_frontend_lower,
+    )
+
     if frontend_parallel_config.enabled:
         frontend_layer_error = _run_frontend_parallel_enabled_layers(
             module_layers,
+            execution_context=frontend_layer_execution_context,
+            runtime_hooks=frontend_layer_runtime_hooks,
             frontend_parallel_config=frontend_parallel_config,
-            syntax_error_modules=syntax_error_modules,
-            module_graph=module_graph,
-            module_sources=module_sources,
-            project_root=project_root,
-            module_resolution_cache=module_resolution_cache,
-            parse_codec=parse_codec,
-            type_hint_policy=type_hint_policy,
-            fallback_policy=fallback_policy,
-            type_facts=type_facts,
-            enable_phi=enable_phi,
-            known_modules=known_modules,
-            stdlib_allowlist=stdlib_allowlist,
-            known_func_defaults=known_func_defaults,
-            module_deps=module_deps,
-            module_chunk_max_ops=module_chunk_max_ops,
-            optimization_profile=profile,
-            pgo_hot_function_names=pgo_hot_function_names,
-            known_modules_sorted=known_modules_sorted,
-            stdlib_allowlist_sorted=stdlib_allowlist_sorted,
-            pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
-            module_dep_closures=module_dep_closures,
-            module_graph_metadata=module_graph_metadata,
-            path_stat_by_module=module_path_stats,
-            module_chunking=module_chunking,
-            scoped_lowering_inputs=scoped_lowering_inputs,
-            dirty_lowering_modules=dirty_lowering_modules,
-            frontend_module_costs=frontend_module_costs,
-            stdlib_like_by_module=stdlib_like_by_module,
-            known_classes=known_classes,
-            warnings=warnings,
-            frontend_parallel_details=frontend_parallel_details,
             frontend_parallel_layers=frontend_parallel_layers,
-            record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
-            record_frontend_timing=_record_frontend_timing,
-            integrate_module_frontend_result=_integrate_module_frontend_result,
-            accumulate_midend_diagnostics=_accumulate_midend_diagnostics,
-            fail=_fail,
-            json_output=json_output,
-            run_serial_frontend_lower=_run_serial_frontend_lower,
         )
     else:
         frontend_layer_error = _run_frontend_serial_disabled_layers(
             module_order,
-            module_graph=module_graph,
+            execution_context=frontend_layer_execution_context,
+            runtime_hooks=frontend_layer_runtime_hooks,
             frontend_parallel_layers=frontend_parallel_layers,
-            frontend_module_costs=frontend_module_costs,
-            stdlib_like_by_module=stdlib_like_by_module,
             frontend_parallel_config=frontend_parallel_config,
-            record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
-            integrate_module_frontend_result=_integrate_module_frontend_result,
-            accumulate_midend_diagnostics=_accumulate_midend_diagnostics,
-            fail=_fail,
-            json_output=json_output,
-            run_serial_frontend_lower=_run_serial_frontend_lower,
         )
     if frontend_layer_error is not None:
         return frontend_layer_error
