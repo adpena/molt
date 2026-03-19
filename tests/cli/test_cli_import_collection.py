@@ -1200,6 +1200,49 @@ def test_wasm_runtime_root_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert info.currsize >= 1
 
 
+def test_safe_output_base_is_cached() -> None:
+    cli._safe_output_base.cache_clear()
+
+    first = cli._safe_output_base("hello/world.py")
+    second = cli._safe_output_base("hello/world.py")
+
+    info = cli._safe_output_base.cache_info()
+    assert first == second == "hello_world.py"
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
+def test_default_build_root_is_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli._default_build_root_cached.cache_clear()
+    monkeypatch.setenv("MOLT_HOME", str(tmp_path / "home-root"))
+
+    first = cli._default_build_root("hello/world.py")
+    second = cli._default_build_root("hello/world.py")
+
+    info = cli._default_build_root_cached.cache_info()
+    assert first == second == (
+        tmp_path / "home-root" / "build" / "hello_world.py"
+    )
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
+def test_resolve_cache_root_is_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli._resolve_cache_root_cached.cache_clear()
+
+    first = cli._resolve_cache_root(tmp_path, "cache-dir")
+    second = cli._resolve_cache_root(tmp_path, "cache-dir")
+
+    info = cli._resolve_cache_root_cached.cache_info()
+    assert first == second == (tmp_path / "cache-dir")
+    assert info.hits >= 1
+    assert info.currsize >= 1
+
+
 def test_runtime_lib_path_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -8594,6 +8594,7 @@ def _resolve_env_path(var: str, default: Path) -> Path:
     return path
 
 
+@functools.lru_cache(maxsize=512)
 def _safe_output_base(name: str) -> str:
     cleaned = _OUTPUT_BASE_SAFE_RE.sub("_", name)
     return cleaned or "molt"
@@ -8782,18 +8783,75 @@ def _wasm_runtime_root(project_root: Path) -> Path:
     )
 
 
-def _default_build_root(output_base: str) -> Path:
+@functools.lru_cache(maxsize=256)
+def _default_build_root_cached(
+    output_base: str,
+    home_override: str | None,
+    cache_override: str | None,
+    xdg_cache_home: str | None,
+    cwd_str: str,
+    home_str: str,
+    platform_name: str,
+) -> Path:
     safe_base = _safe_output_base(output_base)
-    return _default_molt_home() / "build" / safe_base
+    home_root = _default_molt_home_cached(
+        home_override,
+        cache_override,
+        xdg_cache_home,
+        cwd_str,
+        home_str,
+        platform_name,
+    )
+    return home_root / "build" / safe_base
 
 
-def _resolve_cache_root(project_root: Path, cache_dir: str | None) -> Path:
+def _default_build_root(output_base: str) -> Path:
+    return _default_build_root_cached(
+        output_base,
+        os.environ.get("MOLT_HOME"),
+        os.environ.get("MOLT_CACHE"),
+        os.environ.get("XDG_CACHE_HOME"),
+        os.fspath(Path.cwd()),
+        os.fspath(Path.home()),
+        sys.platform,
+    )
+
+
+@functools.lru_cache(maxsize=256)
+def _resolve_cache_root_cached(
+    project_root_str: str,
+    cache_dir: str | None,
+    cache_override: str | None,
+    xdg_cache_home: str | None,
+    cwd_str: str,
+    home_str: str,
+    platform_name: str,
+) -> Path:
     if not cache_dir:
-        return _default_molt_cache()
+        return _default_molt_cache_cached(
+            cache_override,
+            xdg_cache_home,
+            cwd_str,
+            home_str,
+            platform_name,
+        )
+    project_root = Path(project_root_str)
     path = Path(cache_dir).expanduser()
     if not path.is_absolute():
         path = (project_root / path).absolute()
     return path
+
+
+def _resolve_cache_root(project_root: Path, cache_dir: str | None) -> Path:
+    return _resolve_cache_root_cached(
+        os.fspath(project_root),
+        cache_dir,
+        os.environ.get("MOLT_CACHE"),
+        os.environ.get("XDG_CACHE_HOME"),
+        os.fspath(Path.cwd()),
+        os.fspath(Path.home()),
+        sys.platform,
+    )
 
 
 def _resolve_out_dir(project_root: Path, out_dir: str | Path | None) -> Path | None:
