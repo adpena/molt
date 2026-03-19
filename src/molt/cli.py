@@ -509,6 +509,13 @@ class _ModuleLoweringExecutionView:
     scoped_known_classes: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class _ParallelWorkerSubmission:
+    module_name: str
+    submitted_ns: int
+    future: Any
+
+
 def _run_command_timed(
     cmd: list[str],
     *,
@@ -12493,8 +12500,7 @@ def build(
                     layer_failure_detail = ""
                     for batch_start in range(0, len(candidates), layer_workers):
                         batch = candidates[batch_start : batch_start + layer_workers]
-                        future_by_module: dict[str, Any] = {}
-                        submit_ns_by_module: dict[str, int] = {}
+                        worker_submissions: list[_ParallelWorkerSubmission] = []
                         (
                             cached_results,
                             worker_payloads,
@@ -12548,12 +12554,18 @@ def build(
                                 "worker_pid": None,
                             }
                         for module_name, payload in worker_payloads:
-                            submit_ns_by_module[module_name] = time.time_ns()
-                            future_by_module[module_name] = executor.submit(
-                                _frontend_lower_module_worker, payload
+                            worker_submissions.append(
+                                _ParallelWorkerSubmission(
+                                    module_name=module_name,
+                                    submitted_ns=time.time_ns(),
+                                    future=executor.submit(
+                                        _frontend_lower_module_worker, payload
+                                    ),
+                                )
                             )
-                        for module_name in sorted(future_by_module):
-                            future = future_by_module[module_name]
+                        for submission in worker_submissions:
+                            module_name = submission.module_name
+                            future = submission.future
                             try:
                                 layer_results[module_name] = future.result()
                                 received_ns = time.time_ns()
@@ -12566,7 +12578,6 @@ def build(
                                 )
                                 worker_started_ns = worker_meta.get("started_ns")
                                 worker_finished_ns = worker_meta.get("finished_ns")
-                                submit_ns = submit_ns_by_module.get(module_name)
                                 exec_ms = float(timings.get("total_s", 0.0)) * 1000.0
                                 exec_from_ns = _duration_ms_from_ns(
                                     worker_started_ns,
@@ -12577,7 +12588,7 @@ def build(
                                 worker_timing_by_module[module_name] = {
                                     "mode": "parallel",
                                     "queue_ms": _duration_ms_from_ns(
-                                        submit_ns,
+                                        submission.submitted_ns,
                                         worker_started_ns,
                                     ),
                                     "wait_ms": _duration_ms_from_ns(
@@ -12586,7 +12597,7 @@ def build(
                                     ),
                                     "exec_ms": round(max(0.0, exec_ms), 6),
                                     "roundtrip_ms": _duration_ms_from_ns(
-                                        submit_ns,
+                                        submission.submitted_ns,
                                         received_ns,
                                     ),
                                     "worker_pid": worker_meta.get("pid"),
