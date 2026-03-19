@@ -10086,6 +10086,75 @@ def _emit_build_diagnostics_if_present(
     )
 
 
+def _build_native_link_success_data(
+    *,
+    target: str,
+    target_triple: str | None,
+    source_path: Path,
+    output_binary: Path,
+    deterministic: bool,
+    trusted: bool,
+    capabilities_list: list[str] | None,
+    capability_profiles: list[str] | None,
+    capabilities_source: str | None,
+    sysroot_path: Path | None,
+    cache_info: Mapping[str, Any],
+    emit_mode: str,
+    profile: str,
+    native_arch_perf_enabled: bool,
+    output_obj: Path,
+    stub_path: Path,
+    runtime_lib: Path,
+    link_skipped: bool,
+) -> dict[str, Any]:
+    data = _build_common_build_json_data(
+        target=target,
+        target_triple=target_triple,
+        source_path=source_path,
+        output=output_binary,
+        deterministic=deterministic,
+        trusted=trusted,
+        capabilities_list=capabilities_list,
+        capability_profiles=capability_profiles,
+        capabilities_source=capabilities_source,
+        sysroot_path=sysroot_path,
+        cache_info=cache_info,
+        emit_mode=emit_mode,
+        profile=profile,
+        native_arch_perf_enabled=native_arch_perf_enabled,
+    )
+    data["artifacts"] = {
+        "object": str(output_obj),
+        "stub": str(stub_path),
+        "runtime": str(runtime_lib),
+    }
+    data["link"] = {"skipped": link_skipped}
+    return data
+
+
+def _build_native_link_error_data(
+    *,
+    target: str,
+    source_path: Path,
+    returncode: int,
+    emit_mode: str,
+    profile: str,
+    native_arch_perf_enabled: bool,
+    trusted: bool,
+    cache_info: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "target": target,
+        "entry": str(source_path),
+        "returncode": returncode,
+        "emit": emit_mode,
+        "profile": profile,
+        "native_arch_perf": native_arch_perf_enabled,
+        "trusted": trusted,
+        "cache": dict(cache_info),
+    }
+
+
 def _initialize_runtime_artifact_state(
     *,
     is_rust_transpile: bool,
@@ -15725,11 +15794,11 @@ int main(int argc, char** argv) {
                 backend_daemon_cache_tier=backend_daemon_cache_tier,
                 backend_daemon_config_digest=backend_daemon_config_digest,
             )
-            data = _build_common_build_json_data(
+            data = _build_native_link_success_data(
                 target=target,
-                target_triple=target_triple,
                 source_path=source_path,
-                output=output_binary,
+                target_triple=target_triple,
+                output_binary=output_binary,
                 deterministic=deterministic,
                 trusted=trusted,
                 capabilities_list=capabilities_list,
@@ -15740,13 +15809,11 @@ int main(int argc, char** argv) {
                 emit_mode=emit_mode,
                 profile=profile,
                 native_arch_perf_enabled=native_arch_perf_enabled,
+                output_obj=output_obj,
+                stub_path=stub_path,
+                runtime_lib=runtime_lib,
+                link_skipped=link_skipped,
             )
-            data["artifacts"] = {
-                "object": str(output_obj),
-                "stub": str(stub_path),
-                "runtime": str(runtime_lib),
-            }
-            data["link"] = {"skipped": link_skipped}
             _attach_build_metadata(
                 data,
                 diagnostics_payload=diagnostics_payload,
@@ -15770,16 +15837,7 @@ int main(int argc, char** argv) {
         )
     else:
         if json_output:
-            data: dict[str, Any] = {
-                "target": target,
-                "entry": str(source_path),
-                "returncode": link_process.returncode,
-                "emit": emit_mode,
-                "profile": profile,
-                "native_arch_perf": native_arch_perf_enabled,
-                "trusted": trusted,
-            }
-            data["cache"] = _build_cache_info(
+            cache_info = _build_cache_info(
                 enabled=cache,
                 hit=cache_hit,
                 cache_key=cache_key,
@@ -15790,6 +15848,16 @@ int main(int argc, char** argv) {
                 backend_daemon_cached=backend_daemon_cached,
                 backend_daemon_cache_tier=backend_daemon_cache_tier,
                 backend_daemon_config_digest=backend_daemon_config_digest,
+            )
+            data = _build_native_link_error_data(
+                target=target,
+                source_path=source_path,
+                returncode=link_process.returncode,
+                emit_mode=emit_mode,
+                profile=profile,
+                native_arch_perf_enabled=native_arch_perf_enabled,
+                trusted=trusted,
+                cache_info=cache_info,
             )
             _attach_build_metadata(
                 data,
