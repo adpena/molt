@@ -27,11 +27,9 @@ __all__ = [
 ]
 
 _MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic(
-    "molt_import_smoke_runtime_ready", globals()
-)
+    "molt_import_smoke_runtime_ready")
 _MOLT_OPCODE_PAYLOAD_312_JSON = _require_intrinsic(
-    "molt_opcode_payload_312_json", globals()
-)
+    "molt_opcode_payload_312_json")
 
 _MOLT_IMPORT_SMOKE_RUNTIME_READY()
 

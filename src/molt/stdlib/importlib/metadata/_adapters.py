@@ -5,8 +5,7 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_IMPORTLIB_IMPORT_REQUIRED = _require_intrinsic(
-    "molt_importlib_import_required", globals()
-)
+    "molt_importlib_import_required")
 
 email = _MOLT_IMPORTLIB_IMPORT_REQUIRED("email")
 functools = _MOLT_IMPORTLIB_IMPORT_REQUIRED("functools")
