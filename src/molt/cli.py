@@ -881,6 +881,14 @@ class _PreparedBuildRoots:
 
 
 @dataclass(frozen=True)
+class _PreparedBuildInputs:
+    prepared_build_preamble: _PreparedBuildPreamble
+    prepared_build_roots: _PreparedBuildRoots
+    prepared_build_config: _PreparedBuildConfig
+    resolved_build_entry: _ResolvedBuildEntry
+
+
+@dataclass(frozen=True)
 class _PreparedFrontendAnalysis:
     module_graph_metadata: _ModuleGraphMetadata
     module_deps: dict[str, set[str]]
@@ -3120,6 +3128,81 @@ def _prepare_build_roots(
         project_root=project_root,
         molt_root=molt_root,
         sysroot_path=sysroot_path,
+    ), None
+
+
+def _prepare_build_inputs(
+    *,
+    file_path: str | None,
+    module: str | None,
+    diagnostics: bool | None,
+    diagnostics_file: str | None,
+    diagnostics_verbosity: str | None,
+    json_output: bool,
+    target: Target,
+    deterministic: bool,
+    deterministic_warn: bool,
+    sysroot: str | None,
+    profile: BuildProfile,
+    pgo_profile: str | None,
+    runtime_feedback: str | None,
+    capabilities: CapabilityInput | None,
+    respect_pythonpath: bool,
+) -> tuple[_PreparedBuildInputs | None, dict[str, Any] | None]:
+    prepared_build_preamble, prepared_build_preamble_error = _prepare_build_preamble(
+        diagnostics=diagnostics,
+        diagnostics_file=diagnostics_file,
+        diagnostics_verbosity=diagnostics_verbosity,
+        json_output=json_output,
+        target=target,
+    )
+    if prepared_build_preamble_error is not None:
+        return None, prepared_build_preamble_error
+    assert prepared_build_preamble is not None
+
+    prepared_build_roots, prepared_build_roots_error = _prepare_build_roots(
+        file_path=file_path,
+        json_output=json_output,
+        warnings=prepared_build_preamble.warnings,
+        deterministic=deterministic,
+        deterministic_warn=deterministic_warn,
+        sysroot=sysroot,
+    )
+    if prepared_build_roots_error is not None:
+        return None, prepared_build_roots_error
+    assert prepared_build_roots is not None
+
+    prepared_build_config, prepared_build_config_error = _prepare_build_config(
+        project_root=prepared_build_roots.project_root,
+        warnings=prepared_build_preamble.warnings,
+        json_output=json_output,
+        profile=profile,
+        pgo_profile=pgo_profile,
+        runtime_feedback=runtime_feedback,
+        capabilities=capabilities,
+    )
+    if prepared_build_config_error is not None:
+        return None, prepared_build_config_error
+    assert prepared_build_config is not None
+
+    resolved_build_entry, resolved_build_entry_error = _resolve_build_entry(
+        file_path=file_path,
+        module=module,
+        project_root=prepared_build_roots.project_root,
+        cwd_root=prepared_build_roots.cwd_root,
+        stdlib_root=prepared_build_preamble.stdlib_root,
+        respect_pythonpath=respect_pythonpath,
+        json_output=json_output,
+    )
+    if resolved_build_entry_error is not None:
+        return None, resolved_build_entry_error
+    assert resolved_build_entry is not None
+
+    return _PreparedBuildInputs(
+        prepared_build_preamble=prepared_build_preamble,
+        prepared_build_roots=prepared_build_roots,
+        prepared_build_config=prepared_build_config,
+        resolved_build_entry=resolved_build_entry,
     ), None
 
 
@@ -17709,16 +17792,30 @@ def build(
         )
     if not file_path and not module:
         return _fail("Missing entry file or module.", json_output, command="build")
-    prepared_build_preamble, prepared_build_preamble_error = _prepare_build_preamble(
+    prepared_build_inputs, prepared_build_inputs_error = _prepare_build_inputs(
+        file_path=file_path,
+        module=module,
         diagnostics=diagnostics,
         diagnostics_file=diagnostics_file,
         diagnostics_verbosity=diagnostics_verbosity,
         json_output=json_output,
         target=target,
+        deterministic=deterministic,
+        deterministic_warn=deterministic_warn,
+        sysroot=sysroot,
+        profile=profile,
+        pgo_profile=pgo_profile,
+        runtime_feedback=runtime_feedback,
+        capabilities=capabilities,
+        respect_pythonpath=respect_pythonpath,
     )
-    if prepared_build_preamble_error is not None:
-        return prepared_build_preamble_error
-    assert prepared_build_preamble is not None
+    if prepared_build_inputs_error is not None:
+        return prepared_build_inputs_error
+    assert prepared_build_inputs is not None
+    prepared_build_preamble = prepared_build_inputs.prepared_build_preamble
+    prepared_build_roots = prepared_build_inputs.prepared_build_roots
+    prepared_build_config = prepared_build_inputs.prepared_build_config
+    resolved_build_entry = prepared_build_inputs.resolved_build_entry
     diagnostics_path_spec = prepared_build_preamble.diagnostics_path_spec
     diagnostics_enabled = prepared_build_preamble.diagnostics_enabled
     resolved_diagnostics_verbosity = (
@@ -17750,33 +17847,10 @@ def build(
     stdlib_root = prepared_build_preamble.stdlib_root
     warnings = prepared_build_preamble.warnings
     native_arch_perf_enabled = prepared_build_preamble.native_arch_perf_enabled
-    prepared_build_roots, prepared_build_roots_error = _prepare_build_roots(
-        file_path=file_path,
-        json_output=json_output,
-        warnings=warnings,
-        deterministic=deterministic,
-        deterministic_warn=deterministic_warn,
-        sysroot=sysroot,
-    )
-    if prepared_build_roots_error is not None:
-        return prepared_build_roots_error
-    assert prepared_build_roots is not None
     cwd_root = prepared_build_roots.cwd_root
     project_root = prepared_build_roots.project_root
     molt_root = prepared_build_roots.molt_root
     sysroot_path = prepared_build_roots.sysroot_path
-    prepared_build_config, prepared_build_config_error = _prepare_build_config(
-        project_root=project_root,
-        warnings=warnings,
-        json_output=json_output,
-        profile=profile,
-        pgo_profile=pgo_profile,
-        runtime_feedback=runtime_feedback,
-        capabilities=capabilities,
-    )
-    if prepared_build_config_error is not None:
-        return prepared_build_config_error
-    assert prepared_build_config is not None
     pgo_profile_summary = prepared_build_config.pgo_profile_summary
     pgo_profile_path = prepared_build_config.pgo_profile_path
     runtime_feedback_summary = prepared_build_config.runtime_feedback_summary
@@ -17797,18 +17871,6 @@ def build(
     capabilities_list = prepared_build_config.capabilities_list
     capability_profiles = prepared_build_config.capability_profiles
     capabilities_source = prepared_build_config.capabilities_source
-    resolved_build_entry, resolved_build_entry_error = _resolve_build_entry(
-        file_path=file_path,
-        module=module,
-        project_root=project_root,
-        cwd_root=cwd_root,
-        stdlib_root=stdlib_root,
-        respect_pythonpath=respect_pythonpath,
-        json_output=json_output,
-    )
-    if resolved_build_entry_error is not None:
-        return resolved_build_entry_error
-    assert resolved_build_entry is not None
     source_path = resolved_build_entry.source_path
     entry_module = resolved_build_entry.entry_module
     module_roots = resolved_build_entry.module_roots
