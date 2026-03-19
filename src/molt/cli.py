@@ -7165,6 +7165,47 @@ def _materialize_cached_backend_artifact(
         return False
 
 
+def _try_cached_backend_candidates(
+    *,
+    project_root: Path,
+    cache_candidates: Sequence[tuple[str, Path]],
+    output_artifact: Path,
+    is_wasm: bool,
+    cache_key: str | None,
+    function_cache_key: str | None,
+    cache_path: Path | None,
+    warnings: list[str],
+) -> tuple[bool, str | None]:
+    state_path = _artifact_sync_state_path(project_root, output_artifact)
+    state = _read_artifact_sync_state(state_path)
+    try:
+        output_stat: os.stat_result | None = output_artifact.stat()
+    except OSError:
+        output_stat = None
+    for tier, candidate in cache_candidates:
+        if not candidate.exists():
+            continue
+        if not _is_valid_cached_backend_artifact(candidate, is_wasm=is_wasm):
+            warnings.append(f"Ignoring invalid cache artifact: {candidate}")
+            with contextlib.suppress(OSError):
+                candidate.unlink()
+            continue
+        if _materialize_cached_backend_artifact(
+            project_root,
+            candidate,
+            output_artifact,
+            tier=tier,
+            source_key=cache_key if tier == "module" else (function_cache_key or cache_key or ""),
+            cache_path=cache_path,
+            warnings=warnings,
+            state_path=state_path,
+            state=state,
+            output_stat=output_stat,
+        ):
+            return True, tier
+    return False, None
+
+
 def _backend_daemon_skip_output_sync_flags(
     project_root: Path,
     output_artifact: Path,
@@ -14604,74 +14645,16 @@ def build(
                 cache_candidates.append(("module", cache_path))
             if function_cache_path is not None and function_cache_path != cache_path:
                 cache_candidates.append(("function", function_cache_path))
-
-            def _try_cache_candidates() -> tuple[bool, str | None]:
-                state_path = _artifact_sync_state_path(project_root, output_artifact)
-                state = _read_artifact_sync_state(state_path)
-                try:
-                    output_stat: os.stat_result | None = output_artifact.stat()
-                except OSError:
-                    output_stat = None
-                for tier, candidate in cache_candidates:
-                    if not candidate.exists():
-                        continue
-                    if not _is_valid_cached_backend_artifact(
-                        candidate, is_wasm=is_wasm
-                    ):
-                        warnings.append(f"Ignoring invalid cache artifact: {candidate}")
-                        with contextlib.suppress(OSError):
-                            candidate.unlink()
-                        continue
-                    if _materialize_cached_backend_artifact(
-                        project_root,
-                        candidate,
-                        output_artifact,
-                        tier=tier,
-                        source_key=cache_key
-                        if tier == "module"
-                        else (function_cache_key or cache_key or ""),
-                        cache_path=cache_path,
-                        warnings=warnings,
-                        state_path=state_path,
-                        state=state,
-                        output_stat=output_stat,
-                    ):
-                        return True, tier
-                return False, None
-
-            cache_hit, cache_hit_tier = _try_cache_candidates()
-
-    def _try_cache_candidates_locked() -> tuple[bool, str | None]:
-        state_path = _artifact_sync_state_path(project_root, output_artifact)
-        state = _read_artifact_sync_state(state_path)
-        try:
-            output_stat: os.stat_result | None = output_artifact.stat()
-        except OSError:
-            output_stat = None
-        for tier, candidate in cache_candidates:
-            if not candidate.exists():
-                continue
-            if not _is_valid_cached_backend_artifact(candidate, is_wasm=is_wasm):
-                warnings.append(f"Ignoring invalid cache artifact: {candidate}")
-                with contextlib.suppress(OSError):
-                    candidate.unlink()
-                continue
-            if _materialize_cached_backend_artifact(
-                project_root,
-                candidate,
-                output_artifact,
-                tier=tier,
-                source_key=cache_key
-                if tier == "module"
-                else (function_cache_key or cache_key or ""),
+            cache_hit, cache_hit_tier = _try_cached_backend_candidates(
+                project_root=project_root,
+                cache_candidates=cache_candidates,
+                output_artifact=output_artifact,
+                is_wasm=is_wasm,
+                cache_key=cache_key,
+                function_cache_key=function_cache_key,
                 cache_path=cache_path,
                 warnings=warnings,
-                state_path=state_path,
-                state=state,
-                output_stat=output_stat,
-            ):
-                return True, tier
-        return False, None
+            )
 
     if (verbose or cache_report) and not json_output:
         if not cache:
@@ -14690,7 +14673,16 @@ def build(
     )
     with compile_lock:
         if not cache_hit and cache:
-            cache_hit, cache_hit_tier = _try_cache_candidates_locked()
+            cache_hit, cache_hit_tier = _try_cached_backend_candidates(
+                project_root=project_root,
+                cache_candidates=cache_candidates,
+                output_artifact=output_artifact,
+                is_wasm=is_wasm,
+                cache_key=cache_key,
+                function_cache_key=function_cache_key,
+                cache_path=cache_path,
+                warnings=warnings,
+            )
 
         # 2. Backend: JSON IR -> output.o / output.wasm
         if not cache_hit:
