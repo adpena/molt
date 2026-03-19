@@ -92,3 +92,6 @@ class blake2s(_Hash):
             "usedforsecurity": usedforsecurity,
         }
         super().__init__("blake2s", data, _hashlib._validate_options("blake2s", options, "blake2s"))
+
+
+globals().pop("_require_intrinsic", None)

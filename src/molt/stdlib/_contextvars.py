@@ -11,3 +11,4 @@ _MOLT_CANCEL_TOKEN_GET_CURRENT = _require_intrinsic("molt_cancel_token_get_curre
 __all__ = ["Context", "ContextVar", "Token", "copy_context"]
 
 del _MOLT_CANCEL_TOKEN_GET_CURRENT
+globals().pop("_require_intrinsic", None)

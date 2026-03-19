@@ -41,3 +41,6 @@ def decode(obj, encoding="utf-8", errors="strict"):
 
 def lookup(encoding):
     return _py_codecs.lookup(encoding)
+
+
+globals().pop("_require_intrinsic", None)

@@ -24,3 +24,6 @@ class MultibyteCodec:
 
 def getcodec(name):
     return MultibyteCodec(str(name))
+
+
+globals().pop("_require_intrinsic", None)

@@ -37,3 +37,6 @@ __all__ = [
     "unregister_dialect",
     "writer",
 ]
+
+
+globals().pop("_require_intrinsic", None)
