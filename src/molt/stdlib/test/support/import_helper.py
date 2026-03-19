@@ -17,7 +17,7 @@ import warnings
 
 from .os_helper import temp_dir, unlink
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 # TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P3, status:planned): extend import_helper coverage (extension loader helpers, importlib.machinery parity, and script helper utilities beyond ready_to_import).
 

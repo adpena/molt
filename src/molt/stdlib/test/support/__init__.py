@@ -11,7 +11,7 @@ import sys
 from types import ModuleType
 from typing import Any
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 _THIS_FILE = Path(__file__).resolve()
 _THIS_DIR = _THIS_FILE.parent
