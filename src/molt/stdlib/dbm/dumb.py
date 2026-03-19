@@ -5,14 +5,14 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 from typing import Iterator
 
-_MOLT_DBM_DUMB_OPEN = _require_intrinsic("molt_dbm_dumb_open", globals())
-_MOLT_DBM_DUMB_GETITEM = _require_intrinsic("molt_dbm_dumb_getitem", globals())
-_MOLT_DBM_DUMB_SETITEM = _require_intrinsic("molt_dbm_dumb_setitem", globals())
-_MOLT_DBM_DUMB_DELITEM = _require_intrinsic("molt_dbm_dumb_delitem", globals())
-_MOLT_DBM_DUMB_CONTAINS = _require_intrinsic("molt_dbm_dumb_contains", globals())
-_MOLT_DBM_DUMB_KEYS = _require_intrinsic("molt_dbm_dumb_keys", globals())
-_MOLT_DBM_DUMB_SYNC = _require_intrinsic("molt_dbm_dumb_sync", globals())
-_MOLT_DBM_DUMB_CLOSE = _require_intrinsic("molt_dbm_dumb_close", globals())
+_MOLT_DBM_DUMB_OPEN = _require_intrinsic("molt_dbm_dumb_open")
+_MOLT_DBM_DUMB_GETITEM = _require_intrinsic("molt_dbm_dumb_getitem")
+_MOLT_DBM_DUMB_SETITEM = _require_intrinsic("molt_dbm_dumb_setitem")
+_MOLT_DBM_DUMB_DELITEM = _require_intrinsic("molt_dbm_dumb_delitem")
+_MOLT_DBM_DUMB_CONTAINS = _require_intrinsic("molt_dbm_dumb_contains")
+_MOLT_DBM_DUMB_KEYS = _require_intrinsic("molt_dbm_dumb_keys")
+_MOLT_DBM_DUMB_SYNC = _require_intrinsic("molt_dbm_dumb_sync")
+_MOLT_DBM_DUMB_CLOSE = _require_intrinsic("molt_dbm_dumb_close")
 
 __all__ = ["error", "open"]
 

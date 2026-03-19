@@ -6,54 +6,50 @@ import tempfile
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_require_intrinsic("molt_stdlib_probe")
 
-_MOLT_RESP_READ = _require_intrinsic("molt_urllib_request_response_read", globals())
+_MOLT_RESP_READ = _require_intrinsic("molt_urllib_request_response_read")
 _MOLT_RESP_READINTO = _require_intrinsic(
-    "molt_urllib_request_response_readinto", globals()
+    "molt_urllib_request_response_readinto"
 )
-_MOLT_RESP_READ1 = _require_intrinsic("molt_urllib_request_response_read1", globals())
+_MOLT_RESP_READ1 = _require_intrinsic("molt_urllib_request_response_read1")
 _MOLT_RESP_READINTO1 = _require_intrinsic(
-    "molt_urllib_request_response_readinto1", globals()
+    "molt_urllib_request_response_readinto1"
 )
 _MOLT_RESP_READLINE = _require_intrinsic(
-    "molt_urllib_request_response_readline", globals()
+    "molt_urllib_request_response_readline"
 )
 _MOLT_RESP_READLINES = _require_intrinsic(
-    "molt_urllib_request_response_readlines", globals()
+    "molt_urllib_request_response_readlines"
 )
 _MOLT_RESP_READABLE = _require_intrinsic(
-    "molt_urllib_request_response_readable", globals()
+    "molt_urllib_request_response_readable"
 )
 _MOLT_RESP_WRITABLE = _require_intrinsic(
-    "molt_urllib_request_response_writable", globals()
+    "molt_urllib_request_response_writable"
 )
 _MOLT_RESP_SEEKABLE = _require_intrinsic(
-    "molt_urllib_request_response_seekable", globals()
+    "molt_urllib_request_response_seekable"
 )
-_MOLT_RESP_TELL = _require_intrinsic("molt_urllib_request_response_tell", globals())
-_MOLT_RESP_SEEK = _require_intrinsic("molt_urllib_request_response_seek", globals())
-_MOLT_RESP_CLOSE = _require_intrinsic("molt_urllib_request_response_close", globals())
-_MOLT_RESP_DROP = _require_intrinsic("molt_urllib_request_response_drop", globals())
-_MOLT_RESP_GETURL = _require_intrinsic("molt_urllib_request_response_geturl", globals())
+_MOLT_RESP_TELL = _require_intrinsic("molt_urllib_request_response_tell")
+_MOLT_RESP_SEEK = _require_intrinsic("molt_urllib_request_response_seek")
+_MOLT_RESP_CLOSE = _require_intrinsic("molt_urllib_request_response_close")
+_MOLT_RESP_DROP = _require_intrinsic("molt_urllib_request_response_drop")
+_MOLT_RESP_GETURL = _require_intrinsic("molt_urllib_request_response_geturl")
 _MOLT_RESP_GETCODE = _require_intrinsic(
-    "molt_urllib_request_response_getcode", globals()
+    "molt_urllib_request_response_getcode"
 )
 _MOLT_RESP_GETREASON = _require_intrinsic(
-    "molt_urllib_request_response_getreason",
-    globals(),
+    "molt_urllib_request_response_getreason"
 )
 _MOLT_RESP_GETHEADER = _require_intrinsic(
-    "molt_urllib_request_response_getheader",
-    globals(),
+    "molt_urllib_request_response_getheader"
 )
 _MOLT_RESP_GETHEADERS_LIST = _require_intrinsic(
-    "molt_urllib_request_response_getheaders_list",
-    globals(),
+    "molt_urllib_request_response_getheaders_list"
 )
 _MOLT_RESP_MESSAGE = _require_intrinsic(
-    "molt_urllib_request_response_message",
-    globals(),
+    "molt_urllib_request_response_message"
 )
 
 __all__ = ["addbase", "addclosehook", "addinfo", "addinfourl"]

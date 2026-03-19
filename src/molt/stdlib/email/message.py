@@ -1257,38 +1257,38 @@ class EmailMessage(MIMEPart):
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
-_MOLT_EMAIL_MESSAGE_NEW = _require_intrinsic("molt_email_message_new", globals())
+_MOLT_EMAIL_MESSAGE_NEW = _require_intrinsic("molt_email_message_new")
 _MOLT_EMAIL_MESSAGE_FROM_BYTES = _require_intrinsic(
-    "molt_email_message_from_bytes", globals()
+    "molt_email_message_from_bytes"
 )
-_MOLT_EMAIL_MESSAGE_SET = _require_intrinsic("molt_email_message_set", globals())
-_MOLT_EMAIL_MESSAGE_GET = _require_intrinsic("molt_email_message_get", globals())
+_MOLT_EMAIL_MESSAGE_SET = _require_intrinsic("molt_email_message_set")
+_MOLT_EMAIL_MESSAGE_GET = _require_intrinsic("molt_email_message_get")
 _MOLT_EMAIL_MESSAGE_SET_CONTENT = _require_intrinsic(
-    "molt_email_message_set_content", globals()
+    "molt_email_message_set_content"
 )
 _MOLT_EMAIL_MESSAGE_ADD_ALTERNATIVE = _require_intrinsic(
-    "molt_email_message_add_alternative", globals()
+    "molt_email_message_add_alternative"
 )
 _MOLT_EMAIL_MESSAGE_ADD_ATTACHMENT = _require_intrinsic(
-    "molt_email_message_add_attachment", globals()
+    "molt_email_message_add_attachment"
 )
 _MOLT_EMAIL_MESSAGE_IS_MULTIPART = _require_intrinsic(
-    "molt_email_message_is_multipart", globals()
+    "molt_email_message_is_multipart"
 )
 _MOLT_EMAIL_MESSAGE_PAYLOAD = _require_intrinsic(
-    "molt_email_message_payload", globals()
+    "molt_email_message_payload"
 )
 _MOLT_EMAIL_MESSAGE_CONTENT = _require_intrinsic(
-    "molt_email_message_content", globals()
+    "molt_email_message_content"
 )
 _MOLT_EMAIL_MESSAGE_CONTENT_TYPE = _require_intrinsic(
-    "molt_email_message_content_type", globals()
+    "molt_email_message_content_type"
 )
 _MOLT_EMAIL_MESSAGE_FILENAME = _require_intrinsic(
-    "molt_email_message_filename", globals()
+    "molt_email_message_filename"
 )
 _MOLT_EMAIL_MESSAGE_AS_STRING = _require_intrinsic(
-    "molt_email_message_as_string", globals()
+    "molt_email_message_as_string"
 )
-_MOLT_EMAIL_MESSAGE_ITEMS = _require_intrinsic("molt_email_message_items", globals())
-_MOLT_EMAIL_MESSAGE_DROP = _require_intrinsic("molt_email_message_drop", globals())
+_MOLT_EMAIL_MESSAGE_ITEMS = _require_intrinsic("molt_email_message_items")
+_MOLT_EMAIL_MESSAGE_DROP = _require_intrinsic("molt_email_message_drop")

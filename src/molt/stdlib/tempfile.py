@@ -6,13 +6,13 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 import os as _os
 
-_MOLT_TEMPFILE_GETTEMPDIR = _require_intrinsic("molt_tempfile_gettempdir", globals())
-_MOLT_TEMPFILE_GETTEMPDIRB = _require_intrinsic("molt_tempfile_gettempdirb", globals())
-_MOLT_TEMPFILE_MKDTEMP = _require_intrinsic("molt_tempfile_mkdtemp", globals())
-_MOLT_TEMPFILE_MKSTEMP = _require_intrinsic("molt_tempfile_mkstemp", globals())
-_MOLT_TEMPFILE_NAMED = _require_intrinsic("molt_tempfile_named", globals())
-_MOLT_TEMPFILE_TEMPDIR = _require_intrinsic("molt_tempfile_tempdir", globals())
-_MOLT_TEMPFILE_CLEANUP = _require_intrinsic("molt_tempfile_cleanup", globals())
+_MOLT_TEMPFILE_GETTEMPDIR = _require_intrinsic("molt_tempfile_gettempdir")
+_MOLT_TEMPFILE_GETTEMPDIRB = _require_intrinsic("molt_tempfile_gettempdirb")
+_MOLT_TEMPFILE_MKDTEMP = _require_intrinsic("molt_tempfile_mkdtemp")
+_MOLT_TEMPFILE_MKSTEMP = _require_intrinsic("molt_tempfile_mkstemp")
+_MOLT_TEMPFILE_NAMED = _require_intrinsic("molt_tempfile_named")
+_MOLT_TEMPFILE_TEMPDIR = _require_intrinsic("molt_tempfile_tempdir")
+_MOLT_TEMPFILE_CLEANUP = _require_intrinsic("molt_tempfile_cleanup")
 
 __all__ = [
     "NamedTemporaryFile",

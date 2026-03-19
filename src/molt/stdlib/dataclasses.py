@@ -10,23 +10,23 @@ from types import MappingProxyType
 from typing import Any, Callable, ClassVar, cast
 
 _MOLT_DATACLASSES_MAKE_DATACLASS = _require_intrinsic(
-    "molt_dataclasses_make_dataclass", globals()
+    "molt_dataclasses_make_dataclass"
 )
 _MOLT_DATACLASSES_IS_DATACLASS = _require_intrinsic(
-    "molt_dataclasses_is_dataclass", globals()
+    "molt_dataclasses_is_dataclass"
 )
-_MOLT_DATACLASSES_FIELDS = _require_intrinsic("molt_dataclasses_fields", globals())
-_MOLT_DATACLASSES_ASDICT = _require_intrinsic("molt_dataclasses_asdict", globals())
-_MOLT_DATACLASSES_ASTUPLE = _require_intrinsic("molt_dataclasses_astuple", globals())
-_MOLT_DATACLASSES_REPLACE = _require_intrinsic("molt_dataclasses_replace", globals())
-_MOLT_DATACLASSES_REPR = _require_intrinsic("molt_dataclasses_repr", globals())
-_MOLT_DATACLASSES_EQ = _require_intrinsic("molt_dataclasses_eq", globals())
-_MOLT_DATACLASSES_HASH_FN = _require_intrinsic("molt_dataclasses_hash_fn", globals())
+_MOLT_DATACLASSES_FIELDS = _require_intrinsic("molt_dataclasses_fields")
+_MOLT_DATACLASSES_ASDICT = _require_intrinsic("molt_dataclasses_asdict")
+_MOLT_DATACLASSES_ASTUPLE = _require_intrinsic("molt_dataclasses_astuple")
+_MOLT_DATACLASSES_REPLACE = _require_intrinsic("molt_dataclasses_replace")
+_MOLT_DATACLASSES_REPR = _require_intrinsic("molt_dataclasses_repr")
+_MOLT_DATACLASSES_EQ = _require_intrinsic("molt_dataclasses_eq")
+_MOLT_DATACLASSES_HASH_FN = _require_intrinsic("molt_dataclasses_hash_fn")
 _MOLT_DATACLASSES_CHECK_DEFAULT_ORDER = _require_intrinsic(
-    "molt_dataclasses_check_default_order", globals()
+    "molt_dataclasses_check_default_order"
 )
 _MOLT_DATACLASSES_FIELD_FLAGS = _require_intrinsic(
-    "molt_dataclasses_field_flags", globals()
+    "molt_dataclasses_field_flags"
 )
 
 

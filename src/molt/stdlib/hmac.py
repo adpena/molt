@@ -10,12 +10,12 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 __all__ = ["HMAC", "new", "digest", "compare_digest"]
 
-_molt_hmac_new = _require_intrinsic("molt_hmac_new", globals())
-_molt_hmac_update = _require_intrinsic("molt_hmac_update", globals())
-_molt_hmac_copy = _require_intrinsic("molt_hmac_copy", globals())
-_molt_hmac_digest = _require_intrinsic("molt_hmac_digest", globals())
-_molt_hmac_drop = _require_intrinsic("molt_hmac_drop", globals())
-_molt_compare_digest = _require_intrinsic("molt_compare_digest", globals())
+_molt_hmac_new = _require_intrinsic("molt_hmac_new")
+_molt_hmac_update = _require_intrinsic("molt_hmac_update")
+_molt_hmac_copy = _require_intrinsic("molt_hmac_copy")
+_molt_hmac_digest = _require_intrinsic("molt_hmac_digest")
+_molt_hmac_drop = _require_intrinsic("molt_hmac_drop")
+_molt_compare_digest = _require_intrinsic("molt_compare_digest")
 
 
 def _resolve_digestmod(digestmod: Any) -> tuple[str, dict[str, Any] | None, int, int]:

@@ -6,59 +6,59 @@ from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_molt_configparser_new = _require_intrinsic("molt_configparser_new", globals())
+_molt_configparser_new = _require_intrinsic("molt_configparser_new")
 _molt_configparser_read_string = _require_intrinsic(
-    "molt_configparser_read_string", globals()
+    "molt_configparser_read_string"
 )
-_molt_configparser_read = _require_intrinsic("molt_configparser_read", globals())
+_molt_configparser_read = _require_intrinsic("molt_configparser_read")
 _molt_configparser_sections = _require_intrinsic(
-    "molt_configparser_sections", globals()
+    "molt_configparser_sections"
 )
 _molt_configparser_has_section = _require_intrinsic(
-    "molt_configparser_has_section", globals()
+    "molt_configparser_has_section"
 )
 _molt_configparser_has_option = _require_intrinsic(
-    "molt_configparser_has_option", globals()
+    "molt_configparser_has_option"
 )
-_molt_configparser_get = _require_intrinsic("molt_configparser_get", globals())
-_molt_configparser_getint = _require_intrinsic("molt_configparser_getint", globals())
+_molt_configparser_get = _require_intrinsic("molt_configparser_get")
+_molt_configparser_getint = _require_intrinsic("molt_configparser_getint")
 _molt_configparser_getfloat = _require_intrinsic(
-    "molt_configparser_getfloat", globals()
+    "molt_configparser_getfloat"
 )
 _molt_configparser_getboolean = _require_intrinsic(
-    "molt_configparser_getboolean", globals()
+    "molt_configparser_getboolean"
 )
-_molt_configparser_options = _require_intrinsic("molt_configparser_options", globals())
-_molt_configparser_items = _require_intrinsic("molt_configparser_items", globals())
-_molt_configparser_set = _require_intrinsic("molt_configparser_set", globals())
+_molt_configparser_options = _require_intrinsic("molt_configparser_options")
+_molt_configparser_items = _require_intrinsic("molt_configparser_items")
+_molt_configparser_set = _require_intrinsic("molt_configparser_set")
 _molt_configparser_add_section = _require_intrinsic(
-    "molt_configparser_add_section", globals()
+    "molt_configparser_add_section"
 )
 _molt_configparser_remove_section = _require_intrinsic(
-    "molt_configparser_remove_section", globals()
+    "molt_configparser_remove_section"
 )
 _molt_configparser_remove_option = _require_intrinsic(
-    "molt_configparser_remove_option", globals()
+    "molt_configparser_remove_option"
 )
-_molt_configparser_write = _require_intrinsic("molt_configparser_write", globals())
-_molt_configparser_drop = _require_intrinsic("molt_configparser_drop", globals())
+_molt_configparser_write = _require_intrinsic("molt_configparser_write")
+_molt_configparser_drop = _require_intrinsic("molt_configparser_drop")
 _molt_configparser_write_string = _require_intrinsic(
-    "molt_configparser_write_string", globals()
+    "molt_configparser_write_string"
 )
 _molt_configparser_get_raw = _require_intrinsic(
-    "molt_configparser_get_raw", globals()
+    "molt_configparser_get_raw"
 )
 _molt_configparser_interpolate_basic = _require_intrinsic(
-    "molt_configparser_interpolate_basic", globals()
+    "molt_configparser_interpolate_basic"
 )
 _molt_configparser_interpolate_extended = _require_intrinsic(
-    "molt_configparser_interpolate_extended", globals()
+    "molt_configparser_interpolate_extended"
 )
 _molt_configparser_read_file = _require_intrinsic(
-    "molt_configparser_read_file", globals()
+    "molt_configparser_read_file"
 )
 _molt_configparser_defaults = _require_intrinsic(
-    "molt_configparser_defaults", globals()
+    "molt_configparser_defaults"
 )
 
 _MISSING = object()
