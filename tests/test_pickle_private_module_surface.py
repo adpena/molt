@@ -73,6 +73,11 @@ for name, type_name, is_callable in rows:
 payload = {{"answer": 42}}
 blob = _private.dumps(payload)
 checks = {{
+    "anchors_hidden": (
+        "molt_stdlib_probe" not in _private.__dict__
+        and "molt_pickle_dumps_core" not in _private.__dict__
+        and "molt_pickle_loads_core" not in _private.__dict__
+    ),
     "behavior": _private.loads(blob) == payload,
     "protocols": (
         isinstance(_private.DEFAULT_PROTOCOL, int)
@@ -120,4 +125,8 @@ def test__pickle_public_surface_matches_expected_shape() -> None:
         ("load", "function", "True"),
         ("loads", "function", "True"),
     ]
-    assert checks == {"behavior": "True", "protocols": "True"}
+    assert checks == {
+        "anchors_hidden": "True",
+        "behavior": "True",
+        "protocols": "True",
+    }

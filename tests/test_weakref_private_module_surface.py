@@ -94,6 +94,7 @@ for name, type_name, is_callable in rows:
     print(f"ROW|{{name}}|{{type_name}}|{{is_callable}}")
 
 checks = {{
+    "anchor_hidden": "molt_weakref_count" not in _private.__dict__,
     "behavior": (
         _private.ref("x") == ("ref", "x")
         and _private.proxy("x") == ("proxy", "x")
@@ -136,4 +137,4 @@ def test__weakref_public_surface_matches_expected_shape() -> None:
         ("proxy", "function", "True"),
         ("ref", "function", "True"),
     ]
-    assert checks == {"behavior": "True"}
+    assert checks == {"anchor_hidden": "True", "behavior": "True"}

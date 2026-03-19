@@ -68,6 +68,7 @@ for name, type_name, is_callable in rows:
     print(f"ROW|{{name}}|{{type_name}}|{{is_callable}}")
 
 checks = {{
+    "anchor_hidden": "molt_weakset_len" not in _private.__dict__,
     "behavior": isinstance(_private.WeakSet([1, 2]), _private.WeakSet) and len(_private.WeakSet([1, 2])) == 2,
 }}
 for key in sorted(checks):
@@ -97,4 +98,4 @@ def _run_probe() -> tuple[list[tuple[str, str, str]], dict[str, str]]:
 def test__weakrefset_public_surface_matches_expected_shape() -> None:
     rows, checks = _run_probe()
     assert rows == [("WeakSet", "type", "True")]
-    assert checks == {"behavior": "True"}
+    assert checks == {"anchor_hidden": "True", "behavior": "True"}
