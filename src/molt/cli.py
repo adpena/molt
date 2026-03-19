@@ -456,6 +456,25 @@ class _ScopedLoweringInputView:
     type_facts: TypeFacts | None
 
 
+@dataclass(frozen=True)
+class _ModuleGraphMetadata:
+    logical_source_path_by_module: dict[str, str]
+    entry_override_by_module: dict[str, str | None]
+    module_is_namespace_by_module: dict[str, bool]
+    module_is_package_by_module: dict[str, bool]
+    frontend_module_costs: dict[str, float] | None
+    stdlib_like_by_module: dict[str, bool] | None
+
+
+@dataclass(frozen=True)
+class _ModuleLoweringMetadataView:
+    logical_source_path: str
+    entry_override: str | None
+    module_is_namespace: bool
+    is_package: bool
+    path_stat: os.stat_result | None
+
+
 def _run_command_timed(
     cmd: list[str],
     *,
@@ -4509,14 +4528,7 @@ def _build_module_graph_metadata(
     namespace_module_names: Collection[str],
     module_sources: Mapping[str, str] | None = None,
     module_deps: Mapping[str, set[str]] | None = None,
-) -> tuple[
-    dict[str, str],
-    dict[str, str | None],
-    dict[str, bool],
-    dict[str, bool],
-    dict[str, float] | None,
-    dict[str, bool] | None,
-]:
+) -> _ModuleGraphMetadata:
     (
         logical_source_path_by_module,
         entry_override_by_module,
@@ -4540,13 +4552,37 @@ def _build_module_graph_metadata(
         if module_deps is not None
         else None
     )
-    return (
-        logical_source_path_by_module,
-        entry_override_by_module,
-        module_is_namespace_by_module,
-        module_is_package_by_module,
-        frontend_module_costs,
-        stdlib_like_by_module,
+    return _ModuleGraphMetadata(
+        logical_source_path_by_module=logical_source_path_by_module,
+        entry_override_by_module=entry_override_by_module,
+        module_is_namespace_by_module=module_is_namespace_by_module,
+        module_is_package_by_module=module_is_package_by_module,
+        frontend_module_costs=frontend_module_costs,
+        stdlib_like_by_module=stdlib_like_by_module,
+    )
+
+
+def _module_lowering_metadata_view(
+    module_name: str,
+    *,
+    module_path: Path,
+    module_graph_metadata: _ModuleGraphMetadata,
+    path_stat_by_module: Mapping[str, os.stat_result | None] | None = None,
+) -> _ModuleLoweringMetadataView:
+    return _ModuleLoweringMetadataView(
+        logical_source_path=module_graph_metadata.logical_source_path_by_module[
+            module_name
+        ],
+        entry_override=module_graph_metadata.entry_override_by_module[module_name],
+        module_is_namespace=module_graph_metadata.module_is_namespace_by_module[
+            module_name
+        ],
+        is_package=module_graph_metadata.module_is_package_by_module[module_name],
+        path_stat=(
+            path_stat_by_module[module_name]
+            if path_stat_by_module is not None
+            else None
+        ),
     )
 
 
@@ -8587,9 +8623,7 @@ def _prepare_frontend_parallel_batch(
     *,
     module_graph: dict[str, Path],
     module_sources: dict[str, str],
-    generated_module_source_paths: dict[str, str],
     project_root: Path | None,
-    entry_module: str,
     known_classes_snapshot: dict[str, Any],
     module_resolution_cache: _ModuleResolutionCache,
     parse_codec: ParseCodec,
@@ -8601,8 +8635,6 @@ def _prepare_frontend_parallel_batch(
     stdlib_allowlist: Collection[str],
     known_func_defaults: dict[str, dict[str, Any]],
     module_deps: dict[str, set[str]],
-    namespace_module_names: set[str],
-    is_wasm: bool,
     module_chunk_max_ops: int,
     optimization_profile: str,
     pgo_hot_function_names: Collection[str],
@@ -8610,11 +8642,9 @@ def _prepare_frontend_parallel_batch(
     stdlib_allowlist_sorted: tuple[str, ...],
     pgo_hot_function_names_sorted: tuple[str, ...],
     module_dep_closures: dict[str, frozenset[str]],
-    logical_source_path_by_module: Mapping[str, str] | None = None,
-    entry_override_by_module: Mapping[str, str | None] | None = None,
-    module_is_namespace_by_module: Mapping[str, bool] | None = None,
-    module_is_package_by_module: Mapping[str, bool] | None = None,
+    module_graph_metadata: _ModuleGraphMetadata,
     path_stat_by_module: Mapping[str, os.stat_result | None] | None = None,
+    module_chunking: bool,
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
     dirty_lowering_modules: Collection[str],
@@ -8627,7 +8657,6 @@ def _prepare_frontend_parallel_batch(
     cached_results: dict[str, dict[str, Any]] = {}
     worker_payloads: list[tuple[str, dict[str, Any]]] = []
     context_digest_by_module: dict[str, str] = {}
-    module_chunking = is_wasm and module_chunk_max_ops > 0
     dirty_lowering = set(dirty_lowering_modules)
     stdlib_allowlist_payload = list(stdlib_allowlist_sorted)
     if scoped_known_classes_by_module is None:
@@ -8639,35 +8668,17 @@ def _prepare_frontend_parallel_batch(
         )
     for module_name in batch:
         module_path = module_graph[module_name]
-        logical_source_path = (
-            logical_source_path_by_module[module_name]
-            if logical_source_path_by_module is not None
-            else generated_module_source_paths.get(module_name, str(module_path))
+        metadata_view = _module_lowering_metadata_view(
+            module_name,
+            module_path=module_path,
+            module_graph_metadata=module_graph_metadata,
+            path_stat_by_module=path_stat_by_module,
         )
-        entry_override = (
-            entry_override_by_module[module_name]
-            if entry_override_by_module is not None
-            else (
-                None
-                if module_name == entry_module and entry_module != "__main__"
-                else entry_module
-            )
-        )
-        module_is_namespace = (
-            module_is_namespace_by_module[module_name]
-            if module_is_namespace_by_module is not None
-            else module_name in namespace_module_names
-        )
-        is_package = (
-            module_is_package_by_module[module_name]
-            if module_is_package_by_module is not None
-            else module_path.name == "__init__.py"
-        )
-        path_stat = (
-            path_stat_by_module[module_name]
-            if path_stat_by_module is not None
-            else None
-        )
+        logical_source_path = metadata_view.logical_source_path
+        entry_override = metadata_view.entry_override
+        module_is_namespace = metadata_view.module_is_namespace
+        is_package = metadata_view.is_package
+        path_stat = metadata_view.path_stat
         if project_root is not None:
             context_payload = _module_lowering_context_payload(
                 module_name,
@@ -11641,14 +11652,7 @@ def build(
     stdlib_allowlist.add("molt.stdlib")
     known_modules_sorted = tuple(sorted(known_modules))
     stdlib_allowlist_sorted = tuple(sorted(stdlib_allowlist))
-    (
-        logical_source_path_by_module,
-        entry_override_by_module,
-        module_is_namespace_by_module,
-        module_is_package_by_module,
-        _frontend_module_costs_unused,
-        _stdlib_like_by_module_unused,
-    ) = _build_module_graph_metadata(
+    module_graph_metadata = _build_module_graph_metadata(
         module_graph,
         generated_module_source_paths=generated_module_source_paths,
         entry_module=entry_module,
@@ -11675,10 +11679,12 @@ def build(
             ) = _load_module_analysis(
                 module_path,
                 module_name=module_name,
-                is_package=module_is_package_by_module[module_name],
+                is_package=module_graph_metadata.module_is_package_by_module[module_name],
                 include_nested=True,
                 source=None,
-                logical_source_path=logical_source_path_by_module[module_name],
+                logical_source_path=module_graph_metadata.logical_source_path_by_module[
+                    module_name
+                ],
                 resolution_cache=module_resolution_cache,
                 project_root=project_root,
             )
@@ -11783,14 +11789,7 @@ def build(
         pgo_hot_function_names=pgo_hot_function_names,
         type_facts=cast(TypeFacts | None, type_facts),
     )
-    (
-        _logical_source_path_by_module_reused,
-        _entry_override_by_module_reused,
-        _module_is_namespace_by_module_reused,
-        _module_is_package_by_module_reused,
-        frontend_module_costs,
-        stdlib_like_by_module,
-    ) = _build_module_graph_metadata(
+    module_graph_metadata = _build_module_graph_metadata(
         module_graph,
         generated_module_source_paths=generated_module_source_paths,
         entry_module=entry_module,
@@ -11798,6 +11797,8 @@ def build(
         module_sources=module_sources,
         module_deps=module_deps,
     )
+    frontend_module_costs = module_graph_metadata.frontend_module_costs
+    stdlib_like_by_module = module_graph_metadata.stdlib_like_by_module
     assert frontend_module_costs is not None
     assert stdlib_like_by_module is not None
 
@@ -11864,6 +11865,7 @@ def build(
                 warnings.append(
                     "Invalid MOLT_WASM_MODULE_CHUNK_OPS; using default of 2000."
                 )
+    module_chunking = is_wasm and module_chunk_max_ops > 0
     if target_triple:
         _ensure_rustup_target(target_triple, warnings)
 
@@ -11968,11 +11970,17 @@ def build(
         module_name: str,
         module_path: Path,
     ) -> tuple[dict[str, Any], float, float, float]:
-        logical_source_path = logical_source_path_by_module[module_name]
-        entry_override = entry_override_by_module[module_name]
-        is_package = module_is_package_by_module[module_name]
-        module_is_namespace = module_is_namespace_by_module[module_name]
-        path_stat = module_path_stats.get(module_name)
+        metadata_view = _module_lowering_metadata_view(
+            module_name,
+            module_path=module_path,
+            module_graph_metadata=module_graph_metadata,
+            path_stat_by_module=module_path_stats,
+        )
+        logical_source_path = metadata_view.logical_source_path
+        entry_override = metadata_view.entry_override
+        is_package = metadata_view.is_package
+        module_is_namespace = metadata_view.module_is_namespace
+        path_stat = metadata_view.path_stat
         if path_stat is None:
             with contextlib.suppress(OSError):
                 path_stat = module_resolution_cache.path_stat(module_path)
@@ -11994,7 +12002,7 @@ def build(
                 known_func_defaults=known_func_defaults,
                 module_deps=module_deps,
                 module_is_namespace=module_is_namespace,
-                module_chunking=is_wasm and module_chunk_max_ops > 0,
+                module_chunking=module_chunking,
                 module_chunk_max_ops=module_chunk_max_ops,
                 optimization_profile=profile,
                 pgo_hot_function_names=pgo_hot_function_names,
@@ -12049,7 +12057,7 @@ def build(
             known_classes=scoped_known_classes,
             stdlib_allowlist=stdlib_allowlist,
             known_func_defaults=scoped_known_func_defaults,
-            module_chunking=is_wasm and module_chunk_max_ops > 0,
+            module_chunking=module_chunking,
             module_chunk_max_ops=module_chunk_max_ops,
             optimization_profile=profile,
             pgo_hot_functions=set(scoped_pgo_hot_functions),
@@ -12260,9 +12268,7 @@ def build(
                             batch,
                             module_graph=module_graph,
                             module_sources=module_sources,
-                            generated_module_source_paths=generated_module_source_paths,
                             project_root=project_root,
-                            entry_module=entry_module,
                             known_classes_snapshot=known_classes_snapshot,
                             module_resolution_cache=module_resolution_cache,
                             parse_codec=parse_codec,
@@ -12274,8 +12280,6 @@ def build(
                             stdlib_allowlist=stdlib_allowlist,
                             known_func_defaults=known_func_defaults,
                             module_deps=module_deps,
-                            namespace_module_names=namespace_module_names,
-                            is_wasm=is_wasm,
                             module_chunk_max_ops=module_chunk_max_ops,
                             optimization_profile=profile,
                             pgo_hot_function_names=pgo_hot_function_names,
@@ -12283,11 +12287,9 @@ def build(
                             stdlib_allowlist_sorted=stdlib_allowlist_sorted,
                             pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
                             module_dep_closures=module_dep_closures,
-                            logical_source_path_by_module=logical_source_path_by_module,
-                            entry_override_by_module=entry_override_by_module,
-                            module_is_namespace_by_module=module_is_namespace_by_module,
-                            module_is_package_by_module=module_is_package_by_module,
+                            module_graph_metadata=module_graph_metadata,
                             path_stat_by_module=module_path_stats,
+                            module_chunking=module_chunking,
                             scoped_lowering_inputs=scoped_lowering_inputs,
                             scoped_known_classes_by_module=scoped_known_classes_by_module,
                             dirty_lowering_modules=dirty_lowering_modules,
@@ -12760,7 +12762,7 @@ def build(
             known_classes=known_classes,
             stdlib_allowlist=stdlib_allowlist,
             known_func_defaults=known_func_defaults,
-            module_chunking=is_wasm and module_chunk_max_ops > 0,
+            module_chunking=module_chunking,
             module_chunk_max_ops=module_chunk_max_ops,
             optimization_profile=profile,
             pgo_hot_functions=pgo_hot_function_names,

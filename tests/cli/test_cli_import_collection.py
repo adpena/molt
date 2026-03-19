@@ -2008,15 +2008,19 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
         return {"module": module_name, "kind": "cached"}
 
     monkeypatch.setattr(cli, "_read_persisted_module_lowering", fake_read)
+    module_graph_metadata = cli._build_module_graph_metadata(
+        {"alpha": module_path},
+        generated_module_source_paths={},
+        entry_module="__main__",
+        namespace_module_names=set(),
+    )
 
     cached_results, worker_payloads, context_digest_by_module, batch_error = (
         cli._prepare_frontend_parallel_batch(
             ["alpha"],
             module_graph={"alpha": module_path},
             module_sources={},
-            generated_module_source_paths={},
             project_root=project_root,
-            entry_module="__main__",
             known_classes_snapshot={},
             module_resolution_cache=cli._ModuleResolutionCache(),
             parse_codec="json",
@@ -2028,8 +2032,6 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
             stdlib_allowlist=set(),
             known_func_defaults={},
             module_deps={"alpha": set()},
-            namespace_module_names=set(),
-            is_wasm=False,
             module_chunk_max_ops=0,
             optimization_profile="dev",
             pgo_hot_function_names=set(),
@@ -2037,6 +2039,8 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
             stdlib_allowlist_sorted=(),
             pgo_hot_function_names_sorted=(),
             module_dep_closures={"alpha": frozenset({"alpha"})},
+            module_graph_metadata=module_graph_metadata,
+            module_chunking=False,
             dirty_lowering_modules=set(),
         )
     )
@@ -2480,15 +2484,19 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
     monkeypatch.setattr(
         cli, "_load_cached_module_lowering_result", lambda *args, **kwargs: None
     )
+    module_graph_metadata = cli._build_module_graph_metadata(
+        module_graph,
+        generated_module_source_paths={},
+        entry_module="__main__",
+        namespace_module_names=set(),
+    )
 
     cached_results, worker_payloads, context_digest_by_module, batch_error = (
         cli._prepare_frontend_parallel_batch(
             ["main", "alpha"],
             module_graph=module_graph,
             module_sources=module_sources,
-            generated_module_source_paths={},
             project_root=tmp_path,
-            entry_module="__main__",
             known_classes_snapshot={
                 "MainClass": {"module": "main", "fields": {}},
                 "DepClass": {"module": "alpha", "fields": {}},
@@ -2504,8 +2512,6 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
             stdlib_allowlist=set(),
             known_func_defaults={},
             module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
-            namespace_module_names=set(),
-            is_wasm=False,
             module_chunk_max_ops=0,
             optimization_profile="dev",
             pgo_hot_function_names=set(),
@@ -2516,6 +2522,8 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
                 "main": frozenset({"main", "alpha"}),
                 "alpha": frozenset({"alpha"}),
             },
+            module_graph_metadata=module_graph_metadata,
+            module_chunking=False,
             dirty_lowering_modules={"main", "alpha"},
         )
     )
@@ -3683,14 +3691,7 @@ def test_build_module_graph_metadata_bundles_related_views(tmp_path: Path) -> No
         "app_entry": tmp_path / "app.py",
         "pkg": tmp_path / "pkg" / "__init__.py",
     }
-    (
-        logical_source_path_by_module,
-        entry_override_by_module,
-        module_is_namespace_by_module,
-        module_is_package_by_module,
-        frontend_module_costs,
-        stdlib_like_by_module,
-    ) = cli._build_module_graph_metadata(
+    metadata = cli._build_module_graph_metadata(
         module_graph,
         generated_module_source_paths={"pkg": "/generated/pkg/__init__.py"},
         entry_module="app_entry",
@@ -3699,14 +3700,39 @@ def test_build_module_graph_metadata_bundles_related_views(tmp_path: Path) -> No
         module_deps={"app_entry": {"pkg"}, "pkg": set()},
     )
 
-    assert logical_source_path_by_module["pkg"] == "/generated/pkg/__init__.py"
-    assert entry_override_by_module["app_entry"] is None
-    assert module_is_namespace_by_module["pkg"] is True
-    assert module_is_package_by_module["pkg"] is True
-    assert frontend_module_costs is not None
-    assert frontend_module_costs["app_entry"] == 12.0 + 512.0
-    assert stdlib_like_by_module is not None
-    assert stdlib_like_by_module["pkg"] is False
+    assert metadata.logical_source_path_by_module["pkg"] == "/generated/pkg/__init__.py"
+    assert metadata.entry_override_by_module["app_entry"] is None
+    assert metadata.module_is_namespace_by_module["pkg"] is True
+    assert metadata.module_is_package_by_module["pkg"] is True
+    assert metadata.frontend_module_costs is not None
+    assert metadata.frontend_module_costs["app_entry"] == 12.0 + 512.0
+    assert metadata.stdlib_like_by_module is not None
+    assert metadata.stdlib_like_by_module["pkg"] is False
+
+
+def test_module_lowering_metadata_view_reuses_precomputed_maps(tmp_path: Path) -> None:
+    module_path = tmp_path / "pkg.py"
+    module_path.write_text("VALUE = 1\n")
+    metadata = cli._build_module_graph_metadata(
+        {"pkg": module_path},
+        generated_module_source_paths={"pkg": "generated/pkg.py"},
+        entry_module="pkg",
+        namespace_module_names=set(),
+    )
+    path_stat = module_path.stat()
+
+    view = cli._module_lowering_metadata_view(
+        "pkg",
+        module_path=module_path,
+        module_graph_metadata=metadata,
+        path_stat_by_module={"pkg": path_stat},
+    )
+
+    assert view.logical_source_path == "generated/pkg.py"
+    assert view.entry_override is None
+    assert view.module_is_namespace is False
+    assert view.is_package is False
+    assert view.path_stat is path_stat
 
 
 def test_choose_frontend_parallel_layer_workers_uses_precomputed_costs_and_flags(
