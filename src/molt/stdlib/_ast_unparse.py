@@ -7,7 +7,7 @@ stdlib coverage synchronized with CPython 3.12/3.13/3.14.
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_capabilities_has", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 # TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P1, status:planned): replace `_ast_unparse` top-level stub with full intrinsic-backed lowering.
@@ -15,3 +15,6 @@ def __getattr__(attr: str):
     raise RuntimeError(
         'stdlib module "_ast_unparse" is not fully lowered yet; only an intrinsic-first stub is available.'
     )
+
+
+del _MOLT_CAPABILITIES_HAS
