@@ -8804,6 +8804,41 @@ def _fallback_frontend_parallel_layer_to_serial(
     return fallback_state
 
 
+def _frontend_parallel_result_error(
+    module_name: str,
+    result: Mapping[str, Any],
+) -> str | None:
+    if bool(result.get("ok")):
+        return None
+    return str(result.get("error", f"Failed to lower module {module_name}"))
+
+
+def _write_parallel_persisted_module_lowering(
+    *,
+    project_root: Path | None,
+    module_path: Path,
+    module_name: str,
+    worker_mode: str,
+    context_digest: str | None,
+    result: Mapping[str, Any],
+) -> None:
+    if (
+        project_root is None
+        or worker_mode == "parallel_cache_hit"
+        or context_digest is None
+    ):
+        return
+    with contextlib.suppress(OSError):
+        _write_persisted_module_lowering(
+            project_root,
+            module_path,
+            module_name=module_name,
+            is_package=module_path.name == "__init__.py",
+            context_digest=context_digest,
+            result={key: value for key, value in result.items() if key != "ok"},
+        )
+
+
 def _frontend_parallel_worker_timing_inputs(
     result_timings: _FrontendModuleResultTimings,
     worker_timing: Mapping[str, Any] | None,
@@ -13016,14 +13051,13 @@ def build(
                     module_path = module_graph[module_name]
                     result = layer_state.results.get(module_name)
                     if result is not None:
-                        if not bool(result.get("ok")):
+                        result_error = _frontend_parallel_result_error(
+                            module_name,
+                            result,
+                        )
+                        if result_error is not None:
                             return _fail(
-                                str(
-                                    result.get(
-                                        "error",
-                                        f"Failed to lower module {module_name}",
-                                    )
-                                ),
+                                result_error,
                                 json_output,
                                 command="build",
                             )
@@ -13056,24 +13090,14 @@ def build(
                             )
                         )
                         context_digest = layer_state.context_digests.get(module_name)
-                        if (
-                            project_root is not None
-                            and worker_mode != "parallel_cache_hit"
-                            and context_digest is not None
-                        ):
-                            with contextlib.suppress(OSError):
-                                _write_persisted_module_lowering(
-                                    project_root,
-                                    module_path,
-                                    module_name=module_name,
-                                    is_package=module_path.name == "__init__.py",
-                                    context_digest=context_digest,
-                                    result={
-                                        key: value
-                                        for key, value in result.items()
-                                        if key != "ok"
-                                    },
-                                )
+                        _write_parallel_persisted_module_lowering(
+                            project_root=project_root,
+                            module_path=module_path,
+                            module_name=module_name,
+                            worker_mode=worker_mode,
+                            context_digest=context_digest,
+                            result=result,
+                        )
                         consume_error = _consume_frontend_module_result(
                             module_name=module_name,
                             module_path=module_path,
