@@ -980,6 +980,14 @@ class _PreparedBackendCompile:
 
 
 @dataclass(frozen=True)
+class _PreparedBackendPipeline:
+    runtime_lib: Path | None
+    runtime_reloc_wasm: Path | None
+    ensure_runtime_wasm_reloc: Callable[[], bool]
+    build_result_context: "_BuildResultEmissionContext"
+
+
+@dataclass(frozen=True)
 class _PreparedBackendRuntimeContext:
     runtime_state: _RuntimeArtifactState
     runtime_lib: Path | None
@@ -13273,6 +13281,226 @@ def _prepare_backend_compile(
     ), None
 
 
+def _prepare_backend_pipeline(
+    *,
+    entry_module: str,
+    module_graph: Mapping[str, Path],
+    parse_codec: ParseCodec,
+    type_hint_policy: TypeHintPolicy,
+    fallback_policy: FallbackPolicy,
+    type_facts: TypeFacts | None,
+    enable_phi: bool,
+    known_modules: Collection[str],
+    known_classes: Mapping[str, Any],
+    stdlib_allowlist: Collection[str],
+    known_func_defaults: dict[str, dict[str, Any]],
+    module_chunking: bool,
+    module_chunk_max_ops: int,
+    profile: BuildProfile,
+    pgo_hot_function_names: Collection[str],
+    frontend_phase_timeout: float | None,
+    integration_state: _FrontendIntegrationState,
+    diagnostics_state: _MidendDiagnosticsState,
+    record_frontend_timing: Callable[..., None],
+    json_output: bool,
+    module_order: Sequence[str],
+    generated_module_source_paths: Mapping[str, str],
+    spawn_enabled: bool,
+    pgo_profile_summary: Any | None,
+    runtime_feedback_summary: Any | None,
+    emit_ir_path: Path | None,
+    diagnostics_enabled: bool,
+    phase_starts: dict[str, float],
+    is_rust_transpile: bool,
+    is_wasm: bool,
+    emit_mode: str,
+    molt_root: Path,
+    runtime_cargo_profile: str,
+    target_triple: str | None,
+    cargo_timeout: float | None,
+    target: str,
+    backend_cargo_profile: str,
+    linked: bool,
+    project_root: Path,
+    cache_dir: str | None,
+    output_artifact: Path,
+    warnings: list[str],
+    cache: bool,
+    backend_timeout: float | None,
+    backend_daemon_config_digest: str | None,
+    artifacts_root: Path,
+    backend_daemon_cached: bool | None,
+    backend_daemon_cache_tier: str | None,
+    backend_daemon_health: dict[str, Any] | None,
+    source_path: Path,
+    deterministic: bool,
+    trusted: bool,
+    capabilities_list: list[str] | None,
+    capability_profiles: list[str],
+    capabilities_source: str | None,
+    sysroot_path: Path | None,
+    native_arch_perf_enabled: bool,
+    pgo_profile_payload: dict[str, Any] | None,
+    runtime_feedback_payload: dict[str, Any] | None,
+    resolved_diagnostics_verbosity: str,
+    build_diagnostics_payload: Callable[[], tuple[dict[str, Any] | None, Path | None]],
+    cache_report: bool,
+    verbose: bool,
+) -> tuple[_PreparedBackendPipeline | None, dict[str, Any] | None]:
+    prepared_backend_ir, prepared_backend_ir_error = _prepare_backend_ir(
+        entry_module=entry_module,
+        module_graph=module_graph,
+        parse_codec=parse_codec,
+        type_hint_policy=type_hint_policy,
+        fallback_policy=fallback_policy,
+        type_facts=type_facts,
+        enable_phi=enable_phi,
+        known_modules=known_modules,
+        known_classes=known_classes,
+        stdlib_allowlist=stdlib_allowlist,
+        known_func_defaults=known_func_defaults,
+        module_chunking=module_chunking,
+        module_chunk_max_ops=module_chunk_max_ops,
+        optimization_profile=profile,
+        pgo_hot_function_names=pgo_hot_function_names,
+        frontend_phase_timeout=frontend_phase_timeout,
+        integration_state=integration_state,
+        diagnostics_state=diagnostics_state,
+        record_frontend_timing=record_frontend_timing,
+        fail=_fail,
+        json_output=json_output,
+        module_order=module_order,
+        generated_module_source_paths=generated_module_source_paths,
+        spawn_enabled=spawn_enabled,
+        pgo_profile_summary=pgo_profile_summary,
+        runtime_feedback_summary=runtime_feedback_summary,
+        emit_ir_path=emit_ir_path,
+    )
+    if prepared_backend_ir_error is not None:
+        return None, prepared_backend_ir_error
+    assert prepared_backend_ir is not None
+    ir = prepared_backend_ir.ir
+    if diagnostics_enabled:
+        phase_starts["runtime_setup"] = time.perf_counter()
+    backend_ir_bytes: bytes | None = None
+
+    def _ensure_backend_ir_bytes() -> bytes:
+        nonlocal backend_ir_bytes
+        if backend_ir_bytes is None:
+            backend_ir_bytes = _backend_ir_bytes(ir)
+        return backend_ir_bytes
+
+    prepared_backend_setup, prepared_backend_setup_error = _prepare_backend_setup(
+        is_rust_transpile=is_rust_transpile,
+        is_wasm=is_wasm,
+        emit_mode=emit_mode,
+        molt_root=molt_root,
+        runtime_cargo_profile=runtime_cargo_profile,
+        target_triple=target_triple,
+        json_output=json_output,
+        cargo_timeout=cargo_timeout,
+        target=target,
+        profile=profile,
+        backend_cargo_profile=backend_cargo_profile,
+        linked=linked,
+        project_root=project_root,
+        cache_dir=cache_dir,
+        output_artifact=output_artifact,
+        warnings=warnings,
+        cache=cache,
+        ir=ir,
+    )
+    if prepared_backend_setup_error is not None:
+        return None, prepared_backend_setup_error
+    assert prepared_backend_setup is not None
+    prepared_backend_runtime_context = _prepare_backend_runtime_context(
+        prepared_backend_setup=prepared_backend_setup,
+        json_output=json_output,
+        runtime_cargo_profile=runtime_cargo_profile,
+        cargo_timeout=cargo_timeout,
+        molt_root=molt_root,
+    )
+    prepared_backend_compile, prepared_backend_compile_error = _prepare_backend_compile(
+        diagnostics_enabled=diagnostics_enabled,
+        phase_starts=phase_starts,
+        cache_report=cache_report,
+        verbose=verbose,
+        json_output=json_output,
+        cache_setup=prepared_backend_runtime_context.cache_setup,
+        cache_hit=prepared_backend_runtime_context.cache_hit,
+        cache_hit_tier=prepared_backend_runtime_context.cache_hit_tier,
+        cache_key=prepared_backend_runtime_context.cache_key,
+        function_cache_key=prepared_backend_runtime_context.function_cache_key,
+        cache_path=prepared_backend_runtime_context.cache_path,
+        function_cache_path=prepared_backend_runtime_context.function_cache_path,
+        project_root=project_root,
+        warnings=warnings,
+        is_wasm=is_wasm,
+        output_artifact=output_artifact,
+        linked=linked,
+        deterministic=deterministic,
+        profile=profile,
+        runtime_state=prepared_backend_runtime_context.runtime_state,
+        runtime_cargo_profile=runtime_cargo_profile,
+        cargo_timeout=cargo_timeout,
+        molt_root=molt_root,
+        target_triple=target_triple,
+        backend_cargo_profile=backend_cargo_profile,
+        backend_timeout=backend_timeout,
+        backend_daemon_config_digest=backend_daemon_config_digest,
+        ensure_runtime_wasm_shared=prepared_backend_runtime_context.ensure_runtime_wasm_shared,
+        ensure_runtime_wasm_reloc=prepared_backend_runtime_context.ensure_runtime_wasm_reloc,
+        artifacts_root=artifacts_root,
+        ir=ir,
+        _ensure_backend_ir_bytes=_ensure_backend_ir_bytes,
+        backend_daemon_cached=backend_daemon_cached,
+        backend_daemon_cache_tier=backend_daemon_cache_tier,
+        backend_daemon_health=backend_daemon_health,
+    )
+    if prepared_backend_compile_error is not None:
+        return None, prepared_backend_compile_error
+    assert prepared_backend_compile is not None
+    diagnostics_payload, diagnostics_path = build_diagnostics_payload()
+    build_result_context = _BuildResultEmissionContext(
+        cache=prepared_backend_compile.cache_enabled,
+        cache_hit=prepared_backend_compile.cache_hit,
+        cache_key=prepared_backend_runtime_context.cache_key,
+        function_cache_key=prepared_backend_runtime_context.function_cache_key,
+        cache_path=prepared_backend_runtime_context.cache_path,
+        function_cache_path=prepared_backend_runtime_context.function_cache_path,
+        cache_hit_tier=prepared_backend_compile.cache_hit_tier,
+        backend_daemon_cached=prepared_backend_compile.backend_daemon_cached,
+        backend_daemon_cache_tier=prepared_backend_compile.backend_daemon_cache_tier,
+        backend_daemon_config_digest=prepared_backend_compile.backend_daemon_config_digest,
+        target=target,
+        target_triple=target_triple,
+        source_path=source_path,
+        deterministic=deterministic,
+        trusted=trusted,
+        capabilities_list=capabilities_list,
+        capability_profiles=capability_profiles,
+        capabilities_source=capabilities_source,
+        sysroot_path=sysroot_path,
+        emit_mode=emit_mode,
+        profile=profile,
+        native_arch_perf_enabled=native_arch_perf_enabled,
+        pgo_profile_payload=pgo_profile_payload,
+        runtime_feedback_payload=runtime_feedback_payload,
+        emit_ir_path=emit_ir_path,
+        warnings=warnings,
+        json_output=json_output,
+        resolved_diagnostics_verbosity=resolved_diagnostics_verbosity,
+        diagnostics_payload=diagnostics_payload,
+        diagnostics_path=diagnostics_path,
+    )
+    return _PreparedBackendPipeline(
+        runtime_lib=prepared_backend_runtime_context.runtime_lib,
+        runtime_reloc_wasm=prepared_backend_runtime_context.runtime_reloc_wasm,
+        ensure_runtime_wasm_reloc=prepared_backend_runtime_context.ensure_runtime_wasm_reloc,
+        build_result_context=build_result_context,
+    ), None
+
+
 def _prepare_non_native_build_result(
     *,
     is_wasm: bool,
@@ -17729,181 +17957,80 @@ def build(
     if frontend_layer_error is not None:
         return frontend_layer_error
 
-    prepared_backend_ir, prepared_backend_ir_error = _prepare_backend_ir(
-        entry_module=entry_module,
-        module_graph=module_graph,
-        parse_codec=parse_codec,
-        type_hint_policy=type_hint_policy,
-        fallback_policy=fallback_policy,
-        type_facts=type_facts,
-        enable_phi=enable_phi,
-        known_modules=known_modules,
-        known_classes=known_classes,
-        stdlib_allowlist=stdlib_allowlist,
-        known_func_defaults=known_func_defaults,
-        module_chunking=module_chunking,
-        module_chunk_max_ops=module_chunk_max_ops,
-        optimization_profile=profile,
-        pgo_hot_function_names=pgo_hot_function_names,
-        frontend_phase_timeout=frontend_phase_timeout,
-        integration_state=integration_state,
-        diagnostics_state=midend_diagnostics_state,
-        record_frontend_timing=_record_frontend_timing,
-        fail=_fail,
-        json_output=json_output,
-        module_order=module_order,
-        generated_module_source_paths=generated_module_source_paths,
-        spawn_enabled=spawn_enabled,
-        pgo_profile_summary=pgo_profile_summary,
-        runtime_feedback_summary=runtime_feedback_summary,
-        emit_ir_path=emit_ir_path,
-    )
-    if prepared_backend_ir_error is not None:
-        return prepared_backend_ir_error
-    assert prepared_backend_ir is not None
-    ir = prepared_backend_ir.ir
-    if diagnostics_enabled:
-        phase_starts["runtime_setup"] = time.perf_counter()
-    backend_ir_bytes: bytes | None = None
-
-    def _ensure_backend_ir_bytes() -> bytes:
-        nonlocal backend_ir_bytes
-        if backend_ir_bytes is None:
-            backend_ir_bytes = _backend_ir_bytes(ir)
-        return backend_ir_bytes
-
-    prepared_backend_setup, prepared_backend_setup_error = _prepare_backend_setup(
-        is_rust_transpile=is_rust_transpile,
-        is_wasm=is_wasm,
-        emit_mode=emit_mode,
-        molt_root=molt_root,
-        runtime_cargo_profile=runtime_cargo_profile,
-        target_triple=target_triple,
-        json_output=json_output,
-        cargo_timeout=cargo_timeout,
-        target=target,
-        profile=profile,
-        backend_cargo_profile=backend_cargo_profile,
-        linked=linked,
-        project_root=project_root,
-        cache_dir=cache_dir,
-        output_artifact=output_artifact,
-        warnings=warnings,
-        cache=cache,
-        ir=ir,
-    )
-    if prepared_backend_setup_error is not None:
-        return prepared_backend_setup_error
-    assert prepared_backend_setup is not None
-    prepared_backend_runtime_context = _prepare_backend_runtime_context(
-        prepared_backend_setup=prepared_backend_setup,
-        json_output=json_output,
-        runtime_cargo_profile=runtime_cargo_profile,
-        cargo_timeout=cargo_timeout,
-        molt_root=molt_root,
-    )
-    runtime_state = prepared_backend_runtime_context.runtime_state
-    runtime_lib = prepared_backend_runtime_context.runtime_lib
-    runtime_wasm = prepared_backend_runtime_context.runtime_wasm
-    runtime_reloc_wasm = prepared_backend_runtime_context.runtime_reloc_wasm
-    ensure_runtime_wasm_shared = (
-        prepared_backend_runtime_context.ensure_runtime_wasm_shared
-    )
-    ensure_runtime_wasm_reloc = (
-        prepared_backend_runtime_context.ensure_runtime_wasm_reloc
-    )
-    cache_hit = prepared_backend_runtime_context.cache_hit
-    cache_hit_tier = prepared_backend_runtime_context.cache_hit_tier
-    cache_key = prepared_backend_runtime_context.cache_key
-    function_cache_key = prepared_backend_runtime_context.function_cache_key
-    cache_path = prepared_backend_runtime_context.cache_path
-    function_cache_path = prepared_backend_runtime_context.function_cache_path
-
-    cache_setup = prepared_backend_runtime_context.cache_setup
-    prepared_backend_compile, prepared_backend_compile_error = (
-        _prepare_backend_compile(
+    prepared_backend_pipeline, prepared_backend_pipeline_error = (
+        _prepare_backend_pipeline(
+            entry_module=entry_module,
+            module_graph=module_graph,
+            parse_codec=parse_codec,
+            type_hint_policy=type_hint_policy,
+            fallback_policy=fallback_policy,
+            type_facts=type_facts,
+            enable_phi=enable_phi,
+            known_modules=known_modules,
+            known_classes=known_classes,
+            stdlib_allowlist=stdlib_allowlist,
+            known_func_defaults=known_func_defaults,
+            module_chunking=module_chunking,
+            module_chunk_max_ops=module_chunk_max_ops,
+            profile=profile,
+            pgo_hot_function_names=pgo_hot_function_names,
+            frontend_phase_timeout=frontend_phase_timeout,
+            integration_state=integration_state,
+            diagnostics_state=midend_diagnostics_state,
+            record_frontend_timing=_record_frontend_timing,
+            json_output=json_output,
+            module_order=module_order,
+            generated_module_source_paths=generated_module_source_paths,
+            spawn_enabled=spawn_enabled,
+            pgo_profile_summary=pgo_profile_summary,
+            runtime_feedback_summary=runtime_feedback_summary,
+            emit_ir_path=emit_ir_path,
             diagnostics_enabled=diagnostics_enabled,
             phase_starts=phase_starts,
-            cache_report=cache_report,
-            verbose=verbose,
-            json_output=json_output,
-            cache_setup=cache_setup,
-            cache_hit=cache_hit,
-            cache_hit_tier=cache_hit_tier,
-            cache_key=cache_key,
-            function_cache_key=function_cache_key,
-            cache_path=cache_path,
-            function_cache_path=function_cache_path,
-            project_root=project_root,
-            warnings=warnings,
+            is_rust_transpile=is_rust_transpile,
             is_wasm=is_wasm,
-            output_artifact=output_artifact,
-            linked=linked,
-            deterministic=deterministic,
-            profile=profile,
-            runtime_state=runtime_state,
-            runtime_cargo_profile=runtime_cargo_profile,
-            cargo_timeout=cargo_timeout,
+            emit_mode=emit_mode,
             molt_root=molt_root,
+            runtime_cargo_profile=runtime_cargo_profile,
             target_triple=target_triple,
+            cargo_timeout=cargo_timeout,
+            target=target,
             backend_cargo_profile=backend_cargo_profile,
+            linked=linked,
+            project_root=project_root,
+            cache_dir=cache_dir,
+            output_artifact=output_artifact,
+            warnings=warnings,
+            cache=cache,
             backend_timeout=backend_timeout,
             backend_daemon_config_digest=backend_daemon_config_digest,
-            ensure_runtime_wasm_shared=ensure_runtime_wasm_shared,
-            ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
             artifacts_root=artifacts_root,
-            ir=ir,
-            _ensure_backend_ir_bytes=_ensure_backend_ir_bytes,
             backend_daemon_cached=backend_daemon_cached,
             backend_daemon_cache_tier=backend_daemon_cache_tier,
             backend_daemon_health=backend_daemon_health,
+            source_path=source_path,
+            deterministic=deterministic,
+            trusted=trusted,
+            capabilities_list=capabilities_list,
+            capability_profiles=capability_profiles,
+            capabilities_source=capabilities_source,
+            sysroot_path=sysroot_path,
+            native_arch_perf_enabled=native_arch_perf_enabled,
+            pgo_profile_payload=pgo_profile_payload,
+            runtime_feedback_payload=runtime_feedback_payload,
+            resolved_diagnostics_verbosity=resolved_diagnostics_verbosity,
+            build_diagnostics_payload=_build_diagnostics_payload,
+            cache_report=cache_report,
+            verbose=verbose,
         )
     )
-    if prepared_backend_compile_error is not None:
-        return prepared_backend_compile_error
-    assert prepared_backend_compile is not None
-    cache = prepared_backend_compile.cache_enabled
-    cache_hit = prepared_backend_compile.cache_hit
-    cache_hit_tier = prepared_backend_compile.cache_hit_tier
-    backend_daemon_cached = prepared_backend_compile.backend_daemon_cached
-    backend_daemon_cache_tier = prepared_backend_compile.backend_daemon_cache_tier
-    backend_daemon_health = prepared_backend_compile.backend_daemon_health
-    backend_daemon_config_digest = (
-        prepared_backend_compile.backend_daemon_config_digest
-    )
-    diagnostics_payload, diagnostics_path = _build_diagnostics_payload()
-    build_result_context = _BuildResultEmissionContext(
-        cache=cache,
-        cache_hit=cache_hit,
-        cache_key=cache_key,
-        function_cache_key=function_cache_key,
-        cache_path=cache_path,
-        function_cache_path=function_cache_path,
-        cache_hit_tier=cache_hit_tier,
-        backend_daemon_cached=backend_daemon_cached,
-        backend_daemon_cache_tier=backend_daemon_cache_tier,
-        backend_daemon_config_digest=backend_daemon_config_digest,
-        target=target,
-        target_triple=target_triple,
-        source_path=source_path,
-        deterministic=deterministic,
-        trusted=trusted,
-        capabilities_list=capabilities_list,
-        capability_profiles=capability_profiles,
-        capabilities_source=capabilities_source,
-        sysroot_path=sysroot_path,
-        emit_mode=emit_mode,
-        profile=profile,
-        native_arch_perf_enabled=native_arch_perf_enabled,
-        pgo_profile_payload=pgo_profile_payload,
-        runtime_feedback_payload=runtime_feedback_payload,
-        emit_ir_path=emit_ir_path,
-        warnings=warnings,
-        json_output=json_output,
-        resolved_diagnostics_verbosity=resolved_diagnostics_verbosity,
-        diagnostics_payload=diagnostics_payload,
-        diagnostics_path=diagnostics_path,
-    )
+    if prepared_backend_pipeline_error is not None:
+        return prepared_backend_pipeline_error
+    assert prepared_backend_pipeline is not None
+    runtime_lib = prepared_backend_pipeline.runtime_lib
+    runtime_reloc_wasm = prepared_backend_pipeline.runtime_reloc_wasm
+    ensure_runtime_wasm_reloc = prepared_backend_pipeline.ensure_runtime_wasm_reloc
+    build_result_context = prepared_backend_pipeline.build_result_context
 
     if is_wasm or emit_mode == "obj":
         prepared_non_native_result, prepared_non_native_result_error = (
