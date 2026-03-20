@@ -16,6 +16,12 @@ pub struct SnapshotHeader {
     pub capability_manifest: Vec<String>,
     pub determinism_stamp: String,
     pub init_state_size: u64,
+    /// Integrity hash computed from all other header fields.
+    /// TODO(v0.2): Compute as SHA-256 of the canonical JSON representation
+    /// (excluding this field) when serializing, and verify on deserialize.
+    /// For v0.1, `validate_against` already checks `module_hash` which
+    /// provides primary tamper detection against the deployment manifest.
+    pub integrity_hash: Option<String>,
 }
 
 /// A single mount recorded in the snapshot header.
@@ -52,7 +58,7 @@ impl SnapshotHeader {
 
     /// Serialize to a `serde_json::Value`.
     pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut obj = serde_json::json!({
             "snapshot_version": self.snapshot_version,
             "abi_version": self.abi_version,
             "target_profile": self.target_profile,
@@ -61,7 +67,13 @@ impl SnapshotHeader {
             "capability_manifest": self.capability_manifest,
             "determinism_stamp": self.determinism_stamp,
             "init_state_size": self.init_state_size,
-        })
+        });
+        if let Some(ref hash) = self.integrity_hash {
+            obj.as_object_mut()
+                .unwrap()
+                .insert("integrity_hash".into(), serde_json::Value::String(hash.clone()));
+        }
+        obj
     }
 
     /// Deserialize from a `serde_json::Value`.
@@ -110,6 +122,10 @@ impl SnapshotHeader {
                 .get("init_state_size")
                 .and_then(|v| v.as_u64())
                 .ok_or("missing init_state_size")?,
+            integrity_hash: obj
+                .get("integrity_hash")
+                .and_then(|v| v.as_str())
+                .map(String::from),
         })
     }
 }
@@ -188,6 +204,7 @@ mod tests {
             ],
             determinism_stamp: "2026-03-20T00:00:00Z".into(),
             init_state_size: 0,
+            integrity_hash: None,
         }
     }
 

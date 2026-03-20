@@ -3,6 +3,9 @@
 use crate::vfs::{VfsBackend, VfsError, VfsStat};
 use std::sync::Mutex;
 
+/// Maximum combined buffer size for stdout/stderr (16 MB).
+const DEV_BUFFER_CAP: usize = 16 * 1024 * 1024;
+
 pub struct DevFs {
     stdout_buffer: Mutex<Vec<u8>>,
     stderr_buffer: Mutex<Vec<u8>>,
@@ -52,11 +55,17 @@ impl VfsBackend for DevFs {
         match path {
             "stdout" => {
                 let mut buf = self.stdout_buffer.lock().unwrap();
+                if buf.len() + data.len() > DEV_BUFFER_CAP {
+                    return Err(VfsError::QuotaExceeded);
+                }
                 buf.extend_from_slice(data);
                 Ok(())
             }
             "stderr" => {
                 let mut buf = self.stderr_buffer.lock().unwrap();
+                if buf.len() + data.len() > DEV_BUFFER_CAP {
+                    return Err(VfsError::QuotaExceeded);
+                }
                 buf.extend_from_slice(data);
                 Ok(())
             }
