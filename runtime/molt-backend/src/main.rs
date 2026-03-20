@@ -5,7 +5,7 @@ use molt_backend::SimpleIR;
 use molt_backend::rust::RustBackend;
 #[cfg(feature = "wasm-backend")]
 use molt_backend::wasm::{WasmBackend, WasmCompileOptions};
-use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::env;
@@ -17,8 +17,14 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+mod json_boundary;
+
+use crate::json_boundary::{
+    expect_object, optional_bool, optional_string, optional_u32, required_field, required_string,
+};
+
 const BACKEND_DAEMON_PROTOCOL_VERSION: u32 = 1;
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
@@ -29,27 +35,21 @@ struct DaemonJobRequest {
     #[cfg_attr(not(feature = "native-backend"), allow(dead_code))]
     target_triple: Option<String>,
     #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    #[serde(default)]
     wasm_link: bool,
     #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    #[serde(default)]
     wasm_data_base: Option<u32>,
     #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    #[serde(default)]
     wasm_table_base: Option<u32>,
     output: String,
     cache_key: String,
     function_cache_key: Option<String>,
-    #[serde(default)]
     skip_module_output_if_synced: bool,
-    #[serde(default)]
     skip_function_output_if_synced: bool,
-    #[serde(default)]
     probe_cache_only: bool,
     ir: Option<SimpleIR>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 struct DaemonRequest {
     version: Option<u32>,
     ping: Option<bool>,
@@ -58,14 +58,13 @@ struct DaemonRequest {
     jobs: Option<Vec<DaemonJobRequest>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 struct DaemonJobResponse {
     id: String,
     ok: bool,
     cached: bool,
     cache_tier: Option<String>,
     output_written: bool,
-    #[serde(skip_serializing_if = "is_false")]
     needs_ir: bool,
     message: Option<String>,
 }
@@ -74,18 +73,15 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 struct DaemonHealthResponse {
     protocol_version: u32,
     pid: u32,
     uptime_ms: u64,
     cache_entries: usize,
     cache_bytes: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
     cache_max_bytes: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     request_limit_bytes: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     max_jobs: Option<usize>,
     requests_total: u64,
     jobs_total: u64,
@@ -93,14 +89,183 @@ struct DaemonHealthResponse {
     cache_misses: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 struct DaemonResponse {
     ok: bool,
     pong: bool,
     jobs: Vec<DaemonJobResponse>,
     error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     health: Option<DaemonHealthResponse>,
+}
+
+impl DaemonJobRequest {
+    fn from_json_value(value: &JsonValue, ctx: &str) -> Result<Self, String> {
+        let obj = expect_object(value, ctx)?;
+        let is_wasm = required_field(obj, "is_wasm", ctx)?
+            .as_bool()
+            .ok_or_else(|| format!("{ctx}.is_wasm must be a bool"))?;
+        let ir = match obj.get("ir") {
+            None | Some(JsonValue::Null) => None,
+            Some(ir_value) => Some(SimpleIR::from_json_value(ir_value)?),
+        };
+        Ok(Self {
+            id: required_string(obj, "id", ctx)?,
+            is_wasm,
+            target_triple: optional_string(obj, "target_triple", ctx)?,
+            wasm_link: optional_bool(obj, "wasm_link", ctx)?.unwrap_or(false),
+            wasm_data_base: optional_u32(obj, "wasm_data_base", ctx)?,
+            wasm_table_base: optional_u32(obj, "wasm_table_base", ctx)?,
+            output: required_string(obj, "output", ctx)?,
+            cache_key: required_string(obj, "cache_key", ctx)?,
+            function_cache_key: optional_string(obj, "function_cache_key", ctx)?,
+            skip_module_output_if_synced: optional_bool(obj, "skip_module_output_if_synced", ctx)?
+                .unwrap_or(false),
+            skip_function_output_if_synced: optional_bool(
+                obj,
+                "skip_function_output_if_synced",
+                ctx,
+            )?
+            .unwrap_or(false),
+            probe_cache_only: optional_bool(obj, "probe_cache_only", ctx)?.unwrap_or(false),
+            ir,
+        })
+    }
+}
+
+impl DaemonRequest {
+    fn from_json_bytes(bytes: &[u8]) -> Result<Self, String> {
+        let value: JsonValue =
+            serde_json::from_slice(bytes).map_err(|err| format!("invalid request JSON: {err}"))?;
+        let obj = expect_object(&value, "request")?;
+        let version = match obj.get("version") {
+            None | Some(JsonValue::Null) => None,
+            Some(value) => {
+                let Some(raw) = value.as_u64() else {
+                    return Err("request.version must be a non-negative integer".to_string());
+                };
+                Some(
+                    u32::try_from(raw)
+                        .map_err(|_| "request.version is out of range for u32".to_string())?,
+                )
+            }
+        };
+        let jobs = match obj.get("jobs") {
+            None | Some(JsonValue::Null) => None,
+            Some(value) => {
+                let array = value
+                    .as_array()
+                    .ok_or_else(|| "request.jobs must be an array".to_string())?;
+                let mut out = Vec::with_capacity(array.len());
+                for (idx, item) in array.iter().enumerate() {
+                    out.push(DaemonJobRequest::from_json_value(
+                        item,
+                        &format!("request.jobs[{idx}]"),
+                    )?);
+                }
+                Some(out)
+            }
+        };
+        Ok(Self {
+            version,
+            ping: optional_bool(obj, "ping", "request")?,
+            include_health: optional_bool(obj, "include_health", "request")?,
+            config_digest: optional_string(obj, "config_digest", "request")?,
+            jobs,
+        })
+    }
+}
+
+impl DaemonJobResponse {
+    fn to_json_value(&self) -> JsonValue {
+        let mut obj = serde_json::Map::new();
+        obj.insert("id".to_string(), JsonValue::String(self.id.clone()));
+        obj.insert("ok".to_string(), JsonValue::Bool(self.ok));
+        obj.insert("cached".to_string(), JsonValue::Bool(self.cached));
+        if let Some(cache_tier) = &self.cache_tier {
+            obj.insert(
+                "cache_tier".to_string(),
+                JsonValue::String(cache_tier.clone()),
+            );
+        }
+        obj.insert(
+            "output_written".to_string(),
+            JsonValue::Bool(self.output_written),
+        );
+        if !is_false(&self.needs_ir) {
+            obj.insert("needs_ir".to_string(), JsonValue::Bool(self.needs_ir));
+        }
+        if let Some(message) = &self.message {
+            obj.insert("message".to_string(), JsonValue::String(message.clone()));
+        }
+        JsonValue::Object(obj)
+    }
+}
+
+impl DaemonHealthResponse {
+    fn to_json_value(&self) -> JsonValue {
+        let mut obj = serde_json::Map::new();
+        obj.insert(
+            "protocol_version".to_string(),
+            JsonValue::from(self.protocol_version),
+        );
+        obj.insert("pid".to_string(), JsonValue::from(self.pid));
+        obj.insert("uptime_ms".to_string(), JsonValue::from(self.uptime_ms));
+        obj.insert(
+            "cache_entries".to_string(),
+            JsonValue::from(self.cache_entries),
+        );
+        obj.insert("cache_bytes".to_string(), JsonValue::from(self.cache_bytes));
+        if let Some(cache_max_bytes) = self.cache_max_bytes {
+            obj.insert(
+                "cache_max_bytes".to_string(),
+                JsonValue::from(cache_max_bytes),
+            );
+        }
+        if let Some(request_limit_bytes) = self.request_limit_bytes {
+            obj.insert(
+                "request_limit_bytes".to_string(),
+                JsonValue::from(request_limit_bytes),
+            );
+        }
+        if let Some(max_jobs) = self.max_jobs {
+            obj.insert("max_jobs".to_string(), JsonValue::from(max_jobs));
+        }
+        obj.insert(
+            "requests_total".to_string(),
+            JsonValue::from(self.requests_total),
+        );
+        obj.insert("jobs_total".to_string(), JsonValue::from(self.jobs_total));
+        obj.insert("cache_hits".to_string(), JsonValue::from(self.cache_hits));
+        obj.insert(
+            "cache_misses".to_string(),
+            JsonValue::from(self.cache_misses),
+        );
+        JsonValue::Object(obj)
+    }
+}
+
+impl DaemonResponse {
+    fn to_json_value(&self) -> JsonValue {
+        let mut obj = serde_json::Map::new();
+        obj.insert("ok".to_string(), JsonValue::Bool(self.ok));
+        obj.insert("pong".to_string(), JsonValue::Bool(self.pong));
+        obj.insert(
+            "jobs".to_string(),
+            JsonValue::Array(
+                self.jobs
+                    .iter()
+                    .map(DaemonJobResponse::to_json_value)
+                    .collect(),
+            ),
+        );
+        if let Some(error) = &self.error {
+            obj.insert("error".to_string(), JsonValue::String(error.clone()));
+        }
+        if let Some(health) = &self.health {
+            obj.insert("health".to_string(), health.to_json_value());
+        }
+        JsonValue::Object(obj)
+    }
 }
 
 #[derive(Default)]
@@ -551,7 +716,7 @@ fn handle_daemon_connection(
             write_daemon_response(stream, &response)?;
             continue;
         }
-        let req: DaemonRequest = match serde_json::from_slice(&raw_bytes) {
+        let req = match DaemonRequest::from_json_bytes(&raw_bytes) {
             Ok(req) => req,
             Err(err) => {
                 let response = DaemonResponse {
@@ -661,10 +826,15 @@ fn write_daemon_response(
     stream: &mut std::os::unix::net::UnixStream,
     response: &DaemonResponse,
 ) -> io::Result<()> {
-    let mut payload = serde_json::to_vec(response).map_err(io::Error::other)?;
+    let mut payload = daemon_response_payload(response)?;
     payload.push(b'\n');
     stream.write_all(&payload)?;
     Ok(())
+}
+
+#[cfg(unix)]
+fn daemon_response_payload(response: &DaemonResponse) -> io::Result<Vec<u8>> {
+    serde_json::to_vec(&response.to_json_value()).map_err(io::Error::other)
 }
 
 #[cfg(not(unix))]
@@ -703,10 +873,10 @@ fn main() -> io::Result<()> {
     let mut buffer = String::new();
     io::stdin().read_to_string(&mut buffer)?;
 
-    let ir: SimpleIR = match serde_json::from_str(&buffer) {
+    let ir: SimpleIR = match SimpleIR::from_json_str(&buffer) {
         Ok(ir) => ir,
         Err(err) => {
-            eprintln!("Invalid IR JSON: {err}");
+            eprintln!("{err}");
             std::process::exit(1);
         }
     };
@@ -774,8 +944,8 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DaemonCache, DaemonJobRequest, compile_single_job, read_daemon_request_bytes,
-        write_cached_output,
+        DaemonCache, DaemonJobRequest, DaemonRequest, DaemonResponse, compile_single_job,
+        daemon_response_payload, read_daemon_request_bytes, write_cached_output,
     };
     use std::io::Cursor;
     use std::sync::Arc;
@@ -811,6 +981,56 @@ mod tests {
         let mut cursor = Cursor::new(b"{\"version\":1}\ntrailing".to_vec());
         let bytes = read_daemon_request_bytes(&mut cursor).expect("request bytes");
         assert_eq!(bytes, b"{\"version\":1}\n");
+    }
+
+    #[test]
+    fn daemon_request_parse_applies_boolean_defaults() {
+        let request = DaemonRequest::from_json_bytes(
+            br#"{
+                "version": 1,
+                "jobs": [
+                    {
+                        "id": "job0",
+                        "is_wasm": false,
+                        "output": "/tmp/out.o",
+                        "cache_key": "module"
+                    }
+                ]
+            }"#,
+        )
+        .expect("request parse");
+
+        let job = request.jobs.expect("job list").pop().expect("job");
+        assert!(!job.wasm_link);
+        assert!(!job.skip_module_output_if_synced);
+        assert!(!job.skip_function_output_if_synced);
+        assert!(!job.probe_cache_only);
+        assert!(job.ir.is_none());
+    }
+
+    #[test]
+    fn daemon_response_payload_omits_false_optional_fields() {
+        let payload = daemon_response_payload(&DaemonResponse {
+            ok: true,
+            pong: false,
+            jobs: vec![super::DaemonJobResponse {
+                id: "job0".to_string(),
+                ok: true,
+                cached: false,
+                cache_tier: None,
+                output_written: true,
+                needs_ir: false,
+                message: None,
+            }],
+            error: None,
+            health: None,
+        })
+        .expect("response payload");
+
+        let text = String::from_utf8(payload).expect("utf8 json");
+        assert!(!text.contains("\"needs_ir\""));
+        assert!(!text.contains("\"health\""));
+        assert!(!text.contains("\"error\""));
     }
 
     #[test]

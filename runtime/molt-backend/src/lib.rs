@@ -21,7 +21,7 @@ use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_native::builder_with_options as native_isa_builder_with_options;
 #[cfg(feature = "native-backend")]
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 #[cfg(feature = "native-backend")]
 use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -31,6 +31,12 @@ use std::fmt::Write as _;
 use std::sync::OnceLock;
 
 mod ir_schema;
+mod json_boundary;
+
+use crate::json_boundary::{
+    expect_object, optional_bool, optional_bytes, optional_f64, optional_i64, optional_string,
+    optional_string_list, required_field, required_string, required_string_list,
+};
 
 #[cfg(feature = "luau-backend")]
 pub mod luau;
@@ -424,31 +430,28 @@ fn emit_maybe_ref_adjust_v2(builder: &mut FunctionBuilder, val: Value, call_ref:
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct PgoProfileIR {
     pub version: Option<String>,
     pub hash: Option<String>,
-    #[serde(default)]
     pub hot_functions: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug)]
 pub struct SimpleIR {
     pub functions: Vec<FunctionIR>,
-    #[serde(default)]
     pub profile: Option<PgoProfileIR>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug)]
 pub struct FunctionIR {
     pub name: String,
     pub params: Vec<String>,
     pub ops: Vec<OpIR>,
-    #[serde(default)]
     pub param_types: Option<Vec<String>>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct OpIR {
     pub kind: String,
     pub value: Option<i64>,
@@ -458,20 +461,150 @@ pub struct OpIR {
     pub var: Option<String>,
     pub args: Option<Vec<String>>,
     pub out: Option<String>,
-    #[serde(default)]
     pub fast_int: Option<bool>,
-    #[serde(default)]
     pub fast_float: Option<bool>,
-    #[serde(default)]
     pub raw_int: Option<bool>,
-    #[serde(default)]
     pub stack_eligible: Option<bool>,
-    #[serde(default)]
     pub task_kind: Option<String>,
-    #[serde(default)]
     pub container_type: Option<String>,
-    #[serde(default)]
     pub type_hint: Option<String>,
+}
+
+impl PgoProfileIR {
+    fn from_json_value(value: &JsonValue, ctx: &str) -> Result<Self, String> {
+        let obj = expect_object(value, ctx)?;
+        Ok(Self {
+            version: optional_string(obj, "version", ctx)?,
+            hash: optional_string(obj, "hash", ctx)?,
+            hot_functions: optional_string_list(obj, "hot_functions", ctx)?.unwrap_or_default(),
+        })
+    }
+}
+
+impl SimpleIR {
+    pub fn from_json_str(input: &str) -> Result<Self, String> {
+        let value: JsonValue =
+            serde_json::from_str(input).map_err(|err| format!("invalid IR JSON: {err}"))?;
+        Self::from_json_value(&value)
+    }
+
+    pub fn from_json_value(value: &JsonValue) -> Result<Self, String> {
+        let obj = expect_object(value, "ir")?;
+        let functions_value = required_field(obj, "functions", "ir")?;
+        let function_values = functions_value
+            .as_array()
+            .ok_or_else(|| "ir.functions must be an array".to_string())?;
+        let mut functions = Vec::with_capacity(function_values.len());
+        for (idx, function_value) in function_values.iter().enumerate() {
+            functions.push(FunctionIR::from_json_value(
+                function_value,
+                &format!("ir.functions[{idx}]"),
+            )?);
+        }
+        let profile = match obj.get("profile") {
+            None | Some(JsonValue::Null) => None,
+            Some(profile_value) => {
+                Some(PgoProfileIR::from_json_value(profile_value, "ir.profile")?)
+            }
+        };
+        Ok(Self { functions, profile })
+    }
+}
+
+impl FunctionIR {
+    fn from_json_value(value: &JsonValue, ctx: &str) -> Result<Self, String> {
+        let obj = expect_object(value, ctx)?;
+        let ops_value = required_field(obj, "ops", ctx)?;
+        let op_values = ops_value
+            .as_array()
+            .ok_or_else(|| format!("{ctx}.ops must be an array"))?;
+        let mut ops = Vec::with_capacity(op_values.len());
+        for (idx, op_value) in op_values.iter().enumerate() {
+            ops.push(OpIR::from_json_value(
+                op_value,
+                &format!("{ctx}.ops[{idx}]"),
+            )?);
+        }
+        Ok(Self {
+            name: required_string(obj, "name", ctx)?,
+            params: required_string_list(obj, "params", ctx)?,
+            ops,
+            param_types: optional_string_list(obj, "param_types", ctx)?,
+        })
+    }
+}
+
+impl OpIR {
+    fn from_json_value(value: &JsonValue, ctx: &str) -> Result<Self, String> {
+        let obj = expect_object(value, ctx)?;
+        Ok(Self {
+            kind: required_string(obj, "kind", ctx)?,
+            value: optional_i64(obj, "value", ctx)?,
+            f_value: optional_f64(obj, "f_value", ctx)?,
+            s_value: optional_string(obj, "s_value", ctx)?,
+            bytes: optional_bytes(obj, "bytes", ctx)?,
+            var: optional_string(obj, "var", ctx)?,
+            args: optional_string_list(obj, "args", ctx)?,
+            out: optional_string(obj, "out", ctx)?,
+            fast_int: optional_bool(obj, "fast_int", ctx)?,
+            fast_float: optional_bool(obj, "fast_float", ctx)?,
+            raw_int: optional_bool(obj, "raw_int", ctx)?,
+            stack_eligible: optional_bool(obj, "stack_eligible", ctx)?,
+            task_kind: optional_string(obj, "task_kind", ctx)?,
+            container_type: optional_string(obj, "container_type", ctx)?,
+            type_hint: optional_string(obj, "type_hint", ctx)?,
+        })
+    }
+}
+
+#[cfg(test)]
+mod json_parse_tests {
+    use super::SimpleIR;
+
+    #[test]
+    fn simple_ir_from_json_str_applies_optional_defaults() {
+        let ir = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "__main__",
+                        "params": [],
+                        "ops": [{"kind": "ret_void"}]
+                    }
+                ]
+            }"#,
+        )
+        .expect("ir parse");
+
+        assert_eq!(ir.functions.len(), 1);
+        assert!(ir.profile.is_none());
+        assert!(ir.functions[0].param_types.is_none());
+        assert!(ir.functions[0].ops[0].args.is_none());
+        assert!(ir.functions[0].ops[0].fast_int.is_none());
+    }
+
+    #[test]
+    fn simple_ir_from_json_str_parses_profile_without_hot_functions() {
+        let ir = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "__main__",
+                        "params": [],
+                        "ops": [{"kind": "ret_void"}]
+                    }
+                ],
+                "profile": {
+                    "version": "v1"
+                }
+            }"#,
+        )
+        .expect("ir parse");
+
+        let profile = ir.profile.expect("profile");
+        assert_eq!(profile.version.as_deref(), Some("v1"));
+        assert!(profile.hot_functions.is_empty());
+    }
 }
 
 const RAW_INT_ALLOWED_OP_KINDS: &[&str] = &[
@@ -14667,7 +14800,9 @@ impl SimpleBackend {
             .declare_function(&func_ir.name, Linkage::Export, &self.ctx.func.signature)
             .unwrap();
         let define_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.module.define_function(id, &mut self.ctx).map_err(Box::new)
+            self.module
+                .define_function(id, &mut self.ctx)
+                .map_err(Box::new)
         }));
         match define_result {
             Ok(Ok(())) => {}
