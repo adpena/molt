@@ -5162,6 +5162,121 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
     ]
 
 
+def test_run_uses_build_profile_flag_for_nested_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+    entry = project / "main.py"
+    entry.write_text("print('ok')\n")
+
+    build_cmds: list[list[str]] = []
+    run_cmds: list[list[str]] = []
+
+    def fake_subprocess_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        build_cmds.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def fake_run_command(cmd: list[str], **kwargs: object) -> int:
+        del kwargs
+        run_cmds.append(list(cmd))
+        return 0
+
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli, "_run_command", fake_run_command)
+
+    rc = cli.run_script(
+        str(entry),
+        None,
+        [],
+        build_profile="dev",
+        json_output=False,
+    )
+
+    assert rc == 0
+    assert build_cmds == [
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            "--build-profile",
+            "dev",
+            str(entry),
+        ]
+    ]
+    assert run_cmds
+
+
+def test_compare_uses_build_profile_flag_for_nested_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+    entry = project / "main.py"
+    entry.write_text("print('ok')\n")
+    built_binary = project / "build" / "main_molt"
+    built_binary.parent.mkdir(parents=True, exist_ok=True)
+    built_binary.write_text("")
+
+    seen_cmds: list[list[str]] = []
+
+    def fake_run_command_timed(
+        cmd: list[str], **kwargs: object
+    ) -> cli._TimedResult:
+        del kwargs
+        seen_cmds.append(list(cmd))
+        if len(seen_cmds) == 1:
+            return cli._TimedResult(0, "ok\n", "", 0.01)
+        if len(seen_cmds) == 2:
+            return cli._TimedResult(
+                0,
+                json.dumps({"data": {"output": str(built_binary)}}),
+                "",
+                0.02,
+            )
+        return cli._TimedResult(0, "ok\n", "", 0.01)
+
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli, "_resolve_python_exe", lambda exe: "python3")
+    monkeypatch.setattr(cli, "_resolve_binary_output", lambda output: built_binary)
+    monkeypatch.setattr(cli, "_run_command_timed", fake_run_command_timed)
+
+    rc = cli.compare(
+        str(entry),
+        None,
+        "python3",
+        [],
+        build_profile="dev",
+    )
+
+    assert rc == 0
+    assert seen_cmds[1] == [
+        sys.executable,
+        "-m",
+        "molt.cli",
+        "build",
+        "--json",
+        "--build-profile",
+        "dev",
+        str(entry),
+    ]
+
+
 def test_backend_daemon_enabled_is_cached(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

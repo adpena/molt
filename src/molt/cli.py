@@ -18618,7 +18618,7 @@ def run_script(
     build_args = list(build_args or [])
     capabilities_tmp: Path | None = None
     if build_profile is not None and not _build_args_has_profile_flag(build_args):
-        build_args.extend(["--profile", build_profile])
+        build_args.extend(["--build-profile", build_profile])
     if trusted and not _build_args_has_trusted_flag(build_args):
         build_args.append("--trusted")
     if capabilities is not None and not _build_args_has_capabilities_flag(build_args):
@@ -18841,7 +18841,7 @@ def compare(
     build_args = list(build_args or [])
     capabilities_tmp: Path | None = None
     if build_profile is not None and not _build_args_has_profile_flag(build_args):
-        build_args.extend(["--profile", build_profile])
+        build_args.extend(["--build-profile", build_profile])
     if rebuild and not _build_args_has_cache_flag(build_args):
         build_args.append("--no-cache")
     if trusted and not _build_args_has_trusted_flag(build_args):

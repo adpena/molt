@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -447,3 +448,65 @@ def test_run_batch_compile_build_error_path_force_closes_server(
     assert error == "build timed out"
     assert shutdown_calls == [True]
     assert disabled_reasons == ["build timed out"]
+
+
+def test_run_molt_build_only_uses_build_profile_flag(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_diff_module()
+    seen_cmds: list[list[str]] = []
+    diff_root = tmp_path / "diff-root"
+    target_root = tmp_path / "target-root"
+
+    def fake_run_with_optional_time(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        seen_cmds.append(list(cmd))
+        output_path = Path(cmd[cmd.index("--output") + 1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(module, "_run_with_optional_time", fake_run_with_optional_time)
+    monkeypatch.setattr(module, "_diff_tmp_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "_diff_root", lambda: diff_root)
+    monkeypatch.setattr(module, "_diff_cargo_target_root", lambda: target_root)
+    monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
+    monkeypatch.setattr(module, "_diff_allow_rustc_wrapper", lambda: False)
+    monkeypatch.setattr(module, "_diff_trusted_default", lambda: False)
+    monkeypatch.setattr(module, "_diff_backend_daemon_default", lambda: False)
+    monkeypatch.setattr(module, "_diff_force_no_cache", lambda: False)
+    monkeypatch.setattr(module, "_diff_force_rebuild", lambda: False)
+    monkeypatch.setattr(module, "_diff_timeout", lambda: 60.0)
+    monkeypatch.setattr(module, "_diff_build_timeout", lambda timeout: timeout)
+    monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
+    monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output: None)
+    monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
+
+    stdout, stderr, rc = module.run_molt_build_only(
+        "tests/differential/stdlib/unicodedata_basic.py",
+        "dev",
+    )
+
+    assert (stdout, stderr, rc) == ("", "", 0)
+    assert seen_cmds == [
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            "tests/differential/stdlib/unicodedata_basic.py",
+            "--build-profile",
+            "dev",
+            "--respect-pythonpath",
+            "--out-dir",
+            seen_cmds[0][seen_cmds[0].index("--out-dir") + 1],
+            "--output",
+            seen_cmds[0][seen_cmds[0].index("--output") + 1],
+            "--capabilities",
+            "fs,env,time,random",
+        ]
+    ]
