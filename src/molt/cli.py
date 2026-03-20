@@ -7696,7 +7696,7 @@ def _resolve_backend_cargo_profile_name_cached(
     normalized_generic = generic_raw.strip()
     profile_name = normalized_backend or normalized_generic
     if not profile_name:
-        profile_name = "dev-fast" if build_profile == "dev" else "release-fast"
+        profile_name = "dev" if build_profile == "dev" else "release-fast"
     if not _CARGO_PROFILE_NAME_RE.match(profile_name):
         if normalized_backend:
             return build_profile, f"Invalid {backend_env_var} value: {backend_raw}"

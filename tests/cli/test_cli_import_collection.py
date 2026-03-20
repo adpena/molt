@@ -4734,6 +4734,12 @@ def test_resolve_backend_cargo_profile_name_defaults_and_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cli._resolve_backend_cargo_profile_name_cached.cache_clear()
+    monkeypatch.delenv("MOLT_DEV_BACKEND_CARGO_PROFILE", raising=False)
+    monkeypatch.delenv("MOLT_DEV_CARGO_PROFILE", raising=False)
+    profile, error = cli._resolve_backend_cargo_profile_name("dev")
+    assert profile == "dev"
+    assert error is None
+
     monkeypatch.delenv("MOLT_RELEASE_BACKEND_CARGO_PROFILE", raising=False)
     monkeypatch.delenv("MOLT_RELEASE_CARGO_PROFILE", raising=False)
     profile, error = cli._resolve_backend_cargo_profile_name("release")
@@ -5043,7 +5049,7 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
             "--package",
             "molt-backend",
             "--profile",
-            "dev-fast",
+            "dev",
             "--no-default-features",
             "--features",
             "rust-backend",
