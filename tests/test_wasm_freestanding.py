@@ -760,3 +760,28 @@ def test_precompile_produces_cwasm(tmp_path):
     else:
         # wasmtime not installed; precompilation should be skipped gracefully
         assert "wasmtime not found" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# --wasm-profile pure
+# ---------------------------------------------------------------------------
+
+
+def test_wasm_profile_pure_accepted():
+    """--wasm-profile pure should be accepted by the CLI."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt",
+            "build",
+            "--help",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=PROJECT_ROOT,
+        timeout=30,
+    )
+    assert result.returncode == 0
+    assert "--wasm-profile" in result.stdout
+    assert "pure" in result.stdout

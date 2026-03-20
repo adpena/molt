@@ -18379,6 +18379,7 @@ def build(
     portable: bool = False,
     wasm_opt_level: str = "Oz",
     precompile: bool = False,
+    wasm_profile: str = "full",
 ) -> int:
     if isinstance(profile, bool):
         profile = "release"
@@ -18387,6 +18388,9 @@ def build(
     # --portable: force baseline ISA for cross-machine reproducible codegen.
     if portable:
         os.environ["MOLT_PORTABLE"] = "1"
+    # --wasm-profile: pass to backend via environment variable.
+    if wasm_profile and wasm_profile != "full":
+        os.environ["MOLT_WASM_PROFILE"] = wasm_profile
     if file_path and module:
         return _fail(
             "Use a file path or --module, not both.", json_output, command="build"
@@ -22972,6 +22976,15 @@ def main() -> int:
         ),
     )
     build_parser.add_argument(
+        "--wasm-profile",
+        choices=["full", "pure"],
+        default="full",
+        help=(
+            "WASM import profile: full (default) registers all host imports; "
+            "pure omits IO/ASYNC/TIME imports for minimal pure-computation modules."
+        ),
+    )
+    build_parser.add_argument(
         "--emit-ir",
         help="Write the lowered IR JSON to a file path.",
     )
@@ -24040,6 +24053,7 @@ def main() -> int:
             portable=getattr(args, "portable", False),
             wasm_opt_level=getattr(args, "wasm_opt_level", "Oz"),
             precompile=getattr(args, "precompile", False),
+            wasm_profile=getattr(args, "wasm_profile", "full"),
         )
     if args.command == "extension":
         if args.extension_command == "build":
