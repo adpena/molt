@@ -10,6 +10,7 @@ pub mod file;
 pub mod snapshot;
 pub mod tmp;
 
+use std::borrow::Cow;
 use std::sync::{Arc, RwLock};
 
 /// Errors from VFS operations.
@@ -57,6 +58,14 @@ pub struct VfsStat {
 /// Backend trait for mount implementations.
 pub trait VfsBackend: Send + Sync {
     fn open_read(&self, path: &str) -> Result<Vec<u8>, VfsError>;
+
+    /// Return file contents as a shared `Arc`, avoiding a full copy when the
+    /// backend already stores data behind an `Arc`.  The default implementation
+    /// wraps the result of [`open_read`] in a new `Arc`.
+    fn open_read_shared(&self, path: &str) -> Result<Arc<Vec<u8>>, VfsError> {
+        self.open_read(path).map(Arc::new)
+    }
+
     fn open_write(&self, path: &str, data: &[u8]) -> Result<(), VfsError>;
     fn open_append(&self, path: &str, data: &[u8]) -> Result<(), VfsError>;
     fn stat(&self, path: &str) -> Result<VfsStat, VfsError>;
@@ -115,16 +124,23 @@ impl MountTable {
 
 /// Normalize a path: collapse //, resolve ., reject .. escapes.
 /// Returns None for empty or invalid paths.
-fn normalize_path(path: &str) -> Option<String> {
-    if path.is_empty() {
+fn normalize_path(path: &str) -> Option<Cow<'_, str>> {
+    if path.is_empty() || !path.starts_with('/') {
         return None;
     }
-    let path = if path.starts_with('/') {
-        path
-    } else {
-        return None;
-    };
 
+    // Fast path: if the path has no problematic sequences, return as-is (zero-alloc).
+    if path.len() > 1
+        && !path.contains("//")
+        && !path.contains("/./")
+        && !path.contains("/../")
+        && !path.ends_with("/.")
+        && !path.ends_with("/..")
+    {
+        return Some(Cow::Borrowed(path));
+    }
+
+    // Slow path: full normalization
     let mut parts: Vec<&str> = Vec::new();
     for component in path.split('/') {
         match component {
@@ -143,7 +159,7 @@ fn normalize_path(path: &str) -> Option<String> {
         return None; // bare "/" not allowed
     }
 
-    Some(format!("/{}", parts.join("/")))
+    Some(Cow::Owned(format!("/{}", parts.join("/"))))
 }
 
 /// Thread-safe VFS state stored in runtime.
@@ -263,6 +279,17 @@ mod tests {
         let fs = BundleFs::from_entries(vec![("hello.txt".into(), b"world".to_vec())]);
         assert_eq!(fs.open_read("hello.txt").unwrap(), b"world");
         assert!(fs.open_read("missing.txt").is_err());
+    }
+
+    #[test]
+    fn bundle_fs_read_shared() {
+        let fs = BundleFs::from_entries(vec![("hello.txt".into(), b"world".to_vec())]);
+        let arc1 = fs.open_read_shared("hello.txt").unwrap();
+        let arc2 = fs.open_read_shared("hello.txt").unwrap();
+        assert_eq!(&**arc1, b"world");
+        // Both Arcs point to the same allocation.
+        assert!(Arc::ptr_eq(&arc1, &arc2));
+        assert!(fs.open_read_shared("missing.txt").is_err());
     }
 
     #[test]
