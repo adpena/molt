@@ -81,6 +81,7 @@ def test_workspace_dev_profile_trims_runtime_debug_info() -> None:
         "xz2",
         "zlib-rs",
         "lzma-sys",
+        "zip",
     }
 
     for packages in (dev_packages, dev_fast_packages):
