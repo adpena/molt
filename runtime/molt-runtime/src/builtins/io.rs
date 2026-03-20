@@ -3732,9 +3732,9 @@ fn open_impl(
                         }
                         let mem_bits = MoltObject::from_ptr(bytearray_ptr).bits();
                         let vfs_state = Arc::new(MoltFileState {
-                            backend: Mutex::new(Some(MoltFileBackend::Memory(
-                                MoltMemoryBackend { pos: 0 },
-                            ))),
+                            backend: Mutex::new(Some(MoltFileBackend::Memory(MoltMemoryBackend {
+                                pos: 0,
+                            }))),
                             #[cfg(windows)]
                             crt_fd: Mutex::new(None),
                         });
@@ -3789,13 +3789,13 @@ fn open_impl(
                             let buffer_ptr = alloc_file_handle_with_state(
                                 _py,
                                 Arc::clone(&vfs_state),
-                                true,   // readable
-                                false,  // writable
-                                false,  // text
-                                false,  // closefd
-                                true,   // owns_fd
-                                false,  // line_buffering
-                                false,  // write_through
+                                true,  // readable
+                                false, // writable
+                                false, // text
+                                false, // closefd
+                                true,  // owns_fd
+                                false, // line_buffering
+                                false, // write_through
                                 buf_size,
                                 buffer_class_bits,
                                 path_name_bits,
@@ -3818,13 +3818,13 @@ fn open_impl(
                         let ptr = alloc_file_handle_with_state(
                             _py,
                             vfs_state,
-                            true,            // readable
-                            false,           // writable
+                            true,  // readable
+                            false, // writable
                             mode_info.text,
-                            true,            // closefd
-                            true,            // owns_fd
+                            true, // closefd
+                            true, // owns_fd
                             line_buffering,
-                            false,           // write_through
+                            false, // write_through
                             buf_size,
                             handle_class_bits,
                             path_name_bits,

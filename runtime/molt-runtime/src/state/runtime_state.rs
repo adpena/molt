@@ -370,16 +370,11 @@ impl RuntimeState {
     ///
     /// The caller must hold the returned `MutexGuard` for the duration of use.
     /// Use `get_vfs()` from `io.rs` / `modules.rs` to access mount tables.
-    pub(crate) fn get_vfs(&self) -> Option<std::sync::MutexGuard<'_, Option<crate::vfs::VfsState>>> {
+    pub(crate) fn get_vfs(
+        &self,
+    ) -> Option<std::sync::MutexGuard<'_, Option<crate::vfs::VfsState>>> {
         let guard = self.vfs_state.lock().ok()?;
         if guard.is_some() { Some(guard) } else { None }
-    }
-
-    /// Inject VFS state from the host. Replaces any previous VFS state.
-    pub(crate) fn set_vfs(&self, vfs: crate::vfs::VfsState) {
-        if let Ok(mut guard) = self.vfs_state.lock() {
-            *guard = Some(vfs);
-        }
     }
 }
 

@@ -1003,10 +1003,10 @@ pub extern "C" fn molt_codecs_charmap_decode(
                     let val_obj = obj_from_bits(val);
                     if let Some(s) = string_obj_to_owned(val_obj) {
                         out.push_str(&s);
-                    } else if let Some(i) = crate::to_i64(val_obj) {
-                        if let Some(ch) = char::from_u32(i as u32) {
-                            out.push(ch);
-                        }
+                    } else if let Some(i) = crate::to_i64(val_obj)
+                        && let Some(ch) = char::from_u32(i as u32)
+                    {
+                        out.push(ch);
                     }
                 }
                 None => match errors.as_str() {
@@ -1096,11 +1096,11 @@ pub extern "C" fn molt_codecs_charmap_encode(
                     crate::dec_ref_bits(_py, ch_key_bits);
                     if let Some(v) = val {
                         let v_obj = obj_from_bits(v);
-                        if let Some(b_ptr) = v_obj.as_ptr() {
-                            if let Some(b_slice) = unsafe { bytes_like_slice(b_ptr) } {
-                                out.extend_from_slice(b_slice);
-                                found = true;
-                            }
+                        if let Some(b_ptr) = v_obj.as_ptr()
+                            && let Some(b_slice) = unsafe { bytes_like_slice(b_ptr) }
+                        {
+                            out.extend_from_slice(b_slice);
+                            found = true;
                         }
                         if !found {
                             if let Some(i) = crate::to_i64(v_obj) {
@@ -1119,17 +1119,15 @@ pub extern "C" fn molt_codecs_charmap_encode(
                     let val = unsafe { crate::dict_get_in_place(_py, mp, ord_key) };
                     if let Some(v) = val {
                         let v_obj = obj_from_bits(v);
-                        if let Some(b_ptr) = v_obj.as_ptr() {
-                            if let Some(b_slice) = unsafe { bytes_like_slice(b_ptr) } {
-                                out.extend_from_slice(b_slice);
-                                found = true;
-                            }
+                        if let Some(b_ptr) = v_obj.as_ptr()
+                            && let Some(b_slice) = unsafe { bytes_like_slice(b_ptr) }
+                        {
+                            out.extend_from_slice(b_slice);
+                            found = true;
                         }
-                        if !found {
-                            if let Some(i) = crate::to_i64(v_obj) {
-                                out.push((i & 0xFF) as u8);
-                                found = true;
-                            }
+                        if !found && let Some(i) = crate::to_i64(v_obj) {
+                            out.push((i & 0xFF) as u8);
+                            found = true;
                         }
                     }
                 }

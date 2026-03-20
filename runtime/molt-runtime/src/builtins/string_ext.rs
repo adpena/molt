@@ -289,12 +289,13 @@ pub extern "C" fn molt_string_template_get_identifiers(
                 if let Some(brace_end_rel) = text[brace_start..].iter().position(|&b| b == b'}') {
                     let brace_end = brace_start + brace_end_rel;
                     let name = &text[brace_start..brace_end];
-                    if !name.is_empty() && scan_identifier(name, 0).is_some() {
-                        if !seen.iter().any(|s| s == name) {
-                            seen.push(name.to_vec());
-                            let ptr = alloc_string(_py, name);
-                            result_bits.push(MoltObject::from_ptr(ptr).bits());
-                        }
+                    if !name.is_empty()
+                        && scan_identifier(name, 0).is_some()
+                        && !seen.iter().any(|s| s == name)
+                    {
+                        seen.push(name.to_vec());
+                        let ptr = alloc_string(_py, name);
+                        result_bits.push(MoltObject::from_ptr(ptr).bits());
                     }
                     idx = brace_end + 1;
                     continue;
@@ -413,8 +414,7 @@ pub extern "C" fn molt_string_formatter_parse(format_string_bits: u64) -> u64 {
                 }
 
                 // Format spec.
-                let format_spec_bits;
-                if text[idx] == b':' {
+                let format_spec_bits = if text[idx] == b':' {
                     idx += 1;
                     let spec_start = idx;
                     let mut nested = 0i32;
@@ -452,11 +452,11 @@ pub extern "C" fn molt_string_formatter_parse(format_string_bits: u64) -> u64 {
                     }
                     let spec = &text[spec_start..idx];
                     let spec_ptr = alloc_string(_py, spec);
-                    format_spec_bits = MoltObject::from_ptr(spec_ptr).bits();
+                    MoltObject::from_ptr(spec_ptr).bits()
                 } else {
                     let empty_ptr = alloc_string(_py, b"");
-                    format_spec_bits = MoltObject::from_ptr(empty_ptr).bits();
-                }
+                    MoltObject::from_ptr(empty_ptr).bits()
+                };
 
                 if idx >= length || text[idx] != b'}' {
                     return raise_exception::<_>(

@@ -244,7 +244,7 @@ fn json_encode_basestring_impl(value: &str, ensure_ascii: bool) -> String {
                 '\r' => out.push_str("\\r"),
                 '\t' => out.push_str("\\t"),
                 _ => {
-                    if code < 0x20 || code > 0x7E {
+                    if !(0x20..=0x7E).contains(&code) {
                         json_escape_codepoint(code, &mut out);
                     } else {
                         out.push(ch);
@@ -1525,10 +1525,10 @@ fn object_to_json_with_options(
             }
             out.push(']');
 
-            if options.check_circular {
-                if let Some(popped) = stack.pop() {
-                    stack_set.remove(&popped);
-                }
+            if options.check_circular
+                && let Some(popped) = stack.pop()
+            {
+                stack_set.remove(&popped);
             }
             Ok(())
         }
@@ -1590,10 +1590,10 @@ fn object_to_json_with_options(
             }
             out.push('}');
 
-            if options.check_circular {
-                if let Some(popped) = stack.pop() {
-                    stack_set.remove(&popped);
-                }
+            if options.check_circular
+                && let Some(popped) = stack.pop()
+            {
+                stack_set.remove(&popped);
             }
             Ok(())
         }
@@ -2184,11 +2184,7 @@ pub extern "C" fn molt_json_dumps(
             } else {
                 ", ".to_string()
             },
-            key_separator: if indent_text.is_some() {
-                ": ".to_string()
-            } else {
-                ": ".to_string()
-            },
+            key_separator: ": ".to_string(),
             default_fn: None,
         };
         let mut out = String::with_capacity(128);
@@ -2566,25 +2562,23 @@ pub extern "C" fn molt_json_parse_error_msg(exc_msg_bits: u64) -> u64 {
             let msg = &text[..idx];
             let rest = &text[idx + 7..]; // after ": line "
             let parts: Vec<&str> = rest.splitn(2, " column ").collect();
-            if parts.len() == 2 {
-                if parts[0].parse::<i64>().is_ok() {
-                    let col_rest: Vec<&str> = parts[1].splitn(2, " (char ").collect();
-                    if col_rest.len() == 2 {
-                        let pos_str = col_rest[1].trim_end_matches(')');
-                        if let Ok(pos) = pos_str.parse::<i64>() {
-                            let msg_ptr = alloc_string(_py, msg.as_bytes());
-                            if msg_ptr.is_null() {
-                                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
-                            }
-                            let msg_bits = MoltObject::from_ptr(msg_ptr).bits();
-                            let pos_bits = MoltObject::from_int(pos).bits();
-                            let tuple_ptr = alloc_tuple(_py, &[msg_bits, pos_bits]);
-                            dec_ref_bits(_py, msg_bits);
-                            if tuple_ptr.is_null() {
-                                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
-                            }
-                            return MoltObject::from_ptr(tuple_ptr).bits();
+            if parts.len() == 2 && parts[0].parse::<i64>().is_ok() {
+                let col_rest: Vec<&str> = parts[1].splitn(2, " (char ").collect();
+                if col_rest.len() == 2 {
+                    let pos_str = col_rest[1].trim_end_matches(')');
+                    if let Ok(pos) = pos_str.parse::<i64>() {
+                        let msg_ptr = alloc_string(_py, msg.as_bytes());
+                        if msg_ptr.is_null() {
+                            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
                         }
+                        let msg_bits = MoltObject::from_ptr(msg_ptr).bits();
+                        let pos_bits = MoltObject::from_int(pos).bits();
+                        let tuple_ptr = alloc_tuple(_py, &[msg_bits, pos_bits]);
+                        dec_ref_bits(_py, msg_bits);
+                        if tuple_ptr.is_null() {
+                            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                        }
+                        return MoltObject::from_ptr(tuple_ptr).bits();
                     }
                 }
             }

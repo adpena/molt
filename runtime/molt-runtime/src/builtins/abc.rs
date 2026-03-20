@@ -1093,7 +1093,7 @@ fn protocol_collect_structural_members(
             for name_bits in iter_values(_py, keys_bits)? {
                 let name_str = crate::string_obj_to_owned(obj_from_bits(name_bits));
                 let skip = match &name_str {
-                    Some(s) => ignored.iter().any(|ig| s.as_bytes() == *ig),
+                    Some(s) => ignored.contains(&s.as_bytes()),
                     None => false,
                 };
                 if !skip {
@@ -1127,8 +1127,7 @@ fn protocol_collect_structural_members(
                     let skip = match &name_str {
                         Some(s) => {
                             let b = s.as_bytes();
-                            ignored.iter().any(|ig| b == *ig)
-                                || (b.starts_with(b"_") && !b.starts_with(b"__"))
+                            ignored.contains(&b) || (b.starts_with(b"_") && !b.starts_with(b"__"))
                         }
                         None => false,
                     };

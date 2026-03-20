@@ -8,6 +8,9 @@ build = "build.rs"
 [lib]
 crate-type = ["staticlib", "rlib", "cdylib"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [features]
 default = ["wasi_host"]
 molt_debug_gil = []

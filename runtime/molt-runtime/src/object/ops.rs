@@ -866,8 +866,9 @@ pub extern "C" fn molt_dataclass_set(obj_bits: u64, index_bits: u64, val_bits: u
                 }
                 let desc_ptr = dataclass_desc_ptr(ptr);
                 if !desc_ptr.is_null() && (*desc_ptr).frozen {
+                    let field_names = &(*desc_ptr).field_names;
                     let field_name = if idx >= 0 {
-                        (&(*desc_ptr).field_names)
+                        field_names
                             .get(idx as usize)
                             .map(|name| name.as_str())
                             .unwrap_or("<field>")
@@ -21444,8 +21445,8 @@ pub extern "C" fn molt_string_swapcase(hay_bits: u64) -> u64 {
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             // SIMD fast path: pure-ASCII strings use bulk XOR bit-5 swapcase
             if hay_bytes.is_ascii() {
-                let mut buf = hay_bytes.to_vec();
-                bytes_ascii_swapcase(&mut buf);
+                let buf = hay_bytes.to_vec();
+                bytes_ascii_swapcase(&buf);
                 let ptr = alloc_string(_py, &buf);
                 if ptr.is_null() {
                     return MoltObject::none().bits();
@@ -21488,8 +21489,8 @@ pub extern "C" fn molt_string_capitalize(hay_bits: u64) -> u64 {
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             // SIMD fast path: pure-ASCII capitalize uses bytes_ascii_capitalize
             if hay_bytes.is_ascii() {
-                let mut buf = hay_bytes.to_vec();
-                bytes_ascii_capitalize(&mut buf);
+                let buf = hay_bytes.to_vec();
+                bytes_ascii_capitalize(&buf);
                 let ptr = alloc_string(_py, &buf);
                 if ptr.is_null() {
                     return MoltObject::none().bits();
@@ -24148,7 +24149,7 @@ fn simd_is_all_ascii_printable(bytes: &[u8]) -> bool {
 
     while i < bytes.len() {
         let b = bytes[i];
-        if b < 0x20 || b > 0x7E {
+        if !(0x20..=0x7E).contains(&b) {
             return false;
         }
         i += 1;
@@ -35903,8 +35904,8 @@ unsafe fn find_ascii_split_whitespace_neon(bytes: &[u8], start: usize) -> usize 
                 // Found whitespace in this chunk — scan for exact position
                 let mut buf = [0u8; 16];
                 vst1q_u8(buf.as_mut_ptr(), is_ws);
-                for j in 0..16 {
-                    if buf[j] != 0 {
+                for (j, &byte) in buf.iter().enumerate() {
+                    if byte != 0 {
                         return i + j;
                     }
                 }
@@ -45697,12 +45698,12 @@ pub(crate) unsafe fn dict_get_in_place(
         // hash caching. This prevents Cranelift-compiled code from producing
         // stale or incorrect hash values during dict_find_entry.
         let key_obj = obj_from_bits(key_bits);
-        if let Some(key_ptr) = key_obj.as_ptr() {
-            if object_type_id(key_ptr) == TYPE_ID_STRING {
-                let len = string_len(key_ptr);
-                if len > 0 {
-                    std::ptr::read_volatile(string_bytes(key_ptr));
-                }
+        if let Some(key_ptr) = key_obj.as_ptr()
+            && object_type_id(key_ptr) == TYPE_ID_STRING
+        {
+            let len = string_len(key_ptr);
+            if len > 0 {
+                std::ptr::read_volatile(string_bytes(key_ptr));
             }
         }
         if !ensure_hashable(_py, key_bits) {

@@ -1218,8 +1218,7 @@ pub extern "C" fn molt_datetime_format_isodatetime(
         let sep = string_obj_to_owned(obj_from_bits(sep_bits)).unwrap_or_else(|| "T".to_string());
         let timespec =
             string_obj_to_owned(obj_from_bits(timespec_bits)).unwrap_or_else(|| "auto".to_string());
-        let tz_str =
-            string_obj_to_owned(obj_from_bits(tz_str_bits)).unwrap_or_else(|| "".to_string());
+        let tz_str = string_obj_to_owned(obj_from_bits(tz_str_bits)).unwrap_or_default();
         let utcoff = match parse_iso_offset_str(&tz_str) {
             Ok(value) => value,
             Err(msg) => return raise_exception::<u64>(_py, "ValueError", &msg),

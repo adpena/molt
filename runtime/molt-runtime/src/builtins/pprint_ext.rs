@@ -123,9 +123,9 @@ pub(crate) fn safe_repr_inner(
                 } else {
                     len
                 };
-                for i in 0..display_len {
+                for &item in src.iter().take(display_len) {
                     let (s, r, rec) =
-                        safe_repr_inner(_py, src[i], seen, depth + 1, max_depth, max_width);
+                        safe_repr_inner(_py, item, seen, depth + 1, max_depth, max_width);
                     if !r {
                         readable = false;
                     }
@@ -155,9 +155,9 @@ pub(crate) fn safe_repr_inner(
                 } else {
                     len
                 };
-                for i in 0..display_len {
+                for &item in src.iter().take(display_len) {
                     let (s, r, rec) =
-                        safe_repr_inner(_py, src[i], seen, depth + 1, max_depth, max_width);
+                        safe_repr_inner(_py, item, seen, depth + 1, max_depth, max_width);
                     if !r {
                         readable = false;
                     }
@@ -204,8 +204,7 @@ pub(crate) fn safe_repr_inner(
                     let kb = format_obj(_py, obj_from_bits(b.0));
                     ka.cmp(&kb)
                 });
-                for i in 0..display_len {
-                    let (key_bits, val_bits) = pairs[i];
+                for &(key_bits, val_bits) in pairs.iter().take(display_len) {
                     let (ks, kr, krec) =
                         safe_repr_inner(_py, key_bits, seen, depth + 1, max_depth, max_width);
                     let (vs, vr, vrec) =
@@ -288,31 +287,20 @@ pub(crate) fn safe_repr_inner(
 
 // ─── pformat engine ─────────────────────────────────────────────────────────
 
-/// Full pformat implementation matching CPython's pprint.pformat behavior.
-fn pformat_impl(
-    _py: &PyToken<'_>,
-    bits: u64,
-    indent: i64,
+#[derive(Clone, Copy)]
+struct PformatConfig {
+    indent_per_level: i64,
     width: i64,
-    depth: i64,
+    max_depth: i64,
     compact: bool,
     sort_dicts: bool,
     underscore_numbers: bool,
-) -> String {
+}
+
+/// Full pformat implementation matching CPython's pprint.pformat behavior.
+fn pformat_impl(_py: &PyToken<'_>, bits: u64, config: PformatConfig) -> String {
     let mut seen = HashSet::new();
-    pformat_recursive(
-        _py,
-        bits,
-        &mut seen,
-        0,
-        indent,
-        width,
-        depth,
-        0,
-        compact,
-        sort_dicts,
-        underscore_numbers,
-    )
+    pformat_recursive(_py, bits, &mut seen, 0, 0, config)
 }
 
 fn pformat_recursive(
@@ -320,13 +308,8 @@ fn pformat_recursive(
     bits: u64,
     seen: &mut HashSet<u64>,
     current_indent: i64,
-    indent_per_level: i64,
-    width: i64,
-    max_depth: i64,
     level: i64,
-    compact: bool,
-    sort_dicts: bool,
-    underscore_numbers: bool,
+    config: PformatConfig,
 ) -> String {
     let obj = obj_from_bits(bits);
 
@@ -338,7 +321,7 @@ fn pformat_recursive(
         return format!("{}", f);
     }
     if let Some(i) = to_i64(obj) {
-        if underscore_numbers {
+        if config.underscore_numbers {
             return format_int_underscored(i);
         }
         return format!("{}", i);
@@ -359,7 +342,7 @@ fn pformat_recursive(
     }
 
     // Depth check
-    if max_depth > 0 && level >= max_depth {
+    if config.max_depth > 0 && level >= config.max_depth {
         match type_id {
             TYPE_ID_LIST => return "[...]".to_string(),
             TYPE_ID_TUPLE => return "(...)".to_string(),
@@ -384,11 +367,11 @@ fn pformat_recursive(
     // Try simple single-line repr first
     let simple = {
         let mut temp_seen = seen.clone();
-        let (s, _, _) = safe_repr_inner(_py, bits, &mut temp_seen, level, max_depth, -1);
+        let (s, _, _) = safe_repr_inner(_py, bits, &mut temp_seen, level, config.max_depth, -1);
         s
     };
 
-    let available = width - current_indent;
+    let available = config.width - current_indent;
     if (simple.len() as i64) <= available {
         if is_container {
             seen.remove(&bits);
@@ -404,7 +387,7 @@ fn pformat_recursive(
             if num_pairs == 0 {
                 "{}".to_string()
             } else {
-                let child_indent = current_indent + indent_per_level;
+                let child_indent = current_indent + config.indent_per_level;
                 let indent_str = " ".repeat(child_indent as usize);
                 // Collect pairs
                 let mut pairs: Vec<(u64, u64)> = Vec::with_capacity(num_pairs);
@@ -413,7 +396,7 @@ fn pformat_recursive(
                     pairs.push((order[i], order[i + 1]));
                     i += 2;
                 }
-                if sort_dicts {
+                if config.sort_dicts {
                     pairs.sort_by(|a, b| {
                         let ka = format_obj(_py, obj_from_bits(a.0));
                         let kb = format_obj(_py, obj_from_bits(b.0));
@@ -422,36 +405,20 @@ fn pformat_recursive(
                 }
                 let mut parts = Vec::with_capacity(pairs.len());
                 for (key_bits, val_bits) in &pairs {
-                    let key_repr = pformat_recursive(
-                        _py,
-                        *key_bits,
-                        seen,
-                        child_indent,
-                        indent_per_level,
-                        width,
-                        max_depth,
-                        level + 1,
-                        compact,
-                        sort_dicts,
-                        underscore_numbers,
-                    );
+                    let key_repr =
+                        pformat_recursive(_py, *key_bits, seen, child_indent, level + 1, config);
                     let val_repr = pformat_recursive(
                         _py,
                         *val_bits,
                         seen,
                         child_indent + key_repr.len() as i64 + 2,
-                        indent_per_level,
-                        width,
-                        max_depth,
                         level + 1,
-                        compact,
-                        sort_dicts,
-                        underscore_numbers,
+                        config,
                     );
                     parts.push(format!("{key_repr}: {val_repr}"));
                 }
-                let prefix = if indent_per_level > 1 {
-                    format!("{{{}", " ".repeat((indent_per_level - 1) as usize))
+                let prefix = if config.indent_per_level > 1 {
+                    format!("{{{}", " ".repeat((config.indent_per_level - 1) as usize))
                 } else {
                     "{".to_string()
                 };
@@ -464,21 +431,7 @@ fn pformat_recursive(
             if src.is_empty() {
                 "[]".to_string()
             } else {
-                format_sequence_pformat(
-                    _py,
-                    src,
-                    seen,
-                    current_indent,
-                    indent_per_level,
-                    width,
-                    max_depth,
-                    level,
-                    compact,
-                    sort_dicts,
-                    underscore_numbers,
-                    "[",
-                    "]",
-                )
+                format_sequence_pformat(_py, src, seen, current_indent, level, config, ("[", "]"))
             }
         }
         TYPE_ID_TUPLE => {
@@ -487,21 +440,7 @@ fn pformat_recursive(
                 "()".to_string()
             } else {
                 let end = if src.len() == 1 { ",)" } else { ")" };
-                format_sequence_pformat(
-                    _py,
-                    src,
-                    seen,
-                    current_indent,
-                    indent_per_level,
-                    width,
-                    max_depth,
-                    level,
-                    compact,
-                    sort_dicts,
-                    underscore_numbers,
-                    "(",
-                    end,
-                )
+                format_sequence_pformat(_py, src, seen, current_indent, level, config, ("(", end))
             }
         }
         _ => simple,
@@ -519,39 +458,22 @@ fn format_sequence_pformat(
     elems: &[u64],
     seen: &mut HashSet<u64>,
     current_indent: i64,
-    indent_per_level: i64,
-    width: i64,
-    max_depth: i64,
     level: i64,
-    compact: bool,
-    sort_dicts: bool,
-    underscore_numbers: bool,
-    open: &str,
-    close: &str,
+    config: PformatConfig,
+    delimiters: (&str, &str),
 ) -> String {
-    let child_indent = current_indent + indent_per_level;
+    let (open, close) = delimiters;
+    let child_indent = current_indent + config.indent_per_level;
     let indent_str = " ".repeat(child_indent as usize);
 
-    if compact {
+    if config.compact {
         // In compact mode, try to fit multiple items on each line
         let mut lines: Vec<String> = Vec::new();
         let mut current_line = String::new();
-        let max_line = width - child_indent;
+        let max_line = config.width - child_indent;
 
         for (i, &elem) in elems.iter().enumerate() {
-            let repr = pformat_recursive(
-                _py,
-                elem,
-                seen,
-                child_indent,
-                indent_per_level,
-                width,
-                max_depth,
-                level + 1,
-                compact,
-                sort_dicts,
-                underscore_numbers,
-            );
+            let repr = pformat_recursive(_py, elem, seen, child_indent, level + 1, config);
             let candidate = if current_line.is_empty() {
                 repr.clone()
             } else {
@@ -573,34 +495,30 @@ fn format_sequence_pformat(
             lines.push(current_line);
         }
 
-        let prefix = if indent_per_level > 1 {
-            format!("{}{}", open, " ".repeat((indent_per_level - 1) as usize))
+        let prefix = if config.indent_per_level > 1 {
+            format!(
+                "{}{}",
+                open,
+                " ".repeat((config.indent_per_level - 1) as usize)
+            )
         } else {
             open.to_string()
         };
         let sep = format!(",\n{indent_str}");
         format!("{}{}{}", prefix, lines.join(&sep), close)
     } else {
-        let prefix = if indent_per_level > 1 {
-            format!("{}{}", open, " ".repeat((indent_per_level - 1) as usize))
+        let prefix = if config.indent_per_level > 1 {
+            format!(
+                "{}{}",
+                open,
+                " ".repeat((config.indent_per_level - 1) as usize)
+            )
         } else {
             open.to_string()
         };
         let mut parts = Vec::with_capacity(elems.len());
         for &elem in elems {
-            let repr = pformat_recursive(
-                _py,
-                elem,
-                seen,
-                child_indent,
-                indent_per_level,
-                width,
-                max_depth,
-                level + 1,
-                compact,
-                sort_dicts,
-                underscore_numbers,
-            );
+            let repr = pformat_recursive(_py, elem, seen, child_indent, level + 1, config);
             parts.push(repr);
         }
         let sep = format!(",\n{indent_str}");
@@ -613,7 +531,7 @@ fn format_int_underscored(i: i64) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut result = String::with_capacity(s.len() + s.len() / 3);
     for (idx, ch) in chars.iter().enumerate() {
-        if idx > 0 && (chars.len() - idx) % 3 == 0 {
+        if idx > 0 && (chars.len() - idx).is_multiple_of(3) {
             result.push('_');
         }
         result.push(*ch);
@@ -652,12 +570,14 @@ pub extern "C" fn molt_pprint_format(
         let result = pformat_impl(
             _py,
             obj_bits,
-            indent_val,
-            width_val,
-            depth_val,
-            compact_val,
-            true,
-            false,
+            PformatConfig {
+                indent_per_level: indent_val,
+                width: width_val,
+                max_depth: depth_val,
+                compact: compact_val,
+                sort_dicts: true,
+                underscore_numbers: false,
+            },
         );
         alloc_string_result(_py, &result)
     })
@@ -705,12 +625,14 @@ pub extern "C" fn molt_pprint_pformat(
         let result = pformat_impl(
             _py,
             obj_bits,
-            indent_val,
-            width_val,
-            depth_val,
-            compact_val,
-            sort_dicts_val,
-            underscore_numbers_val,
+            PformatConfig {
+                indent_per_level: indent_val,
+                width: width_val,
+                max_depth: depth_val,
+                compact: compact_val,
+                sort_dicts: sort_dicts_val,
+                underscore_numbers: underscore_numbers_val,
+            },
         );
         alloc_string_result(_py, &result)
     })
