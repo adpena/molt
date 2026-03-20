@@ -34,8 +34,16 @@ def optimize(
     input_path: Path,
     output_path: Path | None = None,
     level: str = "O2",
+    extra_passes: list[str] | None = None,
 ) -> dict[str, object]:
     """Run ``wasm-opt`` on *input_path*.
+
+    Parameters:
+        input_path   – path to the ``.wasm`` file to optimise.
+        output_path  – where to write the result (default: ``<input>.opt.wasm``).
+        level        – optimisation level flag (e.g. ``O2``, ``Oz``, ``O3``).
+        extra_passes – additional wasm-opt pass flags to append after the level
+                       flag (e.g. ``["--dce", "--vacuum", "--inlining"]``).
 
     Returns a dict with:
         ok              – bool, True if optimisation succeeded
@@ -77,10 +85,15 @@ def optimize(
 
     input_bytes = input_path.stat().st_size
 
+    cmd = [wasm_opt, f"-{level}"]
+    if extra_passes:
+        cmd.extend(extra_passes)
+    cmd.extend([str(input_path), "-o", str(output_path)])
+
     t0 = time.monotonic()
     try:
         proc = subprocess.run(
-            [wasm_opt, f"-{level}", str(input_path), "-o", str(output_path)],
+            cmd,
             capture_output=True,
             text=True,
             timeout=300,
@@ -174,13 +187,24 @@ def main() -> None:
         dest="json_output",
         help="Machine-readable JSON output",
     )
+    parser.add_argument(
+        "--extra-passes",
+        nargs="*",
+        default=None,
+        help="Additional wasm-opt pass flags (e.g. --dce --vacuum).",
+    )
     args = parser.parse_args()
 
     if not args.wasm.is_file():
         print(f"ERROR: {args.wasm} not found", file=sys.stderr)
         sys.exit(1)
 
-    result = optimize(args.wasm, output_path=args.output, level=args.level)
+    result = optimize(
+        args.wasm,
+        output_path=args.output,
+        level=args.level,
+        extra_passes=args.extra_passes,
+    )
 
     if args.json_output:
         import json
