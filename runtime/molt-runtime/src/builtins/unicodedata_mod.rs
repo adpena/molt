@@ -882,6 +882,7 @@ pub extern "C" fn molt_unicodedata_name(ch_bits: u64, default_bits: u64) -> u64 
             Ok(c) => c,
             Err(exc) => return exc,
         };
+        #[cfg(feature = "stdlib_unicode_names")]
         if let Some(name) = unicode_names2::name(ch) {
             let name_string = format!("{name}");
             return alloc_str(_py, &name_string);
@@ -906,6 +907,7 @@ pub extern "C" fn molt_unicodedata_lookup(name_bits: u64) -> u64 {
         let Some(s) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "argument must be str");
         };
+        #[cfg(feature = "stdlib_unicode_names")]
         if let Some(ch) = unicode_names2::character(&s) {
             let encoded = ch.to_string();
             return alloc_str(_py, &encoded);
