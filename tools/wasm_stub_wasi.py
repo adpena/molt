@@ -674,21 +674,59 @@ def _remap_function_body(body: bytes, remap: dict[int, int]) -> bytes:
                 idx, offset = _read_varuint(body, offset)
                 output.extend(_write_varuint(idx))
         elif opcode == 0xFD:  # SIMD prefix
-            # SIMD instructions have variable-length immediates that are complex
-            # to parse generically. If no function indices changed, we can skip
-            # rewriting entirely. If indices DID change and we encounter SIMD,
-            # we must bail — silent corruption is worse than a loud error.
-            raise ValueError(
-                "WASI stub rewriter encountered SIMD instruction (0xFD prefix) "
-                "in a function that requires call target remapping. "
-                "This is not yet supported."
-            )
+            # SIMD instructions never contain function indices, so we can
+            # copy them through safely. Parse the sub-opcode and its immediates.
+            sub_opcode, offset = _read_varuint(body, offset)
+            output.extend(_write_varuint(sub_opcode))
+            if sub_opcode == 12:  # v128.const — 16 byte immediate
+                output.extend(body[offset:offset + 16])
+                offset += 16
+            elif sub_opcode == 13:  # i8x16.shuffle — 16 byte lane mask
+                output.extend(body[offset:offset + 16])
+                offset += 16
+            elif 0 <= sub_opcode <= 11:
+                # v128.load, v128.store variants — memarg (align + offset)
+                align, offset = _read_varuint(body, offset)
+                output.extend(_write_varuint(align))
+                mem_offset, offset = _read_varuint(body, offset)
+                output.extend(_write_varuint(mem_offset))
+            elif 84 <= sub_opcode <= 91:
+                # v128.loadN_lane, v128.storeN_lane — memarg + lane index
+                align, offset = _read_varuint(body, offset)
+                output.extend(_write_varuint(align))
+                mem_offset, offset = _read_varuint(body, offset)
+                output.extend(_write_varuint(mem_offset))
+                output.append(body[offset])  # lane index
+                offset += 1
+            elif sub_opcode in (21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34):
+                # extractlane/replacelane — 1 byte lane index
+                output.append(body[offset])
+                offset += 1
+            # All other SIMD opcodes (14-20, 35-83, 92+) have no immediates
         elif opcode == 0xFE:  # Atomics prefix
-            raise ValueError(
-                "WASI stub rewriter encountered atomics instruction (0xFE prefix) "
-                "in a function that requires call target remapping. "
-                "This is not yet supported."
-            )
+            # Atomic instructions don't contain function indices.
+            sub_opcode, offset = _read_varuint(body, offset)
+            output.extend(_write_varuint(sub_opcode))
+            if sub_opcode == 0:  # memory.atomic.notify — memarg
+                align, offset = _read_varuint(body, offset)
+                output.extend(_write_varuint(align))
+                mem_offset, offset = _read_varuint(body, offset)
+                output.extend(_write_varuint(mem_offset))
+            elif sub_opcode == 1 or sub_opcode == 2:
+                # memory.atomic.wait32/wait64 — memarg
+                align, offset = _read_varuint(body, offset)
+                output.extend(_write_varuint(align))
+                mem_offset, offset = _read_varuint(body, offset)
+                output.extend(_write_varuint(mem_offset))
+            elif sub_opcode == 3:  # atomic.fence — 1 byte (0x00)
+                output.append(body[offset])
+                offset += 1
+            elif 16 <= sub_opcode <= 78:
+                # atomic load/store/rmw/cmpxchg — all take memarg
+                align, offset = _read_varuint(body, offset)
+                output.extend(_write_varuint(align))
+                mem_offset, offset = _read_varuint(body, offset)
+                output.extend(_write_varuint(mem_offset))
         # All other opcodes (0x45-0xC4 numeric ops, etc.) have no immediates
 
     return bytes(output)
