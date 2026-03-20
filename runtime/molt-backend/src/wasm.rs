@@ -1718,6 +1718,9 @@ impl WasmBackend {
                 // In pure mode, skip IO/ASYNC/TIME imports entirely.
                 // The import is not registered in the WASM module, so the
                 // resulting binary has no dependency on these host functions.
+                // Insert a sentinel value so that `import_ids["name"]` lookups
+                // succeed (no panic), and `emit_call` emits `unreachable`.
+                ids.insert(name.to_string(), u32::MAX);
                 return;
             }
             self.imports
@@ -4093,8 +4096,10 @@ impl WasmBackend {
                 eh_used.len(), eh_imports.len(),
                 eh_eliminable.len(), eh_eliminable.join(", "),
             );
-            if self.options.native_eh_enabled {
+            if self.options.native_eh_enabled && !self.options.reloc_enabled {
                 eprintln!("[molt-wasm-import-audit] native EH ENABLED: tag section emitted");
+            } else if self.options.native_eh_enabled && self.options.reloc_enabled {
+                eprintln!("[molt-wasm-import-audit] native EH requested but suppressed (reloc mode; wasm-ld doesn't support EH relocations)");
             } else {
                 eprintln!("[molt-wasm-import-audit] native EH disabled (set MOLT_WASM_NATIVE_EH=1)");
             }
@@ -4115,7 +4120,8 @@ impl WasmBackend {
         // --- WASM EH Tag Section (Section 3.6) ---
         // Tag 0 = molt_exception with payload (i64) -> (), using type index 1.
         // Emitted between memory and export sections per WASM spec ordering.
-        if self.options.native_eh_enabled {
+        // Native EH requires non-relocatable output (wasm-ld doesn't support EH relocations)
+        if self.options.native_eh_enabled && !self.options.reloc_enabled {
             let mut tags = TagSection::new();
             tags.tag(TagType {
                 kind: TagKind::Exception,
@@ -5033,7 +5039,8 @@ impl WasmBackend {
         const_cache.emit_init(&mut func);
 
         // Capture native_eh_enabled before the closure to avoid borrowing self.
-        let native_eh_enabled = self.options.native_eh_enabled;
+        // Native EH requires non-relocatable output (wasm-ld doesn't support EH relocations)
+        let native_eh_enabled = self.options.native_eh_enabled && !self.options.reloc_enabled;
 
         // Tail call optimization counter (WASM tail calls proposal §3.5).
         // Uses Cell so the closure can mutate it while also being borrowed
@@ -11631,6 +11638,12 @@ fn encode_i32_sleb128_padded(mut value: i32, out: &mut Vec<u8>) {
 }
 
 fn emit_call(func: &mut Function, reloc_enabled: bool, func_index: u32) {
+    if func_index == u32::MAX {
+        // Sentinel: this import was stripped in pure profile mode.
+        // Trap if the code path is actually reached at runtime.
+        func.instruction(&Instruction::Unreachable);
+        return;
+    }
     if reloc_enabled {
         let mut bytes = Vec::with_capacity(6);
         bytes.push(0x10);
@@ -11659,6 +11672,11 @@ fn emit_call_or_unreachable(
 /// Emit a `return_call` instruction (WASM tail calls proposal).
 /// The callee's return value becomes the caller's return value without growing the stack.
 fn emit_return_call(func: &mut Function, reloc_enabled: bool, func_index: u32) {
+    if func_index == u32::MAX {
+        // Sentinel: this import was stripped in pure profile mode.
+        func.instruction(&Instruction::Unreachable);
+        return;
+    }
     if reloc_enabled {
         let mut bytes = Vec::with_capacity(6);
         bytes.push(0x12); // return_call opcode
