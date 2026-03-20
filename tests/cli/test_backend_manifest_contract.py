@@ -50,6 +50,8 @@ def test_workspace_dev_profile_trims_runtime_debug_info() -> None:
     dev_fast_packages = profiles["dev-fast"]["package"]
     expected_packages = {
         "molt-runtime",
+        "aws-lc-rs",
+        "aws-lc-sys",
         "rustpython-parser",
         "rustpython-ast",
         "rustpython-parser-core",
