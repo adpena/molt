@@ -1,6 +1,6 @@
 # WASM VFS Host Adapters Implementation Plan (Plan B)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Connect the VFS core (Plan A) to host runtimes — wasmtime injects mounts at instantiation, the module import system resolves from `/bundle`, and `open()` routes through VFS on WASM targets.
 
@@ -29,17 +29,17 @@
 - Modify: `runtime/molt-runtime/src/state.rs`
 - Modify: `runtime/molt-runtime/src/vfs/mod.rs`
 
-- [ ] **Step 1: Add VfsState to runtime state**
+- [x] **Step 1: Add VfsState to runtime state**
 
 Search for the runtime state struct in `state.rs`. Add an `Option<VfsState>` field. This is how the host injects the VFS into the runtime — if `Some`, all filesystem ops route through VFS.
 
 Also add a global accessor function `get_vfs()` that returns `Option<&VfsState>` from the runtime state, callable from io.rs and modules.rs.
 
-- [ ] **Step 2: Verify it compiles**
+- [x] **Step 2: Verify it compiles**
 
 Run: `cargo check -p molt-runtime 2>&1 | tail -5`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git commit -m "feat(vfs): add VfsState to runtime state struct"
@@ -52,7 +52,7 @@ git commit -m "feat(vfs): add VfsState to runtime state struct"
 **Files:**
 - Modify: `runtime/molt-runtime/src/builtins/io.rs:3678`
 
-- [ ] **Step 1: Add VFS dispatch before std::fs open**
+- [x] **Step 1: Add VFS dispatch before std::fs open**
 
 At the `open_impl` function (~line 3678), before `mode_info.options.open(&path)`, add VFS dispatch:
 
@@ -111,11 +111,11 @@ if let Some(vfs_state) = get_vfs() {
 
 Note: The `todo!()` for wrapping MoltVfsFile in a runtime file object is the integration point. The runtime represents files as NaN-boxed handles. The host needs to provide a file-handle registration mechanism. For v0.1, the simplest approach is to store VFS file data as a bytes object and return a BytesIO/StringIO wrapper.
 
-- [ ] **Step 2: Verify it compiles**
+- [x] **Step 2: Verify it compiles**
 
 Run: `cargo check -p molt-runtime 2>&1 | tail -5`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git commit -m "feat(vfs): route open() through VFS with capability checks"
@@ -128,7 +128,7 @@ git commit -m "feat(vfs): route open() through VFS with capability checks"
 **Files:**
 - Modify: `runtime/molt-runtime/src/builtins/modules.rs:1082-1135`
 
-- [ ] **Step 1: Add VFS-aware file existence helpers**
+- [x] **Step 1: Add VFS-aware file existence helpers**
 
 Add helper functions that check VFS before std::fs:
 
@@ -165,11 +165,11 @@ fn vfs_read_to_string(path: &std::path::Path) -> Option<String> {
 }
 ```
 
-- [ ] **Step 2: Replace all is_file/is_dir calls in runpy_resolve_module_source**
+- [x] **Step 2: Replace all is_file/is_dir calls in runpy_resolve_module_source**
 
 Replace every `path.is_file()` with `vfs_is_file(&path)` and every `path.is_dir()` with `vfs_is_dir(&path)` in the module resolution function.
 
-- [ ] **Step 3: Prepend /bundle to sys.path on VFS-enabled builds**
+- [x] **Step 3: Prepend /bundle to sys.path on VFS-enabled builds**
 
 In the module initialization, when VFS is active, prepend `/bundle` to `sys.path`:
 
@@ -180,11 +180,11 @@ if get_vfs().is_some() {
 }
 ```
 
-- [ ] **Step 4: Verify it compiles**
+- [x] **Step 4: Verify it compiles**
 
 Run: `cargo check -p molt-runtime 2>&1 | tail -5`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git commit -m "feat(vfs): VFS-aware module resolution with /bundle sys.path"
@@ -198,14 +198,14 @@ git commit -m "feat(vfs): VFS-aware module resolution with /bundle sys.path"
 - Modify: `runtime/molt-wasm-host/src/main.rs`
 - Modify: `runtime/molt-wasm-host/Cargo.toml`
 
-- [ ] **Step 1: Add --bundle and --vfs flags to host CLI**
+- [x] **Step 1: Add --bundle and --vfs flags to host CLI**
 
 In the argument parsing section of main.rs, add:
 - `--bundle <path>` — path to bundle.tar for `/bundle` mount
 - `--vfs-tmp-quota <MB>` — TmpFs quota in MB (default 64)
 - `--vfs` — enable VFS mode (auto-enabled when --bundle is set)
 
-- [ ] **Step 2: Add VFS mount initialization**
+- [x] **Step 2: Add VFS mount initialization**
 
 After WASI context setup, before module instantiation:
 
@@ -230,7 +230,7 @@ if let Some(bundle_path) = &args.bundle {
 }
 ```
 
-- [ ] **Step 3: Add tar dependency to Cargo.toml**
+- [x] **Step 3: Add tar dependency to Cargo.toml**
 
 ```toml
 [dependencies]
@@ -239,11 +239,11 @@ tar = "0.4"
 
 Also add `vfs_bundle_tar` feature to molt-runtime's Cargo.toml and enable it in the host.
 
-- [ ] **Step 4: Verify it compiles**
+- [x] **Step 4: Verify it compiles**
 
 Run: `cargo check -p molt-wasm-host 2>&1 | tail -5`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git commit -m "feat(vfs): wasmtime host VFS mount setup with --bundle flag"
@@ -256,7 +256,7 @@ git commit -m "feat(vfs): wasmtime host VFS mount setup with --bundle flag"
 **Files:**
 - Create: `tests/test_wasm_vfs_integration.py`
 
-- [ ] **Step 1: Write VFS integration test**
+- [x] **Step 1: Write VFS integration test**
 
 ```python
 @pytest.mark.slow
@@ -280,7 +280,7 @@ def test_vfs_bundle_import(tmp_path):
     ...
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git commit -m "test(vfs): add VFS integration test for bundled module import"

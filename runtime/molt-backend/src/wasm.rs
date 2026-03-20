@@ -455,7 +455,12 @@ impl ConstantCache {
 /// type information / `fast_int`), we can skip the `AND INT_MASK` step.
 /// The left-shift by `INT_SHIFT` (17) already discards the upper QNAN+tag
 /// bits, so the mask is redundant.  Saves 2 instructions per operand.
-fn emit_unbox_int_local_trusted(func: &mut Function, src_local: u32, dst_local: u32, cc: &ConstantCache) {
+fn emit_unbox_int_local_trusted(
+    func: &mut Function,
+    src_local: u32,
+    dst_local: u32,
+    cc: &ConstantCache,
+) {
     func.instruction(&Instruction::LocalGet(src_local));
     if let Some(shift) = cc.int_shift {
         func.instruction(&Instruction::LocalGet(shift));
@@ -476,7 +481,12 @@ fn emit_unbox_int_local_trusted(func: &mut Function, src_local: u32, dst_local: 
 /// `local.set`, leaving the unboxed value on the operand stack.  This
 /// eliminates a subsequent `local.get` when the caller needs the value
 /// immediately after storing it.
-fn emit_unbox_int_local_trusted_tee(func: &mut Function, src_local: u32, dst_local: u32, cc: &ConstantCache) {
+fn emit_unbox_int_local_trusted_tee(
+    func: &mut Function,
+    src_local: u32,
+    dst_local: u32,
+    cc: &ConstantCache,
+) {
     func.instruction(&Instruction::LocalGet(src_local));
     if let Some(shift) = cc.int_shift {
         func.instruction(&Instruction::LocalGet(shift));
@@ -543,11 +553,7 @@ fn emit_unbox_int_local_trusted_tee_opt(
 /// Peephole-optimized box: if `src_local` has a known raw int value in
 /// `known_raw`, emit `i64.const <boxed>` (1 instruction) instead of the
 /// 4-instruction mask+or boxing sequence.
-fn emit_box_int_from_local_opt(
-    func: &mut Function,
-    src_local: u32,
-    known_raw: &HashMap<u32, i64>,
-) {
+fn emit_box_int_from_local_opt(func: &mut Function, src_local: u32, known_raw: &HashMap<u32, i64>) {
     if let Some(&raw) = known_raw.get(&src_local) {
         func.instruction(&Instruction::I64Const(box_int(raw)));
     } else {
@@ -1085,10 +1091,7 @@ impl Default for WasmCompileOptions {
                 Ok(value) => value.parse::<u32>().unwrap_or(RELOC_TABLE_BASE_DEFAULT),
                 Err(_) => RELOC_TABLE_BASE_DEFAULT,
             },
-            native_eh_enabled: matches!(
-                std::env::var("MOLT_WASM_NATIVE_EH").as_deref(),
-                Ok("1")
-            ),
+            native_eh_enabled: matches!(std::env::var("MOLT_WASM_NATIVE_EH").as_deref(), Ok("1")),
             wasm_profile: match std::env::var("MOLT_WASM_PROFILE").as_deref() {
                 Ok("pure") => WasmProfile::Pure,
                 _ => WasmProfile::Full,
@@ -1287,11 +1290,8 @@ impl WasmBackend {
         // Phase 2: Verify the callee function body — every `ret` must return
         // a variable that was produced by a `tuple_new` with the expected arity.
         // This ensures the callee genuinely always returns a fixed-size tuple.
-        let func_map: HashMap<&str, &FunctionIR> = ir
-            .functions
-            .iter()
-            .map(|f| (f.name.as_str(), f))
-            .collect();
+        let func_map: HashMap<&str, &FunctionIR> =
+            ir.functions.iter().map(|f| (f.name.as_str(), f)).collect();
 
         call_site_candidates
             .into_iter()
@@ -1681,16 +1681,37 @@ impl WasmBackend {
         let skipped_import_prefixes: &[&str] = if is_pure {
             &[
                 // IO
-                "process_", "socket", "os_", "db_", "ws_",
-                "file_", "stream_", "path_exists", "path_listdir",
-                "path_mkdir", "path_unlink", "path_rmdir", "path_chmod",
+                "process_",
+                "socket",
+                "os_",
+                "db_",
+                "ws_",
+                "file_",
+                "stream_",
+                "path_exists",
+                "path_listdir",
+                "path_mkdir",
+                "path_unlink",
+                "path_rmdir",
+                "path_chmod",
                 "open_builtin",
                 // ASYNC
-                "async_sleep", "future_", "promise_", "thread_",
-                "lock_", "rlock_", "chan_",
-                "asyncio_", "asyncgen_", "anext_",
-                "io_wait", "spawn", "block_on",
-                "cancel_token_", "cancelled", "cancel_current",
+                "async_sleep",
+                "future_",
+                "promise_",
+                "thread_",
+                "lock_",
+                "rlock_",
+                "chan_",
+                "asyncio_",
+                "asyncgen_",
+                "anext_",
+                "io_wait",
+                "spawn",
+                "block_on",
+                "cancel_token_",
+                "cancelled",
+                "cancel_current",
                 "sleep_register",
                 "contextlib_async",
                 // TIME
@@ -3894,9 +3915,9 @@ impl WasmBackend {
                 2
             } else if let Some(&ret_count) = multi_return_candidates.get(&func_ir.name) {
                 let key = (func_ir.params.len(), ret_count);
-                *multi_return_type_map.get(&key).unwrap_or(
-                    user_type_map.get(&func_ir.params.len()).unwrap_or(&0),
-                )
+                *multi_return_type_map
+                    .get(&key)
+                    .unwrap_or(user_type_map.get(&func_ir.params.len()).unwrap_or(&0))
             } else {
                 *user_type_map.get(&func_ir.params.len()).unwrap_or(&0)
             };
@@ -4076,32 +4097,53 @@ impl WasmBackend {
 
             // --- Exception-related host call audit (Section 3.6) ---
             let eh_imports = [
-                "exception_push", "exception_pop", "exception_pending",
-                "exception_clear", "exception_new", "exception_new_from_class",
-                "exception_kind", "exception_class", "exception_message",
-                "exception_active", "exception_last", "exception_stack_clear",
-                "exception_set_cause", "exception_set_value",
-                "exception_context_set", "exception_set_last", "raise",
+                "exception_push",
+                "exception_pop",
+                "exception_pending",
+                "exception_clear",
+                "exception_new",
+                "exception_new_from_class",
+                "exception_kind",
+                "exception_class",
+                "exception_message",
+                "exception_active",
+                "exception_last",
+                "exception_stack_clear",
+                "exception_set_cause",
+                "exception_set_value",
+                "exception_context_set",
+                "exception_set_last",
+                "raise",
             ];
             let used_set = self.import_ids.used.borrow();
-            let eh_used: Vec<&str> = eh_imports.iter().copied()
-                .filter(|name| used_set.contains(*name)).collect();
-            let eh_eliminable: Vec<&str> =
-                ["exception_push", "exception_pop", "exception_pending"]
-                    .iter().copied()
-                    .filter(|name| used_set.contains(*name)).collect();
+            let eh_used: Vec<&str> = eh_imports
+                .iter()
+                .copied()
+                .filter(|name| used_set.contains(*name))
+                .collect();
+            let eh_eliminable: Vec<&str> = ["exception_push", "exception_pop", "exception_pending"]
+                .iter()
+                .copied()
+                .filter(|name| used_set.contains(*name))
+                .collect();
             drop(used_set);
             eprintln!(
                 "[molt-wasm-import-audit] exception host calls: {}/{} used ({} eliminable by native EH: {})",
-                eh_used.len(), eh_imports.len(),
-                eh_eliminable.len(), eh_eliminable.join(", "),
+                eh_used.len(),
+                eh_imports.len(),
+                eh_eliminable.len(),
+                eh_eliminable.join(", "),
             );
             if self.options.native_eh_enabled && !self.options.reloc_enabled {
                 eprintln!("[molt-wasm-import-audit] native EH ENABLED: tag section emitted");
             } else if self.options.native_eh_enabled && self.options.reloc_enabled {
-                eprintln!("[molt-wasm-import-audit] native EH requested but suppressed (reloc mode; wasm-ld doesn't support EH relocations)");
+                eprintln!(
+                    "[molt-wasm-import-audit] native EH requested but suppressed (reloc mode; wasm-ld doesn't support EH relocations)"
+                );
             } else {
-                eprintln!("[molt-wasm-import-audit] native EH disabled (set MOLT_WASM_NATIVE_EH=1)");
+                eprintln!(
+                    "[molt-wasm-import-audit] native EH disabled (set MOLT_WASM_NATIVE_EH=1)"
+                );
             }
 
             // --- Tail call optimization audit (§3.5) ---
@@ -4447,7 +4489,11 @@ impl WasmBackend {
             }
             // list_builder_new(count) -> builder handle
             func.instruction(&Instruction::I64Const(box_int(ret_count as i64)));
-            emit_call(&mut func, reloc_enabled, self.import_ids["list_builder_new"]);
+            emit_call(
+                &mut func,
+                reloc_enabled,
+                self.import_ids["list_builder_new"],
+            );
             func.instruction(&Instruction::LocalSet(builder_local));
             // list_builder_append(builder, value) for each value in order
             for i in 0..ret_count {
@@ -5209,8 +5255,20 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64Add);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
@@ -5237,8 +5295,20 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64Add);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
@@ -5541,8 +5611,20 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64Sub);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
@@ -5569,8 +5651,20 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64Mul);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
@@ -5597,8 +5691,20 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64Sub);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
@@ -5625,8 +5731,20 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64Mul);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
@@ -5653,8 +5771,20 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64Or);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
@@ -5681,8 +5811,20 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64And);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
@@ -5709,8 +5851,20 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64Xor);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
@@ -5745,8 +5899,20 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64Or);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
@@ -5773,8 +5939,20 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64And);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
@@ -5801,8 +5979,20 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64Xor);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
@@ -5829,8 +6019,20 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64GeS);
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
@@ -5879,8 +6081,20 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64GeS);
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
@@ -5923,8 +6137,20 @@ impl WasmBackend {
                         if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local_trusted_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
@@ -5955,8 +6181,20 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
@@ -6014,8 +6252,20 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
@@ -6110,8 +6360,20 @@ impl WasmBackend {
                         if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64LtS);
                             emit_box_bool_from_i32(func);
                         } else {
@@ -6129,8 +6391,20 @@ impl WasmBackend {
                         if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64LeS);
                             emit_box_bool_from_i32(func);
                         } else {
@@ -6148,8 +6422,20 @@ impl WasmBackend {
                         if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64GtS);
                             emit_box_bool_from_i32(func);
                         } else {
@@ -6167,8 +6453,20 @@ impl WasmBackend {
                         if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
-                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                lhs,
+                                tmp_lhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
+                            emit_unbox_int_local_trusted_tee_opt(
+                                func,
+                                rhs,
+                                tmp_rhs,
+                                &const_cache,
+                                &known_raw_ints,
+                            );
                             func.instruction(&Instruction::I64GeS);
                             emit_box_bool_from_i32(func);
                         } else {
@@ -9992,7 +10290,9 @@ impl WasmBackend {
                             func.instruction(&Instruction::Throw(TAG_EXCEPTION_INDEX));
                         } else {
                             emit_call(func, reloc_enabled, import_ids["raise"]);
-                            func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                            func.instruction(&Instruction::LocalSet(
+                                locals[op.out.as_ref().unwrap()],
+                            ));
                         }
                     }
                     "bridge_unavailable" => {
@@ -10185,8 +10485,7 @@ impl WasmBackend {
                                 func.instruction(&Instruction::LocalGet(local_idx));
                             }
                         } else {
-                            let ret_local =
-                                ret_var.and_then(|name| locals.get(name).copied());
+                            let ret_local = ret_var.and_then(|name| locals.get(name).copied());
                             if let Some(local_idx) = ret_local {
                                 func.instruction(&Instruction::LocalGet(local_idx));
                             } else {
@@ -10305,9 +10604,7 @@ impl WasmBackend {
                             //     i64.const <box_none>  ;; normal path sentinel
                             //   end
                             //   ;; catch: exception handle on stack
-                            func.instruction(&Instruction::Block(
-                                BlockType::Result(ValType::I64),
-                            ));
+                            func.instruction(&Instruction::Block(BlockType::Result(ValType::I64)));
                             control_stack.push(ControlKind::Block);
                             func.instruction(&Instruction::TryTable(
                                 BlockType::Empty,
@@ -10397,12 +10694,27 @@ impl WasmBackend {
                 // Control-flow ops make compile-time value tracking
                 // unreliable across branches; clear everything.
                 match op.kind.as_str() {
-                    "if" | "else" | "end_if" | "loop_start" | "loop_index_start"
-                    | "loop_break" | "loop_break_if_true" | "loop_break_if_false"
-                    | "loop_continue" | "label" | "jump" | "state_switch"
-                    | "state_transition" | "state_yield" | "chan_send_yield"
-                    | "chan_recv_yield" | "try_start" | "try_end" | "check_exception"
-                    | "loop_end" | "ret"
+                    "if"
+                    | "else"
+                    | "end_if"
+                    | "loop_start"
+                    | "loop_index_start"
+                    | "loop_break"
+                    | "loop_break_if_true"
+                    | "loop_break_if_false"
+                    | "loop_continue"
+                    | "label"
+                    | "jump"
+                    | "state_switch"
+                    | "state_transition"
+                    | "state_yield"
+                    | "chan_send_yield"
+                    | "chan_recv_yield"
+                    | "try_start"
+                    | "try_end"
+                    | "check_exception"
+                    | "loop_end"
+                    | "ret"
                     | "ret_void" => {
                         known_raw_ints.clear();
                     }
@@ -11039,46 +11351,46 @@ impl WasmBackend {
                                 func.instruction(&Instruction::Br(depth));
                                 block_terminated = true;
                             } else {
-                            let Some(target_label) = op.value else {
-                                eprintln!(
-                                    "WASM lowering warning: check_exception missing label in {} at op {}; falling through",
-                                    func_ir.name, idx
-                                );
+                                let Some(target_label) = op.value else {
+                                    eprintln!(
+                                        "WASM lowering warning: check_exception missing label in {} at op {}; falling through",
+                                        func_ir.name, idx
+                                    );
+                                    let next_block = idx + 1;
+                                    func.instruction(&Instruction::I64Const(next_block as i64));
+                                    func.instruction(&Instruction::LocalSet(state_local));
+                                    func.instruction(&Instruction::Br(depth));
+                                    block_terminated = true;
+                                    continue;
+                                };
+                                let Some(target_idx) = label_to_index.get(&target_label).copied()
+                                else {
+                                    eprintln!(
+                                        "WASM lowering warning: unknown check_exception label {} in {} at op {}; falling through",
+                                        target_label, func_ir.name, idx
+                                    );
+                                    let next_block = idx + 1;
+                                    func.instruction(&Instruction::I64Const(next_block as i64));
+                                    func.instruction(&Instruction::LocalSet(state_local));
+                                    func.instruction(&Instruction::Br(depth));
+                                    block_terminated = true;
+                                    continue;
+                                };
+                                let target_block = target_idx;
                                 let next_block = idx + 1;
+                                emit_call(func, reloc_enabled, import_ids["exception_pending"]);
+                                func.instruction(&Instruction::I64Const(0));
+                                func.instruction(&Instruction::I64Ne);
+                                func.instruction(&Instruction::If(BlockType::Empty));
+                                func.instruction(&Instruction::I64Const(target_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth + 1));
+                                func.instruction(&Instruction::Else);
                                 func.instruction(&Instruction::I64Const(next_block as i64));
                                 func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
+                                func.instruction(&Instruction::Br(depth + 1));
+                                func.instruction(&Instruction::End);
                                 block_terminated = true;
-                                continue;
-                            };
-                            let Some(target_idx) = label_to_index.get(&target_label).copied()
-                            else {
-                                eprintln!(
-                                    "WASM lowering warning: unknown check_exception label {} in {} at op {}; falling through",
-                                    target_label, func_ir.name, idx
-                                );
-                                let next_block = idx + 1;
-                                func.instruction(&Instruction::I64Const(next_block as i64));
-                                func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
-                                block_terminated = true;
-                                continue;
-                            };
-                            let target_block = target_idx;
-                            let next_block = idx + 1;
-                            emit_call(func, reloc_enabled, import_ids["exception_pending"]);
-                            func.instruction(&Instruction::I64Const(0));
-                            func.instruction(&Instruction::I64Ne);
-                            func.instruction(&Instruction::If(BlockType::Empty));
-                            func.instruction(&Instruction::I64Const(target_block as i64));
-                            func.instruction(&Instruction::LocalSet(state_local));
-                            func.instruction(&Instruction::Br(depth + 1));
-                            func.instruction(&Instruction::Else);
-                            func.instruction(&Instruction::I64Const(next_block as i64));
-                            func.instruction(&Instruction::LocalSet(state_local));
-                            func.instruction(&Instruction::Br(depth + 1));
-                            func.instruction(&Instruction::End);
-                            block_terminated = true;
                             }
                         }
                         "ret" => {
@@ -11465,46 +11777,46 @@ impl WasmBackend {
                                 func.instruction(&Instruction::Br(depth));
                                 block_terminated = true;
                             } else {
-                            let Some(target_label) = op.value else {
-                                eprintln!(
-                                    "WASM lowering warning: check_exception missing label in {} at op {}; falling through",
-                                    func_ir.name, idx
-                                );
+                                let Some(target_label) = op.value else {
+                                    eprintln!(
+                                        "WASM lowering warning: check_exception missing label in {} at op {}; falling through",
+                                        func_ir.name, idx
+                                    );
+                                    let next_block = idx + 1;
+                                    func.instruction(&Instruction::I64Const(next_block as i64));
+                                    func.instruction(&Instruction::LocalSet(state_local));
+                                    func.instruction(&Instruction::Br(depth));
+                                    block_terminated = true;
+                                    continue;
+                                };
+                                let Some(target_idx) = label_to_index.get(&target_label).copied()
+                                else {
+                                    eprintln!(
+                                        "WASM lowering warning: unknown check_exception label {} in {} at op {}; falling through",
+                                        target_label, func_ir.name, idx
+                                    );
+                                    let next_block = idx + 1;
+                                    func.instruction(&Instruction::I64Const(next_block as i64));
+                                    func.instruction(&Instruction::LocalSet(state_local));
+                                    func.instruction(&Instruction::Br(depth));
+                                    block_terminated = true;
+                                    continue;
+                                };
+                                let target_block = target_idx;
                                 let next_block = idx + 1;
+                                emit_call(func, reloc_enabled, import_ids["exception_pending"]);
+                                func.instruction(&Instruction::I64Const(0));
+                                func.instruction(&Instruction::I64Ne);
+                                func.instruction(&Instruction::If(BlockType::Empty));
+                                func.instruction(&Instruction::I64Const(target_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth + 1));
+                                func.instruction(&Instruction::Else);
                                 func.instruction(&Instruction::I64Const(next_block as i64));
                                 func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
+                                func.instruction(&Instruction::Br(depth + 1));
+                                func.instruction(&Instruction::End);
                                 block_terminated = true;
-                                continue;
-                            };
-                            let Some(target_idx) = label_to_index.get(&target_label).copied()
-                            else {
-                                eprintln!(
-                                    "WASM lowering warning: unknown check_exception label {} in {} at op {}; falling through",
-                                    target_label, func_ir.name, idx
-                                );
-                                let next_block = idx + 1;
-                                func.instruction(&Instruction::I64Const(next_block as i64));
-                                func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
-                                block_terminated = true;
-                                continue;
-                            };
-                            let target_block = target_idx;
-                            let next_block = idx + 1;
-                            emit_call(func, reloc_enabled, import_ids["exception_pending"]);
-                            func.instruction(&Instruction::I64Const(0));
-                            func.instruction(&Instruction::I64Ne);
-                            func.instruction(&Instruction::If(BlockType::Empty));
-                            func.instruction(&Instruction::I64Const(target_block as i64));
-                            func.instruction(&Instruction::LocalSet(state_local));
-                            func.instruction(&Instruction::Br(depth + 1));
-                            func.instruction(&Instruction::Else);
-                            func.instruction(&Instruction::I64Const(next_block as i64));
-                            func.instruction(&Instruction::LocalSet(state_local));
-                            func.instruction(&Instruction::Br(depth + 1));
-                            func.instruction(&Instruction::End);
-                            block_terminated = true;
                             }
                         }
                         "ret" => {
@@ -12251,8 +12563,14 @@ mod tests {
         assert!(read_vars.contains("b"), "arg 'b' should be in read set");
         assert!(read_vars.contains("d"), "var 'd' should be in read set");
         // 'c' and 'e' are outputs only -- they should NOT be in read_vars
-        assert!(!read_vars.contains("c"), "output-only 'c' should NOT be in read set");
-        assert!(!read_vars.contains("e"), "output-only 'e' should NOT be in read set");
+        assert!(
+            !read_vars.contains("c"),
+            "output-only 'c' should NOT be in read set"
+        );
+        assert!(
+            !read_vars.contains("e"),
+            "output-only 'e' should NOT be in read set"
+        );
     }
 
     #[test]
@@ -12263,10 +12581,16 @@ mod tests {
         ];
         let read_vars = collect_read_vars(&ops);
         // 'x' is an output of const but also an arg of add -- should be live
-        assert!(read_vars.contains("x"), "'x' should be live since it's read by add");
+        assert!(
+            read_vars.contains("x"),
+            "'x' should be live since it's read by add"
+        );
         assert!(read_vars.contains("y"), "'y' should be live");
         // 'z' is output-only
-        assert!(!read_vars.contains("z"), "'z' is output-only, should be dead");
+        assert!(
+            !read_vars.contains("z"),
+            "'z' is output-only, should be dead"
+        );
     }
 
     #[test]

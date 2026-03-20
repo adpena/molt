@@ -44,8 +44,6 @@ use tungstenite::stream::MaybeTlsStream;
 #[cfg(not(target_arch = "wasm32"))]
 use tungstenite::{Message, WebSocket, connect};
 #[cfg(not(target_arch = "wasm32"))]
-use url::Url;
-#[cfg(not(target_arch = "wasm32"))]
 use webpki_roots::TLS_SERVER_ROOTS;
 
 // --- Channels ---
@@ -1762,16 +1760,12 @@ fn ws_connect_native(url_ptr: *const u8, url_len: usize) -> *mut u8 {
         Ok(val) => val,
         Err(_) => return std::ptr::null_mut(),
     };
-    let url = match Url::parse(url_str) {
-        Ok(val) => val,
-        Err(_) => return std::ptr::null_mut(),
-    };
-    if url.scheme() != "ws" && url.scheme() != "wss" {
+    if !ws_url_has_supported_scheme(url_str) {
         return std::ptr::null_mut();
     }
     let (mut socket, _) = {
         let _release = GilReleaseGuard::new();
-        match connect(url) {
+        match connect(url_str) {
             Ok(val) => val,
             Err(_) => return std::ptr::null_mut(),
         }
@@ -1802,6 +1796,11 @@ fn ws_connect_native(url_ptr: *const u8, url_len: usize) -> *mut u8 {
         }
     }
     ws_ptr
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ws_url_has_supported_scheme(url: &str) -> bool {
+    url.starts_with("ws://") || url.starts_with("wss://")
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2243,6 +2242,20 @@ pub extern "C" fn molt_ws_connect_obj(url_bits: u64) -> u64 {
         }
         handle
     })
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::ws_url_has_supported_scheme;
+
+    #[test]
+    fn websocket_scheme_gate_accepts_ws_and_wss_only() {
+        assert!(ws_url_has_supported_scheme("ws://127.0.0.1:8080"));
+        assert!(ws_url_has_supported_scheme("wss://example.com/socket"));
+        assert!(!ws_url_has_supported_scheme("http://example.com/socket"));
+        assert!(!ws_url_has_supported_scheme("https://example.com/socket"));
+        assert!(!ws_url_has_supported_scheme("ftp://example.com/socket"));
+    }
 }
 
 fn ws_connect_error(_py: &PyToken<'_>, code: i32) -> u64 {

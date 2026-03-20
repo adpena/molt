@@ -1,5 +1,5 @@
 # Molt WASM Optimization Plan
-**Status:** Draft
+**Status:** Sections 1-5 DONE (2026-03-20)
 **Priority:** P1
 **Audience:** runtime engineers, compiler engineers, performance engineers
 **Goal:** Comprehensive plan for optimizing Molt's WASM compilation target across codegen quality, binary size, startup time, memory management, and interop.

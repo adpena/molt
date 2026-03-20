@@ -1,6 +1,6 @@
 # WASM VFS Core Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Implement the mount-oriented virtual filesystem core in molt-runtime that enables `open()`, `pathlib`, and `import` to work with `/bundle`, `/tmp`, and `/dev` mounts on WASM targets.
 
@@ -37,13 +37,13 @@
 - Create: `runtime/molt-runtime/src/vfs/mod.rs`
 - Modify: `runtime/molt-runtime/src/lib.rs`
 
-- [ ] **Step 1: Create vfs module directory**
+- [x] **Step 1: Create vfs module directory**
 
 ```bash
 mkdir -p runtime/molt-runtime/src/vfs
 ```
 
-- [ ] **Step 2: Write VfsBackend trait, VfsError, VfsStat, and MountTable**
+- [x] **Step 2: Write VfsBackend trait, VfsError, VfsStat, and MountTable**
 
 Create `runtime/molt-runtime/src/vfs/mod.rs`:
 
@@ -209,7 +209,7 @@ impl VfsState {
 }
 ```
 
-- [ ] **Step 3: Register vfs module in lib.rs**
+- [x] **Step 3: Register vfs module in lib.rs**
 
 Add to `runtime/molt-runtime/src/lib.rs` after the existing module declarations:
 
@@ -217,12 +217,12 @@ Add to `runtime/molt-runtime/src/lib.rs` after the existing module declarations:
 pub mod vfs;
 ```
 
-- [ ] **Step 4: Verify it compiles**
+- [x] **Step 4: Verify it compiles**
 
 Run: `cargo check -p molt-runtime 2>&1 | tail -5`
 Expected: Compiles (with warnings about unused modules — submodules don't exist yet)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add runtime/molt-runtime/src/vfs/mod.rs runtime/molt-runtime/src/lib.rs
@@ -236,7 +236,7 @@ git commit -m "feat(vfs): add VfsBackend trait, VfsError, MountTable with path r
 **Files:**
 - Create: `runtime/molt-runtime/src/vfs/caps.rs`
 
-- [ ] **Step 1: Write capability mapping**
+- [x] **Step 1: Write capability mapping**
 
 Create `runtime/molt-runtime/src/vfs/caps.rs`:
 
@@ -295,12 +295,12 @@ pub fn check_mount_capability(
 }
 ```
 
-- [ ] **Step 2: Verify it compiles**
+- [x] **Step 2: Verify it compiles**
 
 Run: `cargo check -p molt-runtime 2>&1 | tail -5`
 Expected: Compiles
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add runtime/molt-runtime/src/vfs/caps.rs
@@ -314,7 +314,7 @@ git commit -m "feat(vfs): add mount-to-capability mapping with diagnostic messag
 **Files:**
 - Create: `runtime/molt-runtime/src/vfs/bundle.rs`
 
-- [ ] **Step 1: Write BundleFs implementation**
+- [x] **Step 1: Write BundleFs implementation**
 
 Create `runtime/molt-runtime/src/vfs/bundle.rs`:
 
@@ -474,11 +474,11 @@ impl VfsBackend for BundleFs {
 }
 ```
 
-- [ ] **Step 2: Verify it compiles**
+- [x] **Step 2: Verify it compiles**
 
 Run: `cargo check -p molt-runtime 2>&1 | tail -5`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add runtime/molt-runtime/src/vfs/bundle.rs
@@ -492,7 +492,7 @@ git commit -m "feat(vfs): add BundleFs read-only in-memory filesystem"
 **Files:**
 - Create: `runtime/molt-runtime/src/vfs/tmp.rs`
 
-- [ ] **Step 1: Write TmpFs implementation**
+- [x] **Step 1: Write TmpFs implementation**
 
 Create `runtime/molt-runtime/src/vfs/tmp.rs`:
 
@@ -666,11 +666,11 @@ impl VfsBackend for TmpFs {
 }
 ```
 
-- [ ] **Step 2: Verify it compiles**
+- [x] **Step 2: Verify it compiles**
 
 Run: `cargo check -p molt-runtime 2>&1 | tail -5`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add runtime/molt-runtime/src/vfs/tmp.rs
@@ -684,7 +684,7 @@ git commit -m "feat(vfs): add TmpFs ephemeral read-write filesystem with quota"
 **Files:**
 - Create: `runtime/molt-runtime/src/vfs/dev.rs`
 
-- [ ] **Step 1: Write DevFs implementation**
+- [x] **Step 1: Write DevFs implementation**
 
 Create `runtime/molt-runtime/src/vfs/dev.rs`:
 
@@ -796,11 +796,11 @@ impl VfsBackend for DevFs {
 }
 ```
 
-- [ ] **Step 2: Verify it compiles**
+- [x] **Step 2: Verify it compiles**
 
 Run: `cargo check -p molt-runtime 2>&1 | tail -5`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add runtime/molt-runtime/src/vfs/dev.rs
@@ -814,7 +814,7 @@ git commit -m "feat(vfs): add DevFs pseudo-device filesystem for stdio"
 **Files:**
 - Create: `runtime/molt-runtime/src/vfs/file.rs`
 
-- [ ] **Step 1: Write MoltVfsFile**
+- [x] **Step 1: Write MoltVfsFile**
 
 Create `runtime/molt-runtime/src/vfs/file.rs`:
 
@@ -917,11 +917,11 @@ impl MoltVfsFile {
 }
 ```
 
-- [ ] **Step 2: Verify it compiles**
+- [x] **Step 2: Verify it compiles**
 
 Run: `cargo check -p molt-runtime 2>&1 | tail -5`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add runtime/molt-runtime/src/vfs/file.rs
@@ -935,7 +935,7 @@ git commit -m "feat(vfs): add MoltVfsFile cursor-based file handle bridge"
 **Files:**
 - Add tests to: `runtime/molt-runtime/src/vfs/mod.rs` (or as `#[cfg(test)]` blocks in each file)
 
-- [ ] **Step 1: Add unit tests for path normalization and MountTable**
+- [x] **Step 1: Add unit tests for path normalization and MountTable**
 
 Add to the bottom of `runtime/molt-runtime/src/vfs/mod.rs`:
 
@@ -1070,12 +1070,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests**
+- [x] **Step 2: Run tests**
 
 Run: `cargo test -p molt-runtime --lib vfs 2>&1 | tail -15`
 Expected: All tests PASS
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add runtime/molt-runtime/src/vfs/
@@ -1089,7 +1089,7 @@ git commit -m "test(vfs): add unit tests for path normalization, MountTable, Bun
 **Files:**
 - Modify: `runtime/molt-runtime/src/builtins/io.rs:3678`
 
-- [ ] **Step 1: Add VFS dispatch to open_impl**
+- [x] **Step 1: Add VFS dispatch to open_impl**
 
 In `runtime/molt-runtime/src/builtins/io.rs`, find the line `file = match mode_info.options.open(&path)` (~line 3678). Add VFS dispatch before it:
 
@@ -1129,11 +1129,11 @@ file = match mode_info.options.open(&path) {
 
 Note: The full file handle integration requires the host adapter (Layer 2) to inject the VFS state into the runtime. This task establishes the dispatch point; the actual file wrapping is completed in Plan B.
 
-- [ ] **Step 2: Verify it compiles**
+- [x] **Step 2: Verify it compiles**
 
 Run: `cargo check -p molt-runtime 2>&1 | tail -5`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add runtime/molt-runtime/src/builtins/io.rs
