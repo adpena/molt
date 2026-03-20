@@ -3,15 +3,7 @@ use molt_backend::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
 fn op(kind: &str) -> OpIR {
     OpIR {
         kind: kind.to_string(),
-        value: None,
-        f_value: None,
-        s_value: None,
-        bytes: None,
-        var: None,
-        args: None,
-        out: None,
-        fast_int: None,
-        task_kind: None,
+        ..OpIR::default()
     }
 }
 
@@ -89,6 +81,7 @@ fn loop_continue_in_if_compiles() {
             name: "molt_test_loop_continue".to_string(),
             params: Vec::new(),
             ops,
+            param_types: None,
         }],
         profile: None,
     };

@@ -2310,7 +2310,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
- "target-lexicon",
  "wasm-encoder 0.245.1",
  "wasmparser 0.245.1",
 ]

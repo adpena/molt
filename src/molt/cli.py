@@ -7487,20 +7487,45 @@ def _runtime_source_paths(project_root: Path) -> list[Path]:
     return list(_runtime_source_paths_cached(os.fspath(project_root)))
 
 
-@functools.lru_cache(maxsize=128)
-def _backend_source_paths_cached(project_root_str: str) -> tuple[Path, ...]:
+@functools.lru_cache(maxsize=256)
+def _backend_source_paths_cached(
+    project_root_str: str,
+    backend_features: tuple[str, ...],
+) -> tuple[Path, ...]:
     project_root = Path(project_root_str)
-    return (
-        project_root / "runtime/molt-backend/src",
-        project_root / "runtime/molt-backend/Cargo.toml",
-        project_root / "runtime/molt-backend/build.rs",
+    backend_root = project_root / "runtime/molt-backend"
+    src_root = backend_root / "src"
+    features = frozenset(backend_features)
+    source_paths: list[Path] = [
+        src_root / "lib.rs",
+        src_root / "main.rs",
+        src_root / "ir_schema.rs",
+        backend_root / "Cargo.toml",
+        backend_root / "build.rs",
         project_root / "Cargo.toml",
         project_root / "Cargo.lock",
-    )
+    ]
+    if "egraphs" in features:
+        source_paths.append(src_root / "egraph_simplify.rs")
+    if "rust-backend" in features:
+        source_paths.append(src_root / "rust.rs")
+    if "wasm-backend" in features:
+        source_paths.append(src_root / "wasm.rs")
+    if "luau-backend" in features:
+        source_paths.extend(
+            [
+                src_root / "luau.rs",
+                src_root / "luau_json_prelude.luau",
+            ]
+        )
+    return tuple(source_paths)
 
 
-def _backend_source_paths(project_root: Path) -> list[Path]:
-    return list(_backend_source_paths_cached(os.fspath(project_root)))
+def _backend_source_paths(
+    project_root: Path,
+    backend_features: tuple[str, ...] = (),
+) -> list[Path]:
+    return list(_backend_source_paths_cached(os.fspath(project_root), backend_features))
 
 
 @functools.lru_cache(maxsize=256)
@@ -16070,7 +16095,7 @@ def _backend_fingerprint(
     meta = f"profile:{cargo_profile}\n"
     meta += f"rustflags:{rustflags}\n"
     meta += f"features:{','.join(backend_features)}\n"
-    source_paths = _backend_source_paths(project_root)
+    source_paths = _backend_source_paths(project_root, backend_features)
     rustc_info = _rustc_version()
     inputs_meta = _hash_source_tree_metadata(source_paths, project_root)
     inputs_digest = inputs_meta[0] if inputs_meta is not None else None
@@ -17712,7 +17737,9 @@ def _cache_fingerprint() -> str:
     # Keep cache invalidation scoped to runtime/backend codegen sources.
     # Frontend/stdlib semantics already flow into the IR payload hash, so
     # hashing the entire stdlib tree here would over-invalidate unrelated builds.
-    source_paths = _backend_source_paths(root) + _runtime_source_paths(root)
+    source_paths = _backend_source_paths(
+        root, ("egraphs", "luau-backend", "rust-backend", "wasm-backend")
+    ) + _runtime_source_paths(root)
     for path in sorted(source_paths, key=lambda p: str(p)):
         if path in seen:
             continue

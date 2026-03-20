@@ -1,18 +1,12 @@
+#![cfg(feature = "wasm-backend")]
+
 use molt_backend::wasm::WasmBackend;
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
 
 fn op(kind: &str) -> OpIR {
     OpIR {
         kind: kind.to_string(),
-        value: None,
-        f_value: None,
-        s_value: None,
-        bytes: None,
-        var: None,
-        args: None,
-        out: None,
-        fast_int: None,
-        task_kind: None,
+        ..OpIR::default()
     }
 }
 
@@ -43,6 +37,7 @@ fn jumpful_else_without_end_if_does_not_panic() {
             name: "molt_test_jumpful_malformed_else".to_string(),
             params: Vec::new(),
             ops,
+            param_types: None,
         }],
         profile: None,
     };

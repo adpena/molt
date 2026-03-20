@@ -310,9 +310,7 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
                 cache_tier: None,
                 output_written: false,
                 needs_ir: false,
-                message: Some(
-                    "backend binary was built without wasm-backend support".to_string(),
-                ),
+                message: Some("backend binary was built without wasm-backend support".to_string()),
             };
         }
     } else {

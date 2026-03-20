@@ -1450,13 +1450,40 @@ def test_runtime_source_paths_are_cached(tmp_path: Path) -> None:
 def test_backend_source_paths_are_cached(tmp_path: Path) -> None:
     cli._backend_source_paths_cached.cache_clear()
 
-    first = cli._backend_source_paths(tmp_path)
-    second = cli._backend_source_paths(tmp_path)
+    first = cli._backend_source_paths(tmp_path, ("wasm-backend",))
+    second = cli._backend_source_paths(tmp_path, ("wasm-backend",))
 
     info = cli._backend_source_paths_cached.cache_info()
     assert first == second
     assert info.hits >= 1
     assert info.currsize >= 1
+
+
+def test_backend_source_paths_are_feature_aware(tmp_path: Path) -> None:
+    native_paths = {
+        path.relative_to(tmp_path).as_posix()
+        for path in cli._backend_source_paths(tmp_path, ())
+    }
+    wasm_paths = {
+        path.relative_to(tmp_path).as_posix()
+        for path in cli._backend_source_paths(tmp_path, ("wasm-backend",))
+    }
+    rust_paths = {
+        path.relative_to(tmp_path).as_posix()
+        for path in cli._backend_source_paths(tmp_path, ("rust-backend",))
+    }
+
+    assert "runtime/molt-backend/src/luau.rs" not in native_paths
+    assert "runtime/molt-backend/src/rust.rs" not in native_paths
+    assert "runtime/molt-backend/src/wasm.rs" not in native_paths
+
+    assert "runtime/molt-backend/src/wasm.rs" in wasm_paths
+    assert "runtime/molt-backend/src/rust.rs" not in wasm_paths
+    assert "runtime/molt-backend/src/luau.rs" not in wasm_paths
+
+    assert "runtime/molt-backend/src/rust.rs" in rust_paths
+    assert "runtime/molt-backend/src/wasm.rs" not in rust_paths
+    assert "runtime/molt-backend/src/luau.rs" not in rust_paths
 
 
 def test_backend_bin_path_is_cached(
