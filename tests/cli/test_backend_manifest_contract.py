@@ -29,6 +29,30 @@ def test_backend_manifest_does_not_redeclare_wasmparser_in_dev_dependencies() ->
     assert "wasmparser" not in dev_dependencies
 
 
+def test_backend_manifest_uses_minimal_cranelift_codegen_features() -> None:
+    manifest = _load_backend_manifest()
+    codegen_dependency = manifest["dependencies"]["cranelift-codegen"]
+
+    assert codegen_dependency["default-features"] is False
+    assert set(codegen_dependency["features"]) == {"host-arch", "std", "unwind"}
+
+
+def test_backend_manifest_target_overlays_only_add_cross_isa_support() -> None:
+    manifest = _load_backend_manifest()
+    target_tables = manifest["target"]
+    aarch64_dependency = target_tables['cfg(target_arch = "aarch64")']["dependencies"][
+        "cranelift-codegen"
+    ]
+    x86_64_dependency = target_tables['cfg(target_arch = "x86_64")']["dependencies"][
+        "cranelift-codegen"
+    ]
+
+    assert aarch64_dependency["default-features"] is False
+    assert aarch64_dependency["features"] == ["x86"]
+    assert x86_64_dependency["default-features"] is False
+    assert x86_64_dependency["features"] == ["arm64"]
+
+
 def test_workspace_dev_profile_trims_backend_debug_info() -> None:
     manifest = _load_workspace_manifest()
     profiles = manifest["profile"]
@@ -38,9 +62,11 @@ def test_workspace_dev_profile_trims_backend_debug_info() -> None:
         "molt-backend",
         "cranelift-codegen",
         "cranelift-frontend",
+        "gimli",
         "cranelift-module",
         "cranelift-native",
         "cranelift-object",
+        "object",
     }
 
     for packages in (dev_packages, dev_fast_packages):
