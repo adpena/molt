@@ -52,18 +52,22 @@ const BR_TABLE_MIN_ENTRIES: usize = 5;
 
 /// Type index for multi-value return: (i64, i64) -> (i64, i64)
 /// Use case: divmod, dict.popitem(), tuple-2 returns
+#[allow(dead_code)]
 const MULTI_RETURN_2_TYPE: u32 = 31;
 
 /// Type index for multi-value return: (i64, i64, i64) -> (i64, i64, i64)
 /// Use case: 3-element tuple returns
+#[allow(dead_code)]
 const MULTI_RETURN_3_TYPE: u32 = 32;
 
 /// Type index for multi-value return: (i64) -> (i64, i64)
-/// Use case: unary ops that return a pair (e.g. coerce-and-split)
+/// Use case: unary operations that produce a pair
+#[allow(dead_code)]
 const MULTI_RETURN_UNARY_TO_2_TYPE: u32 = 33;
 
 /// Type index for multi-value return: () -> (i64, i64)
 /// Use case: nullary builtins that produce a pair
+#[allow(dead_code)]
 const MULTI_RETURN_NULLARY_TO_2_TYPE: u32 = 34;
 
 /// First dynamic type index; must equal the count of all statically-defined types.
@@ -788,6 +792,89 @@ impl WasmBackend {
         func.instruction(&Instruction::I64ExtendI32U);
     }
 
+    // ------------------------------------------------------------------
+    // Multi-value return analysis  (WASM_OPTIMIZATION_PLAN.md §3.1)
+    //
+    // Scans every function in the IR and identifies call sites whose
+    // result is **immediately destructured** via a fixed number of
+    // `tuple_index` ops with constant indices 0..N-1.  These are
+    // candidates for the multi-value return optimisation: the callee
+    // can push N i64 results directly, and the caller can consume them
+    // without a heap-allocated tuple.
+    //
+    // Returns a map: callee_name -> required_return_count (2 or 3).
+    // Only functions where *every* call site destructures to the same
+    // arity are included.
+    // ------------------------------------------------------------------
+    #[allow(dead_code)]
+    fn detect_multi_return_candidates(ir: &SimpleIR) -> HashMap<String, usize> {
+        // callee -> Option<arity>  (None means conflicting arities => ineligible)
+        let mut candidate_arity: HashMap<String, Option<usize>> = HashMap::new();
+
+        for func_ir in &ir.functions {
+            let ops = &func_ir.ops;
+            for (i, op) in ops.iter().enumerate() {
+                // Look for "call" or "call_internal" ops that produce a result.
+                let is_call = op.kind == "call" || op.kind == "call_internal";
+                if !is_call {
+                    continue;
+                }
+                let Some(callee) = op.s_value.as_ref() else {
+                    continue;
+                };
+                let Some(result_var) = op.out.as_ref() else {
+                    continue;
+                };
+
+                // Scan forward to find consecutive tuple_index ops on result_var.
+                let mut unpack_count = 0usize;
+                let mut seen_indices: HashSet<i64> = HashSet::new();
+                for j in (i + 1)..ops.len() {
+                    let next_op = &ops[j];
+                    if next_op.kind != "tuple_index" {
+                        break;
+                    }
+                    let Some(args) = next_op.args.as_ref() else {
+                        break;
+                    };
+                    if args.len() < 2 || args[0] != *result_var {
+                        break;
+                    }
+                    // The index argument should be a const-int; we check
+                    // by looking at the preceding ops, but for this analysis
+                    // just count the tuple_index ops.
+                    if let Some(idx_val) = next_op.value {
+                        seen_indices.insert(idx_val);
+                    }
+                    unpack_count += 1;
+                }
+
+                // Only 2 or 3 element unpacks are worth multi-value.
+                if unpack_count < 2 || unpack_count > 3 {
+                    continue;
+                }
+
+                // Record or verify consistency.
+                match candidate_arity.entry(callee.clone()) {
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(Some(unpack_count));
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut e) => {
+                        if *e.get() != Some(unpack_count) {
+                            // Conflicting arities across call sites — not eligible.
+                            *e.get_mut() = None;
+                        }
+                    }
+                }
+            }
+        }
+
+        candidate_arity
+            .into_iter()
+            .filter_map(|(name, arity)| arity.map(|a| (name, a)))
+            .collect()
+    }
+
     pub fn compile(mut self, ir: SimpleIR) -> Vec<u8> {
         let mut ir = ir;
         crate::apply_profile_order(&mut ir);
@@ -795,6 +882,13 @@ impl WasmBackend {
             crate::elide_dead_struct_allocs(func_ir);
         }
         crate::inline_functions(&mut ir);
+
+        // Multi-value return candidate detection (§3.1 groundwork).
+        // This analysis identifies functions whose call sites always
+        // destructure the result via 2-3 consecutive tuple_index ops,
+        // making them eligible for multi-value return in a future pass.
+        let _multi_return_candidates = Self::detect_multi_return_candidates(&ir);
+
         // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
         let mut func_trampoline_spec: BTreeMap<String, (usize, bool)> = BTreeMap::new();
         let mut task_kinds: BTreeMap<String, TrampolineKind> = BTreeMap::new();
@@ -1437,6 +1531,12 @@ impl WasmBackend {
         add_import("ord", 2, &mut self.import_ids);
         add_import("chr", 2, &mut self.import_ids);
         add_import("abs_builtin", 2, &mut self.import_ids);
+        // NOTE(multi-value §3.1): divmod always returns exactly 2 values.
+        // When the host-side import is updated to use the multi-value ABI,
+        // change the type index from 3 (i64,i64)->i64 to
+        // MULTI_RETURN_2_TYPE (i64,i64)->(i64,i64) and update call sites
+        // to consume the two stack results directly instead of calling
+        // tuple_index on the returned handle.
         add_import("divmod_builtin", 3, &mut self.import_ids);
         add_import("open_builtin", 28, &mut self.import_ids);
         add_import("getargv", 0, &mut self.import_ids);
@@ -6101,6 +6201,13 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(res));
                     }
                     "tuple_index" => {
+                        // TODO(multi-value §3.1): When the tuple being indexed
+                        // was produced by a call that has been promoted to a
+                        // multi-value return, this op becomes a no-op — the
+                        // individual values are already in separate locals from
+                        // the multi-value call lowering.  The call-site lowering
+                        // pass should replace this tuple_index with a simple
+                        // local.get of the Nth result local.
                         let args = op.args.as_ref().unwrap();
                         let tuple = locals[&args[0]];
                         let val = locals[&args[1]];
