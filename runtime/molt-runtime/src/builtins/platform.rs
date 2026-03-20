@@ -860,6 +860,7 @@ fn zip_archive_open(path: &str) -> Result<zip::ZipArchive<std::fs::File>, std::i
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string()))
 }
 
+#[cfg(feature = "stdlib_archive")]
 fn zip_archive_entry_exists(path: &str, entry: &str) -> bool {
     let Ok(mut archive) = zip_archive_open(path) else {
         return false;
@@ -868,6 +869,7 @@ fn zip_archive_entry_exists(path: &str, entry: &str) -> bool {
     archive.by_name(entry).is_ok()
 }
 
+#[cfg(feature = "stdlib_archive")]
 fn zip_archive_has_prefix(path: &str, prefix: &str) -> bool {
     let Ok(mut archive) = zip_archive_open(path) else {
         return false;
@@ -889,11 +891,13 @@ fn zip_archive_has_prefix(path: &str, prefix: &str) -> bool {
 }
 
 #[derive(Default)]
+#[cfg(feature = "stdlib_archive")]
 struct ZipArchiveIndex {
     entries: HashSet<String>,
     prefixes: HashSet<String>,
 }
 
+#[cfg(feature = "stdlib_archive")]
 fn zip_archive_build_index(path: &str) -> Option<ZipArchiveIndex> {
     let mut archive = zip_archive_open(path).ok()?;
     let mut entries: HashSet<String> = HashSet::new();
@@ -927,6 +931,7 @@ fn zip_archive_build_index(path: &str) -> Option<ZipArchiveIndex> {
     Some(ZipArchiveIndex { entries, prefixes })
 }
 
+#[cfg(feature = "stdlib_archive")]
 fn zip_archive_index_cached<'a>(
     cache: &'a mut HashMap<String, Option<ZipArchiveIndex>>,
     path: &str,
@@ -937,6 +942,7 @@ fn zip_archive_index_cached<'a>(
         .as_ref()
 }
 
+#[cfg(feature = "stdlib_archive")]
 fn zip_archive_entry_exists_cached(
     cache: &mut HashMap<String, Option<ZipArchiveIndex>>,
     path: &str,
@@ -951,6 +957,7 @@ fn zip_archive_entry_exists_cached(
         .unwrap_or(false)
 }
 
+#[cfg(feature = "stdlib_archive")]
 fn zip_archive_has_prefix_cached(
     cache: &mut HashMap<String, Option<ZipArchiveIndex>>,
     path: &str,
@@ -965,6 +972,7 @@ fn zip_archive_has_prefix_cached(
         .unwrap_or(false)
 }
 
+#[cfg(feature = "stdlib_archive")]
 fn zip_archive_read_entry(path: &str, entry: &str) -> Result<Vec<u8>, std::io::Error> {
     let mut archive = zip_archive_open(path)?;
     let mut file = archive
@@ -975,6 +983,7 @@ fn zip_archive_read_entry(path: &str, entry: &str) -> Result<Vec<u8>, std::io::E
     Ok(bytes)
 }
 
+#[cfg(feature = "stdlib_archive")]
 fn zip_archive_resources_path_payload(
     archive_path: &str,
     inner_path: &str,
@@ -1080,6 +1089,7 @@ fn zip_archive_resources_path_payload(
     }
 }
 
+#[cfg(feature = "stdlib_archive")]
 fn importlib_zip_source_exec_payload(
     module_name: &str,
     archive_path: &str,
@@ -1103,6 +1113,97 @@ fn importlib_zip_source_exec_payload(
         package_root: resolution.package_root,
         origin,
     })
+}
+
+// --- Stubs when stdlib_archive is disabled ---
+
+#[cfg(not(feature = "stdlib_archive"))]
+fn zip_archive_entry_exists(_path: &str, _entry: &str) -> bool {
+    false
+}
+
+#[cfg(not(feature = "stdlib_archive"))]
+fn zip_archive_has_prefix(_path: &str, _prefix: &str) -> bool {
+    false
+}
+
+#[cfg(not(feature = "stdlib_archive"))]
+#[derive(Default)]
+struct ZipArchiveIndex {
+    entries: HashSet<String>,
+    prefixes: HashSet<String>,
+}
+
+#[cfg(not(feature = "stdlib_archive"))]
+fn zip_archive_build_index(_path: &str) -> Option<ZipArchiveIndex> {
+    None
+}
+
+#[cfg(not(feature = "stdlib_archive"))]
+fn zip_archive_index_cached<'a>(
+    cache: &'a mut HashMap<String, Option<ZipArchiveIndex>>,
+    path: &str,
+) -> Option<&'a ZipArchiveIndex> {
+    cache
+        .entry(path.to_string())
+        .or_insert(None)
+        .as_ref()
+}
+
+#[cfg(not(feature = "stdlib_archive"))]
+fn zip_archive_entry_exists_cached(
+    _cache: &mut HashMap<String, Option<ZipArchiveIndex>>,
+    _path: &str,
+    _entry: &str,
+) -> bool {
+    false
+}
+
+#[cfg(not(feature = "stdlib_archive"))]
+fn zip_archive_has_prefix_cached(
+    _cache: &mut HashMap<String, Option<ZipArchiveIndex>>,
+    _path: &str,
+    _prefix: &str,
+) -> bool {
+    false
+}
+
+#[cfg(not(feature = "stdlib_archive"))]
+fn zip_archive_read_entry(_path: &str, _entry: &str) -> Result<Vec<u8>, std::io::Error> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "zip archive support requires the stdlib_archive feature",
+    ))
+}
+
+#[cfg(not(feature = "stdlib_archive"))]
+fn zip_archive_resources_path_payload(
+    _archive_path: &str,
+    _inner_path: &str,
+    basename: String,
+) -> ImportlibResourcesPathPayload {
+    ImportlibResourcesPathPayload {
+        basename,
+        exists: false,
+        is_file: false,
+        is_dir: false,
+        entries: Vec::new(),
+        has_init_py: false,
+        is_archive_member: true,
+    }
+}
+
+#[cfg(not(feature = "stdlib_archive"))]
+fn importlib_zip_source_exec_payload(
+    _module_name: &str,
+    _archive_path: &str,
+    _inner_path: &str,
+    _spec_is_package: bool,
+) -> Result<ImportlibZipSourceExecPayload, std::io::Error> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "zip archive support requires the stdlib_archive feature",
+    ))
 }
 
 fn importlib_cache_from_source(path: &str) -> String {

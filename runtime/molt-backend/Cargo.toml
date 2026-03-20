@@ -5,7 +5,7 @@ edition = "2024"
 license = "Apache-2.0"
 
 [dependencies]
-cranelift-codegen = { version = "0.128", optional = true, default-features = false, features = ["host-arch", "std", "unwind"] }
+cranelift-codegen = { version = "0.128", optional = true, default-features = false, features = ["host-arch", "std"] }
 cranelift-frontend = { version = "0.128", optional = true }
 cranelift-module = { version = "0.128", optional = true }
 cranelift-object = { version = "0.128", optional = true }

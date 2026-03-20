@@ -566,6 +566,7 @@ pub extern "C" fn molt_pathlib_match(path_bits: u64, pattern_bits: u64) -> u64 {
             Err(bits) => return bits,
         };
         // Use glob::Pattern for matching
+        #[cfg(feature = "stdlib_fs_extra")]
         let matched = match glob::Pattern::new(&pattern) {
             Ok(pat) => {
                 let p = Path::new(&s);
@@ -582,6 +583,8 @@ pub extern "C" fn molt_pathlib_match(path_bits: u64, pattern_bits: u64) -> u64 {
             }
             Err(_) => false,
         };
+        #[cfg(not(feature = "stdlib_fs_extra"))]
+        let matched = { let _ = (&s, &pattern); false };
         bool_bits(matched)
     })
 }
@@ -1002,7 +1005,8 @@ pub extern "C" fn molt_pathlib_glob(path_bits: u64, pattern_bits: u64) -> u64 {
         } else {
             format!("{s}/{pattern}")
         };
-        let mut results = Vec::new();
+        let mut results: Vec<String> = Vec::new();
+        #[cfg(feature = "stdlib_fs_extra")]
         match glob::glob(&full_pattern) {
             Ok(paths) => {
                 for entry in paths {
@@ -1020,6 +1024,8 @@ pub extern "C" fn molt_pathlib_glob(path_bits: u64, pattern_bits: u64) -> u64 {
                 );
             }
         }
+        #[cfg(not(feature = "stdlib_fs_extra"))]
+        { let _ = &full_pattern; }
         list_of_strings(_py, &results)
     })
 }
@@ -1044,7 +1050,8 @@ pub extern "C" fn molt_pathlib_rglob(path_bits: u64, pattern_bits: u64) -> u64 {
         } else {
             format!("{s}/**/{pattern}")
         };
-        let mut results = Vec::new();
+        let mut results: Vec<String> = Vec::new();
+        #[cfg(feature = "stdlib_fs_extra")]
         match glob::glob(&full_pattern) {
             Ok(paths) => {
                 for entry in paths {
@@ -1062,6 +1069,8 @@ pub extern "C" fn molt_pathlib_rglob(path_bits: u64, pattern_bits: u64) -> u64 {
                 );
             }
         }
+        #[cfg(not(feature = "stdlib_fs_extra"))]
+        { let _ = &full_pattern; }
         list_of_strings(_py, &results)
     })
 }

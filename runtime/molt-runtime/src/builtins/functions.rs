@@ -1,4 +1,5 @@
 use molt_obj_model::MoltObject;
+#[cfg(feature = "stdlib_ast")]
 use rustpython_parser::{Mode as ParseMode, ParseErrorType, ast as pyast, parse as parse_python};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -18633,6 +18634,8 @@ pub extern "C" fn molt_compileall_compile_path(
     })
 }
 
+// --- Begin stdlib_ast-gated compile infrastructure ---
+#[cfg(feature = "stdlib_ast")]
 fn compile_error_type(error: &ParseErrorType) -> &'static str {
     if error.is_tab_error() {
         "TabError"
@@ -18643,6 +18646,7 @@ fn compile_error_type(error: &ParseErrorType) -> &'static str {
     }
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn codeop_future_flag_for_name(name: &str) -> i64 {
     match name {
         "nested_scopes" => 0x0010,
@@ -18659,6 +18663,7 @@ fn codeop_future_flag_for_name(name: &str) -> i64 {
     }
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn codeop_is_docstring_stmt(stmt: &pyast::Stmt) -> bool {
     match stmt {
         pyast::Stmt::Expr(node) => match node.value.as_ref() {
@@ -18669,6 +18674,7 @@ fn codeop_is_docstring_stmt(stmt: &pyast::Stmt) -> bool {
     }
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn codeop_future_flags_from_stmts(stmts: &[pyast::Stmt]) -> i64 {
     let mut idx = 0usize;
     if let Some(first) = stmts.first()
@@ -18698,6 +18704,7 @@ fn codeop_future_flags_from_stmts(stmts: &[pyast::Stmt]) -> i64 {
     out
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn codeop_future_flags_from_parsed(parsed: &pyast::Mod) -> i64 {
     match parsed {
         pyast::Mod::Module(module) => codeop_future_flags_from_stmts(&module.body),
@@ -18706,6 +18713,7 @@ fn codeop_future_flags_from_parsed(parsed: &pyast::Mod) -> i64 {
     }
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn codeop_stmt_is_compound(stmt: &pyast::Stmt) -> bool {
     matches!(
         stmt,
@@ -18724,6 +18732,7 @@ fn codeop_stmt_is_compound(stmt: &pyast::Stmt) -> bool {
     )
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn codeop_source_incomplete_after_success(source: &str, mode: &str, parsed: &pyast::Mod) -> bool {
     if mode != "single" {
         return false;
@@ -18741,6 +18750,7 @@ fn codeop_source_incomplete_after_success(source: &str, mode: &str, parsed: &pya
     false
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn codeop_source_has_missing_indented_suite(source: &str) -> bool {
     let lines: Vec<&str> = source.split('\n').collect();
     let leading_indent = |line: &str| -> usize {
@@ -18775,6 +18785,7 @@ fn codeop_source_has_missing_indented_suite(source: &str) -> bool {
     false
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn codeop_parse_error_is_incomplete(error: &ParseErrorType, source: &str) -> bool {
     let trimmed = source.trim_end();
     let trailing_backslash_newline = source.ends_with("\\\n") || source.ends_with("\\\r\n");
@@ -18800,6 +18811,7 @@ fn codeop_parse_error_is_incomplete(error: &ParseErrorType, source: &str) -> boo
     }
 }
 
+#[cfg(feature = "stdlib_ast")]
 enum CodeopCompileStatus {
     Compiled {
         next_flags: i64,
@@ -18811,6 +18823,7 @@ enum CodeopCompileStatus {
     },
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn codeop_compile_status(
     source: &str,
     filename: &str,
@@ -18864,6 +18877,7 @@ fn codeop_compile_status(
     }
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn codeobj_from_filename_bits(_py: &crate::PyToken<'_>, filename_bits: u64) -> u64 {
     let name_ptr = alloc_string(_py, b"<module>");
     if name_ptr.is_null() {
@@ -18895,6 +18909,7 @@ fn codeobj_from_filename_bits(_py: &crate::PyToken<'_>, filename_bits: u64) -> u
     }
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn collect_bound_names_in_target(target: &pyast::Expr, out: &mut HashSet<String>) {
     match target {
         pyast::Expr::Name(node) => {
@@ -18917,6 +18932,7 @@ fn collect_bound_names_in_target(target: &pyast::Expr, out: &mut HashSet<String>
     }
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn collect_import_binding(alias: &pyast::Alias, out: &mut HashSet<String>) {
     if let Some(asname) = alias.asname.as_ref() {
         out.insert(asname.as_str().to_string());
@@ -18929,6 +18945,7 @@ fn collect_import_binding(alias: &pyast::Alias, out: &mut HashSet<String>) {
     }
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn collect_arg_bindings(args: &pyast::Arguments, out: &mut HashSet<String>) {
     for arg in &args.posonlyargs {
         out.insert(arg.def.arg.as_str().to_string());
@@ -18947,6 +18964,7 @@ fn collect_arg_bindings(args: &pyast::Arguments, out: &mut HashSet<String>) {
     }
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn collect_function_scope_info(
     stmt: &pyast::Stmt,
     local_bindings: &mut HashSet<String>,
@@ -19114,6 +19132,7 @@ fn collect_function_scope_info(
     }
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn walk_nested_function_scopes(
     stmts: &[pyast::Stmt],
     enclosing_function_bindings: &[HashSet<String>],
@@ -19180,6 +19199,7 @@ fn walk_nested_function_scopes(
     Ok(())
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn validate_control_flow_stmt(
     stmt: &pyast::Stmt,
     in_function: bool,
@@ -19331,6 +19351,7 @@ fn validate_control_flow_stmt(
     Ok(())
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn validate_control_flow_stmts(
     stmts: &[pyast::Stmt],
     in_function: bool,
@@ -19342,6 +19363,7 @@ fn validate_control_flow_stmts(
     Ok(())
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn validate_function_scope(
     args: &pyast::Arguments,
     body: &[pyast::Stmt],
@@ -19385,6 +19407,7 @@ fn validate_function_scope(
     walk_nested_function_scopes(body, &next_enclosing)
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn compile_validate_nonlocal_semantics(parsed: &pyast::Mod) -> Result<(), String> {
     match parsed {
         pyast::Mod::Module(module) => {
@@ -19399,6 +19422,7 @@ fn compile_validate_nonlocal_semantics(parsed: &pyast::Mod) -> Result<(), String
     }
 }
 
+#[cfg(feature = "stdlib_ast")]
 fn compile_validate_source(
     source: &str,
     filename: &str,
@@ -19425,6 +19449,7 @@ fn compile_validate_source(
 }
 
 #[unsafe(no_mangle)]
+#[cfg(feature = "stdlib_ast")]
 pub extern "C" fn molt_compile_builtin(
     source_bits: u64,
     filename_bits: u64,
@@ -19476,6 +19501,7 @@ pub extern "C" fn molt_compile_builtin(
 }
 
 #[unsafe(no_mangle)]
+#[cfg(feature = "stdlib_ast")]
 pub extern "C" fn molt_codeop_compile(
     source_bits: u64,
     filename_bits: u64,
@@ -19532,6 +19558,7 @@ pub extern "C" fn molt_codeop_compile(
 }
 
 #[unsafe(no_mangle)]
+#[cfg(feature = "stdlib_ast")]
 pub extern "C" fn molt_codeop_compile_command(
     source_bits: u64,
     filename_bits: u64,
@@ -19643,6 +19670,50 @@ pub extern "C" fn molt_codeop_compile_command(
                 message,
             } => raise_exception::<_>(_py, error_type, &message),
         }
+    })
+}
+
+// --- Stubs when stdlib_ast is disabled ---
+
+#[cfg(not(feature = "stdlib_ast"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_compile_builtin(
+    _source_bits: u64,
+    _filename_bits: u64,
+    _mode_bits: u64,
+    _flags_bits: u64,
+    _dont_inherit_bits: u64,
+    _optimize_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        raise_exception::<u64>(_py, "NotImplementedError", "compile() requires the stdlib_ast feature")
+    })
+}
+
+#[cfg(not(feature = "stdlib_ast"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_codeop_compile(
+    _source_bits: u64,
+    _filename_bits: u64,
+    _mode_bits: u64,
+    _flags_bits: u64,
+    _incomplete_input_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        raise_exception::<u64>(_py, "NotImplementedError", "compile() requires the stdlib_ast feature")
+    })
+}
+
+#[cfg(not(feature = "stdlib_ast"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_codeop_compile_command(
+    _source_bits: u64,
+    _filename_bits: u64,
+    _mode_bits: u64,
+    _flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        raise_exception::<u64>(_py, "NotImplementedError", "compile() requires the stdlib_ast feature")
     })
 }
 
