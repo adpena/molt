@@ -89,6 +89,13 @@ def test_workspace_dev_profile_trims_runtime_debug_info() -> None:
             assert packages[package]["debug"] == 0
 
 
+def test_workspace_dev_fast_does_not_force_opt_level() -> None:
+    manifest = _load_workspace_manifest()
+    dev_fast_profile = manifest["profile"]["dev-fast"]
+
+    assert "opt-level" not in dev_fast_profile
+
+
 def test_runtime_manifest_uses_flate2_zip_deflate_only() -> None:
     runtime_manifest_path = ROOT / "runtime" / "molt-runtime" / "Cargo.toml"
     with runtime_manifest_path.open("rb") as handle:
