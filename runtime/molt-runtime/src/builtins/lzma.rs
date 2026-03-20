@@ -801,35 +801,24 @@ pub extern "C" fn molt_lzma_file_close(handle_bits: u64) -> u64 {
             } => {
                 let result: Result<Vec<u8>, std::io::Error> = match format {
                     FORMAT_XZ | FORMAT_AUTO => {
-                        let stream =
-                            match xz2::stream::Stream::new_easy_encoder(preset, check) {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    let msg = format!("lzma init error: {e}");
-                                    return raise_exception::<u64>(
-                                        _py,
-                                        "lzma.LZMAError",
-                                        &msg,
-                                    );
-                                }
-                            };
+                        let stream = match xz2::stream::Stream::new_easy_encoder(preset, check) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                let msg = format!("lzma init error: {e}");
+                                return raise_exception::<u64>(_py, "lzma.LZMAError", &msg);
+                            }
+                        };
                         let mut enc = xz2::write::XzEncoder::new_stream(Vec::new(), stream);
                         enc.write_all(&buffer).and_then(|()| enc.finish())
                     }
                     FORMAT_ALONE | FORMAT_RAW => {
                         let opts = xz2::stream::LzmaOptions::new_preset(preset)
-                            .unwrap_or_else(|_| {
-                                xz2::stream::LzmaOptions::new_preset(6).unwrap()
-                            });
+                            .unwrap_or_else(|_| xz2::stream::LzmaOptions::new_preset(6).unwrap());
                         let stream = match xz2::stream::Stream::new_lzma_encoder(&opts) {
                             Ok(s) => s,
                             Err(e) => {
                                 let msg = format!("lzma init error: {e}");
-                                return raise_exception::<u64>(
-                                    _py,
-                                    "lzma.LZMAError",
-                                    &msg,
-                                );
+                                return raise_exception::<u64>(_py, "lzma.LZMAError", &msg);
                             }
                         };
                         let mut enc = xz2::write::XzEncoder::new_stream(Vec::new(), stream);
@@ -855,9 +844,7 @@ pub extern "C" fn molt_lzma_file_close(handle_bits: u64) -> u64 {
                     }
                 }
             }
-            LzmaFileInner::Reading(_)
-            | LzmaFileInner::ReadingLzma(_)
-            | LzmaFileInner::Closed => {}
+            LzmaFileInner::Reading(_) | LzmaFileInner::ReadingLzma(_) | LzmaFileInner::Closed => {}
         }
         MoltObject::none().bits()
     })

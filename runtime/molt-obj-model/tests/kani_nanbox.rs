@@ -393,7 +393,10 @@ mod kani_proofs {
         let i: i64 = kani::any();
         kani::assume(i >= INT_MIN_INLINE && i <= INT_MAX_INLINE);
         let b: bool = kani::any();
-        assert_ne!(MoltObject::from_int(i).bits(), MoltObject::from_bool(b).bits());
+        assert_ne!(
+            MoltObject::from_int(i).bits(),
+            MoltObject::from_bool(b).bits()
+        );
     }
 
     /// Int and none never collide.
@@ -423,7 +426,10 @@ mod kani_proofs {
     #[kani::proof]
     fn bool_pending_no_collision() {
         let b: bool = kani::any();
-        assert_ne!(MoltObject::from_bool(b).bits(), MoltObject::pending().bits());
+        assert_ne!(
+            MoltObject::from_bool(b).bits(),
+            MoltObject::pending().bits()
+        );
     }
 
     // =================================================================

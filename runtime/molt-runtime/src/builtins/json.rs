@@ -83,9 +83,14 @@ fn json_encode_basestring_impl(value: &str, ensure_ascii: bool) -> String {
                     // Safe: > 0x1F && < 0x7F && != '"' && != '\\'
                     let gt_lo = _mm_cmpgt_epi8(chunk, lo_bound);
                     let lt_hi = _mm_cmpgt_epi8(hi_bound, chunk);
-                    let not_quote = _mm_andnot_si128(_mm_cmpeq_epi8(chunk, quote), _mm_set1_epi8(-1));
-                    let not_bs = _mm_andnot_si128(_mm_cmpeq_epi8(chunk, backslash), _mm_set1_epi8(-1));
-                    let safe = _mm_and_si128(_mm_and_si128(gt_lo, lt_hi), _mm_and_si128(not_quote, not_bs));
+                    let not_quote =
+                        _mm_andnot_si128(_mm_cmpeq_epi8(chunk, quote), _mm_set1_epi8(-1));
+                    let not_bs =
+                        _mm_andnot_si128(_mm_cmpeq_epi8(chunk, backslash), _mm_set1_epi8(-1));
+                    let safe = _mm_and_si128(
+                        _mm_and_si128(gt_lo, lt_hi),
+                        _mm_and_si128(not_quote, not_bs),
+                    );
                     if _mm_movemask_epi8(safe) == 0xFFFF {
                         out.push_str(std::str::from_utf8_unchecked(&bytes[i..i + 16]));
                         i += 16;
@@ -184,9 +189,14 @@ fn json_encode_basestring_impl(value: &str, ensure_ascii: bool) -> String {
                     let chunk = _mm_loadu_si128(bytes.as_ptr().add(i) as *const __m128i);
                     let gt_lo = _mm_cmpgt_epi8(chunk, lo_bound);
                     let lt_hi = _mm_cmpgt_epi8(hi_bound, chunk);
-                    let not_quote = _mm_andnot_si128(_mm_cmpeq_epi8(chunk, quote), _mm_set1_epi8(-1));
-                    let not_bs = _mm_andnot_si128(_mm_cmpeq_epi8(chunk, backslash), _mm_set1_epi8(-1));
-                    let safe = _mm_and_si128(_mm_and_si128(gt_lo, lt_hi), _mm_and_si128(not_quote, not_bs));
+                    let not_quote =
+                        _mm_andnot_si128(_mm_cmpeq_epi8(chunk, quote), _mm_set1_epi8(-1));
+                    let not_bs =
+                        _mm_andnot_si128(_mm_cmpeq_epi8(chunk, backslash), _mm_set1_epi8(-1));
+                    let safe = _mm_and_si128(
+                        _mm_and_si128(gt_lo, lt_hi),
+                        _mm_and_si128(not_quote, not_bs),
+                    );
                     if _mm_movemask_epi8(safe) == 0xFFFF {
                         out.push_str(std::str::from_utf8_unchecked(&bytes[i..i + 16]));
                         i += 16;
@@ -325,9 +335,14 @@ fn json_scanstring_decode(
                     let chunk = _mm_loadu_si128(bytes.as_ptr().add(bi) as *const __m128i);
                     let gt_lo = _mm_cmpgt_epi8(chunk, lo_bound);
                     let lt_hi = _mm_cmpgt_epi8(hi_bound, chunk);
-                    let not_quote = _mm_andnot_si128(_mm_cmpeq_epi8(chunk, quote), _mm_set1_epi8(-1));
-                    let not_bs = _mm_andnot_si128(_mm_cmpeq_epi8(chunk, backslash), _mm_set1_epi8(-1));
-                    let safe = _mm_and_si128(_mm_and_si128(gt_lo, lt_hi), _mm_and_si128(not_quote, not_bs));
+                    let not_quote =
+                        _mm_andnot_si128(_mm_cmpeq_epi8(chunk, quote), _mm_set1_epi8(-1));
+                    let not_bs =
+                        _mm_andnot_si128(_mm_cmpeq_epi8(chunk, backslash), _mm_set1_epi8(-1));
+                    let safe = _mm_and_si128(
+                        _mm_and_si128(gt_lo, lt_hi),
+                        _mm_and_si128(not_quote, not_bs),
+                    );
                     if _mm_movemask_epi8(safe) == 0xFFFF {
                         out.push_str(std::str::from_utf8_unchecked(&bytes[bi..bi + 16]));
                         bi += 16;
@@ -2385,7 +2400,11 @@ pub extern "C" fn molt_json_calc_lineno_col(doc_bits: u64, pos_bits: u64) -> u64
             return raise_exception::<u64>(_py, "TypeError", "pos must be int");
         };
         let pos = pos.max(0) as usize;
-        let prefix = if pos <= doc.len() { &doc[..pos] } else { &doc[..] };
+        let prefix = if pos <= doc.len() {
+            &doc[..pos]
+        } else {
+            &doc[..]
+        };
         let lineno = prefix.matches('\n').count() as i64 + 1;
         let line_start = prefix.rfind('\n').map(|i| i as i64).unwrap_or(-1);
         let colno = if line_start < 0 {
@@ -2477,11 +2496,7 @@ pub extern "C" fn molt_json_coerce_text(payload_bits: u64) -> u64 {
 pub extern "C" fn molt_json_default_separators(indent_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let is_none = obj_from_bits(indent_bits).is_none();
-        let (item_sep, key_sep) = if is_none {
-            (", ", ": ")
-        } else {
-            (",", ": ")
-        };
+        let (item_sep, key_sep) = if is_none { (", ", ": ") } else { (",", ": ") };
         let item_ptr = alloc_string(_py, item_sep.as_bytes());
         let key_ptr = alloc_string(_py, key_sep.as_bytes());
         if item_ptr.is_null() || key_ptr.is_null() {
@@ -2517,7 +2532,11 @@ pub extern "C" fn molt_json_format_decode_error(
             return raise_exception::<u64>(_py, "TypeError", "pos must be int");
         };
         let pos = pos.max(0) as usize;
-        let prefix = if pos <= doc.len() { &doc[..pos] } else { &doc[..] };
+        let prefix = if pos <= doc.len() {
+            &doc[..pos]
+        } else {
+            &doc[..]
+        };
         let lineno = prefix.matches('\n').count() + 1;
         let line_start = prefix.rfind('\n').map(|i| i as i64).unwrap_or(-1);
         let colno = if line_start < 0 {
@@ -2575,33 +2594,55 @@ pub extern "C" fn molt_json_parse_error_msg(exc_msg_bits: u64) -> u64 {
 }
 
 fn json_decode_utf16_be(data: &[u8]) -> String {
-    let units: Vec<u16> = data.chunks(2).filter_map(|c| {
-        if c.len() == 2 { Some(u16::from_be_bytes([c[0], c[1]])) } else { None }
-    }).collect();
+    let units: Vec<u16> = data
+        .chunks(2)
+        .filter_map(|c| {
+            if c.len() == 2 {
+                Some(u16::from_be_bytes([c[0], c[1]]))
+            } else {
+                None
+            }
+        })
+        .collect();
     String::from_utf16_lossy(&units)
 }
 
 fn json_decode_utf16_le(data: &[u8]) -> String {
-    let units: Vec<u16> = data.chunks(2).filter_map(|c| {
-        if c.len() == 2 { Some(u16::from_le_bytes([c[0], c[1]])) } else { None }
-    }).collect();
+    let units: Vec<u16> = data
+        .chunks(2)
+        .filter_map(|c| {
+            if c.len() == 2 {
+                Some(u16::from_le_bytes([c[0], c[1]]))
+            } else {
+                None
+            }
+        })
+        .collect();
     String::from_utf16_lossy(&units)
 }
 
 fn json_decode_utf32_be(data: &[u8]) -> String {
-    data.chunks(4).filter_map(|c| {
-        if c.len() == 4 {
-            let code = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
-            char::from_u32(code)
-        } else { None }
-    }).collect()
+    data.chunks(4)
+        .filter_map(|c| {
+            if c.len() == 4 {
+                let code = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
+                char::from_u32(code)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn json_decode_utf32_le(data: &[u8]) -> String {
-    data.chunks(4).filter_map(|c| {
-        if c.len() == 4 {
-            let code = u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-            char::from_u32(code)
-        } else { None }
-    }).collect()
+    data.chunks(4)
+        .filter_map(|c| {
+            if c.len() == 4 {
+                let code = u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+                char::from_u32(code)
+            } else {
+                None
+            }
+        })
+        .collect()
 }

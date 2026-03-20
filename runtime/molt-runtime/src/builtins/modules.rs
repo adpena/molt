@@ -464,8 +464,7 @@ pub extern "C" fn molt_module_import(name_bits: u64) -> u64 {
             if let Some(sys_bits) = sys_bits
                 && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
             {
-                let from_sys_bits =
-                    unsafe { dict_get_in_place(_py, modules_ptr, name_key_bits) };
+                let from_sys_bits = unsafe { dict_get_in_place(_py, modules_ptr, name_key_bits) };
                 if exception_pending(_py) {
                     break 'result MoltObject::none().bits();
                 }
@@ -477,8 +476,7 @@ pub extern "C" fn molt_module_import(name_bits: u64) -> u64 {
                         // Keep runtime module cache aligned with sys.modules alias hits
                         // so frontend MODULE_CACHE_GET-based import lowering observes
                         // the same module identity as importlib/builtins paths.
-                        let cache =
-                            crate::builtins::exceptions::internals::module_cache(_py);
+                        let cache = crate::builtins::exceptions::internals::module_cache(_py);
                         let mut guard = cache.lock().unwrap();
                         if let Some(old) = guard.insert(name.clone(), bits) {
                             dec_ref_bits(_py, old);
@@ -508,8 +506,7 @@ pub extern "C" fn molt_module_import(name_bits: u64) -> u64 {
             if let Some(sys_bits) = sys_bits
                 && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
             {
-                let from_sys_bits =
-                    unsafe { dict_get_in_place(_py, modules_ptr, name_key_bits) };
+                let from_sys_bits = unsafe { dict_get_in_place(_py, modules_ptr, name_key_bits) };
                 if exception_pending(_py) {
                     break 'result MoltObject::none().bits();
                 }
@@ -4038,7 +4035,10 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
             if debug_attr {
                 let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
                     .unwrap_or_else(|| "<attr>".to_string());
-                eprintln!("molt module_get_attr invalid module (bits=0x{:x}) for attr={}", module_bits, attr_name);
+                eprintln!(
+                    "molt module_get_attr invalid module (bits=0x{:x}) for attr={}",
+                    module_bits, attr_name
+                );
             }
             return raise_exception::<_>(
                 _py,
@@ -4052,7 +4052,10 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
                     let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
                         .unwrap_or_else(|| "<attr>".to_string());
                     let type_id = object_type_id(module_ptr);
-                    eprintln!("molt module_get_attr non-module (bits=0x{:x}, type_id={}) for attr={}", module_bits, type_id, attr_name);
+                    eprintln!(
+                        "molt module_get_attr non-module (bits=0x{:x}, type_id={}) for attr={}",
+                        module_bits, type_id, attr_name
+                    );
                 }
                 return raise_exception::<_>(
                     _py,

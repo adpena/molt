@@ -12,7 +12,7 @@ use crate::libc_compat as libc;
 
 use crate::*;
 use std::fs;
-use std::path::{Path, PathBuf, Component, MAIN_SEPARATOR};
+use std::path::{Component, MAIN_SEPARATOR, Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -113,7 +113,11 @@ fn splitroot(path: &str, posix: bool) -> (String, String, String) {
         let rest = &p[2..];
         let idx = rest.find('/').unwrap_or(rest.len());
         let server = &rest[..idx];
-        let after_server = if idx < rest.len() { &rest[idx + 1..] } else { "" };
+        let after_server = if idx < rest.len() {
+            &rest[idx + 1..]
+        } else {
+            ""
+        };
         let idx2 = after_server.find('/').unwrap_or(after_server.len());
         let share = &after_server[..idx2];
         let drive = format!("//{server}/{share}");
@@ -483,11 +487,7 @@ pub extern "C" fn molt_pathlib_with_name(path_bits: u64, name_bits: u64) -> u64 
         };
         let p = Path::new(&s);
         if p.file_name().is_none() {
-            return raise_exception::<u64>(
-                _py,
-                "ValueError",
-                &format!("{s} has an empty name"),
-            );
+            return raise_exception::<u64>(_py, "ValueError", &format!("{s} has an empty name"));
         }
         let result = p.with_file_name(&name);
         str_bits(_py, &result.to_string_lossy())
@@ -508,11 +508,7 @@ pub extern "C" fn molt_pathlib_with_stem(path_bits: u64, stem_bits: u64) -> u64 
         };
         let p = Path::new(&s);
         if p.file_name().is_none() {
-            return raise_exception::<u64>(
-                _py,
-                "ValueError",
-                &format!("{s} has an empty name"),
-            );
+            return raise_exception::<u64>(_py, "ValueError", &format!("{s} has an empty name"));
         }
         let ext = p
             .extension()
@@ -538,11 +534,7 @@ pub extern "C" fn molt_pathlib_with_suffix(path_bits: u64, suffix_bits: u64) -> 
         };
         let p = Path::new(&s);
         if p.file_name().is_none() {
-            return raise_exception::<u64>(
-                _py,
-                "ValueError",
-                &format!("{s} has an empty name"),
-            );
+            return raise_exception::<u64>(_py, "ValueError", &format!("{s} has an empty name"));
         }
         if !suffix.is_empty() && !suffix.starts_with('.') {
             return raise_exception::<u64>(
@@ -580,7 +572,10 @@ pub extern "C" fn molt_pathlib_match(path_bits: u64, pattern_bits: u64) -> u64 {
                 let p = Path::new(&s);
                 // If pattern has no separator, match only the name
                 if !pattern.contains('/') && !pattern.contains('\\') {
-                    let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let name = p
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
                     pat.matches(&name)
                 } else {
                     pat.matches(&s)
@@ -671,11 +666,9 @@ pub extern "C" fn molt_pathlib_home() -> u64 {
 
         match home {
             Some(h) => str_bits(_py, &h),
-            None => raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                "Could not determine home directory",
-            ),
+            None => {
+                raise_exception::<u64>(_py, "RuntimeError", "Could not determine home directory")
+            }
         }
     })
 }
@@ -737,11 +730,9 @@ pub extern "C" fn molt_pathlib_expanduser(path_bits: u64) -> u64 {
                     str_bits(_py, &s)
                 }
             }
-            None => raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                "Could not determine home directory",
-            ),
+            None => {
+                raise_exception::<u64>(_py, "RuntimeError", "Could not determine home directory")
+            }
         }
     })
 }
@@ -1078,11 +1069,7 @@ pub extern "C" fn molt_pathlib_rglob(path_bits: u64, pattern_bits: u64) -> u64 {
 
 /// `path.mkdir(mode=0o777, parents=False, exist_ok=False)` -> None
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_mkdir(
-    path_bits: u64,
-    parents_bits: u64,
-    exist_ok_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_pathlib_mkdir(path_bits: u64, parents_bits: u64, exist_ok_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.write") {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
@@ -1469,11 +1456,7 @@ pub extern "C" fn molt_pathlib_owner(path_bits: u64) -> u64 {
             let uid = meta.uid();
             let pw = unsafe { libc::getpwuid(uid) };
             if pw.is_null() {
-                return raise_exception::<u64>(
-                    _py,
-                    "KeyError",
-                    &format!("no user with uid {uid}"),
-                );
+                return raise_exception::<u64>(_py, "KeyError", &format!("no user with uid {uid}"));
             }
             let name = unsafe { std::ffi::CStr::from_ptr((*pw).pw_name) };
             str_bits(_py, &name.to_string_lossy())
@@ -1481,7 +1464,11 @@ pub extern "C" fn molt_pathlib_owner(path_bits: u64) -> u64 {
         #[cfg(not(unix))]
         {
             let _ = s;
-            raise_exception::<u64>(_py, "NotImplementedError", "owner() not available on this platform")
+            raise_exception::<u64>(
+                _py,
+                "NotImplementedError",
+                "owner() not available on this platform",
+            )
         }
     })
 }
@@ -1519,7 +1506,11 @@ pub extern "C" fn molt_pathlib_group(path_bits: u64) -> u64 {
         #[cfg(not(unix))]
         {
             let _ = s;
-            raise_exception::<u64>(_py, "NotImplementedError", "group() not available on this platform")
+            raise_exception::<u64>(
+                _py,
+                "NotImplementedError",
+                "group() not available on this platform",
+            )
         }
     })
 }
@@ -1568,7 +1559,5 @@ pub extern "C" fn molt_pathlib_samefile(path_bits: u64, other_bits: u64) -> u64 
 /// Return the OS path separator
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_sep() -> u64 {
-    crate::with_gil_entry!(_py, {
-        str_bits(_py, &MAIN_SEPARATOR.to_string())
-    })
+    crate::with_gil_entry!(_py, { str_bits(_py, &MAIN_SEPARATOR.to_string()) })
 }

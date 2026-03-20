@@ -1770,8 +1770,14 @@ pub extern "C" fn molt_csv_has_header(sample_bits: u64) -> u64 {
 pub extern "C" fn molt_csv_validate_fmtparams(keys_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         static VALID_KEYS: &[&str] = &[
-            "delimiter", "quotechar", "escapechar", "doublequote",
-            "skipinitialspace", "lineterminator", "quoting", "strict",
+            "delimiter",
+            "quotechar",
+            "escapechar",
+            "doublequote",
+            "skipinitialspace",
+            "lineterminator",
+            "quoting",
+            "strict",
         ];
         let obj = obj_from_bits(keys_bits);
         if let Some(ptr) = obj.as_ptr() {
@@ -1785,7 +1791,9 @@ pub extern "C" fn molt_csv_validate_fmtparams(keys_bits: u64) -> u64 {
                                 return raise_exception::<u64>(
                                     _py,
                                     "TypeError",
-                                    &format!("this function got an unexpected keyword argument {key:?}"),
+                                    &format!(
+                                        "this function got an unexpected keyword argument {key:?}"
+                                    ),
                                 );
                             }
                         }
@@ -1815,7 +1823,10 @@ pub extern "C" fn molt_csv_validate_dialect(
                 return raise_exception::<u64>(
                     _py,
                     "TypeError",
-                    &format!("\"delimiter\" must be a unicode character, not a string of length {}", d.chars().count()),
+                    &format!(
+                        "\"delimiter\" must be a unicode character, not a string of length {}",
+                        d.chars().count()
+                    ),
                 );
             }
         } else {
@@ -1836,7 +1847,10 @@ pub extern "C" fn molt_csv_validate_dialect(
                     return raise_exception::<u64>(
                         _py,
                         "TypeError",
-                        &format!("\"quotechar\" must be a unicode character or None, not a string of length {}", q.chars().count()),
+                        &format!(
+                            "\"quotechar\" must be a unicode character or None, not a string of length {}",
+                            q.chars().count()
+                        ),
                     );
                 }
             } else {
@@ -1857,7 +1871,10 @@ pub extern "C" fn molt_csv_validate_dialect(
                     return raise_exception::<u64>(
                         _py,
                         "TypeError",
-                        &format!("\"escapechar\" must be a unicode character or None, not a string of length {}", e.chars().count()),
+                        &format!(
+                            "\"escapechar\" must be a unicode character or None, not a string of length {}",
+                            e.chars().count()
+                        ),
                     );
                 }
             } else {
@@ -1885,13 +1902,26 @@ pub extern "C" fn molt_csv_validate_dialect(
         let Some(quoting) = to_i64(obj_from_bits(quoting_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "bad \"quoting\" value");
         };
-        if ![QUOTE_MINIMAL, QUOTE_ALL, QUOTE_NONNUMERIC, QUOTE_NONE, QUOTE_STRINGS, QUOTE_NOTNULL].contains(&quoting) {
+        if ![
+            QUOTE_MINIMAL,
+            QUOTE_ALL,
+            QUOTE_NONNUMERIC,
+            QUOTE_NONE,
+            QUOTE_STRINGS,
+            QUOTE_NOTNULL,
+        ]
+        .contains(&quoting)
+        {
             return raise_exception::<u64>(_py, "TypeError", "bad \"quoting\" value");
         }
 
         // quotechar must be set if quoting enabled
         if qc_is_none && quoting != QUOTE_NONE {
-            return raise_exception::<u64>(_py, "TypeError", "quotechar must be set if quoting enabled");
+            return raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "quotechar must be set if quoting enabled",
+            );
         }
 
         MoltObject::none().bits()

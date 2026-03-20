@@ -517,5 +517,11 @@ pub extern "C" fn molt_thread_start(_callable_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_thread_start(callable_bits: u64) -> u64 {
     // On native, this is a simple alias for molt_thread_submit with no
     // args/kwargs.
-    unsafe { molt_thread_submit(callable_bits, MoltObject::none().bits(), MoltObject::none().bits()) }
+    unsafe {
+        molt_thread_submit(
+            callable_bits,
+            MoltObject::none().bits(),
+            MoltObject::none().bits(),
+        )
+    }
 }

@@ -966,8 +966,8 @@ pub extern "C" fn molt_codecs_charmap_decode(
             return raise_exception::<_>(_py, "TypeError", "input must be bytes");
         };
         let input_vec = input_bytes.to_vec();
-        let errors = string_obj_to_owned(obj_from_bits(errors_bits))
-            .unwrap_or_else(|| "strict".to_owned());
+        let errors =
+            string_obj_to_owned(obj_from_bits(errors_bits)).unwrap_or_else(|| "strict".to_owned());
         let mapping_obj = obj_from_bits(mapping_bits);
 
         // None mapping = latin-1 identity decode
@@ -1009,18 +1009,16 @@ pub extern "C" fn molt_codecs_charmap_decode(
                         }
                     }
                 }
-                None => {
-                    match errors.as_str() {
-                        "ignore" => continue,
-                        "replace" => out.push('\u{FFFD}'),
-                        _ => {
-                            let msg = format!(
-                                "'charmap' codec can't decode byte 0x{b:02x} in position {pos}: character maps to <undefined>"
-                            );
-                            return raise_exception::<_>(_py, "UnicodeDecodeError", &msg);
-                        }
+                None => match errors.as_str() {
+                    "ignore" => continue,
+                    "replace" => out.push('\u{FFFD}'),
+                    _ => {
+                        let msg = format!(
+                            "'charmap' codec can't decode byte 0x{b:02x} in position {pos}: character maps to <undefined>"
+                        );
+                        return raise_exception::<_>(_py, "UnicodeDecodeError", &msg);
                     }
-                }
+                },
             }
         }
         let str_ptr = alloc_string(_py, out.as_bytes());
@@ -1054,8 +1052,8 @@ pub extern "C" fn molt_codecs_charmap_encode(
         let Some(input_str) = string_obj_to_owned(input_obj) else {
             return raise_exception::<_>(_py, "TypeError", "input must be str");
         };
-        let errors = string_obj_to_owned(obj_from_bits(errors_bits))
-            .unwrap_or_else(|| "strict".to_owned());
+        let errors =
+            string_obj_to_owned(obj_from_bits(errors_bits)).unwrap_or_else(|| "strict".to_owned());
         let mapping_obj = obj_from_bits(mapping_bits);
 
         // None mapping = latin-1 identity encode
@@ -1109,9 +1107,7 @@ pub extern "C" fn molt_codecs_charmap_encode(
                                 out.push((i & 0xFF) as u8);
                                 found = true;
                             } else if let Some(s) = string_obj_to_owned(v_obj) {
-                                out.extend_from_slice(
-                                    s.as_bytes().get(..1).unwrap_or(b"?"),
-                                );
+                                out.extend_from_slice(s.as_bytes().get(..1).unwrap_or(b"?"));
                                 found = true;
                             }
                         }

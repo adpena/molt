@@ -2148,9 +2148,7 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                     // PEP 479 analog for async generators: StopAsyncIteration
                     // raised inside the body must be converted to RuntimeError.
                     if matches!(kind.as_deref(), Some("StopAsyncIteration")) {
-                        exception_clear_reason_set(
-                            "asyncgen_poll_stop_async_iter_convert",
-                        );
+                        exception_clear_reason_set("asyncgen_poll_stop_async_iter_convert");
                         molt_exception_clear();
                         dec_ref_bits(_py, exc_bits);
                         return raise_exception::<i64>(

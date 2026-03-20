@@ -32,8 +32,7 @@ type TclInitFn = unsafe extern "C" fn(*mut c_void) -> c_int;
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 type TclEvalExFn = unsafe extern "C" fn(*mut c_void, *const c_char, c_int, c_int) -> c_int;
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
-type TclEvalObjvFn =
-    unsafe extern "C" fn(*mut c_void, c_int, *const *mut c_void, c_int) -> c_int;
+type TclEvalObjvFn = unsafe extern "C" fn(*mut c_void, c_int, *const *mut c_void, c_int) -> c_int;
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
 type TclGetStringResultFn = unsafe extern "C" fn(*mut c_void) -> *const c_char;
 #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
@@ -98,7 +97,11 @@ impl TclApi {
         }
         if let Some(incr) = self.db_incr_ref_count {
             unsafe {
-                incr(obj, TCL_REFCOUNT_FILE.as_ptr().cast::<c_char>(), line!() as c_int);
+                incr(
+                    obj,
+                    TCL_REFCOUNT_FILE.as_ptr().cast::<c_char>(),
+                    line!() as c_int,
+                );
             }
         }
     }
@@ -112,7 +115,11 @@ impl TclApi {
         }
         if let Some(decr) = self.db_decr_ref_count {
             unsafe {
-                decr(obj, TCL_REFCOUNT_FILE.as_ptr().cast::<c_char>(), line!() as c_int);
+                decr(
+                    obj,
+                    TCL_REFCOUNT_FILE.as_ptr().cast::<c_char>(),
+                    line!() as c_int,
+                );
             }
         }
     }
@@ -310,9 +317,9 @@ fn load_tcl_api() -> Result<&'static TclApi, String> {
                     get_string_result: std::mem::transmute(load(b"Tcl_GetStringResult\0")?),
                     new_string_obj: std::mem::transmute(load(b"Tcl_NewStringObj\0")?),
                     new_list_obj: std::mem::transmute(load(b"Tcl_NewListObj\0")?),
-                    list_obj_append_element: std::mem::transmute(
-                        load(b"Tcl_ListObjAppendElement\0")?,
-                    ),
+                    list_obj_append_element: std::mem::transmute(load(
+                        b"Tcl_ListObjAppendElement\0",
+                    )?),
                     incr_ref_count: load_optional(b"Tcl_IncrRefCount\0")
                         .map(|sym| unsafe { std::mem::transmute(sym) }),
                     decr_ref_count: load_optional(b"Tcl_DecrRefCount\0")
@@ -380,9 +387,15 @@ impl TclObj {
                 .map(|item| {
                     let s = item.to_string();
                     // Brace elements that contain spaces, braces, or special Tcl chars
-                    if s.contains(' ') || s.contains('{') || s.contains('}')
-                        || s.contains('"') || s.contains('\\') || s.contains('[')
-                        || s.contains(']') || s.contains('$') || s.is_empty()
+                    if s.contains(' ')
+                        || s.contains('{')
+                        || s.contains('}')
+                        || s.contains('"')
+                        || s.contains('\\')
+                        || s.contains('[')
+                        || s.contains(']')
+                        || s.contains('$')
+                        || s.is_empty()
                     {
                         format!("{{{}}}", s)
                     } else {
@@ -614,12 +627,8 @@ impl TclInterpreter {
             for &obj in &objv {
                 self.api.incr_ref_count_obj(obj);
             }
-            let call_rc = (self.api.eval_objv)(
-                self.interp_ptr(),
-                objv.len() as c_int,
-                objv.as_ptr(),
-                0,
-            );
+            let call_rc =
+                (self.api.eval_objv)(self.interp_ptr(), objv.len() as c_int, objv.as_ptr(), 0);
             for &obj in &objv {
                 self.api.decr_ref_count_obj(obj);
             }
@@ -1460,13 +1469,12 @@ fn wm_state_for_path<'a>(app: &'a TkAppState, toplevel: &str) -> Option<&'a TkWm
     if toplevel == "." {
         return Some(&app.wm);
     }
-    app.widgets.get(toplevel).and_then(|widget| widget.wm.as_ref())
+    app.widgets
+        .get(toplevel)
+        .and_then(|widget| widget.wm.as_ref())
 }
 
-fn wm_state_for_path_mut<'a>(
-    app: &'a mut TkAppState,
-    toplevel: &str,
-) -> Option<&'a mut TkWmState> {
+fn wm_state_for_path_mut<'a>(app: &'a mut TkAppState, toplevel: &str) -> Option<&'a mut TkWmState> {
     if toplevel == "." {
         return Some(&mut app.wm);
     }
@@ -16949,7 +16957,8 @@ mod tests {
     fn wm_state_is_isolated_per_toplevel_path() {
         let mut app = TkAppState::default();
         app.wm.title = "root".to_string();
-        app.wm.protocols
+        app.wm
+            .protocols
             .insert("WM_DELETE_WINDOW".to_string(), "root_cb".to_string());
         app.widgets.insert(
             ".dialog".to_string(),
@@ -16970,7 +16979,10 @@ mod tests {
         let root_wm = wm_state_for_path(&app, ".").expect("root wm");
         assert_eq!(root_wm.title, "root");
         assert_eq!(
-            root_wm.protocols.get("WM_DELETE_WINDOW").map(String::as_str),
+            root_wm
+                .protocols
+                .get("WM_DELETE_WINDOW")
+                .map(String::as_str),
             Some("root_cb")
         );
         assert!(root_wm.transient.is_none());
@@ -16979,7 +16991,10 @@ mod tests {
         assert_eq!(dialog_wm.title, "dialog");
         assert_eq!(dialog_wm.transient.as_deref(), Some("."));
         assert_eq!(
-            dialog_wm.protocols.get("WM_DELETE_WINDOW").map(String::as_str),
+            dialog_wm
+                .protocols
+                .get("WM_DELETE_WINDOW")
+                .map(String::as_str),
             Some("dialog_cb")
         );
     }

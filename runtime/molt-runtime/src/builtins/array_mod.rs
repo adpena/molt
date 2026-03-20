@@ -890,14 +890,22 @@ pub extern "C" fn molt_array_index(handle_bits: u64, value_bits: u64) -> u64 {
                     if let Some(pos) = memchr::memchr(v as u8, &handle.data) {
                         return int_bits_from_i64(_py, pos as i64);
                     }
-                    return raise_exception::<u64>(_py, "ValueError", "array.index(x): x not in array");
+                    return raise_exception::<u64>(
+                        _py,
+                        "ValueError",
+                        "array.index(x): x not in array",
+                    );
                 }
             } else if let ArrayElem::Int(v) = target {
                 if v >= 0 && v <= 255 {
                     if let Some(pos) = memchr::memchr(v as u8, &handle.data) {
                         return int_bits_from_i64(_py, pos as i64);
                     }
-                    return raise_exception::<u64>(_py, "ValueError", "array.index(x): x not in array");
+                    return raise_exception::<u64>(
+                        _py,
+                        "ValueError",
+                        "array.index(x): x not in array",
+                    );
                 }
             }
         }
@@ -907,7 +915,11 @@ pub extern "C" fn molt_array_index(handle_bits: u64, value_bits: u64) -> u64 {
                     if let Some(pos) = memchr::memchr(v as u8, &handle.data) {
                         return int_bits_from_i64(_py, pos as i64);
                     }
-                    return raise_exception::<u64>(_py, "ValueError", "array.index(x): x not in array");
+                    return raise_exception::<u64>(
+                        _py,
+                        "ValueError",
+                        "array.index(x): x not in array",
+                    );
                 }
             }
         }

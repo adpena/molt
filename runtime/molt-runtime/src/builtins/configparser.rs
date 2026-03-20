@@ -1026,9 +1026,10 @@ pub extern "C" fn molt_configparser_get_raw(
         };
         let key = option.to_ascii_lowercase();
         let result = CONFIG_REGISTRY.lock().unwrap().get(&id).and_then(|state| {
-            state.sections.get(&section).and_then(|sec| {
-                sec.get(&key).or_else(|| state.defaults.get(&key)).cloned()
-            })
+            state
+                .sections
+                .get(&section)
+                .and_then(|sec| sec.get(&key).or_else(|| state.defaults.get(&key)).cloned())
         });
         match result {
             Some(val) => {
@@ -1062,9 +1063,11 @@ pub extern "C" fn molt_configparser_interpolate_basic(
         let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "value must be str");
         };
-        let result = CONFIG_REGISTRY.lock().unwrap().get(&id).map(|state| {
-            state.interpolate(value.clone(), &section)
-        });
+        let result = CONFIG_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|state| state.interpolate(value.clone(), &section));
         let Some(interpolated) = result else {
             return raise_exception::<u64>(_py, "ValueError", "configparser handle not found");
         };
@@ -1095,9 +1098,11 @@ pub extern "C" fn molt_configparser_interpolate_extended(
         let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "value must be str");
         };
-        let result = CONFIG_REGISTRY.lock().unwrap().get(&id).map(|state| {
-            interpolate_extended(state, &value, &section)
-        });
+        let result = CONFIG_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|state| interpolate_extended(state, &value, &section));
         let Some(interpolated) = result else {
             return raise_exception::<u64>(_py, "ValueError", "configparser handle not found");
         };
@@ -1204,7 +1209,9 @@ pub extern "C" fn molt_configparser_defaults(handle_bits: u64) -> u64 {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
         let result = CONFIG_REGISTRY.lock().unwrap().get(&id).map(|state| {
-            let mut pairs: Vec<(String, String)> = state.defaults.iter()
+            let mut pairs: Vec<(String, String)> = state
+                .defaults
+                .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
             pairs.sort_by(|a, b| a.0.cmp(&b.0));

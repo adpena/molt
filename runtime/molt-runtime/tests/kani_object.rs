@@ -314,7 +314,8 @@ mod object_proofs {
         };
         let header_ptr = &header as *const MoltHeader as *mut u8;
         let obj_ptr = unsafe { header_ptr.add(std::mem::size_of::<MoltHeader>()) };
-        let recovered = unsafe { obj_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader };
+        let recovered =
+            unsafe { obj_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader };
         assert_eq!(recovered as usize, header_ptr as usize);
         assert_eq!(unsafe { (*recovered).type_id }, 42);
     }

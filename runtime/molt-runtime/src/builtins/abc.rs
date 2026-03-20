@@ -6,8 +6,8 @@ use crate::{
     alloc_function_obj, alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
     builtin_classes, call_callable0, call_callable1, class_bases_bits, class_bases_vec,
     class_dict_bits, class_mro_vec, dec_ref_bits, dict_get_in_place, dict_order, exception_pending,
-    int_bits_from_i64, is_truthy, maybe_ptr_from_bits, obj_eq, obj_from_bits,
-    object_type_id, raise_exception, runtime_state, seq_vec_ref, type_of_bits,
+    int_bits_from_i64, is_truthy, maybe_ptr_from_bits, obj_eq, obj_from_bits, object_type_id,
+    raise_exception, runtime_state, seq_vec_ref, type_of_bits,
 };
 
 fn get_attr_default(
@@ -724,8 +724,7 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
             // type already resolved above as a safe fallback.
             mappingproxy
         } else {
-            let fl_bits =
-                get_attr_default(_py, frame_bits, b"f_locals", MoltObject::none().bits());
+            let fl_bits = get_attr_default(_py, frame_bits, b"f_locals", MoltObject::none().bits());
             dec_ref_bits(_py, frame_bits);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
