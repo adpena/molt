@@ -48,6 +48,7 @@ mod provenance;
 mod randomness;
 mod state;
 mod utils;
+pub mod vfs;
 
 #[allow(unused_imports)]
 pub(crate) use crate::async_rt::*;
