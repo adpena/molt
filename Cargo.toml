@@ -112,6 +112,9 @@ debug = 0
 [profile.dev.package.lzma-sys]
 debug = 0
 
+[profile.dev.package.zip]
+debug = 0
+
 [profile.dev-fast]
 inherits = "dev"
 debug = 1
@@ -212,6 +215,9 @@ debug = 0
 debug = 0
 
 [profile.dev-fast.package.lzma-sys]
+debug = 0
+
+[profile.dev-fast.package.zip]
 debug = 0
 
 [profile.release-fast]
