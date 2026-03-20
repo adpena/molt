@@ -57,8 +57,12 @@ def test_workspace_dev_profile_trims_runtime_debug_info() -> None:
         "rustpython-parser-core",
         "rustls",
         "rustls-webpki",
+        "simdutf",
         "tungstenite",
+        "unicode_names2",
         "url",
+        "xz2",
+        "lzma-sys",
     }
 
     for packages in (dev_packages, dev_fast_packages):
