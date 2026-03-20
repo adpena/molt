@@ -1,0 +1,11 @@
+name = "molt-python-demo"
+main = "dist/worker.js"
+compatibility_date = "2025-09-23"
+
+[build]
+command = ""
+
+# WASM module binding
+[[wasm_modules]]
+binding = "MOLT_WASM"
+path = "dist/worker_linked.wasm"
