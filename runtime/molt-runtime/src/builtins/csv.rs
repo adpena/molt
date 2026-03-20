@@ -1709,12 +1709,10 @@ pub extern "C" fn molt_csv_has_header(sample_bits: u64) -> u64 {
         let columns = header.len();
         let mut column_types = vec![HeaderColumnType::Unknown; columns];
 
-        let mut checked = 0usize;
-        for row in rows.iter().skip(1) {
+        for (checked, row) in rows.iter().skip(1).enumerate() {
             if checked > 20 {
                 break;
             }
-            checked += 1;
             if row.len() != columns {
                 continue;
             }
@@ -1786,16 +1784,16 @@ pub extern "C" fn molt_csv_validate_fmtparams(keys_bits: u64) -> u64 {
                 if tid == TYPE_ID_LIST || tid == crate::TYPE_ID_TUPLE {
                     let items = seq_vec_ref(ptr);
                     for &item_bits in items.iter() {
-                        if let Some(key) = string_obj_to_owned(obj_from_bits(item_bits)) {
-                            if !VALID_KEYS.contains(&key.as_str()) {
-                                return raise_exception::<u64>(
-                                    _py,
-                                    "TypeError",
-                                    &format!(
-                                        "this function got an unexpected keyword argument {key:?}"
-                                    ),
-                                );
-                            }
+                        if let Some(key) = string_obj_to_owned(obj_from_bits(item_bits))
+                            && !VALID_KEYS.contains(&key.as_str())
+                        {
+                            return raise_exception::<u64>(
+                                _py,
+                                "TypeError",
+                                &format!(
+                                    "this function got an unexpected keyword argument {key:?}"
+                                ),
+                            );
                         }
                     }
                 }

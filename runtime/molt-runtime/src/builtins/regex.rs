@@ -1185,12 +1185,12 @@ impl ReParser {
             }
             let node = self.parse_factor()?;
             // Coalesce adjacent literals.
-            if let ReNode::Literal(ref new_text) = node {
-                if let Some(ReNode::Literal(prev_text)) = nodes.last_mut() {
-                    let combined = prev_text.clone() + new_text;
-                    *prev_text = combined;
-                    continue;
-                }
+            if let ReNode::Literal(ref new_text) = node
+                && let Some(ReNode::Literal(prev_text)) = nodes.last_mut()
+            {
+                let combined = prev_text.clone() + new_text;
+                *prev_text = combined;
+                continue;
             }
             nodes.push(node);
         }
@@ -1266,10 +1266,10 @@ impl ReParser {
                     return Ok(node);
                 }
                 self.next_ch()?; // consume '}'
-                if let Some(max) = max_count {
-                    if max < min_count {
-                        return Err("invalid quantifier range".to_string());
-                    }
+                if let Some(max) = max_count
+                    && max < min_count
+                {
+                    return Err("invalid quantifier range".to_string());
                 }
                 let greedy = if self.peek() == Some('?') {
                     self.next_ch()?;
@@ -2246,9 +2246,7 @@ fn try_match_inner(
             if idx >= state.groups.len() {
                 return None;
             }
-            let Some((gstart, gend)) = state.groups[idx] else {
-                return None;
-            };
+            let (gstart, gend) = state.groups[idx]?;
             let ref_len = gend - gstart;
             if pos + ref_len > state.end {
                 return None;
@@ -2595,11 +2593,11 @@ fn char_class_matches(
     // Check literal chars.
     for c_str in chars {
         // Each entry is a single-char string.
-        if let Some(c) = c_str.chars().next() {
-            if state.char_eq(ch, c) {
-                hit = true;
-                break;
-            }
+        if let Some(c) = c_str.chars().next()
+            && state.char_eq(ch, c)
+        {
+            hit = true;
+            break;
         }
     }
 
@@ -3196,10 +3194,10 @@ pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits:
         let mut prev_empty_at: Option<usize> = None;
 
         while cur <= text_len {
-            if let Some(lim) = limit {
-                if splits >= lim {
-                    break;
-                }
+            if let Some(lim) = limit
+                && splits >= lim
+            {
+                break;
             }
 
             match execute_match(&local_compiled, &text, cur, text_len, "search") {
@@ -3360,10 +3358,10 @@ pub extern "C" fn molt_re_sub(
         let mut prev_empty_at: Option<usize> = None;
 
         while cur <= text_len {
-            if let Some(lim) = limit {
-                if replaced >= lim {
-                    break;
-                }
+            if let Some(lim) = limit
+                && replaced >= lim
+            {
+                break;
             }
 
             match execute_match(&local_compiled, &text, cur, text_len, "search") {
@@ -3486,18 +3484,20 @@ fn expand_repl_with_groups(
                     num_str.push(next);
                     if i + 2 < rlen && repl_chars[i + 2].is_ascii_digit() {
                         let two_digit = format!("{}{}", next, repl_chars[i + 2]);
-                        if let Ok(n) = two_digit.parse::<u32>() {
-                            if n <= group_count {
-                                num_str.push(repl_chars[i + 2]);
-                            }
+                        if let Ok(n) = two_digit.parse::<u32>()
+                            && n <= group_count
+                        {
+                            num_str.push(repl_chars[i + 2]);
                         }
                     }
                     let idx = num_str.parse::<u32>().unwrap_or(0) as usize;
-                    if idx > 0 && idx <= group_count as usize && idx < result.groups.len() {
-                        if let Some((gs, ge)) = result.groups[idx] {
-                            let group_text: String = chars[gs..ge].iter().collect();
-                            out.push_str(&group_text);
-                        }
+                    if idx > 0
+                        && idx <= group_count as usize
+                        && idx < result.groups.len()
+                        && let Some((gs, ge)) = result.groups[idx]
+                    {
+                        let group_text: String = chars[gs..ge].iter().collect();
+                        out.push_str(&group_text);
                     }
                     i += 1 + num_str.len();
                 }
@@ -3524,11 +3524,12 @@ fn expand_repl_with_groups(
                                     let group_text: String =
                                         chars[result.start..result.end].iter().collect();
                                     out.push_str(&group_text);
-                                } else if idx <= group_count as usize && idx < result.groups.len() {
-                                    if let Some((gs, ge)) = result.groups[idx] {
-                                        let group_text: String = chars[gs..ge].iter().collect();
-                                        out.push_str(&group_text);
-                                    }
+                                } else if idx <= group_count as usize
+                                    && idx < result.groups.len()
+                                    && let Some((gs, ge)) = result.groups[idx]
+                                {
+                                    let group_text: String = chars[gs..ge].iter().collect();
+                                    out.push_str(&group_text);
                                 }
                             }
                             i = end_idx + 1;
@@ -4763,10 +4764,10 @@ mod tests {
         let mut prev_empty_at: Option<usize> = None;
 
         while cur <= text_len {
-            if let Some(lim) = limit {
-                if splits >= lim {
-                    break;
-                }
+            if let Some(lim) = limit
+                && splits >= lim
+            {
+                break;
             }
 
             match execute_match(&compiled, text, cur, text_len, "search") {
@@ -4845,10 +4846,10 @@ mod tests {
         let mut prev_empty_at: Option<usize> = None;
 
         while cur <= text_len {
-            if let Some(lim) = limit {
-                if replaced >= lim {
-                    break;
-                }
+            if let Some(lim) = limit
+                && replaced >= lim
+            {
+                break;
             }
 
             match execute_match(&compiled, text, cur, text_len, "search") {

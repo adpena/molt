@@ -10990,13 +10990,9 @@ pub extern "C" fn molt_logging_filter_check(filter_name_bits: u64, record_name_b
     crate::with_gil_entry!(_py, {
         let filter_name = string_obj_to_owned(obj_from_bits(filter_name_bits)).unwrap_or_default();
         let record_name = string_obj_to_owned(obj_from_bits(record_name_bits)).unwrap_or_default();
-        let result = if filter_name.is_empty() {
-            true
-        } else if record_name == filter_name {
-            true
-        } else {
-            record_name.starts_with(&format!("{}.", filter_name))
-        };
+        let result = filter_name.is_empty()
+            || record_name == filter_name
+            || record_name.starts_with(&format!("{}.", filter_name));
         MoltObject::from_int(if result { 1 } else { 0 }).bits()
     })
 }
@@ -22196,40 +22192,36 @@ pub extern "C" fn molt_tokenize_scan(source_bits: u64) -> u64 {
 
                 // Full-line comment check
                 let trimmed_start = line_bytes.iter().position(|&b| b != b' ' && b != b'\t');
-                if let Some(ts) = trimmed_start {
-                    if line_bytes[ts] == b'#' {
-                        let comment = line.trim();
+                if let Some(ts) = trimmed_start
+                    && line_bytes[ts] == b'#'
+                {
+                    let comment = line.trim();
+                    let tok = make_token_tuple(
+                        _py,
+                        COMMENT,
+                        comment,
+                        (line_no, 0),
+                        (line_no, comment.len() as i64),
+                        line_bits,
+                    );
+                    tokens.push(tok);
+                    if line.ends_with('\n') {
                         let tok = make_token_tuple(
                             _py,
-                            COMMENT,
-                            comment,
-                            line_no,
-                            0,
-                            line_no,
-                            comment.len() as i64,
+                            NL,
+                            "\n",
+                            (line_no, (line_len - 1) as i64),
+                            (line_no, line_len as i64),
                             line_bits,
                         );
                         tokens.push(tok);
-                        if line.ends_with('\n') {
-                            let tok = make_token_tuple(
-                                _py,
-                                NL,
-                                "\n",
-                                line_no,
-                                (line_len - 1) as i64,
-                                line_no,
-                                line_len as i64,
-                                line_bits,
-                            );
-                            tokens.push(tok);
-                        }
-                        if line_bits != MoltObject::none().bits() {
-                            dec_ref_bits(_py, line_bits);
-                        }
-                        line_no += 1;
-                        start = line_end;
-                        continue;
                     }
+                    if line_bits != MoltObject::none().bits() {
+                        dec_ref_bits(_py, line_bits);
+                    }
+                    line_no += 1;
+                    start = line_end;
+                    continue;
                 }
 
                 let mut col: usize = 0;
@@ -22240,15 +22232,13 @@ pub extern "C" fn molt_tokenize_scan(source_bits: u64) -> u64 {
                         continue;
                     }
                     if ch == b'#' {
-                        let comment = line[col..].trim_end_matches(|c| c == '\r' || c == '\n');
+                        let comment = line[col..].trim_end_matches(['\r', '\n']);
                         let tok = make_token_tuple(
                             _py,
                             COMMENT,
                             comment,
-                            line_no,
-                            col as i64,
-                            line_no,
-                            (col + comment.len()) as i64,
+                            (line_no, col as i64),
+                            (line_no, (col + comment.len()) as i64),
                             line_bits,
                         );
                         tokens.push(tok);
@@ -22265,10 +22255,8 @@ pub extern "C" fn molt_tokenize_scan(source_bits: u64) -> u64 {
                             _py,
                             NAME,
                             text,
-                            line_no,
-                            start_col as i64,
-                            line_no,
-                            col as i64,
+                            (line_no, start_col as i64),
+                            (line_no, col as i64),
                             line_bits,
                         );
                         tokens.push(tok);
@@ -22285,10 +22273,8 @@ pub extern "C" fn molt_tokenize_scan(source_bits: u64) -> u64 {
                             _py,
                             NUMBER,
                             text,
-                            line_no,
-                            start_col as i64,
-                            line_no,
-                            col as i64,
+                            (line_no, start_col as i64),
+                            (line_no, col as i64),
                             line_bits,
                         );
                         tokens.push(tok);
@@ -22300,10 +22286,8 @@ pub extern "C" fn molt_tokenize_scan(source_bits: u64) -> u64 {
                         _py,
                         OP,
                         ch_str,
-                        line_no,
-                        col as i64,
-                        line_no,
-                        (col + 1) as i64,
+                        (line_no, col as i64),
+                        (line_no, (col + 1) as i64),
                         line_bits,
                     );
                     tokens.push(tok);
@@ -22318,10 +22302,8 @@ pub extern "C" fn molt_tokenize_scan(source_bits: u64) -> u64 {
                         _py,
                         tok_type,
                         "\n",
-                        line_no,
-                        (line_len - 1) as i64,
-                        line_no,
-                        line_len as i64,
+                        (line_no, (line_len - 1) as i64),
+                        (line_no, line_len as i64),
                         line_bits,
                     );
                     tokens.push(tok);
@@ -22344,10 +22326,8 @@ pub extern "C" fn molt_tokenize_scan(source_bits: u64) -> u64 {
             _py,
             ENDMARKER,
             "",
-            line_no,
-            0,
-            line_no,
-            0,
+            (line_no, 0),
+            (line_no, 0),
             endmarker_line_bits,
         );
         tokens.push(tok);
@@ -22370,10 +22350,8 @@ fn make_token_tuple(
     _py: &crate::PyToken<'_>,
     tok_type: i64,
     string: &str,
-    start_line: i64,
-    start_col: i64,
-    end_line: i64,
-    end_col: i64,
+    start: (i64, i64),
+    end: (i64, i64),
     line_bits: u64,
 ) -> u64 {
     let type_bits = MoltObject::from_int(tok_type).bits();
@@ -22384,8 +22362,8 @@ fn make_token_tuple(
         MoltObject::from_ptr(string_ptr).bits()
     };
     let start_elems = [
-        MoltObject::from_int(start_line).bits(),
-        MoltObject::from_int(start_col).bits(),
+        MoltObject::from_int(start.0).bits(),
+        MoltObject::from_int(start.1).bits(),
     ];
     let start_ptr = crate::alloc_tuple(_py, &start_elems);
     let start_bits = if start_ptr.is_null() {
@@ -22394,8 +22372,8 @@ fn make_token_tuple(
         MoltObject::from_ptr(start_ptr).bits()
     };
     let end_elems = [
-        MoltObject::from_int(end_line).bits(),
-        MoltObject::from_int(end_col).bits(),
+        MoltObject::from_int(end.0).bits(),
+        MoltObject::from_int(end.1).bits(),
     ];
     let end_ptr = crate::alloc_tuple(_py, &end_elems);
     let end_bits = if end_ptr.is_null() {
@@ -22515,25 +22493,25 @@ pub extern "C" fn molt_linecache_detect_encoding(first_bits: u64, second_bits: u
         }
 
         // Check second line
-        if !second_bytes.is_empty() {
-            if let Some(encoding) = find_encoding_cookie(second_bytes) {
-                let encoding = if bom_found && encoding.eq_ignore_ascii_case("utf-8") {
-                    "utf-8-sig"
-                } else {
-                    encoding
-                };
-                let enc_ptr = crate::alloc_string(_py, encoding.as_bytes());
-                let bom_bits = MoltObject::from_bool(bom_found).bits();
-                if enc_ptr.is_null() {
-                    return crate::raise_exception::<_>(_py, "MemoryError", "out of memory");
-                }
-                let elems = [MoltObject::from_ptr(enc_ptr).bits(), bom_bits];
-                let tuple_ptr = crate::alloc_tuple(_py, &elems);
-                if tuple_ptr.is_null() {
-                    return crate::raise_exception::<_>(_py, "MemoryError", "out of memory");
-                }
-                return MoltObject::from_ptr(tuple_ptr).bits();
+        if !second_bytes.is_empty()
+            && let Some(encoding) = find_encoding_cookie(second_bytes)
+        {
+            let encoding = if bom_found && encoding.eq_ignore_ascii_case("utf-8") {
+                "utf-8-sig"
+            } else {
+                encoding
+            };
+            let enc_ptr = crate::alloc_string(_py, encoding.as_bytes());
+            let bom_bits = MoltObject::from_bool(bom_found).bits();
+            if enc_ptr.is_null() {
+                return crate::raise_exception::<_>(_py, "MemoryError", "out of memory");
             }
+            let elems = [MoltObject::from_ptr(enc_ptr).bits(), bom_bits];
+            let tuple_ptr = crate::alloc_tuple(_py, &elems);
+            if tuple_ptr.is_null() {
+                return crate::raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            return MoltObject::from_ptr(tuple_ptr).bits();
         }
 
         // Default encoding

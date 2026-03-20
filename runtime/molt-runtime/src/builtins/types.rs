@@ -5232,17 +5232,17 @@ pub extern "C" fn molt_dataclasses_repr(self_bits: u64) -> u64 {
                     clear_exception(_py);
                 }
             }
-            if name.is_empty() {
-                if let Some(nk) = attr_name_bits_from_bytes(_py, b"__name__") {
-                    let nv = molt_getattr_builtin(cls_bits, nk, missing);
-                    dec_ref_bits(_py, nk);
-                    if !exception_pending(_py) && nv != missing {
-                        if let Some(s) = string_obj_to_owned(obj_from_bits(nv)) {
-                            name = s;
-                        }
-                    } else if exception_pending(_py) {
-                        clear_exception(_py);
+            if name.is_empty()
+                && let Some(nk) = attr_name_bits_from_bytes(_py, b"__name__")
+            {
+                let nv = molt_getattr_builtin(cls_bits, nk, missing);
+                dec_ref_bits(_py, nk);
+                if !exception_pending(_py) && nv != missing {
+                    if let Some(s) = string_obj_to_owned(obj_from_bits(nv)) {
+                        name = s;
                     }
+                } else if exception_pending(_py) {
+                    clear_exception(_py);
                 }
             }
             if name.is_empty() {

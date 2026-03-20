@@ -1171,61 +1171,58 @@ fn importlib_find_in_path(
         let mut namespace_paths: Vec<String> = Vec::new();
         let mut namespace_seen: HashSet<String> = HashSet::new();
         for base in &current_paths {
-            if let Some((zip_archive, zip_prefix)) = split_zip_archive_path(base) {
-                if zip_archive_index_cached(&mut zip_index_cache, &zip_archive).is_some() {
-                    let pkg_rel = zip_entry_join(&zip_prefix, part);
-                    let init_entry = format!("{pkg_rel}/__init__.py");
+            if let Some((zip_archive, zip_prefix)) = split_zip_archive_path(base)
+                && zip_archive_index_cached(&mut zip_index_cache, &zip_archive).is_some()
+            {
+                let pkg_rel = zip_entry_join(&zip_prefix, part);
+                let init_entry = format!("{pkg_rel}/__init__.py");
+                if zip_archive_entry_exists_cached(&mut zip_index_cache, &zip_archive, &init_entry)
+                {
+                    if is_last {
+                        return Some(ImportlibPathResolution {
+                            origin: Some(format!("{zip_archive}/{init_entry}")),
+                            is_package: true,
+                            submodule_search_locations: Some(vec![format!(
+                                "{zip_archive}/{pkg_rel}"
+                            )]),
+                            cached: None,
+                            has_location: true,
+                            loader_kind: "zip_source".to_string(),
+                            zip_archive: Some(zip_archive),
+                            zip_inner_path: Some(init_entry),
+                        });
+                    }
+                    next_paths = vec![format!("{zip_archive}/{pkg_rel}")];
+                    found_pkg = true;
+                    break;
+                }
+                if zip_archive_has_prefix_cached(&mut zip_index_cache, &zip_archive, &pkg_rel) {
+                    append_unique_path_hashed(
+                        &mut namespace_paths,
+                        &mut namespace_seen,
+                        &format!("{zip_archive}/{pkg_rel}"),
+                    );
+                }
+                if is_last {
+                    let mod_entry = zip_entry_join(&zip_prefix, &format!("{part}.py"));
                     if zip_archive_entry_exists_cached(
                         &mut zip_index_cache,
                         &zip_archive,
-                        &init_entry,
+                        &mod_entry,
                     ) {
-                        if is_last {
-                            return Some(ImportlibPathResolution {
-                                origin: Some(format!("{zip_archive}/{init_entry}")),
-                                is_package: true,
-                                submodule_search_locations: Some(vec![format!(
-                                    "{zip_archive}/{pkg_rel}"
-                                )]),
-                                cached: None,
-                                has_location: true,
-                                loader_kind: "zip_source".to_string(),
-                                zip_archive: Some(zip_archive),
-                                zip_inner_path: Some(init_entry),
-                            });
-                        }
-                        next_paths = vec![format!("{zip_archive}/{pkg_rel}")];
-                        found_pkg = true;
-                        break;
+                        return Some(ImportlibPathResolution {
+                            origin: Some(format!("{zip_archive}/{mod_entry}")),
+                            is_package: false,
+                            submodule_search_locations: None,
+                            cached: None,
+                            has_location: true,
+                            loader_kind: "zip_source".to_string(),
+                            zip_archive: Some(zip_archive),
+                            zip_inner_path: Some(mod_entry),
+                        });
                     }
-                    if zip_archive_has_prefix_cached(&mut zip_index_cache, &zip_archive, &pkg_rel) {
-                        append_unique_path_hashed(
-                            &mut namespace_paths,
-                            &mut namespace_seen,
-                            &format!("{zip_archive}/{pkg_rel}"),
-                        );
-                    }
-                    if is_last {
-                        let mod_entry = zip_entry_join(&zip_prefix, &format!("{part}.py"));
-                        if zip_archive_entry_exists_cached(
-                            &mut zip_index_cache,
-                            &zip_archive,
-                            &mod_entry,
-                        ) {
-                            return Some(ImportlibPathResolution {
-                                origin: Some(format!("{zip_archive}/{mod_entry}")),
-                                is_package: false,
-                                submodule_search_locations: None,
-                                cached: None,
-                                has_location: true,
-                                loader_kind: "zip_source".to_string(),
-                                zip_archive: Some(zip_archive),
-                                zip_inner_path: Some(mod_entry),
-                            });
-                        }
-                    }
-                    continue;
                 }
+                continue;
             }
             let root = if base.is_empty() {
                 ".".to_string()
@@ -1422,21 +1419,21 @@ fn importlib_namespace_paths(
         return matches;
     }
     for base in resolved {
-        if let Some((archive_path, zip_prefix)) = split_zip_archive_path(&base) {
-            if zip_archive_index_cached(&mut zip_index_cache, &archive_path).is_some() {
-                let mut rel = zip_prefix;
-                for part in &parts {
-                    rel = zip_entry_join(&rel, part);
-                }
-                if zip_archive_has_prefix_cached(&mut zip_index_cache, &archive_path, &rel) {
-                    append_unique_path_hashed(
-                        &mut matches,
-                        &mut matches_seen,
-                        &format!("{archive_path}/{rel}"),
-                    );
-                }
-                continue;
+        if let Some((archive_path, zip_prefix)) = split_zip_archive_path(&base)
+            && zip_archive_index_cached(&mut zip_index_cache, &archive_path).is_some()
+        {
+            let mut rel = zip_prefix;
+            for part in &parts {
+                rel = zip_entry_join(&rel, part);
             }
+            if zip_archive_has_prefix_cached(&mut zip_index_cache, &archive_path, &rel) {
+                append_unique_path_hashed(
+                    &mut matches,
+                    &mut matches_seen,
+                    &format!("{archive_path}/{rel}"),
+                );
+            }
+            continue;
         }
         let mut path = if base.is_empty() {
             ".".to_string()
@@ -3103,8 +3100,7 @@ fn importlib_load_extension_manifest_for_path(
                     _py,
                     "ImportError",
                     &format!(
-                        "invalid extension metadata in {}: {err}",
-                        format!("{archive_path}/extension_manifest.json")
+                        "invalid extension metadata in {archive_path}/extension_manifest.json: {err}"
                     ),
                 ));
             }

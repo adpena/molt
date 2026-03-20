@@ -100,8 +100,8 @@ fn splitroot(path: &str, posix: bool) -> (String, String, String) {
             };
             return (drive, root, tail);
         }
-        if path.starts_with('/') {
-            return (String::new(), "/".to_string(), path[1..].to_string());
+        if let Some(stripped) = path.strip_prefix('/') {
+            return (String::new(), "/".to_string(), stripped.to_string());
         }
         return (String::new(), String::new(), path.to_string());
     }
@@ -109,8 +109,7 @@ fn splitroot(path: &str, posix: bool) -> (String, String, String) {
     let norm = normalize_win_separators(path);
     let p = norm.as_str();
     // UNC path: //server/share
-    if p.starts_with("//") {
-        let rest = &p[2..];
+    if let Some(rest) = p.strip_prefix("//") {
         let idx = rest.find('/').unwrap_or(rest.len());
         let server = &rest[..idx];
         let after_server = if idx < rest.len() {
@@ -126,8 +125,8 @@ fn splitroot(path: &str, posix: bool) -> (String, String, String) {
         } else {
             ""
         };
-        let (root, tail) = if tail_start.starts_with('/') {
-            ("/".to_string(), tail_start[1..].to_string())
+        let (root, tail) = if let Some(stripped) = tail_start.strip_prefix('/') {
+            ("/".to_string(), stripped.to_string())
         } else {
             (String::new(), tail_start.to_string())
         };
@@ -137,14 +136,14 @@ fn splitroot(path: &str, posix: bool) -> (String, String, String) {
     if p.len() >= 2 && p.as_bytes()[0].is_ascii_alphabetic() && p.as_bytes()[1] == b':' {
         let drive = p[..2].to_string();
         let rest = &p[2..];
-        if rest.starts_with('/') {
-            return (drive, "/".to_string(), rest[1..].to_string());
+        if let Some(stripped) = rest.strip_prefix('/') {
+            return (drive, "/".to_string(), stripped.to_string());
         }
         return (drive, String::new(), rest.to_string());
     }
     // Relative path
-    if p.starts_with('/') {
-        return (String::new(), "/".to_string(), p[1..].to_string());
+    if let Some(stripped) = p.strip_prefix('/') {
+        return (String::new(), "/".to_string(), stripped.to_string());
     }
     (String::new(), String::new(), p.to_string())
 }
@@ -1559,5 +1558,5 @@ pub extern "C" fn molt_pathlib_samefile(path_bits: u64, other_bits: u64) -> u64 
 /// Return the OS path separator
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_sep() -> u64 {
-    crate::with_gil_entry!(_py, { str_bits(_py, &MAIN_SEPARATOR.to_string()) })
+    crate::with_gil_entry!(_py, { str_bits(_py, std::path::MAIN_SEPARATOR_STR) })
 }

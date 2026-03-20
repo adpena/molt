@@ -1087,15 +1087,15 @@ fn runpy_normalize_candidate(path: PathBuf) -> String {
 /// Returns `true` if `path` is a file in the VFS or on disk.
 fn vfs_is_file(path: &std::path::Path) -> bool {
     let path_str = path.to_string_lossy();
-    if let Some(state) = crate::runtime_state_for_gil() {
-        if let Some(guard) = state.get_vfs() {
-            let vfs = guard.as_ref().unwrap();
-            if let Some((_prefix, backend, rel)) = vfs.resolve(&path_str) {
-                return match backend.stat(&rel) {
-                    Ok(st) => !st.is_dir,
-                    Err(_) => false,
-                };
-            }
+    if let Some(state) = crate::runtime_state_for_gil()
+        && let Some(guard) = state.get_vfs()
+    {
+        let vfs = guard.as_ref().unwrap();
+        if let Some((_prefix, backend, rel)) = vfs.resolve(&path_str) {
+            return match backend.stat(&rel) {
+                Ok(st) => !st.is_dir,
+                Err(_) => false,
+            };
         }
     }
     path.is_file()
@@ -1105,15 +1105,15 @@ fn vfs_is_file(path: &std::path::Path) -> bool {
 #[allow(dead_code)]
 fn vfs_read_to_string(path: &std::path::Path) -> Option<String> {
     let path_str = path.to_string_lossy();
-    if let Some(state) = crate::runtime_state_for_gil() {
-        if let Some(guard) = state.get_vfs() {
-            let vfs = guard.as_ref().unwrap();
-            if let Some((_prefix, backend, rel)) = vfs.resolve(&path_str) {
-                return match backend.open_read(&rel) {
-                    Ok(bytes) => String::from_utf8(bytes).ok(),
-                    Err(_) => None,
-                };
-            }
+    if let Some(state) = crate::runtime_state_for_gil()
+        && let Some(guard) = state.get_vfs()
+    {
+        let vfs = guard.as_ref().unwrap();
+        if let Some((_prefix, backend, rel)) = vfs.resolve(&path_str) {
+            return match backend.open_read(&rel) {
+                Ok(bytes) => String::from_utf8(bytes).ok(),
+                Err(_) => None,
+            };
         }
     }
     std::fs::read_to_string(path).ok()
@@ -1121,24 +1121,24 @@ fn vfs_read_to_string(path: &std::path::Path) -> Option<String> {
 
 /// Read a file to raw bytes, trying VFS first then the real filesystem.
 fn vfs_read(path: &str) -> std::io::Result<Vec<u8>> {
-    if let Some(state) = crate::runtime_state_for_gil() {
-        if let Some(guard) = state.get_vfs() {
-            let vfs = guard.as_ref().unwrap();
-            if let Some((_prefix, backend, rel)) = vfs.resolve(path) {
-                return backend.open_read(&rel).map_err(|e| {
-                    let kind = match e {
-                        crate::vfs::VfsError::NotFound => std::io::ErrorKind::NotFound,
-                        crate::vfs::VfsError::PermissionDenied
-                        | crate::vfs::VfsError::ReadOnly
-                        | crate::vfs::VfsError::CapabilityDenied(_) => {
-                            std::io::ErrorKind::PermissionDenied
-                        }
-                        crate::vfs::VfsError::IsDirectory => std::io::ErrorKind::IsADirectory,
-                        _ => std::io::ErrorKind::Other,
-                    };
-                    std::io::Error::new(kind, e.to_string())
-                });
-            }
+    if let Some(state) = crate::runtime_state_for_gil()
+        && let Some(guard) = state.get_vfs()
+    {
+        let vfs = guard.as_ref().unwrap();
+        if let Some((_prefix, backend, rel)) = vfs.resolve(path) {
+            return backend.open_read(&rel).map_err(|e| {
+                let kind = match e {
+                    crate::vfs::VfsError::NotFound => std::io::ErrorKind::NotFound,
+                    crate::vfs::VfsError::PermissionDenied
+                    | crate::vfs::VfsError::ReadOnly
+                    | crate::vfs::VfsError::CapabilityDenied(_) => {
+                        std::io::ErrorKind::PermissionDenied
+                    }
+                    crate::vfs::VfsError::IsDirectory => std::io::ErrorKind::IsADirectory,
+                    _ => std::io::ErrorKind::Other,
+                };
+                std::io::Error::new(kind, e.to_string())
+            });
         }
     }
     std::fs::read(path)

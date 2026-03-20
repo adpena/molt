@@ -84,10 +84,8 @@ pub extern "C" fn molt_glob_glob(
         let mut results = Vec::new();
         match glob::glob(&pattern) {
             Ok(paths) => {
-                for entry in paths {
-                    if let Ok(p) = entry {
-                        results.push(p.to_string_lossy().into_owned());
-                    }
+                for p in paths.flatten() {
+                    results.push(p.to_string_lossy().into_owned());
                 }
             }
             Err(err) => {

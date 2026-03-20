@@ -193,8 +193,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
                 let new_vec_ptr = *(new_ptr as *mut *mut Vec<u64>);
                 let new_vec = &mut *new_vec_ptr;
                 new_vec.reserve(len);
-                for i in 0..len {
-                    let elem = src[i];
+                for &elem in src.iter().take(len) {
                     let copied = deep_copy_bits(_py, elem, memo_handle);
                     if exception_pending(_py) {
                         return MoltObject::none().bits();

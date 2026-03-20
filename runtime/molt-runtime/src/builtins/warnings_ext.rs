@@ -146,10 +146,7 @@ fn filter_matches(
     if !filter.category.is_empty() {
         // Simple category matching: exact name match or subclass check
         // For the intrinsic, we compare category name strings.
-        if filter.category != category
-            && filter.category != "Warning"
-            && category != filter.category
-        {
+        if filter.category != category && filter.category != "Warning" {
             return false;
         }
     }

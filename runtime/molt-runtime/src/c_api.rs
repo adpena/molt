@@ -4385,7 +4385,7 @@ mod tests {
         let kind_bits = molt_exception_kind(exc_bits);
         let class_bits = molt_exception_class(kind_bits);
         assert_eq!(molt_err_matches(runtime_error), 0);
-        assert_eq!(issubclass_bits(class_bits, runtime_error), true);
+        assert!(issubclass_bits(class_bits, runtime_error));
         crate::with_gil_entry!(_py, {
             dec_ref_bits(_py, kind_bits);
             dec_ref_bits(_py, class_bits);
@@ -5310,9 +5310,7 @@ mod tests {
             assert_ne!(dict, 0);
 
             let val = MoltObject::from_int(42).bits();
-            let rc = unsafe {
-                PyDict_SetItemString(dict, b"hello\0".as_ptr() as *const std::ffi::c_char, val)
-            };
+            let rc = unsafe { PyDict_SetItemString(dict, c"hello".as_ptr(), val) };
             assert_eq!(rc, 0);
             assert_eq!(PyDict_Size(dict), 1);
 
@@ -5381,7 +5379,7 @@ mod tests {
             assert_eq!(PyTuple_Check(int_val), 0);
 
             // Float
-            let float_val = MoltObject::from_float(3.14).bits();
+            let float_val = MoltObject::from_float(3.125).bits();
             assert_eq!(PyFloat_Check(float_val), 1);
             assert_eq!(PyLong_Check(float_val), 0);
 
@@ -5679,10 +5677,10 @@ mod tests {
             assert_eq!(to_i64(obj_from_bits(res)), Some(42));
             dec_ref_bits(_py, res);
 
-            let b = MoltObject::from_float(-3.14).bits();
+            let b = MoltObject::from_float(-3.125).bits();
             let res2 = PyNumber_Absolute(b);
             assert_ne!(res2, 0);
-            assert_eq!(obj_from_bits(res2).as_float(), Some(3.14));
+            assert_eq!(obj_from_bits(res2).as_float(), Some(3.125));
             dec_ref_bits(_py, res2);
         });
     }
@@ -5754,7 +5752,7 @@ mod tests {
         let _ = molt_runtime_init();
         crate::with_gil_entry!(_py, {
             assert_eq!(PyNumber_Check(MoltObject::from_int(42).bits()), 1);
-            assert_eq!(PyNumber_Check(MoltObject::from_float(3.14).bits()), 1);
+            assert_eq!(PyNumber_Check(MoltObject::from_float(3.125).bits()), 1);
             assert_eq!(PyNumber_Check(MoltObject::from_bool(true).bits()), 1);
             assert_eq!(PyNumber_Check(MoltObject::none().bits()), 0);
 
@@ -5858,13 +5856,13 @@ mod tests {
             let val = MoltObject::from_int(99).bits();
             assert_eq!(PyDict_SetItem(dict, key_bits, val), 0);
 
-            let got = unsafe { PyMapping_GetItemString(dict, b"hello\0".as_ptr() as *const _) };
+            let got = unsafe { PyMapping_GetItemString(dict, c"hello".as_ptr()) };
             assert_ne!(got, 0);
             assert_eq!(to_i64(obj_from_bits(got)), Some(99));
             dec_ref_bits(_py, got);
 
             // Missing key should fail.
-            let missing = unsafe { PyMapping_GetItemString(dict, b"nope\0".as_ptr() as *const _) };
+            let missing = unsafe { PyMapping_GetItemString(dict, c"nope".as_ptr()) };
             assert_eq!(missing, 0);
             assert!(exception_pending(_py));
             let _ = molt_exception_clear();
@@ -6075,13 +6073,14 @@ mod tests {
     fn c_api_unicode_from_string() {
         let _ = molt_runtime_init();
         crate::with_gil_entry!(_py, {
-            let str_bits = unsafe { PyUnicode_FromString(b"hello world\0".as_ptr() as *const _) };
+            let str_bits = unsafe { PyUnicode_FromString(c"hello world".as_ptr()) };
             assert_ne!(str_bits, 0);
             assert_eq!(PyUnicode_Check(str_bits), 1);
 
             let utf8_ptr = PyUnicode_AsUTF8(str_bits);
             assert!(!utf8_ptr.is_null());
             let observed = unsafe { std::ffi::CStr::from_ptr(utf8_ptr).to_bytes() };
+            assert_eq!(observed, b"hello world");
             // The string content might not be NUL-terminated in molt's internal
             // storage, so compare the known length.
             let mut out_size: isize = 0;
@@ -6124,7 +6123,7 @@ mod tests {
     fn c_api_unicode_asutf8andsize_null_size_ok() {
         let _ = molt_runtime_init();
         crate::with_gil_entry!(_py, {
-            let str_bits = unsafe { PyUnicode_FromString(b"abc\0".as_ptr() as *const _) };
+            let str_bits = unsafe { PyUnicode_FromString(c"abc".as_ptr()) };
             assert_ne!(str_bits, 0);
             // Pass NULL for size — should not crash.
             let ptr = unsafe { PyUnicode_AsUTF8AndSize(str_bits, std::ptr::null_mut()) };
@@ -6210,11 +6209,11 @@ mod tests {
         crate::with_gil_entry!(_py, {
             // int + float -> float
             let a = MoltObject::from_int(3).bits();
-            let b = MoltObject::from_float(0.14).bits();
+            let b = MoltObject::from_float(0.125).bits();
             let res = PyNumber_Add(a, b);
             assert_ne!(res, 0);
             let val = obj_from_bits(res).as_float().unwrap();
-            assert!((val - 3.14).abs() < 1e-10);
+            assert!((val - 3.125).abs() < 1e-10);
             dec_ref_bits(_py, res);
 
             // float * int -> float
@@ -6435,9 +6434,7 @@ mod tests {
             let v1 = MoltObject::from_int(100).bits();
             assert_eq!(PyDict_SetItem(dict, k1, v1), 0);
 
-            let got = unsafe {
-                PyDict_GetItemString(dict, b"hello\0".as_ptr() as *const std::ffi::c_char)
-            };
+            let got = PyDict_GetItemString(dict, c"hello".as_ptr());
             assert_ne!(got, 0);
 
             assert_eq!(PyDict_DelItem(dict, k1), 0);
@@ -6500,9 +6497,7 @@ mod tests {
         let _ = molt_runtime_init();
         assert_eq!(PyErr_Occurred(), 0);
 
-        unsafe {
-            PyErr_SetString(0, b"test error\0".as_ptr() as *const std::ffi::c_char);
-        }
+        PyErr_SetString(0, c"test error".as_ptr());
         assert_ne!(PyErr_Occurred(), 0);
 
         PyErr_Clear();
@@ -6521,9 +6516,9 @@ mod tests {
         assert_ne!(long, 0);
         assert_eq!(PyLong_AsLong(long), 42);
 
-        let float = PyFloat_FromDouble(3.14);
+        let float = PyFloat_FromDouble(3.125);
         let val = PyFloat_AsDouble(float);
-        assert!((val - 3.14).abs() < 0.001);
+        assert!((val - 3.125).abs() < 0.001);
 
         let t = PyBool_FromLong(1);
         assert_eq!(PyObject_IsTrue(t), 1);
@@ -6568,9 +6563,7 @@ mod tests {
             assert_eq!(PyUnicode_GetLength(concat), 11);
             dec_ref_bits(_py, concat);
 
-            let cmp = unsafe {
-                PyUnicode_CompareWithASCIIString(s, b"hello\0".as_ptr() as *const std::ffi::c_char)
-            };
+            let cmp = PyUnicode_CompareWithASCIIString(s, c"hello".as_ptr());
             assert_eq!(cmp, 0);
 
             dec_ref_bits(_py, s2);
