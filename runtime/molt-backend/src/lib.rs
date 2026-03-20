@@ -1,13 +1,24 @@
+#[cfg(feature = "native-backend")]
 use cranelift::codegen::Context;
+#[cfg(feature = "native-backend")]
 use cranelift::codegen::ir::{FuncRef, Function};
+#[cfg(feature = "native-backend")]
 use cranelift::codegen::isa;
+#[cfg(feature = "native-backend")]
 use cranelift::frontend::Switch;
+#[cfg(feature = "native-backend")]
 use cranelift::prelude::*;
+#[cfg(feature = "native-backend")]
 use cranelift_module::{DataDescription, Linkage, Module};
+#[cfg(feature = "native-backend")]
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+#[cfg(feature = "native-backend")]
+use std::collections::BTreeMap;
+use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(feature = "native-backend")]
 use std::fmt::Write as _;
+#[cfg(feature = "native-backend")]
 use std::sync::OnceLock;
 
 mod ir_schema;
@@ -22,33 +33,37 @@ pub mod wasm;
 #[cfg(feature = "egraphs")]
 pub mod egraph_simplify;
 
-const QNAN: u64 = 0x7ff8_0000_0000_0000;
-const TAG_INT: u64 = 0x0001_0000_0000_0000;
-const TAG_BOOL: u64 = 0x0002_0000_0000_0000;
-const TAG_NONE: u64 = 0x0003_0000_0000_0000;
-const TAG_PTR: u64 = 0x0004_0000_0000_0000;
-const TAG_PENDING: u64 = 0x0005_0000_0000_0000;
-const TAG_MASK: u64 = 0x0007_0000_0000_0000;
-const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
-const INT_WIDTH: u64 = 47;
-const INT_MASK: u64 = (1u64 << INT_WIDTH) - 1;
-const INT_SHIFT: i64 = (64 - INT_WIDTH) as i64;
-const GENERATOR_CONTROL_BYTES: i32 = 48;
-const TASK_KIND_FUTURE: i64 = 0;
-const TASK_KIND_GENERATOR: i64 = 1;
-const TASK_KIND_COROUTINE: i64 = 2;
-const FUNC_DEFAULT_NONE: i64 = 1;
-const FUNC_DEFAULT_DICT_POP: i64 = 2;
-const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
-const HEADER_SIZE_BYTES: i32 = 40;
-const HEADER_STATE_OFFSET: i32 = -(HEADER_SIZE_BYTES - 16);
-/// Byte offset from data pointer to `MoltHeader.ref_count` (u32 at header offset 4).
-const HEADER_REFCOUNT_OFFSET: i32 = -(HEADER_SIZE_BYTES - 4);
-/// Byte offset from data pointer to `MoltHeader.flags` (u64 at header offset 32).
-const HEADER_FLAGS_OFFSET: i32 = -(HEADER_SIZE_BYTES - 32);
-/// Matches `HEADER_FLAG_IMMORTAL` in `runtime/molt-runtime/src/object/mod.rs`.
-const HEADER_FLAG_IMMORTAL: u64 = 1 << 15;
+#[cfg(feature = "native-backend")]
+mod native_backend_consts {
+    pub(super) const QNAN: u64 = 0x7ff8_0000_0000_0000;
+    pub(super) const TAG_INT: u64 = 0x0001_0000_0000_0000;
+    pub(super) const TAG_BOOL: u64 = 0x0002_0000_0000_0000;
+    pub(super) const TAG_NONE: u64 = 0x0003_0000_0000_0000;
+    pub(super) const TAG_PTR: u64 = 0x0004_0000_0000_0000;
+    pub(super) const TAG_PENDING: u64 = 0x0005_0000_0000_0000;
+    pub(super) const TAG_MASK: u64 = 0x0007_0000_0000_0000;
+    pub(super) const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
+    pub(super) const INT_WIDTH: u64 = 47;
+    pub(super) const INT_MASK: u64 = (1u64 << INT_WIDTH) - 1;
+    pub(super) const INT_SHIFT: i64 = (64 - INT_WIDTH) as i64;
+    pub(super) const GENERATOR_CONTROL_BYTES: i32 = 48;
+    pub(super) const TASK_KIND_FUTURE: i64 = 0;
+    pub(super) const TASK_KIND_GENERATOR: i64 = 1;
+    pub(super) const TASK_KIND_COROUTINE: i64 = 2;
+    pub(super) const FUNC_DEFAULT_NONE: i64 = 1;
+    pub(super) const FUNC_DEFAULT_DICT_POP: i64 = 2;
+    pub(super) const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
+    pub(super) const HEADER_SIZE_BYTES: i32 = 40;
+    pub(super) const HEADER_STATE_OFFSET: i32 = -(HEADER_SIZE_BYTES - 16);
+    pub(super) const HEADER_REFCOUNT_OFFSET: i32 = -(HEADER_SIZE_BYTES - 4);
+    pub(super) const HEADER_FLAGS_OFFSET: i32 = -(HEADER_SIZE_BYTES - 32);
+    pub(super) const HEADER_FLAG_IMMORTAL: u64 = 1 << 15;
+}
 
+#[cfg(feature = "native-backend")]
+use native_backend_consts::*;
+
+#[cfg(feature = "native-backend")]
 fn find_zero_pred_blocks(func: &Function) -> Vec<Block> {
     let mut preds: HashMap<Block, usize> = HashMap::new();
     for block in func.layout.blocks() {
@@ -72,6 +87,7 @@ fn find_zero_pred_blocks(func: &Function) -> Vec<Block> {
         .collect()
 }
 
+#[cfg(feature = "native-backend")]
 fn ensure_block_in_layout(builder: &mut FunctionBuilder, block: Block) {
     if builder.func.layout.is_block_inserted(block) {
         return;
@@ -85,6 +101,7 @@ fn ensure_block_in_layout(builder: &mut FunctionBuilder, block: Block) {
     builder.func.layout.append_block(block);
 }
 
+#[cfg(feature = "native-backend")]
 fn block_has_terminator(builder: &FunctionBuilder, block: Block) -> bool {
     builder
         .func
@@ -94,6 +111,7 @@ fn block_has_terminator(builder: &FunctionBuilder, block: Block) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(feature = "native-backend")]
 fn sync_block_filled(builder: &FunctionBuilder, is_block_filled: &mut bool) {
     if let Some(block) = builder.current_block()
         && block_has_terminator(builder, block)
@@ -102,6 +120,7 @@ fn sync_block_filled(builder: &FunctionBuilder, is_block_filled: &mut bool) {
     }
 }
 
+#[cfg(feature = "native-backend")]
 fn switch_to_block_tracking(
     builder: &mut FunctionBuilder,
     block: Block,
@@ -111,28 +130,34 @@ fn switch_to_block_tracking(
     *is_block_filled = block_has_terminator(builder, block);
 }
 
+#[cfg(feature = "native-backend")]
 fn box_int(val: i64) -> i64 {
     let masked = (val as u64) & POINTER_MASK;
     (QNAN | TAG_INT | masked) as i64
 }
 
+#[cfg(feature = "native-backend")]
 fn box_float(val: f64) -> i64 {
     val.to_bits() as i64
 }
 
+#[cfg(feature = "native-backend")]
 fn pending_bits() -> i64 {
     (QNAN | TAG_PENDING) as i64
 }
 
+#[cfg(feature = "native-backend")]
 fn box_none() -> i64 {
     (QNAN | TAG_NONE) as i64
 }
 
+#[cfg(feature = "native-backend")]
 fn box_bool(val: i64) -> i64 {
     let bit = if val != 0 { 1u64 } else { 0u64 };
     (QNAN | TAG_BOOL | bit) as i64
 }
 
+#[cfg(feature = "native-backend")]
 fn stable_ic_site_id(func_name: &str, op_idx: usize, lane: &str) -> i64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -153,6 +178,7 @@ fn stable_ic_site_id(func_name: &str, op_idx: usize, lane: &str) -> i64 {
     id as i64
 }
 
+#[cfg(feature = "native-backend")]
 fn unbox_int(builder: &mut FunctionBuilder, val: Value) -> Value {
     // The ishl by INT_SHIFT (17) shifts out the upper 17 tag bits (QNAN+TAG),
     // then sshr sign-extends the 47-bit payload. No separate band with INT_MASK
@@ -163,6 +189,7 @@ fn unbox_int(builder: &mut FunctionBuilder, val: Value) -> Value {
 }
 
 #[allow(dead_code)]
+#[cfg(feature = "native-backend")]
 fn is_int_tag(builder: &mut FunctionBuilder, val: Value) -> Value {
     let mask = builder.ins().iconst(types::I64, (QNAN | TAG_MASK) as i64);
     let tag = builder.ins().iconst(types::I64, (QNAN | TAG_INT) as i64);
@@ -181,6 +208,7 @@ fn is_int_tag(builder: &mut FunctionBuilder, val: Value) -> Value {
 ///     value was a NaN-boxed int.
 ///   - `unboxed` is the sign-extended 47-bit integer payload (valid only when
 ///     the tag check passes).
+#[cfg(feature = "native-backend")]
 fn fused_tag_check_and_unbox_int(builder: &mut FunctionBuilder, val: Value) -> (Value, Value) {
     let expected_tag = builder.ins().iconst(types::I64, (QNAN | TAG_INT) as i64);
     let xored = builder.ins().bxor(val, expected_tag);
@@ -196,6 +224,7 @@ fn fused_tag_check_and_unbox_int(builder: &mut FunctionBuilder, val: Value) -> (
 /// and checks that both had their tag bits zeroed (i.e., both were ints).
 /// Uses BOR to combine the two values, then checks that the upper 17 bits
 /// of the combined result are zero — true iff both inputs were ints.
+#[cfg(feature = "native-backend")]
 fn fused_both_int_check(
     builder: &mut FunctionBuilder,
     lhs_xored: Value,
@@ -207,6 +236,7 @@ fn fused_both_int_check(
     builder.ins().icmp_imm(IntCC::Equal, upper, 0)
 }
 
+#[cfg(feature = "native-backend")]
 fn box_int_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     let mask = builder.ins().iconst(types::I64, INT_MASK as i64);
     let masked = builder.ins().band(val, mask);
@@ -214,10 +244,12 @@ fn box_int_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     builder.ins().bor(tag, masked)
 }
 
+#[cfg(feature = "native-backend")]
 fn box_float_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     builder.ins().bitcast(types::I64, MemFlags::new(), val)
 }
 
+#[cfg(feature = "native-backend")]
 fn int_value_fits_inline(builder: &mut FunctionBuilder, val: Value) -> Value {
     // Inline ints are 47-bit signed payloads. Round-trip through box/unbox to
     // guard against silent wrap in fast arithmetic lowering.
@@ -226,6 +258,7 @@ fn int_value_fits_inline(builder: &mut FunctionBuilder, val: Value) -> Value {
     builder.ins().icmp(IntCC::Equal, val, unboxed)
 }
 
+#[cfg(feature = "native-backend")]
 fn box_bool_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     let one = builder.ins().iconst(types::I64, 1);
     let zero = builder.ins().iconst(types::I64, 0);
@@ -234,6 +267,7 @@ fn box_bool_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     builder.ins().bor(tag, bool_val)
 }
 
+#[cfg(feature = "native-backend")]
 fn unbox_ptr_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     let mask = builder.ins().iconst(types::I64, POINTER_MASK as i64);
     let masked = builder.ins().band(val, mask);
@@ -242,6 +276,7 @@ fn unbox_ptr_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     builder.ins().sshr(shifted, shift)
 }
 
+#[cfg(feature = "native-backend")]
 fn box_ptr_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     let mask = builder.ins().iconst(types::I64, POINTER_MASK as i64);
     let masked = builder.ins().band(val, mask);
@@ -250,6 +285,7 @@ fn box_ptr_value(builder: &mut FunctionBuilder, val: Value) -> Value {
 }
 
 #[allow(dead_code)]
+#[cfg(feature = "native-backend")]
 fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: FuncRef) {
     // Keep ref-adjust control flow linear. Hidden branch blocks here can invalidate
     // block-local tracked-value carry if callers do not explicitly propagate tracking.
@@ -273,6 +309,7 @@ fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: 
 // ---------------------------------------------------------------------------
 
 /// Returns `true` if inline RC codegen is enabled via `MOLT_INLINE_RC=1`.
+#[cfg(feature = "native-backend")]
 fn inline_rc_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("MOLT_INLINE_RC").as_deref() == Ok("1"))
@@ -289,6 +326,7 @@ fn inline_rc_enabled() -> bool {
 ///         rc = *(ptr - 36) as u32
 ///         *(ptr - 36) = rc + 1
 /// ```
+#[cfg(feature = "native-backend")]
 fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value) {
     let current_block = builder.current_block().expect("no current block");
 
@@ -357,6 +395,7 @@ fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value) {
 
 /// Emit an inc_ref_obj — either inlined or as a function call depending on
 /// the `MOLT_INLINE_RC` flag.
+#[cfg(feature = "native-backend")]
 fn emit_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef) {
     if inline_rc_enabled() {
         emit_inline_inc_ref_obj(builder, val);
@@ -367,6 +406,7 @@ fn emit_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef
 
 /// Emit a ref-adjust (inc_ref_obj) — either inlined or as a function call
 /// depending on the `MOLT_INLINE_RC` flag.
+#[cfg(feature = "native-backend")]
 fn emit_maybe_ref_adjust_v2(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef) {
     if inline_rc_enabled() {
         emit_inline_inc_ref_obj(builder, val);
@@ -554,8 +594,10 @@ impl SimpleIR {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "native-backend")]
 struct VarValue(Value);
 
+#[cfg(feature = "native-backend")]
 impl std::ops::Deref for VarValue {
     type Target = Value;
 
@@ -564,6 +606,7 @@ impl std::ops::Deref for VarValue {
     }
 }
 
+#[cfg(feature = "native-backend")]
 fn var_get(
     builder: &mut FunctionBuilder,
     vars: &HashMap<String, Variable>,
@@ -572,6 +615,7 @@ fn var_get(
     vars.get(name).map(|var| VarValue(builder.use_var(*var)))
 }
 
+#[cfg(feature = "native-backend")]
 fn def_var_named(
     builder: &mut FunctionBuilder,
     vars: &HashMap<String, Variable>,
@@ -588,6 +632,7 @@ fn def_var_named(
     builder.def_var(var, val);
 }
 
+#[cfg(feature = "native-backend")]
 fn jump_block(builder: &mut FunctionBuilder, target: Block, args: &[Value]) {
     let block_args: Vec<cranelift::codegen::ir::BlockArg> = args
         .iter()
@@ -597,6 +642,7 @@ fn jump_block(builder: &mut FunctionBuilder, target: Block, args: &[Value]) {
     builder.ins().jump(target, &block_args);
 }
 
+#[cfg(feature = "native-backend")]
 fn brif_block(
     builder: &mut FunctionBuilder,
     cond: Value,
@@ -624,6 +670,7 @@ fn brif_block(
     );
 }
 
+#[cfg(feature = "native-backend")]
 fn parse_inst_id(text: &str) -> Option<usize> {
     let bytes = text.as_bytes();
     let mut i = 0;
@@ -646,11 +693,13 @@ fn parse_inst_id(text: &str) -> Option<usize> {
     None
 }
 
+#[cfg(feature = "native-backend")]
 struct DumpIrConfig {
     mode: String,
     filter: Option<String>,
 }
 
+#[cfg(feature = "native-backend")]
 fn should_dump_ir() -> Option<DumpIrConfig> {
     let raw = std::env::var("MOLT_DUMP_IR").ok()?;
     let trimmed = raw.trim();
@@ -681,6 +730,7 @@ fn should_dump_ir() -> Option<DumpIrConfig> {
     Some(DumpIrConfig { mode, filter })
 }
 
+#[cfg(feature = "native-backend")]
 fn dump_ir_matches(config: &DumpIrConfig, func_name: &str) -> bool {
     let Some(filter) = config.filter.as_ref() else {
         return true;
@@ -691,10 +741,12 @@ fn dump_ir_matches(config: &DumpIrConfig, func_name: &str) -> bool {
     func_name == filter || func_name.contains(filter)
 }
 
+#[cfg(feature = "native-backend")]
 struct TraceOpsConfig {
     stride: usize,
 }
 
+#[cfg(feature = "native-backend")]
 fn should_trace_ops(func_name: &str) -> Option<TraceOpsConfig> {
     static RAW: OnceLock<Option<String>> = OnceLock::new();
     let raw = RAW
@@ -724,6 +776,7 @@ fn should_trace_ops(func_name: &str) -> Option<TraceOpsConfig> {
     }
 }
 
+#[cfg(feature = "native-backend")]
 fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
     let mut out = String::new();
     let full = mode.eq_ignore_ascii_case("full");
@@ -786,6 +839,7 @@ fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
     eprintln!("IR ops for {} (mode={}):\n{}", func_ir.name, mode, out);
 }
 
+#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
 pub(crate) fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_DISABLE_STRUCT_ELIDE").is_ok() {
         return;
@@ -861,10 +915,12 @@ pub(crate) fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
 // code size explosion. Controlled by MOLT_INLINE_LIMIT env var.
 // ---------------------------------------------------------------------------
 
+#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
 const INLINE_OP_LIMIT: usize = 30;
 
 /// Returns true if a function is safe to inline: no control flow (loops,
 /// try/except, generators), no nested internal calls, small op count.
+#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
 fn is_inlineable(func: &FunctionIR, defined_functions: &std::collections::HashSet<&str>) -> bool {
     if func.ops.len() > INLINE_OP_LIMIT {
         return false;
@@ -892,6 +948,7 @@ fn is_inlineable(func: &FunctionIR, defined_functions: &std::collections::HashSe
     true
 }
 
+#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
 pub(crate) fn inline_functions(ir: &mut SimpleIR) {
     if std::env::var("MOLT_DISABLE_INLINING").is_ok() {
         return;
@@ -1068,6 +1125,7 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
     }
 }
 
+#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
 pub(crate) fn apply_profile_order(ir: &mut SimpleIR) {
     let Some(profile) = ir.profile.as_ref() else {
         return;
@@ -1097,6 +1155,7 @@ pub(crate) fn apply_profile_order(ir: &mut SimpleIR) {
     });
 }
 
+#[cfg(feature = "native-backend")]
 fn compute_last_use(ops: &[OpIR]) -> HashMap<String, usize> {
     let mut last_use = HashMap::new();
     for (idx, op) in ops.iter().enumerate() {
@@ -1112,6 +1171,7 @@ fn compute_last_use(ops: &[OpIR]) -> HashMap<String, usize> {
     last_use
 }
 
+#[cfg(feature = "native-backend")]
 fn collect_var_names(params: &[String], ops: &[OpIR]) -> Vec<String> {
     let mut names: HashSet<String> = HashSet::new();
     for name in params {
@@ -1147,6 +1207,7 @@ fn collect_var_names(params: &[String], ops: &[OpIR]) -> Vec<String> {
     names
 }
 
+#[cfg(feature = "native-backend")]
 fn compute_if_end_maps(ops: &[OpIR]) -> (HashMap<usize, usize>, HashMap<usize, usize>) {
     let mut if_to_end: HashMap<usize, usize> = HashMap::new();
     let mut else_to_end: HashMap<usize, usize> = HashMap::new();
@@ -1173,6 +1234,7 @@ fn compute_if_end_maps(ops: &[OpIR]) -> (HashMap<usize, usize>, HashMap<usize, u
     (if_to_end, else_to_end)
 }
 
+#[cfg(feature = "native-backend")]
 fn drain_cleanup_tracked(
     names: &mut Vec<String>,
     last_use: &HashMap<String, usize>,
@@ -1194,6 +1256,7 @@ fn drain_cleanup_tracked(
     cleanup
 }
 
+#[cfg(feature = "native-backend")]
 fn collect_cleanup_tracked(
     names: &[String],
     last_use: &HashMap<String, usize>,
@@ -1208,6 +1271,7 @@ fn collect_cleanup_tracked(
         .collect()
 }
 
+#[cfg(feature = "native-backend")]
 fn extend_unique_tracked(dst: &mut Vec<String>, src: Vec<String>) {
     if src.is_empty() {
         return;
@@ -1225,6 +1289,7 @@ fn extend_unique_tracked(dst: &mut Vec<String>, src: Vec<String>) {
     }
 }
 
+#[cfg(feature = "native-backend")]
 fn drain_cleanup_entry_tracked(
     names: &mut Vec<String>,
     entry_vars: &HashMap<String, Value>,
@@ -1246,6 +1311,7 @@ fn drain_cleanup_entry_tracked(
 }
 
 #[derive(Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
+#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
 pub(crate) enum TrampolineKind {
     Plain,
     Generator,
@@ -1254,6 +1320,7 @@ pub(crate) enum TrampolineKind {
 }
 
 #[derive(Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[cfg(feature = "native-backend")]
 struct TrampolineKey {
     name: String,
     arity: usize,
@@ -1264,6 +1331,7 @@ struct TrampolineKey {
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
 pub(crate) struct TrampolineSpec {
     pub(crate) arity: usize,
     pub(crate) has_closure: bool,
@@ -1271,6 +1339,7 @@ pub(crate) struct TrampolineSpec {
     pub(crate) closure_size: i64,
 }
 
+#[cfg(feature = "native-backend")]
 pub struct SimpleBackend {
     module: ObjectModule,
     ctx: Context,
@@ -1281,6 +1350,7 @@ pub struct SimpleBackend {
     next_data_id: u64,
 }
 
+#[cfg(feature = "native-backend")]
 struct IfFrame {
     else_block: Block,
     merge_block: Block,
@@ -1291,6 +1361,7 @@ struct IfFrame {
     phi_params: Vec<Value>,
 }
 
+#[cfg(feature = "native-backend")]
 struct LoopFrame {
     loop_block: Block,
     body_block: Block,
@@ -1299,11 +1370,13 @@ struct LoopFrame {
     next_index: Option<Value>,
 }
 
+#[cfg(feature = "native-backend")]
 fn parse_truthy_env(raw: &str) -> bool {
     let norm = raw.trim().to_ascii_lowercase();
     matches!(norm.as_str(), "1" | "true" | "yes" | "on")
 }
 
+#[cfg(feature = "native-backend")]
 fn env_setting(var: &str) -> Option<String> {
     std::env::var(var)
         .ok()
@@ -1311,12 +1384,14 @@ fn env_setting(var: &str) -> Option<String> {
         .filter(|raw| !raw.is_empty())
 }
 
+#[cfg(feature = "native-backend")]
 impl Default for SimpleBackend {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "native-backend")]
 impl SimpleBackend {
     pub fn new() -> Self {
         Self::new_with_target(None)

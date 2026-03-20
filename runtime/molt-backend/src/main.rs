@@ -1,8 +1,10 @@
+#[cfg(feature = "native-backend")]
+use molt_backend::SimpleBackend;
 #[cfg(feature = "rust-backend")]
 use molt_backend::rust::RustBackend;
 #[cfg(feature = "wasm-backend")]
 use molt_backend::wasm::{WasmBackend, WasmCompileOptions};
-use molt_backend::{SimpleBackend, SimpleIR};
+use molt_backend::SimpleIR;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -17,9 +19,11 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const BACKEND_DAEMON_PROTOCOL_VERSION: u32 = 1;
 #[derive(Debug, Deserialize)]
+#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
 struct DaemonJobRequest {
     id: String,
     is_wasm: bool,
+    #[cfg_attr(not(feature = "native-backend"), allow(dead_code))]
     target_triple: Option<String>,
     #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
     #[serde(default)]
@@ -104,6 +108,7 @@ struct DaemonStats {
     cache_misses: u64,
 }
 
+#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
 struct DaemonCache {
     entries: HashMap<Arc<str>, CacheEntry>,
     order: BinaryHeap<Reverse<(u64, Arc<str>)>>,
@@ -112,11 +117,13 @@ struct DaemonCache {
     max_bytes: Option<usize>,
 }
 
+#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
 struct CacheEntry {
     bytes: Arc<[u8]>,
     stamp: u64,
 }
 
+#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
 impl DaemonCache {
     fn new(max_bytes: Option<usize>) -> Self {
         Self {
@@ -215,7 +222,27 @@ fn daemon_health(cache: &DaemonCache, stats: &DaemonStats, start: Instant) -> Da
     }
 }
 
-fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJobResponse {
+fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> DaemonJobResponse {
+    #[cfg(not(any(feature = "native-backend", feature = "wasm-backend")))]
+    {
+        let unsupported = if job.is_wasm {
+            "backend binary was built without wasm-backend support"
+        } else {
+            "backend binary was built without native-backend support"
+        };
+        return DaemonJobResponse {
+            id: job.id,
+            ok: false,
+            cached: false,
+            cache_tier: None,
+            output_written: false,
+            needs_ir: false,
+            message: Some(unsupported.to_string()),
+        };
+    }
+
+    #[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+    {
     let cache_key = job.cache_key.trim();
     let function_cache_key = job
         .function_cache_key
@@ -223,7 +250,7 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
         .map(str::trim)
         .unwrap_or("");
     if !cache_key.is_empty()
-        && let Some(bytes) = cache.get_bytes(cache_key)
+        && let Some(bytes) = _cache.get_bytes(cache_key)
     {
         match write_cached_output(&job.output, bytes, job.skip_module_output_if_synced) {
             Ok(output_written) => {
@@ -252,7 +279,7 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
     }
     if !function_cache_key.is_empty()
         && function_cache_key != cache_key
-        && let Some(bytes) = cache.get_bytes(function_cache_key)
+        && let Some(bytes) = _cache.get_bytes(function_cache_key)
     {
         match write_cached_output(&job.output, bytes, job.skip_function_output_if_synced) {
             Ok(output_written) => {
@@ -331,8 +358,25 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
             };
         }
     } else {
+        #[cfg(feature = "native-backend")]
+        {
         let backend = SimpleBackend::new_with_target(job.target_triple.as_deref());
         Arc::from(backend.compile(ir))
+        }
+        #[cfg(not(feature = "native-backend"))]
+        {
+            return DaemonJobResponse {
+                id: job.id,
+                ok: false,
+                cached: false,
+                cache_tier: None,
+                output_written: false,
+                needs_ir: false,
+                message: Some(
+                    "backend binary was built without native-backend support".to_string(),
+                ),
+            };
+        }
     };
 
     if let Err(err) = write_output(&job.output, output_bytes.as_ref()) {
@@ -348,12 +392,12 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
     }
 
     if !cache_key.is_empty() && !function_cache_key.is_empty() && function_cache_key != cache_key {
-        cache.insert(cache_key.to_string(), Arc::clone(&output_bytes));
-        cache.insert(function_cache_key.to_string(), output_bytes);
+        _cache.insert(cache_key.to_string(), Arc::clone(&output_bytes));
+        _cache.insert(function_cache_key.to_string(), output_bytes);
     } else if !cache_key.is_empty() {
-        cache.insert(cache_key.to_string(), output_bytes);
+        _cache.insert(cache_key.to_string(), output_bytes);
     } else if !function_cache_key.is_empty() {
-        cache.insert(function_cache_key.to_string(), output_bytes);
+        _cache.insert(function_cache_key.to_string(), output_bytes);
     }
 
     DaemonJobResponse {
@@ -365,8 +409,10 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
         needs_ir: false,
         message: None,
     }
+    }
 }
 
+#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
 fn write_cached_output(path: &str, bytes: &[u8], skip_if_synced: bool) -> io::Result<bool> {
     if skip_if_synced {
         return Ok(false);
@@ -375,6 +421,7 @@ fn write_cached_output(path: &str, bytes: &[u8], skip_if_synced: bool) -> io::Re
     Ok(true)
 }
 
+#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
 fn write_output(path: &str, bytes: &[u8]) -> io::Result<()> {
     let output_path = Path::new(path);
     if let Some(parent) = output_path.parent()
@@ -618,6 +665,7 @@ fn main() -> io::Result<()> {
     }
     let is_wasm = args.contains(&"--target".to_string()) && args.contains(&"wasm".to_string());
     let is_rust = args.contains(&"--target".to_string()) && args.contains(&"rust".to_string());
+    #[cfg_attr(not(feature = "native-backend"), allow(unused_variables))]
     let target_triple = args
         .iter()
         .position(|arg| arg == "--target-triple")
@@ -684,10 +732,20 @@ fn main() -> io::Result<()> {
             ));
         }
     } else {
+        #[cfg(feature = "native-backend")]
+        {
         let backend = SimpleBackend::new_with_target(target_triple);
         let obj_bytes = backend.compile(ir);
         file.write_all(&obj_bytes)?;
         println!("Successfully compiled to output.o");
+        }
+        #[cfg(not(feature = "native-backend"))]
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "backend binary was built without native-backend support",
+            ));
+        }
     }
 
     Ok(())
