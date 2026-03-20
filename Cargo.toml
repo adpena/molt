@@ -30,12 +30,13 @@ lto = "off"
 codegen-units = 128
 strip = false
 
-# WASM-optimized release profile: thin LTO instead of full, more codegen
-# units for faster compilation while still producing well-optimized output.
+# WASM-optimized release profile: full LTO with single codegen unit for
+# maximum cross-crate inlining and dead code elimination. Build time
+# increases but runtime wasm artifacts are cached and infrequently rebuilt.
 [profile.wasm-release]
 inherits = "release"
 opt-level = 3
-lto = "thin"
-codegen-units = 4
+lto = true
+codegen-units = 1
 panic = "abort"
 strip = true
