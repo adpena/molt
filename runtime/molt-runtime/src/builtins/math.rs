@@ -11,10 +11,12 @@ use crate::{
     molt_iter_next, molt_mul, molt_sorted_builtin, obj_from_bits, object_type_id, raise_exception,
     raise_not_iterable, runtime_state, seq_vec_ref, string_bytes, string_len, to_i64, type_of_bits,
 };
+#[cfg(feature = "stdlib_crypto")]
 use digest::Digest;
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
+#[cfg(feature = "stdlib_crypto")]
 use sha2::Sha512;
 
 #[derive(Debug)]
@@ -3317,11 +3319,19 @@ fn statistics_seed_bigint(_py: &PyToken<'_>, seed_bits: u64) -> Option<BigInt> {
             _ => return statistics_seed_type_error(_py),
         }
     };
-    let digest = Sha512::digest(&seed_bytes);
-    let mut payload = Vec::with_capacity(seed_bytes.len() + digest.len());
-    payload.extend_from_slice(&seed_bytes);
-    payload.extend_from_slice(&digest);
-    Some(BigInt::from(BigUint::from_bytes_be(&payload)))
+    #[cfg(feature = "stdlib_crypto")]
+    {
+        let digest = Sha512::digest(&seed_bytes);
+        let mut payload = Vec::with_capacity(seed_bytes.len() + digest.len());
+        payload.extend_from_slice(&seed_bytes);
+        payload.extend_from_slice(&digest);
+        Some(BigInt::from(BigUint::from_bytes_be(&payload)))
+    }
+    #[cfg(not(feature = "stdlib_crypto"))]
+    {
+        // Without crypto support, fall back to using the raw seed bytes.
+        Some(BigInt::from(BigUint::from_bytes_be(&seed_bytes)))
+    }
 }
 
 fn statistics_seed_key(seed: &BigInt) -> Vec<u32> {

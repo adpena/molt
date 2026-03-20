@@ -34,6 +34,12 @@ debug = 0
 [profile.dev.package.cranelift-object]
 debug = 0
 
+[profile.dev.package.gimli]
+debug = 0
+
+[profile.dev.package.object]
+debug = 0
+
 [profile.dev.package.molt-runtime]
 debug = 0
 
@@ -137,6 +143,12 @@ debug = 0
 debug = 0
 
 [profile.dev-fast.package.cranelift-object]
+debug = 0
+
+[profile.dev-fast.package.gimli]
+debug = 0
+
+[profile.dev-fast.package.object]
 debug = 0
 
 [profile.dev-fast.package.molt-runtime]

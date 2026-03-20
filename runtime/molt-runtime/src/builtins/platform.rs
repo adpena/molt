@@ -853,6 +853,7 @@ fn zip_entry_join(prefix: &str, rel: &str) -> String {
     }
 }
 
+#[cfg(feature = "stdlib_archive")]
 fn zip_archive_open(path: &str) -> Result<zip::ZipArchive<std::fs::File>, std::io::Error> {
     let file = std::fs::File::open(path)?;
     zip::ZipArchive::new(file)
