@@ -114,7 +114,6 @@ debug = 0
 
 [profile.dev-fast]
 inherits = "dev"
-opt-level = 1
 debug = 1
 codegen-units = 256
 lto = "off"
