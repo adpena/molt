@@ -22,11 +22,10 @@ use crate::{
     molt_alloc, molt_call_bind, molt_callargs_new, molt_callargs_push_kw, molt_callargs_push_pos,
     molt_contains, molt_dict_from_obj, molt_dict_get, molt_eq, molt_getattr_builtin,
     molt_hash_builtin, molt_index, molt_iter, molt_iter_next, molt_len, molt_object_setattr,
-    molt_repr_from_obj, obj_eq,
-    molt_setitem_method, molt_str_from_obj, molt_string_isidentifier, obj_from_bits,
-    object_class_bits, object_set_class_bits, object_type_id, property_del_bits, property_get_bits,
-    property_set_bits, raise_exception, raise_not_iterable, runtime_state, seq_vec_ref,
-    string_obj_to_owned, to_i64, tuple_from_iter_bits, type_name, type_of_bits,
+    molt_repr_from_obj, molt_setitem_method, molt_str_from_obj, molt_string_isidentifier, obj_eq,
+    obj_from_bits, object_class_bits, object_set_class_bits, object_type_id, property_del_bits,
+    property_get_bits, property_set_bits, raise_exception, raise_not_iterable, runtime_state,
+    seq_vec_ref, string_obj_to_owned, to_i64, tuple_from_iter_bits, type_name, type_of_bits,
 };
 
 #[unsafe(no_mangle)]
@@ -5114,10 +5113,7 @@ fn dc_repr_str(_py: &PyToken<'_>, val_bits: u64) -> String {
 
 /// Helper: read `__dataclass_fields__` from the class of `self_bits` and
 /// return an ordered vec of (field_name_bits, field_obj_bits) pairs.
-fn dc_fields_ordered(
-    _py: &PyToken<'_>,
-    self_bits: u64,
-) -> Option<Vec<(u64, u64)>> {
+fn dc_fields_ordered(_py: &PyToken<'_>, self_bits: u64) -> Option<Vec<(u64, u64)>> {
     let cls_bits = type_of_bits(_py, self_bits);
     let missing = missing_bits(_py);
     let fields_dict_bits = dataclasses_fields_dict_bits(_py, cls_bits, missing)?;
@@ -5134,11 +5130,7 @@ fn dc_fields_ordered(
 
 /// Helper: read the `_field_type` attribute from a field object and check
 /// whether it matches a given tag.
-fn dc_field_has_tag(
-    _py: &PyToken<'_>,
-    field_bits: u64,
-    tag_name: &[u8],
-) -> bool {
+fn dc_field_has_tag(_py: &PyToken<'_>, field_bits: u64, tag_name: &[u8]) -> bool {
     let Some(ft_name_bits) = attr_name_bits_from_bytes(_py, b"_field_type") else {
         return false;
     };
@@ -5177,11 +5169,7 @@ fn dc_is_field(_py: &PyToken<'_>, field_bits: u64) -> bool {
 }
 
 /// Helper: read a bool-ish attribute from a field object.
-fn dc_field_bool_attr(
-    _py: &PyToken<'_>,
-    field_bits: u64,
-    attr: &[u8],
-) -> Option<bool> {
+fn dc_field_bool_attr(_py: &PyToken<'_>, field_bits: u64, attr: &[u8]) -> Option<bool> {
     let name_bits = attr_name_bits_from_bytes(_py, attr)?;
     let missing = missing_bits(_py);
     let val = molt_getattr_builtin(field_bits, name_bits, missing);
@@ -5197,10 +5185,7 @@ fn dc_field_bool_attr(
 }
 
 /// Helper: read the "name" string attribute from a field object.
-fn dc_field_name_str(
-    _py: &PyToken<'_>,
-    field_bits: u64,
-) -> Option<String> {
+fn dc_field_name_str(_py: &PyToken<'_>, field_bits: u64) -> Option<String> {
     let name_bits = attr_name_bits_from_bytes(_py, b"name")?;
     let missing = missing_bits(_py);
     let val = molt_getattr_builtin(field_bits, name_bits, missing);
@@ -5494,7 +5479,11 @@ pub extern "C" fn molt_dataclasses_field_flags(fields_dict_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(fields_ptr) = obj_from_bits(fields_dict_bits).as_ptr() else {
             let ptr = alloc_tuple(_py, &[]);
-            return if ptr.is_null() { MoltObject::none().bits() } else { MoltObject::from_ptr(ptr).bits() };
+            return if ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(ptr).bits()
+            };
         };
         let order = unsafe { dict_order(fields_ptr) }.clone();
         let mut flags: Vec<u64> = Vec::new();

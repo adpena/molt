@@ -65,11 +65,7 @@ pub extern "C" fn molt_tempfile_gettempdirb() -> u64 {
 ///
 /// Creates a temporary directory and returns its path.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_tempfile_mkdtemp(
-    suffix_bits: u64,
-    prefix_bits: u64,
-    dir_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_tempfile_mkdtemp(suffix_bits: u64, prefix_bits: u64, dir_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.write") {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
@@ -101,11 +97,7 @@ pub extern "C" fn molt_tempfile_mkdtemp(
 /// -> tuple[int, str]  (fd, path)
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_tempfile_mkstemp(
-    suffix_bits: u64,
-    prefix_bits: u64,
-    dir_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_tempfile_mkstemp(suffix_bits: u64, prefix_bits: u64, dir_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.write") {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
@@ -145,10 +137,7 @@ pub extern "C" fn molt_tempfile_mkstemp(
                 #[cfg(not(any(unix, windows)))]
                 let fd: i64 = -1;
 
-                let elems = [
-                    MoltObject::from_int(fd).bits(),
-                    str_bits(_py, &path),
-                ];
+                let elems = [MoltObject::from_int(fd).bits(), str_bits(_py, &path)];
                 let ptr = alloc_tuple(_py, &elems);
                 if ptr.is_null() {
                     return raise_exception::<u64>(_py, "MemoryError", "out of memory");
@@ -261,11 +250,7 @@ pub extern "C" fn molt_tempfile_named(
 ///
 /// Cleanup is handled by the Python wrapper's __exit__.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_tempfile_tempdir(
-    suffix_bits: u64,
-    prefix_bits: u64,
-    dir_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_tempfile_tempdir(suffix_bits: u64, prefix_bits: u64, dir_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.write") {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");

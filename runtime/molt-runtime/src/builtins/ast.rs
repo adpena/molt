@@ -2,13 +2,13 @@ use molt_obj_model::MoltObject;
 use num_bigint::BigInt as NumBigInt;
 use rustpython_parser::{Mode as ParseMode, ParseErrorType, ast as pyast, parse as parse_python};
 
+use crate::builtins::exceptions::clear_exception;
 use crate::{
     TYPE_ID_STRING, alloc_string, alloc_tuple, attr_name_bits_from_bytes, call_callable0,
     call_callable1, call_callable2, call_callable3, dec_ref_bits, decode_value_list, ellipsis_bits,
     exception_pending, inc_ref_bits, int_bits_from_bigint, missing_bits, molt_getattr_builtin,
     obj_from_bits, object_type_id, raise_exception, string_obj_to_owned,
 };
-use crate::builtins::exceptions::clear_exception;
 
 struct AstParseCtors {
     module: u64,

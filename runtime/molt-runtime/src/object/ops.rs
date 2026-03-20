@@ -2844,11 +2844,7 @@ pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
         }
         if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
             if ri == 0 {
-                return raise_exception::<_>(
-                    _py,
-                    "ZeroDivisionError",
-                    "integer modulo by zero",
-                );
+                return raise_exception::<_>(_py, "ZeroDivisionError", "integer modulo by zero");
             }
             let mut rem = li % ri;
             if rem != 0 && (rem > 0) != (ri > 0) {
@@ -2858,11 +2854,7 @@ pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
         }
         if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
             if r_big.is_zero() {
-                return raise_exception::<_>(
-                    _py,
-                    "ZeroDivisionError",
-                    "integer modulo by zero",
-                );
+                return raise_exception::<_>(_py, "ZeroDivisionError", "integer modulo by zero");
             }
             let res = l_big.mod_floor(&r_big);
             if let Some(i) = bigint_to_inline(&res) {
@@ -23660,9 +23652,8 @@ fn bytes_hex_string(bytes: &[u8], sep: Option<&str>, bytes_per_sep: i64) -> Stri
                     use std::arch::x86_64::*;
                     let mask_lo = _mm_set1_epi8(0x0F);
                     let hex_lut = _mm_setr_epi8(
-                        b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8,
-                        b'4' as i8, b'5' as i8, b'6' as i8, b'7' as i8,
-                        b'8' as i8, b'9' as i8, b'a' as i8, b'b' as i8,
+                        b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8, b'4' as i8, b'5' as i8,
+                        b'6' as i8, b'7' as i8, b'8' as i8, b'9' as i8, b'a' as i8, b'b' as i8,
                         b'c' as i8, b'd' as i8, b'e' as i8, b'f' as i8,
                     );
                     while i + 16 <= bytes.len() {
@@ -23676,7 +23667,10 @@ fn bytes_hex_string(bytes: &[u8], sep: Option<&str>, bytes_per_sep: i64) -> Stri
                         let len = raw.len();
                         raw.set_len(len + 32);
                         _mm_storeu_si128(raw.as_mut_ptr().add(len) as *mut __m128i, interleaved_lo);
-                        _mm_storeu_si128(raw.as_mut_ptr().add(len + 16) as *mut __m128i, interleaved_hi);
+                        _mm_storeu_si128(
+                            raw.as_mut_ptr().add(len + 16) as *mut __m128i,
+                            interleaved_hi,
+                        );
                         i += 16;
                     }
                 }
@@ -23696,8 +23690,42 @@ fn bytes_hex_string(bytes: &[u8], sep: Option<&str>, bytes_per_sep: i64) -> Stri
                         let hi_hex = i8x16_swizzle(hex_lut, hi_nibbles);
                         let lo_hex = i8x16_swizzle(hex_lut, lo_nibbles);
                         // Interleave hi and lo hex chars
-                        let interleaved_lo = i8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(hi_hex, lo_hex);
-                        let interleaved_hi = i8x16_shuffle::<8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31>(hi_hex, lo_hex);
+                        let interleaved_lo = i8x16_shuffle::<
+                            0,
+                            16,
+                            1,
+                            17,
+                            2,
+                            18,
+                            3,
+                            19,
+                            4,
+                            20,
+                            5,
+                            21,
+                            6,
+                            22,
+                            7,
+                            23,
+                        >(hi_hex, lo_hex);
+                        let interleaved_hi = i8x16_shuffle::<
+                            8,
+                            24,
+                            9,
+                            25,
+                            10,
+                            26,
+                            11,
+                            27,
+                            12,
+                            28,
+                            13,
+                            29,
+                            14,
+                            30,
+                            15,
+                            31,
+                        >(hi_hex, lo_hex);
                         let len = raw.len();
                         raw.set_len(len + 32);
                         v128_store(raw.as_mut_ptr().add(len) as *mut v128, interleaved_lo);
@@ -24539,8 +24567,12 @@ fn bytes_ascii_islower(bytes: &[u8]) -> bool {
                 // Scalar tail
                 let mut has_lower = has_lower_simd;
                 for &b in &bytes[i..] {
-                    if b.is_ascii_uppercase() { return false; }
-                    if b.is_ascii_lowercase() { has_lower = true; }
+                    if b.is_ascii_uppercase() {
+                        return false;
+                    }
+                    if b.is_ascii_lowercase() {
+                        has_lower = true;
+                    }
                 }
                 return has_lower;
             }
@@ -24572,8 +24604,12 @@ fn bytes_ascii_islower(bytes: &[u8]) -> bool {
                     i += 16;
                 }
                 for &b in &bytes[i..] {
-                    if b.is_ascii_uppercase() { return false; }
-                    if b.is_ascii_lowercase() { has_lower_any = true; }
+                    if b.is_ascii_uppercase() {
+                        return false;
+                    }
+                    if b.is_ascii_lowercase() {
+                        has_lower_any = true;
+                    }
                 }
                 return has_lower_any;
             }
@@ -24620,8 +24656,12 @@ fn bytes_ascii_isupper(bytes: &[u8]) -> bool {
                 let has_upper_simd = vmaxvq_u8(has_upper_vec) != 0;
                 let mut has_upper = has_upper_simd;
                 for &b in &bytes[i..] {
-                    if b.is_ascii_lowercase() { return false; }
-                    if b.is_ascii_uppercase() { has_upper = true; }
+                    if b.is_ascii_lowercase() {
+                        return false;
+                    }
+                    if b.is_ascii_uppercase() {
+                        has_upper = true;
+                    }
                 }
                 return has_upper;
             }
@@ -24651,8 +24691,12 @@ fn bytes_ascii_isupper(bytes: &[u8]) -> bool {
                     i += 16;
                 }
                 for &b in &bytes[i..] {
-                    if b.is_ascii_lowercase() { return false; }
-                    if b.is_ascii_uppercase() { has_upper_any = true; }
+                    if b.is_ascii_lowercase() {
+                        return false;
+                    }
+                    if b.is_ascii_uppercase() {
+                        has_upper_any = true;
+                    }
                 }
                 return has_upper_any;
             }
@@ -25008,7 +25052,12 @@ pub extern "C" fn molt_bytes_isspace(hay_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_isspace(hay_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, simd_is_all_ascii_whitespace)
+        bytes_like_ascii_predicate(
+            _py,
+            hay_bits,
+            TYPE_ID_BYTEARRAY,
+            simd_is_all_ascii_whitespace,
+        )
     })
 }
 
@@ -34752,8 +34801,7 @@ pub extern "C" fn molt_str_contains(container_bits: u64, item_bits: u64) -> u64 
                 let hay_len = string_len(ptr);
                 let needle_len = string_len(item_ptr);
                 let hay_bytes = std::slice::from_raw_parts(string_bytes(ptr), hay_len);
-                let needle_bytes =
-                    std::slice::from_raw_parts(string_bytes(item_ptr), needle_len);
+                let needle_bytes = std::slice::from_raw_parts(string_bytes(item_ptr), needle_len);
                 if needle_bytes.is_empty() {
                     return MoltObject::from_bool(true).bits();
                 }
@@ -39734,8 +39782,7 @@ pub extern "C" fn molt_heapq_heappop_max(list_bits: u64) -> u64 {
 pub extern "C" fn molt_heapq_nsmallest(n_bits: u64, iterable_bits: u64, key_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         // --- extract n ---
-        let n_raw =
-            index_i64_from_obj(_py, n_bits, "nsmallest() argument 'n' must be an integer");
+        let n_raw = index_i64_from_obj(_py, n_bits, "nsmallest() argument 'n' must be an integer");
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -39991,20 +40038,17 @@ pub extern "C" fn molt_heapq_nsmallest(n_bits: u64, iterable_bits: u64, key_bits
                                 }
                                 let rightpos = childpos + 1;
                                 if rightpos < plen2 {
-                                    let left_lt_right = match heapq_lt(
-                                        _py,
-                                        pairs[childpos].0,
-                                        pairs[rightpos].0,
-                                    ) {
-                                        Some(v) => v,
-                                        None => {
-                                            dec_ref_bits(_py, src_bits);
-                                            for (pk, _) in pairs {
-                                                dec_ref_bits(_py, pk);
+                                    let left_lt_right =
+                                        match heapq_lt(_py, pairs[childpos].0, pairs[rightpos].0) {
+                                            Some(v) => v,
+                                            None => {
+                                                dec_ref_bits(_py, src_bits);
+                                                for (pk, _) in pairs {
+                                                    dec_ref_bits(_py, pk);
+                                                }
+                                                return MoltObject::none().bits();
                                             }
-                                            return MoltObject::none().bits();
-                                        }
-                                    };
+                                        };
                                     if left_lt_right {
                                         childpos = rightpos;
                                     }
@@ -40166,8 +40210,7 @@ pub extern "C" fn molt_heapq_nsmallest(n_bits: u64, iterable_bits: u64, key_bits
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_heapq_nlargest(n_bits: u64, iterable_bits: u64, key_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let n_raw =
-            index_i64_from_obj(_py, n_bits, "nlargest() argument 'n' must be an integer");
+        let n_raw = index_i64_from_obj(_py, n_bits, "nlargest() argument 'n' must be an integer");
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -40239,8 +40282,7 @@ pub extern "C" fn molt_heapq_nlargest(n_bits: u64, iterable_bits: u64, key_bits:
                         }
                         return MoltObject::none().bits();
                     }
-                    let sorted_vals: Vec<u64> =
-                        indices.iter().map(|&i| *vals_ptr.add(i)).collect();
+                    let sorted_vals: Vec<u64> = indices.iter().map(|&i| *vals_ptr.add(i)).collect();
                     for kk in keys {
                         dec_ref_bits(_py, kk);
                     }
@@ -40370,20 +40412,17 @@ pub extern "C" fn molt_heapq_nlargest(n_bits: u64, iterable_bits: u64, key_bits:
                                 }
                                 let rightpos = childpos + 1;
                                 if rightpos < plen2 {
-                                    let right_lt_left = match heapq_lt(
-                                        _py,
-                                        pairs[rightpos].0,
-                                        pairs[childpos].0,
-                                    ) {
-                                        Some(v) => v,
-                                        None => {
-                                            dec_ref_bits(_py, src_bits);
-                                            for (pk, _) in pairs {
-                                                dec_ref_bits(_py, pk);
+                                    let right_lt_left =
+                                        match heapq_lt(_py, pairs[rightpos].0, pairs[childpos].0) {
+                                            Some(v) => v,
+                                            None => {
+                                                dec_ref_bits(_py, src_bits);
+                                                for (pk, _) in pairs {
+                                                    dec_ref_bits(_py, pk);
+                                                }
+                                                return MoltObject::none().bits();
                                             }
-                                            return MoltObject::none().bits();
-                                        }
-                                    };
+                                        };
                                     if right_lt_left {
                                         childpos = rightpos;
                                     }
@@ -40544,11 +40583,7 @@ pub extern "C" fn molt_heapq_nlargest(n_bits: u64, iterable_bits: u64, key_bits:
 // ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_heapq_merge(
-    iterables_bits: u64,
-    key_bits: u64,
-    reverse_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_heapq_merge(iterables_bits: u64, key_bits: u64, reverse_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let iter_obj = obj_from_bits(iterables_bits);
         let Some(iter_ptr) = iter_obj.as_ptr() else {
@@ -43718,7 +43753,11 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                 // SIMD fast path: skip past identity-equal prefix
                 let first_diff = simd_find_first_mismatch(l_elems, r_elems);
                 for idx in first_diff..l_elems.len() {
-                    if !obj_eq(_py, obj_from_bits(l_elems[idx]), obj_from_bits(r_elems[idx])) {
+                    if !obj_eq(
+                        _py,
+                        obj_from_bits(l_elems[idx]),
+                        obj_from_bits(r_elems[idx]),
+                    ) {
                         return false;
                     }
                 }
@@ -43764,7 +43803,11 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                 // SIMD fast path: skip past identity-equal prefix
                 let first_diff = simd_find_first_mismatch(l_elems, r_elems);
                 for idx in first_diff..l_elems.len() {
-                    if !obj_eq(_py, obj_from_bits(l_elems[idx]), obj_from_bits(r_elems[idx])) {
+                    if !obj_eq(
+                        _py,
+                        obj_from_bits(l_elems[idx]),
+                        obj_from_bits(r_elems[idx]),
+                    ) {
                         return false;
                     }
                 }
@@ -44249,7 +44292,8 @@ unsafe fn simd_max_byte_wasm32(bytes: &[u8]) -> u32 {
             i += 16;
         }
         // Horizontal max: fold 128 bits down to single byte
-        let hi64 = u8x16_shuffle::<8, 9, 10, 11, 12, 13, 14, 15, 0, 0, 0, 0, 0, 0, 0, 0>(vmax, vmax);
+        let hi64 =
+            u8x16_shuffle::<8, 9, 10, 11, 12, 13, 14, 15, 0, 0, 0, 0, 0, 0, 0, 0>(vmax, vmax);
         vmax = u8x16_max(vmax, hi64);
         let hi32 = u8x16_shuffle::<4, 5, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>(vmax, vmax);
         vmax = u8x16_max(vmax, hi32);
@@ -45137,7 +45181,8 @@ unsafe fn simd_bytes_eq_wasm32(a: *const u8, b: *const u8, len: usize) -> bool {
             }
             i += 16;
         }
-        std::slice::from_raw_parts(a.add(i), len - i) == std::slice::from_raw_parts(b.add(i), len - i)
+        std::slice::from_raw_parts(a.add(i), len - i)
+            == std::slice::from_raw_parts(b.add(i), len - i)
     }
 }
 
@@ -45202,7 +45247,8 @@ unsafe fn simd_bytes_eq_neon(a: *const u8, b: *const u8, len: usize) -> bool {
             }
             i += 16;
         }
-        std::slice::from_raw_parts(a.add(i), len - i) == std::slice::from_raw_parts(b.add(i), len - i)
+        std::slice::from_raw_parts(a.add(i), len - i)
+            == std::slice::from_raw_parts(b.add(i), len - i)
     }
 }
 
@@ -45223,7 +45269,11 @@ unsafe fn string_bits_eq(a_bits: u64, b_bits: u64) -> Option<bool> {
         if a_len != b_len {
             return Some(false);
         }
-        Some(simd_bytes_eq(string_bytes(a_ptr), string_bytes(b_ptr), a_len))
+        Some(simd_bytes_eq(
+            string_bytes(a_ptr),
+            string_bytes(b_ptr),
+            a_len,
+        ))
     }
 }
 

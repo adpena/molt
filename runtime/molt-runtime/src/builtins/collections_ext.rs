@@ -2661,11 +2661,41 @@ pub extern "C" fn molt_defaultdict_drop(handle_bits: u64) -> u64 {
 fn is_python_keyword(name: &str) -> bool {
     matches!(
         name,
-        "False" | "None" | "True" | "and" | "as" | "assert" | "async" | "await"
-        | "break" | "class" | "continue" | "def" | "del" | "elif" | "else"
-        | "except" | "finally" | "for" | "from" | "global" | "if" | "import"
-        | "in" | "is" | "lambda" | "nonlocal" | "not" | "or" | "pass" | "raise"
-        | "return" | "try" | "while" | "with" | "yield"
+        "False"
+            | "None"
+            | "True"
+            | "and"
+            | "as"
+            | "assert"
+            | "async"
+            | "await"
+            | "break"
+            | "class"
+            | "continue"
+            | "def"
+            | "del"
+            | "elif"
+            | "else"
+            | "except"
+            | "finally"
+            | "for"
+            | "from"
+            | "global"
+            | "if"
+            | "import"
+            | "in"
+            | "is"
+            | "lambda"
+            | "nonlocal"
+            | "not"
+            | "or"
+            | "pass"
+            | "raise"
+            | "return"
+            | "try"
+            | "while"
+            | "with"
+            | "yield"
     )
 }
 
@@ -2700,16 +2730,10 @@ pub extern "C" fn molt_namedtuple_validate_fields(
     crate::with_gil_entry!(_py, {
         // Validate typename
         let Some(typename) = string_obj_to_owned(obj_from_bits(typename_bits)) else {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "typename must be a string",
-            );
+            return raise_exception::<_>(_py, "TypeError", "typename must be a string");
         };
         if !is_valid_identifier(&typename) || is_python_keyword(&typename) {
-            let msg = format!(
-                "Type names and field names must be valid identifiers: {typename:?}"
-            );
+            let msg = format!("Type names and field names must be valid identifiers: {typename:?}");
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
 
@@ -2731,11 +2755,7 @@ pub extern "C" fn molt_namedtuple_validate_fields(
 
         for (idx, &elem_bits) in elems.iter().enumerate() {
             let Some(name) = string_obj_to_owned(obj_from_bits(elem_bits)) else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "field names must be strings",
-                );
+                return raise_exception::<_>(_py, "TypeError", "field names must be strings");
             };
 
             let invalid = !is_valid_identifier(&name)
@@ -2752,14 +2772,11 @@ pub extern "C" fn molt_namedtuple_validate_fields(
                         return raise_exception::<_>(_py, "ValueError", &msg);
                     }
                     if name.starts_with('_') {
-                        let msg = format!(
-                            "Field names cannot start with an underscore: {name:?}"
-                        );
+                        let msg = format!("Field names cannot start with an underscore: {name:?}");
                         return raise_exception::<_>(_py, "ValueError", &msg);
                     }
-                    let msg = format!(
-                        "Type names and field names must be valid identifiers: {name:?}"
-                    );
+                    let msg =
+                        format!("Type names and field names must be valid identifiers: {name:?}");
                     return raise_exception::<_>(_py, "ValueError", &msg);
                 }
             } else {

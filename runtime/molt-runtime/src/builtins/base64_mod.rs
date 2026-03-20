@@ -226,7 +226,10 @@ fn b64_decode(input: &[u8], alphabet: &[u8; 64], validate: bool) -> Result<Vec<u
                         let is_plus = vceqq_u8(v, plus);
                         let is_slash = vceqq_u8(v, slash);
                         let is_eq = vceqq_u8(v, eq);
-                        let valid = vorrq_u8(vorrq_u8(vorrq_u8(is_upper, is_lower), vorrq_u8(is_digit, is_plus)), vorrq_u8(is_slash, is_eq));
+                        let valid = vorrq_u8(
+                            vorrq_u8(vorrq_u8(is_upper, is_lower), vorrq_u8(is_digit, is_plus)),
+                            vorrq_u8(is_slash, is_eq),
+                        );
 
                         // Check if all bytes are valid (fast path: copy entire chunk)
                         if vminvq_u8(valid) == 0xFF {
@@ -302,7 +305,10 @@ fn b64_decode(input: &[u8], alphabet: &[u8; 64], validate: bool) -> Result<Vec<u
                         let is_plus = u8x16_eq(v, plus);
                         let is_slash = u8x16_eq(v, slash);
                         let is_eq = u8x16_eq(v, eq);
-                        let valid = v128_or(v128_or(v128_or(is_upper, is_lower), v128_or(is_digit, is_plus)), v128_or(is_slash, is_eq));
+                        let valid = v128_or(
+                            v128_or(v128_or(is_upper, is_lower), v128_or(is_digit, is_plus)),
+                            v128_or(is_slash, is_eq),
+                        );
                         let mask = u8x16_bitmask(valid);
                         if mask == 0xFFFF {
                             let len = filtered_out.len();
@@ -564,9 +570,8 @@ fn b16_encode(input: &[u8]) -> Vec<u8> {
                 use std::arch::x86_64::*;
                 let mask_lo = _mm_set1_epi8(0x0F);
                 let hex_lut = _mm_setr_epi8(
-                    b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8,
-                    b'4' as i8, b'5' as i8, b'6' as i8, b'7' as i8,
-                    b'8' as i8, b'9' as i8, b'A' as i8, b'B' as i8,
+                    b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8, b'4' as i8, b'5' as i8,
+                    b'6' as i8, b'7' as i8, b'8' as i8, b'9' as i8, b'A' as i8, b'B' as i8,
                     b'C' as i8, b'D' as i8, b'E' as i8, b'F' as i8,
                 );
                 while i + 16 <= input.len() {
@@ -580,7 +585,10 @@ fn b16_encode(input: &[u8]) -> Vec<u8> {
                     let len = out.len();
                     out.set_len(len + 32);
                     _mm_storeu_si128(out.as_mut_ptr().add(len) as *mut __m128i, interleaved_lo);
-                    _mm_storeu_si128(out.as_mut_ptr().add(len + 16) as *mut __m128i, interleaved_hi);
+                    _mm_storeu_si128(
+                        out.as_mut_ptr().add(len + 16) as *mut __m128i,
+                        interleaved_hi,
+                    );
                     i += 16;
                 }
             }
@@ -593,9 +601,8 @@ fn b16_encode(input: &[u8]) -> Vec<u8> {
             unsafe {
                 use std::arch::wasm32::*;
                 let hex_lut = i8x16(
-                    b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8,
-                    b'4' as i8, b'5' as i8, b'6' as i8, b'7' as i8,
-                    b'8' as i8, b'9' as i8, b'A' as i8, b'B' as i8,
+                    b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8, b'4' as i8, b'5' as i8,
+                    b'6' as i8, b'7' as i8, b'8' as i8, b'9' as i8, b'A' as i8, b'B' as i8,
                     b'C' as i8, b'D' as i8, b'E' as i8, b'F' as i8,
                 );
                 let mask_lo = u8x16_splat(0x0F);
@@ -605,8 +612,28 @@ fn b16_encode(input: &[u8]) -> Vec<u8> {
                     let lo_nibbles = v128_and(chunk, mask_lo);
                     let hi_hex = i8x16_swizzle(hex_lut, hi_nibbles);
                     let lo_hex = i8x16_swizzle(hex_lut, lo_nibbles);
-                    let interleaved_lo = i8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(hi_hex, lo_hex);
-                    let interleaved_hi = i8x16_shuffle::<8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31>(hi_hex, lo_hex);
+                    let interleaved_lo =
+                        i8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(
+                            hi_hex, lo_hex,
+                        );
+                    let interleaved_hi = i8x16_shuffle::<
+                        8,
+                        24,
+                        9,
+                        25,
+                        10,
+                        26,
+                        11,
+                        27,
+                        12,
+                        28,
+                        13,
+                        29,
+                        14,
+                        30,
+                        15,
+                        31,
+                    >(hi_hex, lo_hex);
                     let len = out.len();
                     out.set_len(len + 32);
                     v128_store(out.as_mut_ptr().add(len) as *mut v128, interleaved_lo);

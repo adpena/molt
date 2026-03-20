@@ -224,8 +224,7 @@ impl MersenneTwisterRng {
 
     fn twist(&mut self) {
         for i in 0..MT_N {
-            let y = (self.mt[i] & MT_UPPER_MASK)
-                | (self.mt[(i + 1) % MT_N] & MT_LOWER_MASK);
+            let y = (self.mt[i] & MT_UPPER_MASK) | (self.mt[(i + 1) % MT_N] & MT_LOWER_MASK);
             let mut value = self.mt[(i + MT_M) % MT_N] ^ (y >> 1);
             if y & 1 != 0 {
                 value ^= MT_MATRIX_A;
@@ -349,11 +348,7 @@ fn f64_from_bits(_py: &PyToken<'_>, bits: u64, param_name: &str) -> Option<f64> 
         let big = unsafe { bigint_ref(ptr) };
         return Some(big.to_f64().unwrap_or(f64::INFINITY));
     }
-    let _ = raise_exception::<u64>(
-        _py,
-        "TypeError",
-        &format!("{param_name} must be a number"),
-    );
+    let _ = raise_exception::<u64>(_py, "TypeError", &format!("{param_name} must be a number"));
     None
 }
 
@@ -589,11 +584,7 @@ pub extern "C" fn molt_random_getrandbits(handle_bits: u64, k_bits: u64) -> u64 
             );
         }
         if k_i64 > 65_536 {
-            return raise_exception::<u64>(
-                _py,
-                "ValueError",
-                "number of bits must be <= 65536",
-            );
+            return raise_exception::<u64>(_py, "ValueError", "number of bits must be <= 65536");
         }
         let k = k_i64 as u32;
         if k == 0 {
@@ -723,11 +714,7 @@ pub extern "C" fn molt_random_setstate(handle_bits: u64, state_bits: u64) -> u64
 
         let outer_elems = unsafe { seq_vec_ref(state_ptr) };
         if outer_elems.len() < 3 {
-            return raise_exception::<u64>(
-                _py,
-                "ValueError",
-                "state tuple must have 3 elements",
-            );
+            return raise_exception::<u64>(_py, "ValueError", "state tuple must have 3 elements");
         }
 
         // element 1: internalstate tuple (625 elements)
@@ -971,7 +958,11 @@ pub extern "C" fn molt_random_expovariate(handle_bits: u64, lambd_bits: u64) -> 
 
 /// Normal variate using Kinderman-Monahan (CPython random.normalvariate).
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_random_normalvariate(handle_bits: u64, mu_bits: u64, sigma_bits: u64) -> u64 {
+pub extern "C" fn molt_random_normalvariate(
+    handle_bits: u64,
+    mu_bits: u64,
+    sigma_bits: u64,
+) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
@@ -1399,11 +1390,7 @@ pub extern "C" fn molt_random_sample(handle_bits: u64, population_bits: u64, k_b
         }
         let k = k_i64 as usize;
         if k > n {
-            return raise_exception::<u64>(
-                _py,
-                "ValueError",
-                "sample k larger than population",
-            );
+            return raise_exception::<u64>(_py, "ValueError", "sample k larger than population");
         }
 
         let mut reg = RANDOM_REGISTRY.lock().unwrap();
@@ -1468,11 +1455,7 @@ fn rng_lgamma(x: f64) -> f64 {
 /// Mirrors CPython random.Random.binomialvariate exactly.
 /// Parameters: handle, n (int), p (float).
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_random_binomialvariate(
-    handle_bits: u64,
-    n_bits: u64,
-    p_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_random_binomialvariate(handle_bits: u64, n_bits: u64, p_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "Random handle must be an int");
@@ -1494,7 +1477,11 @@ pub extern "C" fn molt_random_binomialvariate(
             if p == 1.0 {
                 return MoltObject::from_int(n).bits();
             }
-            return raise_exception::<u64>(_py, "ValueError", "p must be in the range 0.0 <= p <= 1.0");
+            return raise_exception::<u64>(
+                _py,
+                "ValueError",
+                "p must be in the range 0.0 <= p <= 1.0",
+            );
         }
 
         let mut reg = RANDOM_REGISTRY.lock().unwrap();
@@ -1570,8 +1557,7 @@ fn binomialvariate_impl(rng: &mut MersenneTwisterRng, n: i64, p: f64) -> i64 {
         }
         let kf = k as f64;
         let v2 = v * alpha / (a / (us * us) + b);
-        if rng_log(v2) <= h - rng_lgamma(kf + 1.0) - rng_lgamma(nf - kf + 1.0) + (kf - m) * lpq
-        {
+        if rng_log(v2) <= h - rng_lgamma(kf + 1.0) - rng_lgamma(nf - kf + 1.0) + (kf - m) * lpq {
             return k;
         }
     }
@@ -1595,7 +1581,11 @@ pub extern "C" fn molt_random_randrange(
         };
         // stop = None is encoded as MoltObject::none()
         let stop_obj = obj_from_bits(stop_bits);
-        let istop_opt = if stop_obj.is_none() { None } else { to_i64(stop_obj) };
+        let istop_opt = if stop_obj.is_none() {
+            None
+        } else {
+            to_i64(stop_obj)
+        };
         let Some(istep) = to_i64(obj_from_bits(step_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "integer argument expected");
         };
@@ -1607,7 +1597,11 @@ pub extern "C" fn molt_random_randrange(
 
         if istop_opt.is_none() {
             if istep != 1 {
-                return raise_exception::<u64>(_py, "TypeError", "Missing a non-None stop argument");
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "Missing a non-None stop argument",
+                );
             }
             if istart <= 0 {
                 return raise_exception::<u64>(_py, "ValueError", "empty range for randrange()");

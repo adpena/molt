@@ -740,7 +740,11 @@ pub extern "C" fn molt_os_getppid() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getppid() -> u64 {
     crate::with_gil_entry!(_py, {
-        raise_exception::<u64>(_py, "OSError", "[Errno 38] Function not implemented: 'getppid'")
+        raise_exception::<u64>(
+            _py,
+            "OSError",
+            "[Errno 38] Function not implemented: 'getppid'",
+        )
     })
 }
 
@@ -2113,10 +2117,7 @@ pub extern "C" fn molt_os_fspath(path_bits: u64) -> u64 {
             }
             Err(_msg) => {
                 let tn = type_name(_py, obj);
-                let msg = format!(
-                    "expected str, bytes or os.PathLike object, not {}",
-                    tn
-                );
+                let msg = format!("expected str, bytes or os.PathLike object, not {}", tn);
                 raise_exception::<u64>(_py, "TypeError", &msg)
             }
         }

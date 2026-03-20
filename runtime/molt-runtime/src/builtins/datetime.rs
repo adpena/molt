@@ -1215,10 +1215,9 @@ pub extern "C" fn molt_datetime_format_isodatetime(
             Err(e) => return e,
         };
 
-        let sep =
-            string_obj_to_owned(obj_from_bits(sep_bits)).unwrap_or_else(|| "T".to_string());
-        let timespec = string_obj_to_owned(obj_from_bits(timespec_bits))
-            .unwrap_or_else(|| "auto".to_string());
+        let sep = string_obj_to_owned(obj_from_bits(sep_bits)).unwrap_or_else(|| "T".to_string());
+        let timespec =
+            string_obj_to_owned(obj_from_bits(timespec_bits)).unwrap_or_else(|| "auto".to_string());
         let tz_str =
             string_obj_to_owned(obj_from_bits(tz_str_bits)).unwrap_or_else(|| "".to_string());
         let utcoff = match parse_iso_offset_str(&tz_str) {
@@ -1265,8 +1264,7 @@ fn parse_iso_offset_str(value: &str) -> Result<Option<i64>, String> {
     } else {
         0
     };
-    if !(0..=23).contains(&hours) || !(0..=59).contains(&minutes) || !(0..=59).contains(&seconds)
-    {
+    if !(0..=23).contains(&hours) || !(0..=59).contains(&minutes) || !(0..=59).contains(&seconds) {
         return Err(format!("Invalid UTC offset: {:?}", value));
     }
     Ok(Some(sign * (hours * 3600 + minutes * 60 + seconds)))
@@ -2316,9 +2314,7 @@ pub extern "C" fn molt_datetime_validate_date(y_bits: u64, m_bits: u64, d_bits: 
         }
         let max_day = days_in_month_impl(y as i32, m as i32) as i64;
         if !(1..=max_day).contains(&d) {
-            let msg = format!(
-                "day {d} must be in range 1..{max_day} for month {m} in year {y}"
-            );
+            let msg = format!("day {d} must be in range 1..{max_day} for month {m} in year {y}");
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
         MoltObject::from_bool(true).bits()
@@ -2500,11 +2496,7 @@ pub extern "C" fn molt_date_fromisocalendar(
         }
         let max_week = iso_weeks_in_year(iso_year as i32) as i64;
         if iso_week < 1 || iso_week > max_week {
-            return raise_exception::<u64>(
-                _py,
-                "ValueError",
-                &format!("Invalid week: {iso_week}"),
-            );
+            return raise_exception::<u64>(_py, "ValueError", &format!("Invalid week: {iso_week}"));
         }
         // January 4 is always in ISO week 1
         let jan4_ordinal = ymd_to_ordinal(iso_year as i32, 1, 4);
@@ -2555,8 +2547,7 @@ pub extern "C" fn molt_timedelta_truediv_scalar(
         if divisor == 0.0 {
             return raise_exception::<u64>(_py, "ZeroDivisionError", "division by zero");
         }
-        let total_us =
-            (days as f64) * 86_400_000_000.0 + (secs as f64) * 1_000_000.0 + (us as f64);
+        let total_us = (days as f64) * 86_400_000_000.0 + (secs as f64) * 1_000_000.0 + (us as f64);
         let result_us = (total_us / divisor).round() as i64;
         let (rd, rs, ru) = normalize_timedelta_us(result_us);
         timedelta_tuple(_py, rd, rs, ru)
@@ -2747,15 +2738,31 @@ pub extern "C" fn molt_datetime_format_time(
     timespec_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let h = match unpack_i64(_py, hour_bits, "hour") { Ok(v) => v, Err(e) => return e };
-        let m = match unpack_i64(_py, minute_bits, "minute") { Ok(v) => v, Err(e) => return e };
-        let s = match unpack_i64(_py, second_bits, "second") { Ok(v) => v, Err(e) => return e };
-        let us = match unpack_i64(_py, microsecond_bits, "microsecond") { Ok(v) => v, Err(e) => return e };
+        let h = match unpack_i64(_py, hour_bits, "hour") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let m = match unpack_i64(_py, minute_bits, "minute") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let s = match unpack_i64(_py, second_bits, "second") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let us = match unpack_i64(_py, microsecond_bits, "microsecond") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
         let spec = unpack_str!(_py, timespec_bits, "timespec");
         let base = format!("{:02}:{:02}:{:02}", h, m, s);
         let result = match spec.as_str() {
             "auto" => {
-                if us != 0 { format!("{}.{:06}", base, us) } else { base }
+                if us != 0 {
+                    format!("{}.{:06}", base, us)
+                } else {
+                    base
+                }
             }
             "seconds" => base,
             "milliseconds" => format!("{}.{:03}", base, us / 1000),
@@ -2772,10 +2779,22 @@ pub extern "C" fn molt_datetime_format_time(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_timedelta_repr(days_bits: u64, secs_bits: u64, us_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let days = match unpack_i64(_py, days_bits, "days") { Ok(v) => v, Err(e) => return e };
-        let secs = match unpack_i64(_py, secs_bits, "seconds") { Ok(v) => v, Err(e) => return e };
-        let us = match unpack_i64(_py, us_bits, "microseconds") { Ok(v) => v, Err(e) => return e };
-        let s = format!("timedelta(days={}, seconds={}, microseconds={})", days, secs, us);
+        let days = match unpack_i64(_py, days_bits, "days") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let secs = match unpack_i64(_py, secs_bits, "seconds") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let us = match unpack_i64(_py, us_bits, "microseconds") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let s = format!(
+            "timedelta(days={}, seconds={}, microseconds={})",
+            days, secs, us
+        );
         string_bits(_py, &s)
     })
 }
@@ -2784,9 +2803,18 @@ pub extern "C" fn molt_timedelta_repr(days_bits: u64, secs_bits: u64, us_bits: u
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_timedelta_str(days_bits: u64, secs_bits: u64, us_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let days = match unpack_i64(_py, days_bits, "days") { Ok(v) => v, Err(e) => return e };
-        let secs = match unpack_i64(_py, secs_bits, "seconds") { Ok(v) => v, Err(e) => return e };
-        let us = match unpack_i64(_py, us_bits, "microseconds") { Ok(v) => v, Err(e) => return e };
+        let days = match unpack_i64(_py, days_bits, "days") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let secs = match unpack_i64(_py, secs_bits, "seconds") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let us = match unpack_i64(_py, us_bits, "microseconds") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
         let hours = secs / 3600;
         let rem = secs % 3600;
         let minutes = rem / 60;
@@ -2798,7 +2826,10 @@ pub extern "C" fn molt_timedelta_str(days_bits: u64, secs_bits: u64, us_bits: u6
             String::new()
         };
         let result = if us != 0 {
-            format!("{}{}:{:02}:{:02}.{:06}", prefix, hours, minutes, seconds, us)
+            format!(
+                "{}{}:{:02}:{:02}.{:06}",
+                prefix, hours, minutes, seconds, us
+            )
         } else {
             format!("{}{}:{:02}:{:02}", prefix, hours, minutes, seconds)
         };
@@ -2810,11 +2841,21 @@ pub extern "C" fn molt_timedelta_str(days_bits: u64, secs_bits: u64, us_bits: u6
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_timezone_validate(days_bits: u64, secs_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let days = match unpack_i64(_py, days_bits, "days") { Ok(v) => v, Err(e) => return e };
-        let secs = match unpack_i64(_py, secs_bits, "seconds") { Ok(v) => v, Err(e) => return e };
+        let days = match unpack_i64(_py, days_bits, "days") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let secs = match unpack_i64(_py, secs_bits, "seconds") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
         let total = days * 86400 + secs;
         if !(-86400 < total && total < 86400) {
-            return raise_exception::<u64>(_py, "ValueError", "offset must be strictly between -24h and +24h");
+            return raise_exception::<u64>(
+                _py,
+                "ValueError",
+                "offset must be strictly between -24h and +24h",
+            );
         }
         MoltObject::from_int(total).bits()
     })
@@ -2824,8 +2865,14 @@ pub extern "C" fn molt_timezone_validate(days_bits: u64, secs_bits: u64) -> u64 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_timezone_tzname(days_bits: u64, secs_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let days = match unpack_i64(_py, days_bits, "days") { Ok(v) => v, Err(e) => return e };
-        let secs = match unpack_i64(_py, secs_bits, "seconds") { Ok(v) => v, Err(e) => return e };
+        let days = match unpack_i64(_py, days_bits, "days") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let secs = match unpack_i64(_py, secs_bits, "seconds") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
         let total = days * 86400 + secs;
         if total == 0 {
             return string_bits(_py, "UTC");
@@ -2843,9 +2890,18 @@ pub extern "C" fn molt_timezone_tzname(days_bits: u64, secs_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_date_repr(y_bits: u64, m_bits: u64, d_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let y = match unpack_i64(_py, y_bits, "year") { Ok(v) => v, Err(e) => return e };
-        let m = match unpack_i64(_py, m_bits, "month") { Ok(v) => v, Err(e) => return e };
-        let d = match unpack_i64(_py, d_bits, "day") { Ok(v) => v, Err(e) => return e };
+        let y = match unpack_i64(_py, y_bits, "year") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let m = match unpack_i64(_py, m_bits, "month") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let d = match unpack_i64(_py, d_bits, "day") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
         let s = format!("datetime.date({}, {}, {})", y, m, d);
         string_bits(_py, &s)
     })
@@ -2860,10 +2916,22 @@ pub extern "C" fn molt_datetime_time_repr(
     us_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let h = match unpack_i64(_py, h_bits, "hour") { Ok(v) => v, Err(e) => return e };
-        let m = match unpack_i64(_py, m_bits, "minute") { Ok(v) => v, Err(e) => return e };
-        let s = match unpack_i64(_py, s_bits, "second") { Ok(v) => v, Err(e) => return e };
-        let us = match unpack_i64(_py, us_bits, "microsecond") { Ok(v) => v, Err(e) => return e };
+        let h = match unpack_i64(_py, h_bits, "hour") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let m = match unpack_i64(_py, m_bits, "minute") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let s = match unpack_i64(_py, s_bits, "second") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let us = match unpack_i64(_py, us_bits, "microsecond") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
         let result = if us != 0 {
             format!("datetime.time({}, {}, {}, {})", h, m, s, us)
         } else if s != 0 {
@@ -2887,17 +2955,44 @@ pub extern "C" fn molt_datetime_datetime_repr(
     us_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let y = match unpack_i64(_py, y_bits, "year") { Ok(v) => v, Err(e) => return e };
-        let mo = match unpack_i64(_py, mo_bits, "month") { Ok(v) => v, Err(e) => return e };
-        let d = match unpack_i64(_py, d_bits, "day") { Ok(v) => v, Err(e) => return e };
-        let h = match unpack_i64(_py, h_bits, "hour") { Ok(v) => v, Err(e) => return e };
-        let mi = match unpack_i64(_py, mi_bits, "minute") { Ok(v) => v, Err(e) => return e };
-        let s = match unpack_i64(_py, s_bits, "second") { Ok(v) => v, Err(e) => return e };
-        let us = match unpack_i64(_py, us_bits, "microsecond") { Ok(v) => v, Err(e) => return e };
+        let y = match unpack_i64(_py, y_bits, "year") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let mo = match unpack_i64(_py, mo_bits, "month") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let d = match unpack_i64(_py, d_bits, "day") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let h = match unpack_i64(_py, h_bits, "hour") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let mi = match unpack_i64(_py, mi_bits, "minute") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let s = match unpack_i64(_py, s_bits, "second") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let us = match unpack_i64(_py, us_bits, "microsecond") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
         let result = if us != 0 {
-            format!("datetime.datetime({}, {}, {}, {}, {}, {}, {})", y, mo, d, h, mi, s, us)
+            format!(
+                "datetime.datetime({}, {}, {}, {}, {}, {}, {})",
+                y, mo, d, h, mi, s, us
+            )
         } else if s != 0 {
-            format!("datetime.datetime({}, {}, {}, {}, {}, {})", y, mo, d, h, mi, s)
+            format!(
+                "datetime.datetime({}, {}, {}, {}, {}, {})",
+                y, mo, d, h, mi, s
+            )
         } else if mi != 0 {
             format!("datetime.datetime({}, {}, {}, {}, {})", y, mo, d, h, mi)
         } else if h != 0 {
@@ -2923,15 +3018,42 @@ pub extern "C" fn molt_datetime_timetuple(
     dst_flag_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let y = match unpack_i64(_py, y_bits, "year") { Ok(v) => v, Err(e) => return e };
-        let mo = match unpack_i64(_py, mo_bits, "month") { Ok(v) => v, Err(e) => return e };
-        let d = match unpack_i64(_py, d_bits, "day") { Ok(v) => v, Err(e) => return e };
-        let h = match unpack_i64(_py, h_bits, "hour") { Ok(v) => v, Err(e) => return e };
-        let mi = match unpack_i64(_py, mi_bits, "minute") { Ok(v) => v, Err(e) => return e };
-        let s = match unpack_i64(_py, s_bits, "second") { Ok(v) => v, Err(e) => return e };
-        let wd = match unpack_i64(_py, weekday_bits, "weekday") { Ok(v) => v, Err(e) => return e };
-        let yday = match unpack_i64(_py, yday_bits, "yday") { Ok(v) => v, Err(e) => return e };
-        let dst = match unpack_i64(_py, dst_flag_bits, "dst") { Ok(v) => v, Err(e) => return e };
+        let y = match unpack_i64(_py, y_bits, "year") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let mo = match unpack_i64(_py, mo_bits, "month") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let d = match unpack_i64(_py, d_bits, "day") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let h = match unpack_i64(_py, h_bits, "hour") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let mi = match unpack_i64(_py, mi_bits, "minute") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let s = match unpack_i64(_py, s_bits, "second") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let wd = match unpack_i64(_py, weekday_bits, "weekday") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let yday = match unpack_i64(_py, yday_bits, "yday") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let dst = match unpack_i64(_py, dst_flag_bits, "dst") {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
         let elems = [
             MoltObject::from_int(y).bits(),
             MoltObject::from_int(mo).bits(),
