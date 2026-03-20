@@ -1814,26 +1814,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             yield
         finally:
             self.try_suppress_depth = prior
-            if not emit_on_exit:
-                return
-            if (
-                self.try_suppress_depth is not None
-                and len(self.try_end_labels) <= self.try_suppress_depth
-            ):
-                return
-            if self.try_end_labels:
-                handler_label = self.try_end_labels[-1]
-            else:
-                handler_label = self.function_exception_label
-            if handler_label is None:
-                return
-            self.emit(
-                MoltOp(
-                    kind="CHECK_EXCEPTION",
-                    args=[handler_label],
-                    result=MoltValue("none"),
-                )
-            )
+            if emit_on_exit:
+                if (
+                    self.try_suppress_depth is None
+                    or len(self.try_end_labels) > self.try_suppress_depth
+                ):
+                    if self.try_end_labels:
+                        handler_label = self.try_end_labels[-1]
+                    else:
+                        handler_label = self.function_exception_label
+                    if handler_label is not None:
+                        self.emit(
+                            MoltOp(
+                                kind="CHECK_EXCEPTION",
+                                args=[handler_label],
+                                result=MoltValue("none"),
+                            )
+                        )
 
     def emit(self, op: MoltOp) -> None:
         if (
@@ -2912,6 +2909,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "current_class": self.current_class,
             "current_method_first_param": self.current_method_first_param,
             "locals": self.locals,
+            "locals_cache_val": self.locals_cache_val,
             "boxed_locals": self.boxed_locals,
             "closure_locals": self.closure_locals,
             "boxed_local_hints": self.boxed_local_hints,
@@ -2966,6 +2964,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.current_class = state["current_class"]
         self.current_method_first_param = state["current_method_first_param"]
         self.locals = state["locals"]
+        self.locals_cache_val = state["locals_cache_val"]
         self.boxed_locals = state["boxed_locals"]
         self.closure_locals = state["closure_locals"]
         self.boxed_local_hints = state["boxed_local_hints"]

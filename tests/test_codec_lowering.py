@@ -367,6 +367,29 @@ series.append(1)
     assert "dict_setdefault_empty_list" in kinds
 
 
+def test_nested_function_locals_cache_does_not_leak_into_outer_function():
+    src = """
+def outer():
+    def inner():
+        return locals()
+    x = 1
+    return x
+"""
+    ir = compile_to_tir(src)
+
+    for fn in ir["functions"]:
+        defined: set[str] = set()
+        for op in fn["ops"]:
+            out = op.get("out")
+            if isinstance(out, str):
+                defined.add(out)
+            for arg in op.get("args", []):
+                if isinstance(arg, str) and arg.startswith("v"):
+                    assert arg in defined, (
+                        f"{fn['name']} references undefined temp {arg} in {op}"
+                    )
+
+
 def test_abs_builtin_lowering():
     src = """
 x = abs(-7)
