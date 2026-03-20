@@ -12,6 +12,7 @@ use std::sync::OnceLock;
 
 pub mod luau;
 pub mod rust;
+#[cfg(feature = "wasm-backend")]
 pub mod wasm;
 
 #[cfg(feature = "egraphs")]
