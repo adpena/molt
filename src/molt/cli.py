@@ -6396,6 +6396,7 @@ def _runtime_fingerprint(
 ) -> dict[str, str | None] | None:
     feature_list = tuple(_dedupe_preserve_order(sorted(runtime_features)))
     meta = f"profile:{cargo_profile}\ntarget:{target_triple or 'native'}\n"
+    meta += "build-schema:wasm-runtime-rustflags-v2\n"
     meta += f"rustflags:{rustflags}\n"
     meta += f"features:{','.join(feature_list)}\n"
     source_paths = _runtime_source_paths(project_root)
@@ -12925,6 +12926,7 @@ def _prepare_backend_runtime_context(
             cargo_timeout=cargo_timeout,
             project_root=molt_root,
             simd_enabled=not is_wasm_freestanding,
+            freestanding=is_wasm_freestanding,
         )
 
     def ensure_runtime_wasm_reloc() -> bool:
@@ -12936,6 +12938,7 @@ def _prepare_backend_runtime_context(
             cargo_timeout=cargo_timeout,
             project_root=molt_root,
             simd_enabled=not is_wasm_freestanding,
+            freestanding=is_wasm_freestanding,
         )
 
     return _PreparedBackendRuntimeContext(
@@ -14857,6 +14860,7 @@ def _ensure_runtime_wasm_artifact(
     cargo_timeout: float | None,
     project_root: Path,
     simd_enabled: bool,
+    freestanding: bool,
 ) -> bool:
     runtime_path = (
         runtime_state.runtime_reloc_wasm if reloc else runtime_state.runtime_wasm
@@ -14874,6 +14878,7 @@ def _ensure_runtime_wasm_artifact(
         cargo_timeout=cargo_timeout,
         project_root=project_root,
         simd_enabled=simd_enabled,
+        freestanding=freestanding,
     ):
         return False
     if reloc:
@@ -16483,6 +16488,7 @@ def _ensure_runtime_wasm(
     cargo_timeout: float | None,
     project_root: Path | None = None,
     simd_enabled: bool = True,
+    freestanding: bool = False,
 ) -> bool:
     root = project_root or Path(__file__).resolve().parents[2]
     requested_cargo_profile = cargo_profile
@@ -16515,6 +16521,10 @@ def _ensure_runtime_wasm(
     # rewriter currently cannot remap SIMD-prefixed instruction streams.
     if simd_enabled and "-C target-feature" not in rustflags:
         rustflags = f"{rustflags} -C target-feature=+simd128".strip()
+    if freestanding and 'getrandom_backend="' not in rustflags:
+        rustflags = f'{rustflags} --cfg getrandom_backend="unsupported"'.strip()
+    cargo_runtime_features = ("wasm_freestanding",) if freestanding else ()
+    runtime_features = cargo_runtime_features
     fingerprint_path = _runtime_fingerprint_path(
         root, runtime_wasm, cargo_profile, "wasm32-wasip1"
     )
@@ -16524,7 +16534,7 @@ def _ensure_runtime_wasm(
         cargo_profile=cargo_profile,
         target_triple="wasm32-wasip1",
         rustflags=rustflags,
-        runtime_features=(),
+        runtime_features=runtime_features,
         stored_fingerprint=stored_fingerprint,
     )
     lock_suffix = "reloc" if reloc else "shared"
@@ -16544,8 +16554,8 @@ def _ensure_runtime_wasm(
             )
         if not json_output:
             print("Runtime sources changed; rebuilding runtime...")
-        if flags:
-            _append_rustflags(env, flags)
+        if rustflags:
+            env["RUSTFLAGS"] = rustflags
         if os.environ.get("MOLT_WASM_FORCE_CC") == "1":
             _configure_wasm_cc_env(env)
         # Enable incremental compilation for dev-fast WASM builds; disable for
@@ -16571,6 +16581,8 @@ def _ensure_runtime_wasm(
             "--target",
             "wasm32-wasip1",
         ]
+        if cargo_runtime_features:
+            cmd.extend(["--features", ",".join(cargo_runtime_features)])
         try:
             build, src = _run_runtime_wasm_cargo_build(
                 cmd=cmd,
