@@ -3,9 +3,10 @@
 
 use crate::vfs::{VfsBackend, VfsError, VfsStat};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 pub struct BundleFs {
-    files: BTreeMap<String, Vec<u8>>,
+    files: BTreeMap<String, Arc<Vec<u8>>>,
     dirs: BTreeSet<String>,
 }
 
@@ -28,7 +29,7 @@ impl BundleFs {
                 }
                 parent.push_str(component);
             }
-            files.insert(path, content);
+            files.insert(path, Arc::new(content));
         }
         dirs.insert(String::new()); // root dir
         Self { files, dirs }
@@ -77,7 +78,20 @@ impl VfsBackend for BundleFs {
         if self.dirs.contains(path) {
             return Err(VfsError::IsDirectory);
         }
-        self.files.get(path).cloned().ok_or(VfsError::NotFound)
+        self.files
+            .get(path)
+            .map(|arc| (**arc).clone())
+            .ok_or(VfsError::NotFound)
+    }
+
+    fn open_read_shared(&self, path: &str) -> Result<Arc<Vec<u8>>, VfsError> {
+        if self.dirs.contains(path) {
+            return Err(VfsError::IsDirectory);
+        }
+        self.files
+            .get(path)
+            .map(Arc::clone)
+            .ok_or(VfsError::NotFound)
     }
 
     fn open_write(&self, _path: &str, _data: &[u8]) -> Result<(), VfsError> {
