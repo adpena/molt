@@ -1044,6 +1044,15 @@ fn emit_sparse_state_remap_lookup(
     emit_node(func, state_local, sorted_entries);
 }
 
+/// WASM profile for import stripping (see docs/plans/wasm-import-stripping.md §3A).
+/// `Full` registers all host imports; `Pure` omits IO, ASYNC, and TIME categories
+/// so the resulting module only depends on core runtime + arithmetic + collections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WasmProfile {
+    Full,
+    Pure,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct WasmCompileOptions {
     pub reloc_enabled: bool,
@@ -1052,6 +1061,9 @@ pub struct WasmCompileOptions {
     /// Enable native WASM exception handling (WASM 3.0 EH proposal).
     /// Gated by `MOLT_WASM_NATIVE_EH=1` environment variable.
     pub native_eh_enabled: bool,
+    /// WASM profile for compile-time import stripping.
+    /// Gated by `MOLT_WASM_PROFILE` environment variable ("full" or "pure").
+    pub wasm_profile: WasmProfile,
 }
 
 impl Default for WasmCompileOptions {
@@ -1074,6 +1086,10 @@ impl Default for WasmCompileOptions {
                 std::env::var("MOLT_WASM_NATIVE_EH").as_deref(),
                 Ok("1")
             ),
+            wasm_profile: match std::env::var("MOLT_WASM_PROFILE").as_deref() {
+                Ok("pure") => WasmProfile::Pure,
+                _ => WasmProfile::Full,
+            },
         }
     }
 }
@@ -1100,6 +1116,9 @@ pub struct WasmBackend {
     data_segment_cache: BTreeMap<Vec<u8>, DataSegmentRef>,
     molt_main_index: Option<u32>,
     options: WasmCompileOptions,
+    /// Import indices that were registered but stripped in `pure` profile mode.
+    /// Calls to these indices emit `unreachable` instead of `call`.
+    skipped_import_indices: HashSet<u32>,
     /// Number of tail calls emitted via `return_call` (WASM tail calls proposal).
     tail_calls_emitted: usize,
 }
@@ -1134,6 +1153,7 @@ impl WasmBackend {
             data_segment_cache: BTreeMap::new(),
             molt_main_index: None,
             options,
+            skipped_import_indices: HashSet::new(),
             tail_calls_emitted: 0,
         }
     }
@@ -1459,21 +1479,11 @@ impl WasmBackend {
             default_trampoline_spec.insert(func_ir.name.clone(), spec);
         }
 
-        // --- Critical fix: exclude multi-return candidates that have trampolines ---
-        // Trampolines use a single-return ABI `(i64, i64, i64) -> i64`. If the
-        // target function is compiled with a multi-value return signature, the
-        // `call` inside the trampoline pushes N values but the trampoline type
-        // expects exactly 1 return value, causing a WASM validation error.
-        // Since ALL user-defined functions get trampolines (via
-        // default_trampoline_spec), we must exclude any function that appears
-        // in either trampoline spec map from the multi-return optimization.
-        let multi_return_candidates: HashMap<String, usize> = multi_return_candidates
-            .into_iter()
-            .filter(|(name, _)| {
-                !func_trampoline_spec.contains_key(name)
-                    && !default_trampoline_spec.contains_key(name)
-            })
-            .collect();
+        // Trampolines now handle multi-value return callees by reconstructing
+        // a tuple from the N return values (see compile_trampoline), so we no
+        // longer need to exclude trampolined functions from the optimization.
+        let multi_return_candidates: HashMap<String, usize> =
+            multi_return_candidates.into_iter().collect();
 
         // Type 0: () -> i64 (User functions)
         self.types
@@ -1660,11 +1670,54 @@ impl WasmBackend {
             std::iter::repeat_n(ValType::I64, 2),
         );
 
+        // Build the set of import name prefixes to skip in "pure" profile mode.
+        // IO: process_*, socket_*, os_*, db_*, ws_*, file_*
+        // ASYNC: async_sleep, future_*, promise_*, thread_*, lock_*, rlock_*, chan_*,
+        //        asyncio_*, asyncgen_*, anext_*, io_wait*, spawn, block_on,
+        //        cancel_token_*, cancelled, cancel_current, sleep_register,
+        //        contextlib_async*
+        // TIME: clock_*, time_*, timezone_*
+        let is_pure = self.options.wasm_profile == WasmProfile::Pure;
+        let skipped_import_prefixes: &[&str] = if is_pure {
+            &[
+                // IO
+                "process_", "socket_", "socket", "os_", "db_", "ws_",
+                "file_", "stream_", "path_",
+                // ASYNC
+                "async_sleep", "future_", "promise_", "thread_",
+                "lock_", "rlock_", "chan_",
+                "asyncio_", "asyncgen_", "anext_",
+                "io_wait", "spawn", "block_on",
+                "cancel_token_", "cancelled", "cancel_current",
+                "sleep_register",
+                "contextlib_async",
+                // TIME
+                "time_",
+            ]
+        } else {
+            &[]
+        };
+        let is_skipped_import = |name: &str| -> bool {
+            if !is_pure {
+                return false;
+            }
+            for prefix in skipped_import_prefixes {
+                if name.starts_with(prefix) {
+                    return true;
+                }
+            }
+            false
+        };
+
         let mut import_idx = 0;
+        let mut skipped_indices: HashSet<u32> = HashSet::new();
         let mut add_import = |name: &str, ty: u32, ids: &mut TrackedImportIds| {
             self.imports
                 .import("molt_runtime", name, EntityType::Function(ty));
             ids.insert(name.to_string(), import_idx);
+            if is_skipped_import(name) {
+                skipped_indices.insert(import_idx);
+            }
             import_idx += 1;
         };
         let simple_i64_import_type = |arity: usize| -> u32 {
@@ -3861,6 +3914,7 @@ impl WasmBackend {
                     kind: TrampolineKind::Plain,
                     closure_size: 0,
                 },
+                None,
             );
         }
         if self.func_count != user_trampoline_start {
@@ -3901,6 +3955,14 @@ impl WasmBackend {
                     .get(&func_ir.name)
                     .unwrap_or_else(|| panic!("task closure size missing for {}", func_ir.name))
             };
+            let mr_count = if kind == TrampolineKind::Plain {
+                multi_return_candidates
+                    .get(&func_ir.name)
+                    .copied()
+                    .filter(|&c| c > 1)
+            } else {
+                None
+            };
             self.compile_trampoline(
                 reloc_enabled,
                 target_idx,
@@ -3911,6 +3973,7 @@ impl WasmBackend {
                     kind,
                     closure_size,
                 },
+                mr_count,
             );
         }
 
@@ -4077,6 +4140,7 @@ impl WasmBackend {
         target_func_index: u32,
         table_idx: u32,
         spec: TrampolineSpec,
+        multi_return_count: Option<usize>,
     ) {
         let TrampolineSpec {
             arity,
@@ -4095,6 +4159,19 @@ impl WasmBackend {
             local_types.push(ValType::I32);
             local_types.push(ValType::I64);
             local_types.push(ValType::I32);
+        }
+        // For multi-value return trampolines (Plain kind only): allocate
+        // N temp locals for the return values + 1 local for the tuple builder.
+        // Params occupy locals 0..=2, so extra locals start at index 3.
+        let mr_locals_start: u32 = 3 + local_types.len() as u32;
+        if let (Some(ret_count), TrampolineKind::Plain) = (multi_return_count, &kind) {
+            // N temp locals for storing each return value
+            for _ in 0..ret_count {
+                local_types.push(ValType::I64);
+            }
+            // 1 local for the tuple builder handle
+            local_types.push(ValType::I64);
+            let _ = ret_count; // suppress unused warning
         }
         let mut func = Function::new_with_locals_types(local_types);
         if matches!(
@@ -4344,6 +4421,36 @@ impl WasmBackend {
             }));
         }
         emit_call(&mut func, reloc_enabled, target_func_index);
+        if let Some(ret_count) = multi_return_count {
+            // The target function pushed `ret_count` i64 values onto the
+            // stack.  Pop them into temp locals (last return value is on
+            // top, so store in reverse order) then reconstruct a tuple.
+            let builder_local = mr_locals_start + ret_count as u32;
+            for i in (0..ret_count).rev() {
+                func.instruction(&Instruction::LocalSet(mr_locals_start + i as u32));
+            }
+            // list_builder_new(count) -> builder handle
+            func.instruction(&Instruction::I64Const(box_int(ret_count as i64)));
+            emit_call(&mut func, reloc_enabled, self.import_ids["list_builder_new"]);
+            func.instruction(&Instruction::LocalSet(builder_local));
+            // list_builder_append(builder, value) for each value in order
+            for i in 0..ret_count {
+                func.instruction(&Instruction::LocalGet(builder_local));
+                func.instruction(&Instruction::LocalGet(mr_locals_start + i as u32));
+                emit_call(
+                    &mut func,
+                    reloc_enabled,
+                    self.import_ids["list_builder_append"],
+                );
+            }
+            // tuple_builder_finish(builder) -> tuple handle (single i64)
+            func.instruction(&Instruction::LocalGet(builder_local));
+            emit_call(
+                &mut func,
+                reloc_enabled,
+                self.import_ids["tuple_builder_finish"],
+            );
+        }
         func.instruction(&Instruction::End);
         self.codes.function(&func);
     }
