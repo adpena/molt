@@ -6,8 +6,8 @@ use crate::{
     alloc_function_obj, alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
     builtin_classes, call_callable0, call_callable1, class_bases_bits, class_bases_vec,
     class_dict_bits, class_mro_vec, dec_ref_bits, dict_get_in_place, dict_order, exception_pending,
-    int_bits_from_i64, is_truthy, maybe_ptr_from_bits, obj_eq, obj_from_bits, object_type_id,
-    raise_exception, runtime_state, seq_vec_ref, type_of_bits,
+    int_bits_from_i64, is_truthy, issubclass_bits, maybe_ptr_from_bits, obj_eq, obj_from_bits,
+    object_type_id, raise_exception, runtime_state, seq_vec_ref, type_of_bits,
 };
 
 fn get_attr_default(
@@ -1048,6 +1048,79 @@ pub extern "C" fn molt_abc_bootstrap() -> u64 {
 /// Walks the class `__dict__` and `__annotations__` to extract the names of
 /// attributes that constitute the protocol's structural contract.  Returns a
 /// frozen set of attribute name strings.
+/// Collect structural members from a single class's own annotations and dict,
+/// without walking the MRO.  Used as a building block by the full collector.
+fn protocol_collect_own_members(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+    members_bits: u64,
+    ignored: &[&[u8]],
+) -> Result<(), u64> {
+    // Collect names from __annotations__
+    let ann_bits = get_attr_default(
+        _py,
+        cls_bits,
+        b"__annotations__",
+        MoltObject::none().bits(),
+    );
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    if !obj_from_bits(ann_bits).is_none() {
+        let keys_bits = crate::molt_dict_keys(ann_bits);
+        if !exception_pending(_py) && !obj_from_bits(keys_bits).is_none() {
+            for name_bits in iter_values(_py, keys_bits)? {
+                let name_str = crate::string_obj_to_owned(obj_from_bits(name_bits));
+                let skip = match &name_str {
+                    Some(s) => ignored.contains(&s.as_bytes()),
+                    None => false,
+                };
+                if !skip {
+                    set_add(_py, members_bits, name_bits)?;
+                }
+            }
+            dec_ref_bits(_py, keys_bits);
+        }
+    }
+
+    // Collect names from __dict__
+    let cls_ptr = match maybe_ptr_from_bits(cls_bits) {
+        Some(p) => p,
+        None => return Ok(()),
+    };
+    unsafe {
+        if object_type_id(cls_ptr) != TYPE_ID_TYPE {
+            return Ok(());
+        }
+    }
+    let dict_bits = unsafe { class_dict_bits(cls_ptr) };
+    if let Some(dict_ptr) = maybe_ptr_from_bits(dict_bits) {
+        unsafe {
+            if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                let entries = dict_order(dict_ptr);
+                for pair in entries.chunks(2) {
+                    if pair.len() < 2 {
+                        continue;
+                    }
+                    let name_str = crate::string_obj_to_owned(obj_from_bits(pair[0]));
+                    let skip = match &name_str {
+                        Some(s) => {
+                            let b = s.as_bytes();
+                            ignored.contains(&b)
+                                || (b.starts_with(b"_") && !b.starts_with(b"__"))
+                        }
+                        None => false,
+                    };
+                    if !skip {
+                        set_add(_py, members_bits, pair[0])?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn protocol_collect_structural_members(
     _py: &crate::PyToken<'_>,
     proto_bits: u64,
@@ -1076,66 +1149,52 @@ fn protocol_collect_structural_members(
         b"__abstractmethods__",
     ];
 
-    // Collect names from __annotations__
-    let ann_bits = get_attr_default(
-        _py,
-        proto_bits,
-        b"__annotations__",
-        MoltObject::none().bits(),
-    );
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    if !obj_from_bits(ann_bits).is_none() {
-        // Iterate annotation keys
-        let keys_bits = crate::molt_dict_keys(ann_bits);
-        if !exception_pending(_py) && !obj_from_bits(keys_bits).is_none() {
-            for name_bits in iter_values(_py, keys_bits)? {
-                let name_str = crate::string_obj_to_owned(obj_from_bits(name_bits));
-                let skip = match &name_str {
-                    Some(s) => ignored.contains(&s.as_bytes()),
-                    None => false,
-                };
-                if !skip {
-                    set_add(_py, members_bits, name_bits)?;
-                }
-            }
-            dec_ref_bits(_py, keys_bits);
-        }
-    }
+    // Collect own members from the protocol class itself.
+    protocol_collect_own_members(_py, proto_bits, members_bits, ignored)?;
 
-    // Collect names from __dict__
-    let cls_ptr = maybe_ptr_from_bits(proto_bits).ok_or_else(|| MoltObject::none().bits())?;
-    unsafe {
-        if object_type_id(cls_ptr) != TYPE_ID_TYPE {
-            let frozen_bits = crate::frozenset_from_iter_bits(_py, members_bits)
-                .unwrap_or(MoltObject::none().bits());
-            dec_ref_bits(_py, members_bits);
-            return Ok(frozen_bits);
+    // Walk the MRO and merge structural members from parent protocol classes.
+    // This is essential for protocol inheritance: if NamedDrawable inherits from
+    // Named and Drawable, it must include `name` and `draw` in its contract.
+    let mro = class_mro_vec(proto_bits);
+    for base_bits in mro {
+        // Skip the class itself (already collected) and `object`.
+        if base_bits == proto_bits {
+            continue;
         }
-    }
-    let dict_bits = unsafe { class_dict_bits(cls_ptr) };
-    if let Some(dict_ptr) = maybe_ptr_from_bits(dict_bits) {
-        unsafe {
-            if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                let entries = dict_order(dict_ptr);
-                for pair in entries.chunks(2) {
-                    if pair.len() < 2 {
-                        continue;
-                    }
-                    let name_str = crate::string_obj_to_owned(obj_from_bits(pair[0]));
-                    let skip = match &name_str {
-                        Some(s) => {
-                            let b = s.as_bytes();
-                            ignored.contains(&b) || (b.starts_with(b"_") && !b.starts_with(b"__"))
-                        }
-                        None => false,
-                    };
-                    if !skip {
-                        set_add(_py, members_bits, pair[0])?;
-                    }
-                }
+        // Check if this base is a protocol (_is_protocol == True).
+        let is_proto_flag = get_attr_default(
+            _py,
+            base_bits,
+            b"_is_protocol",
+            MoltObject::from_bool(false).bits(),
+        );
+        if exception_pending(_py) {
+            dec_ref_bits(_py, members_bits);
+            return Err(MoltObject::none().bits());
+        }
+        if !is_truthy(_py, obj_from_bits(is_proto_flag)) {
+            continue;
+        }
+        // If the parent protocol already has __protocol_attrs__, merge them
+        // directly (avoids redundant re-collection).
+        let parent_attrs = get_attr_default(
+            _py,
+            base_bits,
+            b"__protocol_attrs__",
+            MoltObject::none().bits(),
+        );
+        if exception_pending(_py) {
+            dec_ref_bits(_py, members_bits);
+            return Err(MoltObject::none().bits());
+        }
+        if !obj_from_bits(parent_attrs).is_none() {
+            for name_bits in iter_values(_py, parent_attrs)? {
+                set_add(_py, members_bits, name_bits)?;
             }
+        } else {
+            // Parent protocol hasn't been initialized yet; collect its own
+            // members inline.
+            protocol_collect_own_members(_py, base_bits, members_bits, ignored)?;
         }
     }
 
@@ -1163,17 +1222,41 @@ pub extern "C" fn molt_protocol_get_structural_members(proto_bits: u64) -> u64 {
     })
 }
 
-/// Structural isinstance/issubclass check for `@runtime_checkable` Protocols.
+/// Full isinstance/issubclass check for Protocol classes.
 ///
-/// For each name in `proto.__protocol_attrs__`, checks whether `obj` (which
-/// may be an instance or a class) has the corresponding attribute via `hasattr`.
-/// This is a purely structural check – no nominal subtyping required.
-fn protocol_structural_check_impl(
+/// 1. **Nominal check** – if `obj` (or `obj`'s type for isinstance) is a
+///    nominal subclass of the protocol via the MRO, return True immediately.
+///    This works even for non-`@runtime_checkable` protocols, matching
+///    CPython's behavior for `class Foo(SomeProtocol): ...`.
+///
+/// 2. **Structural check** – only attempted if the protocol is
+///    `@runtime_checkable`.  Verifies that every name in
+///    `proto.__protocol_attrs__` is present on `obj` via `hasattr`.
+fn protocol_check_impl(
     _py: &crate::PyToken<'_>,
     proto_bits: u64,
     obj_bits: u64,
 ) -> Result<bool, u64> {
-    // Verify the protocol is marked runtime-checkable
+    // Determine the class to check against the MRO.
+    // For issubclass(cls, Proto) obj_bits is already a class;
+    // for isinstance(inst, Proto) we need type(inst).
+    let obj_is_type = is_type_object(obj_bits);
+    let obj_type_bits = if obj_is_type {
+        obj_bits
+    } else {
+        type_of_bits(_py, obj_bits)
+    };
+
+    // Nominal subclass check – works for any Protocol, runtime_checkable or not.
+    if issubclass_bits(obj_type_bits, proto_bits) {
+        return Ok(true);
+    }
+    // For issubclass(cls, Proto) also accept the class itself.
+    if obj_is_type && issubclass_bits(obj_bits, proto_bits) {
+        return Ok(true);
+    }
+
+    // Structural check requires @runtime_checkable.
     let rt_flag = get_attr_default(
         _py,
         proto_bits,
@@ -1222,12 +1305,13 @@ fn protocol_structural_check_impl(
 
 /// `molt_protocol_check(proto_cls, obj) -> bool`
 ///
-/// Structural isinstance/issubclass check for `@runtime_checkable` protocols.
-/// Returns True if `obj` has all attributes listed in `proto.__protocol_attrs__`.
+/// Combined nominal + structural isinstance/issubclass check for Protocol
+/// classes.  Nominal subclasses always pass; structural checks require
+/// `@runtime_checkable`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_protocol_check(proto_bits: u64, obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        match protocol_structural_check_impl(_py, proto_bits, obj_bits) {
+        match protocol_check_impl(_py, proto_bits, obj_bits) {
             Ok(value) => MoltObject::from_bool(value).bits(),
             Err(bits) => bits,
         }
