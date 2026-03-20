@@ -4,9 +4,9 @@ use crate::object::utf8_cache::{
     UTF8_CACHE_BLOCK, UTF8_CACHE_MIN_LEN, UTF8_COUNT_CACHE_SHARDS, UTF8_COUNT_PREFIX_MIN_LEN,
     UTF8_COUNT_TLS, Utf8CountCache, Utf8CountCacheEntry, Utf8IndexCache,
 };
+use crate::randomness::{fill_os_random, os_random_supported};
 use crate::state::runtime_state::PythonVersionInfo;
 use crate::*;
-use getrandom::fill as getrandom_fill;
 use memchr::{memchr, memmem};
 use molt_obj_model::MoltObject;
 use num_bigint::{BigInt, Sign};
@@ -4372,8 +4372,8 @@ unsafe fn simd_find_first_byte_diff_wasm(a: *const u8, b: *const u8, len: usize)
     use std::arch::wasm32::*;
     let mut i = 0usize;
     while i + 16 <= len {
-        let va = v128_load(a.add(i) as *const v128);
-        let vb = v128_load(b.add(i) as *const v128);
+        let va = unsafe { v128_load(a.add(i) as *const v128) };
+        let vb = unsafe { v128_load(b.add(i) as *const v128) };
         let eq = u8x16_eq(va, vb);
         let mask = u8x16_bitmask(eq) as u32;
         if mask != 0xFFFF {
@@ -4384,7 +4384,7 @@ unsafe fn simd_find_first_byte_diff_wasm(a: *const u8, b: *const u8, len: usize)
     }
     // Scalar tail
     while i < len {
-        if *a.add(i) != *b.add(i) {
+        if unsafe { *a.add(i) != *b.add(i) } {
             return i;
         }
         i += 1;
@@ -43913,6 +43913,9 @@ fn init_hash_secret() -> HashSecret {
     match std::env::var("PYTHONHASHSEED") {
         Ok(value) => {
             if value == "random" {
+                if !os_random_supported() {
+                    fatal_hash_seed_unavailable();
+                }
                 return random_hash_secret();
             }
             let seed: u32 = value.parse().unwrap_or_else(|_| fatal_hash_seed(&value));
@@ -43925,7 +43928,13 @@ fn init_hash_secret() -> HashSecret {
                 k1: u64::from_ne_bytes(bytes[8..].try_into().unwrap()),
             }
         }
-        Err(_) => random_hash_secret(),
+        Err(_) => {
+            if os_random_supported() {
+                random_hash_secret()
+            } else {
+                HashSecret { k0: 0, k1: 0 }
+            }
+        }
     }
 }
 
@@ -43937,9 +43946,15 @@ fn fatal_hash_seed(value: &str) -> ! {
     std::process::exit(1);
 }
 
+fn fatal_hash_seed_unavailable() -> ! {
+    eprintln!("Fatal Python error: PYTHONHASHSEED=random is unavailable on wasm-freestanding");
+    eprintln!("Use PYTHONHASHSEED=0 or an explicit integer seed.");
+    std::process::exit(1);
+}
+
 fn random_hash_secret() -> HashSecret {
     let mut bytes = [0u8; 16];
-    if let Err(err) = getrandom_fill(&mut bytes) {
+    if let Err(err) = fill_os_random(&mut bytes) {
         eprintln!("Failed to initialize hash seed: {err}");
         std::process::exit(1);
     }

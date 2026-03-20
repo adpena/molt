@@ -6,7 +6,6 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use digest::Digest;
-use getrandom::fill as getrandom_fill;
 use md5::Md5;
 use serde_json::Value as JsonValue;
 use sha1::Sha1;
@@ -18,6 +17,7 @@ use crate::builtins::io::{
 use crate::builtins::modules::runpy_exec_restricted_source;
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
+use crate::randomness::fill_os_random;
 use crate::*;
 
 // --- Platform constants ---
@@ -111,7 +111,7 @@ fn extension_metadata_cache_stats() -> (u64, u64) {
 
 fn uuid_random_bytes<const N: usize>() -> Result<[u8; N], String> {
     let mut out = [0u8; N];
-    getrandom_fill(&mut out).map_err(|err| format!("os randomness unavailable: {err}"))?;
+    fill_os_random(&mut out).map_err(|err| format!("os randomness unavailable: {err}"))?;
     Ok(out)
 }
 
@@ -238,7 +238,7 @@ fn collect_env_state() -> BTreeMap<String, String> {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(feature = "wasm_freestanding")))]
 fn collect_wasm_env_state() -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     let mut env_count = 0u32;
@@ -278,6 +278,11 @@ fn collect_wasm_env_state() -> BTreeMap<String, String> {
         }
     }
     out
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "wasm_freestanding"))]
+fn collect_wasm_env_state() -> BTreeMap<String, String> {
+    BTreeMap::new()
 }
 
 fn os_name_str() -> &'static str {
@@ -17464,7 +17469,7 @@ mod tests {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(feature = "wasm_freestanding")))]
 #[link(wasm_import_module = "wasi_snapshot_preview1")]
 unsafe extern "C" {
     fn environ_sizes_get(environ_count: *mut u32, environ_buf_size: *mut u32) -> u16;

@@ -45,6 +45,7 @@ mod intrinsics;
 mod libc_compat;
 mod object;
 mod provenance;
+mod randomness;
 mod state;
 mod utils;
 

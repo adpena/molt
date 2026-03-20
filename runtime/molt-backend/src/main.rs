@@ -1,7 +1,7 @@
 #[cfg(feature = "rust-backend")]
 use molt_backend::rust::RustBackend;
 #[cfg(feature = "wasm-backend")]
-use molt_backend::wasm::WasmBackend;
+use molt_backend::wasm::{WasmBackend, WasmCompileOptions};
 use molt_backend::{SimpleBackend, SimpleIR};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
@@ -21,6 +21,12 @@ struct DaemonJobRequest {
     id: String,
     is_wasm: bool,
     target_triple: Option<String>,
+    #[serde(default)]
+    wasm_link: bool,
+    #[serde(default)]
+    wasm_data_base: Option<u32>,
+    #[serde(default)]
+    wasm_table_base: Option<u32>,
     output: String,
     cache_key: String,
     function_cache_key: Option<String>,
@@ -298,7 +304,15 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
     let output_bytes: Arc<[u8]> = if job.is_wasm {
         #[cfg(feature = "wasm-backend")]
         {
-            let backend = WasmBackend::new();
+            let mut options = WasmCompileOptions::default();
+            options.reloc_enabled = job.wasm_link;
+            if let Some(data_base) = job.wasm_data_base {
+                options.data_base = data_base;
+            }
+            if let Some(table_base) = job.wasm_table_base {
+                options.table_base = table_base;
+            }
+            let backend = WasmBackend::with_options(options);
             Arc::from(backend.compile(ir))
         }
         #[cfg(not(feature = "wasm-backend"))]
@@ -654,7 +668,7 @@ fn main() -> io::Result<()> {
     } else if is_wasm {
         #[cfg(feature = "wasm-backend")]
         {
-            let backend = WasmBackend::new();
+            let backend = WasmBackend::with_options(WasmCompileOptions::default());
             let wasm_bytes = backend.compile(ir);
             file.write_all(&wasm_bytes)?;
             println!("Successfully compiled to output.wasm");
@@ -741,6 +755,9 @@ mod tests {
                 id: "job0".to_string(),
                 is_wasm: false,
                 target_triple: None,
+                wasm_link: false,
+                wasm_data_base: None,
+                wasm_table_base: None,
                 output: "/tmp/unused.o".to_string(),
                 cache_key: "module".to_string(),
                 function_cache_key: Some("function".to_string()),
@@ -773,6 +790,9 @@ mod tests {
                 id: "job0".to_string(),
                 is_wasm: false,
                 target_triple: None,
+                wasm_link: false,
+                wasm_data_base: None,
+                wasm_table_base: None,
                 output: output.to_string_lossy().into_owned(),
                 cache_key: "module".to_string(),
                 function_cache_key: Some("function".to_string()),

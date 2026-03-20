@@ -12,7 +12,10 @@ crate-type = ["staticlib", "rlib", "cdylib"]
 default = ["wasi_host"]
 molt_debug_gil = []
 molt_tk_native = ["dep:libloading"]
-wasm_freestanding = ["getrandom/custom"]
+# Reserved for the freestanding wasm target. Keep this feature independent
+# from getrandom Cargo features: getrandom 0.4 selects custom backends via
+# cfg(getrandom_backend = "..."), not via a Cargo feature named "custom".
+wasm_freestanding = []
 wasi_host = ["dep:libc", "dep:tempfile", "dep:glob"]
 
 [dependencies]
@@ -55,7 +58,6 @@ subtle = "2.6"
 rustpython-parser = "0.4"
 glob = { version = "0.3", optional = true }
 tempfile = { version = "3", optional = true }
-getrandom = { version = "0.4", optional = true }
 
 [build-dependencies]
 cc = "1"
@@ -76,8 +78,6 @@ libloading = { version = "0.8.9", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.4", features = ["wasm_js"] }
-# When wasm_freestanding feature is active, getrandom/custom takes
-# precedence and register_custom_getrandom! provides the backend.
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

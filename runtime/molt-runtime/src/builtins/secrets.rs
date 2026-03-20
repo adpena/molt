@@ -1,11 +1,9 @@
 // === FILE: runtime/molt-runtime/src/builtins/secrets.rs ===
 //
 // secrets module intrinsics: cryptographically-secure random tokens.
-// Uses getrandom::fill (available on all targets including WASM via wasm_js feature).
-
-use getrandom::fill as getrandom_fill;
 
 use crate::object::ops::string_obj_to_owned;
+use crate::randomness::fill_os_random;
 use crate::{
     MoltObject, PyToken, alloc_bytes, alloc_string, int_bits_from_bigint, int_bits_from_i64,
     obj_from_bits, raise_exception, to_i64,
@@ -51,7 +49,7 @@ fn base64url_encode(bytes: &[u8]) -> String {
 // ---------------------------------------------------------------------------
 
 fn fill_random(_py: &PyToken<'_>, buf: &mut [u8]) -> Result<(), u64> {
-    getrandom_fill(buf).map_err(|_| raise_exception::<u64>(_py, "OSError", "getrandom failed"))
+    fill_os_random(buf).map_err(|_| raise_exception::<u64>(_py, "OSError", "getrandom failed"))
 }
 
 fn resolve_nbytes(_py: &PyToken<'_>, nbytes_bits: u64, default: usize) -> Result<usize, u64> {
@@ -287,7 +285,7 @@ fn random_index_below(_py: &PyToken<'_>, upper: usize) -> Result<usize, u64> {
     let mut buf = [0u8; 8];
     let threshold = u64::MAX - (u64::MAX % upper as u64);
     loop {
-        getrandom_fill(&mut buf)
+        fill_os_random(&mut buf)
             .map_err(|_| raise_exception::<u64>(_py, "OSError", "getrandom failed"))?;
         let v = u64::from_le_bytes(buf);
         if v < threshold || threshold == 0 {

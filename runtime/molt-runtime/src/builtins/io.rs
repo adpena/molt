@@ -5,8 +5,8 @@ use crate::object::{
     MoltFileBackend, MoltMemoryBackend, MoltTextBackend, NEWLINE_KIND_CR, NEWLINE_KIND_CRLF,
     NEWLINE_KIND_LF,
 };
+use crate::randomness::fill_os_random;
 use crate::*;
-use getrandom::fill as getrandom_fill;
 use num_bigint::{BigInt, Sign};
 use num_traits::{ToPrimitive, Zero};
 use std::collections::HashMap;
@@ -6904,7 +6904,7 @@ pub extern "C" fn molt_os_urandom(len_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "MemoryError", "out of memory");
         }
         buf.resize(len, 0);
-        if let Err(err) = getrandom_fill(&mut buf) {
+        if let Err(err) = fill_os_random(&mut buf) {
             let msg = format!("urandom failed: {err}");
             return raise_exception::<_>(_py, "OSError", &msg);
         }

@@ -48,6 +48,7 @@ addopts = [
 norecursedirs = ["third_party", ".git", ".venv", "dist", "build", "logs"]
 markers = [
     "molt_compile: tests that require a working Molt compiler (use --run-molt)",
+    "slow: tests that exercise longer end-to-end toolchain paths",
 ]
 
 [tool.molt.deps]
