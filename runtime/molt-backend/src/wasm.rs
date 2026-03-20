@@ -443,6 +443,68 @@ fn emit_unbox_int_local_trusted_tee(func: &mut Function, src_local: u32, dst_loc
     func.instruction(&Instruction::LocalTee(dst_local));
 }
 
+// ---------------------------------------------------------------------------
+// Peephole optimization: known-value unbox/box elimination
+//
+// When we know at compile time that a WASM local holds a NaN-boxed integer
+// whose raw value is `v`, we can replace the 4-instruction unbox sequence
+// with a single `i64.const v`, and the 4-instruction box sequence with a
+// single `i64.const box_int(v)`.  This eliminates redundant box/unbox
+// round-trips that commonly occur when a `const` op feeds into a `fast_int`
+// arithmetic op.
+// ---------------------------------------------------------------------------
+
+/// Peephole-optimized unbox: if `src_local` has a known raw int value in
+/// `known_raw`, emit `i64.const <raw>` + `local.set dst` (2 instructions)
+/// instead of the 5-instruction shift-based unbox.  Returns `true` if the
+/// optimization fired.
+fn emit_unbox_int_local_trusted_opt(
+    func: &mut Function,
+    src_local: u32,
+    dst_local: u32,
+    cc: &ConstantCache,
+    known_raw: &HashMap<u32, i64>,
+) {
+    if let Some(&raw) = known_raw.get(&src_local) {
+        func.instruction(&Instruction::I64Const(raw));
+        func.instruction(&Instruction::LocalSet(dst_local));
+    } else {
+        emit_unbox_int_local_trusted(func, src_local, dst_local, cc);
+    }
+}
+
+/// Peephole-optimized unbox with tee: like [`emit_unbox_int_local_trusted_opt`]
+/// but leaves the value on the operand stack (`local.tee`).
+fn emit_unbox_int_local_trusted_tee_opt(
+    func: &mut Function,
+    src_local: u32,
+    dst_local: u32,
+    cc: &ConstantCache,
+    known_raw: &HashMap<u32, i64>,
+) {
+    if let Some(&raw) = known_raw.get(&src_local) {
+        func.instruction(&Instruction::I64Const(raw));
+        func.instruction(&Instruction::LocalTee(dst_local));
+    } else {
+        emit_unbox_int_local_trusted_tee(func, src_local, dst_local, cc);
+    }
+}
+
+/// Peephole-optimized box: if `src_local` has a known raw int value in
+/// `known_raw`, emit `i64.const <boxed>` (1 instruction) instead of the
+/// 4-instruction mask+or boxing sequence.
+fn emit_box_int_from_local_opt(
+    func: &mut Function,
+    src_local: u32,
+    known_raw: &HashMap<u32, i64>,
+) {
+    if let Some(&raw) = known_raw.get(&src_local) {
+        func.instruction(&Instruction::I64Const(box_int(raw)));
+    } else {
+        emit_box_int_from_local(func, src_local);
+    }
+}
+
 fn emit_box_int_from_local(func: &mut Function, src_local: u32) {
     func.instruction(&Instruction::LocalGet(src_local));
     func.instruction(&Instruction::I64Const(INT_MASK as i64));
