@@ -1018,6 +1018,18 @@ Beyond the six planned tasks, ten additional performance optimizations were impl
 
 10. **`local.tee` introduction** (fef9990c): Replaced `local.set` + `local.get` pairs with `local.tee` where applicable, eliminating 37 redundant `LocalGet` instructions across the codebase.
 
+11. **Tail call emission (`return_call`)** (49af0f7a): Conservative tail call optimization for non-stateful functions without exception handling. Emits `return_call` / `return_call_indirect` instead of `call` + `return` in tail position. Reports eligible function count via `MOLT_WASM_IMPORT_AUDIT=1`.
+
+12. **Native exception handling groundwork** (4b7a52c5): WASM native EH support gated by `MOLT_WASM_NATIVE_EH=1`. Implements tag section emission, `try_table`/`catch`/`throw` instruction generation. Currently works for unlinked output only (wasm-ld EH relocation support pending).
+
+13. **SIMD stub rewriter support** (0eb06e6c): The WASI stub rewriter (`tools/wasm_stub_wasi.py`) now correctly handles SIMD instructions, enabling freestanding builds with `+simd128` target features.
+
+14. **`--wasm-profile pure` import stripping** (ddc8ea4c): Compile-time stripping of IO/ASYNC/TIME imports for pure-computation modules, implementing Option A from `docs/plans/wasm-import-stripping.md`.
+
+15. **Multi-value trampoline support** (a7b50199): Multi-value return type signatures (Types 31-34) defined in the type section. `detect_multi_return_candidates` analysis pass identifies safe conversion candidates for future call-site destructuring.
+
+16. **Box/unbox elimination (borrow checker fix)** (cd3f98df): Arithmetic operations using `eq`/`ne` skip unbox entirely; other arithmetic uses trusted unbox saving 4 instructions per operation. Resolved borrow checker issues in the elimination pass.
+
 ---
 
 ## Execution Notes
