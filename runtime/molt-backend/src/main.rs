@@ -680,13 +680,10 @@ fn main() -> io::Result<()> {
     let mut buffer = String::new();
     io::stdin().read_to_string(&mut buffer)?;
 
-    let mut deserializer = serde_json::Deserializer::from_str(&buffer);
-    let ir: SimpleIR = match serde_path_to_error::deserialize(&mut deserializer) {
+    let ir: SimpleIR = match serde_json::from_str(&buffer) {
         Ok(ir) => ir,
         Err(err) => {
-            let path = err.path().to_string();
-            let inner = err.into_inner();
-            eprintln!("Invalid IR JSON at {path}: {inner}");
+            eprintln!("Invalid IR JSON: {err}");
             std::process::exit(1);
         }
     };

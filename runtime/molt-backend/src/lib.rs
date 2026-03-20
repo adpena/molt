@@ -1,15 +1,24 @@
 #[cfg(feature = "native-backend")]
-use cranelift::codegen::Context;
+use cranelift_codegen::Context;
 #[cfg(feature = "native-backend")]
-use cranelift::codegen::ir::{FuncRef, Function};
+use cranelift_codegen::ir::{
+    AbiParam, Block, BlockArg, FuncRef, Function, InstBuilder, MemFlags, StackSlotData,
+    StackSlotKind, Value, types,
+};
 #[cfg(feature = "native-backend")]
-use cranelift::codegen::isa;
+use cranelift_codegen::ir::condcodes::IntCC;
 #[cfg(feature = "native-backend")]
-use cranelift::frontend::Switch;
+use cranelift_codegen::isa;
 #[cfg(feature = "native-backend")]
-use cranelift::prelude::*;
+use cranelift_codegen::settings;
+#[cfg(feature = "native-backend")]
+use cranelift_codegen::settings::Configurable;
+#[cfg(feature = "native-backend")]
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
 #[cfg(feature = "native-backend")]
 use cranelift_module::{DataDescription, Linkage, Module};
+#[cfg(feature = "native-backend")]
+use cranelift_native::builder_with_options as native_isa_builder_with_options;
 #[cfg(feature = "native-backend")]
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use serde::{Deserialize, Serialize};
@@ -634,10 +643,10 @@ fn def_var_named(
 
 #[cfg(feature = "native-backend")]
 fn jump_block(builder: &mut FunctionBuilder, target: Block, args: &[Value]) {
-    let block_args: Vec<cranelift::codegen::ir::BlockArg> = args
+    let block_args: Vec<BlockArg> = args
         .iter()
         .copied()
-        .map(cranelift::codegen::ir::BlockArg::from)
+        .map(BlockArg::from)
         .collect();
     builder.ins().jump(target, &block_args);
 }
@@ -651,15 +660,15 @@ fn brif_block(
     else_block: Block,
     else_args: &[Value],
 ) {
-    let then_block_args: Vec<cranelift::codegen::ir::BlockArg> = then_args
+    let then_block_args: Vec<BlockArg> = then_args
         .iter()
         .copied()
-        .map(cranelift::codegen::ir::BlockArg::from)
+        .map(BlockArg::from)
         .collect();
-    let else_block_args: Vec<cranelift::codegen::ir::BlockArg> = else_args
+    let else_block_args: Vec<BlockArg> = else_args
         .iter()
         .copied()
-        .map(cranelift::codegen::ir::BlockArg::from)
+        .map(BlockArg::from)
         .collect();
     builder.ins().brif(
         cond,
@@ -1501,14 +1510,14 @@ impl SimpleBackend {
         } else if portable {
             // Baseline ISA: no auto-detected host features. Produces portable
             // binaries that run on any CPU supporting the base architecture.
-            cranelift_native::builder_with_options(false).unwrap_or_else(|msg| {
+            native_isa_builder_with_options(false).unwrap_or_else(|msg| {
                 panic!("host machine is not supported: {}", msg);
             })
         } else {
             // Auto-detect host CPU features (AVX2, SSE4.2, BMI2, POPCNT on x86;
             // NEON, AES, CRC on aarch64). Allows Cranelift to emit feature-specific
             // instructions like vpmovmskb, popcnt, tzcnt, etc.
-            cranelift_native::builder_with_options(true).unwrap_or_else(|msg| {
+            native_isa_builder_with_options(true).unwrap_or_else(|msg| {
                 panic!("host machine is not supported: {}", msg);
             })
         };
