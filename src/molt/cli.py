@@ -13028,11 +13028,12 @@ def _prepare_backend_dispatch(
     warnings: list[str],
 ) -> tuple[_PreparedBackendDispatch | None, dict[str, Any] | None]:
     backend_env = os.environ.copy() if is_wasm else None
-    backend_features: tuple[str, ...] = ()
     if is_rust_transpile:
-        backend_features = ("rust-backend",)
+        backend_features: tuple[str, ...] = ("rust-backend",)
     elif is_wasm:
         backend_features = ("wasm-backend",)
+    else:
+        backend_features = ("native-backend",)
     if deterministic or profile == "release":
         os.environ.setdefault("SOURCE_DATE_EPOCH", "315532800")
     reloc_requested = is_wasm and (linked or os.environ.get("MOLT_WASM_LINK") == "1")
@@ -13639,6 +13640,7 @@ def _run_backend_pipeline(
     verbose: bool,
     require_linked: bool,
     wasm_opt_level: str = "Oz",
+    precompile: bool = False,
 ) -> int:
     (
         _prepared_frontend_run_ticket,
@@ -13814,6 +13816,7 @@ def _run_backend_pipeline(
                 runtime_reloc_wasm=runtime_reloc_wasm,
                 ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
                 molt_root=prepared_build_roots.molt_root,
+                precompile=precompile,
             )
         )
         if prepared_non_native_result_error is not None:
@@ -13935,6 +13938,7 @@ def _prepare_non_native_build_result(
     runtime_reloc_wasm: Path | None,
     ensure_runtime_wasm_reloc: Callable[[], bool],
     molt_root: Path,
+    precompile: bool = False,
 ) -> tuple[_PreparedNonNativeResult | None, dict[str, Any] | None]:
     if is_rust_transpile:
         return _PreparedNonNativeResult(
@@ -14001,6 +14005,34 @@ def _prepare_non_native_build_result(
                             json_output,
                             command="build",
                         )
+        # -- Precompile step: produce .cwasm for faster startup -----------
+        cwasm_path: Path | None = None
+        if precompile:
+            precompile_target = (
+                resolved_linked_output if resolved_linked_output is not None else output_wasm
+            )
+            cwasm_path = precompile_target.with_suffix(".cwasm")
+            wasmtime_bin = shutil.which("wasmtime")
+            if wasmtime_bin:
+                precompile_proc = subprocess.run(
+                    [wasmtime_bin, "compile", str(precompile_target), "-o", str(cwasm_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                if precompile_proc.returncode == 0:
+                    print(f"Precompiled to {cwasm_path}", file=sys.stderr)
+                else:
+                    print(
+                        f"Precompilation failed (non-fatal): {precompile_proc.stderr.strip()}",
+                        file=sys.stderr,
+                    )
+                    cwasm_path = None
+            else:
+                print("wasmtime not found; skipping precompilation", file=sys.stderr)
+                cwasm_path = None
+        # -- End precompile step -------------------------------------------
+
         primary_output = output_wasm
         if require_linked and resolved_linked_output is not None:
             primary_output = resolved_linked_output
@@ -14011,6 +14043,8 @@ def _prepare_non_native_build_result(
         )
         if resolved_linked_output is not None and not require_linked:
             success_messages.append(f"Successfully linked {resolved_linked_output}")
+        if cwasm_path is not None:
+            success_messages.append(f"Precompiled {cwasm_path}")
         return _PreparedNonNativeResult(
             primary_output=primary_output,
             linked_output_path=resolved_linked_output,
@@ -14021,6 +14055,11 @@ def _prepare_non_native_build_result(
                 **(
                     {"linked_output": str(resolved_linked_output)}
                     if resolved_linked_output is not None
+                    else {}
+                ),
+                **(
+                    {"cwasm_output": str(cwasm_path)}
+                    if cwasm_path is not None
                     else {}
                 ),
             },
@@ -14227,6 +14266,7 @@ def _run_build_pipeline(
     verbose: bool,
     require_linked: bool,
     wasm_opt_level: str = "Oz",
+    precompile: bool = False,
 ) -> int:
     prepared_frontend_run_ticket = prepared_frontend_pipeline_bundle[0]
     frontend_layer_error = _run_frontend_pipeline(
@@ -14255,6 +14295,7 @@ def _run_build_pipeline(
         verbose=verbose,
         require_linked=require_linked,
         wasm_opt_level=wasm_opt_level,
+        precompile=precompile,
     )
 
 
@@ -16307,6 +16348,7 @@ def _ensure_backend_binary(
             cargo_profile,
         ]
         if backend_features:
+            cmd.append("--no-default-features")
             cmd.extend(["--features", ",".join(backend_features)])
         build_env = os.environ.copy()
         _maybe_enable_sccache(build_env)
@@ -18336,6 +18378,7 @@ def build(
     diagnostics_verbosity: str | None = None,
     portable: bool = False,
     wasm_opt_level: str = "Oz",
+    precompile: bool = False,
 ) -> int:
     if isinstance(profile, bool):
         profile = "release"
@@ -18423,6 +18466,7 @@ def build(
         verbose=verbose,
         require_linked=require_linked,
         wasm_opt_level=wasm_opt_level,
+        precompile=precompile,
     )
 
 
@@ -22919,6 +22963,15 @@ def main() -> int:
         ),
     )
     build_parser.add_argument(
+        "--precompile",
+        action="store_true",
+        default=False,
+        help=(
+            "After linking, run wasmtime compile to produce a precompiled "
+            ".cwasm artifact for 10-50x faster startup in production."
+        ),
+    )
+    build_parser.add_argument(
         "--emit-ir",
         help="Write the lowered IR JSON to a file path.",
     )
@@ -23986,6 +24039,7 @@ def main() -> int:
             diagnostics_verbosity,
             portable=getattr(args, "portable", False),
             wasm_opt_level=getattr(args, "wasm_opt_level", "Oz"),
+            precompile=getattr(args, "precompile", False),
         )
     if args.command == "extension":
         if args.extension_command == "build":

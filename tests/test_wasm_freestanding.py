@@ -722,3 +722,41 @@ def test_freestanding_binary_is_valid_wasm(tmp_path):
     wasm_bytes = linked.read_bytes()
     assert wasm_bytes[:4] == b"\x00asm", "Not a valid WASM binary"
     assert wasm_bytes[4:8] == b"\x01\x00\x00\x00", "Not WASM version 1"
+
+
+@pytest.mark.slow
+def test_precompile_produces_cwasm(tmp_path):
+    """--precompile should produce a .cwasm alongside the .wasm."""
+    output = tmp_path / "output.wasm"
+    linked = tmp_path / "output_linked.wasm"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt",
+            "build",
+            str(FIXTURE),
+            "--target",
+            "wasm-freestanding",
+            "--output",
+            str(output),
+            "--linked-output",
+            str(linked),
+            "--precompile",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=PROJECT_ROOT,
+        timeout=180,
+    )
+    assert (
+        result.returncode == 0
+    ), f"Build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    cwasm = linked.with_suffix(".cwasm")
+    if shutil.which("wasmtime"):
+        assert cwasm.exists(), f"Expected .cwasm at {cwasm}"
+        assert cwasm.stat().st_size > 0, ".cwasm file is empty"
+        assert "Precompiled to" in result.stderr
+    else:
+        # wasmtime not installed; precompilation should be skipped gracefully
+        assert "wasmtime not found" in result.stderr
