@@ -3742,6 +3742,9 @@ def test_build_skips_daemon_preflight_when_socket_exists(
         ir: dict[str, object],
         backend_output: Path,
         is_wasm: bool,
+        wasm_link: bool,
+        wasm_data_base: int | None,
+        wasm_table_base: int | None,
         target_triple: str | None,
         cache_key: str | None,
         function_cache_key: str | None,
@@ -3754,6 +3757,9 @@ def test_build_skips_daemon_preflight_when_socket_exists(
         del (
             ir,
             is_wasm,
+            wasm_link,
+            wasm_data_base,
+            wasm_table_base,
             target_triple,
             cache_key,
             function_cache_key,
@@ -3821,6 +3827,39 @@ def test_read_module_source_falls_back_for_encoding_cookie(
     assert (
         cli._read_module_source(source_path)
         == "# -*- coding: latin-1 -*-\nname = 'café'\n"
+    )
+
+
+def _compile_with_backend_daemon_non_wasm(
+    socket_path: Path,
+    *,
+    ir: dict[str, object],
+    backend_output: Path,
+    target_triple: str | None,
+    cache_key: str | None,
+    function_cache_key: str | None,
+    config_digest: str | None,
+    skip_module_output_if_synced: bool = False,
+    skip_function_output_if_synced: bool = False,
+    timeout: float | None,
+    request_bytes: bytes | None = None,
+) -> cli._BackendDaemonCompileResult:
+    return cli._compile_with_backend_daemon(
+        socket_path,
+        ir=ir,
+        backend_output=backend_output,
+        is_wasm=False,
+        wasm_link=False,
+        wasm_data_base=None,
+        wasm_table_base=None,
+        target_triple=target_triple,
+        cache_key=cache_key,
+        function_cache_key=function_cache_key,
+        config_digest=config_digest,
+        skip_module_output_if_synced=skip_module_output_if_synced,
+        skip_function_output_if_synced=skip_function_output_if_synced,
+        timeout=timeout,
+        request_bytes=request_bytes,
     )
 
 
@@ -4820,7 +4859,7 @@ def test_start_backend_daemon_leaves_warming_process_running(
     assert removed == []
 
 
-def test_ensure_backend_binary_skips_wasm_feature_for_native(
+def test_ensure_backend_binary_uses_native_feature_for_native(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4848,11 +4887,21 @@ def test_ensure_backend_binary_skips_wasm_feature_for_native(
         json_output=True,
         cargo_profile="dev-fast",
         project_root=tmp_path,
-        backend_features=(),
+        backend_features=("native-backend",),
     )
-    assert seen_features == [()]
+    assert seen_features == [("native-backend",)]
     assert build_cmds == [
-        ["cargo", "build", "--package", "molt-backend", "--profile", "dev-fast"]
+        [
+            "cargo",
+            "build",
+            "--package",
+            "molt-backend",
+            "--profile",
+            "dev-fast",
+            "--no-default-features",
+            "--features",
+            "native-backend",
+        ]
     ]
 
 
@@ -4895,6 +4944,7 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
             "molt-backend",
             "--profile",
             "dev-fast",
+            "--no-default-features",
             "--features",
             "wasm-backend",
         ]
@@ -4994,6 +5044,7 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
             "molt-backend",
             "--profile",
             "dev-fast",
+            "--no-default-features",
             "--features",
             "rust-backend",
         ]
@@ -5098,6 +5149,7 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
             "molt-backend",
             "--profile",
             "release-fast",
+            "--no-default-features",
             "--features",
             "rust-backend",
         ]
@@ -5285,14 +5337,13 @@ def test_compile_with_backend_daemon_surfaces_cache_telemetry(
         )
 
     monkeypatch.setattr(cli, "_backend_daemon_request_bytes", _fake_request)
-    result = cli._compile_with_backend_daemon(
+    result = _compile_with_backend_daemon_non_wasm(
         Path("/tmp/fake.sock"),
         ir={"functions": []},
         backend_output=backend_output,
-        is_wasm=False,
         target_triple=None,
-        cache_key="module-cache",
-        function_cache_key="function-cache",
+        cache_key=None,
+        function_cache_key=None,
         config_digest="digest123",
         skip_module_output_if_synced=False,
         skip_function_output_if_synced=False,
@@ -5340,14 +5391,13 @@ def test_compile_with_backend_daemon_allows_cached_hit_without_output_write(
         )
 
     monkeypatch.setattr(cli, "_backend_daemon_request_bytes", _fake_request)
-    result = cli._compile_with_backend_daemon(
+    result = _compile_with_backend_daemon_non_wasm(
         Path("/tmp/fake.sock"),
         ir={"functions": []},
         backend_output=backend_output,
-        is_wasm=False,
         target_triple=None,
-        cache_key="module-cache",
-        function_cache_key="function-cache",
+        cache_key=None,
+        function_cache_key=None,
         config_digest="digest123",
         skip_module_output_if_synced=True,
         skip_function_output_if_synced=False,
@@ -5395,14 +5445,13 @@ def test_compile_with_backend_daemon_accepts_response_without_health(
         )
 
     monkeypatch.setattr(cli, "_backend_daemon_request_bytes", _fake_request)
-    result = cli._compile_with_backend_daemon(
+    result = _compile_with_backend_daemon_non_wasm(
         Path("/tmp/fake.sock"),
         ir={"functions": []},
         backend_output=backend_output,
-        is_wasm=False,
         target_triple=None,
-        cache_key="module-cache",
-        function_cache_key="function-cache",
+        cache_key=None,
+        function_cache_key=None,
         config_digest="digest123",
         skip_module_output_if_synced=False,
         skip_function_output_if_synced=False,
@@ -5452,11 +5501,10 @@ def test_compile_with_backend_daemon_uses_preencoded_request_bytes(
 
     monkeypatch.setattr(cli, "_backend_daemon_request_payload_bytes", fail_encode)
     monkeypatch.setattr(cli, "_backend_daemon_request_bytes", _fake_request)
-    result = cli._compile_with_backend_daemon(
+    result = _compile_with_backend_daemon_non_wasm(
         Path("/tmp/fake.sock"),
         ir={"functions": []},
         backend_output=backend_output,
-        is_wasm=False,
         target_triple="",
         cache_key=None,
         function_cache_key=None,
@@ -5525,11 +5573,10 @@ def test_compile_with_backend_daemon_probes_cache_without_ir_on_hit(
             return None
 
     monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
-    result = cli._compile_with_backend_daemon(
+    result = _compile_with_backend_daemon_non_wasm(
         Path("/tmp/fake.sock"),
         ir={"functions": [{"name": "heavy"}]},
         backend_output=backend_output,
-        is_wasm=False,
         target_triple=None,
         cache_key="module-cache",
         function_cache_key="function-cache",
@@ -5610,11 +5657,10 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
             return None
 
     monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
-    result = cli._compile_with_backend_daemon(
+    result = _compile_with_backend_daemon_non_wasm(
         Path("/tmp/fake.sock"),
         ir={"functions": [{"name": "heavy"}]},
         backend_output=backend_output,
-        is_wasm=False,
         target_triple=None,
         cache_key="module-cache",
         function_cache_key="function-cache",
@@ -5696,11 +5742,10 @@ def test_compile_with_backend_daemon_defers_full_encode_until_probe_miss(
         cli, "_backend_daemon_compile_request_bytes", wrapped_compile_request_bytes
     )
     monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
-    result = cli._compile_with_backend_daemon(
+    result = _compile_with_backend_daemon_non_wasm(
         Path("/tmp/fake.sock"),
         ir={"functions": [{"name": "heavy"}]},
         backend_output=backend_output,
-        is_wasm=False,
         target_triple=None,
         cache_key="module-cache",
         function_cache_key="function-cache",
@@ -5739,11 +5784,10 @@ def test_compile_with_backend_daemon_reports_missing_output_in_result(
         )
 
     monkeypatch.setattr(cli, "_backend_daemon_request_bytes", _fake_request)
-    result = cli._compile_with_backend_daemon(
+    result = _compile_with_backend_daemon_non_wasm(
         Path("/tmp/fake.sock"),
         ir={"functions": []},
         backend_output=Path("/tmp/definitely-missing-output.o"),
-        is_wasm=False,
         target_triple=None,
         cache_key=None,
         function_cache_key=None,
