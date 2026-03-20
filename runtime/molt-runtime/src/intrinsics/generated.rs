@@ -13075,21 +13075,35 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
             Some(crate::molt_decimal_normalize as *const () as usize as u64)
         }
         "molt_decimal_exp" => Some(crate::molt_decimal_exp as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
         "molt_hash_new" => Some(crate::molt_hash_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
         "molt_hash_update" => Some(crate::molt_hash_update as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
         "molt_hash_copy" => Some(crate::molt_hash_copy as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
         "molt_hash_digest" => Some(crate::molt_hash_digest as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
         "molt_hash_drop" => Some(crate::molt_hash_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
         "molt_hmac_new" => Some(crate::molt_hmac_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
         "molt_hmac_update" => Some(crate::molt_hmac_update as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
         "molt_hmac_copy" => Some(crate::molt_hmac_copy as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
         "molt_hmac_digest" => Some(crate::molt_hmac_digest as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
         "molt_hmac_drop" => Some(crate::molt_hmac_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
         "molt_compare_digest" => Some(crate::molt_compare_digest as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_compression_streams_buffer_size" => {
             Some(crate::molt_compression_streams_buffer_size as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_crypto")]
         "molt_pbkdf2_hmac" => Some(crate::molt_pbkdf2_hmac as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
         "molt_scrypt" => Some(crate::molt_scrypt as *const () as usize as u64),
         "molt_os_open" => Some(crate::molt_os_open as *const () as usize as u64),
         "molt_os_open_flags" => Some(crate::molt_os_open_flags as *const () as usize as u64),
@@ -13293,7 +13307,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_struct_iter_unpack" => {
             Some(crate::molt_struct_iter_unpack as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_deflate_raw" => Some(crate::molt_deflate_raw as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_inflate_raw" => Some(crate::molt_inflate_raw as *const () as usize as u64),
         "molt_cancel_token_new" => Some(crate::molt_cancel_token_new as *const () as usize as u64),
         "molt_cancel_token_clone" => {
@@ -13565,6 +13581,7 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_zipapp_runtime_ready" => {
             Some(crate::molt_zipapp_runtime_ready as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_runtime_ready" => {
             Some(crate::molt_zlib_runtime_ready as *const () as usize as u64)
         }
@@ -13663,9 +13680,11 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_db_query_obj" => Some(crate::molt_db_query_obj as *const () as usize as u64),
         "molt_db_exec_obj" => Some(crate::molt_db_exec_obj as *const () as usize as u64),
+        #[cfg(feature = "stdlib_serialization")]
         "molt_msgpack_parse_scalar_obj" => {
             Some(crate::molt_msgpack_parse_scalar_obj as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_serialization")]
         "molt_cbor_parse_scalar_obj" => {
             Some(crate::molt_cbor_parse_scalar_obj as *const () as usize as u64)
         }
@@ -14200,8 +14219,11 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_asyncgen_locals" => Some(crate::molt_asyncgen_locals as *const () as usize as u64),
         "molt_gen_locals" => Some(crate::molt_gen_locals as *const () as usize as u64),
+        #[cfg(feature = "stdlib_ast")]
         "molt_ast_parse" => Some(crate::molt_ast_parse as *const () as usize as u64),
+        #[cfg(feature = "stdlib_ast")]
         "molt_ast_walk" => Some(crate::molt_ast_walk as *const () as usize as u64),
+        #[cfg(feature = "stdlib_ast")]
         "molt_ast_get_docstring" => {
             Some(crate::molt_ast_get_docstring as *const () as usize as u64)
         }
@@ -14639,42 +14661,59 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_array_tobytes" => Some(crate::molt_array_tobytes as *const () as usize as u64),
         "molt_array_tolist" => Some(crate::molt_array_tolist as *const () as usize as u64),
         "molt_array_typecode" => Some(crate::molt_array_typecode as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_compress" => Some(crate::molt_bz2_compress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_compressor_compress" => {
             Some(crate::molt_bz2_compressor_compress as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_compressor_drop" => {
             Some(crate::molt_bz2_compressor_drop as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_compressor_flush" => {
             Some(crate::molt_bz2_compressor_flush as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_compressor_new" => {
             Some(crate::molt_bz2_compressor_new as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_decompress" => Some(crate::molt_bz2_decompress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_decompressor_decompress" => {
             Some(crate::molt_bz2_decompressor_decompress as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_decompressor_drop" => {
             Some(crate::molt_bz2_decompressor_drop as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_decompressor_eof" => {
             Some(crate::molt_bz2_decompressor_eof as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_decompressor_needs_input" => {
             Some(crate::molt_bz2_decompressor_needs_input as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_decompressor_new" => {
             Some(crate::molt_bz2_decompressor_new as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_decompressor_unused_data" => {
             Some(crate::molt_bz2_decompressor_unused_data as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_file_close" => Some(crate::molt_bz2_file_close as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_file_drop" => Some(crate::molt_bz2_file_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_file_open" => Some(crate::molt_bz2_file_open as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_file_read" => Some(crate::molt_bz2_file_read as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_file_write" => Some(crate::molt_bz2_file_write as *const () as usize as u64),
         "molt_chainmap_contains" => {
             Some(crate::molt_chainmap_contains as *const () as usize as u64)
@@ -15183,12 +15222,19 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_fraction_to_str" => Some(crate::molt_fraction_to_str as *const () as usize as u64),
         "molt_fraction_truediv" => Some(crate::molt_fraction_truediv as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_gzip_close" => Some(crate::molt_gzip_close as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_gzip_compress" => Some(crate::molt_gzip_compress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_gzip_decompress" => Some(crate::molt_gzip_decompress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_gzip_drop" => Some(crate::molt_gzip_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_gzip_open" => Some(crate::molt_gzip_open as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_gzip_read" => Some(crate::molt_gzip_read as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_gzip_write" => Some(crate::molt_gzip_write as *const () as usize as u64),
         "molt_html_entities_codepoint2name" => {
             Some(crate::molt_html_entities_codepoint2name as *const () as usize as u64)
@@ -15299,53 +15345,75 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_json_raw_decode_ex" => {
             Some(crate::molt_json_raw_decode_ex as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_check_crc32" => Some(crate::molt_lzma_check_crc32 as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_check_crc64" => Some(crate::molt_lzma_check_crc64 as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_check_none" => Some(crate::molt_lzma_check_none as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_check_sha256" => {
             Some(crate::molt_lzma_check_sha256 as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_compress" => Some(crate::molt_lzma_compress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_compressor_compress" => {
             Some(crate::molt_lzma_compressor_compress as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_compressor_drop" => {
             Some(crate::molt_lzma_compressor_drop as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_compressor_flush" => {
             Some(crate::molt_lzma_compressor_flush as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_compressor_new" => {
             Some(crate::molt_lzma_compressor_new as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_decompress" => Some(crate::molt_lzma_decompress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_decompressor_decompress" => {
             Some(crate::molt_lzma_decompressor_decompress as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_decompressor_drop" => {
             Some(crate::molt_lzma_decompressor_drop as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_decompressor_eof" => {
             Some(crate::molt_lzma_decompressor_eof as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_decompressor_needs_input" => {
             Some(crate::molt_lzma_decompressor_needs_input as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_decompressor_new" => {
             Some(crate::molt_lzma_decompressor_new as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_decompressor_unused_data" => {
             Some(crate::molt_lzma_decompressor_unused_data as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_format_alone" => {
             Some(crate::molt_lzma_format_alone as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_format_auto" => Some(crate::molt_lzma_format_auto as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_format_raw" => Some(crate::molt_lzma_format_raw as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_format_xz" => Some(crate::molt_lzma_format_xz as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_preset_default" => {
             Some(crate::molt_lzma_preset_default as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_preset_extreme" => {
             Some(crate::molt_lzma_preset_extreme as *const () as usize as u64)
         }
@@ -15502,18 +15570,25 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
             Some(crate::molt_re_finditer_collect as *const () as usize as u64)
         }
         "molt_re_pattern_info" => Some(crate::molt_re_pattern_info as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
         "molt_secrets_below" => Some(crate::molt_secrets_below as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
         "molt_secrets_choice" => Some(crate::molt_secrets_choice as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
         "molt_secrets_compare_digest" => {
             Some(crate::molt_secrets_compare_digest as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_crypto")]
         "molt_secrets_randbits" => Some(crate::molt_secrets_randbits as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
         "molt_secrets_token_bytes" => {
             Some(crate::molt_secrets_token_bytes as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_crypto")]
         "molt_secrets_token_hex" => {
             Some(crate::molt_secrets_token_hex as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_crypto")]
         "molt_secrets_token_urlsafe" => {
             Some(crate::molt_secrets_token_urlsafe as *const () as usize as u64)
         }
@@ -15723,23 +15798,33 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_subprocess_stdout_const" => {
             Some(crate::molt_subprocess_stdout_const as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_tarfile_add" => Some(crate::molt_tarfile_add as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_tarfile_close" => Some(crate::molt_tarfile_close as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_tarfile_drop" => Some(crate::molt_tarfile_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_tarfile_extract" => Some(crate::molt_tarfile_extract as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_tarfile_extractall" => {
             Some(crate::molt_tarfile_extractall as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_tarfile_extractfile" => {
             Some(crate::molt_tarfile_extractfile as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_tarfile_getmembers" => {
             Some(crate::molt_tarfile_getmembers as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_tarfile_getnames" => Some(crate::molt_tarfile_getnames as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_tarfile_is_tarfile" => {
             Some(crate::molt_tarfile_is_tarfile as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_tarfile_open" => Some(crate::molt_tarfile_open as *const () as usize as u64),
         "molt_unicodedata_bidirectional" => {
             Some(crate::molt_unicodedata_bidirectional as *const () as usize as u64)
@@ -15781,71 +15866,99 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_unicodedata_unidata_version" => {
             Some(crate::molt_unicodedata_unidata_version as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_adler32" => Some(crate::molt_zlib_adler32 as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_compress" => Some(crate::molt_zlib_compress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_compressobj_compress" => {
             Some(crate::molt_zlib_compressobj_compress as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_compressobj_drop" => {
             Some(crate::molt_zlib_compressobj_drop as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_compressobj_flush" => {
             Some(crate::molt_zlib_compressobj_flush as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_compressobj_new" => {
             Some(crate::molt_zlib_compressobj_new as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_crc32" => Some(crate::molt_zlib_crc32 as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_decompress" => Some(crate::molt_zlib_decompress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_decompressobj_decompress" => {
             Some(crate::molt_zlib_decompressobj_decompress as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_decompressobj_drop" => {
             Some(crate::molt_zlib_decompressobj_drop as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_decompressobj_eof" => {
             Some(crate::molt_zlib_decompressobj_eof as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_decompressobj_flush" => {
             Some(crate::molt_zlib_decompressobj_flush as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_decompressobj_new" => {
             Some(crate::molt_zlib_decompressobj_new as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_decompressobj_unconsumed_tail" => {
             Some(crate::molt_zlib_decompressobj_unconsumed_tail as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_def_buf_size" => {
             Some(crate::molt_zlib_def_buf_size as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_def_mem_level" => {
             Some(crate::molt_zlib_def_mem_level as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_max_wbits" => Some(crate::molt_zlib_max_wbits as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_z_best_compression" => {
             Some(crate::molt_zlib_z_best_compression as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_z_best_speed" => {
             Some(crate::molt_zlib_z_best_speed as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_z_default_compression" => {
             Some(crate::molt_zlib_z_default_compression as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_z_default_strategy" => {
             Some(crate::molt_zlib_z_default_strategy as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_z_filtered" => Some(crate::molt_zlib_z_filtered as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_z_finish" => Some(crate::molt_zlib_z_finish as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_z_full_flush" => {
             Some(crate::molt_zlib_z_full_flush as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_z_huffman_only" => {
             Some(crate::molt_zlib_z_huffman_only as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_z_no_compression" => {
             Some(crate::molt_zlib_z_no_compression as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_z_no_flush" => Some(crate::molt_zlib_z_no_flush as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_z_sync_flush" => {
             Some(crate::molt_zlib_z_sync_flush as *const () as usize as u64)
         }
@@ -16441,23 +16554,33 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_pathlib_group" => Some(crate::molt_pathlib_group as *const () as usize as u64),
         "molt_pathlib_samefile" => Some(crate::molt_pathlib_samefile as *const () as usize as u64),
         "molt_pathlib_sep" => Some(crate::molt_pathlib_sep as *const () as usize as u64),
+        #[cfg(feature = "stdlib_fs_extra")]
         "molt_glob_glob" => Some(crate::molt_glob_glob as *const () as usize as u64),
+        #[cfg(feature = "stdlib_fs_extra")]
         "molt_glob_iglob" => Some(crate::molt_glob_iglob as *const () as usize as u64),
         "molt_fnmatch_fnmatch" => Some(crate::molt_fnmatch_fnmatch as *const () as usize as u64),
         "molt_fnmatch_fnmatchcase" => {
             Some(crate::molt_fnmatch_fnmatchcase as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_fs_extra")]
         "molt_tempfile_gettempdir" => {
             Some(crate::molt_tempfile_gettempdir as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_fs_extra")]
         "molt_tempfile_gettempdirb" => {
             Some(crate::molt_tempfile_gettempdirb as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_fs_extra")]
         "molt_tempfile_mkdtemp" => Some(crate::molt_tempfile_mkdtemp as *const () as usize as u64),
+        #[cfg(feature = "stdlib_fs_extra")]
         "molt_tempfile_mkstemp" => Some(crate::molt_tempfile_mkstemp as *const () as usize as u64),
+        #[cfg(feature = "stdlib_fs_extra")]
         "molt_tempfile_named" => Some(crate::molt_tempfile_named as *const () as usize as u64),
+        #[cfg(feature = "stdlib_fs_extra")]
         "molt_tempfile_tempdir" => Some(crate::molt_tempfile_tempdir as *const () as usize as u64),
+        #[cfg(feature = "stdlib_fs_extra")]
         "molt_tempfile_cleanup" => Some(crate::molt_tempfile_cleanup as *const () as usize as u64),
+        #[cfg(feature = "stdlib_fs_extra")]
         "molt_tempfile_tempdir_path" => {
             Some(crate::molt_tempfile_tempdir_path as *const () as usize as u64)
         }
@@ -16516,7 +16639,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_codecs_make_identity_dict" => {
             Some(crate::molt_codecs_make_identity_dict as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_ast")]
         "molt_ast_iter_fields" => Some(crate::molt_ast_iter_fields as *const () as usize as u64),
+        #[cfg(feature = "stdlib_ast")]
         "molt_ast_iter_child_nodes" => {
             Some(crate::molt_ast_iter_child_nodes as *const () as usize as u64)
         }
@@ -16552,6 +16677,7 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_enum_is_descriptor" => {
             Some(crate::molt_enum_is_descriptor as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_gzip_flush" => Some(crate::molt_gzip_flush as *const () as usize as u64),
         "molt_json_calc_lineno_col" => {
             Some(crate::molt_json_calc_lineno_col as *const () as usize as u64)
@@ -16563,10 +16689,15 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_logging_filter_check" => {
             Some(crate::molt_logging_filter_check as *const () as usize as u64)
         }
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_file_close" => Some(crate::molt_lzma_file_close as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_file_drop" => Some(crate::molt_lzma_file_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_file_open" => Some(crate::molt_lzma_file_open as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_file_read" => Some(crate::molt_lzma_file_read as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_file_write" => Some(crate::molt_lzma_file_write as *const () as usize as u64),
         "molt_pprint_format_object" => {
             Some(crate::molt_pprint_format_object as *const () as usize as u64)

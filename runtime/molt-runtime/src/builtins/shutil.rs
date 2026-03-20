@@ -581,6 +581,7 @@ pub extern "C" fn molt_shutil_make_archive(
         let archive_path = format!("{base_name}{ext}");
 
         match format.as_str() {
+            #[cfg(feature = "stdlib_archive")]
             "zip" => {
                 use std::io::Write;
                 let file = match fs::File::create(&archive_path) {
@@ -629,7 +630,7 @@ pub extern "C" fn molt_shutil_make_archive(
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "stdlib_archive"))]
 fn zip_add_directory<W: std::io::Write + std::io::Seek>(
     zip: &mut zip::ZipWriter<W>,
     base: &Path,
@@ -694,6 +695,7 @@ pub extern "C" fn molt_shutil_unpack_archive(filename_bits: u64, extract_dir_bit
         };
 
         let name_lower = filename.to_string_lossy().to_lowercase();
+        #[cfg(feature = "stdlib_archive")]
         if name_lower.ends_with(".zip") {
             match unpack_zip(&filename, &extract_dir) {
                 Ok(()) => return MoltObject::none().bits(),
@@ -724,7 +726,7 @@ pub extern "C" fn molt_shutil_unpack_archive(filename_bits: u64, extract_dir_bit
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "stdlib_archive"))]
 fn unpack_zip(archive: &Path, dest: &Path) -> std::io::Result<()> {
     let file = fs::File::open(archive)?;
     let mut zip = zip::ZipArchive::new(file)
