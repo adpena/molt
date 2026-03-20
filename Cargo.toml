@@ -58,10 +58,31 @@ debug = 0
 [profile.dev.package.rustls-webpki]
 debug = 0
 
+[profile.dev.package.serde]
+debug = 0
+
+[profile.dev.package.serde_core]
+debug = 0
+
+[profile.dev.package.serde_json]
+debug = 0
+
 [profile.dev.package.simdutf]
 debug = 0
 
+[profile.dev.package.thiserror]
+debug = 0
+
 [profile.dev.package.tungstenite]
+debug = 0
+
+[profile.dev.package.proc-macro2]
+debug = 0
+
+[profile.dev.package.quote]
+debug = 0
+
+[profile.dev.package.syn]
 debug = 0
 
 [profile.dev.package.unicode_names2]
@@ -125,10 +146,31 @@ debug = 0
 [profile.dev-fast.package.rustls-webpki]
 debug = 0
 
+[profile.dev-fast.package.serde]
+debug = 0
+
+[profile.dev-fast.package.serde_core]
+debug = 0
+
+[profile.dev-fast.package.serde_json]
+debug = 0
+
 [profile.dev-fast.package.simdutf]
 debug = 0
 
+[profile.dev-fast.package.thiserror]
+debug = 0
+
 [profile.dev-fast.package.tungstenite]
+debug = 0
+
+[profile.dev-fast.package.proc-macro2]
+debug = 0
+
+[profile.dev-fast.package.quote]
+debug = 0
+
+[profile.dev-fast.package.syn]
 debug = 0
 
 [profile.dev-fast.package.unicode_names2]
