@@ -369,7 +369,7 @@ pub extern "C" fn molt_module_new(name_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "TypeError", "module name must be str");
             }
         }
-        let name = match string_obj_to_owned(name_obj) {
+        let _name = match string_obj_to_owned(name_obj) {
             Some(val) => val,
             None => return raise_exception::<_>(_py, "TypeError", "module name must be str"),
         };
