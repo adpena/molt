@@ -5535,6 +5535,254 @@ pub extern "C" fn molt_dataclasses_field_flags(fields_dict_bits: u64) -> u64 {
     })
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// __post_init__ support
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `molt_dataclasses_post_init(instance, *initvar_values) -> None`
+///
+/// Calls `instance.__post_init__(*initvar_values)` if it exists.  This is
+/// invoked at the end of the generated `__init__` for dataclasses that define
+/// a `__post_init__` method.
+///
+/// `initvar_values_bits` is a tuple of the InitVar field values in declaration
+/// order.  If the instance has no `__post_init__` method, this is a no-op.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_dataclasses_post_init(
+    instance_bits: u64,
+    initvar_values_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+
+        // Look up __post_init__ on the instance.
+        let Some(post_init_name_bits) = attr_name_bits_from_bytes(_py, b"__post_init__") else {
+            return MoltObject::none().bits();
+        };
+        let method_bits = molt_getattr_builtin(instance_bits, post_init_name_bits, missing);
+        dec_ref_bits(_py, post_init_name_bits);
+
+        if exception_pending(_py) {
+            // __post_init__ not found or attribute error — clear and return.
+            if !crate::builtins::attr::clear_attribute_error_if_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::none().bits();
+        }
+        if method_bits == missing {
+            // No __post_init__ method — nothing to do.
+            return MoltObject::none().bits();
+        }
+
+        // Call __post_init__ with the InitVar values.
+        // initvar_values_bits may be a tuple (possibly empty) or None.
+        let has_args = obj_from_bits(initvar_values_bits)
+            .as_ptr()
+            .is_some_and(|ptr| unsafe {
+                let ty = object_type_id(ptr);
+                (ty == TYPE_ID_TUPLE || ty == TYPE_ID_LIST)
+                    && !seq_vec_ref(ptr).is_empty()
+            });
+
+        let result_bits = if has_args {
+            // Build a call with positional args from the tuple.
+            let args_ptr = obj_from_bits(initvar_values_bits).as_ptr().unwrap();
+            let args = unsafe { seq_vec_ref(args_ptr) };
+            // Use the CallArgs builder to push positional args.
+            let builder_bits = crate::molt_callargs_new(args.len() as u64, 0);
+            for &arg_bits in args.iter() {
+                unsafe {
+                    let _ = crate::molt_callargs_push_pos(builder_bits, arg_bits);
+                }
+            }
+            crate::molt_call_bind(method_bits, builder_bits)
+        } else {
+            // No initvar args — call with zero args.
+            unsafe { call_callable0(_py, method_bits) }
+        };
+
+        dec_ref_bits(_py, method_bits);
+
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+
+        // __post_init__ return value is discarded.
+        if obj_from_bits(result_bits).as_ptr().is_some() {
+            dec_ref_bits(_py, result_bits);
+        }
+
+        MoltObject::none().bits()
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// field() metadata support
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `molt_dataclasses_field_metadata(field_obj) -> MappingProxy | empty dict`
+///
+/// Returns the `metadata` attribute of a Field object.  If the field has no
+/// metadata or metadata is None, returns an empty dict (matching CPython's
+/// behaviour where metadata defaults to `types.MappingProxyType({})`).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_dataclasses_field_metadata(field_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        let Some(meta_name_bits) = attr_name_bits_from_bytes(_py, b"metadata") else {
+            // Allocation failure — return empty dict.
+            let ptr = alloc_dict_with_pairs(_py, &[]);
+            return if ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(ptr).bits()
+            };
+        };
+        let meta_bits = molt_getattr_builtin(field_bits, meta_name_bits, missing);
+        dec_ref_bits(_py, meta_name_bits);
+
+        if exception_pending(_py) {
+            clear_exception(_py);
+            let ptr = alloc_dict_with_pairs(_py, &[]);
+            return if ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(ptr).bits()
+            };
+        }
+        if meta_bits == missing || obj_from_bits(meta_bits).is_none() {
+            let ptr = alloc_dict_with_pairs(_py, &[]);
+            return if ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(ptr).bits()
+            };
+        }
+        // Return the metadata value as-is (should already be a MappingProxy or dict).
+        meta_bits
+    })
+}
+
+/// `molt_dataclasses_set_field_metadata(field_obj, metadata_dict) -> None`
+///
+/// Sets the `metadata` attribute on a Field object, wrapping the given dict
+/// in a `types.MappingProxyType` if it isn't already one.  If `metadata_dict`
+/// is None or empty, sets an empty MappingProxy.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_dataclasses_set_field_metadata(
+    field_bits: u64,
+    metadata_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(meta_name_bits) = attr_name_bits_from_bytes(_py, b"metadata") else {
+            return MoltObject::none().bits();
+        };
+
+        // If metadata is None, set an empty dict.
+        let val_bits = if obj_from_bits(metadata_bits).is_none() {
+            let ptr = alloc_dict_with_pairs(_py, &[]);
+            if ptr.is_null() {
+                dec_ref_bits(_py, meta_name_bits);
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(ptr).bits()
+        } else {
+            metadata_bits
+        };
+
+        let _ = crate::molt_object_setattr(field_bits, meta_name_bits, val_bits);
+        dec_ref_bits(_py, meta_name_bits);
+
+        MoltObject::none().bits()
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// InitVar / KW_ONLY sentinel support
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `molt_dataclasses_is_initvar(obj) -> bool`
+///
+/// Checks if `obj` is an InitVar descriptor (has `__molt_initvar__` marker or
+/// its class name is "InitVar").
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_dataclasses_is_initvar(obj_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+
+        // Check for __molt_initvar__ marker attribute.
+        if let Some(marker_bits) = attr_name_bits_from_bytes(_py, b"__molt_initvar__") {
+            let val = molt_getattr_builtin(obj_bits, marker_bits, missing);
+            dec_ref_bits(_py, marker_bits);
+            if exception_pending(_py) {
+                clear_exception(_py);
+            } else if val != missing && is_truthy(_py, obj_from_bits(val)) {
+                return MoltObject::from_bool(true).bits();
+            }
+        }
+
+        // Fall back: check class name.
+        let cls_bits = type_of_bits(_py, obj_bits);
+        if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__name__") {
+            let name_val = molt_getattr_builtin(cls_bits, name_bits, missing);
+            dec_ref_bits(_py, name_bits);
+            if !exception_pending(_py) && name_val != missing {
+                if let Some(name_str) = string_obj_to_owned(obj_from_bits(name_val)) {
+                    if name_str == "InitVar" {
+                        return MoltObject::from_bool(true).bits();
+                    }
+                }
+            }
+            if exception_pending(_py) {
+                clear_exception(_py);
+            }
+        }
+
+        MoltObject::from_bool(false).bits()
+    })
+}
+
+/// `molt_dataclasses_is_kw_only_sentinel(obj) -> bool`
+///
+/// Checks if `obj` is the KW_ONLY sentinel (has `__molt_kw_only__` marker or
+/// its class name is "KW_ONLY" in the `dataclasses` module).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_dataclasses_is_kw_only_sentinel(obj_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+
+        // Check for __molt_kw_only__ marker attribute.
+        if let Some(marker_bits) = attr_name_bits_from_bytes(_py, b"__molt_kw_only__") {
+            let val = molt_getattr_builtin(obj_bits, marker_bits, missing);
+            dec_ref_bits(_py, marker_bits);
+            if exception_pending(_py) {
+                clear_exception(_py);
+            } else if val != missing && is_truthy(_py, obj_from_bits(val)) {
+                return MoltObject::from_bool(true).bits();
+            }
+        }
+
+        // Fall back: check class name.
+        let cls_bits = type_of_bits(_py, obj_bits);
+        if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__name__") {
+            let name_val = molt_getattr_builtin(cls_bits, name_bits, missing);
+            dec_ref_bits(_py, name_bits);
+            if !exception_pending(_py) && name_val != missing {
+                if let Some(name_str) = string_obj_to_owned(obj_from_bits(name_val)) {
+                    if name_str == "KW_ONLY" || name_str == "_KW_ONLY_TYPE" {
+                        return MoltObject::from_bool(true).bits();
+                    }
+                }
+            }
+            if exception_pending(_py) {
+                clear_exception(_py);
+            }
+        }
+
+        MoltObject::from_bool(false).bits()
+    })
+}
+
 pub(crate) fn types_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
     let class_bits = unsafe { object_class_bits(ptr) };
     if class_bits == 0 {

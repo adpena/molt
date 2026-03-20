@@ -2123,3 +2123,173 @@ pub extern "C" fn molt_os_fspath(path_bits: u64) -> u64 {
         }
     })
 }
+
+// ---------------------------------------------------------------------------
+// 9. Tier-0 gaps for click / trio / httpx support
+// ---------------------------------------------------------------------------
+
+/// `os.environ` → dict[str, str]  (snapshot of the process environment)
+///
+/// Returns a new dict each call; the Python wrapper caches it in `os.environ`
+/// and keeps it synchronised via `os.putenv` / `os.unsetenv`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_environ() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let vars: Vec<(String, String)> = std::env::vars().collect();
+        let mut pairs: Vec<u64> = Vec::with_capacity(vars.len() * 2);
+        let mut owned: Vec<u64> = Vec::with_capacity(vars.len() * 2);
+        for (key, value) in &vars {
+            let k_ptr = alloc_string(_py, key.as_bytes());
+            let v_ptr = alloc_string(_py, value.as_bytes());
+            if k_ptr.is_null() || v_ptr.is_null() {
+                if !k_ptr.is_null() {
+                    dec_ref_bits(_py, MoltObject::from_ptr(k_ptr).bits());
+                }
+                if !v_ptr.is_null() {
+                    dec_ref_bits(_py, MoltObject::from_ptr(v_ptr).bits());
+                }
+                for bits in &owned {
+                    dec_ref_bits(_py, *bits);
+                }
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            let k_bits = MoltObject::from_ptr(k_ptr).bits();
+            let v_bits = MoltObject::from_ptr(v_ptr).bits();
+            pairs.push(k_bits);
+            pairs.push(v_bits);
+            owned.push(k_bits);
+            owned.push(v_bits);
+        }
+        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+        for bits in &owned {
+            dec_ref_bits(_py, *bits);
+        }
+        if dict_ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(dict_ptr).bits()
+    })
+}
+
+/// `os.makedirs(name, mode=0o777, exist_ok=False)` → None
+///
+/// Recursive directory creation (like `mkdir -p`).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_makedirs(
+    path_bits: u64,
+    mode_bits: u64,
+    exist_ok_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.write") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
+        }
+        let path = match require_path(_py, path_bits, "name") {
+            Ok(p) => p,
+            Err(bits) => return bits,
+        };
+        let exist_ok = is_truthy(_py, obj_from_bits(exist_ok_bits));
+        let _mode = to_i64(obj_from_bits(mode_bits)).unwrap_or(0o777);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            let mut builder = std::fs::DirBuilder::new();
+            builder.recursive(true).mode(_mode as u32);
+            match builder.create(&path) {
+                Ok(()) => MoltObject::none().bits(),
+                Err(err) if exist_ok && err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // exist_ok=True: succeed if the target is a directory
+                    if path.is_dir() {
+                        MoltObject::none().bits()
+                    } else {
+                        os_err_bits(_py, err, "makedirs")
+                    }
+                }
+                Err(err) => os_err_bits(_py, err, "makedirs"),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            match std::fs::create_dir_all(&path) {
+                Ok(()) => MoltObject::none().bits(),
+                Err(err) if exist_ok && err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if path.is_dir() {
+                        MoltObject::none().bits()
+                    } else {
+                        os_err_bits(_py, err, "makedirs")
+                    }
+                }
+                Err(err) => os_err_bits(_py, err, "makedirs"),
+            }
+        }
+    })
+}
+
+/// `os.path.join(a, *p)` → str
+///
+/// Joins one or more path components. Accepts exactly two args at the intrinsic
+/// level; the Python wrapper folds over `*p` by repeated calls.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_path_join(base_bits: u64, part_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let base_str = match string_obj_to_owned(obj_from_bits(base_bits)) {
+            Some(s) => s,
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "expected str, bytes or os.PathLike object",
+                );
+            }
+        };
+        let part_str = match string_obj_to_owned(obj_from_bits(part_bits)) {
+            Some(s) => s,
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "expected str, bytes or os.PathLike object",
+                );
+            }
+        };
+        let result = Path::new(&base_str).join(&part_str);
+        str_bits(_py, &result.to_string_lossy())
+    })
+}
+
+/// `os.path.exists(path)` → bool
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_path_exists(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let path = match require_path(_py, path_bits, "path") {
+            Ok(p) => p,
+            Err(_) => return MoltObject::from_bool(false).bits(),
+        };
+        MoltObject::from_bool(path.exists()).bits()
+    })
+}
+
+/// `os.path.isfile(path)` → bool
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_path_isfile(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let path = match require_path(_py, path_bits, "path") {
+            Ok(p) => p,
+            Err(_) => return MoltObject::from_bool(false).bits(),
+        };
+        MoltObject::from_bool(path.is_file()).bits()
+    })
+}
+
+/// `os.path.isdir(path)` → bool
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_path_isdir(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let path = match require_path(_py, path_bits, "path") {
+            Ok(p) => p,
+            Err(_) => return MoltObject::from_bool(false).bits(),
+        };
+        MoltObject::from_bool(path.is_dir()).bits()
+    })
+}

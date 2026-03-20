@@ -57,6 +57,7 @@ pub(crate) mod ipaddress;
 pub(crate) mod itertools;
 pub(crate) mod json;
 pub(crate) mod logging_ext;
+mod micro_stubs;
 #[cfg(all(feature = "stdlib_compression", not(target_arch = "wasm32")))]
 pub(crate) mod lzma;
 #[cfg(all(feature = "stdlib_compression", target_arch = "wasm32"))]
