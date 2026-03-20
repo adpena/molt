@@ -5494,9 +5494,12 @@ mod tests {
         };
         let mut backend = LuauBackend::new();
         let output = backend.compile(&ir);
-        assert!(output.contains("-- ::label_0::"));
-        assert!(output.contains("-- goto label_1"));
-        assert!(output.contains("-- ::label_1::"));
+        assert!(output.contains("::label_0::"));
+        assert!(output.contains("goto label_1"));
+        assert!(output.contains("::label_1::"));
+        assert!(!output.contains("-- ::label_0::"));
+        assert!(!output.contains("-- goto label_1"));
+        assert!(!output.contains("-- ::label_1::"));
         assert!(output.contains("return"));
     }
 
@@ -5604,11 +5607,13 @@ mod tests {
             profile: None,
         };
         let mut backend = LuauBackend::new();
-        // Labels and gotos emit as comments (standalone Luau has no goto).
+        // Labels and gotos emit as real Luau control flow.
         let source = backend
             .compile_checked(&ir)
-            .expect("label/goto comments should pass validation");
-        assert!(source.contains("-- ::label_0::"));
-        assert!(source.contains("-- goto label_1"));
+            .expect("label/goto source should pass validation");
+        assert!(source.contains("::label_0::"));
+        assert!(source.contains("goto label_1"));
+        assert!(!source.contains("-- ::label_0::"));
+        assert!(!source.contains("-- goto label_1"));
     }
 }
