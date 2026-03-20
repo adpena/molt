@@ -2,6 +2,7 @@ pub(crate) mod abc;
 pub(crate) mod annotations;
 pub(crate) mod argparse;
 pub(crate) mod array_mod;
+#[cfg(feature = "stdlib_ast")]
 pub(crate) mod ast;
 pub(crate) mod asyncio_core;
 pub(crate) mod asyncio_queue;
@@ -10,6 +11,7 @@ pub(crate) mod attr;
 pub(crate) mod attributes;
 pub(crate) mod base64_mod;
 pub(crate) mod binascii;
+#[cfg(feature = "stdlib_compression")]
 pub(crate) mod bz2;
 pub(crate) mod callable;
 pub(crate) mod classes;
@@ -18,6 +20,7 @@ pub(crate) mod codecs;
 pub(crate) mod codecs_ext;
 pub(crate) mod collections_ext;
 pub(crate) mod colorsys;
+#[cfg(feature = "stdlib_compression")]
 pub(crate) mod compression_common;
 pub(crate) mod concurrent;
 pub(crate) mod configparser;
@@ -38,10 +41,14 @@ pub(crate) mod fractions;
 pub(crate) mod frames;
 pub(crate) mod functions;
 pub(crate) mod functools;
+#[cfg(feature = "stdlib_fs_extra")]
 pub(crate) mod glob_mod;
 pub(crate) mod graphlib;
+#[cfg(feature = "stdlib_compression")]
 pub(crate) mod gzip;
+#[cfg(feature = "stdlib_crypto")]
 pub(crate) mod hashlib;
+#[cfg(feature = "stdlib_crypto")]
 pub(crate) mod hmac;
 pub(crate) mod html;
 pub(crate) mod inspect;
@@ -50,9 +57,9 @@ pub(crate) mod ipaddress;
 pub(crate) mod itertools;
 pub(crate) mod json;
 pub(crate) mod logging_ext;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "stdlib_compression", not(target_arch = "wasm32")))]
 pub(crate) mod lzma;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(feature = "stdlib_compression", target_arch = "wasm32"))]
 #[path = "lzma_wasm.rs"]
 pub(crate) mod lzma;
 pub(crate) mod math;
@@ -68,6 +75,7 @@ pub(crate) mod pprint_ext;
 pub(crate) mod punycode;
 pub(crate) mod random_mod;
 pub(crate) mod regex;
+#[cfg(feature = "stdlib_crypto")]
 pub(crate) mod secrets;
 pub(crate) mod select;
 pub(crate) mod shutil;
@@ -80,12 +88,15 @@ pub(crate) mod strings;
 pub(crate) mod structs;
 pub(crate) mod subprocess_ext;
 pub(crate) mod sys_ext;
+#[cfg(feature = "stdlib_compression")]
 pub(crate) mod tarfile;
+#[cfg(feature = "stdlib_fs_extra")]
 pub(crate) mod tempfile_mod;
 pub(crate) mod tkinter_core;
 pub(crate) mod type_ops;
 pub(crate) mod types;
 pub(crate) mod unicodedata_mod;
 pub(crate) mod warnings_ext;
+#[cfg(feature = "stdlib_compression")]
 pub(crate) mod zlib;
 pub(crate) mod zoneinfo;

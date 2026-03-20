@@ -119,6 +119,7 @@ pub(crate) use crate::async_rt::{
 pub use crate::builtins::abc::*;
 pub use crate::builtins::argparse::*;
 pub use crate::builtins::array_mod::*;
+#[cfg(feature = "stdlib_ast")]
 pub use crate::builtins::ast::*;
 pub use crate::builtins::asyncio_core::*;
 pub use crate::builtins::asyncio_queue::*;
@@ -136,6 +137,7 @@ pub(crate) use crate::builtins::attr::{
 pub use crate::builtins::attributes::*;
 pub use crate::builtins::base64_mod::*;
 pub use crate::builtins::binascii::*;
+#[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::bz2::*;
 pub use crate::builtins::callable::*;
 pub(crate) use crate::builtins::classes::{
@@ -147,6 +149,7 @@ pub use crate::builtins::codecs::*;
 pub use crate::builtins::codecs_ext::*;
 pub use crate::builtins::collections_ext::*;
 pub use crate::builtins::colorsys::*;
+#[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::compression_common::*;
 pub use crate::builtins::concurrent::*;
 pub use crate::builtins::configparser::*;
@@ -211,10 +214,14 @@ pub use crate::builtins::fnmatch::*;
 pub use crate::builtins::fractions::*;
 pub use crate::builtins::functions::*;
 pub use crate::builtins::functools::*;
+#[cfg(feature = "stdlib_fs_extra")]
 pub use crate::builtins::glob_mod::*;
 pub use crate::builtins::graphlib::*;
+#[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::gzip::*;
+#[cfg(feature = "stdlib_crypto")]
 pub use crate::builtins::hashlib::*;
+#[cfg(feature = "stdlib_crypto")]
 pub use crate::builtins::hmac::*;
 pub use crate::builtins::html::*;
 pub use crate::builtins::inspect::*;
@@ -227,6 +234,7 @@ pub use crate::builtins::ipaddress::*;
 pub use crate::builtins::itertools::*;
 pub use crate::builtins::json::*;
 pub use crate::builtins::logging_ext::*;
+#[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::lzma::*;
 pub use crate::builtins::math::*;
 pub(crate) use crate::builtins::methods::*;
@@ -248,6 +256,7 @@ pub use crate::builtins::pprint_ext::*;
 pub use crate::builtins::punycode::*;
 pub use crate::builtins::random_mod::*;
 pub use crate::builtins::regex::*;
+#[cfg(feature = "stdlib_crypto")]
 pub use crate::builtins::secrets::*;
 pub use crate::builtins::select::*;
 pub use crate::builtins::shutil::*;
@@ -267,7 +276,9 @@ pub(crate) use crate::builtins::strings::{
 pub use crate::builtins::structs::*;
 pub use crate::builtins::subprocess_ext::*;
 pub use crate::builtins::sys_ext::*;
+#[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::tarfile::*;
+#[cfg(feature = "stdlib_fs_extra")]
 pub use crate::builtins::tempfile_mod::*;
 pub use crate::builtins::tkinter_core::*;
 pub(crate) use crate::builtins::type_ops::{
@@ -277,6 +288,7 @@ pub(crate) use crate::builtins::type_ops::{
 pub use crate::builtins::types::*;
 pub use crate::builtins::unicodedata_mod::*;
 pub use crate::builtins::warnings_ext::*;
+#[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::zlib::*;
 pub use crate::builtins::zoneinfo::*;
 #[allow(unused_imports)]
