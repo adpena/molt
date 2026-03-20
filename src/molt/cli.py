@@ -22989,11 +22989,16 @@ def main() -> int:
         help="Write the lowered IR JSON to a file path.",
     )
     build_parser.add_argument(
-        "--profile",
         "--build-profile",
         choices=["dev", "release"],
         default=None,
         help="Build profile for backend/runtime (default: release).",
+    )
+    build_parser.add_argument(
+        "--profile",
+        choices=["cloudflare", "browser", "wasi", "fastly"],
+        default=None,
+        help="Deployment profile (sets optimization defaults).",
     )
     build_parser.add_argument(
         "--deterministic",
@@ -23924,7 +23929,7 @@ def main() -> int:
             or build_cfg.get("runtime-feedback")
         )
         build_profile = (
-            args.profile
+            args.build_profile
             or build_cfg.get("profile")
             or build_cfg.get("build_profile")
             or "release"
@@ -24018,6 +24023,55 @@ def main() -> int:
             )
         if not args.file and not args.module:
             return _fail("Missing entry file or module.", args.json, command="build")
+
+        # --- Deployment profile defaults ---
+        _DEPLOY_PROFILE_DEFAULTS = {
+            "cloudflare": {
+                "wasm_opt_level": "Oz",
+                "wasm_profile": "pure",
+                "precompile": True,
+                "tmp_quota_mb": 32,
+            },
+            "browser": {
+                "wasm_opt_level": "Oz",
+                "wasm_profile": "pure",
+                "precompile": False,
+                "tmp_quota_mb": 64,
+            },
+            "wasi": {
+                "wasm_opt_level": "O3",
+                "wasm_profile": "full",
+                "precompile": False,
+                "tmp_quota_mb": 256,
+            },
+            "fastly": {
+                "wasm_opt_level": "Oz",
+                "wasm_profile": "pure",
+                "precompile": True,
+                "tmp_quota_mb": 64,
+            },
+        }
+
+        deploy_profile = getattr(args, "profile", None)
+        wasm_opt_level = getattr(args, "wasm_opt_level", "Oz")
+        precompile = getattr(args, "precompile", False)
+        wasm_profile = getattr(args, "wasm_profile", "full")
+
+        if deploy_profile and deploy_profile in _DEPLOY_PROFILE_DEFAULTS:
+            defaults = _DEPLOY_PROFILE_DEFAULTS[deploy_profile]
+            # Only apply defaults for arguments that weren't explicitly set
+            if args.wasm_opt_level == "Oz" and "wasm_opt_level" not in sys.argv:
+                # wasm_opt_level has argparse default "Oz"; check if user passed it
+                _wasm_opt_explicitly_set = any(
+                    a.startswith("--wasm-opt-level") for a in sys.argv
+                )
+                if not _wasm_opt_explicitly_set:
+                    wasm_opt_level = defaults["wasm_opt_level"]
+            if not any(a == "--precompile" for a in sys.argv):
+                precompile = defaults["precompile"]
+            if not any(a.startswith("--wasm-profile") for a in sys.argv):
+                wasm_profile = defaults["wasm_profile"]
+
         return build(
             args.file,
             target,
@@ -24051,9 +24105,9 @@ def main() -> int:
             diagnostics_file,
             diagnostics_verbosity,
             portable=getattr(args, "portable", False),
-            wasm_opt_level=getattr(args, "wasm_opt_level", "Oz"),
-            precompile=getattr(args, "precompile", False),
-            wasm_profile=getattr(args, "wasm_profile", "full"),
+            wasm_opt_level=wasm_opt_level,
+            precompile=precompile,
+            wasm_profile=wasm_profile,
         )
     if args.command == "extension":
         if args.extension_command == "build":
