@@ -131,7 +131,7 @@ unsafe fn bytes_like_slice_raw_mut(ptr: *mut u8) -> Option<&'static mut [u8]> {
     unsafe {
         let type_id = object_type_id(ptr);
         if type_id == TYPE_ID_BYTEARRAY {
-            let vec = bytearray_vec(ptr);
+            let vec = &mut *bytearray_vec(ptr);
             return Some(vec.as_mut_slice());
         }
         None

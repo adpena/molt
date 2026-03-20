@@ -1490,7 +1490,7 @@ fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Option<u64> {
 
 unsafe fn list_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> bool {
     unsafe {
-        let elems = seq_vec(ptr);
+        let elems = &mut *seq_vec(ptr);
         if count <= 0 {
             for &item in elems.iter() {
                 dec_ref_bits(_py, item);
@@ -1538,7 +1538,7 @@ unsafe fn list_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> b
 
 unsafe fn bytearray_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> bool {
     unsafe {
-        let elems = bytearray_vec(ptr);
+        let elems = &mut *bytearray_vec(ptr);
         if count <= 0 {
             elems.clear();
             return true;
@@ -1605,7 +1605,7 @@ unsafe fn bytearray_concat_in_place(_py: &PyToken<'_>, ptr: *mut u8, other_bits:
             let msg = format!("can't concat {} to bytearray", type_name(_py, other));
             return raise_exception::<_>(_py, "TypeError", &msg);
         };
-        bytearray_vec(ptr).extend_from_slice(&payload);
+        (*bytearray_vec(ptr)).extend_from_slice(&payload);
         true
     }
 }
@@ -9349,7 +9349,7 @@ pub extern "C" fn molt_bytearray_extend(bytearray_bits: u64, other_bits: u64) ->
             return MoltObject::none().bits();
         };
         unsafe {
-            bytearray_vec(bytearray_ptr).extend_from_slice(&payload);
+            (*bytearray_vec(bytearray_ptr)).extend_from_slice(&payload);
         }
         MoltObject::none().bits()
     })
@@ -9375,7 +9375,7 @@ pub extern "C" fn molt_bytearray_append(bytearray_bits: u64, val_bits: u64) -> u
             return MoltObject::none().bits();
         };
         unsafe {
-            bytearray_vec(bytearray_ptr).push(byte);
+            (*bytearray_vec(bytearray_ptr)).push(byte);
         }
         MoltObject::none().bits()
     })
@@ -9392,7 +9392,7 @@ pub extern "C" fn molt_bytearray_clear(bytearray_bits: u64) -> u64 {
             if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
                 return raise_exception::<_>(_py, "TypeError", "bytearray.clear expects bytearray");
             }
-            bytearray_vec(bytearray_ptr).clear();
+            (*bytearray_vec(bytearray_ptr)).clear();
         }
         MoltObject::none().bits()
     })
@@ -9459,7 +9459,7 @@ pub extern "C" fn molt_bytearray_insert(
             if idx > len {
                 idx = len;
             }
-            bytearray_vec(bytearray_ptr).insert(idx as usize, byte);
+            (*bytearray_vec(bytearray_ptr)).insert(idx as usize, byte);
             MoltObject::none().bits()
         }
     })
@@ -9477,7 +9477,7 @@ pub extern "C" fn molt_bytearray_pop(bytearray_bits: u64, index_bits: u64) -> u6
             if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
                 return raise_exception::<_>(_py, "TypeError", "bytearray.pop expects bytearray");
             }
-            let elems = bytearray_vec(bytearray_ptr);
+            let elems = &mut *bytearray_vec(bytearray_ptr);
             let len = elems.len() as i64;
             if len == 0 {
                 return raise_exception::<_>(_py, "IndexError", "pop from empty bytearray");
@@ -9524,7 +9524,7 @@ pub extern "C" fn molt_bytearray_remove(bytearray_bits: u64, val_bits: u64) -> u
             let Some(byte) = bytes_item_to_u8(_py, val_bits, BytesCtorKind::Bytearray) else {
                 return MoltObject::none().bits();
             };
-            let elems = bytearray_vec(bytearray_ptr);
+            let elems = &mut *bytearray_vec(bytearray_ptr);
             if let Some(pos) = elems.iter().position(|item| *item == byte) {
                 elems.remove(pos);
                 return MoltObject::none().bits();
@@ -9549,7 +9549,7 @@ pub extern "C" fn molt_bytearray_reverse(bytearray_bits: u64) -> u64 {
                     "bytearray.reverse expects bytearray",
                 );
             }
-            bytearray_vec(bytearray_ptr).reverse();
+            (*bytearray_vec(bytearray_ptr)).reverse();
             MoltObject::none().bits()
         }
     })
@@ -9582,7 +9582,7 @@ pub extern "C" fn molt_bytearray_resize(bytearray_bits: u64, size_bits: u64) -> 
                     "bytearray.resize expects bytearray",
                 );
             }
-            bytearray_vec(bytearray_ptr).resize(size as usize, 0u8);
+            (*bytearray_vec(bytearray_ptr)).resize(size as usize, 0u8);
         }
         MoltObject::none().bits()
     })
@@ -33447,7 +33447,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             Some(items) => items,
                             None => return MoltObject::none().bits(),
                         };
-                        let elems = seq_vec(ptr);
+                        let elems = &mut *seq_vec(ptr);
                         if step == 1 {
                             let s = start as usize;
                             let mut e = stop as usize;
@@ -33530,7 +33530,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             "list assignment index out of range",
                         );
                     }
-                    let elems = seq_vec(ptr);
+                    let elems = &mut *seq_vec(ptr);
                     let old_bits = elems[i as usize];
                     if old_bits != val_bits {
                         dec_ref_bits(_py, old_bits);
@@ -33560,7 +33560,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             Some(bytes) => bytes,
                             None => return MoltObject::none().bits(),
                         };
-                        let elems = bytearray_vec(ptr);
+                        let elems = &mut *bytearray_vec(ptr);
                         if step == 1 {
                             let s = start as usize;
                             let mut e = stop as usize;
@@ -33610,7 +33610,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     else {
                         return MoltObject::none().bits();
                     };
-                    let elems = bytearray_vec(ptr);
+                    let elems = &mut *bytearray_vec(ptr);
                     elems[i as usize] = byte;
                     return obj_bits;
                 }
@@ -33642,7 +33642,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     let shape = memoryview_shape(ptr).unwrap_or(&[]);
                     let strides = memoryview_strides(ptr).unwrap_or(&[]);
                     let ndim = shape.len();
-                    let data = bytearray_vec(owner_ptr);
+                    let data = &mut *bytearray_vec(owner_ptr);
                     if ndim == 0 {
                         if let Some(tup_ptr) = key.as_ptr()
                             && object_type_id(tup_ptr) == TYPE_ID_TUPLE
@@ -34026,7 +34026,7 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                             Ok(vals) => vals,
                             Err(err) => return slice_error(_py, err),
                         };
-                        let elems = seq_vec(ptr);
+                        let elems = &mut *seq_vec(ptr);
                         if step == 1 {
                             let s = start as usize;
                             let mut e = stop as usize;
@@ -34079,7 +34079,7 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                             "list assignment index out of range",
                         );
                     }
-                    let elems = seq_vec(ptr);
+                    let elems = &mut *seq_vec(ptr);
                     let old_bits = elems.remove(i as usize);
                     dec_ref_bits(_py, old_bits);
                     return obj_bits;
@@ -34098,7 +34098,7 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                             Ok(vals) => vals,
                             Err(err) => return slice_error(_py, err),
                         };
-                        let elems = bytearray_vec(ptr);
+                        let elems = &mut *bytearray_vec(ptr);
                         if step == 1 {
                             let s = start as usize;
                             let mut e = stop as usize;
@@ -34139,7 +34139,7 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                             "bytearray index out of range",
                         );
                     }
-                    let elems = bytearray_vec(ptr);
+                    let elems = &mut *bytearray_vec(ptr);
                     elems.remove(i as usize);
                     return obj_bits;
                 }
@@ -38914,7 +38914,7 @@ pub extern "C" fn molt_list_append(list_bits: u64, val_bits: u64) -> u64 {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_LIST {
-                    let elems = seq_vec(ptr);
+                    let elems = &mut *seq_vec(ptr);
                     elems.push(val_bits);
                     inc_ref_bits(_py, val_bits);
                     return MoltObject::none().bits();
@@ -38955,7 +38955,7 @@ pub extern "C" fn molt_list_pop(list_bits: u64, index_bits: u64) -> u64 {
                     if idx < 0 || idx >= len {
                         return raise_exception::<_>(_py, "IndexError", "pop index out of range");
                     }
-                    let elems = seq_vec(ptr);
+                    let elems = &mut *seq_vec(ptr);
                     let idx_usize = idx as usize;
                     let value = elems.remove(idx_usize);
                     inc_ref_bits(_py, value);
@@ -38977,7 +38977,7 @@ pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
                 if object_type_id(list_ptr) != TYPE_ID_LIST {
                     return MoltObject::none().bits();
                 }
-                let list_elems = seq_vec(list_ptr);
+                let list_elems = &mut *seq_vec(list_ptr);
                 let other_obj = obj_from_bits(other_bits);
                 if let Some(other_ptr) = other_obj.as_ptr() {
                     let other_type = object_type_id(other_ptr);
@@ -39093,7 +39093,7 @@ pub extern "C" fn molt_list_insert(list_bits: u64, index_bits: u64, val_bits: u6
                     if idx > len {
                         idx = len;
                     }
-                    let elems = seq_vec(list_ptr);
+                    let elems = &mut *seq_vec(list_ptr);
                     elems.insert(idx as usize, val_bits);
                     inc_ref_bits(_py, val_bits);
                     return MoltObject::none().bits();
@@ -39153,7 +39153,7 @@ pub extern "C" fn molt_list_remove(list_bits: u64, val_bits: u64) -> u64 {
                     }
                     list_snapshot_release(_py, snapshot);
                     if let Some(target_idx) = matched_idx {
-                        let elems = seq_vec(list_ptr);
+                        let elems = &mut *seq_vec(list_ptr);
                         if target_idx < elems.len() {
                             let removed = elems.remove(target_idx);
                             dec_ref_bits(_py, removed);
@@ -39179,7 +39179,7 @@ pub extern "C" fn molt_list_clear(list_bits: u64) -> u64 {
         if let Some(list_ptr) = list_obj.as_ptr() {
             unsafe {
                 if object_type_id(list_ptr) == TYPE_ID_LIST {
-                    let elems = seq_vec(list_ptr);
+                    let elems = &mut *seq_vec(list_ptr);
                     for &elem in elems.iter() {
                         dec_ref_bits(_py, elem);
                     }
@@ -39246,7 +39246,7 @@ pub extern "C" fn molt_list_reverse(list_bits: u64) -> u64 {
         if let Some(list_ptr) = list_obj.as_ptr() {
             unsafe {
                 if object_type_id(list_ptr) == TYPE_ID_LIST {
-                    let elems = seq_vec(list_ptr);
+                    let elems = &mut *seq_vec(list_ptr);
                     elems.reverse();
                     return MoltObject::none().bits();
                 }
@@ -39346,7 +39346,7 @@ pub extern "C" fn molt_list_sort(list_bits: u64, key_bits: u64, reverse_bits: u6
                         dec_ref_bits(_py, item.key_bits);
                     }
                 }
-                let elems_mut = seq_vec(list_ptr);
+                let elems_mut = &mut *seq_vec(list_ptr);
                 *elems_mut = new_elems;
                 return MoltObject::none().bits();
             }
@@ -39498,7 +39498,7 @@ pub extern "C" fn molt_heapq_heapify(list_bits: u64) -> u64 {
             if object_type_id(list_ptr) != TYPE_ID_LIST {
                 return MoltObject::none().bits();
             }
-            let elems = seq_vec(list_ptr);
+            let elems = &mut *seq_vec(list_ptr);
             let len = elems.len();
             if len < 2 {
                 return MoltObject::none().bits();
@@ -39524,7 +39524,7 @@ pub extern "C" fn molt_heapq_heappush(list_bits: u64, item_bits: u64) -> u64 {
             if object_type_id(list_ptr) != TYPE_ID_LIST {
                 return MoltObject::none().bits();
             }
-            let elems = seq_vec(list_ptr);
+            let elems = &mut *seq_vec(list_ptr);
             elems.push(item_bits);
             inc_ref_bits(_py, item_bits);
             let len = elems.len();
@@ -39547,7 +39547,7 @@ pub extern "C" fn molt_heapq_heappop(list_bits: u64) -> u64 {
             if object_type_id(list_ptr) != TYPE_ID_LIST {
                 return MoltObject::none().bits();
             }
-            let elems = seq_vec(list_ptr);
+            let elems = &mut *seq_vec(list_ptr);
             if elems.is_empty() {
                 return raise_exception::<_>(_py, "IndexError", "index out of range");
             }
@@ -39580,7 +39580,7 @@ pub extern "C" fn molt_heapq_heapreplace(list_bits: u64, item_bits: u64) -> u64 
             if object_type_id(list_ptr) != TYPE_ID_LIST {
                 return MoltObject::none().bits();
             }
-            let elems = seq_vec(list_ptr);
+            let elems = &mut *seq_vec(list_ptr);
             if elems.is_empty() {
                 return raise_exception::<_>(_py, "IndexError", "index out of range");
             }
@@ -39608,7 +39608,7 @@ pub extern "C" fn molt_heapq_heappushpop(list_bits: u64, item_bits: u64) -> u64 
             if object_type_id(list_ptr) != TYPE_ID_LIST {
                 return MoltObject::none().bits();
             }
-            let elems = seq_vec(list_ptr);
+            let elems = &mut *seq_vec(list_ptr);
             if elems.is_empty() {
                 inc_ref_bits(_py, item_bits);
                 return item_bits;
@@ -39710,7 +39710,7 @@ pub extern "C" fn molt_heapq_heapify_max(list_bits: u64) -> u64 {
             if object_type_id(list_ptr) != TYPE_ID_LIST {
                 return MoltObject::none().bits();
             }
-            let elems = seq_vec(list_ptr);
+            let elems = &mut *seq_vec(list_ptr);
             let len = elems.len();
             if len < 2 {
                 return MoltObject::none().bits();
@@ -39740,7 +39740,7 @@ pub extern "C" fn molt_heapq_heappop_max(list_bits: u64) -> u64 {
             if object_type_id(list_ptr) != TYPE_ID_LIST {
                 return MoltObject::none().bits();
             }
-            let elems = seq_vec(list_ptr);
+            let elems = &mut *seq_vec(list_ptr);
             if elems.is_empty() {
                 return raise_exception::<_>(_py, "IndexError", "index out of range");
             }
@@ -41085,7 +41085,7 @@ fn bisect_insert(_py: &PyToken<'_>, seq_bits: u64, idx: i64, value_bits: u64) ->
                 if pos > len {
                     pos = len;
                 }
-                let elems = seq_vec(ptr);
+                let elems = &mut *seq_vec(ptr);
                 elems.insert(pos as usize, value_bits);
                 inc_ref_bits(_py, value_bits);
                 return Some(());
