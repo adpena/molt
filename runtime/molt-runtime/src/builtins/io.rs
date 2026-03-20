@@ -3700,8 +3700,7 @@ fn open_impl(
             // If the path resolves through a VFS mount, serve the read
             // from the in-memory backend rather than the real filesystem.
             let path_str = path.to_string_lossy();
-            if let Some(guard) = runtime_state(_py).get_vfs() {
-                let vfs = guard.as_ref().unwrap();
+            if let Some(vfs) = runtime_state(_py).get_vfs() {
                 if let Some((mount_prefix, backend, rel_path)) = vfs.resolve(&path_str) {
                     let is_write = mode_info.writable;
                     // Capability check
@@ -3757,9 +3756,6 @@ fn open_impl(
                     } else {
                         None
                     };
-
-                    // Drop the VFS lock before allocating Python objects.
-                    drop(guard);
 
                     // Build an in-memory file handle (like BytesIO) backed
                     // by the VFS data so the rest of the runtime sees a
