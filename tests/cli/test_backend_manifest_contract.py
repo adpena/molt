@@ -63,3 +63,14 @@ def test_workspace_dev_profile_trims_runtime_debug_info() -> None:
         assert expected_packages <= packages.keys()
         for package in expected_packages:
             assert packages[package]["debug"] == 0
+
+
+def test_runtime_manifest_uses_flate2_zip_deflate_only() -> None:
+    runtime_manifest_path = ROOT / "runtime" / "molt-runtime" / "Cargo.toml"
+    with runtime_manifest_path.open("rb") as handle:
+        runtime_manifest = tomllib.load(handle)
+
+    zip_dependency = runtime_manifest["dependencies"]["zip"]
+
+    assert zip_dependency["default-features"] is False
+    assert zip_dependency["features"] == ["deflate-flate2-zlib-rs"]
