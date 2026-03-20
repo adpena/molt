@@ -50,6 +50,8 @@ The remaining 30 imports (core runtime, arithmetic, IO/stdout, indirect calls, e
 
 ### Option A: Build flag in `wasm.rs` (compiler-side, recommended)
 
+> **UPDATE 2026-03-20:** This option is now implemented (ddc8ea4c). `--wasm-profile pure` performs compile-time stripping of IO/ASYNC/TIME category imports, emitting `unreachable` for stripped call sites. Combined with `wasm-opt --remove-unused-module-elements` post-link, this achieves 30-50% size reduction for pure-compute modules.
+
 Add a `--wasm-profile` flag with values like `full` (default) and `pure`:
 - In `pure` mode, skip the `add_import` calls for process/db/ws/socket/time categories.
 - Guard the corresponding `emit_call` sites to emit `unreachable` instead of `call $import_idx` for omitted imports.

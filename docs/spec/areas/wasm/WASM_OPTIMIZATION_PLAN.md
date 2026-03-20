@@ -71,6 +71,17 @@ All of the following optimizations were completed in the 2026-03-20 session:
 | `local.tee` introduction | fef9990c | 37 eliminated `LocalGet` instructions; ~1-2% instruction reduction |
 | Constant caching (`ConstantCache`) | ffd95a5d | Cache for `INT_SHIFT`/`INT_MIN`/`INT_MAX` materialization in helper functions |
 | Precompiled `.cwasm` artifacts | e4b4d9b8 | `--precompile` flag with `wasmtime compile`; 10-50x faster startup |
+| `br_table` O(1) state dispatch | c1ae684a | Generator/coroutine state machines use `br_table`; 2-5x faster resume |
+| Dead local elimination (`__dead_sink`) | 0b9c39ad | Unused locals routed to single sink; 2-5% binary size reduction |
+| `memory.fill` for generator zero-init | 2bff6165 | Bulk zero-init replaces N individual stores; code size + throughput |
+| `memory_copy` intrinsic op | 4ca5c360 | `memory.copy` emission for bulk linear-memory copies |
+| Full wasm-opt Oz/O3 pipelines | bf65d218 | Integrated post-link optimization; 15-30% binary size reduction |
+| `--wasm-profile pure` import stripping | ddc8ea4c | Compile-time IO/ASYNC/TIME import stripping for pure-compute modules |
+| Tail call emission (`return_call`) | 49af0f7a | Conservative tail calls for non-stateful functions without EH |
+| Native exception handling groundwork | 4b7a52c5 | Tag section, try_table/catch/throw; gated by MOLT_WASM_NATIVE_EH=1 |
+| SIMD stub rewriter support | 0eb06e6c | WASI stub rewriter handles SIMD instructions; enables +simd128 freestanding |
+| Multi-value return groundwork | a7b50199 | Multi-value type signatures (Types 31-34); candidate detection pass |
+| Box/unbox elimination | cd3f98df | eq/ne skip unbox; arithmetic uses trusted unbox saving 4 insns/op |
 
 ### 1.3 Missing Features
 
@@ -162,7 +173,7 @@ Migration path (aligned with spec 0400 Section 13):
 - Use `memory.copy` for buffer-to-buffer operations where both source and destination are in linear memory.
 - Estimated impact: 10-30% speedup for large buffer operations; 2-5% binary size reduction from shorter initialization sequences.
 
-**UPDATE 2026-03-20:** `memory.fill` is now used for generator control block zero-initialization (2bff6165). `memory.copy` for buffer operations remains a future optimization.
+**UPDATE 2026-03-20:** `memory.fill` is now used for generator control block zero-initialization (2bff6165). `memory_copy` intrinsic op (4ca5c360) added to the WASM emitter, emitting `memory.copy` (src_mem=0, dst_mem=0) for bulk linear-memory-to-linear-memory copies.
 
 **UPDATE 2026-03-20:** `memory_copy` intrinsic op added to the WASM emitter. The op emits `memory.copy` (src_mem=0, dst_mem=0) for bulk linear-memory-to-linear-memory copies. IR signature: `memory_copy(dst, src, len)` where all three args are i64-boxed i32 byte offsets. Current buffer ops (`bytes_concat`, `str_concat`, `list_copy`, `slice`, etc.) all delegate to host imports which perform the copy on the host side; the new intrinsic is available for future IR lowering passes that can identify cases where both source and destination are already resolved to linear memory addresses (e.g. closure slot migration, frame spill/restore, data-segment-to-heap initialization).
 
@@ -183,6 +194,8 @@ Migration path (aligned with spec 0400 Section 13):
 - Deterministic mode (`MOLT_DETERMINISTIC=1`) must not use relaxed SIMD.
 - Browser compatibility is good (Chrome 91+, Firefox 89+, Safari 16.4+).
 
+**UPDATE 2026-03-20:** SIMD instructions fully supported in the WASI stub rewriter (0eb06e6c), enabling freestanding builds with +simd128.
+
 **Priority**: P2 (stdlib intrinsics), P3 (auto-vectorization).
 
 ### 3.5 Tail Calls Proposal
@@ -195,6 +208,8 @@ Migration path (aligned with spec 0400 Section 13):
 - Detect tail-position calls in the IR and emit `return_call` / `return_call_indirect` instead of `call` + `return`.
 - Primary beneficiaries: recursive algorithms (tree traversal, list processing), trampoline dispatch.
 - Estimated impact: prevents stack overflow for deep recursion; minor performance improvement from eliminated stack frame setup/teardown.
+
+**UPDATE 2026-03-20:** Implemented (49af0f7a). Conservative: only non-stateful functions without exception handling. Reports count via MOLT_WASM_IMPORT_AUDIT=1.
 
 **Priority**: P2 -- correctness improvement more than performance.
 
@@ -209,6 +224,8 @@ Migration path (aligned with spec 0400 Section 13):
 - Replace `exception_push`/`exception_pending`/`exception_pop` sequences with native `try`/`catch`/`throw` WASM instructions.
 - Move exception payload (class, message, traceback) into WASM-side data structures, eliminating host round-trips for exception attribute access.
 - Estimated impact: 20-40% speedup for exception-heavy code (generators, iterators, `dict.get` with default); 5-10% binary size reduction from eliminated check_exception blocks.
+
+**UPDATE 2026-03-20:** Groundwork complete (4b7a52c5). Gated by MOLT_WASM_NATIVE_EH=1. Tag section, try_table/catch/throw emission implemented. Currently works for unlinked output only (wasm-ld EH relocation support pending).
 
 **Priority**: P1 -- high impact for real-world Python patterns (StopIteration is used on every `for` loop).
 
@@ -258,7 +275,7 @@ brotli / gzip  -->  output_stripped.wasm.br
 
 | Optimization | Estimated Reduction | Status |
 |---|---|---|
-| **Import stripping** (`--wasm-profile pure`) | 30-50% for pure-compute modules | Planned (see wasm-import-stripping.md) |
+| **Import stripping** (`--wasm-profile pure`) | 30-50% for pure-compute modules | DONE (ddc8ea4c) — compile-time IO/ASYNC/TIME import stripping |
 | **Dead code elimination** via `wasm-opt --dce` | 10-20% | Integrated into build |
 | **Name section stripping** via `wasm-tools strip` | 5-10% | Integrated (--strip-debug in Oz pipeline) |
 | **Brotli compression** | 60-70% of stripped size | Available, not integrated into build |
