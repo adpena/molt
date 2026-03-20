@@ -3971,17 +3971,96 @@ impl WasmBackend {
         // Also treat function parameters as always live.
         let param_set: HashSet<String> = func_ir.params.iter().cloned().collect();
 
+        // --- Local variable coalescing (liveness analysis) ---
+        // Compute live ranges for each variable: first write -> last read.
+        // Variables whose ranges don't overlap can share a WASM local,
+        // reducing total local count and binary size.
+        let coalesced_map: HashMap<String, String> = {
+            let mut first_write: HashMap<String, usize> = HashMap::new();
+            let mut last_read: HashMap<String, usize> = HashMap::new();
+
+            for (op_idx, op) in func_ir.ops.iter().enumerate() {
+                if let Some(ref out) = op.out {
+                    first_write.entry(out.clone()).or_insert(op_idx);
+                }
+                if let Some(ref args) = op.args {
+                    for arg in args {
+                        last_read.insert(arg.clone(), op_idx);
+                    }
+                }
+                if let Some(ref var) = op.var {
+                    last_read.insert(var.clone(), op_idx);
+                }
+            }
+
+            // Build live ranges for coalescable temporaries only.
+            // Only coalesce variables starting with __tmp or __v to be conservative.
+            // Skip: parameters, dead-sink candidates (never read), _ptr/_len derivatives.
+            let is_coalescable = |name: &str| -> bool {
+                (name.starts_with("__tmp") || name.starts_with("__v"))
+                    && !param_set.contains(name)
+                    && read_vars.contains(name)
+                    && !name.ends_with("_ptr")
+                    && !name.ends_with("_len")
+            };
+
+            let mut ranges: Vec<(usize, usize, String)> = Vec::new();
+            for (name, start) in &first_write {
+                if !is_coalescable(name) {
+                    continue;
+                }
+                let end = last_read.get(name).copied().unwrap_or(*start);
+                ranges.push((*start, end, name.clone()));
+            }
+
+            // Sort by start position for greedy linear scan.
+            ranges.sort_by_key(|r| r.0);
+
+            // Greedy allocation: assign each variable to the lowest-numbered
+            // "slot" (represented by the first variable that occupied it)
+            // whose previous occupant's range has ended.
+            // slot_end[i] = the end position of the variable currently in slot i.
+            // slot_repr[i] = the representative variable name for slot i.
+            let mut slot_end: Vec<usize> = Vec::new();
+            let mut slot_repr: Vec<String> = Vec::new();
+            let mut map: HashMap<String, String> = HashMap::new();
+
+            for (start, end, name) in &ranges {
+                // Find the lowest slot whose range has ended (end < start).
+                let mut assigned = false;
+                for (i, se) in slot_end.iter_mut().enumerate() {
+                    if *se < *start {
+                        // Reuse this slot: map this variable to the slot's representative.
+                        *se = *end;
+                        map.insert(name.clone(), slot_repr[i].clone());
+                        assigned = true;
+                        break;
+                    }
+                }
+                if !assigned {
+                    // Need a new slot; this variable is its own representative.
+                    slot_end.push(*end);
+                    slot_repr.push(name.clone());
+                    map.insert(name.clone(), name.clone());
+                }
+            }
+
+            map
+        };
+
         // Allocate a single shared dead-sink local for output-only variables.
         let dead_sink_idx = local_count;
         locals.insert("__dead_sink".to_string(), dead_sink_idx);
         local_types.push(ValType::I64);
         local_count += 1;
 
-        // ensure_local with dead-local awareness: output-only variables
-        // (never read) are mapped to the shared dead_sink_idx instead of
-        // getting their own WASM local slot.  The `as_dead_out` flag
-        // indicates the caller is allocating an output-only variable that
-        // should be checked against the read set.
+        // ensure_local with dead-local awareness and coalescing: output-only
+        // variables (never read) are mapped to the shared dead_sink_idx
+        // instead of getting their own WASM local slot.  Coalescable
+        // temporaries with non-overlapping lifetimes share locals via
+        // the coalesced_map.  The `as_dead_out` flag indicates the caller
+        // is allocating an output variable that should be checked against
+        // the read set.
         let mut ensure_local_inner = |name: &str, as_dead_out: bool| -> u32 {
             if let Some(&idx) = locals.get(name) {
                 return idx;
@@ -3992,6 +4071,16 @@ impl WasmBackend {
             if as_dead_out && !read_vars.contains(name) && !param_set.contains(name) {
                 locals.insert(name.to_string(), dead_sink_idx);
                 return dead_sink_idx;
+            }
+            // Local coalescing: if this variable maps to a representative
+            // that already has a local, reuse that local index.
+            if let Some(repr) = coalesced_map.get(name) {
+                if repr != name {
+                    if let Some(&repr_idx) = locals.get(repr) {
+                        locals.insert(name.to_string(), repr_idx);
+                        return repr_idx;
+                    }
+                }
             }
             let idx = local_count;
             locals.insert(name.to_string(), idx);
