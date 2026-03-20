@@ -772,6 +772,7 @@ class _FrontendTimingRecorderConfig:
 @dataclass(frozen=True)
 class _BuildOutputLayout:
     is_wasm: bool
+    is_wasm_freestanding: bool
     is_rust_transpile: bool
     linked: bool
     target_triple: str | None
@@ -11939,7 +11940,8 @@ def _resolve_build_output_layout(
     out_dir_path: Path | None,
     project_root: Path | None,
 ) -> _BuildOutputLayout:
-    is_wasm = target == "wasm"
+    is_wasm = target in {"wasm", "wasm-freestanding"}
+    is_wasm_freestanding = target == "wasm-freestanding"
     is_rust_transpile = target == "rust"
     if trusted and is_wasm:
         raise ValueError("Trusted mode is not supported for wasm targets")
@@ -11955,7 +11957,7 @@ def _resolve_build_output_layout(
         wasm_linked_env = os.environ.get("MOLT_WASM_LINKED", "1").strip().lower()
         if wasm_linked_env not in {"0", "false", "no", "off"}:
             linked = True
-    target_triple = None if target in {"native", "wasm", "rust"} else target
+    target_triple = None if target in {"native", "wasm", "wasm-freestanding", "rust"} else target
     emit_mode = "bin" if is_rust_transpile else (emit or ("wasm" if is_wasm else "bin"))
     if not is_rust_transpile and emit_mode not in {"bin", "obj", "wasm"}:
         raise ValueError(f"Invalid emit mode: {emit_mode}")
@@ -12022,6 +12024,7 @@ def _resolve_build_output_layout(
             emit_ir_path.parent.mkdir(parents=True, exist_ok=True)
     return _BuildOutputLayout(
         is_wasm=is_wasm,
+        is_wasm_freestanding=is_wasm_freestanding,
         is_rust_transpile=is_rust_transpile,
         linked=linked,
         target_triple=target_triple,
@@ -13699,6 +13702,7 @@ def _run_backend_pipeline(
             _prepare_non_native_build_result(
                 is_rust_transpile=output_layout.is_rust_transpile,
                 is_wasm=output_layout.is_wasm,
+                is_wasm_freestanding=output_layout.is_wasm_freestanding,
                 linked=output_layout.linked,
                 require_linked=require_linked,
                 linked_output_path=output_layout.linked_output_path,
