@@ -603,7 +603,7 @@ def _remap_function_body(body: bytes, remap: dict[int, int]) -> bytes:
             pass
         elif opcode == 0x01:  # nop
             pass
-        elif opcode in (0x02, 0x03, 0x04):  # block, loop, if
+        elif opcode in (0x02, 0x03, 0x04, 0x06):  # block, loop, if, try (legacy)
             output.append(body[offset])  # blocktype
             offset += 1
         elif opcode == 0x05:  # else
@@ -634,6 +634,12 @@ def _remap_function_body(body: bytes, remap: dict[int, int]) -> bytes:
             pass
         elif opcode == 0x1B:  # select
             pass
+        elif opcode == 0x1C:  # select t* — typed select with valtype vector
+            n_types, offset = _read_varuint(body, offset)
+            output.extend(_write_varuint(n_types))
+            for _ in range(n_types):
+                output.append(body[offset])
+                offset += 1
         elif opcode == 0x1F:  # try_table — blocktype + catch vector
             output.append(body[offset])  # blocktype byte
             offset += 1
