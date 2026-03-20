@@ -1410,13 +1410,12 @@ impl SimpleBackend {
         let mut flag_builder = settings::builder();
         flag_builder.set("is_pic", "true").unwrap();
         flag_builder.set("opt_level", "speed").unwrap();
+        // Force single_pass regalloc: backtracking produces incorrect code
+        // for large modules (heap corruption / use-after-free in generated code).
+        // TODO: File upstream Cranelift bug for backtracking regalloc.
         let regalloc_algorithm =
             env_setting("MOLT_BACKEND_REGALLOC_ALGORITHM").unwrap_or_else(|| {
-                if cfg!(debug_assertions) {
-                    "single_pass".to_string()
-                } else {
-                    "backtracking".to_string()
-                }
+                "single_pass".to_string()
             });
         flag_builder
             .set("regalloc_algorithm", &regalloc_algorithm)
