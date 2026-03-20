@@ -12850,6 +12850,7 @@ def _prepare_backend_runtime_context(
 
 def _prepare_backend_dispatch(
     *,
+    is_rust_transpile: bool,
     is_wasm: bool,
     linked: bool,
     deterministic: bool,
@@ -12869,6 +12870,11 @@ def _prepare_backend_dispatch(
     warnings: list[str],
 ) -> tuple[_PreparedBackendDispatch | None, dict[str, Any] | None]:
     backend_env = os.environ.copy() if is_wasm else None
+    backend_features: tuple[str, ...] = ()
+    if is_rust_transpile:
+        backend_features = ("rust-backend",)
+    elif is_wasm:
+        backend_features = ("wasm-backend",)
     if deterministic or profile == "release":
         os.environ.setdefault("SOURCE_DATE_EPOCH", "315532800")
     reloc_requested = is_wasm and (linked or os.environ.get("MOLT_WASM_LINK") == "1")
@@ -12929,7 +12935,7 @@ def _prepare_backend_dispatch(
         json_output=json_output,
         cargo_profile=backend_cargo_profile,
         project_root=molt_root,
-        enable_wasm_backend=is_wasm,
+        backend_features=backend_features,
     ):
         return None, _fail("Backend build failed", json_output, command="build")
     if not backend_bin.exists():
@@ -12938,7 +12944,7 @@ def _prepare_backend_dispatch(
     daemon_socket: Path | None = None
     daemon_ready = False
     daemon_config_digest = backend_daemon_config_digest
-    if _backend_daemon_enabled():
+    if not is_rust_transpile and _backend_daemon_enabled():
         daemon_config_digest = _backend_daemon_config_digest(
             molt_root, backend_cargo_profile
         )
@@ -12991,6 +12997,7 @@ def _execute_backend_compile(
     cache_path: Path | None,
     function_cache_path: Path | None,
     artifacts_root: Path,
+    is_rust_transpile: bool,
     is_wasm: bool,
     diagnostics_enabled: bool,
     phase_starts: dict[str, float],
@@ -13162,7 +13169,9 @@ def _execute_backend_compile(
             if diagnostics_enabled and "backend_subprocess_compile" not in phase_starts:
                 phase_starts["backend_subprocess_compile"] = time.perf_counter()
             cmd = [str(backend_bin)]
-            if is_wasm:
+            if is_rust_transpile:
+                cmd.extend(["--target", "rust"])
+            elif is_wasm:
                 cmd.extend(["--target", "wasm"])
             elif target_triple:
                 cmd.extend(["--target-triple", target_triple])
@@ -13258,6 +13267,7 @@ def _prepare_backend_compile(
     function_cache_path: Path | None,
     project_root: Path,
     warnings: list[str],
+    is_rust_transpile: bool,
     is_wasm: bool,
     output_artifact: Path,
     linked: bool,
@@ -13321,6 +13331,7 @@ def _prepare_backend_compile(
                     phase_starts["backend_prepare"] = now
             prepared_backend_dispatch, prepared_backend_dispatch_error = (
                 _prepare_backend_dispatch(
+                    is_rust_transpile=is_rust_transpile,
                     is_wasm=is_wasm,
                     linked=linked,
                     deterministic=deterministic,
@@ -13350,6 +13361,7 @@ def _prepare_backend_compile(
                 cache_path=cache_path,
                 function_cache_path=function_cache_path,
                 artifacts_root=artifacts_root,
+                is_rust_transpile=is_rust_transpile,
                 is_wasm=is_wasm,
                 diagnostics_enabled=diagnostics_enabled,
                 phase_starts=phase_starts,
@@ -13552,6 +13564,7 @@ def _run_backend_pipeline(
         function_cache_path=prepared_backend_runtime_context.function_cache_path,
         project_root=prepared_build_roots.project_root,
         warnings=prepared_build_preamble.warnings,
+        is_rust_transpile=output_layout.is_rust_transpile,
         is_wasm=output_layout.is_wasm,
         output_artifact=output_layout.output_artifact,
         linked=output_layout.linked,
@@ -13596,9 +13609,14 @@ def _run_backend_pipeline(
         prepared_backend_compile.backend_daemon_config_digest
     )
 
-    if output_layout.is_wasm or output_layout.emit_mode == "obj":
+    if (
+        output_layout.is_rust_transpile
+        or output_layout.is_wasm
+        or output_layout.emit_mode == "obj"
+    ):
         prepared_non_native_result, prepared_non_native_result_error = (
             _prepare_non_native_build_result(
+                is_rust_transpile=output_layout.is_rust_transpile,
                 is_wasm=output_layout.is_wasm,
                 linked=output_layout.linked,
                 require_linked=require_linked,
@@ -13716,6 +13734,7 @@ def _run_backend_pipeline(
 
 def _prepare_non_native_build_result(
     *,
+    is_rust_transpile: bool,
     is_wasm: bool,
     linked: bool,
     require_linked: bool,
@@ -13726,6 +13745,14 @@ def _prepare_non_native_build_result(
     ensure_runtime_wasm_reloc: Callable[[], bool],
     molt_root: Path,
 ) -> tuple[_PreparedNonNativeResult | None, dict[str, Any] | None]:
+    if is_rust_transpile:
+        return _PreparedNonNativeResult(
+            primary_output=output_artifact,
+            linked_output_path=linked_output_path,
+            success_messages=[f"Successfully transpiled {output_artifact}"],
+            extra_fields={},
+            artifacts={"rust": str(output_artifact)},
+        ), None
     if is_wasm:
         output_wasm = output_artifact
         resolved_linked_output = linked_output_path
@@ -16028,10 +16055,9 @@ def _ensure_backend_binary(
     json_output: bool,
     cargo_profile: str,
     project_root: Path,
-    enable_wasm_backend: bool,
+    backend_features: tuple[str, ...],
 ) -> bool:
     rustflags = os.environ.get("RUSTFLAGS", "")
-    backend_features = ("wasm-backend",) if enable_wasm_backend else ()
     fingerprint_path = _backend_fingerprint_path(
         project_root, backend_bin, cargo_profile
     )

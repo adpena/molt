@@ -21,4 +21,5 @@ egg = { version = "0.9", optional = true }
 
 [features]
 egraphs = ["egg"]
+rust-backend = []
 wasm-backend = ["dep:wasm-encoder", "dep:wasmparser"]

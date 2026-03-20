@@ -1,3 +1,4 @@
+#[cfg(feature = "rust-backend")]
 use molt_backend::rust::RustBackend;
 #[cfg(feature = "wasm-backend")]
 use molt_backend::wasm::WasmBackend;
@@ -638,10 +639,20 @@ fn main() -> io::Result<()> {
     let mut file = File::create(output_file)?;
 
     if is_rust {
-        let mut backend = RustBackend::new();
-        let source = backend.compile(&ir);
-        file.write_all(source.as_bytes())?;
-        println!("Successfully transpiled to {output_file}");
+        #[cfg(feature = "rust-backend")]
+        {
+            let mut backend = RustBackend::new();
+            let source = backend.compile(&ir);
+            file.write_all(source.as_bytes())?;
+            println!("Successfully transpiled to {output_file}");
+        }
+        #[cfg(not(feature = "rust-backend"))]
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "backend binary was built without rust-backend support",
+            ));
+        }
     } else if is_wasm {
         #[cfg(feature = "wasm-backend")]
         {
