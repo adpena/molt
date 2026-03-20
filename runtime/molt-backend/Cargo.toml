@@ -16,9 +16,6 @@ wasm-encoder = { version = "0.245.1", optional = true }
 wasmparser = { version = "0.245.1", optional = true }
 egg = { version = "0.9", optional = true }
 
-[dev-dependencies]
-wasmparser = "0.245.1"
-
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 cranelift-codegen = { version = "0.128", optional = true, features = ["x86"] }
 
@@ -42,6 +39,10 @@ wasm-backend = ["dep:wasm-encoder", "dep:wasmparser"]
 [[test]]
 name = "jumpful_malformed_control"
 required-features = ["wasm-backend"]
+
+[[test]]
+name = "loop_continue"
+required-features = ["native-backend"]
 
 [[test]]
 name = "rust_transpiler_preview"

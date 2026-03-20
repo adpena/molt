@@ -23,6 +23,12 @@ def test_backend_manifest_does_not_depend_on_obj_model() -> None:
     assert "molt-obj-model" not in dependencies
 
 
+def test_backend_manifest_does_not_redeclare_wasmparser_in_dev_dependencies() -> None:
+    manifest = _load_backend_manifest()
+    dev_dependencies = manifest.get("dev-dependencies", {})
+    assert "wasmparser" not in dev_dependencies
+
+
 def test_workspace_dev_profile_trims_backend_debug_info() -> None:
     manifest = _load_workspace_manifest()
     profiles = manifest["profile"]
@@ -99,3 +105,10 @@ def test_runtime_manifest_declares_vfs_bundle_tar_feature() -> None:
         runtime_manifest = tomllib.load(handle)
 
     assert "vfs_bundle_tar" in runtime_manifest["features"]
+
+
+def test_backend_manifest_gates_loop_continue_to_native_backend() -> None:
+    manifest = _load_backend_manifest()
+    tests = manifest.get("test", [])
+    loop_continue = next(test for test in tests if test["name"] == "loop_continue")
+    assert loop_continue["required-features"] == ["native-backend"]
