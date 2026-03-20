@@ -127,9 +127,21 @@ def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> s
 
         # Step 2: rustc output.rs -o output
         rustc = _find_rustc()
+        allow_lints = [
+            "unused_mut",
+            "unused_variables",
+            "dead_code",
+            "non_snake_case",
+        ]
         result2 = subprocess.run(
-            [rustc, rs_path, "-o", bin_path, "--edition=2021",
-             "-A", "unused_mut,unused_variables,dead_code,non_snake_case"],
+            [
+                rustc,
+                rs_path,
+                "-o",
+                bin_path,
+                "--edition=2021",
+                *[flag for lint in allow_lints for flag in ("-A", lint)],
+            ],
             capture_output=True, text=True, timeout=300,
         )
         if result2.returncode != 0:

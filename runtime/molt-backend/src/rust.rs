@@ -62,18 +62,12 @@ impl RustBackend {
 
     /// Compile the given IR to a Rust source string.
     pub fn compile(&mut self, ir: &SimpleIR) -> String {
-        let emit_funcs: Vec<&FunctionIR> = ir
-            .functions
-            .iter()
-            .filter(|f| !f.name.contains("__annotate__"))
-            .collect();
-
         // Phase 1: emit all function bodies into a temporary buffer so we
         // can scan which runtime helpers are actually referenced.
         let mut func_body = String::with_capacity(16384);
         std::mem::swap(&mut self.output, &mut func_body);
 
-        for func in &emit_funcs {
+        for func in &ir.functions {
             self.emit_function(func);
             self.output.push('\n');
         }
@@ -817,9 +811,9 @@ impl RustBackend {
         // Runtime lifecycle stubs (no-ops for standalone binaries)
         if used("molt_runtime_init(") {
             self.output.push_str(concat!(
-                "fn molt_runtime_init(_args: Vec<MoltValue>) -> MoltValue { MoltValue::None }\n",
-                "fn molt_runtime_shutdown(_args: Vec<MoltValue>) -> MoltValue { MoltValue::None }\n",
-                "fn molt_sys_set_version_info(_args: Vec<MoltValue>) -> MoltValue { MoltValue::None }\n\n",
+                "fn molt_runtime_init(_args: &mut Vec<MoltValue>) -> MoltValue { MoltValue::None }\n",
+                "fn molt_runtime_shutdown(_args: &mut Vec<MoltValue>) -> MoltValue { MoltValue::None }\n",
+                "fn molt_sys_set_version_info(_args: &mut Vec<MoltValue>) -> MoltValue { MoltValue::None }\n\n",
             ));
         }
 
@@ -2754,43 +2748,67 @@ impl RustBackend {
 fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
     let mut result = Vec::with_capacity(ops.len());
     let mut depth: i32 = 0;
-    let mut dead = false;
-    let mut dead_depth: i32 = 0; // nesting depth of control-flow blocks inside dead zone
+    let mut dead_at_depth: Option<i32> = None;
     for op in ops {
-        if dead {
-            // Inside dead zone: track nesting so we skip entire if/loop blocks.
-            match op.kind.as_str() {
-                "if" | "if_not" | "loop_start" | "while_start" | "for_range" | "for_iter" => {
-                    dead_depth += 1;
-                }
-                "end_if" | "loop_end" | "while_end" | "end_for" => {
-                    dead_depth -= 1;
-                }
-                _ => {}
+        let kind = op.kind.as_str();
+        let is_open = matches!(
+            kind,
+            "if" | "if_not" | "loop_start" | "while_start" | "for_range" | "for_iter"
+        );
+        let is_mid = matches!(kind, "else");
+        let is_close = matches!(kind, "end_if" | "loop_end" | "while_end" | "end_for");
+
+        if is_open {
+            if dead_at_depth.is_none() {
+                result.push(op.clone());
             }
-            // Skip all ops while dead (regardless of nesting).
+            depth += 1;
             continue;
         }
-        match op.kind.as_str() {
-            "if" | "if_not" | "loop_start" | "while_start" | "for_range" | "for_iter" => {
-                depth += 1;
+        if is_mid {
+            if dead_at_depth == Some(depth) {
+                dead_at_depth = None;
+            }
+            if dead_at_depth.is_none() {
                 result.push(op.clone());
             }
-            "end_if" | "loop_end" | "while_end" | "end_for" => {
-                depth -= 1;
+            continue;
+        }
+        if is_close {
+            depth -= 1;
+            if let Some(d) = dead_at_depth {
+                if d > depth {
+                    dead_at_depth = None;
+                }
+            }
+            if dead_at_depth.is_none() {
                 result.push(op.clone());
             }
-            "else" => {
-                result.push(op.clone());
+            continue;
+        }
+
+        if let Some(d) = dead_at_depth {
+            if depth >= d {
+                continue;
             }
-            "return" | "ret" | "return_none" | "ret_none" if depth == 0 => {
-                result.push(op.clone());
-                dead = true;
-                dead_depth = 0;
-            }
-            _ => {
-                result.push(op.clone());
-            }
+            dead_at_depth = None;
+        }
+
+        let is_terminator = matches!(
+            kind,
+            "ret"
+                | "return"
+                | "return_value"
+                | "return_none"
+                | "ret_none"
+                | "ret_void"
+                | "jump"
+                | "raise"
+                | "reraise"
+        );
+        result.push(op.clone());
+        if is_terminator {
+            dead_at_depth = Some(depth);
         }
     }
     result
@@ -3039,4 +3057,108 @@ fn rust_string_literal(s: &str) -> String {
         .replace('\r', "\\r")
         .replace('\t', "\\t");
     format!("\"{escaped}\"")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{FunctionIR, SimpleIR};
+
+    #[test]
+    fn compile_keeps_annotation_functions_when_referenced() {
+        let mut backend = RustBackend::new();
+        let ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "__main____annotate__".to_string(),
+                    params: vec!["args".to_string()],
+                    ops: vec![OpIR {
+                        kind: "return_none".to_string(),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                },
+                FunctionIR {
+                    name: "molt_main".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "return_none".to_string(),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                },
+            ],
+            profile: None,
+        };
+
+        let source = backend.compile(&ir);
+        assert!(source.contains("fn __main____annotate__("));
+    }
+
+    #[test]
+    fn strip_dead_after_return_skips_jump_after_nested_return_until_else() {
+        let ops = vec![
+            OpIR {
+                kind: "if".to_string(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "return_none".to_string(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "jump".to_string(),
+                value: Some(1),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "else".to_string(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const".to_string(),
+                out: Some("v0".to_string()),
+                value: Some(1),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "end_if".to_string(),
+                ..OpIR::default()
+            },
+        ];
+
+        let lowered = strip_dead_after_return(&ops);
+        let kinds: Vec<&str> = lowered.iter().map(|op| op.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["if", "return_none", "else", "const", "end_if"]);
+    }
+
+    #[test]
+    fn strip_dead_after_return_skips_top_level_jump_after_return() {
+        let ops = vec![
+            OpIR {
+                kind: "return_none".to_string(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "jump".to_string(),
+                value: Some(1),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "label".to_string(),
+                value: Some(1),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const".to_string(),
+                out: Some("v0".to_string()),
+                value: Some(1),
+                ..OpIR::default()
+            },
+        ];
+
+        let lowered = strip_dead_after_return(&ops);
+        let kinds: Vec<&str> = lowered.iter().map(|op| op.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["return_none"]);
+    }
 }
