@@ -1474,6 +1474,7 @@ fn wm_state_for_path<'a>(app: &'a TkAppState, toplevel: &str) -> Option<&'a TkWm
         .and_then(|widget| widget.wm.as_ref())
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn wm_state_for_path_mut<'a>(app: &'a mut TkAppState, toplevel: &str) -> Option<&'a mut TkWmState> {
     if toplevel == "." {
         return Some(&mut app.wm);
@@ -6303,7 +6304,7 @@ fn handle_wm_command(py: &PyToken<'_>, handle: i64, args: &[u64]) -> Result<u64,
         app.widgets
             .get_mut(&toplevel)
             .and_then(|widget| widget.wm.as_mut())
-            .map(|wm| (wm as *mut TkWmState))
+            .map(|wm| wm as *mut TkWmState)
     }) else {
         return Err(app_tcl_error_locked(
             py,

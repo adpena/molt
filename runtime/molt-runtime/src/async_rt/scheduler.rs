@@ -58,6 +58,7 @@ use super::{spawned_task_count, spawned_task_inc};
 // ---------------------------------------------------------------------------
 
 /// Optimization level that the scheduler can degrade to under load.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum OptLevel {
     /// Full optimization pipeline (default).
@@ -68,6 +69,7 @@ pub(crate) enum OptLevel {
     Minimal,
 }
 
+#[allow(dead_code)]
 impl OptLevel {
     fn label(self) -> &'static str {
         match self {
@@ -79,6 +81,7 @@ impl OptLevel {
 }
 
 /// Per-window accounting for the rate limiter.
+#[allow(dead_code)]
 struct RateLimitWindow {
     /// Start of the current window.
     window_start: Instant,
@@ -91,6 +94,7 @@ struct RateLimitWindow {
 /// Tracks wall-time budget overruns and automatically degrades the
 /// optimization level when the system is overloaded, resuming full
 /// optimization once pressure subsides.
+#[allow(dead_code)]
 pub(crate) struct CompileRateLimiter {
     /// Maximum compilation tasks allowed per time window.
     max_tasks_per_window: u64,
@@ -105,6 +109,7 @@ pub(crate) struct CompileRateLimiter {
     inner: Mutex<RateLimiterState>,
 }
 
+#[allow(dead_code)]
 struct RateLimiterState {
     window: RateLimitWindow,
     /// Current effective optimization level.
@@ -119,6 +124,7 @@ struct RateLimiterState {
     total_rejected: u64,
 }
 
+#[allow(dead_code)]
 impl CompileRateLimiter {
     pub(crate) fn from_env() -> Self {
         let max_tasks: u64 = std::env::var("MOLT_COMPILE_RATE_MAX")
@@ -287,6 +293,7 @@ impl CompileRateLimiter {
 }
 
 /// Telemetry snapshot for the compile rate-limit governor.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct CompileGovernorSnapshot {
     pub opt_level: &'static str,
@@ -299,6 +306,7 @@ pub(crate) struct CompileGovernorSnapshot {
 }
 
 /// Global singleton for the compile governor.
+#[allow(dead_code)]
 pub(crate) fn compile_rate_limiter() -> &'static CompileRateLimiter {
     static LIMITER: OnceLock<CompileRateLimiter> = OnceLock::new();
     LIMITER.get_or_init(CompileRateLimiter::from_env)
