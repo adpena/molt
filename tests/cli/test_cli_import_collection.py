@@ -4716,7 +4716,7 @@ def test_resolve_cargo_profile_name_defaults_and_validation(
     cli._resolve_cargo_profile_name_cached.cache_clear()
     monkeypatch.delenv("MOLT_DEV_CARGO_PROFILE", raising=False)
     profile, error = cli._resolve_cargo_profile_name("dev")
-    assert profile == "dev-fast"
+    assert profile == "dev"
     assert error is None
 
     monkeypatch.setenv("MOLT_DEV_CARGO_PROFILE", "my-dev_1")

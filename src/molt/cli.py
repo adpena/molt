@@ -7655,7 +7655,7 @@ def _resolve_cargo_profile_name_cached(
         else "MOLT_RELEASE_CARGO_PROFILE"
     )
     normalized_raw = raw.strip()
-    default_profile = "dev-fast" if build_profile == "dev" else "release"
+    default_profile = "dev" if build_profile == "dev" else "release"
     profile_name = normalized_raw or default_profile
     if not _CARGO_PROFILE_NAME_RE.match(profile_name):
         return build_profile, f"Invalid {env_var} value: {raw}"
