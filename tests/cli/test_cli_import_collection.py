@@ -240,9 +240,9 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
         )
         if (path := module_graph.get(name)) is not None
     ]
-    for core_path in core_paths:
-        core_graph, _ = cli._discover_module_graph(
-            core_path,
+    if core_paths:
+        core_graph, _ = cli._discover_module_graph_from_paths(
+            core_paths,
             roots,
             module_roots,
             stdlib_root,
@@ -328,6 +328,35 @@ def test_collect_imports_resolves_helper_join_dynamic_module_name() -> None:
     imports = cli._collect_imports(tree)
     assert "math" in imports
     assert "sys" in imports
+
+
+def test_collect_imports_uses_single_module_tree_walk_for_nested_scans(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tree = ast.parse(
+        "import os\n"
+        "import importlib\n"
+        "MODULE_NAME = 'warnings'\n"
+        "def _probe(module_name):\n"
+        "    return importlib.import_module(module_name)\n"
+        "_probe(MODULE_NAME)\n"
+    )
+    module_tree_walks = 0
+    original_walk = cli.ast.walk
+
+    def wrapped_walk(node: ast.AST):
+        nonlocal module_tree_walks
+        if node is tree:
+            module_tree_walks += 1
+        return original_walk(node)
+
+    monkeypatch.setattr(cli.ast, "walk", wrapped_walk)
+
+    imports = cli._collect_imports(tree)
+
+    assert module_tree_walks == 1
+    assert "os" in imports
+    assert "warnings" in imports
 
 
 def test_backend_ir_text_is_compact() -> None:
@@ -675,6 +704,8 @@ def test_shared_module_resolution_cache_reuses_import_scans(
         return original_collect(*args, **kwargs)
 
     monkeypatch.setattr(cli, "_collect_imports", wrapped_collect)
+    monkeypatch.setattr(cli, "_read_persisted_import_scan", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "_read_persisted_module_graph", lambda *args, **kwargs: None)
 
     cache = cli._ModuleResolutionCache()
     graph, _ = cli._discover_module_graph(
@@ -772,6 +803,127 @@ def test_discover_module_graph_reuses_persisted_graph_cache(
     )
     assert "pkg.helper" in explicit_imports
     assert "pkg" in graph
+
+
+def test_discover_module_graph_reuses_precomputed_entry_imports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry = tmp_path / "main.py"
+    entry.write_text("import pkg.helper\n")
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    helper = package / "helper.py"
+    helper.write_text("VALUE = 1\n")
+
+    stdlib_root = cli._stdlib_root_path()
+    module_roots = [tmp_path.resolve()]
+    roots = module_roots + [stdlib_root]
+    stdlib_allowlist = cli._stdlib_allowlist()
+    cache = cli._ModuleResolutionCache()
+    reads: list[Path] = []
+    original_read = cache.read_module_source
+
+    def wrapped_read(path: Path) -> str:
+        reads.append(path)
+        return original_read(path)
+
+    monkeypatch.setattr(cache, "read_module_source", wrapped_read)
+
+    graph, explicit_imports = cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        tmp_path,
+        stdlib_allowlist,
+        resolver_cache=cache,
+        precomputed_imports=("pkg.helper",),
+    )
+
+    assert entry not in reads
+    assert helper in reads
+    assert explicit_imports == {"pkg.helper"}
+    assert "main" in graph
+    assert "pkg.helper" in graph
+
+
+def test_discover_module_graph_from_paths_batches_shared_dependency_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "first.py"
+    first.write_text("import shared\n")
+    second = tmp_path / "second.py"
+    second.write_text("import shared\n")
+    shared = tmp_path / "shared.py"
+    shared.write_text("VALUE = 1\n")
+
+    stdlib_root = cli._stdlib_root_path()
+    module_roots = [tmp_path.resolve()]
+    roots = module_roots + [stdlib_root]
+    cache = cli._ModuleResolutionCache()
+    reads: list[Path] = []
+    original_read = cache.read_module_source
+
+    def wrapped_read(path: Path) -> str:
+        reads.append(path)
+        return original_read(path)
+
+    monkeypatch.setattr(cache, "read_module_source", wrapped_read)
+
+    graph, explicit_imports = cli._discover_module_graph_from_paths(
+        [first, second],
+        roots,
+        module_roots,
+        stdlib_root,
+        tmp_path,
+        set(),
+        resolver_cache=cache,
+    )
+
+    assert reads.count(first) == 1
+    assert reads.count(second) == 1
+    assert reads.count(shared) == 1
+    assert explicit_imports == {"shared"}
+    assert "shared" in graph
+
+
+def test_discover_module_graph_from_paths_deduplicates_repeated_import_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "first.py"
+    first.write_text("import shared\n")
+    second = tmp_path / "second.py"
+    second.write_text("import shared\n")
+    shared = tmp_path / "shared.py"
+    shared.write_text("VALUE = 1\n")
+
+    stdlib_root = cli._stdlib_root_path()
+    module_roots = [tmp_path.resolve()]
+    roots = module_roots + [stdlib_root]
+    expand_calls = 0
+    original_expand = cli._expand_module_chain_cached
+
+    def wrapped_expand(name: str):
+        nonlocal expand_calls
+        if name == "shared":
+            expand_calls += 1
+        return original_expand(name)
+
+    monkeypatch.setattr(cli, "_expand_module_chain_cached", wrapped_expand)
+
+    graph, explicit_imports = cli._discover_module_graph_from_paths(
+        [first, second],
+        roots,
+        module_roots,
+        stdlib_root,
+        tmp_path,
+        set(),
+    )
+
+    assert expand_calls == 1
+    assert explicit_imports == {"shared"}
+    assert "shared" in graph
 
 
 def test_discover_module_graph_reuses_persisted_paths_for_unchanged_modules(
@@ -3698,9 +3850,9 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
         )
         if (path := module_graph.get(name)) is not None
     ]
-    for core_path in core_paths:
-        core_graph, _ = cli._discover_module_graph(
-            core_path,
+    if core_paths:
+        core_graph, _ = cli._discover_module_graph_from_paths(
+            core_paths,
             roots,
             module_roots,
             stdlib_root,

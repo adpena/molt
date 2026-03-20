@@ -264,6 +264,10 @@ def test_ne():
     assert_rust_eq_python("print(1 != 2)")
 
 
+def test_list_not_equal_none():
+    assert_rust_eq_python("print([1, 2] == None)")
+
+
 def test_lt():
     assert_rust_eq_python("print(1 < 2)")
 
@@ -350,6 +354,29 @@ def test_list_literal():
 
 def test_list_append():
     assert_rust_eq_python("x = []\nx.append(1)\nx.append(2)\nprint(len(x))")
+
+
+def test_nested_list_append_alias_writeback():
+    assert_rust_eq_python(
+        "rows = []\n"
+        "row = []\n"
+        "row.append(7)\n"
+        "rows.append(row)\n"
+        "print(rows[0][0])"
+    )
+
+
+def test_function_local_nested_list_append_writeback():
+    assert_rust_eq_python(
+        "def build_rows():\n"
+        "    rows = []\n"
+        "    row = []\n"
+        "    row.append(7)\n"
+        "    rows.append(row)\n"
+        "    return rows\n"
+        "rows = build_rows()\n"
+        "print(rows[0][0])"
+    )
 
 
 def test_list_index():

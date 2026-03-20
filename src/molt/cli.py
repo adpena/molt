@@ -3596,7 +3596,9 @@ def _collect_imports(
                 )
         return None
 
-    if include_nested and isinstance(tree, ast.Module):
+    nested_module_scan = include_nested and isinstance(tree, ast.Module)
+
+    if nested_module_scan:
         for stmt in module_body:
             if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
                 target = stmt.targets[0]
@@ -3664,43 +3666,7 @@ def _collect_imports(
                     pos = param_positions[first.id]
                     helper_param_import_positions.setdefault(stmt.name, set()).add(pos)
 
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            if not isinstance(node.func, ast.Name):
-                continue
-            positions = helper_param_import_positions.get(node.func.id)
-            if not positions:
-                positions = set()
-            for pos in positions:
-                if pos < len(node.args):
-                    resolved = _resolve_string_constant(node.args[pos])
-                    if resolved is not None:
-                        imports.append(resolved)
-            helper_expr_entry = helper_import_arg_exprs.get(node.func.id)
-            if helper_expr_entry is None:
-                continue
-            params, exprs = helper_expr_entry
-            if len(node.args) < len(params):
-                continue
-            call_bindings: dict[str, object] = {}
-            for idx, param in enumerate(params):
-                arg = node.args[idx]
-                scalar = _resolve_string_constant(arg)
-                if scalar is not None:
-                    call_bindings[param] = scalar
-                    continue
-                seq = _resolve_string_sequence(arg, {}, set())
-                if seq is not None:
-                    call_bindings[param] = seq
-            for expr in exprs:
-                resolved = _resolve_string_constant(expr, call_bindings, set())
-                if resolved is not None:
-                    imports.append(resolved)
-
-    if include_nested and isinstance(tree, ast.Module):
-        scan_nodes = ast.walk(tree)
-    elif include_nested:
+    if include_nested:
         scan_nodes = tuple(ast.walk(tree))
     elif isinstance(tree, ast.Module):
         scan_nodes = module_body
@@ -3708,6 +3674,35 @@ def _collect_imports(
         scan_nodes = tuple(ast.walk(tree))
 
     for node in scan_nodes:
+        if nested_module_scan:
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                positions = helper_param_import_positions.get(node.func.id)
+                if positions:
+                    for pos in positions:
+                        if pos < len(node.args):
+                            resolved = _resolve_string_constant(node.args[pos])
+                            if resolved is not None:
+                                imports.append(resolved)
+                helper_expr_entry = helper_import_arg_exprs.get(node.func.id)
+                if helper_expr_entry is not None:
+                    params, exprs = helper_expr_entry
+                    if len(node.args) >= len(params):
+                        call_bindings: dict[str, object] = {}
+                        for idx, param in enumerate(params):
+                            arg = node.args[idx]
+                            scalar = _resolve_string_constant(arg)
+                            if scalar is not None:
+                                call_bindings[param] = scalar
+                                continue
+                            seq = _resolve_string_sequence(arg, {}, set())
+                            if seq is not None:
+                                call_bindings[param] = seq
+                        for expr in exprs:
+                            resolved = _resolve_string_constant(
+                                expr, call_bindings, set()
+                            )
+                            if resolved is not None:
+                                imports.append(resolved)
         if isinstance(node, ast.Import):
             for alias in node.names:
                 imports.append(alias.name)
@@ -5933,8 +5928,8 @@ def _requires_spawn_entry_override(
     return False
 
 
-def _discover_module_graph(
-    entry_path: Path,
+def _discover_module_graph_from_paths(
+    entry_paths: Sequence[Path],
     roots: list[Path],
     module_roots: list[Path],
     stdlib_root: Path,
@@ -5944,7 +5939,11 @@ def _discover_module_graph(
     stub_parents: set[str] | None = None,
     nested_stdlib_scan_modules: set[str] | None = None,
     resolver_cache: _ModuleResolutionCache | None = None,
+    precomputed_imports_by_path: Mapping[Path, Collection[str]] | None = None,
 ) -> tuple[dict[str, Path], set[str]]:
+    entry_paths = tuple(entry_paths)
+    if not entry_paths:
+        return {}, set()
     graph: dict[str, Path] = {}
     skip_modules = skip_modules or set()
     stub_parents = stub_parents or set()
@@ -5954,13 +5953,16 @@ def _discover_module_graph(
         else nested_stdlib_scan_modules
     )
     explicit_imports: set[str] = set()
-    queue = [entry_path]
-    queued_paths = {entry_path}
+    seen_import_names: set[str] = set()
+    queue = list(reversed(entry_paths))
+    queued_paths = set(entry_paths)
     resolution_cache = resolver_cache or _ModuleResolutionCache()
 
     persisted_graph_paths: dict[str, Path] = {}
     dirty_persisted_modules: set[str] = set()
-    if project_root is not None:
+    use_persisted_graph_cache = project_root is not None and len(entry_paths) == 1
+    if use_persisted_graph_cache:
+        entry_path = entry_paths[0]
         persisted_graph = _read_persisted_module_graph(
             project_root,
             entry_path,
@@ -6000,38 +6002,59 @@ def _discover_module_graph(
             not resolution_cache.is_stdlib_path(path, stdlib_root)
             or module_name in nested_stdlib_scan_modules
         )
-        persisted_imports = None
-        if project_root is not None:
-            persisted_imports = _read_persisted_import_scan(
-                project_root,
-                path,
-                module_name=module_name,
-                is_package=is_package,
-                include_nested=include_nested_imports,
-            )
-        if persisted_imports is None:
-            try:
-                source = resolution_cache.read_module_source(path)
-            except (OSError, SyntaxError, UnicodeDecodeError):
-                continue
-            try:
-                tree = resolution_cache.parse_module_ast(
-                    path, source, filename=str(path)
-                )
-            except SyntaxError:
-                continue
-            imports = _load_module_imports(
-                path,
-                module_name=module_name,
-                is_package=is_package,
-                include_nested=include_nested_imports,
-                tree=tree,
-                resolution_cache=resolution_cache,
-                project_root=project_root,
-            )
+        precomputed_imports = (
+            precomputed_imports_by_path.get(path)
+            if precomputed_imports_by_path is not None
+            else None
+        )
+        if precomputed_imports is not None:
+            imports = precomputed_imports
+            if use_persisted_graph_cache:
+                with contextlib.suppress(OSError):
+                    _write_persisted_import_scan(
+                        project_root,
+                        path,
+                        module_name=module_name,
+                        is_package=is_package,
+                        include_nested=include_nested_imports,
+                        imports=imports,
+                    )
         else:
-            imports = persisted_imports
+            persisted_imports = None
+            if project_root is not None:
+                persisted_imports = _read_persisted_import_scan(
+                    project_root,
+                    path,
+                    module_name=module_name,
+                    is_package=is_package,
+                    include_nested=include_nested_imports,
+                )
+            if persisted_imports is None:
+                try:
+                    source = resolution_cache.read_module_source(path)
+                except (OSError, SyntaxError, UnicodeDecodeError):
+                    continue
+                try:
+                    tree = resolution_cache.parse_module_ast(
+                        path, source, filename=str(path)
+                    )
+                except SyntaxError:
+                    continue
+                imports = _load_module_imports(
+                    path,
+                    module_name=module_name,
+                    is_package=is_package,
+                    include_nested=include_nested_imports,
+                    tree=tree,
+                    resolution_cache=resolution_cache,
+                    project_root=project_root,
+                )
+            else:
+                imports = persisted_imports
         for name in imports:
+            if name in seen_import_names:
+                continue
+            seen_import_names.add(name)
             explicit_imports.add(name)
             for candidate in _expand_module_chain_cached(name):
                 if candidate in stub_parents:
@@ -6042,11 +6065,11 @@ def _discover_module_graph(
                 if resolved is not None and resolved not in queued_paths:
                     queued_paths.add(resolved)
                     queue.append(resolved)
-    if project_root is not None:
+    if use_persisted_graph_cache:
         with contextlib.suppress(OSError):
             _write_persisted_module_graph(
                 project_root,
-                entry_path,
+                entry_paths[0],
                 roots=roots,
                 module_roots=module_roots,
                 stdlib_root=stdlib_root,
@@ -6057,6 +6080,37 @@ def _discover_module_graph(
                 explicit_imports=explicit_imports,
             )
     return graph, explicit_imports
+
+
+def _discover_module_graph(
+    entry_path: Path,
+    roots: list[Path],
+    module_roots: list[Path],
+    stdlib_root: Path,
+    project_root: Path | None,
+    stdlib_allowlist: set[str],
+    skip_modules: set[str] | None = None,
+    stub_parents: set[str] | None = None,
+    nested_stdlib_scan_modules: set[str] | None = None,
+    resolver_cache: _ModuleResolutionCache | None = None,
+    precomputed_imports: Collection[str] | None = None,
+) -> tuple[dict[str, Path], set[str]]:
+    precomputed_imports_by_path = (
+        {entry_path: precomputed_imports} if precomputed_imports is not None else None
+    )
+    return _discover_module_graph_from_paths(
+        (entry_path,),
+        roots,
+        module_roots,
+        stdlib_root,
+        project_root,
+        stdlib_allowlist,
+        skip_modules=skip_modules,
+        stub_parents=stub_parents,
+        nested_stdlib_scan_modules=nested_stdlib_scan_modules,
+        resolver_cache=resolver_cache,
+        precomputed_imports_by_path=precomputed_imports_by_path,
+    )
 
 
 def _latest_mtime(paths: list[Path]) -> float:
@@ -12040,7 +12094,7 @@ def _augment_module_graph_for_entry_and_runtime(
     roots: Sequence[Path],
     project_root: Path | None,
     stdlib_allowlist: set[str],
-    entry_tree: ast.AST,
+    entry_imports: Collection[str],
     module_resolution_cache: "_ModuleResolutionCache",
     module_graph: MutableMapping[str, Path],
     module_reasons: MutableMapping[str, set[str]],
@@ -12055,9 +12109,7 @@ def _augment_module_graph_for_entry_and_runtime(
         alias_name = _module_name_from_path(source_path, alias_roots, stdlib_root)
         if alias_name and alias_name != entry_module:
             entry_module_import_alias = alias_name
-    entry_imports = set(
-        _collect_imports(entry_tree, entry_module, source_path.name == "__init__.py")
-    )
+    entry_imports = set(entry_imports)
     explicit_imports = set(entry_imports)
     stub_skip_modules = STUB_MODULES - entry_imports
     stub_parents = STUB_PARENT_MODULES - entry_imports
@@ -12083,9 +12135,9 @@ def _augment_module_graph_for_entry_and_runtime(
         )
         if (path := module_graph.get(name)) is not None
     ]
-    for core_path in core_paths:
-        core_graph, _ = _discover_module_graph(
-            core_path,
+    if core_paths:
+        core_graph, _ = _discover_module_graph_from_paths(
+            core_paths,
             roots,
             module_roots,
             stdlib_root,
@@ -12177,6 +12229,9 @@ def _prepare_entry_module_graph(
     stdlib_allowlist = _stdlib_allowlist()
     roots = module_roots + [stdlib_root]
     module_resolution_cache = _ModuleResolutionCache()
+    entry_imports = tuple(
+        _collect_imports(entry_tree, entry_module, source_path.name == "__init__.py")
+    )
     module_graph, explicit_imports = _discover_module_graph(
         source_path,
         roots,
@@ -12187,6 +12242,7 @@ def _prepare_entry_module_graph(
         skip_modules=STUB_MODULES,
         stub_parents=STUB_PARENT_MODULES,
         resolver_cache=module_resolution_cache,
+        precomputed_imports=entry_imports,
     )
     if diagnostics_enabled:
         for name in module_graph:
@@ -12228,7 +12284,7 @@ def _prepare_entry_module_graph(
         roots=roots,
         project_root=project_root,
         stdlib_allowlist=stdlib_allowlist,
-        entry_tree=entry_tree,
+        entry_imports=entry_imports,
         module_resolution_cache=module_resolution_cache,
         module_graph=module_graph,
         module_reasons=module_reasons,

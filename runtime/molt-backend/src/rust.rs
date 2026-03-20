@@ -18,6 +18,12 @@ use crate::{FunctionIR, OpIR, SimpleIR};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
+#[derive(Clone)]
+enum AliasBinding {
+    Value(String),
+    Indexed { obj: String, key: String },
+}
+
 /// Transpiles Molt `SimpleIR` into Rust source text.
 pub struct RustBackend {
     output: String,
@@ -30,9 +36,9 @@ pub struct RustBackend {
     /// Used to emit a writeback when loop_index_next updates the phi var,
     /// so the locals frame stays coherent after the loop exits.
     phi_to_frame: HashMap<String, (String, String)>,
-    /// Best-effort alias graph from temporary clones to their source variable.
+    /// Best-effort alias graph from temporaries to their source bindings.
     /// Used to propagate side-effecting mutations on cloned temps back to roots.
-    aliases: HashMap<String, String>,
+    aliases: HashMap<String, AliasBinding>,
     /// Current function params (as Rust identifiers) for call-by-object writeback.
     current_params: Vec<String>,
     current_is_main: bool,
@@ -113,7 +119,11 @@ impl RustBackend {
             let children: Vec<String> = self
                 .aliases
                 .iter()
-                .filter_map(|(k, v)| if v == &target { Some(k.clone()) } else { None })
+                .filter_map(|(k, binding)| match binding {
+                    AliasBinding::Value(parent) if parent == &target => Some(k.clone()),
+                    AliasBinding::Indexed { obj, .. } if obj == &target => Some(k.clone()),
+                    _ => None,
+                })
                 .collect();
             for child in children {
                 self.aliases.remove(&child);
@@ -128,19 +138,35 @@ impl RustBackend {
         // propagates mutations through each intermediate phi var correctly.
         // e.g. v265→v130→v146 ensures both v130 and v146 get updated.
         if dst != src {
-            self.aliases.insert(dst, src);
+            self.aliases.insert(dst, AliasBinding::Value(src));
         }
+    }
+
+    fn note_indexed_alias(&mut self, dst: String, obj: String, key: String) {
+        self.clear_alias(&dst);
+        self.aliases.insert(dst, AliasBinding::Indexed { obj, key });
     }
 
     fn emit_alias_writeback(&mut self, var: &str) {
         let mut cur = var.to_string();
         let mut seen = HashSet::new();
-        while let Some(parent) = self.aliases.get(&cur).cloned() {
-            if !seen.insert(parent.clone()) {
+        while let Some(binding) = self.aliases.get(&cur).cloned() {
+            let next = match binding {
+                AliasBinding::Value(parent) => {
+                    self.emit_line(&format!("{parent} = {cur}.clone();"));
+                    parent
+                }
+                AliasBinding::Indexed { obj, key } => {
+                    self.emit_line(&format!(
+                        "molt_set_item(&mut {obj}, {key}.clone(), {cur}.clone());"
+                    ));
+                    obj
+                }
+            };
+            if !seen.insert(next.clone()) {
                 break;
             }
-            self.emit_line(&format!("{parent} = {cur}.clone();"));
-            cur = parent;
+            cur = next;
         }
     }
 
@@ -486,6 +512,9 @@ impl RustBackend {
             || used("molt_max(");
         if needs_compare_helpers {
             self.output.push_str(concat!(
+                "fn molt_is_numeric(x: &MoltValue) -> bool {\n",
+                "    matches!(x, MoltValue::Bool(_) | MoltValue::Int(_) | MoltValue::Float(_))\n",
+                "}\n",
                 "fn molt_numeric_cmp(a: &MoltValue, b: &MoltValue) -> std::cmp::Ordering {\n",
                 "    match (a, b) {\n",
                 "        (MoltValue::Int(x), MoltValue::Int(y)) => x.cmp(y),\n",
@@ -498,7 +527,11 @@ impl RustBackend {
                 "        (MoltValue::Bool(x), MoltValue::Bool(y)) => x == y,\n",
                 "        (MoltValue::Str(x), MoltValue::Str(y)) => x == y,\n",
                 "        (MoltValue::List(x), MoltValue::List(y)) => x == y,\n",
-                "        _ => matches!(molt_numeric_cmp(a, b), std::cmp::Ordering::Equal),\n",
+                "        (MoltValue::Dict(x), MoltValue::Dict(y)) => x == y,\n",
+                "        _ if molt_is_numeric(a) && molt_is_numeric(b) => {\n",
+                "            matches!(molt_numeric_cmp(a, b), std::cmp::Ordering::Equal)\n",
+                "        }\n",
+                "        _ => false,\n",
                 "    }\n",
                 "}\n",
                 "fn molt_lt(a: &MoltValue, b: &MoltValue) -> bool { matches!(molt_numeric_cmp(a, b), std::cmp::Ordering::Less) }\n",
@@ -1334,6 +1367,13 @@ impl RustBackend {
                         &format!("molt_get_item(&{obj}, &{slot_key})"),
                         &self.hoisted_vars.clone(),
                     ));
+                    let alias_key = format!("__alias_key_{o}");
+                    self.emit_line(&declare(
+                        &alias_key,
+                        &format!("{slot_key}.clone()"),
+                        &self.hoisted_vars.clone(),
+                    ));
+                    self.note_indexed_alias(o, obj, alias_key);
                 } else {
                     self.emit_line(&declare(&o, "MoltValue::None", &self.hoisted_vars.clone()));
                 }
@@ -1628,7 +1668,7 @@ impl RustBackend {
                 let (a, b) = args2(op);
                 self.emit_line(&declare(
                     &o,
-                    &format!("(if !molt_bool(&{a}) {{ {a}.clone() }} else {{ {b}.clone() }})"),
+                    &format!("if !molt_bool(&{a}) {{ {a}.clone() }} else {{ {b}.clone() }}"),
                     &self.hoisted_vars.clone(),
                 ));
             }
@@ -1637,7 +1677,7 @@ impl RustBackend {
                 let (a, b) = args2(op);
                 self.emit_line(&declare(
                     &o,
-                    &format!("(if molt_bool(&{a}) {{ {a}.clone() }} else {{ {b}.clone() }})"),
+                    &format!("if molt_bool(&{a}) {{ {a}.clone() }} else {{ {b}.clone() }}"),
                     &self.hoisted_vars.clone(),
                 ));
             }
@@ -2212,6 +2252,13 @@ impl RustBackend {
                     &format!("molt_get_item(&{obj}, &{key})"),
                     &self.hoisted_vars.clone(),
                 ));
+                let alias_key = format!("__alias_key_{o}");
+                self.emit_line(&declare(
+                    &alias_key,
+                    &format!("{key}.clone()"),
+                    &self.hoisted_vars.clone(),
+                ));
+                self.note_indexed_alias(o, obj, alias_key);
             }
             "dict_get" => {
                 let o = out();
@@ -3093,6 +3140,113 @@ mod tests {
 
         let source = backend.compile(&ir);
         assert!(source.contains("fn __main____annotate__("));
+    }
+
+    #[test]
+    fn compile_numeric_equality_does_not_fall_back_for_non_numeric_values() {
+        let mut backend = RustBackend::new();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![OpIR {
+                    kind: "cmp_eq".to_string(),
+                    args: Some(vec!["v0".to_string(), "v1".to_string()]),
+                    out: Some("v2".to_string()),
+                    ..OpIR::default()
+                }],
+                param_types: None,
+            }],
+            profile: None,
+        };
+
+        let source = backend.compile(&ir);
+        assert!(source.contains("fn molt_is_numeric(x: &MoltValue) -> bool"));
+        assert!(source.contains("_ if molt_is_numeric(a) && molt_is_numeric(b) =>"));
+        assert!(source.contains("_ => false,"));
+    }
+
+    #[test]
+    fn compile_list_append_writes_back_indexed_aliases() {
+        let mut backend = RustBackend::new();
+        let ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "helper".to_string(),
+                    params: vec!["v0".to_string(), "v1".to_string(), "v3".to_string()],
+                    ops: vec![
+                        OpIR {
+                            kind: "index".to_string(),
+                            args: Some(vec!["v0".to_string(), "v1".to_string()]),
+                            out: Some("v2".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "list_append".to_string(),
+                            args: Some(vec!["v2".to_string(), "v3".to_string()]),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "return_none".to_string(),
+                            ..OpIR::default()
+                        },
+                    ],
+                    param_types: None,
+                },
+                FunctionIR {
+                    name: "molt_main".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "return_none".to_string(),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                },
+            ],
+            profile: None,
+        };
+
+        let source = backend.compile(&ir);
+        assert!(source.contains("let mut __alias_key_v2: MoltValue = v1.clone();"));
+        assert!(source.contains("molt_list_append(&mut v2, v3.clone());"));
+        assert!(source.contains("molt_set_item(&mut v0, __alias_key_v2.clone(), v2.clone());"));
+    }
+
+    #[test]
+    fn compile_boolean_short_circuit_omits_unused_if_parentheses() {
+        let mut backend = RustBackend::new();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![
+                    OpIR {
+                        kind: "and".to_string(),
+                        args: Some(vec!["v0".to_string(), "v1".to_string()]),
+                        out: Some("v2".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "or".to_string(),
+                        args: Some(vec!["v0".to_string(), "v1".to_string()]),
+                        out: Some("v3".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "return_none".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+            }],
+            profile: None,
+        };
+
+        let source = backend.compile(&ir);
+        assert!(source.contains("if !molt_bool(&v0) { v0.clone() } else { v1.clone() }"));
+        assert!(source.contains("if molt_bool(&v0) { v0.clone() } else { v1.clone() }"));
+        assert!(!source.contains("(if !molt_bool(&v0) { v0.clone() } else { v1.clone() })"));
+        assert!(!source.contains("(if molt_bool(&v0) { v0.clone() } else { v1.clone() })"));
     }
 
     #[test]
