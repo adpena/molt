@@ -80,3 +80,14 @@ def test_runtime_manifest_uses_flate2_zip_deflate_only() -> None:
 
     assert zip_dependency["default-features"] is False
     assert zip_dependency["features"] == ["deflate-flate2-zlib-rs"]
+
+
+def test_runtime_manifest_uses_minimal_rustpython_parser_features() -> None:
+    runtime_manifest_path = ROOT / "runtime" / "molt-runtime" / "Cargo.toml"
+    with runtime_manifest_path.open("rb") as handle:
+        runtime_manifest = tomllib.load(handle)
+
+    parser_dependency = runtime_manifest["dependencies"]["rustpython-parser"]
+
+    assert parser_dependency["default-features"] is False
+    assert set(parser_dependency["features"]) == {"location", "num-bigint"}
