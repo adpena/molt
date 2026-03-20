@@ -5,7 +5,7 @@ edition = "2024"
 license = "Apache-2.0"
 
 [dependencies]
-cranelift-codegen = { version = "0.128", optional = true }
+cranelift-codegen = { version = "0.128", optional = true, default-features = false, features = ["host-arch", "std", "unwind"] }
 cranelift-frontend = { version = "0.128", optional = true }
 cranelift-module = { version = "0.128", optional = true }
 cranelift-object = { version = "0.128", optional = true }
@@ -17,10 +17,10 @@ wasmparser = { version = "0.245.1", optional = true }
 egg = { version = "0.9", optional = true }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-cranelift-codegen = { version = "0.128", optional = true, features = ["x86"] }
+cranelift-codegen = { version = "0.128", optional = true, default-features = false, features = ["x86"] }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-cranelift-codegen = { version = "0.128", optional = true, features = ["arm64"] }
+cranelift-codegen = { version = "0.128", optional = true, default-features = false, features = ["arm64"] }
 
 [features]
 default = ["native-backend"]

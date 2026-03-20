@@ -942,10 +942,10 @@ fn is_inlineable(func: &FunctionIR, defined_functions: &std::collections::HashSe
             }
             // Nested internal calls would cause recursive inlining
             "call_internal" => {
-                if let Some(target) = op.s_value.as_deref() {
-                    if defined_functions.contains(target) {
-                        return false;
-                    }
+                if let Some(target) = op.s_value.as_deref()
+                    && defined_functions.contains(target)
+                {
+                    return false;
                 }
             }
             _ => {}
@@ -1052,31 +1052,31 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
             for callee_op in callee_ops {
                 if callee_op.kind == "ret" || callee_op.kind == "ret_void" {
                     // Replace return with assignment to call output variable
-                    if callee_op.kind == "ret" {
-                        if let Some(ret_var) = callee_op.var.as_deref() {
-                            let renamed = rename_map
-                                .get(ret_var)
-                                .cloned()
-                                .unwrap_or_else(|| format!("{prefix}{ret_var}"));
-                            // Emit a copy: out = ret_var
-                            new_ops.push(OpIR {
-                                kind: "copy".to_string(),
-                                value: None,
-                                f_value: None,
-                                s_value: None,
-                                bytes: None,
-                                var: None,
-                                args: Some(vec![renamed]),
-                                out: Some(call_out.clone()),
-                                fast_int: None,
-                                fast_float: None,
-                                raw_int: None,
-                                stack_eligible: None,
-                                task_kind: None,
-                                container_type: None,
-                                type_hint: None,
-                            });
-                        }
+                    if callee_op.kind == "ret"
+                        && let Some(ret_var) = callee_op.var.as_deref()
+                    {
+                        let renamed = rename_map
+                            .get(ret_var)
+                            .cloned()
+                            .unwrap_or_else(|| format!("{prefix}{ret_var}"));
+                        // Emit a copy: out = ret_var
+                        new_ops.push(OpIR {
+                            kind: "copy".to_string(),
+                            value: None,
+                            f_value: None,
+                            s_value: None,
+                            bytes: None,
+                            var: None,
+                            args: Some(vec![renamed]),
+                            out: Some(call_out.clone()),
+                            fast_int: None,
+                            fast_float: None,
+                            raw_int: None,
+                            stack_eligible: None,
+                            task_kind: None,
+                            container_type: None,
+                            type_hint: None,
+                        });
                     }
                     // Skip the ret op itself (don't emit it into the caller)
                     continue;
@@ -1093,9 +1093,7 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
                         .unwrap_or_else(|| format!("{prefix}{out}"));
                     inlined_op.out = Some(renamed.clone());
                     // Also add to rename_map for subsequent ops
-                    if !rename_map.contains_key(&out) {
-                        rename_map.insert(out, renamed);
-                    }
+                    rename_map.entry(out).or_insert(renamed);
                 }
 
                 // Rename args
@@ -9644,27 +9642,27 @@ impl SimpleBackend {
                     }
 
                     // For direct calls to closures, extract env from function object
-                    if closure_functions.contains(target_name.as_str()) {
-                        if let Some(func_obj_var) = local_closure_envs.get(target_name.as_str()) {
-                            let func_obj_bits = *var_get(&mut builder, &vars, func_obj_var)
-                                .expect("Closure func obj not found for direct call");
-                            let mut extract_sig = self.module.make_signature();
-                            extract_sig.params.push(AbiParam::new(types::I64));
-                            extract_sig.returns.push(AbiParam::new(types::I64));
-                            let extract_fn = self
-                                .module
-                                .declare_function(
-                                    "molt_function_closure_bits",
-                                    Linkage::Import,
-                                    &extract_sig,
-                                )
-                                .unwrap();
-                            let extract_local =
-                                self.module.declare_func_in_func(extract_fn, builder.func);
-                            let extract_call = builder.ins().call(extract_local, &[func_obj_bits]);
-                            let env_bits = builder.inst_results(extract_call)[0];
-                            args.insert(0, env_bits);
-                        }
+                    if closure_functions.contains(target_name.as_str())
+                        && let Some(func_obj_var) = local_closure_envs.get(target_name.as_str())
+                    {
+                        let func_obj_bits = *var_get(&mut builder, &vars, func_obj_var)
+                            .expect("Closure func obj not found for direct call");
+                        let mut extract_sig = self.module.make_signature();
+                        extract_sig.params.push(AbiParam::new(types::I64));
+                        extract_sig.returns.push(AbiParam::new(types::I64));
+                        let extract_fn = self
+                            .module
+                            .declare_function(
+                                "molt_function_closure_bits",
+                                Linkage::Import,
+                                &extract_sig,
+                            )
+                            .unwrap();
+                        let extract_local =
+                            self.module.declare_func_in_func(extract_fn, builder.func);
+                        let extract_call = builder.ins().call(extract_local, &[func_obj_bits]);
+                        let env_bits = builder.inst_results(extract_call)[0];
+                        args.insert(0, env_bits);
                     }
                     let mut sig = self.module.make_signature();
                     for _ in 0..args.len() {
@@ -9824,27 +9822,27 @@ impl SimpleBackend {
                     }
 
                     // For direct calls to closures, extract env from function object
-                    if closure_functions.contains(target_name.as_str()) {
-                        if let Some(func_obj_var) = local_closure_envs.get(target_name.as_str()) {
-                            let func_obj_bits = *var_get(&mut builder, &vars, func_obj_var)
-                                .expect("Closure func obj not found for direct call");
-                            let mut extract_sig = self.module.make_signature();
-                            extract_sig.params.push(AbiParam::new(types::I64));
-                            extract_sig.returns.push(AbiParam::new(types::I64));
-                            let extract_fn = self
-                                .module
-                                .declare_function(
-                                    "molt_function_closure_bits",
-                                    Linkage::Import,
-                                    &extract_sig,
-                                )
-                                .unwrap();
-                            let extract_local =
-                                self.module.declare_func_in_func(extract_fn, builder.func);
-                            let extract_call = builder.ins().call(extract_local, &[func_obj_bits]);
-                            let env_bits = builder.inst_results(extract_call)[0];
-                            args.insert(0, env_bits);
-                        }
+                    if closure_functions.contains(target_name.as_str())
+                        && let Some(func_obj_var) = local_closure_envs.get(target_name.as_str())
+                    {
+                        let func_obj_bits = *var_get(&mut builder, &vars, func_obj_var)
+                            .expect("Closure func obj not found for direct call");
+                        let mut extract_sig = self.module.make_signature();
+                        extract_sig.params.push(AbiParam::new(types::I64));
+                        extract_sig.returns.push(AbiParam::new(types::I64));
+                        let extract_fn = self
+                            .module
+                            .declare_function(
+                                "molt_function_closure_bits",
+                                Linkage::Import,
+                                &extract_sig,
+                            )
+                            .unwrap();
+                        let extract_local =
+                            self.module.declare_func_in_func(extract_fn, builder.func);
+                        let extract_call = builder.ins().call(extract_local, &[func_obj_bits]);
+                        let env_bits = builder.inst_results(extract_call)[0];
+                        args.insert(0, env_bits);
                     }
                     let mut sig = self.module.make_signature();
                     for _ in 0..args.len() {
@@ -9938,27 +9936,27 @@ impl SimpleBackend {
                     }
 
                     // For direct calls to closures, extract env from function object
-                    if closure_functions.contains(target_name.as_str()) {
-                        if let Some(func_obj_var) = local_closure_envs.get(target_name.as_str()) {
-                            let func_obj_bits = *var_get(&mut builder, &vars, func_obj_var)
-                                .expect("Closure func obj not found for direct call");
-                            let mut extract_sig = self.module.make_signature();
-                            extract_sig.params.push(AbiParam::new(types::I64));
-                            extract_sig.returns.push(AbiParam::new(types::I64));
-                            let extract_fn = self
-                                .module
-                                .declare_function(
-                                    "molt_function_closure_bits",
-                                    Linkage::Import,
-                                    &extract_sig,
-                                )
-                                .unwrap();
-                            let extract_local =
-                                self.module.declare_func_in_func(extract_fn, builder.func);
-                            let extract_call = builder.ins().call(extract_local, &[func_obj_bits]);
-                            let env_bits = builder.inst_results(extract_call)[0];
-                            args.insert(0, env_bits);
-                        }
+                    if closure_functions.contains(target_name.as_str())
+                        && let Some(func_obj_var) = local_closure_envs.get(target_name.as_str())
+                    {
+                        let func_obj_bits = *var_get(&mut builder, &vars, func_obj_var)
+                            .expect("Closure func obj not found for direct call");
+                        let mut extract_sig = self.module.make_signature();
+                        extract_sig.params.push(AbiParam::new(types::I64));
+                        extract_sig.returns.push(AbiParam::new(types::I64));
+                        let extract_fn = self
+                            .module
+                            .declare_function(
+                                "molt_function_closure_bits",
+                                Linkage::Import,
+                                &extract_sig,
+                            )
+                            .unwrap();
+                        let extract_local =
+                            self.module.declare_func_in_func(extract_fn, builder.func);
+                        let extract_call = builder.ins().call(extract_local, &[func_obj_bits]);
+                        let env_bits = builder.inst_results(extract_call)[0];
+                        args.insert(0, env_bits);
                     }
                     let mut sig = self.module.make_signature();
                     for _ in 0..args.len() {
@@ -14669,7 +14667,7 @@ impl SimpleBackend {
             .declare_function(&func_ir.name, Linkage::Export, &self.ctx.func.signature)
             .unwrap();
         let define_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.module.define_function(id, &mut self.ctx)
+            self.module.define_function(id, &mut self.ctx).map_err(Box::new)
         }));
         match define_result {
             Ok(Ok(())) => {}

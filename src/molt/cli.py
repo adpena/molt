@@ -12962,6 +12962,7 @@ def _prepare_backend_runtime_context(
     runtime_cargo_profile: str,
     cargo_timeout: float | None,
     molt_root: Path,
+    stdlib_profile: str | None = None,
 ) -> _PreparedBackendRuntimeContext:
     runtime_state = prepared_backend_setup.runtime_state
 
@@ -12975,6 +12976,7 @@ def _prepare_backend_runtime_context(
             project_root=molt_root,
             simd_enabled=not is_wasm_freestanding,
             freestanding=is_wasm_freestanding,
+            stdlib_profile=stdlib_profile,
         )
 
     def ensure_runtime_wasm_reloc() -> bool:
@@ -12987,6 +12989,7 @@ def _prepare_backend_runtime_context(
             project_root=molt_root,
             simd_enabled=not is_wasm_freestanding,
             freestanding=is_wasm_freestanding,
+            stdlib_profile=stdlib_profile,
         )
 
     return _PreparedBackendRuntimeContext(
@@ -13703,6 +13706,7 @@ def _run_backend_pipeline(
     wasm_opt_level: str = "Oz",
     precompile: bool = False,
     snapshot: bool = False,
+    stdlib_profile: str | None = None,
 ) -> int:
     (
         _prepared_frontend_run_ticket,
@@ -13798,6 +13802,7 @@ def _run_backend_pipeline(
         runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
         cargo_timeout=prepared_build_config.cargo_timeout,
         molt_root=prepared_build_roots.molt_root,
+        stdlib_profile=stdlib_profile,
     )
     prepared_backend_compile, prepared_backend_compile_error = _prepare_backend_compile(
         diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
@@ -14344,6 +14349,7 @@ def _run_build_pipeline(
     wasm_opt_level: str = "Oz",
     precompile: bool = False,
     snapshot: bool = False,
+    stdlib_profile: str | None = None,
 ) -> int:
     prepared_frontend_run_ticket = prepared_frontend_pipeline_bundle[0]
     frontend_layer_error = _run_frontend_pipeline(
@@ -14374,6 +14380,7 @@ def _run_build_pipeline(
         wasm_opt_level=wasm_opt_level,
         precompile=precompile,
         snapshot=snapshot,
+        stdlib_profile=stdlib_profile,
     )
 
 
@@ -15028,6 +15035,7 @@ def _ensure_runtime_wasm_artifact(
     project_root: Path,
     simd_enabled: bool,
     freestanding: bool,
+    stdlib_profile: str | None = None,
 ) -> bool:
     runtime_path = (
         runtime_state.runtime_reloc_wasm if reloc else runtime_state.runtime_wasm
@@ -15046,6 +15054,7 @@ def _ensure_runtime_wasm_artifact(
         project_root=project_root,
         simd_enabled=simd_enabled,
         freestanding=freestanding,
+        stdlib_profile=stdlib_profile,
     ):
         return False
     if reloc:
@@ -16657,6 +16666,7 @@ def _ensure_runtime_wasm(
     project_root: Path | None = None,
     simd_enabled: bool = True,
     freestanding: bool = False,
+    stdlib_profile: str | None = None,
 ) -> bool:
     root = project_root or Path(__file__).resolve().parents[2]
     requested_cargo_profile = cargo_profile
@@ -16751,6 +16761,10 @@ def _ensure_runtime_wasm(
         ]
         if cargo_runtime_features:
             cmd.extend(["--features", ",".join(cargo_runtime_features)])
+        if stdlib_profile == "micro":
+            cmd.extend(["--no-default-features"])
+        elif stdlib_profile == "full":
+            pass  # default features include stdlib_full
         try:
             build, src = _run_runtime_wasm_cargo_build(
                 cmd=cmd,
@@ -18459,6 +18473,7 @@ def build(
     precompile: bool = False,
     wasm_profile: str = "full",
     snapshot: bool = False,
+    stdlib_profile: str | None = None,
 ) -> int:
     if isinstance(profile, bool):
         profile = "release"
@@ -18551,6 +18566,7 @@ def build(
         wasm_opt_level=wasm_opt_level,
         precompile=precompile,
         snapshot=snapshot,
+        stdlib_profile=stdlib_profile,
     )
 
 
@@ -23075,6 +23091,12 @@ def main() -> int:
         ),
     )
     build_parser.add_argument(
+        "--stdlib-profile",
+        choices=["full", "micro"],
+        default=None,
+        help="Runtime stdlib profile (full=all modules, micro=core only for smallest binary)",
+    )
+    build_parser.add_argument(
         "--emit-ir",
         help="Write the lowered IR JSON to a file path.",
     )
@@ -24121,24 +24143,28 @@ def main() -> int:
                 "wasm_profile": "pure",
                 "precompile": True,
                 "tmp_quota_mb": 32,
+                "stdlib_profile": "micro",
             },
             "browser": {
                 "wasm_opt_level": "Oz",
                 "wasm_profile": "pure",
                 "precompile": False,
                 "tmp_quota_mb": 64,
+                "stdlib_profile": "micro",
             },
             "wasi": {
                 "wasm_opt_level": "O3",
                 "wasm_profile": "full",
                 "precompile": False,
                 "tmp_quota_mb": 256,
+                "stdlib_profile": "full",
             },
             "fastly": {
                 "wasm_opt_level": "Oz",
                 "wasm_profile": "pure",
                 "precompile": True,
                 "tmp_quota_mb": 64,
+                "stdlib_profile": "micro",
             },
         }
 
@@ -24146,6 +24172,7 @@ def main() -> int:
         wasm_opt_level = getattr(args, "wasm_opt_level", "Oz")
         precompile = getattr(args, "precompile", False)
         wasm_profile = getattr(args, "wasm_profile", "full")
+        stdlib_profile = getattr(args, "stdlib_profile", None)
 
         if deploy_profile and deploy_profile in _DEPLOY_PROFILE_DEFAULTS:
             defaults = _DEPLOY_PROFILE_DEFAULTS[deploy_profile]
@@ -24161,6 +24188,8 @@ def main() -> int:
                 precompile = defaults["precompile"]
             if not any(a.startswith("--wasm-profile") for a in sys.argv):
                 wasm_profile = defaults["wasm_profile"]
+            if stdlib_profile is None and "stdlib_profile" in defaults:
+                stdlib_profile = defaults["stdlib_profile"]
 
         return build(
             args.file,
@@ -24199,6 +24228,7 @@ def main() -> int:
             precompile=precompile,
             wasm_profile=wasm_profile,
             snapshot=getattr(args, "snapshot", False),
+            stdlib_profile=stdlib_profile,
         )
     if args.command == "extension":
         if args.extension_command == "build":

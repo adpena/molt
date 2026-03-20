@@ -16,10 +16,12 @@
 
 use crate::randomness::fill_os_random;
 use crate::*;
+#[cfg(feature = "stdlib_crypto")]
 use digest::Digest;
 use num_bigint::{BigInt, BigUint, Sign};
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
+#[cfg(feature = "stdlib_crypto")]
 use sha2::Sha512;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -464,11 +466,19 @@ fn seed_bigint_from_bits(_py: &PyToken<'_>, seed_bits: u64) -> Option<BigInt> {
         }
     };
 
-    let digest = Sha512::digest(&seed_bytes);
-    let mut payload = Vec::with_capacity(seed_bytes.len() + digest.len());
-    payload.extend_from_slice(&seed_bytes);
-    payload.extend_from_slice(&digest);
-    Some(BigInt::from(BigUint::from_bytes_be(&payload)))
+    #[cfg(feature = "stdlib_crypto")]
+    {
+        let digest = Sha512::digest(&seed_bytes);
+        let mut payload = Vec::with_capacity(seed_bytes.len() + digest.len());
+        payload.extend_from_slice(&seed_bytes);
+        payload.extend_from_slice(&digest);
+        Some(BigInt::from(BigUint::from_bytes_be(&payload)))
+    }
+    #[cfg(not(feature = "stdlib_crypto"))]
+    {
+        // Without crypto support, fall back to using the raw seed bytes.
+        Some(BigInt::from(BigUint::from_bytes_be(&seed_bytes)))
+    }
 }
 
 // ─── Allocation helpers ───────────────────────────────────────────────────────
