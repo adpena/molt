@@ -1,6 +1,6 @@
 use crate::{FunctionIR, OpIR, SimpleIR, TrampolineKind, TrampolineSpec};
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::iter::ExactSizeIterator;
 use std::rc::Rc;
@@ -3999,6 +3999,12 @@ impl WasmBackend {
             } else {
                 eprintln!("[molt-wasm-import-audit] native EH disabled (set MOLT_WASM_NATIVE_EH=1)");
             }
+
+            // --- Tail call optimization audit (§3.5) ---
+            eprintln!(
+                "[molt-wasm-import-audit] tail calls emitted: {} (return_call instructions)",
+                self.tail_calls_emitted
+            );
         }
 
         self.module.section(&self.types);
@@ -4654,6 +4660,18 @@ impl WasmBackend {
         };
 
         let jumpful = !stateful && saw_jump_or_label;
+
+        // --- Tail call optimization eligibility (WASM tail calls proposal §3.5) ---
+        // A function is eligible for tail call optimization when it has no
+        // exception handling (exception_push/pop), which would require cleanup
+        // between the call and return.  Only non-stateful functions are
+        // candidates since stateful dispatch emits ops one-at-a-time.
+        let has_exception_handling = func_ir
+            .ops
+            .iter()
+            .any(|op| op.kind == "exception_push" || op.kind == "exception_pop");
+        let tail_call_eligible = !stateful && !has_exception_handling;
+
         if stateful && !locals.contains_key("self_param") {
             let self_param_idx = locals
                 .get("self")
@@ -4874,6 +4892,11 @@ impl WasmBackend {
         // Capture native_eh_enabled before the closure to avoid borrowing self.
         let native_eh_enabled = self.options.native_eh_enabled;
 
+        // Tail call optimization counter (WASM tail calls proposal §3.5).
+        // Uses Cell so the closure can mutate it while also being borrowed
+        // by multiple call sites (stateful dispatch emits ops one-at-a-time).
+        let tail_call_count: Cell<usize> = Cell::new(0);
+
         let mut emit_ops = |func: &mut Function,
                             ops: &[OpIR],
                             control_stack: &mut Vec<ControlKind>,
@@ -4887,8 +4910,19 @@ impl WasmBackend {
             // control flow diverges.
             let mut known_raw_ints: HashMap<u32, i64> = HashMap::new();
 
+            // Tail call skip flag: when we emit a return_call for a
+            // call_internal op, we set this to skip the immediately
+            // following `ret` op that is now subsumed.
+            let mut skip_next = false;
+
             for (rel_idx, op) in ops.iter().enumerate() {
                 let op_idx = base_idx + rel_idx;
+
+                if skip_next {
+                    skip_next = false;
+                    continue;
+                }
+
                 match op.kind.as_str() {
                     "const" => {
                         let val = op.value.unwrap();
@@ -8909,14 +8943,38 @@ impl WasmBackend {
                     "call_internal" => {
                         let target_name = op.s_value.as_ref().unwrap();
                         let args_names = op.args.as_ref().unwrap();
-                        let out = locals[op.out.as_ref().unwrap()];
+                        let out_name = op.out.as_ref().unwrap();
+                        let out = locals[out_name];
                         let func_idx = *func_indices
                             .get(target_name)
                             .expect("call_internal target not found");
+
+                        // --- Tail call detection (WASM tail calls proposal §3.5) ---
+                        // A call_internal is in tail position when:
+                        //   1. The function is eligible (no exception handling)
+                        //   2. The very next op is `ret`
+                        //   3. The ret's var matches this call's output
+                        //   4. There are no cleanup ops (dec_ref) between call and return
+                        let is_tail_call = tail_call_eligible
+                            && rel_idx + 1 < ops.len()
+                            && ops[rel_idx + 1].kind == "ret"
+                            && ops[rel_idx + 1].var.as_deref() == Some(out_name.as_str());
+
                         for arg_name in args_names {
                             let arg = locals[arg_name];
                             func.instruction(&Instruction::LocalGet(arg));
                         }
+
+                        if is_tail_call {
+                            // Emit return_call: callee's return value becomes
+                            // our return value without growing the WASM stack.
+                            emit_return_call(func, reloc_enabled, func_idx);
+                            tail_call_count.set(tail_call_count.get() + 1);
+                            // Skip the next op (ret) since return_call subsumes it.
+                            skip_next = true;
+                            continue;
+                        }
+
                         emit_call(func, reloc_enabled, func_idx);
                         func.instruction(&Instruction::LocalSet(out));
                     }
@@ -11348,6 +11406,10 @@ impl WasmBackend {
             }
             func.instruction(&Instruction::End);
         }
+
+        // Accumulate tail call count from this function into the backend total.
+        self.tail_calls_emitted += tail_call_count.get();
+
         self.codes.function(&func);
     }
 }
