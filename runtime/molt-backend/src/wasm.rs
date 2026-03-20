@@ -3352,10 +3352,17 @@ impl WasmBackend {
                     func.instruction(&Instruction::I64Const(TASK_KIND_GENERATOR));
                     emit_call(&mut func, reloc_enabled, self.import_ids["task_new"]);
                     func.instruction(&Instruction::LocalSet(task_local));
+                    // Zero-initialize the generator control block using
+                    // bulk memory.fill instead of N i64.const 0 / i64.store
+                    // sequences (WASM_OPTIMIZATION_PLAN Section 3.3).
+                    func.instruction(&Instruction::LocalGet(task_local));
+                    emit_call(&mut func, reloc_enabled, self.import_ids["handle_resolve"]);
+                    func.instruction(&Instruction::LocalSet(base_local));
+                    func.instruction(&Instruction::LocalGet(base_local)); // dest
+                    func.instruction(&Instruction::I32Const(0)); // fill value
+                    func.instruction(&Instruction::I32Const(GEN_CONTROL_SIZE)); // byte count
+                    func.instruction(&Instruction::MemoryFill(0));
                     if payload_slots > 0 {
-                        func.instruction(&Instruction::LocalGet(task_local));
-                        emit_call(&mut func, reloc_enabled, self.import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::LocalSet(base_local));
                         if arity > 0 {
                             func.instruction(&Instruction::LocalGet(1));
                             func.instruction(&Instruction::I32WrapI64);
@@ -3494,10 +3501,17 @@ impl WasmBackend {
                     func.instruction(&Instruction::I64Const(TASK_KIND_GENERATOR));
                     emit_call(&mut func, reloc_enabled, self.import_ids["task_new"]);
                     func.instruction(&Instruction::LocalSet(task_local));
+                    // Zero-initialize the async generator control block
+                    // using bulk memory.fill (WASM_OPTIMIZATION_PLAN
+                    // Section 3.3).
+                    func.instruction(&Instruction::LocalGet(task_local));
+                    emit_call(&mut func, reloc_enabled, self.import_ids["handle_resolve"]);
+                    func.instruction(&Instruction::LocalSet(base_local));
+                    func.instruction(&Instruction::LocalGet(base_local)); // dest
+                    func.instruction(&Instruction::I32Const(0)); // fill value
+                    func.instruction(&Instruction::I32Const(GEN_CONTROL_SIZE)); // byte count
+                    func.instruction(&Instruction::MemoryFill(0));
                     if payload_slots > 0 {
-                        func.instruction(&Instruction::LocalGet(task_local));
-                        emit_call(&mut func, reloc_enabled, self.import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::LocalSet(base_local));
                         if arity > 0 {
                             func.instruction(&Instruction::LocalGet(1));
                             func.instruction(&Instruction::I32WrapI64);
@@ -3643,16 +3657,59 @@ impl WasmBackend {
             }
         }
 
-        let mut ensure_local = |name: &str| -> u32 {
-            if let Some(&idx) = locals.get(name) {
-                return idx;
+        // --- Dead local elimination: pre-scan to find which IR variables are
+        // ever *read* (appear in op.args or op.var).  Output-only variables
+        // that are never read can share a single WASM local ("dead sink"),
+        // reducing the total local count and binary size.
+        let read_vars: HashSet<String> = {
+            let mut s = HashSet::new();
+            for op in &func_ir.ops {
+                if let Some(args) = &op.args {
+                    for arg in args {
+                        s.insert(arg.clone());
+                    }
+                }
+                if let Some(var) = &op.var {
+                    s.insert(var.clone());
+                }
             }
-            let idx = local_count;
-            locals.insert(name.to_string(), idx);
-            local_types.push(ValType::I64);
-            local_count += 1;
-            idx
+            s
         };
+        // Also treat function parameters as always live.
+        let param_set: HashSet<String> = func_ir.params.iter().cloned().collect();
+
+        // Allocate a single shared dead-sink local for output-only variables.
+        let dead_sink_idx = local_count;
+        locals.insert("__dead_sink".to_string(), dead_sink_idx);
+        local_types.push(ValType::I64);
+        local_count += 1;
+
+        // ensure_local with dead-local awareness: output-only variables
+        // (never read) are mapped to the shared dead_sink_idx instead of
+        // getting their own WASM local slot.  The `as_dead_out` flag
+        // indicates the caller is allocating an output-only variable that
+        // should be checked against the read set.
+        let mut ensure_local_inner =
+            |name: &str, as_dead_out: bool| -> u32 {
+                if let Some(&idx) = locals.get(name) {
+                    return idx;
+                }
+                // Dead local elimination: if this is an output variable that
+                // is never read and not a function parameter, reuse the
+                // shared dead sink local.
+                if as_dead_out
+                    && !read_vars.contains(name)
+                    && !param_set.contains(name)
+                {
+                    locals.insert(name.to_string(), dead_sink_idx);
+                    return dead_sink_idx;
+                }
+                let idx = local_count;
+                locals.insert(name.to_string(), idx);
+                local_types.push(ValType::I64);
+                local_count += 1;
+                idx
+            };
 
         let mut needs_field_fast = false;
         let mut stateful = false;
@@ -3662,14 +3719,17 @@ impl WasmBackend {
         for op in &func_ir.ops {
             if let Some(args) = &op.args {
                 for arg in args {
-                    ensure_local(arg);
+                    ensure_local_inner(arg, false);
                 }
             }
             if let Some(out) = &op.out {
-                let out_local_idx = ensure_local(out);
+                let out_local_idx = ensure_local_inner(out, true);
+                let is_dead = out_local_idx == dead_sink_idx;
                 if op.kind == "const_str" || op.kind == "const_bytes" || op.kind == "const_bigint" {
-                    ensure_local(&format!("{out}_ptr"));
-                    ensure_local(&format!("{out}_len"));
+                    // _ptr and _len locals are used internally by the op
+                    // emission so they always need real (non-sink) locals.
+                    ensure_local_inner(&format!("{out}_ptr"), false);
+                    ensure_local_inner(&format!("{out}_len"), false);
                 }
                 if !const_seed_seen.contains(out) {
                     let bits = match op.kind.as_str() {
@@ -3680,8 +3740,12 @@ impl WasmBackend {
                         _ => None,
                     };
                     if let Some(bits) = bits {
-                        const_seed_seen.insert(out.clone());
-                        const_seed_locals_all.push((out_local_idx, bits));
+                        // Skip seeding dead locals -- the value is never
+                        // observed so there is no point initializing it.
+                        if !is_dead {
+                            const_seed_seen.insert(out.clone());
+                            const_seed_locals_all.push((out_local_idx, bits));
+                        }
                     }
                 }
             }
