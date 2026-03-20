@@ -1227,7 +1227,9 @@ impl WasmBackend {
                 }
 
                 // Only 2 or 3 element unpacks are worth multi-value.
+                // Mark callees with non-destructuring call sites as ineligible.
                 if unpack_count < 2 || unpack_count > 3 {
+                    candidate_arity.insert(callee.clone(), None);
                     continue;
                 }
 
@@ -6438,32 +6440,38 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(out));
                     }
                     "tuple_new" => {
-                        // TODO(multi-value §3.1): When the tuple being built is
-                        // immediately consumed by a return op in a function whose
-                        // callers all destructure via tuple_index, this allocation
-                        // can be eliminated entirely.  Instead:
-                        //   1. Change the function's return type to
-                        //      MULTI_RETURN_2_TYPE / MULTI_RETURN_3_TYPE.
-                        //   2. Emit N local.get instructions (one per element)
-                        //      and let the WASM multi-value return push them all.
-                        //   3. At each call site, replace the tuple_index ops with
-                        //      local.set for each result from the multi-value call.
-                        // Applicable when args.len() is 2 or 3 and the tuple flows
-                        // directly to a return.
                         let args = op.args.as_ref().unwrap();
-                        let out = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::I64Const(box_int(args.len() as i64)));
-                        emit_call(func, reloc_enabled, import_ids["list_builder_new"]);
-                        func.instruction(&Instruction::LocalSet(out));
-                        for name in args {
-                            let val = locals[name];
+                        let out_name = op.out.as_ref().unwrap();
+                        let out = locals[out_name];
+                        // Multi-value return (Section 3.1): store elements
+                        // into __multi_ret_N locals instead of heap-allocating
+                        // when this tuple flows directly to a return in a
+                        // candidate function.
+                        if is_multi_return_callee.is_some()
+                            && multi_ret_tuple_vars.contains(out_name)
+                            && args.len() == multi_ret_locals.len()
+                        {
+                            for (k, arg_name) in args.iter().enumerate() {
+                                let val = locals[arg_name];
+                                func.instruction(&Instruction::LocalGet(val));
+                                func.instruction(&Instruction::LocalSet(multi_ret_locals[k]));
+                            }
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::LocalSet(out));
+                        } else {
+                            func.instruction(&Instruction::I64Const(box_int(args.len() as i64)));
+                            emit_call(func, reloc_enabled, import_ids["list_builder_new"]);
+                            func.instruction(&Instruction::LocalSet(out));
+                            for name in args {
+                                let val = locals[name];
+                                func.instruction(&Instruction::LocalGet(out));
+                                func.instruction(&Instruction::LocalGet(val));
+                                emit_call(func, reloc_enabled, import_ids["list_builder_append"]);
+                            }
                             func.instruction(&Instruction::LocalGet(out));
-                            func.instruction(&Instruction::LocalGet(val));
-                            emit_call(func, reloc_enabled, import_ids["list_builder_append"]);
+                            emit_call(func, reloc_enabled, import_ids["tuple_builder_finish"]);
+                            func.instruction(&Instruction::LocalSet(out));
                         }
-                        func.instruction(&Instruction::LocalGet(out));
-                        emit_call(func, reloc_enabled, import_ids["tuple_builder_finish"]);
-                        func.instruction(&Instruction::LocalSet(out));
                     }
                     "callargs_push_pos" => {
                         let args = op.args.as_ref().unwrap();
@@ -6958,21 +6966,35 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(res));
                     }
                     "tuple_index" => {
-                        // TODO(multi-value §3.1): When the tuple being indexed
-                        // was produced by a call that has been promoted to a
-                        // multi-value return, this op becomes a no-op — the
-                        // individual values are already in separate locals from
-                        // the multi-value call lowering.  The call-site lowering
-                        // pass should replace this tuple_index with a simple
-                        // local.get of the Nth result local.
                         let args = op.args.as_ref().unwrap();
-                        let tuple = locals[&args[0]];
-                        let val = locals[&args[1]];
-                        func.instruction(&Instruction::LocalGet(tuple));
-                        func.instruction(&Instruction::LocalGet(val));
-                        emit_call(func, reloc_enabled, import_ids["tuple_index"]);
+                        let tuple_var = &args[0];
                         let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        // Multi-value return (Section 3.1): if the tuple was
+                        // produced by a promoted call_internal, the values
+                        // are already in dedicated locals.
+                        if multi_ret_call_vars.contains(tuple_var) {
+                            let idx = op.value.unwrap_or(0);
+                            if let Some(&src_local) =
+                                multi_ret_call_locals.get(&(tuple_var.clone(), idx))
+                            {
+                                func.instruction(&Instruction::LocalGet(src_local));
+                                func.instruction(&Instruction::LocalSet(res));
+                            } else {
+                                let tuple = locals[tuple_var];
+                                let val = locals[&args[1]];
+                                func.instruction(&Instruction::LocalGet(tuple));
+                                func.instruction(&Instruction::LocalGet(val));
+                                emit_call(func, reloc_enabled, import_ids["tuple_index"]);
+                                func.instruction(&Instruction::LocalSet(res));
+                            }
+                        } else {
+                            let tuple = locals[tuple_var];
+                            let val = locals[&args[1]];
+                            func.instruction(&Instruction::LocalGet(tuple));
+                            func.instruction(&Instruction::LocalGet(val));
+                            emit_call(func, reloc_enabled, import_ids["tuple_index"]);
+                            func.instruction(&Instruction::LocalSet(res));
+                        }
                     }
                     "iter" => {
                         let args = op.args.as_ref().unwrap();
@@ -8976,7 +8998,20 @@ impl WasmBackend {
                         }
 
                         emit_call(func, reloc_enabled, func_idx);
-                        func.instruction(&Instruction::LocalSet(out));
+                        // Multi-value return (Section 3.1): pop N results
+                        // into dedicated locals for later tuple_index.
+                        if multi_ret_call_vars.contains(out_name) {
+                            let ret_count = multi_return_candidates[target_name];
+                            for k in (0..ret_count).rev() {
+                                let local_idx =
+                                    multi_ret_call_locals[&(out_name.clone(), k as i64)];
+                                func.instruction(&Instruction::LocalSet(local_idx));
+                            }
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::LocalSet(out));
+                        } else {
+                            func.instruction(&Instruction::LocalSet(out));
+                        }
                     }
                     "inc_ref" | "borrow" => {
                         let args_names = op.args.as_ref().expect("inc_ref/borrow args missing");
@@ -9987,15 +10022,28 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "ret" => {
-                        let ret_local = op.var.as_ref().and_then(|name| locals.get(name).copied());
-                        if let Some(local_idx) = ret_local {
-                            func.instruction(&Instruction::LocalGet(local_idx));
+                        let ret_var = op.var.as_ref();
+                        // Multi-value return (Section 3.1): push individual
+                        // __multi_ret_N locals instead of the tuple handle.
+                        if is_multi_return_callee.is_some()
+                            && ret_var.map_or(false, |v| multi_ret_tuple_vars.contains(v))
+                            && !multi_ret_locals.is_empty()
+                        {
+                            for &local_idx in &multi_ret_locals {
+                                func.instruction(&Instruction::LocalGet(local_idx));
+                            }
                         } else {
-                            eprintln!(
-                                "WASM lowering warning: missing return local in {} op {} (var={:?}); returning None",
-                                func_ir.name, op_idx, op.var
-                            );
-                            func.instruction(&Instruction::I64Const(box_none()));
+                            let ret_local =
+                                ret_var.and_then(|name| locals.get(name).copied());
+                            if let Some(local_idx) = ret_local {
+                                func.instruction(&Instruction::LocalGet(local_idx));
+                            } else {
+                                eprintln!(
+                                    "WASM lowering warning: missing return local in {} op {} (var={:?}); returning None",
+                                    func_ir.name, op_idx, op.var
+                                );
+                                func.instruction(&Instruction::I64Const(box_none()));
+                            }
                         }
                         func.instruction(&Instruction::Return);
                     }
