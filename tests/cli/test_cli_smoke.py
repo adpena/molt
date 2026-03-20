@@ -308,6 +308,31 @@ def test_resolve_output_path_uses_out_dir(tmp_path: Path) -> None:
     assert resolved == out_dir / "obj"
 
 
+def test_resolve_build_output_layout_allows_linked_output_for_default_wasm_linking(
+    tmp_path: Path,
+) -> None:
+    layout = cli._resolve_build_output_layout(
+        target="wasm-freestanding",
+        trusted=False,
+        require_linked=False,
+        linked=False,
+        linked_output=str(tmp_path / "linked.wasm"),
+        emit=None,
+        output=None,
+        emit_ir=None,
+        artifacts_root=tmp_path / "artifacts",
+        bin_root=tmp_path / "bin",
+        output_root=tmp_path / "out",
+        output_base="app",
+        out_dir_path=None,
+        project_root=tmp_path,
+    )
+    assert layout.is_wasm is True
+    assert layout.is_wasm_freestanding is True
+    assert layout.linked is True
+    assert layout.linked_output_path == tmp_path / "linked.wasm"
+
+
 def test_default_molt_home_uses_cache_root_when_unset(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

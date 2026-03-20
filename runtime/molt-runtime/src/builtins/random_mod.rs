@@ -14,9 +14,9 @@
 // MT constants follow the original Matsumoto & Nishimura 1998 parameters.
 // Distribution algorithms follow CPython 3.12 random.py exactly.
 
+use crate::randomness::fill_os_random;
 use crate::*;
 use digest::Digest;
-use getrandom::fill as getrandom_fill;
 use num_bigint::{BigInt, BigUint, Sign};
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
@@ -367,7 +367,7 @@ fn seed_key_from_bigint(seed: &BigInt) -> Vec<u32> {
 /// Seed from system time via getrandom — used when seed is None.
 fn seed_from_os(_py: &PyToken<'_>) -> Option<Vec<u32>> {
     let mut buf = [0u8; 32];
-    getrandom_fill(&mut buf)
+    fill_os_random(&mut buf)
         .map_err(|_| {
             let _ = raise_exception::<u64>(_py, "OSError", "getrandom failed");
         })
