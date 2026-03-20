@@ -206,6 +206,7 @@ struct CompileFuncContext<'a> {
     /// Maps function name -> number of return values (2 or 3).
     multi_return_candidates: &'a HashMap<String, usize>,
     /// Import indices stripped in pure profile mode; calls emit `unreachable`.
+    #[allow(dead_code)]
     skipped_import_indices: &'a HashSet<u32>,
 }
 
@@ -1120,6 +1121,7 @@ pub struct WasmBackend {
     options: WasmCompileOptions,
     /// Import indices that were registered but stripped in `pure` profile mode.
     /// Calls to these indices emit `unreachable` instead of `call`.
+    #[allow(dead_code)]
     skipped_import_indices: HashSet<u32>,
     /// Number of tail calls emitted via `return_call` (WASM tail calls proposal).
     tail_calls_emitted: usize,
@@ -1710,7 +1712,7 @@ impl WasmBackend {
         };
 
         let mut import_idx = 0;
-        let mut skipped_indices: HashSet<u32> = HashSet::new();
+        let skipped_indices: HashSet<u32> = HashSet::new();
         let mut add_import = |name: &str, ty: u32, ids: &mut TrackedImportIds| {
             if is_skipped_import(name) {
                 // In pure mode, skip IO/ASYNC/TIME imports entirely.
@@ -11640,6 +11642,7 @@ fn emit_call(func: &mut Function, reloc_enabled: bool, func_index: u32) {
 }
 
 /// Emit a call or `unreachable` if the target import was stripped in pure profile mode.
+#[allow(dead_code)]
 fn emit_call_or_unreachable(
     func: &mut Function,
     reloc_enabled: bool,
