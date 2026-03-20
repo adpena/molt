@@ -184,3 +184,14 @@ def test_runtime_manifest_avoids_url_compile_graph_for_websocket_client() -> Non
 
     assert "url" not in native_deps
     assert "url" not in native_deps["tungstenite"]["features"]
+
+
+def test_backend_ir_model_and_passes_are_split_out_of_lib_rs() -> None:
+    lib_rs = (ROOT / "runtime" / "molt-backend" / "src" / "lib.rs").read_text()
+    ir_rs = ROOT / "runtime" / "molt-backend" / "src" / "ir.rs"
+    passes_rs = ROOT / "runtime" / "molt-backend" / "src" / "passes.rs"
+
+    assert ir_rs.exists()
+    assert passes_rs.exists()
+    assert "pub struct SimpleIR" not in lib_rs
+    assert "pub fn validate_simple_ir" not in lib_rs
