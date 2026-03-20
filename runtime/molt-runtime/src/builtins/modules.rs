@@ -1079,6 +1079,71 @@ fn runpy_normalize_candidate(path: PathBuf) -> String {
         .into_owned()
 }
 
+// ── VFS-aware filesystem helpers (Plan B v0.1) ──────────────────────
+// These check the VFS mount table first and fall back to the real
+// filesystem, so `import mymodule` finds `/bundle/mymodule.py` when
+// `/bundle` is in `sys.path`.
+
+/// Returns `true` if `path` is a file in the VFS or on disk.
+fn vfs_is_file(path: &std::path::Path) -> bool {
+    let path_str = path.to_string_lossy();
+    if let Some(state) = crate::runtime_state_for_gil() {
+        if let Some(guard) = state.get_vfs() {
+            let vfs = guard.as_ref().unwrap();
+            if let Some((_prefix, backend, rel)) = vfs.resolve(&path_str) {
+                return match backend.stat(&rel) {
+                    Ok(st) => !st.is_dir,
+                    Err(_) => false,
+                };
+            }
+        }
+    }
+    path.is_file()
+}
+
+/// Read a file to `String`, trying VFS first then the real filesystem.
+#[allow(dead_code)]
+fn vfs_read_to_string(path: &std::path::Path) -> Option<String> {
+    let path_str = path.to_string_lossy();
+    if let Some(state) = crate::runtime_state_for_gil() {
+        if let Some(guard) = state.get_vfs() {
+            let vfs = guard.as_ref().unwrap();
+            if let Some((_prefix, backend, rel)) = vfs.resolve(&path_str) {
+                return match backend.open_read(&rel) {
+                    Ok(bytes) => String::from_utf8(bytes).ok(),
+                    Err(_) => None,
+                };
+            }
+        }
+    }
+    std::fs::read_to_string(path).ok()
+}
+
+/// Read a file to raw bytes, trying VFS first then the real filesystem.
+fn vfs_read(path: &str) -> std::io::Result<Vec<u8>> {
+    if let Some(state) = crate::runtime_state_for_gil() {
+        if let Some(guard) = state.get_vfs() {
+            let vfs = guard.as_ref().unwrap();
+            if let Some((_prefix, backend, rel)) = vfs.resolve(path) {
+                return backend.open_read(&rel).map_err(|e| {
+                    let kind = match e {
+                        crate::vfs::VfsError::NotFound => std::io::ErrorKind::NotFound,
+                        crate::vfs::VfsError::PermissionDenied
+                        | crate::vfs::VfsError::ReadOnly
+                        | crate::vfs::VfsError::CapabilityDenied(_) => {
+                            std::io::ErrorKind::PermissionDenied
+                        }
+                        crate::vfs::VfsError::IsDirectory => std::io::ErrorKind::IsADirectory,
+                        _ => std::io::ErrorKind::Other,
+                    };
+                    std::io::Error::new(kind, e.to_string())
+                });
+            }
+        }
+    }
+    std::fs::read(path)
+}
+
 fn runpy_resolve_module_source(
     mod_name: &str,
     sys_path: &[String],
@@ -1098,7 +1163,7 @@ fn runpy_resolve_module_source(
             let last = idx + 1 == parts.len();
             if last {
                 let file_path = cur.join(format!("{part}.py"));
-                if file_path.is_file() {
+                if vfs_is_file(&file_path) {
                     let package_name = runpy_package_name(mod_name);
                     return Some((
                         runpy_normalize_candidate(file_path),
@@ -1108,9 +1173,9 @@ fn runpy_resolve_module_source(
                 }
                 let pkg_dir = cur.join(part);
                 let init_path = pkg_dir.join("__init__.py");
-                if init_path.is_file() {
+                if vfs_is_file(&init_path) {
                     let main_path = pkg_dir.join("__main__.py");
-                    if main_path.is_file() {
+                    if vfs_is_file(&main_path) {
                         return Some((
                             runpy_normalize_candidate(main_path),
                             format!("{mod_name}.__main__"),
@@ -1121,7 +1186,7 @@ fn runpy_resolve_module_source(
                 matched = false;
             } else {
                 cur.push(part);
-                if !cur.join("__init__.py").is_file() {
+                if !vfs_is_file(&cur.join("__init__.py")) {
                     matched = false;
                     break;
                 }
@@ -2538,7 +2603,7 @@ unsafe fn runpy_run_module_from_resolved_source(
     init_dict_ptr: Option<*mut u8>,
     alter_sys: bool,
 ) -> u64 {
-    let source_bytes = match std::fs::read(source_path) {
+    let source_bytes = match vfs_read(source_path) {
         Ok(bytes) => bytes,
         Err(err) => {
             let message = err.to_string();
@@ -2848,7 +2913,7 @@ pub extern "C" fn molt_runpy_run_path(
                 };
             }
         }
-        let source_bytes = match std::fs::read(&path) {
+        let source_bytes = match vfs_read(&path) {
             Ok(bytes) => bytes,
             Err(err) => {
                 let message = err.to_string();
