@@ -11,6 +11,7 @@ use std::fmt::Write as _;
 use std::sync::OnceLock;
 
 pub mod luau;
+#[cfg(feature = "rust-backend")]
 pub mod rust;
 #[cfg(feature = "wasm-backend")]
 pub mod wasm;
