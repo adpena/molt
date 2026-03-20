@@ -11488,6 +11488,51 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
+        name: "molt_os_environ",
+        symbol: "molt_os_environ",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_os_makedirs",
+        symbol: "molt_os_makedirs",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_os_path_join",
+        symbol: "molt_os_path_join",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_os_path_exists",
+        symbol: "molt_os_path_exists",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_os_path_isfile",
+        symbol: "molt_os_path_isfile",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_os_path_isdir",
+        symbol: "molt_os_path_isdir",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_sys_argv",
+        symbol: "molt_sys_argv",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_sys_modules",
+        symbol: "molt_sys_modules",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_sys_path",
+        symbol: "molt_sys_path",
+        arity: 0,
+    },
+    IntrinsicSpec {
         name: "molt_tokenize_scan",
         symbol: "molt_tokenize_scan",
         arity: 1,
@@ -11668,6 +11713,31 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
     },
     IntrinsicSpec {
+        name: "molt_re_sub_callable",
+        symbol: "molt_re_sub_callable",
+        arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_re_escape",
+        symbol: "molt_re_escape",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_re_match_group",
+        symbol: "molt_re_match_group",
+        arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_re_match_groups",
+        symbol: "molt_re_match_groups",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_re_match_groupdict",
+        symbol: "molt_re_match_groupdict",
+        arity: 4,
+    },
+    IntrinsicSpec {
         name: "molt_textwrap_dedent",
         symbol: "molt_textwrap_dedent",
         arity: 1,
@@ -11750,6 +11820,31 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_dataclasses_field_flags",
         symbol: "molt_dataclasses_field_flags",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_dataclasses_post_init",
+        symbol: "molt_dataclasses_post_init",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_dataclasses_field_metadata",
+        symbol: "molt_dataclasses_field_metadata",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_dataclasses_set_field_metadata",
+        symbol: "molt_dataclasses_set_field_metadata",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_dataclasses_is_initvar",
+        symbol: "molt_dataclasses_is_initvar",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_dataclasses_is_kw_only_sentinel",
+        symbol: "molt_dataclasses_is_kw_only_sentinel",
         arity: 1,
     },
     IntrinsicSpec {
@@ -16626,6 +16721,15 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_os_wifstopped" => Some(crate::molt_os_wifstopped as *const () as usize as u64),
         "molt_os_wstopsig" => Some(crate::molt_os_wstopsig as *const () as usize as u64),
         "molt_os_fspath" => Some(crate::molt_os_fspath as *const () as usize as u64),
+        "molt_os_environ" => Some(crate::molt_os_environ as *const () as usize as u64),
+        "molt_os_makedirs" => Some(crate::molt_os_makedirs as *const () as usize as u64),
+        "molt_os_path_join" => Some(crate::molt_os_path_join as *const () as usize as u64),
+        "molt_os_path_exists" => Some(crate::molt_os_path_exists as *const () as usize as u64),
+        "molt_os_path_isfile" => Some(crate::molt_os_path_isfile as *const () as usize as u64),
+        "molt_os_path_isdir" => Some(crate::molt_os_path_isdir as *const () as usize as u64),
+        "molt_sys_argv" => Some(crate::molt_sys_argv as *const () as usize as u64),
+        "molt_sys_modules" => Some(crate::molt_sys_modules as *const () as usize as u64),
+        "molt_sys_path" => Some(crate::molt_sys_path as *const () as usize as u64),
         "molt_tokenize_scan" => Some(crate::molt_tokenize_scan as *const () as usize as u64),
         "molt_codecs_charmap_build" => {
             Some(crate::molt_codecs_charmap_build as *const () as usize as u64)
@@ -16706,6 +16810,13 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_random_randrange" => Some(crate::molt_random_randrange as *const () as usize as u64),
         "molt_re_split" => Some(crate::molt_re_split as *const () as usize as u64),
         "molt_re_sub" => Some(crate::molt_re_sub as *const () as usize as u64),
+        "molt_re_sub_callable" => Some(crate::molt_re_sub_callable as *const () as usize as u64),
+        "molt_re_escape" => Some(crate::molt_re_escape as *const () as usize as u64),
+        "molt_re_match_group" => Some(crate::molt_re_match_group as *const () as usize as u64),
+        "molt_re_match_groups" => Some(crate::molt_re_match_groups as *const () as usize as u64),
+        "molt_re_match_groupdict" => {
+            Some(crate::molt_re_match_groupdict as *const () as usize as u64)
+        }
         "molt_textwrap_dedent" => Some(crate::molt_textwrap_dedent as *const () as usize as u64),
         "molt_textwrap_shorten" => Some(crate::molt_textwrap_shorten as *const () as usize as u64),
         "molt_timedelta_repr" => Some(crate::molt_timedelta_repr as *const () as usize as u64),
@@ -16746,6 +16857,21 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_dataclasses_field_flags" => {
             Some(crate::molt_dataclasses_field_flags as *const () as usize as u64)
+        }
+        "molt_dataclasses_post_init" => {
+            Some(crate::molt_dataclasses_post_init as *const () as usize as u64)
+        }
+        "molt_dataclasses_field_metadata" => {
+            Some(crate::molt_dataclasses_field_metadata as *const () as usize as u64)
+        }
+        "molt_dataclasses_set_field_metadata" => {
+            Some(crate::molt_dataclasses_set_field_metadata as *const () as usize as u64)
+        }
+        "molt_dataclasses_is_initvar" => {
+            Some(crate::molt_dataclasses_is_initvar as *const () as usize as u64)
+        }
+        "molt_dataclasses_is_kw_only_sentinel" => {
+            Some(crate::molt_dataclasses_is_kw_only_sentinel as *const () as usize as u64)
         }
         "molt_json_default_separators" => {
             Some(crate::molt_json_default_separators as *const () as usize as u64)

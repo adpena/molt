@@ -42,3 +42,10 @@ molt_call_indirect10
 molt_call_indirect11
 molt_call_indirect12
 molt_call_indirect13
+# Feature-gated runtime functions that may be absent in micro builds
+molt_cbor_parse_scalar
+molt_cbor_parse_scalar_obj
+molt_deflate_raw
+molt_inflate_raw
+molt_msgpack_parse_scalar
+molt_msgpack_parse_scalar_obj

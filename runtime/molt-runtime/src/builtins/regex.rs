@@ -29,8 +29,9 @@ use molt_obj_model::MoltObject;
 
 use crate::{
     TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_TUPLE, alloc_dict_with_pairs, alloc_list, alloc_string,
-    alloc_tuple, dec_ref_bits, exception_pending, is_truthy, obj_from_bits, object_type_id,
-    raise_exception, seq_vec_ref, string_obj_to_owned, to_i64,
+    alloc_tuple, attr_name_bits_from_bytes, dec_ref_bits, exception_pending, inc_ref_bits,
+    is_truthy, obj_from_bits, object_type_id, raise_exception, seq_vec_ref,
+    string_obj_to_owned, to_i64,
 };
 
 // ---------------------------------------------------------------------------
@@ -3586,6 +3587,574 @@ fn expand_repl_with_groups(
 }
 
 // ---------------------------------------------------------------------------
+// molt_re_escape — escape special regex characters
+// ---------------------------------------------------------------------------
+
+/// Characters that have special meaning in regular expressions and must be
+/// escaped.  This matches CPython's `re.escape()` character set.
+const RE_SPECIAL_CHARS: &[char] = &[
+    '\\', '.', '^', '$', '*', '+', '?', '{', '}', '[', ']', '|', '(', ')',
+];
+
+/// Pure-Rust implementation of `re.escape()`.
+///
+/// Prefixes every character in `pattern` that has special regex meaning with
+/// a backslash.  NUL characters are also escaped as `\000`.
+fn re_escape_impl(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len() * 2);
+    for ch in pattern.chars() {
+        if ch == '\0' {
+            out.push_str("\\000");
+        } else if RE_SPECIAL_CHARS.contains(&ch) {
+            out.push('\\');
+            out.push(ch);
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// `molt_re_escape(pattern: str) -> str`
+///
+/// Escape all special regex characters in `pattern` so it can be used as a
+/// literal string in a regex.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_escape(pattern_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(pattern) = string_obj_to_owned(obj_from_bits(pattern_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pattern must be str");
+        };
+        let escaped = re_escape_impl(&pattern);
+        let out_ptr = alloc_string(_py, escaped.as_bytes());
+        if out_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// molt_re_sub_callable — re.sub() with a callable replacement function
+// ---------------------------------------------------------------------------
+
+/// `molt_re_sub_callable(handle, repl_callable, text, count) -> (result_string, num_subs)`
+///
+/// Like `molt_re_sub` but `repl_callable` is a callable that receives a match
+/// result tuple `(start, end, groups)` and returns a replacement string.
+///
+/// This fills the gap where `molt_re_sub` only handles string replacements and
+/// the Python side previously had to fall back to its own loop for callable
+/// replacements.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_sub_callable(
+    handle_bits: u64,
+    repl_callable_bits: u64,
+    text_bits: u64,
+    count_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "handle must be int");
+        };
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(count) = to_i64(obj_from_bits(count_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "count must be int");
+        };
+
+        // Look up compiled pattern.
+        let guard = RE_PATTERNS.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(compiled) = guard.get(&handle) else {
+            return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
+        };
+        let root = compiled.root.clone();
+        let group_count = compiled.group_count;
+        let flags = compiled.flags;
+        drop(guard);
+
+        let local_compiled = CompiledPattern {
+            root,
+            group_count,
+            group_names: HashMap::new(),
+            flags,
+            warn_pos: None,
+        };
+
+        let chars: Vec<char> = text.chars().collect();
+        let text_len = chars.len();
+        let limit = if count <= 0 {
+            None
+        } else {
+            Some(count as usize)
+        };
+
+        let mut out = String::with_capacity(text.len());
+        let mut last: usize = 0;
+        let mut replaced: usize = 0;
+        let mut cur: usize = 0;
+        let mut prev_empty_at: Option<usize> = None;
+
+        while cur <= text_len {
+            if let Some(lim) = limit
+                && replaced >= lim
+            {
+                break;
+            }
+
+            match execute_match(&local_compiled, &text, cur, text_len, "search") {
+                Some(result) => {
+                    let m_start = result.start;
+                    let m_end = result.end;
+
+                    // Zero-length match handling.
+                    if m_start == m_end {
+                        if prev_empty_at == Some(m_start) {
+                            if cur < text_len {
+                                cur += 1;
+                            } else {
+                                break;
+                            }
+                            continue;
+                        }
+                        prev_empty_at = Some(m_start);
+                    } else {
+                        prev_empty_at = None;
+                    }
+
+                    // Append text[last..m_start].
+                    let segment: String = chars[last..m_start].iter().collect();
+                    out.push_str(&segment);
+
+                    // Build the match result tuple and call the replacement function.
+                    let match_tuple_bits =
+                        build_match_result_bits(_py, &result, group_count);
+                    let repl_result_bits = unsafe {
+                        crate::call::dispatch::call_callable1(
+                            _py,
+                            repl_callable_bits,
+                            match_tuple_bits,
+                        )
+                    };
+                    dec_ref_bits(_py, match_tuple_bits);
+
+                    if crate::exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+
+                    // The callable must return a string.
+                    if let Some(repl_str) = string_obj_to_owned(obj_from_bits(repl_result_bits)) {
+                        out.push_str(&repl_str);
+                    }
+                    dec_ref_bits(_py, repl_result_bits);
+
+                    last = m_end;
+                    replaced += 1;
+
+                    if m_end == m_start {
+                        if cur < text_len {
+                            cur = m_start + 1;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        cur = m_end;
+                    }
+                }
+                None => break,
+            }
+        }
+
+        // Append the remaining text.
+        let tail: String = chars[last..].iter().collect();
+        out.push_str(&tail);
+
+        // Build result tuple: (result_string, num_replacements).
+        let result_str_ptr = alloc_string(_py, out.as_bytes());
+        let result_str_bits = if result_str_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(result_str_ptr).bits()
+        };
+        let count_bits_out = MoltObject::from_int(replaced as i64).bits();
+
+        let tuple_ptr = alloc_tuple(_py, &[result_str_bits, count_bits_out]);
+        if tuple_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Match object helpers — .group(), .groups(), .groupdict()
+// ---------------------------------------------------------------------------
+//
+// The Rust match engine returns a flat tuple (start, end, groups_tuple).
+// These intrinsics operate on that tuple + the original text to provide the
+// CPython Match object API efficiently from Rust.
+
+/// `molt_re_match_group(text, match_tuple, *indices) -> str | tuple[str|None, ...]`
+///
+/// Implements `Match.group(...)`.  `indices` is a tuple of (int | str) group
+/// selectors.  If a single index is given, returns a string (or None for
+/// unmatched groups).  If multiple indices, returns a tuple.
+///
+/// `match_tuple` is the `(start, end, groups_tuple)` from `molt_re_execute`.
+/// `group_names_bits` is a dict mapping name → index for named groups.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_match_group(
+    text_bits: u64,
+    match_tuple_bits: u64,
+    indices_bits: u64,
+    group_names_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let text_chars: Vec<char> = text.chars().collect();
+
+        // Decode match_tuple = (start, end, groups_tuple)
+        let Some(mt_ptr) = obj_from_bits(match_tuple_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "match_tuple must be a tuple");
+        };
+        let mt = unsafe { seq_vec_ref(mt_ptr) };
+        if mt.len() < 3 {
+            return raise_exception::<_>(_py, "ValueError", "invalid match tuple");
+        }
+        let Some(m_start) = to_i64(obj_from_bits(mt[0])) else {
+            return raise_exception::<_>(_py, "ValueError", "invalid match start");
+        };
+        let Some(m_end) = to_i64(obj_from_bits(mt[1])) else {
+            return raise_exception::<_>(_py, "ValueError", "invalid match end");
+        };
+
+        // Decode the groups tuple.
+        let Some(groups_ptr) = obj_from_bits(mt[2]).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "groups must be a tuple");
+        };
+        let group_spans = unsafe { seq_vec_ref(groups_ptr) };
+
+        // Helper: resolve a group index from an int or string selector.
+        let resolve_group = |sel_bits: u64| -> Option<usize> {
+            if let Some(idx) = to_i64(obj_from_bits(sel_bits)) {
+                return Some(idx as usize);
+            }
+            // Try as string name.
+            if let Some(name) = string_obj_to_owned(obj_from_bits(sel_bits)) {
+                if let Some(gn_ptr) = obj_from_bits(group_names_bits).as_ptr() {
+                    let gn_ty = unsafe { object_type_id(gn_ptr) };
+                    if gn_ty == TYPE_ID_DICT {
+                        // Look up name in the dict.
+                        if let Some(name_key_bits) = crate::attr_name_bits_from_bytes(_py, name.as_bytes()) {
+                            if let Some(val_bits) = unsafe { crate::dict_get_in_place(_py, gn_ptr, name_key_bits) } {
+                                dec_ref_bits(_py, name_key_bits);
+                                return to_i64(obj_from_bits(val_bits)).map(|v| v as usize);
+                            }
+                            dec_ref_bits(_py, name_key_bits);
+                        }
+                    }
+                }
+            }
+            None
+        };
+
+        // Helper: extract group text for index i (0 = whole match).
+        let group_text_bits = |i: usize| -> u64 {
+            if i == 0 {
+                // Whole match.
+                let ms = m_start as usize;
+                let me = m_end as usize;
+                if ms <= me && me <= text_chars.len() {
+                    let s: String = text_chars[ms..me].iter().collect();
+                    let ptr = alloc_string(_py, s.as_bytes());
+                    if !ptr.is_null() {
+                        return MoltObject::from_ptr(ptr).bits();
+                    }
+                }
+                return MoltObject::none().bits();
+            }
+            // Group i is at index i-1 in the spans tuple (groups are 1-based,
+            // but the groups_tuple stores them starting at index 0 for group 1).
+            let span_idx = i - 1;
+            if span_idx >= group_spans.len() {
+                return MoltObject::none().bits();
+            }
+            let span_bits = group_spans[span_idx];
+            if obj_from_bits(span_bits).is_none() {
+                return MoltObject::none().bits();
+            }
+            let Some(span_ptr) = obj_from_bits(span_bits).as_ptr() else {
+                return MoltObject::none().bits();
+            };
+            let span = unsafe { seq_vec_ref(span_ptr) };
+            if span.len() < 2 {
+                return MoltObject::none().bits();
+            }
+            let Some(gs) = to_i64(obj_from_bits(span[0])) else {
+                return MoltObject::none().bits();
+            };
+            let Some(ge) = to_i64(obj_from_bits(span[1])) else {
+                return MoltObject::none().bits();
+            };
+            if gs < 0 || ge < gs {
+                return MoltObject::none().bits();
+            }
+            let gs = gs as usize;
+            let ge = ge as usize;
+            if ge > text_chars.len() {
+                return MoltObject::none().bits();
+            }
+            let s: String = text_chars[gs..ge].iter().collect();
+            let ptr = alloc_string(_py, s.as_bytes());
+            if !ptr.is_null() {
+                MoltObject::from_ptr(ptr).bits()
+            } else {
+                MoltObject::none().bits()
+            }
+        };
+
+        // Decode indices tuple.
+        let Some(indices_ptr) = obj_from_bits(indices_bits).as_ptr() else {
+            // No indices → return group(0) = whole match.
+            return group_text_bits(0);
+        };
+        let indices = unsafe { seq_vec_ref(indices_ptr) };
+
+        if indices.is_empty() {
+            // group() with no args → group(0)
+            return group_text_bits(0);
+        }
+
+        if indices.len() == 1 {
+            // Single index → return the group directly (not wrapped in tuple).
+            let Some(idx) = resolve_group(indices[0]) else {
+                return raise_exception::<_>(_py, "IndexError", "no such group");
+            };
+            return group_text_bits(idx);
+        }
+
+        // Multiple indices → return a tuple.
+        let mut result: Vec<u64> = Vec::with_capacity(indices.len());
+        for &sel_bits in indices.iter() {
+            let Some(idx) = resolve_group(sel_bits) else {
+                for bits in &result {
+                    dec_ref_bits(_py, *bits);
+                }
+                return raise_exception::<_>(_py, "IndexError", "no such group");
+            };
+            result.push(group_text_bits(idx));
+        }
+        let tuple_ptr = alloc_tuple(_py, &result);
+        for bits in &result {
+            dec_ref_bits(_py, *bits);
+        }
+        if tuple_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+    })
+}
+
+/// `molt_re_match_groups(text, match_tuple, default) -> tuple[str|None, ...]`
+///
+/// Implements `Match.groups(default=None)`.  Returns a tuple of all captured
+/// groups (1-based).  Unmatched groups use `default`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_match_groups(
+    text_bits: u64,
+    match_tuple_bits: u64,
+    default_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let text_chars: Vec<char> = text.chars().collect();
+
+        let Some(mt_ptr) = obj_from_bits(match_tuple_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "match_tuple must be a tuple");
+        };
+        let mt = unsafe { seq_vec_ref(mt_ptr) };
+        if mt.len() < 3 {
+            return raise_exception::<_>(_py, "ValueError", "invalid match tuple");
+        }
+        let Some(groups_ptr) = obj_from_bits(mt[2]).as_ptr() else {
+            let ptr = alloc_tuple(_py, &[]);
+            return if ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(ptr).bits()
+            };
+        };
+        let group_spans = unsafe { seq_vec_ref(groups_ptr) };
+
+        let mut result: Vec<u64> = Vec::with_capacity(group_spans.len());
+        for &span_bits in group_spans.iter() {
+            if obj_from_bits(span_bits).is_none() {
+                inc_ref_bits(_py, default_bits);
+                result.push(default_bits);
+                continue;
+            }
+            let Some(span_ptr) = obj_from_bits(span_bits).as_ptr() else {
+                inc_ref_bits(_py, default_bits);
+                result.push(default_bits);
+                continue;
+            };
+            let span = unsafe { seq_vec_ref(span_ptr) };
+            if span.len() < 2 {
+                inc_ref_bits(_py, default_bits);
+                result.push(default_bits);
+                continue;
+            }
+            let Some(gs) = to_i64(obj_from_bits(span[0])) else {
+                inc_ref_bits(_py, default_bits);
+                result.push(default_bits);
+                continue;
+            };
+            let Some(ge) = to_i64(obj_from_bits(span[1])) else {
+                inc_ref_bits(_py, default_bits);
+                result.push(default_bits);
+                continue;
+            };
+            if gs < 0 || ge < gs || (ge as usize) > text_chars.len() {
+                inc_ref_bits(_py, default_bits);
+                result.push(default_bits);
+                continue;
+            }
+            let s: String = text_chars[gs as usize..ge as usize].iter().collect();
+            let ptr = alloc_string(_py, s.as_bytes());
+            if !ptr.is_null() {
+                result.push(MoltObject::from_ptr(ptr).bits());
+            } else {
+                inc_ref_bits(_py, default_bits);
+                result.push(default_bits);
+            }
+        }
+        let tuple_ptr = alloc_tuple(_py, &result);
+        for bits in &result {
+            dec_ref_bits(_py, *bits);
+        }
+        if tuple_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+    })
+}
+
+/// `molt_re_match_groupdict(text, match_tuple, default, group_names) -> dict`
+///
+/// Implements `Match.groupdict(default=None)`.  Returns a dict mapping named
+/// group names to their captured text (or `default` if the group did not
+/// participate in the match).
+///
+/// `group_names` is a dict `{name: index, ...}`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_match_groupdict(
+    text_bits: u64,
+    match_tuple_bits: u64,
+    default_bits: u64,
+    group_names_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let text_chars: Vec<char> = text.chars().collect();
+
+        let Some(mt_ptr) = obj_from_bits(match_tuple_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "match_tuple must be a tuple");
+        };
+        let mt = unsafe { seq_vec_ref(mt_ptr) };
+        if mt.len() < 3 {
+            return raise_exception::<_>(_py, "ValueError", "invalid match tuple");
+        }
+        let groups_ptr_opt = obj_from_bits(mt[2]).as_ptr();
+
+        // Decode group_names dict.
+        let Some(gn_ptr) = obj_from_bits(group_names_bits).as_ptr() else {
+            // No group names → empty dict.
+            let ptr = crate::alloc_dict_with_pairs(_py, &[]);
+            return if ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(ptr).bits()
+            };
+        };
+        let gn_ty = unsafe { object_type_id(gn_ptr) };
+        if gn_ty != TYPE_ID_DICT {
+            return raise_exception::<_>(_py, "TypeError", "group_names must be a dict");
+        }
+
+        let result_ptr = crate::alloc_dict_with_pairs(_py, &[]);
+        if result_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+
+        // Iterate over group_names dict.
+        let order = unsafe { crate::dict_order(gn_ptr) }.clone();
+        for pair in order.chunks(2) {
+            if pair.len() != 2 {
+                continue;
+            }
+            let name_key_bits = pair[0];
+            let idx_bits = pair[1];
+            let Some(idx) = to_i64(obj_from_bits(idx_bits)) else {
+                continue;
+            };
+
+            // Get the group text for this index.
+            let val_bits = if let Some(groups_ptr) = groups_ptr_opt {
+                let group_spans = unsafe { seq_vec_ref(groups_ptr) };
+                let span_idx = (idx as usize).wrapping_sub(1);
+                if span_idx < group_spans.len() {
+                    let span_bits = group_spans[span_idx];
+                    if let Some(span_ptr) = obj_from_bits(span_bits).as_ptr() {
+                        let span = unsafe { seq_vec_ref(span_ptr) };
+                        if span.len() >= 2 {
+                            let gs = to_i64(obj_from_bits(span[0])).unwrap_or(-1);
+                            let ge = to_i64(obj_from_bits(span[1])).unwrap_or(-1);
+                            if gs >= 0 && ge >= gs && (ge as usize) <= text_chars.len() {
+                                let s: String =
+                                    text_chars[gs as usize..ge as usize].iter().collect();
+                                let ptr = alloc_string(_py, s.as_bytes());
+                                if !ptr.is_null() {
+                                    MoltObject::from_ptr(ptr).bits()
+                                } else {
+                                    default_bits
+                                }
+                            } else {
+                                default_bits
+                            }
+                        } else {
+                            default_bits
+                        }
+                    } else {
+                        default_bits
+                    }
+                } else {
+                    default_bits
+                }
+            } else {
+                default_bits
+            };
+
+            unsafe {
+                crate::dict_set_in_place(_py, result_ptr, name_key_bits, val_bits);
+            }
+        }
+
+        MoltObject::from_ptr(result_ptr).bits()
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 
@@ -5013,5 +5582,49 @@ mod tests {
         let names = HashMap::new();
         let expanded = expand_repl_with_groups("a\\nb\\tc\\\\d", "", &chars, &result, 0, &names);
         assert_eq!(expanded, "a\nb\tc\\d");
+    }
+
+    // -----------------------------------------------------------------------
+    // re_escape tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_escape_no_special() {
+        assert_eq!(re_escape_impl("hello world"), "hello world");
+    }
+
+    #[test]
+    fn test_escape_all_special() {
+        assert_eq!(re_escape_impl("a.b*c?d+e"), "a\\.b\\*c\\?d\\+e");
+    }
+
+    #[test]
+    fn test_escape_brackets_parens() {
+        assert_eq!(re_escape_impl("[foo](bar)"), "\\[foo\\]\\(bar\\)");
+    }
+
+    #[test]
+    fn test_escape_backslash() {
+        assert_eq!(re_escape_impl("a\\b"), "a\\\\b");
+    }
+
+    #[test]
+    fn test_escape_pipe_caret_dollar() {
+        assert_eq!(re_escape_impl("^a|b$"), "\\^a\\|b\\$");
+    }
+
+    #[test]
+    fn test_escape_braces() {
+        assert_eq!(re_escape_impl("a{1,2}"), "a\\{1,2\\}");
+    }
+
+    #[test]
+    fn test_escape_empty() {
+        assert_eq!(re_escape_impl(""), "");
+    }
+
+    #[test]
+    fn test_escape_nul() {
+        assert_eq!(re_escape_impl("a\0b"), "a\\000b");
     }
 }

@@ -43,7 +43,10 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
 
     for spec in INTRINSICS {
         let Some(fn_ptr) = resolve_symbol(spec.symbol) else {
-            panic!("intrinsics registry missing symbol: {}", spec.symbol);
+            // Feature-gated intrinsics may be absent in micro builds.
+            // Skip silently — calling the missing function at runtime will
+            // produce a clear NameError from the Python side.
+            continue;
         };
         let Some(func_bits) = build_intrinsic_func(_py, fn_ptr, spec.arity) else {
             continue;

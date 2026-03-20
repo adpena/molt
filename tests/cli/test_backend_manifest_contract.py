@@ -195,3 +195,25 @@ def test_backend_ir_model_and_passes_are_split_out_of_lib_rs() -> None:
     assert passes_rs.exists()
     assert "pub struct SimpleIR" not in lib_rs
     assert "pub fn validate_simple_ir" not in lib_rs
+
+
+def test_backend_native_trampoline_identity_is_split_out_of_lib_rs() -> None:
+    lib_rs = (ROOT / "runtime" / "molt-backend" / "src" / "lib.rs").read_text()
+    native_backend_mod = ROOT / "runtime" / "molt-backend" / "src" / "native_backend" / "mod.rs"
+    trampolines_rs = (
+        ROOT / "runtime" / "molt-backend" / "src" / "native_backend" / "trampolines.rs"
+    )
+
+    assert native_backend_mod.exists()
+    assert trampolines_rs.exists()
+    assert "struct TrampolineKey" not in lib_rs
+
+
+def test_backend_native_compile_func_is_split_out_of_lib_rs() -> None:
+    lib_rs = (ROOT / "runtime" / "molt-backend" / "src" / "lib.rs").read_text()
+    function_compiler_rs = (
+        ROOT / "runtime" / "molt-backend" / "src" / "native_backend" / "function_compiler.rs"
+    )
+
+    assert function_compiler_rs.exists()
+    assert "fn compile_func(" not in lib_rs
