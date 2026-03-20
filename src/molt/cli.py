@@ -12914,17 +12914,6 @@ def _prepare_backend_setup(
         runtime_cargo_profile=runtime_cargo_profile,
         target_triple=target_triple,
     )
-    runtime_lib = runtime_state.runtime_lib
-    if runtime_lib is not None and not _ensure_runtime_lib_ready(
-        runtime_state,
-        target_triple=target_triple,
-        json_output=json_output,
-        runtime_cargo_profile=runtime_cargo_profile,
-        molt_root=molt_root,
-        cargo_timeout=cargo_timeout,
-    ):
-        return None, _fail("Runtime build failed", json_output, command="build")
-
     cache_setup = _prepare_backend_cache_setup(
         cache_enabled=cache,
         ir=ir,
@@ -12941,6 +12930,16 @@ def _prepare_backend_setup(
         output_artifact=output_artifact,
         warnings=warnings,
     )
+    runtime_lib = runtime_state.runtime_lib
+    if runtime_lib is not None and not cache_setup.cache_hit and not _ensure_runtime_lib_ready(
+        runtime_state,
+        target_triple=target_triple,
+        json_output=json_output,
+        runtime_cargo_profile=runtime_cargo_profile,
+        molt_root=molt_root,
+        cargo_timeout=cargo_timeout,
+    ):
+        return None, _fail("Runtime build failed", json_output, command="build")
     return _PreparedBackendSetup(
         runtime_state=runtime_state,
         cache_setup=cache_setup,
@@ -13940,6 +13939,21 @@ def _run_backend_pipeline(
             success_messages=prepared_non_native_result.success_messages,
         )
 
+    if cache_hit and runtime_lib is not None:
+        if (
+            prepared_build_preamble.diagnostics_enabled
+            and "runtime_setup" not in prepared_build_preamble.phase_starts
+        ):
+            prepared_build_preamble.phase_starts["runtime_setup"] = time.perf_counter()
+        if not _ensure_runtime_lib_ready(
+            prepared_backend_runtime_context.runtime_state,
+            target_triple=output_layout.target_triple,
+            json_output=json_output,
+            runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
+            molt_root=prepared_build_roots.molt_root,
+            cargo_timeout=prepared_build_config.cargo_timeout,
+        ):
+            return _fail("Runtime build failed", json_output, command="build")
     prepared_native_link, prepared_native_link_error = _prepare_native_link(
         output_artifact=output_layout.output_artifact,
         trusted=trusted,

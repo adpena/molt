@@ -4865,6 +4865,130 @@ def test_start_backend_daemon_leaves_warming_process_running(
     assert removed == []
 
 
+def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_hit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_lib = tmp_path / "libmolt_runtime.a"
+    output_artifact = tmp_path / "output.o"
+    ensure_calls: list[Path | None] = []
+
+    monkeypatch.setattr(
+        cli,
+        "_initialize_runtime_artifact_state",
+        lambda **kwargs: cli._RuntimeArtifactState(runtime_lib=runtime_lib),
+    )
+
+    def fake_prepare_backend_cache_setup(**kwargs: object) -> cli._BackendCacheSetup:
+        del kwargs
+        return cli._BackendCacheSetup(
+            cache_enabled=True,
+            cache_key="module-cache",
+            function_cache_key=None,
+            cache_path=tmp_path / "module-cache.o",
+            function_cache_path=None,
+            cache_candidates=(("module", tmp_path / "module-cache.o"),),
+            cache_hit=True,
+            cache_hit_tier="module",
+        )
+
+    monkeypatch.setattr(cli, "_prepare_backend_cache_setup", fake_prepare_backend_cache_setup)
+    monkeypatch.setattr(
+        cli,
+        "_ensure_runtime_lib_ready",
+        lambda runtime_state, **kwargs: ensure_calls.append(runtime_state.runtime_lib)
+        or True,
+    )
+
+    prepared_backend_setup, backend_setup_error = cli._prepare_backend_setup(
+        is_rust_transpile=False,
+        is_wasm=False,
+        emit_mode="bin",
+        molt_root=tmp_path,
+        runtime_cargo_profile="dev",
+        target_triple=None,
+        json_output=True,
+        cargo_timeout=1.0,
+        target="native",
+        profile="dev",
+        backend_cargo_profile="dev",
+        linked=False,
+        project_root=tmp_path,
+        cache_dir=None,
+        output_artifact=output_artifact,
+        warnings=[],
+        cache=True,
+        ir={"functions": []},
+    )
+
+    assert backend_setup_error is None
+    assert prepared_backend_setup is not None
+    assert prepared_backend_setup.cache_hit is True
+    assert ensure_calls == []
+
+
+def test_prepare_backend_setup_keeps_runtime_lib_ready_check_for_native_cache_miss(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_lib = tmp_path / "libmolt_runtime.a"
+    output_artifact = tmp_path / "output.o"
+    ensure_calls: list[Path | None] = []
+
+    monkeypatch.setattr(
+        cli,
+        "_initialize_runtime_artifact_state",
+        lambda **kwargs: cli._RuntimeArtifactState(runtime_lib=runtime_lib),
+    )
+
+    def fake_prepare_backend_cache_setup(**kwargs: object) -> cli._BackendCacheSetup:
+        del kwargs
+        return cli._BackendCacheSetup(
+            cache_enabled=True,
+            cache_key="module-cache",
+            function_cache_key=None,
+            cache_path=tmp_path / "module-cache.o",
+            function_cache_path=None,
+            cache_candidates=(("module", tmp_path / "module-cache.o"),),
+            cache_hit=False,
+            cache_hit_tier=None,
+        )
+
+    monkeypatch.setattr(cli, "_prepare_backend_cache_setup", fake_prepare_backend_cache_setup)
+    monkeypatch.setattr(
+        cli,
+        "_ensure_runtime_lib_ready",
+        lambda runtime_state, **kwargs: ensure_calls.append(runtime_state.runtime_lib)
+        or True,
+    )
+
+    prepared_backend_setup, backend_setup_error = cli._prepare_backend_setup(
+        is_rust_transpile=False,
+        is_wasm=False,
+        emit_mode="bin",
+        molt_root=tmp_path,
+        runtime_cargo_profile="dev",
+        target_triple=None,
+        json_output=True,
+        cargo_timeout=1.0,
+        target="native",
+        profile="dev",
+        backend_cargo_profile="dev",
+        linked=False,
+        project_root=tmp_path,
+        cache_dir=None,
+        output_artifact=output_artifact,
+        warnings=[],
+        cache=True,
+        ir={"functions": []},
+    )
+
+    assert backend_setup_error is None
+    assert prepared_backend_setup is not None
+    assert prepared_backend_setup.cache_hit is False
+    assert ensure_calls == [runtime_lib]
+
+
 def test_ensure_backend_binary_uses_native_feature_for_native(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
