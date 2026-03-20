@@ -2295,7 +2295,6 @@ dependencies = [
  "cranelift-native",
  "cranelift-object",
  "egg",
- "molt-lang-obj-model",
  "serde",
  "serde_json",
  "wasm-encoder 0.245.1",
