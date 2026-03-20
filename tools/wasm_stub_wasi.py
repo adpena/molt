@@ -593,7 +593,7 @@ def _remap_function_body(body: bytes, remap: dict[int, int]) -> bytes:
         output.append(opcode)
         offset += 1
 
-        if opcode == 0x10:  # call
+        if opcode in (0x10, 0x12):  # call, return_call — func index immediate
             func_idx, offset = _read_varuint(body, offset)
             func_idx = remap.get(func_idx, func_idx)
             output.extend(_write_varuint(func_idx))
@@ -608,6 +608,12 @@ def _remap_function_body(body: bytes, remap: dict[int, int]) -> bytes:
             offset += 1
         elif opcode == 0x05:  # else
             pass
+        elif opcode == 0x08:  # throw — tag index immediate
+            idx, offset = _read_varuint(body, offset)
+            output.extend(_write_varuint(idx))
+        elif opcode == 0x09:  # rethrow — label immediate
+            idx, offset = _read_varuint(body, offset)
+            output.extend(_write_varuint(idx))
         elif opcode in (0x0C, 0x0D):  # br, br_if
             idx, offset = _read_varuint(body, offset)
             output.extend(_write_varuint(idx))
@@ -619,7 +625,7 @@ def _remap_function_body(body: bytes, remap: dict[int, int]) -> bytes:
                 output.extend(_write_varuint(idx))
         elif opcode == 0x0F:  # return
             pass
-        elif opcode == 0x11:  # call_indirect
+        elif opcode in (0x11, 0x13):  # call_indirect, return_call_indirect
             type_idx, offset = _read_varuint(body, offset)
             output.extend(_write_varuint(type_idx))
             table_idx, offset = _read_varuint(body, offset)
@@ -628,6 +634,23 @@ def _remap_function_body(body: bytes, remap: dict[int, int]) -> bytes:
             pass
         elif opcode == 0x1B:  # select
             pass
+        elif opcode == 0x1F:  # try_table — blocktype + catch vector
+            output.append(body[offset])  # blocktype byte
+            offset += 1
+            n_catches, offset = _read_varuint(body, offset)
+            output.extend(_write_varuint(n_catches))
+            for _ in range(n_catches):
+                catch_kind = body[offset]
+                output.append(catch_kind)
+                offset += 1
+                if catch_kind in (0x00, 0x01):  # catch, catch_ref — tag + label
+                    tag_idx, offset = _read_varuint(body, offset)
+                    output.extend(_write_varuint(tag_idx))
+                    label, offset = _read_varuint(body, offset)
+                    output.extend(_write_varuint(label))
+                elif catch_kind in (0x02, 0x03):  # catch_all, catch_all_ref — label only
+                    label, offset = _read_varuint(body, offset)
+                    output.extend(_write_varuint(label))
         elif opcode in (0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26):
             # local.get/set/tee, global.get/set, table.get/set
             idx, offset = _read_varuint(body, offset)
