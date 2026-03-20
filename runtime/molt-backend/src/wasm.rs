@@ -1,7 +1,9 @@
 use crate::{FunctionIR, OpIR, SimpleIR, TrampolineKind, TrampolineSpec};
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::iter::ExactSizeIterator;
+use std::rc::Rc;
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, CustomSection, DataSection, DataSymbolDefinition,
     ElementMode, ElementSection, ElementSegment, Elements, Encode, EntityType, ExportKind,
@@ -91,12 +93,77 @@ struct DataSegmentRef {
     index: u32,
 }
 
+/// Transparent wrapper around `BTreeMap<String, u32>` that records which
+/// import names are actually looked up during code emission.  Every
+/// `Index<&str>` access inserts the key into a shared `HashSet` so we can
+/// compute the set of *unused* imports after compilation finishes.
+///
+/// The `used` set is behind `Rc<RefCell<…>>` so that clones (needed to
+/// work around borrow-checker constraints during `compile_func`) share
+/// the same tracking set as the original.
+#[derive(Clone)]
+struct TrackedImportIds {
+    inner: BTreeMap<String, u32>,
+    used: Rc<RefCell<HashSet<String>>>,
+}
+
+impl TrackedImportIds {
+    fn new(inner: BTreeMap<String, u32>) -> Self {
+        Self {
+            inner,
+            used: Rc::new(RefCell::new(HashSet::new())),
+        }
+    }
+
+    fn insert(&mut self, key: String, value: u32) {
+        self.inner.insert(key, value);
+    }
+
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Return import names that were registered but never accessed.
+    fn unused_names(&self) -> Vec<String> {
+        let used = self.used.borrow();
+        let mut names: Vec<String> = self
+            .inner
+            .keys()
+            .filter(|k| !used.contains(k.as_str()))
+            .cloned()
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn get(&self, key: &str) -> Option<&u32> {
+        let val = self.inner.get(key);
+        if val.is_some() {
+            self.used.borrow_mut().insert(key.to_string());
+        }
+        val
+    }
+
+    /// Check existence without marking the import as used.
+    fn contains_key(&self, key: &str) -> bool {
+        self.inner.contains_key(key)
+    }
+}
+
+impl std::ops::Index<&str> for TrackedImportIds {
+    type Output = u32;
+    fn index(&self, key: &str) -> &u32 {
+        self.used.borrow_mut().insert(key.to_string());
+        &self.inner[key]
+    }
+}
+
 struct CompileFuncContext<'a> {
     func_map: &'a HashMap<String, u32>,
     func_indices: &'a HashMap<String, u32>,
     trampoline_map: &'a HashMap<String, u32>,
     table_base: u32,
-    import_ids: &'a BTreeMap<String, u32>,
+    import_ids: &'a TrackedImportIds,
     reloc_enabled: bool,
 }
 
@@ -185,6 +252,19 @@ fn emit_unbox_int_local_trusted(func: &mut Function, src_local: u32, dst_local: 
     func.instruction(&Instruction::I64Const(INT_SHIFT));
     func.instruction(&Instruction::I64ShrS);
     func.instruction(&Instruction::LocalSet(dst_local));
+}
+
+/// Like [`emit_unbox_int_local_trusted`] but uses `local.tee` instead of
+/// `local.set`, leaving the unboxed value on the operand stack.  This
+/// eliminates a subsequent `local.get` when the caller needs the value
+/// immediately after storing it.
+fn emit_unbox_int_local_trusted_tee(func: &mut Function, src_local: u32, dst_local: u32) {
+    func.instruction(&Instruction::LocalGet(src_local));
+    func.instruction(&Instruction::I64Const(INT_SHIFT));
+    func.instruction(&Instruction::I64Shl);
+    func.instruction(&Instruction::I64Const(INT_SHIFT));
+    func.instruction(&Instruction::I64ShrS);
+    func.instruction(&Instruction::LocalTee(dst_local));
 }
 
 fn emit_box_int_from_local(func: &mut Function, src_local: u32) {
@@ -710,7 +790,9 @@ pub struct WasmBackend {
     tables: TableSection,
     func_count: u32,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
-    import_ids: BTreeMap<String, u32>,
+    // Wrapped in TrackedImportIds to record which imports are actually referenced
+    // during code emission (see MOLT_WASM_IMPORT_AUDIT).
+    import_ids: TrackedImportIds,
     data_offset: u32,
     data_segments: Vec<DataSegmentInfo>,
     data_relocs: Vec<DataRelocSite>,
@@ -743,7 +825,7 @@ impl WasmBackend {
             data: DataSection::new(),
             tables: TableSection::new(),
             func_count: 0,
-            import_ids: BTreeMap::new(),
+            import_ids: TrackedImportIds::new(BTreeMap::new()),
             data_offset: options.data_base,
             data_segments: Vec::new(),
             data_relocs: Vec::new(),
@@ -1193,7 +1275,7 @@ impl WasmBackend {
         );
 
         let mut import_idx = 0;
-        let mut add_import = |name: &str, ty: u32, ids: &mut BTreeMap<String, u32>| {
+        let mut add_import = |name: &str, ty: u32, ids: &mut TrackedImportIds| {
             self.imports
                 .import("molt_runtime", name, EntityType::Function(ty));
             ids.insert(name.to_string(), import_idx);
@@ -3467,6 +3549,28 @@ impl WasmBackend {
             .import("env", "memory", EntityType::Memory(memory_ty));
         self.exports.export("molt_memory", ExportKind::Memory, 0);
 
+        // --- Import audit diagnostic (gated by MOLT_WASM_IMPORT_AUDIT=1) ---
+        if std::env::var("MOLT_WASM_IMPORT_AUDIT").as_deref() == Ok("1") {
+            let unused = self.import_ids.unused_names();
+            let total = self.import_ids.len();
+            let used = total - unused.len();
+            let pct = if total > 0 {
+                (unused.len() as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            };
+            eprintln!(
+                "[molt-wasm-import-audit] {used}/{total} imports used, {} unused ({pct:.1}% bloat)",
+                unused.len()
+            );
+            if !unused.is_empty() {
+                eprintln!("[molt-wasm-import-audit] unused imports:");
+                for name in &unused {
+                    eprintln!("  - {name}");
+                }
+            }
+        }
+
         self.module.section(&self.types);
         self.module.section(&self.imports);
         self.module.section(&self.funcs);
@@ -4265,10 +4369,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_lhs));
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64Add);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw);
@@ -4295,10 +4397,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_lhs));
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64Add);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw);
@@ -4601,10 +4701,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_lhs));
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64Sub);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw);
@@ -4631,10 +4729,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_lhs));
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64Mul);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw);
@@ -4661,10 +4757,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_lhs));
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64Sub);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw);
@@ -4691,10 +4785,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_lhs));
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64Mul);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw);
@@ -4721,10 +4813,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_lhs));
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64Or);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw);
@@ -4751,10 +4841,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_lhs));
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64And);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw);
@@ -4781,10 +4869,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_lhs));
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64Xor);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw);
@@ -4819,10 +4905,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_lhs));
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64Or);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw);
@@ -4849,10 +4933,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_lhs));
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64And);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw);
@@ -4879,10 +4961,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_lhs));
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64Xor);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw);
@@ -4910,8 +4990,7 @@ impl WasmBackend {
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
                             emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64GeS);
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
@@ -4961,8 +5040,7 @@ impl WasmBackend {
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
                             emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64GeS);
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
@@ -5006,8 +5084,7 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
@@ -5039,8 +5116,7 @@ impl WasmBackend {
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
                             emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
@@ -5099,8 +5175,7 @@ impl WasmBackend {
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
                             emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
@@ -5195,10 +5270,8 @@ impl WasmBackend {
                         if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_lhs));
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64LtS);
                             emit_box_bool_from_i32(func);
                         } else {
@@ -5216,10 +5289,8 @@ impl WasmBackend {
                         if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_lhs));
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64LeS);
                             emit_box_bool_from_i32(func);
                         } else {
@@ -5237,10 +5308,8 @@ impl WasmBackend {
                         if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_lhs));
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64GtS);
                             emit_box_bool_from_i32(func);
                         } else {
@@ -5258,10 +5327,8 @@ impl WasmBackend {
                         if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
-                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_lhs));
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::I64GeS);
                             emit_box_bool_from_i32(func);
                         } else {
