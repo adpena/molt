@@ -38,6 +38,10 @@ CALL_INDIRECT_RE = re.compile(r"molt_call_indirect(\d+)")
 # Rust wasm symbol names include a hash suffix like "17h<hex...>E". Capture the arity
 # digits that precede the 2-digit hash-length tag so 10+ arities don't get truncated.
 CALL_INDIRECT_MANGLED_RE = re.compile(r"molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA-F]+E)")
+_OUTPUT_RUNTIME_EXPORT_ALIASES = (
+    "molt_isolate_bootstrap",
+    "molt_isolate_import",
+)
 
 
 def _default_runtime_path() -> Path:
@@ -279,6 +283,26 @@ def _collect_func_names(data: bytes) -> dict[int, str]:
             offset = sub_end
         break
     return names
+
+
+def _collect_function_exports(data: bytes) -> dict[str, int]:
+    exports: dict[str, int] = {}
+    for section_id, payload in _parse_sections(data):
+        if section_id != 7:
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        for _ in range(count):
+            name, offset = _read_string(payload, offset)
+            if offset >= len(payload):
+                raise ValueError("Unexpected EOF while reading export kind")
+            kind = payload[offset]
+            offset += 1
+            index, offset = _read_varuint(payload, offset)
+            if kind == 0:
+                exports[name] = index
+        break
+    return exports
 
 
 def _read_varsint(data: bytes, offset: int) -> tuple[int, int]:
@@ -668,6 +692,36 @@ def _inject_call_indirect_alias(
     if not modified:
         return output
     alias_path = Path(temp_dir.name) / "output_alias.wasm"
+    alias_path.write_bytes(updated)
+    return alias_path
+
+
+def _inject_output_export_aliases(
+    output: Path, temp_dir: tempfile.TemporaryDirectory
+) -> Path:
+    try:
+        export_indices = _collect_function_exports(output.read_bytes())
+    except ValueError as exc:
+        print(f"Failed to parse output exports: {exc}", file=sys.stderr)
+        return output
+    updated = output.read_bytes()
+    modified = False
+    for name in _OUTPUT_RUNTIME_EXPORT_ALIASES:
+        func_index = export_indices.get(name)
+        if func_index is None:
+            continue
+        next_data = _add_symtab_alias(
+            updated,
+            name,
+            func_index,
+            FLAG_BINDING_GLOBAL | FLAG_EXPLICIT_NAME | FLAG_EXPORTED,
+        )
+        if next_data is not None:
+            updated = next_data
+            modified = True
+    if not modified:
+        return output
+    alias_path = Path(temp_dir.name) / "output_exports_alias.wasm"
     alias_path.write_bytes(updated)
     return alias_path
 
@@ -1422,11 +1476,45 @@ def _validate_linked(linked: Path) -> bool:
     return True
 
 
+# Pass pipelines from docs/spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md Section 4.4.
+_OZ_PASSES: list[str] = [
+    "--remove-unused-module-elements",
+    "--remove-unused-names",
+    "--strip-debug",
+    "--coalesce-locals",
+    "--reorder-locals",
+    "--dce",
+    "--vacuum",
+    "--duplicate-function-elimination",
+    "--code-folding",
+]
+
+_O3_PASSES: list[str] = [
+    "--remove-unused-module-elements",
+    "--remove-unused-names",
+    "--coalesce-locals",
+    "--reorder-locals",
+    "--dce",
+    "--vacuum",
+    "--inlining",
+    "--flatten",
+    "--local-cse",
+]
+
+_LEVEL_PASSES: dict[str, list[str]] = {
+    "Oz": _OZ_PASSES,
+    "O3": _O3_PASSES,
+}
+
+
 def _run_wasm_opt_via_optimize(linked: Path, level: str = "Oz") -> bool:
     """Run wasm-opt on the linked binary via tools/wasm_optimize.py.
 
     Returns True if optimization ran successfully.
     Writes to a temp file first to avoid corrupting the linked binary on failure.
+
+    For ``Oz`` and ``O3`` levels the recommended pass pipelines from the WASM
+    Optimization Plan (Section 4.4) are forwarded as *extra_passes*.
     """
     try:
         import importlib.util as _ilu
@@ -1442,9 +1530,13 @@ def _run_wasm_opt_via_optimize(linked: Path, level: str = "Oz") -> bool:
         print(f"Failed to load wasm_optimize: {exc}", file=sys.stderr)
         return False
 
+    extra_passes = _LEVEL_PASSES.get(level)
+
     pre_size = linked.stat().st_size
     temp_output = linked.with_suffix(".opt.wasm")
-    result = mod.optimize(linked, output_path=temp_output, level=level)
+    result = mod.optimize(
+        linked, output_path=temp_output, level=level, extra_passes=extra_passes,
+    )
 
     if not result["ok"]:
         err = result.get("error", "unknown error")
@@ -1504,6 +1596,7 @@ def _run_wasm_ld(
         return 1
     rewritten_path, temp_dir = rewritten
     rewritten_path = _inject_call_indirect_alias(rewritten_path, runtime, temp_dir)
+    rewritten_path = _inject_output_export_aliases(rewritten_path, temp_dir)
     if allowlist_override is not None:
         allowlist = allowlist_override
     else:
@@ -1518,8 +1611,10 @@ def _run_wasm_ld(
         f"--allow-undefined-file={str(allowlist)}",
         "--import-table",
         "--export=molt_main",
-        "--export=molt_memory",
-        "--export=molt_table",
+        "--export-if-defined=molt_memory",
+        "--export-if-defined=memory",
+        "--export-if-defined=molt_table",
+        "--export-if-defined=__indirect_function_table",
         "--export-if-defined=molt_set_wasm_table_base",
         "-o",
         str(linked),

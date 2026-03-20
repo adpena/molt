@@ -8367,6 +8367,9 @@ def _backend_daemon_compile_request_bytes(
     ir: dict[str, Any] | None,
     backend_output: Path,
     is_wasm: bool,
+    wasm_link: bool,
+    wasm_data_base: int | None,
+    wasm_table_base: int | None,
     target_triple: str | None,
     cache_key: str | None,
     function_cache_key: str | None,
@@ -8380,6 +8383,9 @@ def _backend_daemon_compile_request_bytes(
         "id": "job0",
         "is_wasm": is_wasm,
         "target_triple": target_triple,
+        "wasm_link": wasm_link,
+        "wasm_data_base": wasm_data_base,
+        "wasm_table_base": wasm_table_base,
         "output": str(backend_output),
         "cache_key": cache_key or "",
         "function_cache_key": function_cache_key or "",
@@ -8574,6 +8580,9 @@ def _compile_with_backend_daemon(
     ir: dict[str, Any],
     backend_output: Path,
     is_wasm: bool,
+    wasm_link: bool,
+    wasm_data_base: int | None,
+    wasm_table_base: int | None,
     target_triple: str | None,
     cache_key: str | None,
     function_cache_key: str | None,
@@ -8591,6 +8600,9 @@ def _compile_with_backend_daemon(
             ir=None,
             backend_output=backend_output,
             is_wasm=is_wasm,
+            wasm_link=wasm_link,
+            wasm_data_base=wasm_data_base,
+            wasm_table_base=wasm_table_base,
             target_triple=target_triple,
             cache_key=cache_key,
             function_cache_key=function_cache_key,
@@ -8609,6 +8621,9 @@ def _compile_with_backend_daemon(
             ir=ir,
             backend_output=backend_output,
             is_wasm=is_wasm,
+            wasm_link=wasm_link,
+            wasm_data_base=wasm_data_base,
+            wasm_table_base=wasm_table_base,
             target_triple=target_triple,
             cache_key=cache_key,
             function_cache_key=function_cache_key,
@@ -8726,6 +8741,9 @@ def _compile_with_backend_daemon(
                 ir=ir,
                 backend_output=backend_output,
                 is_wasm=is_wasm,
+                wasm_link=wasm_link,
+                wasm_data_base=wasm_data_base,
+                wasm_table_base=wasm_table_base,
                 target_triple=target_triple,
                 cache_key=cache_key,
                 function_cache_key=function_cache_key,
@@ -11947,6 +11965,8 @@ def _resolve_build_output_layout(
         raise ValueError("Trusted mode is not supported for wasm targets")
     if require_linked and not is_wasm:
         raise ValueError("--require-linked is only supported for wasm targets")
+    if linked_output and is_wasm:
+        linked = True
     if linked_output and not linked and not require_linked:
         raise ValueError("--linked-output requires --linked")
     if linked and not is_wasm and not is_rust_transpile:
@@ -12888,6 +12908,7 @@ def _prepare_backend_setup(
 def _prepare_backend_runtime_context(
     *,
     prepared_backend_setup: _PreparedBackendSetup,
+    is_wasm_freestanding: bool,
     json_output: bool,
     runtime_cargo_profile: str,
     cargo_timeout: float | None,
@@ -12903,6 +12924,7 @@ def _prepare_backend_runtime_context(
             cargo_profile=runtime_cargo_profile,
             cargo_timeout=cargo_timeout,
             project_root=molt_root,
+            simd_enabled=not is_wasm_freestanding,
         )
 
     def ensure_runtime_wasm_reloc() -> bool:
@@ -12913,6 +12935,7 @@ def _prepare_backend_runtime_context(
             cargo_profile=runtime_cargo_profile,
             cargo_timeout=cargo_timeout,
             project_root=molt_root,
+            simd_enabled=not is_wasm_freestanding,
         )
 
     return _PreparedBackendRuntimeContext(
@@ -13128,6 +13151,23 @@ def _execute_backend_compile(
         output_artifact_stat: os.stat_result | None = None
         skip_module_output_if_synced = False
         skip_function_output_if_synced = False
+        wasm_link = False
+        wasm_data_base: int | None = None
+        wasm_table_base: int | None = None
+        if is_wasm and backend_env is not None:
+            wasm_link = backend_env.get("MOLT_WASM_LINK") == "1"
+            raw_data_base = backend_env.get("MOLT_WASM_DATA_BASE")
+            raw_table_base = backend_env.get("MOLT_WASM_TABLE_BASE")
+            try:
+                wasm_data_base = int(raw_data_base) if raw_data_base is not None else None
+            except ValueError:
+                wasm_data_base = None
+            try:
+                wasm_table_base = (
+                    int(raw_table_base) if raw_table_base is not None else None
+                )
+            except ValueError:
+                wasm_table_base = None
         if daemon_ready and daemon_socket is not None:
             output_sync_state_path = _artifact_sync_state_path(
                 project_root, output_artifact
@@ -13158,6 +13198,9 @@ def _execute_backend_compile(
                     ir=ir,
                     backend_output=backend_output,
                     is_wasm=is_wasm,
+                    wasm_link=wasm_link,
+                    wasm_data_base=wasm_data_base,
+                    wasm_table_base=wasm_table_base,
                     target_triple=target_triple,
                     cache_key=cache_key,
                     function_cache_key=function_cache_key,
@@ -13179,6 +13222,9 @@ def _execute_backend_compile(
                 ir=ir,
                 backend_output=backend_output,
                 is_wasm=is_wasm,
+                wasm_link=wasm_link,
+                wasm_data_base=wasm_data_base,
+                wasm_table_base=wasm_table_base,
                 target_triple=target_triple,
                 cache_key=cache_key,
                 function_cache_key=function_cache_key,
@@ -13218,6 +13264,9 @@ def _execute_backend_compile(
                         ir=ir,
                         backend_output=backend_output,
                         is_wasm=is_wasm,
+                        wasm_link=wasm_link,
+                        wasm_data_base=wasm_data_base,
+                        wasm_table_base=wasm_table_base,
                         target_triple=target_triple,
                         cache_key=cache_key,
                         function_cache_key=function_cache_key,
@@ -13538,6 +13587,7 @@ def _run_backend_pipeline(
     trusted: bool,
     verbose: bool,
     require_linked: bool,
+    wasm_opt_level: str = "Oz",
 ) -> int:
     (
         _prepared_frontend_run_ticket,
@@ -13628,6 +13678,7 @@ def _run_backend_pipeline(
     assert prepared_backend_setup is not None
     prepared_backend_runtime_context = _prepare_backend_runtime_context(
         prepared_backend_setup=prepared_backend_setup,
+        is_wasm_freestanding=output_layout.is_wasm_freestanding,
         json_output=json_output,
         runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
         cargo_timeout=prepared_build_config.cargo_timeout,
@@ -13703,6 +13754,7 @@ def _run_backend_pipeline(
                 is_rust_transpile=output_layout.is_rust_transpile,
                 is_wasm=output_layout.is_wasm,
                 is_wasm_freestanding=output_layout.is_wasm_freestanding,
+                wasm_opt_level=wasm_opt_level,
                 linked=output_layout.linked,
                 require_linked=require_linked,
                 linked_output_path=output_layout.linked_output_path,
@@ -13823,6 +13875,7 @@ def _prepare_non_native_build_result(
     is_wasm: bool,
     is_wasm_freestanding: bool = False,
     wasm_opt_enabled: bool = True,
+    wasm_opt_level: str = "Oz",
     linked: bool,
     require_linked: bool,
     linked_output_path: Path | None,
@@ -13874,7 +13927,7 @@ def _prepare_non_native_build_result(
             if is_wasm_freestanding:
                 link_cmd.append("--freestanding")
             if wasm_opt_enabled:
-                link_cmd.extend(["--optimize", "--optimize-level", "Oz"])
+                link_cmd.extend(["--optimize", "--optimize-level", wasm_opt_level])
             link_process = subprocess.run(
                 link_cmd,
                 cwd=molt_root,
@@ -14122,6 +14175,7 @@ def _run_build_pipeline(
     trusted: bool,
     verbose: bool,
     require_linked: bool,
+    wasm_opt_level: str = "Oz",
 ) -> int:
     prepared_frontend_run_ticket = prepared_frontend_pipeline_bundle[0]
     frontend_layer_error = _run_frontend_pipeline(
@@ -14149,6 +14203,7 @@ def _run_build_pipeline(
         trusted=trusted,
         verbose=verbose,
         require_linked=require_linked,
+        wasm_opt_level=wasm_opt_level,
     )
 
 
@@ -14801,6 +14856,7 @@ def _ensure_runtime_wasm_artifact(
     cargo_profile: str,
     cargo_timeout: float | None,
     project_root: Path,
+    simd_enabled: bool,
 ) -> bool:
     runtime_path = (
         runtime_state.runtime_reloc_wasm if reloc else runtime_state.runtime_wasm
@@ -14817,6 +14873,7 @@ def _ensure_runtime_wasm_artifact(
         cargo_profile=cargo_profile,
         cargo_timeout=cargo_timeout,
         project_root=project_root,
+        simd_enabled=simd_enabled,
     ):
         return False
     if reloc:
@@ -16425,6 +16482,7 @@ def _ensure_runtime_wasm(
     cargo_profile: str,
     cargo_timeout: float | None,
     project_root: Path | None = None,
+    simd_enabled: bool = True,
 ) -> bool:
     root = project_root or Path(__file__).resolve().parents[2]
     requested_cargo_profile = cargo_profile
@@ -16453,10 +16511,9 @@ def _ensure_runtime_wasm(
     if flags:
         rustflags = f"{rustflags} {flags}".strip()
     # Enable WASM SIMD (128-bit) for vectorized string/bytes operations.
-    # All modern WASM runtimes support simd128: Node.js >=16, wasmtime,
-    # Chrome/Firefox/Safari since 2021. This dramatically speeds up
-    # string search, hex encode, base64, and whitespace scanning.
-    if "-C target-feature" not in rustflags:
+    # Freestanding builds use the conservative baseline because the WASI stub
+    # rewriter currently cannot remap SIMD-prefixed instruction streams.
+    if simd_enabled and "-C target-feature" not in rustflags:
         rustflags = f"{rustflags} -C target-feature=+simd128".strip()
     fingerprint_path = _runtime_fingerprint_path(
         root, runtime_wasm, cargo_profile, "wasm32-wasip1"
@@ -18218,6 +18275,7 @@ def build(
     diagnostics_file: str | None = None,
     diagnostics_verbosity: str | None = None,
     portable: bool = False,
+    wasm_opt_level: str = "Oz",
 ) -> int:
     if isinstance(profile, bool):
         profile = "release"
@@ -18304,6 +18362,7 @@ def build(
         trusted=trusted,
         verbose=verbose,
         require_linked=require_linked,
+        wasm_opt_level=wasm_opt_level,
     )
 
 
@@ -22790,6 +22849,16 @@ def main() -> int:
         help="Require linked wasm output for wasm targets (fails if linking is unavailable).",
     )
     build_parser.add_argument(
+        "--wasm-opt-level",
+        choices=["Oz", "O3"],
+        default="Oz",
+        help=(
+            "WASM optimization profile: Oz for size-focused (default, "
+            "recommended for browser deployment), O3 for speed-focused "
+            "(recommended for server/edge deployment)."
+        ),
+    )
+    build_parser.add_argument(
         "--emit-ir",
         help="Write the lowered IR JSON to a file path.",
     )
@@ -23856,6 +23925,7 @@ def main() -> int:
             diagnostics_file,
             diagnostics_verbosity,
             portable=getattr(args, "portable", False),
+            wasm_opt_level=getattr(args, "wasm_opt_level", "Oz"),
         )
     if args.command == "extension":
         if args.extension_command == "build":
