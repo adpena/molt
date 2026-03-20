@@ -1,5 +1,7 @@
 # WASM Import Stripping for Pure-Computation Modules
 
+> **UPDATE 2026-03-20:** Import stripping for freestanding deployment is now implemented via `tools/wasm_stub_wasi.py` (post-link WASI import replacement with unreachable stubs). See `--target wasm-freestanding`.
+
 **Date:** 2026-03-07
 **Context:** Molt WASM codegen (`molt-backend/src/wasm.rs`) emits a monolithic import surface. This document describes what is emitted, what is unnecessary for pure-computation modules, and how to strip it.
 

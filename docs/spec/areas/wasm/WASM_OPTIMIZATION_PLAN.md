@@ -47,9 +47,9 @@ The direct WASM emitter produces correct but unoptimized code. Key observations:
 |---|---|---|---|
 | Local variable coalescing (liveness analysis) | 5-15% size reduction | Medium | P1 |
 | Box/unbox elimination when types are statically known | 10-20% speed improvement | High | P1 |
-| `br_table` for large state dispatch | 2-5x faster generator resume | Medium | P1 |
+| `br_table` for large state dispatch | 2-5x faster generator resume | DONE (c1ae684a) | P1 |
 | Constant folding at WASM emission time | 3-5% size reduction | Low | P2 |
-| Dead local elimination | 2-5% size reduction | Low | P2 |
+| Dead local elimination | 2-5% size reduction | DONE (0b9c39ad) | P2 |
 | Instruction combining (adjacent operations) | 3-8% speed improvement | Medium | P2 |
 
 ### 1.3 Missing Features
@@ -139,6 +139,8 @@ Migration path (aligned with spec 0400 Section 13):
 - Use `memory.fill` for zero-initialization of stack frames and generator control blocks instead of emitting N `i64.const 0; i64.store` sequences.
 - Use `memory.copy` for buffer-to-buffer operations where both source and destination are in linear memory.
 - Estimated impact: 10-30% speedup for large buffer operations; 2-5% binary size reduction from shorter initialization sequences.
+
+**UPDATE 2026-03-20:** `memory.fill` is now used for generator control block zero-initialization (2bff6165). `memory.copy` for buffer operations remains a future optimization.
 
 **Priority**: P2 -- moderate impact, low risk.
 
@@ -233,14 +235,16 @@ brotli / gzip  -->  output_stripped.wasm.br
 | Optimization | Estimated Reduction | Status |
 |---|---|---|
 | **Import stripping** (`--wasm-profile pure`) | 30-50% for pure-compute modules | Planned (see wasm-import-stripping.md) |
-| **Dead code elimination** via `wasm-opt --dce` | 10-20% | Available, not integrated into build |
-| **Name section stripping** via `wasm-tools strip` | 5-10% | Available, not integrated into build |
+| **Dead code elimination** via `wasm-opt --dce` | 10-20% | Integrated into build |
+| **Name section stripping** via `wasm-tools strip` | 5-10% | Integrated (--strip-debug in Oz pipeline) |
 | **Brotli compression** | 60-70% of stripped size | Available, not integrated into build |
 | **Constant deduplication** in data segments | 3-5% | Partially implemented (`data_segment_cache`) |
 | **Function deduplication** (identical code merging) | 2-5% | Not implemented |
 | **Type section deduplication** | 1-2% | Not implemented (30+ types currently defined) |
 
 ### 4.4 wasm-opt Pass Selection
+
+**UPDATE 2026-03-20:** Both the Oz (size-focused) and O3 (speed-focused) pipelines below are now integrated into the build via the `--wasm-opt-level` flag (bf65d218). The pipelines run automatically as a post-link step when wasm-opt is available, achieving 15-30% binary size reduction.
 
 Recommended `wasm-opt` pass pipeline for Molt output:
 
