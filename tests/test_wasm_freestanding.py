@@ -785,3 +785,14 @@ def test_wasm_profile_pure_accepted():
     assert result.returncode == 0
     assert "--wasm-profile" in result.stdout
     assert "pure" in result.stdout
+
+
+def test_profile_cloudflare_accepted():
+    """--profile cloudflare should be accepted by the CLI."""
+    result = subprocess.run(
+        [sys.executable, "-m", "molt", "build", "--help"],
+        capture_output=True,
+        text=True,
+        cwd=PROJECT_ROOT,
+    )
+    assert "cloudflare" in result.stdout
