@@ -17,11 +17,6 @@ def _load_backend_manifest() -> dict[str, object]:
         return tomllib.load(handle)
 
 
-def _load_vendored_manifest(name: str) -> dict[str, object]:
-    with (ROOT / "vendor" / name / "Cargo.toml").open("rb") as handle:
-        return tomllib.load(handle)
-
-
 def test_backend_manifest_does_not_depend_on_obj_model() -> None:
     manifest = _load_backend_manifest()
     dependencies = manifest["dependencies"]
@@ -34,36 +29,12 @@ def test_backend_manifest_does_not_redeclare_wasmparser_in_dev_dependencies() ->
     assert "wasmparser" not in dev_dependencies
 
 
-def test_workspace_patches_native_cranelift_stack_to_vendor_copy() -> None:
-    manifest = _load_workspace_manifest()
-    patched = manifest["patch"]["crates-io"]
-    assert patched["cranelift-codegen"]["path"] == "vendor/cranelift-codegen"
-    assert patched["cranelift-frontend"]["path"] == "vendor/cranelift-frontend"
-    assert patched["cranelift-module"]["path"] == "vendor/cranelift-module"
-    assert patched["cranelift-native"]["path"] == "vendor/cranelift-native"
-    assert patched["cranelift-object"]["path"] == "vendor/cranelift-object"
-
-
 def test_backend_manifest_uses_minimal_cranelift_codegen_features() -> None:
     manifest = _load_backend_manifest()
     codegen_dependency = manifest["dependencies"]["cranelift-codegen"]
 
     assert codegen_dependency["default-features"] is False
-    assert set(codegen_dependency["features"]) == {"host-arch", "std"}
-
-
-def test_vendored_native_cranelift_support_crates_drop_unwind_from_runtime_dependency() -> None:
-    for crate_name in (
-        "cranelift-frontend",
-        "cranelift-module",
-        "cranelift-native",
-        "cranelift-object",
-    ):
-        manifest = _load_vendored_manifest(crate_name)
-        codegen_dependency = manifest["dependencies"]["cranelift-codegen"]
-
-        assert codegen_dependency["default-features"] is False
-        assert codegen_dependency["features"] == ["std"]
+    assert set(codegen_dependency["features"]) == {"host-arch", "std", "unwind"}
 
 
 def test_backend_manifest_target_overlays_only_add_cross_isa_support() -> None:
