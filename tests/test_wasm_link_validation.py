@@ -108,3 +108,37 @@ def test_append_table_ref_elements_tolerates_malformed_name_utf8() -> None:
     # Malformed name entries should be ignored, not crash wasm linking.
     result = wasm_link._append_table_ref_elements(malformed)
     assert result is None or isinstance(result, bytes)
+
+
+# ---------------------------------------------------------------------------
+# Allowlist validation
+# ---------------------------------------------------------------------------
+
+
+def _parse_allowlist(path: Path) -> set[str]:
+    lines = path.read_text().splitlines()
+    return {
+        line.strip()
+        for line in lines
+        if line.strip() and not line.strip().startswith("#")
+    }
+
+
+def test_allowlist_file_exists():
+    """The WASI allowlist must exist and contain the expected symbols."""
+    allowlist = Path(__file__).resolve().parents[1] / "tools" / "wasm_allowed_imports.txt"
+    assert allowlist.exists(), f"Missing allowlist: {allowlist}"
+    symbols = _parse_allowlist(allowlist)
+    # Must contain core WASI symbols
+    assert "fd_write" in symbols
+    assert "proc_exit" in symbols
+    assert "__indirect_function_table" in symbols
+    # Must contain indirect call trampolines
+    assert "molt_call_indirect0" in symbols
+    assert "molt_call_indirect13" in symbols
+    # Must NOT contain molt_runtime namespace symbols (those are resolved by linking)
+    runtime_syms = {
+        s for s in symbols
+        if s.startswith("molt_") and not s.startswith("molt_call_indirect")
+    }
+    assert runtime_syms == set(), f"Unexpected molt_runtime symbols in allowlist: {runtime_syms}"

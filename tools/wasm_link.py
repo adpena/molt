@@ -1371,7 +1371,61 @@ def _validate_linked(linked: Path) -> bool:
     return True
 
 
-def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int:
+def _run_wasm_opt_via_optimize(linked: Path, level: str = "Oz") -> bool:
+    """Run wasm-opt on the linked binary via tools/wasm_optimize.py.
+
+    Returns True if optimization ran successfully.
+    Writes to a temp file first to avoid corrupting the linked binary on failure.
+    """
+    try:
+        import importlib.util as _ilu
+
+        optimize_path = Path(__file__).parent / "wasm_optimize.py"
+        spec = _ilu.spec_from_file_location("wasm_optimize", optimize_path)
+        if spec is None or spec.loader is None:
+            print("wasm_optimize.py not found; skipping wasm-opt.", file=sys.stderr)
+            return False
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception as exc:
+        print(f"Failed to load wasm_optimize: {exc}", file=sys.stderr)
+        return False
+
+    pre_size = linked.stat().st_size
+    temp_output = linked.with_suffix(".opt.wasm")
+    result = mod.optimize(linked, output_path=temp_output, level=level)
+
+    if not result["ok"]:
+        err = result.get("error", "unknown error")
+        print(f"wasm-opt failed (non-fatal): {err}", file=sys.stderr)
+        if temp_output.exists():
+            temp_output.unlink()
+        return False
+
+    shutil.move(str(temp_output), str(linked))
+
+    post_size = result["output_bytes"]
+    savings = pre_size - post_size
+    if savings > 0:
+        print(
+            f"wasm-opt ({level}): {savings:,} bytes saved "
+            f"({savings / pre_size * 100:.1f}% reduction, "
+            f"{post_size:,} bytes final)",
+            file=sys.stderr,
+        )
+    return True
+
+
+def _run_wasm_ld(
+    wasm_ld: str,
+    runtime: Path,
+    output: Path,
+    linked: Path,
+    *,
+    allowlist_override: Path | None = None,
+    optimize: bool = False,
+    optimize_level: str = "Oz",
+) -> int:
     try:
         runtime_exports = _collect_exports(runtime.read_bytes())
     except ValueError as exc:
@@ -1398,11 +1452,18 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
         return 1
     rewritten_path, temp_dir = rewritten
     rewritten_path = _inject_call_indirect_alias(rewritten_path, runtime, temp_dir)
+    if allowlist_override is not None:
+        allowlist = allowlist_override
+    else:
+        allowlist = Path(__file__).parent / "wasm_allowed_imports.txt"
+    if not allowlist.exists():
+        print(f"Allowlist not found: {allowlist}", file=sys.stderr)
+        return 1
     cmd = [
         wasm_ld,
         "--no-entry",
         "--gc-sections",
-        "--allow-undefined",
+        f"--allow-undefined-file={str(allowlist)}",
         "--import-table",
         "--export=molt_main",
         "--export=molt_memory",
@@ -1449,6 +1510,11 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
                 file=sys.stderr,
             )
             linked.write_bytes(linked_bytes)
+
+        if optimize:
+            if _run_wasm_opt_via_optimize(linked, level=optimize_level):
+                # Re-read after optimization since the file changed on disk
+                linked_bytes = linked.read_bytes()
 
         output_table_min = _table_import_min(output.read_bytes())
         if output_table_min is not None:
@@ -1514,6 +1580,18 @@ def main() -> int:
     parser.add_argument("--runtime", type=Path, default=_default_runtime_path())
     parser.add_argument("--input", type=Path, default=Path("output.wasm"))
     parser.add_argument("--output", type=Path, default=Path("output_linked.wasm"))
+    parser.add_argument(
+        "--freestanding", action="store_true", default=False,
+        help="Use freestanding (no-WASI) allowlist for undefined symbols",
+    )
+    parser.add_argument(
+        "--optimize", action="store_true", default=False,
+        help="Run wasm-opt after linking (requires Binaryen)",
+    )
+    parser.add_argument(
+        "--optimize-level", default="Oz",
+        help="wasm-opt optimization level (O1/O2/O3/O4/Os/Oz, default: Oz)",
+    )
     args = parser.parse_args()
 
     runtime = args.runtime
@@ -1538,7 +1616,19 @@ def main() -> int:
         )
         return 1
 
-    return _run_wasm_ld(wasm_ld, runtime, output, linked)
+    allowlist_override = None
+    if args.freestanding:
+        allowlist_override = Path(__file__).parent / "wasm_allowed_imports_freestanding.txt"
+
+    return _run_wasm_ld(
+        wasm_ld,
+        runtime,
+        output,
+        linked,
+        allowlist_override=allowlist_override,
+        optimize=args.optimize,
+        optimize_level=args.optimize_level,
+    )
 
 
 if __name__ == "__main__":
