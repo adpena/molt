@@ -1294,6 +1294,57 @@ def _post_link_optimize(data: bytes) -> bytes:
     return data
 
 
+def _validate_freestanding(data: bytes) -> bool:
+    """Validate a freestanding wasm binary has no prohibited imports.
+
+    Returns True if valid, False if critical issues found.
+    """
+    try:
+        imports = _collect_imports(data)
+    except ValueError as exc:
+        print(f"Failed to parse freestanding wasm imports: {exc}", file=sys.stderr)
+        return False
+
+    wasi_imports = [
+        (module, name)
+        for module, name, _, _ in imports
+        if module == "wasi_snapshot_preview1"
+    ]
+    if wasi_imports:
+        for module, name in wasi_imports:
+            print(
+                f"Freestanding validation error: remaining WASI import {module}::{name}",
+                file=sys.stderr,
+            )
+        return False
+
+    runtime_imports = [
+        (module, name)
+        for module, name, _, _ in imports
+        if module == "molt_runtime"
+    ]
+    if runtime_imports:
+        for module, name in runtime_imports:
+            print(
+                f"Freestanding validation error: remaining molt_runtime import {module}::{name}",
+                file=sys.stderr,
+            )
+        return False
+
+    other_imports = [
+        (module, name)
+        for module, name, _, _ in imports
+        if module != "env"
+    ]
+    for module, name in other_imports:
+        print(
+            f"Freestanding validation warning: unexpected import {module}::{name}",
+            file=sys.stderr,
+        )
+
+    return True
+
+
 def _validate_linked(linked: Path) -> bool:
     data = linked.read_bytes()
     try:
@@ -1589,6 +1640,9 @@ def _run_wasm_ld(
                 print(f"Freestanding WASI stubbing failed: {exc}", file=sys.stderr)
                 return 1
 
+        if freestanding:
+            if not _validate_freestanding(linked_bytes):
+                return 1
         if not _validate_linked(linked):
             return 1
         return 0

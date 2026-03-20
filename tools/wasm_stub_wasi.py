@@ -344,6 +344,13 @@ def stub_wasi_imports(wasm_bytes: bytes) -> tuple[bytes, int]:
         old_idx = n_original_imports + i
         remap[old_idx] = old_idx  # identity
 
+    # Check if any function indices actually changed.  When removing N WASI
+    # imports and inserting N stub functions the total function count stays the
+    # same and – in many common layouts – every function keeps its original
+    # index.  In that case we can skip the expensive (and potentially risky,
+    # e.g. SIMD/atomics) body/element/export rewriting entirely.
+    changed_indices = {old: new for old, new in remap.items() if old != new}
+
     # Now rebuild the sections
     new_sections: list[tuple[int, bytes]] = []
     for sec_idx, (section_id, payload) in enumerate(sections):
@@ -354,24 +361,25 @@ def stub_wasi_imports(wasm_bytes: bytes) -> tuple[bytes, int]:
         elif section_id == 10:
             new_sections.append((10, bytes(new_code_payload)))
         elif section_id == 7:
-            # Export section — remap function indices
-            new_sections.append((7, _remap_export_section(payload, remap)))
+            # Export section — remap function indices (only if indices changed)
+            if changed_indices:
+                new_sections.append((7, _remap_export_section(payload, remap)))
+            else:
+                new_sections.append((section_id, payload))
         elif section_id == 9:
-            # Element section — remap function indices
-            new_sections.append((9, _remap_element_section(payload, remap)))
+            # Element section — remap function indices (only if indices changed)
+            if changed_indices:
+                new_sections.append((9, _remap_element_section(payload, remap)))
+            else:
+                new_sections.append((section_id, payload))
         else:
             new_sections.append((section_id, payload))
 
-    # Also need to remap call instructions in the code section.
-    # This is extremely complex to do correctly (need to parse all WASM instructions).
-    # For now, since the only indices that change are import indices, and the
-    # existing defined functions keep their indices, we check if any import
-    # indices actually changed value.
-    changed_indices = {old: new for old, new in remap.items() if old != new}
+    # If any import indices actually changed value, rewrite call instructions
+    # in the code section.  When indices are all identity-mapped we skip this
+    # entirely — which also avoids entering the body rewriter where SIMD or
+    # atomics instructions would cause an error.
     if changed_indices:
-        # Need to rewrite call instructions. This is a deep rewrite.
-        # For the initial implementation, we'll use a simpler approach:
-        # just rewrite the code section to fix up call targets.
         code_sec_idx = None
         for i, (sid, _) in enumerate(new_sections):
             if sid == 10:
