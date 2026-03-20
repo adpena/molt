@@ -411,7 +411,11 @@ fn br_table_state_remap_params(sorted_entries: &[(i64, i64)]) -> Option<(i64, us
     let max_state = sorted_entries.last()?.0;
     // table_size covers [min_state, max_state] inclusive.
     let table_size = (max_state - min_state + 1) as usize;
-    if table_size > sorted_entries.len().saturating_mul(STATE_REMAP_TABLE_MAX_SPARSITY) {
+    if table_size
+        > sorted_entries
+            .len()
+            .saturating_mul(STATE_REMAP_TABLE_MAX_SPARSITY)
+    {
         return None;
     }
     if table_size > STATE_REMAP_TABLE_MAX_ENTRIES {
@@ -499,9 +503,11 @@ fn emit_br_table_state_remap_lookup(
                 let case_idx = target_to_case[target_idx];
                 // case_idx 0 is outermost case block (depth 1 from br_table).
                 // After br_table, we want to land *after* the end of
-                // $case_{case_idx}.  The block at depth (target_block_count -
-                // case_idx) from the br_table site is $case_{case_idx}.
-                (target_block_count - case_idx) as u32
+                // $case_{case_idx}.  The innermost block ($case_0) is at
+                // depth target_block_count-1; each subsequent case is one
+                // level further out.  So $case_{case_idx} sits at depth
+                // (target_block_count - 1 - case_idx).
+                (target_block_count - 1 - case_idx) as u32
             }
             None => default_depth,
         })
@@ -3689,27 +3695,23 @@ impl WasmBackend {
         // getting their own WASM local slot.  The `as_dead_out` flag
         // indicates the caller is allocating an output-only variable that
         // should be checked against the read set.
-        let mut ensure_local_inner =
-            |name: &str, as_dead_out: bool| -> u32 {
-                if let Some(&idx) = locals.get(name) {
-                    return idx;
-                }
-                // Dead local elimination: if this is an output variable that
-                // is never read and not a function parameter, reuse the
-                // shared dead sink local.
-                if as_dead_out
-                    && !read_vars.contains(name)
-                    && !param_set.contains(name)
-                {
-                    locals.insert(name.to_string(), dead_sink_idx);
-                    return dead_sink_idx;
-                }
-                let idx = local_count;
-                locals.insert(name.to_string(), idx);
-                local_types.push(ValType::I64);
-                local_count += 1;
-                idx
-            };
+        let mut ensure_local_inner = |name: &str, as_dead_out: bool| -> u32 {
+            if let Some(&idx) = locals.get(name) {
+                return idx;
+            }
+            // Dead local elimination: if this is an output variable that
+            // is never read and not a function parameter, reuse the
+            // shared dead sink local.
+            if as_dead_out && !read_vars.contains(name) && !param_set.contains(name) {
+                locals.insert(name.to_string(), dead_sink_idx);
+                return dead_sink_idx;
+            }
+            let idx = local_count;
+            locals.insert(name.to_string(), idx);
+            local_types.push(ValType::I64);
+            local_count += 1;
+            idx
+        };
 
         let mut needs_field_fast = false;
         let mut stateful = false;
