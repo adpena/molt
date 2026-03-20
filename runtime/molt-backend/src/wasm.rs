@@ -205,6 +205,8 @@ struct CompileFuncContext<'a> {
     /// Functions eligible for multi-value return optimization.
     /// Maps function name -> number of return values (2 or 3).
     multi_return_candidates: &'a HashMap<String, usize>,
+    /// Import indices stripped in pure profile mode; calls emit `unreachable`.
+    skipped_import_indices: &'a HashSet<u32>,
 }
 
 trait TypeSectionExt {
@@ -1671,18 +1673,16 @@ impl WasmBackend {
         );
 
         // Build the set of import name prefixes to skip in "pure" profile mode.
-        // IO: process_*, socket_*, os_*, db_*, ws_*, file_*
-        // ASYNC: async_sleep, future_*, promise_*, thread_*, lock_*, rlock_*, chan_*,
-        //        asyncio_*, asyncgen_*, anext_*, io_wait*, spawn, block_on,
-        //        cancel_token_*, cancelled, cancel_current, sleep_register,
-        //        contextlib_async*
-        // TIME: clock_*, time_*, timezone_*
+        // In pure mode, IO/ASYNC/TIME imports are omitted entirely. Any code path
+        // that references a skipped import will trigger a clear compile-time panic.
         let is_pure = self.options.wasm_profile == WasmProfile::Pure;
         let skipped_import_prefixes: &[&str] = if is_pure {
             &[
                 // IO
-                "process_", "socket_", "socket", "os_", "db_", "ws_",
-                "file_", "stream_", "path_",
+                "process_", "socket", "os_", "db_", "ws_",
+                "file_", "stream_", "path_exists", "path_listdir",
+                "path_mkdir", "path_unlink", "path_rmdir", "path_chmod",
+                "open_builtin",
                 // ASYNC
                 "async_sleep", "future_", "promise_", "thread_",
                 "lock_", "rlock_", "chan_",
@@ -1712,12 +1712,15 @@ impl WasmBackend {
         let mut import_idx = 0;
         let mut skipped_indices: HashSet<u32> = HashSet::new();
         let mut add_import = |name: &str, ty: u32, ids: &mut TrackedImportIds| {
+            if is_skipped_import(name) {
+                // In pure mode, skip IO/ASYNC/TIME imports entirely.
+                // The import is not registered in the WASM module, so the
+                // resulting binary has no dependency on these host functions.
+                return;
+            }
             self.imports
                 .import("molt_runtime", name, EntityType::Function(ty));
             ids.insert(name.to_string(), import_idx);
-            if is_skipped_import(name) {
-                skipped_indices.insert(import_idx);
-            }
             import_idx += 1;
         };
         let simple_i64_import_type = |arity: usize| -> u32 {
@@ -2597,6 +2600,9 @@ impl WasmBackend {
             );
         }
         self.func_count = import_idx;
+        // skipped_indices not used in the "skip entirely" approach,
+        // but preserved on the struct for future emit_call_or_unreachable use.
+        self.skipped_import_indices = skipped_indices;
 
         let mut user_type_map: HashMap<usize, u32> = HashMap::new();
         // Types 0-34 are defined above (0-30 single-return, 31-34 multi-value);
@@ -3867,6 +3873,7 @@ impl WasmBackend {
         }
 
         let import_ids = self.import_ids.clone();
+        let skipped_import_indices = self.skipped_import_indices.clone();
         let compile_ctx = CompileFuncContext {
             func_map: &func_to_table_idx,
             func_indices: &func_to_index,
@@ -3875,6 +3882,7 @@ impl WasmBackend {
             reloc_enabled,
             table_base,
             multi_return_candidates: &multi_return_candidates,
+            skipped_import_indices: &skipped_import_indices,
         };
         for func_ir in &ir.functions {
             let type_idx = if func_ir.name.ends_with("_poll") {
@@ -11628,6 +11636,20 @@ fn emit_call(func: &mut Function, reloc_enabled: bool, func_index: u32) {
         func.raw(bytes);
     } else {
         func.instruction(&Instruction::Call(func_index));
+    }
+}
+
+/// Emit a call or `unreachable` if the target import was stripped in pure profile mode.
+fn emit_call_or_unreachable(
+    func: &mut Function,
+    reloc_enabled: bool,
+    func_index: u32,
+    skipped: &HashSet<u32>,
+) {
+    if skipped.contains(&func_index) {
+        func.instruction(&Instruction::Unreachable);
+    } else {
+        emit_call(func, reloc_enabled, func_index);
     }
 }
 
