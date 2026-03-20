@@ -21,10 +21,13 @@ struct DaemonJobRequest {
     id: String,
     is_wasm: bool,
     target_triple: Option<String>,
+    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
     #[serde(default)]
     wasm_link: bool,
+    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
     #[serde(default)]
     wasm_data_base: Option<u32>,
+    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
     #[serde(default)]
     wasm_table_base: Option<u32>,
     output: String,

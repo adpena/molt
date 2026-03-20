@@ -2875,7 +2875,7 @@ def _prepare_build_config(
     runtime_cargo_profile, runtime_profile_err = _resolve_cargo_profile_name(profile)
     if runtime_profile_err:
         return None, _fail(runtime_profile_err, json_output, command="build")
-    backend_cargo_profile, backend_profile_err = _resolve_cargo_profile_name(
+    backend_cargo_profile, backend_profile_err = _resolve_backend_cargo_profile_name(
         backend_profile
     )
     if backend_profile_err:
@@ -7673,6 +7673,54 @@ def _resolve_cargo_profile_name(
     return _resolve_cargo_profile_name_cached(
         build_profile,
         os.environ.get(env_var, ""),
+    )
+
+
+@functools.lru_cache(maxsize=32)
+def _resolve_backend_cargo_profile_name_cached(
+    build_profile: BuildProfile,
+    backend_raw: str,
+    generic_raw: str,
+) -> tuple[str, str | None]:
+    backend_env_var = (
+        "MOLT_DEV_BACKEND_CARGO_PROFILE"
+        if build_profile == "dev"
+        else "MOLT_RELEASE_BACKEND_CARGO_PROFILE"
+    )
+    generic_env_var = (
+        "MOLT_DEV_CARGO_PROFILE"
+        if build_profile == "dev"
+        else "MOLT_RELEASE_CARGO_PROFILE"
+    )
+    normalized_backend = backend_raw.strip()
+    normalized_generic = generic_raw.strip()
+    profile_name = normalized_backend or normalized_generic
+    if not profile_name:
+        profile_name = "dev-fast" if build_profile == "dev" else "release-fast"
+    if not _CARGO_PROFILE_NAME_RE.match(profile_name):
+        if normalized_backend:
+            return build_profile, f"Invalid {backend_env_var} value: {backend_raw}"
+        return build_profile, f"Invalid {generic_env_var} value: {generic_raw}"
+    return profile_name, None
+
+
+def _resolve_backend_cargo_profile_name(
+    build_profile: BuildProfile,
+) -> tuple[str, str | None]:
+    backend_env_var = (
+        "MOLT_DEV_BACKEND_CARGO_PROFILE"
+        if build_profile == "dev"
+        else "MOLT_RELEASE_BACKEND_CARGO_PROFILE"
+    )
+    generic_env_var = (
+        "MOLT_DEV_CARGO_PROFILE"
+        if build_profile == "dev"
+        else "MOLT_RELEASE_CARGO_PROFILE"
+    )
+    return _resolve_backend_cargo_profile_name_cached(
+        build_profile,
+        os.environ.get(backend_env_var, ""),
+        os.environ.get(generic_env_var, ""),
     )
 
 

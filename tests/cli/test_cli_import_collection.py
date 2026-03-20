@@ -4691,6 +4691,32 @@ def test_resolve_cargo_profile_name_defaults_and_validation(
     assert error == "Invalid MOLT_DEV_CARGO_PROFILE value: bad profile"
 
 
+def test_resolve_backend_cargo_profile_name_defaults_and_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli._resolve_backend_cargo_profile_name_cached.cache_clear()
+    monkeypatch.delenv("MOLT_RELEASE_BACKEND_CARGO_PROFILE", raising=False)
+    monkeypatch.delenv("MOLT_RELEASE_CARGO_PROFILE", raising=False)
+    profile, error = cli._resolve_backend_cargo_profile_name("release")
+    assert profile == "release-fast"
+    assert error is None
+
+    monkeypatch.setenv("MOLT_RELEASE_CARGO_PROFILE", "release-iter")
+    profile, error = cli._resolve_backend_cargo_profile_name("release")
+    assert profile == "release-iter"
+    assert error is None
+
+    monkeypatch.setenv("MOLT_RELEASE_BACKEND_CARGO_PROFILE", "backend-prod")
+    profile, error = cli._resolve_backend_cargo_profile_name("release")
+    assert profile == "backend-prod"
+    assert error is None
+
+    monkeypatch.setenv("MOLT_RELEASE_BACKEND_CARGO_PROFILE", "bad profile")
+    profile, error = cli._resolve_backend_cargo_profile_name("release")
+    assert profile == "release"
+    assert error == "Invalid MOLT_RELEASE_BACKEND_CARGO_PROFILE value: bad profile"
+
+
 def test_backend_daemon_retryable_error_classification() -> None:
     assert cli._backend_daemon_retryable_error("backend daemon returned empty response")
     assert cli._backend_daemon_retryable_error("unsupported protocol version 9")
@@ -4982,6 +5008,100 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
         ]
     ]
     assert backend_output.read_text() == "fn main() {}\n"
+
+
+def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+    entry = project / "main.py"
+    entry.write_text("print('ok')\n")
+
+    build_state_root = tmp_path / "build-state"
+    cache_root = tmp_path / "cache"
+    backend_bin = tmp_path / "fake-backend"
+    backend_output = tmp_path / "out.rs"
+    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    build_cmds: list[list[str]] = []
+
+    monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
+    monkeypatch.setenv("MOLT_CACHE", str(cache_root))
+    monkeypatch.delenv("MOLT_RELEASE_BACKEND_CARGO_PROFILE", raising=False)
+    monkeypatch.delenv("MOLT_RELEASE_CARGO_PROFILE", raising=False)
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli, "_resolve_frontend_parallel_module_workers", lambda: 0)
+    monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: True)
+    monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(
+        cli,
+        "_start_backend_daemon",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("rust target should not start backend daemon")
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_compile_with_backend_daemon",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("rust target should not use backend daemon compile")
+        ),
+    )
+
+    def fake_backend_fingerprint(*args: object, **kwargs: object) -> dict[str, str]:
+        del args, kwargs
+        return dict(fingerprint)
+
+    def fake_run_cargo(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        build_cmds.append(list(cmd))
+        backend_bin.write_text("#!/bin/sh\n")
+        backend_bin.chmod(0o755)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    original_run = cli.subprocess.run
+
+    def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        if cmd and str(cmd[0]) == str(backend_bin):
+            output = Path(cmd[cmd.index("--output") + 1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text("fn main() {}\n")
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+        return original_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(cli, "_backend_fingerprint", fake_backend_fingerprint)
+    monkeypatch.setattr(cli, "_run_cargo_with_sccache_retry", fake_run_cargo)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    rc = cli.build(
+        str(entry),
+        target="rust",
+        output=str(backend_output),
+        profile="release",
+        deterministic=False,
+        json_output=False,
+    )
+
+    assert rc == 0
+    assert build_cmds == [
+        [
+            "cargo",
+            "build",
+            "--package",
+            "molt-backend",
+            "--profile",
+            "release-fast",
+            "--features",
+            "rust-backend",
+        ]
+    ]
 
 
 def test_backend_daemon_enabled_is_cached(
