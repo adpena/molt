@@ -75,8 +75,7 @@ socket2 = "0.6"
 rustls = "0.23"
 rustls-pemfile = "2.2"
 webpki-roots = "1.0"
-tungstenite = { version = "0.28", default-features = false, features = ["handshake", "rustls-tls-webpki-roots", "url"] }
-url = "2.5"
+tungstenite = { version = "0.28", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 os_pipe = "1.2"
 libloading = { version = "0.8.9", optional = true }
 

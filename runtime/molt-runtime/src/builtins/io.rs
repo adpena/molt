@@ -15,7 +15,7 @@ use std::io::{ErrorKind, Read, Seek, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(not(unix))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -24,6 +24,27 @@ static HANDLE_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
 static SYS_STDIN_HANDLE_BITS: AtomicU64 = AtomicU64::new(0);
 static SYS_STDOUT_HANDLE_BITS: AtomicU64 = AtomicU64::new(0);
 static SYS_STDERR_HANDLE_BITS: AtomicU64 = AtomicU64::new(0);
+
+// ── VFS write-back registry ──────────────────────────────────────────
+// Maps a file handle's `MoltFileState` pointer address to the VFS backend
+// and relative path so that on close we can flush the in-memory bytearray
+// content back to the virtual filesystem.
+type VfsWritebackEntry = (Arc<dyn crate::vfs::VfsBackend>, String);
+
+fn vfs_writeback_map() -> &'static Mutex<HashMap<usize, VfsWritebackEntry>> {
+    static MAP: OnceLock<Mutex<HashMap<usize, VfsWritebackEntry>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn vfs_writeback_register(state: &Arc<MoltFileState>, entry: VfsWritebackEntry) {
+    let key = Arc::as_ptr(state) as usize;
+    vfs_writeback_map().lock().unwrap().insert(key, entry);
+}
+
+fn vfs_writeback_take(state: &Arc<MoltFileState>) -> Option<VfsWritebackEntry> {
+    let key = Arc::as_ptr(state) as usize;
+    vfs_writeback_map().lock().unwrap().remove(&key)
+}
 
 macro_rules! file_handle_require_attached {
     ($py:expr, $handle:expr) => {

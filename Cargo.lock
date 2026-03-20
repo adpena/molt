@@ -2285,7 +2285,6 @@ dependencies = [
  "unicode-casefold",
  "unicode-ident",
  "unicode_names2 2.0.0",
- "url",
  "webpki-roots 1.0.6",
  "windows-sys 0.61.2",
  "wtf8",

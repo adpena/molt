@@ -1,6 +1,6 @@
 # Codegen Optimization Plan
 
-Status: **Draft** | Author: codegen-team | Date: 2026-03-12
+Status: **Sections 1-5, 10 DONE (2026-03-20)** | Author: codegen-team | Date: 2026-03-12
 
 This document surveys the current state of Molt's Cranelift-based code generation backend (`runtime/molt-backend/src/lib.rs`, `wasm.rs`) and proposes concrete optimization work across eleven areas. Each section states the current state (with code references), proposed improvements, expected impact, and implementation effort.
 

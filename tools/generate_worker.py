@@ -13,9 +13,10 @@ def generate_worker(
     wasm_filename: str = "worker_linked.wasm",
 ) -> None:
     template = TEMPLATE_PATH.read_text()
+    caps_str = ", ".join(f"'{c}'" for c in capabilities)
     template = template.replace("{{TMP_QUOTA_MB}}", str(tmp_quota_mb))
-    template = template.replace("{{CAPABILITIES}}", ", ".join(capabilities))
-    template = template.replace("./worker_linked.wasm", f"./{wasm_filename}")
+    template = template.replace("{{CAPABILITIES}}", caps_str)
+    template = template.replace("{{WASM_FILENAME}}", wasm_filename)
     output.write_text(template)
 
 def main() -> int:

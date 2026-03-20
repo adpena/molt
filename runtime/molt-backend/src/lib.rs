@@ -1,12 +1,12 @@
 #[cfg(feature = "native-backend")]
 use cranelift_codegen::Context;
 #[cfg(feature = "native-backend")]
+use cranelift_codegen::ir::condcodes::IntCC;
+#[cfg(feature = "native-backend")]
 use cranelift_codegen::ir::{
     AbiParam, Block, BlockArg, FuncRef, Function, InstBuilder, MemFlags, StackSlotData,
     StackSlotKind, Value, types,
 };
-#[cfg(feature = "native-backend")]
-use cranelift_codegen::ir::condcodes::IntCC;
 #[cfg(feature = "native-backend")]
 use cranelift_codegen::isa;
 #[cfg(feature = "native-backend")]
@@ -643,11 +643,7 @@ fn def_var_named(
 
 #[cfg(feature = "native-backend")]
 fn jump_block(builder: &mut FunctionBuilder, target: Block, args: &[Value]) {
-    let block_args: Vec<BlockArg> = args
-        .iter()
-        .copied()
-        .map(BlockArg::from)
-        .collect();
+    let block_args: Vec<BlockArg> = args.iter().copied().map(BlockArg::from).collect();
     builder.ins().jump(target, &block_args);
 }
 
@@ -660,16 +656,8 @@ fn brif_block(
     else_block: Block,
     else_args: &[Value],
 ) {
-    let then_block_args: Vec<BlockArg> = then_args
-        .iter()
-        .copied()
-        .map(BlockArg::from)
-        .collect();
-    let else_block_args: Vec<BlockArg> = else_args
-        .iter()
-        .copied()
-        .map(BlockArg::from)
-        .collect();
+    let then_block_args: Vec<BlockArg> = then_args.iter().copied().map(BlockArg::from).collect();
+    let else_block_args: Vec<BlockArg> = else_args.iter().copied().map(BlockArg::from).collect();
     builder.ins().brif(
         cond,
         then_block,
@@ -848,7 +836,10 @@ fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
     eprintln!("IR ops for {} (mode={}):\n{}", func_ir.name, mode, out);
 }
 
-#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
 pub(crate) fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_DISABLE_STRUCT_ELIDE").is_ok() {
         return;
@@ -924,12 +915,18 @@ pub(crate) fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
 // code size explosion. Controlled by MOLT_INLINE_LIMIT env var.
 // ---------------------------------------------------------------------------
 
-#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
 const INLINE_OP_LIMIT: usize = 30;
 
 /// Returns true if a function is safe to inline: no control flow (loops,
 /// try/except, generators), no nested internal calls, small op count.
-#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
 fn is_inlineable(func: &FunctionIR, defined_functions: &std::collections::HashSet<&str>) -> bool {
     if func.ops.len() > INLINE_OP_LIMIT {
         return false;
@@ -957,7 +954,10 @@ fn is_inlineable(func: &FunctionIR, defined_functions: &std::collections::HashSe
     true
 }
 
-#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
 pub(crate) fn inline_functions(ir: &mut SimpleIR) {
     if std::env::var("MOLT_DISABLE_INLINING").is_ok() {
         return;
@@ -1134,7 +1134,10 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
     }
 }
 
-#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
 pub(crate) fn apply_profile_order(ir: &mut SimpleIR) {
     let Some(profile) = ir.profile.as_ref() else {
         return;
@@ -1320,7 +1323,10 @@ fn drain_cleanup_entry_tracked(
 }
 
 #[derive(Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
-#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
 pub(crate) enum TrampolineKind {
     Plain,
     Generator,
@@ -1340,7 +1346,10 @@ struct TrampolineKey {
 }
 
 #[derive(Clone, Copy)]
-#[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
 pub(crate) struct TrampolineSpec {
     pub(crate) arity: usize,
     pub(crate) has_closure: bool,

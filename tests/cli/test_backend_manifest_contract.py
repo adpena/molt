@@ -112,3 +112,14 @@ def test_backend_manifest_gates_loop_continue_to_native_backend() -> None:
     tests = manifest.get("test", [])
     loop_continue = next(test for test in tests if test["name"] == "loop_continue")
     assert loop_continue["required-features"] == ["native-backend"]
+
+
+def test_runtime_manifest_avoids_url_compile_graph_for_websocket_client() -> None:
+    runtime_manifest_path = ROOT / "runtime" / "molt-runtime" / "Cargo.toml"
+    with runtime_manifest_path.open("rb") as handle:
+        runtime_manifest = tomllib.load(handle)
+
+    native_deps = runtime_manifest["target"]['cfg(not(target_arch = "wasm32"))']["dependencies"]
+
+    assert "url" not in native_deps
+    assert "url" not in native_deps["tungstenite"]["features"]
