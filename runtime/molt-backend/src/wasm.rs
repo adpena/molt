@@ -10767,3 +10767,154 @@ fn add_reloc_sections(
 
     bytes
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    // ---------------------------------------------------------------
+    // br_table state dispatch
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn br_table_viable_for_dense_entries() {
+        // 6 entries mapping states 0..=5 (dense, above threshold)
+        let entries: Vec<(i64, i64)> = (0..6).map(|i| (i as i64, i as i64)).collect();
+        let result = br_table_state_remap_params(&entries);
+        assert!(result.is_some(), "dense 6-entry range should be viable");
+        let (min_state, table_size) = result.unwrap();
+        assert_eq!(min_state, 0);
+        assert_eq!(table_size, 6);
+    }
+
+    #[test]
+    fn br_table_viable_with_offset_range() {
+        // 5 entries starting at state 10: 10,11,12,13,14
+        let entries: Vec<(i64, i64)> = (10..15).map(|i| (i as i64, (i - 10) as i64)).collect();
+        let result = br_table_state_remap_params(&entries);
+        assert!(result.is_some(), "dense 5-entry range should be viable");
+        let (min_state, table_size) = result.unwrap();
+        assert_eq!(min_state, 10);
+        assert_eq!(table_size, 5);
+    }
+
+    #[test]
+    fn br_table_rejected_for_few_entries() {
+        // Only 4 entries -- below BR_TABLE_MIN_ENTRIES (5)
+        let entries: Vec<(i64, i64)> = (0..4).map(|i| (i as i64, i as i64)).collect();
+        let result = br_table_state_remap_params(&entries);
+        assert!(result.is_none(), "4 entries should be below the threshold");
+    }
+
+    #[test]
+    fn br_table_rejected_for_sparse_entries() {
+        // 5 entries spanning 0..=100: table_size = 101, sparsity = 101/5 = 20.2 (> 8)
+        let entries: Vec<(i64, i64)> = vec![(0, 0), (25, 1), (50, 2), (75, 3), (100, 4)];
+        let result = br_table_state_remap_params(&entries);
+        assert!(result.is_none(), "sparsity 20 exceeds max allowed 8");
+    }
+
+    #[test]
+    fn br_table_boundary_at_exactly_threshold() {
+        // Exactly 5 entries -- the minimum required
+        let entries: Vec<(i64, i64)> = (0..5).map(|i| (i as i64, i as i64)).collect();
+        let result = br_table_state_remap_params(&entries);
+        assert!(result.is_some(), "exactly 5 entries should pass");
+        let (min_state, table_size) = result.unwrap();
+        assert_eq!(min_state, 0);
+        assert_eq!(table_size, 5);
+    }
+
+    #[test]
+    fn br_table_sparsity_at_max_boundary() {
+        // 5 entries, table_size = 5 * 8 = 40 (exactly at sparsity limit)
+        // entries: 0, 10, 20, 30, 39  ->  table_size = 40, sparsity = 40/5 = 8
+        let entries: Vec<(i64, i64)> = vec![(0, 0), (10, 1), (20, 2), (30, 3), (39, 4)];
+        let result = br_table_state_remap_params(&entries);
+        assert!(result.is_some(), "sparsity exactly 8 should be accepted");
+        let (min_state, table_size) = result.unwrap();
+        assert_eq!(min_state, 0);
+        assert_eq!(table_size, 40);
+    }
+
+    #[test]
+    fn br_table_sparsity_just_over_max() {
+        // 5 entries, table_size = 41: sparsity = 41/5 = 8.2 (> 8)
+        let entries: Vec<(i64, i64)> = vec![(0, 0), (10, 1), (20, 2), (30, 3), (40, 4)];
+        let result = br_table_state_remap_params(&entries);
+        assert!(result.is_none(), "sparsity 8.2 should be rejected");
+    }
+
+    // ---------------------------------------------------------------
+    // Dead local elimination -- read-variable scanning
+    // ---------------------------------------------------------------
+
+    /// Build a minimal OpIR with only the fields relevant to read-var scanning.
+    fn make_op(kind: &str, args: Option<Vec<&str>>, var: Option<&str>, out: Option<&str>) -> OpIR {
+        OpIR {
+            kind: kind.to_string(),
+            args: args.map(|a| a.into_iter().map(String::from).collect()),
+            var: var.map(String::from),
+            out: out.map(String::from),
+            ..Default::default()
+        }
+    }
+
+    /// Replicate the read-var scanning logic from the compiler to test it in isolation.
+    fn collect_read_vars(ops: &[OpIR]) -> HashSet<String> {
+        let mut s = HashSet::new();
+        for op in ops {
+            if let Some(args) = &op.args {
+                for arg in args {
+                    s.insert(arg.clone());
+                }
+            }
+            if let Some(var) = &op.var {
+                s.insert(var.clone());
+            }
+        }
+        s
+    }
+
+    #[test]
+    fn read_vars_includes_args_and_var() {
+        let ops = vec![
+            make_op("add", Some(vec!["a", "b"]), None, Some("c")),
+            make_op("load", None, Some("d"), Some("e")),
+        ];
+        let read_vars = collect_read_vars(&ops);
+        assert!(read_vars.contains("a"), "arg 'a' should be in read set");
+        assert!(read_vars.contains("b"), "arg 'b' should be in read set");
+        assert!(read_vars.contains("d"), "var 'd' should be in read set");
+        // 'c' and 'e' are outputs only -- they should NOT be in read_vars
+        assert!(!read_vars.contains("c"), "output-only 'c' should NOT be in read set");
+        assert!(!read_vars.contains("e"), "output-only 'e' should NOT be in read set");
+    }
+
+    #[test]
+    fn read_vars_output_becomes_live_when_later_read() {
+        let ops = vec![
+            make_op("const", None, None, Some("x")),
+            make_op("add", Some(vec!["x", "y"]), None, Some("z")),
+        ];
+        let read_vars = collect_read_vars(&ops);
+        // 'x' is an output of const but also an arg of add -- should be live
+        assert!(read_vars.contains("x"), "'x' should be live since it's read by add");
+        assert!(read_vars.contains("y"), "'y' should be live");
+        // 'z' is output-only
+        assert!(!read_vars.contains("z"), "'z' is output-only, should be dead");
+    }
+
+    #[test]
+    fn dead_local_all_outputs_dead() {
+        // No op reads any variable -- all outputs are dead
+        let ops = vec![
+            make_op("const", None, None, Some("a")),
+            make_op("const", None, None, Some("b")),
+            make_op("const", None, None, Some("c")),
+        ];
+        let read_vars = collect_read_vars(&ops);
+        assert!(read_vars.is_empty(), "no variable is ever read");
+    }
+}
