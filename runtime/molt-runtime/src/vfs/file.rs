@@ -1,8 +1,8 @@
 //! File handle wrapper bridging VFS Vec<u8> operations with the runtime's
 //! file object expectations (cursor-based read, buffered write, close flush).
 
-use std::sync::Arc;
 use crate::vfs::{VfsBackend, VfsError};
+use std::sync::Arc;
 
 pub struct MoltVfsFile {
     content: Vec<u8>,

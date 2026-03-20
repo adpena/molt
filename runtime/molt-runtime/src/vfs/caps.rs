@@ -13,7 +13,7 @@ const MOUNT_CAPABILITIES: &[(&str, &str, &str)] = &[
     ("/bundle", "fs.bundle.read", NEVER),
     ("/tmp", "fs.tmp.read", "fs.tmp.write"),
     ("/state", "fs.state.read", "fs.state.write"),
-    ("/dev", "", ""),  // always readable and writable
+    ("/dev", "", ""), // always readable and writable
 ];
 
 /// Check whether the given operation is allowed on the mount.

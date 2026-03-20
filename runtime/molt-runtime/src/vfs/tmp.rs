@@ -1,9 +1,9 @@
 //! Ephemeral read-write in-memory filesystem for /tmp mount.
 
+use crate::vfs::{VfsBackend, VfsError, VfsStat};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use crate::vfs::{VfsBackend, VfsError, VfsStat};
 
 pub struct TmpFs {
     files: RwLock<BTreeMap<String, Vec<u8>>>,
@@ -35,22 +35,34 @@ impl TmpFs {
 
 impl VfsBackend for TmpFs {
     fn open_read(&self, path: &str) -> Result<Vec<u8>, VfsError> {
-        let dirs = self.dirs.read().map_err(|e| VfsError::IoError(e.to_string()))?;
+        let dirs = self
+            .dirs
+            .read()
+            .map_err(|e| VfsError::IoError(e.to_string()))?;
         if dirs.contains(path) {
             return Err(VfsError::IsDirectory);
         }
-        let files = self.files.read().map_err(|e| VfsError::IoError(e.to_string()))?;
+        let files = self
+            .files
+            .read()
+            .map_err(|e| VfsError::IoError(e.to_string()))?;
         files.get(path).cloned().ok_or(VfsError::NotFound)
     }
 
     fn open_write(&self, path: &str, data: &[u8]) -> Result<(), VfsError> {
-        let dirs = self.dirs.read().map_err(|e| VfsError::IoError(e.to_string()))?;
+        let dirs = self
+            .dirs
+            .read()
+            .map_err(|e| VfsError::IoError(e.to_string()))?;
         if dirs.contains(path) {
             return Err(VfsError::IsDirectory);
         }
         drop(dirs);
 
-        let mut files = self.files.write().map_err(|e| VfsError::IoError(e.to_string()))?;
+        let mut files = self
+            .files
+            .write()
+            .map_err(|e| VfsError::IoError(e.to_string()))?;
         let old_size = files.get(path).map(|v| v.len()).unwrap_or(0);
         if data.len() > old_size {
             self.check_quota(data.len() - old_size)?;
@@ -65,7 +77,10 @@ impl VfsBackend for TmpFs {
 
     fn open_append(&self, path: &str, data: &[u8]) -> Result<(), VfsError> {
         self.check_quota(data.len())?;
-        let mut files = self.files.write().map_err(|e| VfsError::IoError(e.to_string()))?;
+        let mut files = self
+            .files
+            .write()
+            .map_err(|e| VfsError::IoError(e.to_string()))?;
         let entry = files.entry(path.to_string()).or_default();
         entry.extend_from_slice(data);
         self.used_bytes.fetch_add(data.len(), Ordering::Relaxed);
@@ -73,7 +88,10 @@ impl VfsBackend for TmpFs {
     }
 
     fn stat(&self, path: &str) -> Result<VfsStat, VfsError> {
-        let files = self.files.read().map_err(|e| VfsError::IoError(e.to_string()))?;
+        let files = self
+            .files
+            .read()
+            .map_err(|e| VfsError::IoError(e.to_string()))?;
         if let Some(content) = files.get(path) {
             return Ok(VfsStat {
                 is_file: true,
@@ -83,7 +101,10 @@ impl VfsBackend for TmpFs {
                 mtime: 0, // no clock on freestanding; host can override
             });
         }
-        let dirs = self.dirs.read().map_err(|e| VfsError::IoError(e.to_string()))?;
+        let dirs = self
+            .dirs
+            .read()
+            .map_err(|e| VfsError::IoError(e.to_string()))?;
         if dirs.contains(path) {
             return Ok(VfsStat {
                 is_file: false,
@@ -97,25 +118,37 @@ impl VfsBackend for TmpFs {
     }
 
     fn readdir(&self, path: &str) -> Result<Vec<String>, VfsError> {
-        let dirs = self.dirs.read().map_err(|e| VfsError::IoError(e.to_string()))?;
+        let dirs = self
+            .dirs
+            .read()
+            .map_err(|e| VfsError::IoError(e.to_string()))?;
         if !dirs.contains(path) {
-            let files = self.files.read().map_err(|e| VfsError::IoError(e.to_string()))?;
+            let files = self
+                .files
+                .read()
+                .map_err(|e| VfsError::IoError(e.to_string()))?;
             return Err(if files.contains_key(path) {
                 VfsError::NotDirectory
             } else {
                 VfsError::NotFound
             });
         }
-        let prefix = if path.is_empty() { String::new() } else { format!("{path}/") };
-        let files = self.files.read().map_err(|e| VfsError::IoError(e.to_string()))?;
+        let prefix = if path.is_empty() {
+            String::new()
+        } else {
+            format!("{path}/")
+        };
+        let files = self
+            .files
+            .read()
+            .map_err(|e| VfsError::IoError(e.to_string()))?;
         let mut entries = std::collections::HashSet::new();
         for key in files.keys().chain(dirs.iter()) {
-            if let Some(rest) = key.strip_prefix(&prefix) {
-                if let Some(name) = rest.split('/').next() {
-                    if !name.is_empty() {
-                        entries.insert(name.to_string());
-                    }
-                }
+            if let Some(rest) = key.strip_prefix(&prefix)
+                && let Some(name) = rest.split('/').next()
+                && !name.is_empty()
+            {
+                entries.insert(name.to_string());
             }
         }
         let mut sorted: Vec<String> = entries.into_iter().collect();
@@ -124,12 +157,18 @@ impl VfsBackend for TmpFs {
     }
 
     fn mkdir(&self, path: &str) -> Result<(), VfsError> {
-        let files = self.files.read().map_err(|e| VfsError::IoError(e.to_string()))?;
+        let files = self
+            .files
+            .read()
+            .map_err(|e| VfsError::IoError(e.to_string()))?;
         if files.contains_key(path) {
             return Err(VfsError::AlreadyExists);
         }
         drop(files);
-        let mut dirs = self.dirs.write().map_err(|e| VfsError::IoError(e.to_string()))?;
+        let mut dirs = self
+            .dirs
+            .write()
+            .map_err(|e| VfsError::IoError(e.to_string()))?;
         if !dirs.insert(path.to_string()) {
             return Err(VfsError::AlreadyExists);
         }
@@ -137,7 +176,10 @@ impl VfsBackend for TmpFs {
     }
 
     fn unlink(&self, path: &str) -> Result<(), VfsError> {
-        let mut files = self.files.write().map_err(|e| VfsError::IoError(e.to_string()))?;
+        let mut files = self
+            .files
+            .write()
+            .map_err(|e| VfsError::IoError(e.to_string()))?;
         if let Some(content) = files.remove(path) {
             self.used_bytes.fetch_sub(content.len(), Ordering::Relaxed);
             return Ok(());
@@ -146,7 +188,10 @@ impl VfsBackend for TmpFs {
     }
 
     fn rename(&self, from: &str, to: &str) -> Result<(), VfsError> {
-        let mut files = self.files.write().map_err(|e| VfsError::IoError(e.to_string()))?;
+        let mut files = self
+            .files
+            .write()
+            .map_err(|e| VfsError::IoError(e.to_string()))?;
         let content = files.remove(from).ok_or(VfsError::NotFound)?;
         files.insert(to.to_string(), content);
         Ok(())

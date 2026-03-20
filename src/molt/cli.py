@@ -13599,6 +13599,67 @@ def _prepare_backend_compile(
     ), None
 
 
+def _generate_snapshot_header(
+    *,
+    output_wasm: Path,
+    target_profile: str,
+    capabilities_list: list[str] | None,
+    verbose: bool,
+) -> None:
+    """Generate a molt.snapshot.json header alongside the WASM output.
+
+    The header captures mount plan, capability manifest, and module hash
+    metadata needed by edge hosts to restore a post-init snapshot (Plan D).
+    The binary memory blob capture is deferred to the wasmtime host
+    integration.
+    """
+    import hashlib
+    import datetime
+
+    snapshot_dir = output_wasm.parent
+    snapshot_path = snapshot_dir / "molt.snapshot.json"
+
+    # Compute module hash from the WASM binary.
+    module_hash = "sha256:unknown"
+    if output_wasm.exists():
+        h = hashlib.sha256()
+        with open(output_wasm, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        module_hash = f"sha256:{h.hexdigest()}"
+
+    # Default mount plan matching the spec Layer 4 snapshot format.
+    mount_plan = [
+        {"path": "/bundle", "mount_type": "bundle", "hash": module_hash},
+        {"path": "/tmp", "mount_type": "tmp", "quota_mb": 32},
+        {"path": "/dev", "mount_type": "dev"},
+    ]
+
+    caps = list(capabilities_list) if capabilities_list else [
+        "fs.bundle.read",
+        "fs.tmp.read",
+        "fs.tmp.write",
+    ]
+
+    header = {
+        "snapshot_version": 1,
+        "abi_version": "0.1.0",
+        "target_profile": target_profile,
+        "module_hash": module_hash,
+        "mount_plan": mount_plan,
+        "capability_manifest": caps,
+        "determinism_stamp": datetime.datetime.now(datetime.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "init_state_size": 0,
+    }
+
+    snapshot_path.write_text(json.dumps(header, indent=2) + "\n")
+    if verbose:
+        print(f"Wrote snapshot header: {snapshot_path}", file=sys.stderr)
+
+
 def _run_backend_pipeline(
     *,
     prepared_build_preamble: _PreparedBuildPreamble,
@@ -13641,6 +13702,7 @@ def _run_backend_pipeline(
     require_linked: bool,
     wasm_opt_level: str = "Oz",
     precompile: bool = False,
+    snapshot: bool = False,
 ) -> int:
     (
         _prepared_frontend_run_ticket,
@@ -13822,6 +13884,20 @@ def _run_backend_pipeline(
         if prepared_non_native_result_error is not None:
             return prepared_non_native_result_error
         assert prepared_non_native_result is not None
+
+        # -- Snapshot header generation (Plan D) ----------------------------
+        if snapshot and output_layout.is_wasm:
+            _generate_snapshot_header(
+                output_wasm=prepared_non_native_result.primary_output,
+                target_profile=target,
+                capabilities_list=prepared_build_config.capabilities_list,
+                verbose=verbose,
+            )
+            prepared_non_native_result.success_messages.append(
+                f"Snapshot header: {prepared_non_native_result.primary_output.parent / 'molt.snapshot.json'}"
+            )
+        # -- End snapshot header generation ----------------------------------
+
         return _emit_non_native_build_result(
             output=prepared_non_native_result.primary_output,
             cache=cache,
@@ -14267,6 +14343,7 @@ def _run_build_pipeline(
     require_linked: bool,
     wasm_opt_level: str = "Oz",
     precompile: bool = False,
+    snapshot: bool = False,
 ) -> int:
     prepared_frontend_run_ticket = prepared_frontend_pipeline_bundle[0]
     frontend_layer_error = _run_frontend_pipeline(
@@ -14296,6 +14373,7 @@ def _run_build_pipeline(
         require_linked=require_linked,
         wasm_opt_level=wasm_opt_level,
         precompile=precompile,
+        snapshot=snapshot,
     )
 
 
@@ -18380,6 +18458,7 @@ def build(
     wasm_opt_level: str = "Oz",
     precompile: bool = False,
     wasm_profile: str = "full",
+    snapshot: bool = False,
 ) -> int:
     if isinstance(profile, bool):
         profile = "release"
@@ -18471,6 +18550,7 @@ def build(
         require_linked=require_linked,
         wasm_opt_level=wasm_opt_level,
         precompile=precompile,
+        snapshot=snapshot,
     )
 
 
@@ -22976,6 +23056,16 @@ def main() -> int:
         ),
     )
     build_parser.add_argument(
+        "--snapshot",
+        action="store_true",
+        default=False,
+        help=(
+            "Generate a molt.snapshot.json header alongside the WASM output "
+            "for sub-millisecond cold starts on edge platforms. "
+            "Records mount plan, capabilities, and module hash metadata."
+        ),
+    )
+    build_parser.add_argument(
         "--wasm-profile",
         choices=["full", "pure"],
         default="full",
@@ -24108,6 +24198,7 @@ def main() -> int:
             wasm_opt_level=wasm_opt_level,
             precompile=precompile,
             wasm_profile=wasm_profile,
+            snapshot=getattr(args, "snapshot", False),
         )
     if args.command == "extension":
         if args.extension_command == "build":

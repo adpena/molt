@@ -1,12 +1,18 @@
 //! Pseudo-device filesystem for /dev/stdin, /dev/stdout, /dev/stderr.
 
-use std::sync::Mutex;
 use crate::vfs::{VfsBackend, VfsError, VfsStat};
+use std::sync::Mutex;
 
 pub struct DevFs {
     stdout_buffer: Mutex<Vec<u8>>,
     stderr_buffer: Mutex<Vec<u8>>,
     stdin_data: Vec<u8>,
+}
+
+impl Default for DevFs {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DevFs {
@@ -91,9 +97,15 @@ impl VfsBackend for DevFs {
         }
     }
 
-    fn mkdir(&self, _path: &str) -> Result<(), VfsError> { Err(VfsError::ReadOnly) }
-    fn unlink(&self, _path: &str) -> Result<(), VfsError> { Err(VfsError::PermissionDenied) }
-    fn rename(&self, _from: &str, _to: &str) -> Result<(), VfsError> { Err(VfsError::PermissionDenied) }
+    fn mkdir(&self, _path: &str) -> Result<(), VfsError> {
+        Err(VfsError::ReadOnly)
+    }
+    fn unlink(&self, _path: &str) -> Result<(), VfsError> {
+        Err(VfsError::PermissionDenied)
+    }
+    fn rename(&self, _from: &str, _to: &str) -> Result<(), VfsError> {
+        Err(VfsError::PermissionDenied)
+    }
 
     fn exists(&self, path: &str) -> bool {
         matches!(path, "" | "stdin" | "stdout" | "stderr")
