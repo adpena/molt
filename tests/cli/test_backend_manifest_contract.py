@@ -41,3 +41,25 @@ def test_workspace_dev_profile_trims_backend_debug_info() -> None:
         assert expected_packages <= packages.keys()
         for package in expected_packages:
             assert packages[package]["debug"] == 0
+
+
+def test_workspace_dev_profile_trims_runtime_debug_info() -> None:
+    manifest = _load_workspace_manifest()
+    profiles = manifest["profile"]
+    dev_packages = profiles["dev"]["package"]
+    dev_fast_packages = profiles["dev-fast"]["package"]
+    expected_packages = {
+        "molt-runtime",
+        "rustpython-parser",
+        "rustpython-ast",
+        "rustpython-parser-core",
+        "rustls",
+        "rustls-webpki",
+        "tungstenite",
+        "url",
+    }
+
+    for packages in (dev_packages, dev_fast_packages):
+        assert expected_packages <= packages.keys()
+        for package in expected_packages:
+            assert packages[package]["debug"] == 0
