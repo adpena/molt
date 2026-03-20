@@ -1425,6 +1425,7 @@ def _run_wasm_ld(
     allowlist_override: Path | None = None,
     optimize: bool = False,
     optimize_level: str = "Oz",
+    freestanding: bool = False,
 ) -> int:
     try:
         runtime_exports = _collect_exports(runtime.read_bytes())
@@ -1566,6 +1567,28 @@ def _run_wasm_ld(
         if updated is not None:
             linked.write_bytes(updated)
             linked_bytes = updated
+        if freestanding:
+            try:
+                import importlib.util as _ilu
+
+                stub_path = Path(__file__).parent / "wasm_stub_wasi.py"
+                spec = _ilu.spec_from_file_location("wasm_stub_wasi", stub_path)
+                if spec is None or spec.loader is None:
+                    print("wasm_stub_wasi.py not found", file=sys.stderr)
+                    return 1
+                stub_mod = _ilu.module_from_spec(spec)
+                spec.loader.exec_module(stub_mod)
+                linked_bytes, n_stubbed = stub_mod.stub_wasi_imports(linked_bytes)
+                if n_stubbed > 0:
+                    linked.write_bytes(linked_bytes)
+                    print(
+                        f"Freestanding: stubbed {n_stubbed} WASI imports",
+                        file=sys.stderr,
+                    )
+            except Exception as exc:
+                print(f"Freestanding WASI stubbing failed: {exc}", file=sys.stderr)
+                return 1
+
         if not _validate_linked(linked):
             return 1
         return 0
@@ -1582,7 +1605,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=Path("output_linked.wasm"))
     parser.add_argument(
         "--freestanding", action="store_true", default=False,
-        help="Use freestanding (no-WASI) allowlist for undefined symbols",
+        help="Stub out WASI imports post-link for freestanding deployment",
     )
     parser.add_argument(
         "--optimize", action="store_true", default=False,
@@ -1616,18 +1639,14 @@ def main() -> int:
         )
         return 1
 
-    allowlist_override = None
-    if args.freestanding:
-        allowlist_override = Path(__file__).parent / "wasm_allowed_imports_freestanding.txt"
-
     return _run_wasm_ld(
         wasm_ld,
         runtime,
         output,
         linked,
-        allowlist_override=allowlist_override,
         optimize=args.optimize,
         optimize_level=args.optimize_level,
+        freestanding=args.freestanding,
     )
 
 
