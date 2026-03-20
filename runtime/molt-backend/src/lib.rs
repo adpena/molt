@@ -319,9 +319,12 @@ fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: 
 
 /// Returns `true` if inline RC codegen is enabled via `MOLT_INLINE_RC=1`.
 #[cfg(feature = "native-backend")]
+#[allow(dead_code)]
 fn inline_rc_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_INLINE_RC").as_deref() == Ok("1"))
+    // Disabled unconditionally: the inline RC path emits non-atomic
+    // load/store on a field the runtime treats as AtomicU32, which is UB.
+    // See Finding 2 of the Molt runtime UB analysis.
+    false
 }
 
 /// Emit an inlined `inc_ref_obj` as Cranelift IR instead of a function call.
@@ -336,6 +339,7 @@ fn inline_rc_enabled() -> bool {
 ///         *(ptr - 36) = rc + 1
 /// ```
 #[cfg(feature = "native-backend")]
+#[allow(dead_code)] // Kept for reference; see Finding 2 — inline RC is unsound.
 fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value) {
     let current_block = builder.current_block().expect("no current block");
 
@@ -406,22 +410,18 @@ fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value) {
 /// the `MOLT_INLINE_RC` flag.
 #[cfg(feature = "native-backend")]
 fn emit_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef) {
-    if inline_rc_enabled() {
-        emit_inline_inc_ref_obj(builder, val);
-    } else {
-        builder.ins().call(call_ref, &[val]);
-    }
+    // Always use the function-call path; the inline RC path is unsound
+    // (non-atomic RMW on AtomicU32).  See Finding 2.
+    builder.ins().call(call_ref, &[val]);
 }
 
 /// Emit a ref-adjust (inc_ref_obj) — either inlined or as a function call
 /// depending on the `MOLT_INLINE_RC` flag.
 #[cfg(feature = "native-backend")]
 fn emit_maybe_ref_adjust_v2(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef) {
-    if inline_rc_enabled() {
-        emit_inline_inc_ref_obj(builder, val);
-    } else {
-        let _ = builder.ins().call(call_ref, &[val]);
-    }
+    // Always use the function-call path; the inline RC path is unsound
+    // (non-atomic RMW on AtomicU32).  See Finding 2.
+    let _ = builder.ins().call(call_ref, &[val]);
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
