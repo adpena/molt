@@ -42,6 +42,7 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
         json_output=True,
         cargo_profile="dev-fast",
         project_root=project_root,
+        backend_features=("native-backend",),
     )
     assert isolated_backend.read_text() == "backend-binary"
     assert os.access(isolated_backend, os.X_OK)

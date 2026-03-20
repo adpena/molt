@@ -16,12 +16,48 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
+[profile.dev.package.molt-backend]
+debug = 0
+
+[profile.dev.package.cranelift-codegen]
+debug = 0
+
+[profile.dev.package.cranelift-frontend]
+debug = 0
+
+[profile.dev.package.cranelift-module]
+debug = 0
+
+[profile.dev.package.cranelift-native]
+debug = 0
+
+[profile.dev.package.cranelift-object]
+debug = 0
+
 [profile.dev-fast]
 inherits = "dev"
 opt-level = 1
 debug = 1
 codegen-units = 256
 lto = "off"
+
+[profile.dev-fast.package.molt-backend]
+debug = 0
+
+[profile.dev-fast.package.cranelift-codegen]
+debug = 0
+
+[profile.dev-fast.package.cranelift-frontend]
+debug = 0
+
+[profile.dev-fast.package.cranelift-module]
+debug = 0
+
+[profile.dev-fast.package.cranelift-native]
+debug = 0
+
+[profile.dev-fast.package.cranelift-object]
+debug = 0
 
 [profile.release-fast]
 inherits = "release"
