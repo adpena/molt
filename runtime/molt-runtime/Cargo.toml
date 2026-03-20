@@ -17,8 +17,9 @@ default = ["stdlib_full", "wasi_host"]
 # Full stdlib — everything included (default for native builds)
 stdlib_full = [
     "stdlib_crypto", "stdlib_compression", "stdlib_serialization",
-    "stdlib_archive", "stdlib_ast", "stdlib_fs_extra",
+    "stdlib_archive", "stdlib_ast", "stdlib_fs_extra", "stdlib_unicode_names",
 ]
+stdlib_unicode_names = ["dep:unicode_names2"]
 
 # Micro — core only, no crypto/compression/network/ast
 # Suitable for edge deployment where binary size matters
@@ -64,7 +65,7 @@ libc = "0.2"
 unicode-ident = "1.0"
 unicode-casefold = "0.2"
 wtf8 = "0.1"
-unicode_names2 = "1.3"
+unicode_names2 = { version = "1.3", optional = true }
 
 # Crypto (all optional)
 blake2 = { version = "0.10", optional = true }

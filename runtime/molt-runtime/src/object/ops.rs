@@ -26232,6 +26232,7 @@ fn unicode_escape_codepoint(code: u32) -> String {
 }
 
 fn unicode_name_escape(code: u32) -> String {
+    #[cfg(feature = "stdlib_unicode_names")]
     if let Some(ch) = char::from_u32(code)
         && let Some(name) = unicode_names2::name(ch)
     {
@@ -30952,7 +30953,11 @@ fn decode_unicode_escape_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u
                 };
                 let name_bytes = &bytes[idx + 3..close_idx];
                 let name = std::str::from_utf8(name_bytes).unwrap_or("");
-                if let Some(ch) = unicode_names2::character(name) {
+                #[cfg(feature = "stdlib_unicode_names")]
+                let resolved = unicode_names2::character(name);
+                #[cfg(not(feature = "stdlib_unicode_names"))]
+                let resolved: Option<char> = None;
+                if let Some(ch) = resolved {
                     push_wtf8_codepoint(&mut out, ch as u32);
                     idx = close_idx + 1;
                 } else {
