@@ -1716,6 +1716,36 @@ impl WasmBackend {
                 "contextlib_async",
                 // TIME
                 "time_",
+                // COMPRESSION
+                "deflate_raw",
+                "inflate_raw",
+                "bz2_",
+                "gzip_",
+                "lzma_",
+                "zlib_",
+                "compression_",
+                // SERIALIZATION (msgpack/cbor — JSON stays)
+                "msgpack_",
+                "cbor_",
+                // CRYPTO (hashlib — sha2/sha1/md5 stay as core)
+                "hash_new",
+                "hash_update",
+                "hash_digest",
+                "hash_hexdigest",
+                "hash_copy",
+                "hmac_",
+                "pbkdf2_",
+                "scrypt",
+                "compare_digest",
+                "secrets_",
+                // AST
+                "ast_",
+                // ARCHIVE
+                "zipfile_",
+                // FS EXTRA
+                "glob_",
+                "tempfile_",
+                "tarfile_",
             ]
         } else {
             &[]
