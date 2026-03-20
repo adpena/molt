@@ -1,8 +1,8 @@
 //! Read-only in-memory filesystem for /bundle mount.
 //! Populated from a tar archive or explicit file entries at init.
 
-use std::collections::{BTreeMap, BTreeSet};
 use crate::vfs::{VfsBackend, VfsError, VfsStat};
+use std::collections::{BTreeMap, BTreeSet};
 
 pub struct BundleFs {
     files: BTreeMap<String, Vec<u8>>,
@@ -43,8 +43,11 @@ impl BundleFs {
         let mut entries = Vec::new();
         for entry in archive.entries().map_err(|e| e.to_string())? {
             let mut entry = entry.map_err(|e| e.to_string())?;
-            let path = entry.path().map_err(|e| e.to_string())?
-                .to_string_lossy().to_string();
+            let path = entry
+                .path()
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .to_string();
             // Security: reject symlinks
             if entry.header().entry_type().is_symlink()
                 || entry.header().entry_type().is_hard_link()
@@ -119,12 +122,12 @@ impl VfsBackend for BundleFs {
         let mut entries = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for key in self.files.keys().chain(self.dirs.iter()) {
-            if let Some(rest) = key.strip_prefix(&prefix) {
-                if let Some(name) = rest.split('/').next() {
-                    if !name.is_empty() && seen.insert(name.to_string()) {
-                        entries.push(name.to_string());
-                    }
-                }
+            if let Some(rest) = key.strip_prefix(&prefix)
+                && let Some(name) = rest.split('/').next()
+                && !name.is_empty()
+                && seen.insert(name.to_string())
+            {
+                entries.push(name.to_string());
             }
         }
         entries.sort();

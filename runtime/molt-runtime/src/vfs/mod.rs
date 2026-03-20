@@ -7,6 +7,7 @@ pub mod bundle;
 pub mod caps;
 pub mod dev;
 pub mod file;
+pub mod snapshot;
 pub mod tmp;
 
 use std::sync::{Arc, RwLock};
@@ -73,6 +74,12 @@ pub struct MountTable {
     mounts: Vec<(String, Arc<dyn VfsBackend>)>,
 }
 
+impl Default for MountTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MountTable {
     pub fn new() -> Self {
         Self { mounts: Vec::new() }
@@ -108,7 +115,11 @@ fn normalize_path(path: &str) -> Option<String> {
     if path.is_empty() {
         return None;
     }
-    let path = if path.starts_with('/') { path } else { return None };
+    let path = if path.starts_with('/') {
+        path
+    } else {
+        return None;
+    };
 
     let mut parts: Vec<&str> = Vec::new();
     for component in path.split('/') {
@@ -136,6 +147,12 @@ pub struct VfsState {
     pub mount_table: RwLock<MountTable>,
 }
 
+impl Default for VfsState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VfsState {
     pub fn new() -> Self {
         Self {
@@ -161,9 +178,9 @@ impl VfsState {
 mod tests {
     use super::*;
     use crate::vfs::bundle::BundleFs;
-    use crate::vfs::tmp::TmpFs;
     use crate::vfs::dev::DevFs;
     use crate::vfs::file::MoltVfsFile;
+    use crate::vfs::tmp::TmpFs;
 
     #[test]
     fn normalize_rejects_empty() {
@@ -184,7 +201,10 @@ mod tests {
     #[test]
     fn normalize_resolves_safe_dotdot() {
         // ".." within a path that doesn't escape root is fine
-        assert_eq!(normalize_path("/bundle/../etc/passwd"), Some("/etc/passwd".into()));
+        assert_eq!(
+            normalize_path("/bundle/../etc/passwd"),
+            Some("/etc/passwd".into())
+        );
     }
 
     #[test]
@@ -194,20 +214,27 @@ mod tests {
 
     #[test]
     fn normalize_collapses_slashes() {
-        assert_eq!(normalize_path("/bundle//file.txt"), Some("/bundle/file.txt".into()));
+        assert_eq!(
+            normalize_path("/bundle//file.txt"),
+            Some("/bundle/file.txt".into())
+        );
     }
 
     #[test]
     fn normalize_resolves_dot() {
-        assert_eq!(normalize_path("/bundle/./file.txt"), Some("/bundle/file.txt".into()));
+        assert_eq!(
+            normalize_path("/bundle/./file.txt"),
+            Some("/bundle/file.txt".into())
+        );
     }
 
     #[test]
     fn mount_table_resolves_longest_prefix() {
         let mut table = MountTable::new();
-        let bundle: Arc<dyn VfsBackend> = Arc::new(BundleFs::from_entries(vec![
-            ("file.txt".into(), b"hello".to_vec()),
-        ]));
+        let bundle: Arc<dyn VfsBackend> = Arc::new(BundleFs::from_entries(vec![(
+            "file.txt".into(),
+            b"hello".to_vec(),
+        )]));
         let tmp: Arc<dyn VfsBackend> = Arc::new(TmpFs::new(64));
         table.add_mount("/bundle", bundle);
         table.add_mount("/tmp", tmp);
@@ -229,9 +256,7 @@ mod tests {
 
     #[test]
     fn bundle_fs_read() {
-        let fs = BundleFs::from_entries(vec![
-            ("hello.txt".into(), b"world".to_vec()),
-        ]);
+        let fs = BundleFs::from_entries(vec![("hello.txt".into(), b"world".to_vec())]);
         assert_eq!(fs.open_read("hello.txt").unwrap(), b"world");
         assert!(fs.open_read("missing.txt").is_err());
     }
@@ -256,9 +281,7 @@ mod tests {
 
     #[test]
     fn bundle_fs_stat() {
-        let fs = BundleFs::from_entries(vec![
-            ("data.csv".into(), b"a,b,c".to_vec()),
-        ]);
+        let fs = BundleFs::from_entries(vec![("data.csv".into(), b"a,b,c".to_vec())]);
         let stat = fs.stat("data.csv").unwrap();
         assert!(stat.is_file);
         assert!(!stat.is_dir);
@@ -277,7 +300,10 @@ mod tests {
     #[test]
     fn tmp_fs_quota() {
         let fs = TmpFs::new(0);
-        assert!(matches!(fs.open_write("file.txt", b"data"), Err(VfsError::QuotaExceeded)));
+        assert!(matches!(
+            fs.open_write("file.txt", b"data"),
+            Err(VfsError::QuotaExceeded)
+        ));
     }
 
     #[test]
