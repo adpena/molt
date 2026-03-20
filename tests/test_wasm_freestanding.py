@@ -140,6 +140,63 @@ def test_stub_wasi_removes_wasi_imports():
     assert wasi_after == [], f"WASI imports remain: {wasi_after}"
 
 
+def test_stub_wasi_with_non_function_imports():
+    """WASI stubbing must work when table/memory imports precede WASI function imports."""
+    w = stub_mod._write_varuint
+    ws = stub_mod._write_string
+
+    sections: list[tuple[int, bytes]] = []
+
+    # Type section: one type () -> ()
+    type_payload = bytearray()
+    type_payload.extend(w(1))
+    type_payload.append(0x60)
+    type_payload.extend(w(0))
+    type_payload.extend(w(0))
+    sections.append((1, bytes(type_payload)))
+
+    # Import section: 1 table import (env.__indirect_function_table) + 1 WASI func import
+    import_payload = bytearray()
+    import_payload.extend(w(2))  # 2 imports
+    # Table import
+    import_payload.extend(ws("env"))
+    import_payload.extend(ws("__indirect_function_table"))
+    import_payload.append(0x01)  # kind: table
+    import_payload.append(0x70)  # funcref
+    import_payload.append(0x00)  # limits flags (no max)
+    import_payload.extend(w(0))  # min = 0
+    # WASI function import
+    import_payload.extend(ws("wasi_snapshot_preview1"))
+    import_payload.extend(ws("fd_write"))
+    import_payload.append(0x00)  # kind: function
+    import_payload.extend(w(0))  # type index 0
+    sections.append((2, bytes(import_payload)))
+
+    # Function section: one defined function (type 0)
+    func_payload = w(1) + w(0)
+    sections.append((3, bytes(func_payload)))
+
+    # Code section: one function body that calls the WASI import (func idx 0)
+    body = bytes([0x00, 0x10, 0x00, 0x0B])  # 0 locals, call 0, end
+    code_payload = bytearray()
+    code_payload.extend(w(1))
+    code_payload.extend(w(len(body)))
+    code_payload.extend(body)
+    sections.append((10, bytes(code_payload)))
+
+    wasm = stub_mod._build_sections(sections)
+    result, n_stubbed = stub_mod.stub_wasi_imports(wasm)
+    assert n_stubbed == 1
+
+    imports_after = _parse_wasm_imports(result)
+    wasi_after = [(m, n) for m, n in imports_after if m == "wasi_snapshot_preview1"]
+    assert wasi_after == [], f"WASI imports remain after stubbing: {wasi_after}"
+
+    # Table import should still be present
+    table_imports = [(m, n) for m, n in imports_after if n == "__indirect_function_table"]
+    assert len(table_imports) == 1, "Table import should survive stubbing"
+
+
 def test_stub_wasi_no_wasi_imports_is_noop():
     """If there are no WASI imports, output should be identical to input."""
     w = stub_mod._write_varuint

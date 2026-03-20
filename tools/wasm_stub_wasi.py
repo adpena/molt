@@ -107,7 +107,7 @@ def stub_wasi_imports(wasm_bytes: bytes) -> tuple[bytes, int]:
         import_section_idx = sec_idx
         offset = 0
         count, offset = _read_varuint(payload, offset)
-        import_idx = 0
+        func_import_idx = 0  # tracks position in the function index space (funcs only)
         for _ in range(count):
             mod_name, offset = _read_string(payload, offset)
             field_name, offset = _read_string(payload, offset)
@@ -117,11 +117,12 @@ def stub_wasi_imports(wasm_bytes: bytes) -> tuple[bytes, int]:
             if kind == 0:  # function import
                 type_idx, offset = _read_varuint(payload, offset)
                 if mod_name == "wasi_snapshot_preview1":
-                    wasi_imports.append((import_idx, type_idx))
+                    wasi_imports.append((func_import_idx, type_idx))
                 else:
                     desc_bytes = payload[kind_start:offset]
                     non_wasi_imports.append((mod_name, field_name, kind, desc_bytes))
                 total_import_funcs += 1
+                func_import_idx += 1
             else:
                 # table/memory/global import — figure out size
                 desc_start = offset
@@ -140,7 +141,6 @@ def stub_wasi_imports(wasm_bytes: bytes) -> tuple[bytes, int]:
                     offset += 2  # valtype + mut
                 desc_bytes = payload[kind_start:offset]
                 non_wasi_imports.append((mod_name, field_name, kind, desc_bytes))
-            import_idx += 1
         break
 
     if not wasi_imports:
@@ -429,22 +429,25 @@ def _remap_element_section(payload: bytes, remap: dict[int, int]) -> bytes:
             output.extend(_write_varuint(tidx))
 
         if flags in (0x00, 0x02, 0x04, 0x06):
-            # offset expression
+            # offset expression — uses signed LEB128 for i32.const/i64.const
             while offset < len(payload):
                 opcode = payload[offset]
                 output.append(opcode)
                 offset += 1
                 if opcode == 0x0B:
                     break
-                elif opcode in (0x41, 0x23):  # i32.const, global.get
-                    val, offset = _read_varuint(payload, offset)
-                    output.extend(_write_varuint(val))
-                elif opcode == 0x42:  # i64.const
+                elif opcode == 0x41:  # i32.const (signed LEB128)
+                    val, offset = _read_signed_leb128(payload, offset)
+                    output.extend(_write_signed_leb128(val))
+                elif opcode == 0x42:  # i64.const (signed LEB128)
+                    val, offset = _read_signed_leb128(payload, offset)
+                    output.extend(_write_signed_leb128(val))
+                elif opcode == 0x23:  # global.get (unsigned index)
                     val, offset = _read_varuint(payload, offset)
                     output.extend(_write_varuint(val))
 
-        if flags in (0x01, 0x02, 0x03):
-            # elemkind or reftype
+        if flags in (0x01, 0x02, 0x03, 0x05, 0x07):
+            # elemkind (0x01-0x03) or reftype (0x05, 0x07)
             output.append(payload[offset])
             offset += 1
 
@@ -457,7 +460,7 @@ def _remap_element_section(payload: bytes, remap: dict[int, int]) -> bytes:
                 func_idx = remap.get(func_idx, func_idx)
                 output.extend(_write_varuint(func_idx))
         else:
-            # Expression-based elements (flags 4-7) — copy raw for now
+            # Expression-based elements (flags 4-7)
             elem_count, offset = _read_varuint(payload, offset)
             output.extend(_write_varuint(elem_count))
             for _ in range(elem_count):
@@ -576,7 +579,7 @@ def _remap_function_body(body: bytes, remap: dict[int, int]) -> bytes:
             # local.get/set/tee, global.get/set, table.get/set
             idx, offset = _read_varuint(body, offset)
             output.extend(_write_varuint(idx))
-        elif opcode in range(0x28, 0x3F + 1):  # memory instructions
+        elif 0x28 <= opcode <= 0x3E:  # load/store instructions (align + offset)
             align, offset = _read_varuint(body, offset)
             output.extend(_write_varuint(align))
             mem_offset, offset = _read_varuint(body, offset)
@@ -603,7 +606,7 @@ def _remap_function_body(body: bytes, remap: dict[int, int]) -> bytes:
         elif opcode == 0xD0:  # ref.null
             output.append(body[offset])  # reftype
             offset += 1
-        elif opcode == 0xFC:  # multi-byte prefix
+        elif opcode == 0xFC:  # multi-byte prefix (misc instructions)
             sub_opcode, offset = _read_varuint(body, offset)
             output.extend(_write_varuint(sub_opcode))
             if sub_opcode in (8, 10, 12, 14):  # memory.init, memory.copy, table.init, table.copy
@@ -617,6 +620,22 @@ def _remap_function_body(body: bytes, remap: dict[int, int]) -> bytes:
             elif sub_opcode in (15, 16, 17):  # table.grow, table.size, table.fill
                 idx, offset = _read_varuint(body, offset)
                 output.extend(_write_varuint(idx))
+        elif opcode == 0xFD:  # SIMD prefix
+            # SIMD instructions have variable-length immediates that are complex
+            # to parse generically. If no function indices changed, we can skip
+            # rewriting entirely. If indices DID change and we encounter SIMD,
+            # we must bail — silent corruption is worse than a loud error.
+            raise ValueError(
+                "WASI stub rewriter encountered SIMD instruction (0xFD prefix) "
+                "in a function that requires call target remapping. "
+                "This is not yet supported."
+            )
+        elif opcode == 0xFE:  # Atomics prefix
+            raise ValueError(
+                "WASI stub rewriter encountered atomics instruction (0xFE prefix) "
+                "in a function that requires call target remapping. "
+                "This is not yet supported."
+            )
         # All other opcodes (0x45-0xC4 numeric ops, etc.) have no immediates
 
     return bytes(output)
