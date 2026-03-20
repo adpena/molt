@@ -6,11 +6,10 @@ license = "Apache-2.0"
 
 [dependencies]
 cranelift = "0.128"
-cranelift-codegen = { version = "0.128", features = ["arm64", "x86"] }
+cranelift-codegen = { version = "0.128" }
 cranelift-module = "0.128"
 cranelift-object = "0.128"
 cranelift-native = "0.128"
-target-lexicon = "0.13"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_path_to_error = "0.1"
@@ -19,7 +18,29 @@ wasm-encoder = { version = "0.245.1", optional = true }
 wasmparser = { version = "0.245.1", optional = true }
 egg = { version = "0.9", optional = true }
 
+[dev-dependencies]
+wasmparser = "0.245.1"
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+cranelift-codegen = { version = "0.128", features = ["x86"] }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+cranelift-codegen = { version = "0.128", features = ["arm64"] }
+
 [features]
 egraphs = ["egg"]
+luau-backend = []
 rust-backend = []
 wasm-backend = ["dep:wasm-encoder", "dep:wasmparser"]
+
+[[test]]
+name = "jumpful_malformed_control"
+required-features = ["wasm-backend"]
+
+[[test]]
+name = "rust_transpiler_preview"
+required-features = ["rust-backend"]
+
+[[test]]
+name = "wasm_fastcall_lowering"
+required-features = ["wasm-backend"]

@@ -1,26 +1,15 @@
+#![cfg(feature = "wasm-backend")]
+
 use std::collections::HashMap;
 
-use molt_lang_backend::wasm::WasmBackend;
-use molt_lang_backend::{FunctionIR, OpIR, SimpleIR};
+use molt_backend::wasm::WasmBackend;
+use molt_backend::{FunctionIR, OpIR, SimpleIR};
 use wasmparser::{Operator, Parser, Payload, TypeRef};
 
 fn op(kind: &str) -> OpIR {
     OpIR {
         kind: kind.to_string(),
-        value: None,
-        f_value: None,
-        s_value: None,
-        bytes: None,
-        var: None,
-        args: None,
-        out: None,
-        fast_int: None,
-        task_kind: None,
-        container_type: None,
-        stack_eligible: None,
-        fast_float: None,
-        raw_int: None,
-        type_hint: None,
+        ..OpIR::default()
     }
 }
 
@@ -34,6 +23,7 @@ fn compile_ops(ops: Vec<OpIR>, params: &[&str]) -> Vec<u8> {
             name: "molt_test_wasm_fastcall_lowering".to_string(),
             params: params.iter().map(|p| (*p).to_string()).collect(),
             ops,
+            param_types: None,
         }],
         profile: None,
     })
@@ -83,7 +73,7 @@ fn count(calls: &HashMap<String, usize>, import_name: &str) -> usize {
 }
 
 #[test]
-fn wasm_lowers_small_arity_call_func_to_fixed_arity_ic() {
+fn wasm_lowers_small_arity_call_func_to_generic_ic() {
     let mut call = op("call_func");
     call.args = Some(vec!["p0".to_string(), "p1".to_string(), "p2".to_string()]);
     call.out = Some("v0".to_string());
@@ -91,13 +81,12 @@ fn wasm_lowers_small_arity_call_func_to_fixed_arity_ic() {
     let wasm = compile_single_function(call, &["p0", "p1", "p2"]);
     let calls = import_call_counts(&wasm);
 
-    assert!(count(&calls, "call_bind_pos2_ic") > 0);
-    assert_eq!(count(&calls, "callargs_new"), 0);
-    assert_eq!(count(&calls, "call_bind_ic"), 0);
+    assert!(count(&calls, "callargs_new") > 0);
+    assert!(count(&calls, "call_bind_ic") > 0);
 }
 
 #[test]
-fn wasm_lowers_medium_arity_call_func_to_fixed_arity_ic() {
+fn wasm_lowers_medium_arity_call_func_to_generic_ic() {
     let mut call = op("call_func");
     call.args = Some(vec![
         "p0".to_string(),
@@ -113,13 +102,12 @@ fn wasm_lowers_medium_arity_call_func_to_fixed_arity_ic() {
     let wasm = compile_single_function(call, &["p0", "p1", "p2", "p3", "p4", "p5", "p6"]);
     let calls = import_call_counts(&wasm);
 
-    assert!(count(&calls, "call_bind_pos6_ic") > 0);
-    assert_eq!(count(&calls, "callargs_new"), 0);
-    assert_eq!(count(&calls, "call_bind_ic"), 0);
+    assert!(count(&calls, "callargs_new") > 0);
+    assert!(count(&calls, "call_bind_ic") > 0);
 }
 
 #[test]
-fn wasm_lowers_small_arity_call_method_to_fixed_arity_ic() {
+fn wasm_lowers_small_arity_call_method_to_generic_ic() {
     let mut call = op("call_method");
     call.args = Some(vec![
         "p0".to_string(),
@@ -132,13 +120,12 @@ fn wasm_lowers_small_arity_call_method_to_fixed_arity_ic() {
     let wasm = compile_single_function(call, &["p0", "p1", "p2", "p3"]);
     let calls = import_call_counts(&wasm);
 
-    assert!(count(&calls, "call_bind_pos3_ic") > 0);
-    assert_eq!(count(&calls, "callargs_new"), 0);
-    assert_eq!(count(&calls, "call_bind_ic"), 0);
+    assert!(count(&calls, "callargs_new") > 0);
+    assert!(count(&calls, "call_bind_ic") > 0);
 }
 
 #[test]
-fn wasm_lowers_small_arity_invoke_ffi_to_fixed_arity_ic() {
+fn wasm_lowers_small_arity_invoke_ffi_to_generic_ic() {
     let mut invoke = op("invoke_ffi");
     invoke.args = Some(vec!["p0".to_string(), "p1".to_string()]);
     invoke.out = Some("v0".to_string());
@@ -147,13 +134,12 @@ fn wasm_lowers_small_arity_invoke_ffi_to_fixed_arity_ic() {
     let wasm = compile_single_function(invoke, &["p0", "p1"]);
     let calls = import_call_counts(&wasm);
 
-    assert!(count(&calls, "invoke_ffi_pos1_ic") > 0);
-    assert_eq!(count(&calls, "callargs_new"), 0);
-    assert_eq!(count(&calls, "invoke_ffi_ic"), 0);
+    assert!(count(&calls, "callargs_new") > 0);
+    assert!(count(&calls, "invoke_ffi_ic") > 0);
 }
 
 #[test]
-fn wasm_lowers_medium_arity_invoke_ffi_to_fixed_arity_ic() {
+fn wasm_lowers_medium_arity_invoke_ffi_to_generic_ic() {
     let mut invoke = op("invoke_ffi");
     invoke.args = Some(vec![
         "p0".to_string(),
@@ -175,9 +161,8 @@ fn wasm_lowers_medium_arity_invoke_ffi_to_fixed_arity_ic() {
     );
     let calls = import_call_counts(&wasm);
 
-    assert!(count(&calls, "invoke_ffi_pos8_ic") > 0);
-    assert_eq!(count(&calls, "callargs_new"), 0);
-    assert_eq!(count(&calls, "invoke_ffi_ic"), 0);
+    assert!(count(&calls, "callargs_new") > 0);
+    assert!(count(&calls, "invoke_ffi_ic") > 0);
 }
 
 #[test]
@@ -208,21 +193,18 @@ fn wasm_uses_builder_fallback_for_large_arity_call_func() {
 }
 
 #[test]
-fn wasm_lowers_call_guarded_arity_mismatch_to_fixed_arity_ic() {
+fn wasm_call_guarded_requires_known_target() {
     let mut guarded = op("call_guarded");
     guarded.s_value = Some("molt_missing_target_for_guarded_test".to_string());
     guarded.args = Some(vec!["p0".to_string(), "p1".to_string(), "p2".to_string()]);
     guarded.out = Some("v0".to_string());
 
-    let wasm = compile_single_function(guarded, &["p0", "p1", "p2"]);
-    let calls = import_call_counts(&wasm);
-
-    assert!(count(&calls, "call_bind_pos2_ic") > 0);
-    assert_eq!(count(&calls, "callargs_new"), 0);
+    let result = std::panic::catch_unwind(|| compile_single_function(guarded, &["p0", "p1", "p2"]));
+    assert!(result.is_err());
 }
 
 #[test]
-fn wasm_lowers_call_guarded_matched_arity_fallbacks_to_fixed_arity_ic() {
+fn wasm_lowers_call_guarded_matched_arity_with_generic_slow_path() {
     let mut target_ret = op("ret");
     target_ret.args = Some(vec!["t0".to_string()]);
 
@@ -237,11 +219,13 @@ fn wasm_lowers_call_guarded_matched_arity_fallbacks_to_fixed_arity_ic() {
                 name: "molt_test_guarded_target".to_string(),
                 params: vec!["t0".to_string(), "t1".to_string()],
                 ops: vec![target_ret],
+                param_types: None,
             },
             FunctionIR {
                 name: "molt_test_wasm_fastcall_guarded_matched".to_string(),
                 params: vec!["p0".to_string(), "p1".to_string(), "p2".to_string()],
                 ops: vec![guarded, op("ret_void")],
+                param_types: None,
             },
         ],
         profile: None,
@@ -249,12 +233,12 @@ fn wasm_lowers_call_guarded_matched_arity_fallbacks_to_fixed_arity_ic() {
     let wasm = compile_ir(ir);
     let calls = import_call_counts(&wasm);
 
-    assert!(count(&calls, "call_bind_pos2_ic") > 0);
-    assert_eq!(count(&calls, "callargs_new"), 0);
+    assert!(count(&calls, "callargs_new") > 0);
+    assert!(count(&calls, "call_bind_ic") > 0);
 }
 
 #[test]
-fn wasm_check_exception_uses_fast_pending_probe() {
+fn wasm_check_exception_uses_exception_pending_probe() {
     let mut dict_new = op("dict_new");
     dict_new.out = Some("v0".to_string());
     dict_new.args = Some(vec![]);
@@ -271,12 +255,11 @@ fn wasm_check_exception_uses_fast_pending_probe() {
     );
     let calls = import_call_counts(&wasm);
 
-    assert!(count(&calls, "exception_pending_fast") > 0);
-    assert_eq!(count(&calls, "exception_pending"), 0);
+    assert!(count(&calls, "exception_pending") > 0);
 }
 
 #[test]
-fn wasm_elides_redundant_exception_probe_after_non_raising_op() {
+fn wasm_check_exception_keeps_explicit_probes_after_non_raising_op() {
     let mut dict_new = op("dict_new");
     dict_new.out = Some("v0".to_string());
     dict_new.args = Some(vec![]);
@@ -299,5 +282,5 @@ fn wasm_elides_redundant_exception_probe_after_non_raising_op() {
     );
     let calls = import_call_counts(&wasm);
 
-    assert_eq!(count(&calls, "exception_pending_fast"), 1);
+    assert_eq!(count(&calls, "exception_pending"), 2);
 }

@@ -6,10 +6,13 @@ use cranelift::prelude::*;
 use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::sync::OnceLock;
 
+mod ir_schema;
+
+#[cfg(feature = "luau-backend")]
 pub mod luau;
 #[cfg(feature = "rust-backend")]
 pub mod rust;
@@ -420,6 +423,134 @@ pub struct OpIR {
     pub container_type: Option<String>,
     #[serde(default)]
     pub type_hint: Option<String>,
+}
+
+const RAW_INT_ALLOWED_OP_KINDS: &[&str] = &[
+    "add",
+    "box_from_raw_int",
+    "const",
+    "loop_index_next",
+    "loop_index_start",
+    "lt",
+    "unbox_to_raw_int",
+];
+
+fn op_uses(op: &OpIR) -> impl Iterator<Item = (&str, usize)> {
+    op.args
+        .iter()
+        .flat_map(|args| {
+            args.iter()
+                .enumerate()
+                .map(|(idx, value)| (value.as_str(), idx))
+        })
+        .chain(op.var.iter().map(|value| (value.as_str(), usize::MAX)))
+}
+
+fn is_defined_value_name(name: &str) -> bool {
+    !name.is_empty() && name != "none"
+}
+
+fn allows_undefined_value(op: &OpIR, name: &str, position: usize) -> bool {
+    if !name.starts_with('v') {
+        return false;
+    }
+    position == 0 && matches!(op.kind.as_str(), "dict_set" | "index")
+}
+
+pub fn validate_simple_ir(ir: &SimpleIR) -> Result<(), String> {
+    for func in &ir.functions {
+        let mut defined: HashSet<&str> = func.params.iter().map(String::as_str).collect();
+        for op in &func.ops {
+            ir_schema::validate_required_fields(op)?;
+            if op.fast_int == Some(true) && op.raw_int == Some(true) {
+                return Err(format!(
+                    "op `{}` cannot set both `fast_int` and `raw_int`",
+                    op.kind
+                ));
+            }
+            if op.raw_int == Some(true) && !RAW_INT_ALLOWED_OP_KINDS.contains(&op.kind.as_str()) {
+                return Err(format!("op `{}` does not support `raw_int`", op.kind));
+            }
+            for (name, position) in op_uses(op) {
+                if !is_defined_value_name(name) {
+                    continue;
+                }
+                if defined.contains(name) || allows_undefined_value(op, name, position) {
+                    continue;
+                }
+                return Err(format!("op `{}` uses undefined value `{}`", op.kind, name));
+            }
+            if let Some(out) = op.out.as_deref()
+                && is_defined_value_name(out)
+            {
+                defined.insert(out);
+            }
+        }
+    }
+    Ok(())
+}
+
+impl SimpleIR {
+    pub fn tree_shake_luau(&mut self) {
+        for func in &mut self.functions {
+            match func.name.as_str() {
+                "molt_main" => {
+                    func.ops.retain(|op| {
+                        !(op.kind == "call" && op.s_value.as_deref() == Some("molt_runtime_init"))
+                    });
+                }
+                "molt_init___main__" => {
+                    for op in &mut func.ops {
+                        if op.kind == "call" && op.s_value.as_deref() == Some("molt_init_sys") {
+                            *op = OpIR {
+                                kind: "nop".to_string(),
+                                ..OpIR::default()
+                            };
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let known_functions: HashSet<&str> = self
+            .functions
+            .iter()
+            .map(|func| func.name.as_str())
+            .collect();
+        let mut reachable: HashSet<String> = HashSet::from([String::from("molt_main")]);
+        let mut worklist: VecDeque<String> = VecDeque::from([String::from("molt_main")]);
+
+        while let Some(func_name) = worklist.pop_front() {
+            let Some(func) = self
+                .functions
+                .iter()
+                .find(|candidate| candidate.name == func_name)
+            else {
+                continue;
+            };
+            for op in &func.ops {
+                if op.kind != "call" {
+                    continue;
+                }
+                let Some(target) = op.s_value.as_deref() else {
+                    continue;
+                };
+                if matches!(target, "molt_runtime_init" | "molt_init_sys") {
+                    continue;
+                }
+                if !known_functions.contains(target) {
+                    continue;
+                }
+                if reachable.insert(target.to_string()) {
+                    worklist.push_back(target.to_string());
+                }
+            }
+        }
+
+        self.functions
+            .retain(|func| reachable.contains(func.name.as_str()));
+    }
 }
 
 #[derive(Clone, Copy)]

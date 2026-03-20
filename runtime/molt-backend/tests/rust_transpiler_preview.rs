@@ -1,23 +1,12 @@
-use molt_lang_backend::rust::RustBackend;
-use molt_lang_backend::{FunctionIR, OpIR, SimpleIR};
+#![cfg(feature = "rust-backend")]
+
+use molt_backend::rust::RustBackend;
+use molt_backend::{FunctionIR, OpIR, SimpleIR};
 
 fn op(kind: &str) -> OpIR {
     OpIR {
         kind: kind.to_string(),
-        value: None,
-        f_value: None,
-        s_value: None,
-        bytes: None,
-        var: None,
-        args: None,
-        out: None,
-        fast_int: None,
-        task_kind: None,
-        container_type: None,
-        stack_eligible: None,
-        fast_float: None,
-        raw_int: None,
-        type_hint: None,
+        ..OpIR::default()
     }
 }
 
@@ -126,6 +115,7 @@ fn rust_backend_lowers_class_slots_without_stub_placeholders() {
                 add,
                 ret,
             ],
+            param_types: None,
         }],
         profile: None,
     };
@@ -179,6 +169,7 @@ fn rust_backend_lowers_module_attr_round_trip() {
             ops: vec![
                 module_new, attr_name, class_new, module_set, module_get, ret,
             ],
+            param_types: None,
         }],
         profile: None,
     };

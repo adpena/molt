@@ -1,22 +1,9 @@
-use molt_lang_backend::{FunctionIR, OpIR, SimpleIR, validate_simple_ir};
+use molt_backend::{FunctionIR, OpIR, SimpleIR, validate_simple_ir};
 
 fn op(kind: &str) -> OpIR {
     OpIR {
         kind: kind.to_string(),
-        value: None,
-        f_value: None,
-        s_value: None,
-        bytes: None,
-        var: None,
-        args: None,
-        out: None,
-        fast_int: None,
-        task_kind: None,
-        container_type: None,
-        stack_eligible: None,
-        fast_float: None,
-        raw_int: None,
-        type_hint: None,
+        ..OpIR::default()
     }
 }
 
@@ -26,6 +13,7 @@ fn single_func_ir(op: OpIR, params: Vec<&str>) -> SimpleIR {
             name: "molt_test_schema_scaffold".to_string(),
             params: params.into_iter().map(str::to_string).collect(),
             ops: vec![op],
+            param_types: None,
         }],
         profile: None,
     }

@@ -1,22 +1,9 @@
-use molt_lang_backend::{FunctionIR, OpIR, SimpleIR, validate_simple_ir};
+use molt_backend::{FunctionIR, OpIR, SimpleIR, validate_simple_ir};
 
 fn op(kind: &str) -> OpIR {
     OpIR {
         kind: kind.to_string(),
-        value: None,
-        f_value: None,
-        s_value: None,
-        bytes: None,
-        var: None,
-        args: None,
-        out: None,
-        fast_int: None,
-        task_kind: None,
-        container_type: None,
-        stack_eligible: None,
-        fast_float: None,
-        raw_int: None,
-        type_hint: None,
+        ..OpIR::default()
     }
 }
 
@@ -34,6 +21,7 @@ fn validate_simple_ir_accepts_well_formed_value_uses() {
             name: "molt_test_validate_ok".to_string(),
             params: Vec::new(),
             ops: vec![c0, ret],
+            param_types: None,
         }],
         profile: None,
     };
@@ -51,6 +39,7 @@ fn validate_simple_ir_rejects_missing_value_definition() {
             name: "molt_test_validate_missing".to_string(),
             params: Vec::new(),
             ops: vec![idx],
+            param_types: None,
         }],
         profile: None,
     };
@@ -81,6 +70,7 @@ fn validate_simple_ir_allows_dict_receiver_merge_placeholders() {
             name: "molt_test_validate_dict_receiver_placeholder".to_string(),
             params: Vec::new(),
             ops: vec![k, v, dict_set],
+            param_types: None,
         }],
         profile: None,
     };
@@ -109,6 +99,7 @@ fn validate_simple_ir_rejects_unsupported_raw_int_kinds() {
             name: "molt_test_validate_raw_int_kind".to_string(),
             params: Vec::new(),
             ops: vec![lhs, rhs, sub],
+            param_types: None,
         }],
         profile: None,
     };
@@ -137,6 +128,7 @@ fn validate_simple_ir_rejects_conflicting_specialized_int_flags() {
             name: "molt_test_validate_specialized_int_conflict".to_string(),
             params: Vec::new(),
             ops: vec![lhs, rhs, add],
+            param_types: None,
         }],
         profile: None,
     };
@@ -184,6 +176,7 @@ fn validate_simple_ir_accepts_raw_loop_index_carriers() {
             name: "molt_test_validate_raw_loop_index_carriers".to_string(),
             params: Vec::new(),
             ops: vec![start, loop_index_start, one, add, loop_index_next, stop, lt],
+            param_types: None,
         }],
         profile: None,
     };
@@ -222,31 +215,37 @@ fn tree_shake_luau_rewrites_main_and_drops_runtime_bootstrap_helpers() {
                 name: "molt_main".to_string(),
                 params: Vec::new(),
                 ops: vec![main_runtime_init, main_init, main_ret],
+                param_types: None,
             },
             FunctionIR {
                 name: "molt_init___main__".to_string(),
                 params: Vec::new(),
                 ops: vec![init_sys, user_call, init_ret],
+                param_types: None,
             },
             FunctionIR {
                 name: "molt_runtime_init".to_string(),
                 params: Vec::new(),
                 ops: vec![helper_ret.clone()],
+                param_types: None,
             },
             FunctionIR {
                 name: "molt_init_sys".to_string(),
                 params: Vec::new(),
                 ops: vec![helper_ret.clone()],
+                param_types: None,
             },
             FunctionIR {
                 name: "user_kernel".to_string(),
                 params: Vec::new(),
                 ops: vec![user_ret],
+                param_types: None,
             },
             FunctionIR {
                 name: "unused_helper".to_string(),
                 params: Vec::new(),
                 ops: vec![helper_ret],
+                param_types: None,
             },
         ],
         profile: None,
