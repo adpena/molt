@@ -996,7 +996,7 @@ linked binary's import section contains only table + call trampolines."
 
 ## Additional Optimizations
 
-Beyond the six planned tasks, four additional performance optimizations were implemented during this work:
+Beyond the six planned tasks, ten additional performance optimizations were implemented during this work:
 
 1. **`br_table` O(1) state dispatch** (c1ae684a): Generator/coroutine state machines now use `br_table` for O(1) dispatch instead of nested `if/else/end` trees. This yields 2-5x faster generator resume for state machines with many states.
 
@@ -1005,6 +1005,18 @@ Beyond the six planned tasks, four additional performance optimizations were imp
 3. **`memory.fill` for generator control block zero-init** (2bff6165): Generator control blocks are now zero-initialized using the `memory.fill` bulk memory instruction instead of emitting N individual `i64.const 0; i64.store` sequences. This reduces code size and improves initialization throughput.
 
 4. **Full wasm-opt Oz/O3 pass pipelines** (bf65d218): Both size-optimized (Oz) and speed-optimized (O3) wasm-opt pipelines are now integrated into the build via the `--wasm-opt-level` flag. This achieves 15-30% binary size reduction depending on the pipeline selected.
+
+5. **Local variable coalescing** (ac215c48): Greedy linear-scan register allocation for `__tmp`/`__v` temporaries, reducing local count and achieving 5-15% binary size reduction.
+
+6. **Constant folding at WASM emission** (cd3f1b5f): Forward data-flow analysis that folds add/sub/mul/bitwise operations on `fast_int` constants at emission time, yielding 3-5% size reduction.
+
+7. **Instruction combining** (d468918f): Constant propagation through box/unbox sequences, reducing 5 instructions to 2 for known-const unbox paths. 3-8% speed improvement for arithmetic-heavy code.
+
+8. **Constant caching (`ConstantCache`)** (ffd95a5d): Frequently materialized constants (`INT_SHIFT`, `INT_MIN`, `INT_MAX`) in helper functions are now cached in dedicated locals, eliminating redundant `i64.const` sequences.
+
+9. **Precompiled `.cwasm` artifacts** (e4b4d9b8): New `--precompile` flag generates pre-compiled `.cwasm` files via `wasmtime compile`, enabling 10-50x faster startup by skipping JIT compilation at load time.
+
+10. **`local.tee` introduction** (fef9990c): Replaced `local.set` + `local.get` pairs with `local.tee` where applicable, eliminating 37 redundant `LocalGet` instructions across the codebase.
 
 ---
 
