@@ -346,6 +346,13 @@ fn fold_constants(ops: &mut Vec<OpIR>) {
                 }
             }
 
+            // Control flow boundaries: clear all tracked constants.
+            "if" | "else" | "end_if" | "loop_start" | "loop_end" | "try_start" | "try_end"
+            | "jump" | "label" | "state_switch" => {
+                const_ints.clear();
+                const_bools.clear();
+            }
+
             // Any other op that writes an output kills the constant for that variable.
             _ => {
                 if let Some(ref out) = op.out {
@@ -1451,6 +1458,23 @@ impl WasmBackend {
                 .unwrap_or((default_arity, default_has_closure));
             default_trampoline_spec.insert(func_ir.name.clone(), spec);
         }
+
+        // --- Critical fix: exclude multi-return candidates that have trampolines ---
+        // Trampolines use a single-return ABI `(i64, i64, i64) -> i64`. If the
+        // target function is compiled with a multi-value return signature, the
+        // `call` inside the trampoline pushes N values but the trampoline type
+        // expects exactly 1 return value, causing a WASM validation error.
+        // Since ALL user-defined functions get trampolines (via
+        // default_trampoline_spec), we must exclude any function that appears
+        // in either trampoline spec map from the multi-return optimization.
+        let multi_return_candidates: HashMap<String, usize> = multi_return_candidates
+            .into_iter()
+            .filter(|(name, _)| {
+                !func_trampoline_spec.contains_key(name)
+                    && !default_trampoline_spec.contains_key(name)
+            })
+            .collect();
+
         // Type 0: () -> i64 (User functions)
         self.types
             .function(std::iter::empty::<ValType>(), std::iter::once(ValType::I64));
@@ -8980,7 +9004,11 @@ impl WasmBackend {
                         let is_tail_call = tail_call_eligible
                             && rel_idx + 1 < ops.len()
                             && ops[rel_idx + 1].kind == "ret"
-                            && ops[rel_idx + 1].var.as_deref() == Some(out_name.as_str());
+                            && ops[rel_idx + 1].var.as_deref() == Some(out_name.as_str())
+                            // Exclude calls to multi-return candidates: return_call
+                            // would forward N values but the caller's type signature
+                            // expects a single i64 return, causing an ABI mismatch.
+                            && !multi_return_candidates.contains_key(target_name);
 
                         for arg_name in args_names {
                             let arg = locals[arg_name];
@@ -10154,7 +10182,7 @@ impl WasmBackend {
                             //   end
                             //   ;; catch: exception handle on stack
                             func.instruction(&Instruction::Block(
-                                BlockType::FunctionType(TAG_EXCEPTION_FUNC_TYPE),
+                                BlockType::Result(ValType::I64),
                             ));
                             control_stack.push(ControlKind::Block);
                             func.instruction(&Instruction::TryTable(
@@ -10249,7 +10277,8 @@ impl WasmBackend {
                     | "loop_break" | "loop_break_if_true" | "loop_break_if_false"
                     | "loop_continue" | "label" | "jump" | "state_switch"
                     | "state_transition" | "state_yield" | "chan_send_yield"
-                    | "chan_recv_yield" | "try" | "except" | "end_try" | "ret"
+                    | "chan_recv_yield" | "try_start" | "try_end" | "check_exception"
+                    | "loop_end" | "ret"
                     | "ret_void" => {
                         known_raw_ints.clear();
                     }
