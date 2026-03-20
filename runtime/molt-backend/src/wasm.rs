@@ -37,6 +37,38 @@ const STATE_REMAP_TABLE_MAX_SPARSITY: usize = 8;
 /// Minimum number of sparse remap entries before we attempt `br_table` dispatch.
 const BR_TABLE_MIN_ENTRIES: usize = 5;
 
+// ---------------------------------------------------------------------------
+// Multi-value return type indices (WASM 2.0 multi-value proposal)
+//
+// These type indices are reserved in the static type section for functions
+// that return 2-3 i64 values instead of allocating a tuple on the heap.
+// This enables the optimization described in WASM_OPTIMIZATION_PLAN.md §3.1:
+// eliminate 1 alloc + N field_get calls per multi-return call site.
+//
+// Builtins that always return a known-size tuple (e.g. divmod -> 2 values,
+// dict items iteration -> 2 values) can be migrated to use these signatures
+// once both the host import and call-site lowering are updated.
+// ---------------------------------------------------------------------------
+
+/// Type index for multi-value return: (i64, i64) -> (i64, i64)
+/// Use case: divmod, dict.popitem(), tuple-2 returns
+const MULTI_RETURN_2_TYPE: u32 = 31;
+
+/// Type index for multi-value return: (i64, i64, i64) -> (i64, i64, i64)
+/// Use case: 3-element tuple returns
+const MULTI_RETURN_3_TYPE: u32 = 32;
+
+/// Type index for multi-value return: (i64) -> (i64, i64)
+/// Use case: unary ops that return a pair (e.g. coerce-and-split)
+const MULTI_RETURN_UNARY_TO_2_TYPE: u32 = 33;
+
+/// Type index for multi-value return: () -> (i64, i64)
+/// Use case: nullary builtins that produce a pair
+const MULTI_RETURN_NULLARY_TO_2_TYPE: u32 = 34;
+
+/// First dynamic type index; must equal the count of all statically-defined types.
+const STATIC_TYPE_COUNT: u32 = 35;
+
 #[derive(Clone, Copy)]
 struct DataSegmentInfo {
     size: u32,
@@ -126,10 +158,24 @@ fn stable_ic_site_id(func_name: &str, op_idx: usize, lane: &str) -> i64 {
     id as i64
 }
 
+#[allow(dead_code)]
 fn emit_unbox_int_local(func: &mut Function, src_local: u32, dst_local: u32) {
     func.instruction(&Instruction::LocalGet(src_local));
     func.instruction(&Instruction::I64Const(INT_MASK as i64));
     func.instruction(&Instruction::I64And);
+    func.instruction(&Instruction::I64Const(INT_SHIFT));
+    func.instruction(&Instruction::I64Shl);
+    func.instruction(&Instruction::I64Const(INT_SHIFT));
+    func.instruction(&Instruction::I64ShrS);
+    func.instruction(&Instruction::LocalSet(dst_local));
+}
+
+/// Trusted unbox: when we *know* the value is a NaN-boxed integer (from IR
+/// type information / `fast_int`), we can skip the `AND INT_MASK` step.
+/// The left-shift by `INT_SHIFT` (17) already discards the upper QNAN+tag
+/// bits, so the mask is redundant.  Saves 2 instructions per operand.
+fn emit_unbox_int_local_trusted(func: &mut Function, src_local: u32, dst_local: u32) {
+    func.instruction(&Instruction::LocalGet(src_local));
     func.instruction(&Instruction::I64Const(INT_SHIFT));
     func.instruction(&Instruction::I64Shl);
     func.instruction(&Instruction::I64Const(INT_SHIFT));
@@ -1016,6 +1062,42 @@ impl WasmBackend {
         self.types
             .function(std::iter::repeat_n(ValType::I64, 3), std::iter::empty());
 
+        // ---------------------------------------------------------------
+        // Multi-value return types (WASM 2.0, universally supported)
+        //
+        // These signatures enable returning 2-3 i64 values on the WASM
+        // operand stack, eliminating heap-allocated tuples for small
+        // multi-returns.  See WASM_OPTIMIZATION_PLAN.md §3.1.
+        // ---------------------------------------------------------------
+
+        // Type 31 (MULTI_RETURN_2_TYPE): (i64, i64) -> (i64, i64)
+        // Target: divmod_builtin, dict.popitem(), enumerate next, etc.
+        self.types.function(
+            std::iter::repeat_n(ValType::I64, 2),
+            std::iter::repeat_n(ValType::I64, 2),
+        );
+
+        // Type 32 (MULTI_RETURN_3_TYPE): (i64, i64, i64) -> (i64, i64, i64)
+        // Target: 3-element tuple returns
+        self.types.function(
+            std::iter::repeat_n(ValType::I64, 3),
+            std::iter::repeat_n(ValType::I64, 3),
+        );
+
+        // Type 33 (MULTI_RETURN_UNARY_TO_2_TYPE): (i64) -> (i64, i64)
+        // Target: unary operations that produce a pair
+        self.types.function(
+            std::iter::once(ValType::I64),
+            std::iter::repeat_n(ValType::I64, 2),
+        );
+
+        // Type 34 (MULTI_RETURN_NULLARY_TO_2_TYPE): () -> (i64, i64)
+        // Target: nullary builtins that produce a pair
+        self.types.function(
+            std::iter::empty::<ValType>(),
+            std::iter::repeat_n(ValType::I64, 2),
+        );
+
         let mut import_idx = 0;
         let mut add_import = |name: &str, ty: u32, ids: &mut BTreeMap<String, u32>| {
             self.imports
@@ -1896,8 +1978,9 @@ impl WasmBackend {
         self.func_count = import_idx;
 
         let mut user_type_map: HashMap<usize, u32> = HashMap::new();
-        // Types 0-30 are defined above; start new signatures after them.
-        let mut next_type_idx = 31u32;
+        // Types 0-34 are defined above (0-30 single-return, 31-34 multi-value);
+        // start new dynamic signatures after them.
+        let mut next_type_idx = STATIC_TYPE_COUNT;
         for func_ir in &ir.functions {
             if func_ir.name.ends_with("_poll") {
                 continue;
@@ -4082,8 +4165,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_lhs));
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Add);
@@ -4112,8 +4195,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_lhs));
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Add);
@@ -4418,8 +4501,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_lhs));
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Sub);
@@ -4448,8 +4531,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_lhs));
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Mul);
@@ -4478,8 +4561,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_lhs));
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Sub);
@@ -4508,8 +4591,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_lhs));
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Mul);
@@ -4538,8 +4621,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_lhs));
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Or);
@@ -4568,8 +4651,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_lhs));
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64And);
@@ -4598,8 +4681,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_lhs));
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Xor);
@@ -4636,8 +4719,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_lhs));
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Or);
@@ -4666,8 +4749,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_lhs));
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64And);
@@ -4696,8 +4779,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_lhs));
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Xor);
@@ -4726,8 +4809,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64GeS);
@@ -4777,8 +4860,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64GeS);
@@ -4822,8 +4905,8 @@ impl WasmBackend {
                         if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
@@ -4855,8 +4938,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
@@ -4915,8 +4998,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
@@ -5012,8 +5095,8 @@ impl WasmBackend {
                         if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_lhs));
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64LtS);
@@ -5033,8 +5116,8 @@ impl WasmBackend {
                         if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_lhs));
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64LeS);
@@ -5054,8 +5137,8 @@ impl WasmBackend {
                         if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_lhs));
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64GtS);
@@ -5075,8 +5158,8 @@ impl WasmBackend {
                         if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
+                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs);
+                            emit_unbox_int_local_trusted(func, rhs, tmp_rhs);
                             func.instruction(&Instruction::LocalGet(tmp_lhs));
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64GeS);
@@ -5094,12 +5177,12 @@ impl WasmBackend {
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
                         if op.fast_int.unwrap_or(false) {
-                            let tmp_lhs = locals["__molt_tmp0"];
-                            let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_lhs));
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            // Box/unbox elimination: when both operands are
+                            // known NaN-boxed integers, equality of the boxed
+                            // representations implies equality of the raw
+                            // values (same tag prefix).  Skip unbox entirely.
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::LocalGet(rhs));
                             func.instruction(&Instruction::I64Eq);
                             emit_box_bool_from_i32(func);
                         } else {
@@ -5115,12 +5198,10 @@ impl WasmBackend {
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
                         if op.fast_int.unwrap_or(false) {
-                            let tmp_lhs = locals["__molt_tmp0"];
-                            let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local(func, lhs, tmp_lhs);
-                            emit_unbox_int_local(func, rhs, tmp_rhs);
-                            func.instruction(&Instruction::LocalGet(tmp_lhs));
-                            func.instruction(&Instruction::LocalGet(tmp_rhs));
+                            // Box/unbox elimination: compare NaN-boxed values
+                            // directly — same tag means ne(boxed) iff ne(raw).
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::LocalGet(rhs));
                             func.instruction(&Instruction::I64Ne);
                             emit_box_bool_from_i32(func);
                         } else {
@@ -5500,6 +5581,18 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(out));
                     }
                     "tuple_new" => {
+                        // TODO(multi-value §3.1): When the tuple being built is
+                        // immediately consumed by a return op in a function whose
+                        // callers all destructure via tuple_index, this allocation
+                        // can be eliminated entirely.  Instead:
+                        //   1. Change the function's return type to
+                        //      MULTI_RETURN_2_TYPE / MULTI_RETURN_3_TYPE.
+                        //   2. Emit N local.get instructions (one per element)
+                        //      and let the WASM multi-value return push them all.
+                        //   3. At each call site, replace the tuple_index ops with
+                        //      local.set for each result from the multi-value call.
+                        // Applicable when args.len() is 2 or 3 and the tuple flows
+                        // directly to a return.
                         let args = op.args.as_ref().unwrap();
                         let out = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::I64Const(box_int(args.len() as i64)));
