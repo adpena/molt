@@ -8557,6 +8557,16 @@ impl WasmBackend {
                         emit_call(func, reloc_enabled, import_ids["task_new"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
+                        // Zero-initialize the generator control block using
+                        // bulk memory.fill when this task has a control
+                        // block prefix (WASM_OPTIMIZATION_PLAN Section 3.3).
+                        if payload_base > 0 {
+                            func.instruction(&Instruction::LocalGet(res));
+                            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                            func.instruction(&Instruction::I32Const(0)); // fill value
+                            func.instruction(&Instruction::I32Const(payload_base)); // byte count
+                            func.instruction(&Instruction::MemoryFill(0));
+                        }
                         if let Some(args) = op.args.as_ref() {
                             for (i, name) in args.iter().enumerate() {
                                 let arg_local = locals[name];
