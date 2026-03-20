@@ -319,21 +319,17 @@ def _run_case(
 ) -> CaseResult:
     heartbeat_sec = 15.0
     target_marker = env_base.get("CARGO_TARGET_DIR", "")
-    cmd = [
-        "uv",
-        "run",
-        "--python",
-        python_version,
-        "python3",
-        "-m",
-        "molt.cli",
-        "build",
-        script_path,
-        "--profile",
-        case.profile,
-        "--out-dir",
-        str(out_root / case.name),
-    ]
+    diagnostics_path: Path | None = None
+    if diagnostics:
+        diagnostics_path = out_root / "diagnostics" / f"{case.name}.json"
+        diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = _build_molt_build_cmd(
+        case=case,
+        python_version=python_version,
+        script_path=script_path,
+        out_dir=out_root / case.name,
+        diagnostics_path=diagnostics_path,
+    )
     if case.cache_mode == "cache-report":
         cmd.append("--cache-report")
     else:
@@ -369,11 +365,6 @@ def _run_case(
         env["MOLT_RELEASE_CARGO_PROFILE"] = case.release_cargo_profile
     if build_lock_timeout_sec is not None and build_lock_timeout_sec > 0:
         env["MOLT_BUILD_LOCK_TIMEOUT"] = str(build_lock_timeout_sec)
-    diagnostics_path: Path | None = None
-    if diagnostics:
-        diagnostics_path = out_root / "diagnostics" / f"{case.name}.json"
-        diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
-        cmd.extend(["--diagnostics", "--diagnostics-file", str(diagnostics_path)])
 
     def _execute(label: str) -> tuple[int, bool, str, str, float]:
         started = time.perf_counter()
@@ -511,6 +502,34 @@ def _run_case(
         warmup_runs=case.warmup_runs,
         retry_reason=retry_reason,
     )
+
+
+def _build_molt_build_cmd(
+    *,
+    case: CaseSpec,
+    python_version: str,
+    script_path: str,
+    out_dir: Path,
+    diagnostics_path: Path | None,
+) -> list[str]:
+    cmd = [
+        "uv",
+        "run",
+        "--python",
+        python_version,
+        "python3",
+        "-m",
+        "molt.cli",
+        "build",
+        script_path,
+        "--build-profile",
+        case.profile,
+        "--out-dir",
+        str(out_dir),
+    ]
+    if diagnostics_path is not None:
+        cmd.extend(["--diagnostics", "--diagnostics-file", str(diagnostics_path)])
+    return cmd
 
 
 def _render_markdown(
