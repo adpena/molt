@@ -16,11 +16,10 @@ pub struct SnapshotHeader {
     pub capability_manifest: Vec<String>,
     pub determinism_stamp: String,
     pub init_state_size: u64,
-    /// Integrity hash computed from all other header fields.
-    /// TODO(v0.2): Compute as SHA-256 of the canonical JSON representation
-    /// (excluding this field) when serializing, and verify on deserialize.
-    /// For v0.1, `validate_against` already checks `module_hash` which
-    /// provides primary tamper detection against the deployment manifest.
+    /// SHA-256 integrity hash computed from all other header fields.
+    /// Computed automatically during `to_json()` and verified during
+    /// `verify_integrity()`. Covers the canonical JSON representation
+    /// of all fields except this one.
     pub integrity_hash: Option<String>,
 }
 
@@ -56,9 +55,10 @@ impl SnapshotHeader {
         Ok(())
     }
 
-    /// Serialize to a `serde_json::Value`.
-    pub fn to_json(&self) -> serde_json::Value {
-        let mut obj = serde_json::json!({
+    /// Compute SHA-256 integrity hash of the canonical JSON (excluding integrity_hash).
+    fn compute_integrity_hash(&self) -> String {
+        use sha2::{Sha256, Digest};
+        let canonical = serde_json::json!({
             "snapshot_version": self.snapshot_version,
             "abi_version": self.abi_version,
             "target_profile": self.target_profile,
@@ -68,11 +68,39 @@ impl SnapshotHeader {
             "determinism_stamp": self.determinism_stamp,
             "init_state_size": self.init_state_size,
         });
-        if let Some(ref hash) = self.integrity_hash {
-            obj.as_object_mut()
-                .unwrap()
-                .insert("integrity_hash".into(), serde_json::Value::String(hash.clone()));
+        let canonical_bytes = serde_json::to_vec(&canonical).unwrap_or_default();
+        let hash = Sha256::digest(&canonical_bytes);
+        format!("sha256:{:x}", hash)
+    }
+
+    /// Verify the integrity hash matches the header contents.
+    pub fn verify_integrity(&self) -> Result<(), String> {
+        let Some(ref stored) = self.integrity_hash else {
+            return Err("snapshot missing integrity_hash".to_string());
+        };
+        let computed = self.compute_integrity_hash();
+        if *stored != computed {
+            return Err(format!(
+                "snapshot integrity check failed: expected {computed}, got {stored}"
+            ));
         }
+        Ok(())
+    }
+
+    /// Serialize to a `serde_json::Value` with computed integrity hash.
+    pub fn to_json(&self) -> serde_json::Value {
+        let integrity = self.compute_integrity_hash();
+        let mut obj = serde_json::json!({
+            "snapshot_version": self.snapshot_version,
+            "abi_version": self.abi_version,
+            "target_profile": self.target_profile,
+            "module_hash": self.module_hash,
+            "mount_plan": self.mount_plan.iter().map(|m| m.to_json()).collect::<Vec<_>>(),
+            "capability_manifest": self.capability_manifest,
+            "determinism_stamp": self.determinism_stamp,
+            "init_state_size": self.init_state_size,
+            "integrity_hash": integrity,
+        });
         obj
     }
 
