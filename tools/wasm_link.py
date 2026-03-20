@@ -1396,6 +1396,36 @@ def _validate_freestanding(data: bytes) -> bool:
             file=sys.stderr,
         )
 
+    # Optionally run wasm-validate for structural validation
+    exe = shutil.which("wasm-validate")
+    if exe is not None:
+        with tempfile.NamedTemporaryFile(suffix=".wasm", delete=False) as f:
+            f.write(data)
+            f.flush()
+            tmp_path = f.name
+        try:
+            result = subprocess.run(
+                [exe, tmp_path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                print(
+                    f"wasm-validate warning: {result.stderr.strip()}",
+                    file=sys.stderr,
+                )
+        except Exception as exc:
+            print(
+                f"wasm-validate warning: {exc}",
+                file=sys.stderr,
+            )
+        finally:
+            try:
+                Path(tmp_path).unlink()
+            except OSError:
+                pass
+
     return True
 
 

@@ -12,7 +12,10 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -391,7 +394,49 @@ def stub_wasi_imports(wasm_bytes: bytes) -> tuple[bytes, int]:
                 _remap_code_section(new_sections[code_sec_idx][1], remap),
             )
 
-    return _build_sections(new_sections), n_stubbed
+    result_bytes = _build_sections(new_sections)
+
+    # Optionally validate the output with wasm-validate
+    valid, msg = validate_wasm(result_bytes)
+    if not valid:
+        print(
+            f"wasm-validate warning: stubbed output failed validation: {msg}",
+            file=sys.stderr,
+        )
+
+    return result_bytes, n_stubbed
+
+
+def validate_wasm(wasm_bytes: bytes) -> tuple[bool, str]:
+    """Validate a WASM binary using wasm-validate from wabt (if installed).
+
+    Returns (True, "") on success, (False, stderr) on failure.
+    If wasm-validate is not installed, returns (True, "wasm-validate not installed").
+    """
+    exe = shutil.which("wasm-validate")
+    if exe is None:
+        return True, "wasm-validate not installed"
+    with tempfile.NamedTemporaryFile(suffix=".wasm", delete=False) as f:
+        f.write(wasm_bytes)
+        f.flush()
+        tmp_path = f.name
+    try:
+        result = subprocess.run(
+            [exe, tmp_path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            return True, ""
+        return False, result.stderr.strip()
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        try:
+            Path(tmp_path).unlink()
+        except OSError:
+            pass
 
 
 def _remap_export_section(payload: bytes, remap: dict[int, int]) -> bytes:
