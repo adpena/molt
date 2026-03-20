@@ -1088,9 +1088,8 @@ fn runpy_normalize_candidate(path: PathBuf) -> String {
 fn vfs_is_file(path: &std::path::Path) -> bool {
     let path_str = path.to_string_lossy();
     if let Some(state) = crate::runtime_state_for_gil()
-        && let Some(guard) = state.get_vfs()
+        && let Some(vfs) = state.get_vfs()
     {
-        let vfs = guard.as_ref().unwrap();
         if let Some((_prefix, backend, rel)) = vfs.resolve(&path_str) {
             return match backend.stat(&rel) {
                 Ok(st) => !st.is_dir,
@@ -1106,9 +1105,8 @@ fn vfs_is_file(path: &std::path::Path) -> bool {
 fn vfs_read_to_string(path: &std::path::Path) -> Option<String> {
     let path_str = path.to_string_lossy();
     if let Some(state) = crate::runtime_state_for_gil()
-        && let Some(guard) = state.get_vfs()
+        && let Some(vfs) = state.get_vfs()
     {
-        let vfs = guard.as_ref().unwrap();
         if let Some((_prefix, backend, rel)) = vfs.resolve(&path_str) {
             return match backend.open_read(&rel) {
                 Ok(bytes) => String::from_utf8(bytes).ok(),
@@ -1122,9 +1120,8 @@ fn vfs_read_to_string(path: &std::path::Path) -> Option<String> {
 /// Read a file to raw bytes, trying VFS first then the real filesystem.
 fn vfs_read(path: &str) -> std::io::Result<Vec<u8>> {
     if let Some(state) = crate::runtime_state_for_gil()
-        && let Some(guard) = state.get_vfs()
+        && let Some(vfs) = state.get_vfs()
     {
-        let vfs = guard.as_ref().unwrap();
         if let Some((_prefix, backend, rel)) = vfs.resolve(path) {
             return backend.open_read(&rel).map_err(|e| {
                 let kind = match e {

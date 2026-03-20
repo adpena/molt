@@ -246,8 +246,8 @@ pub(crate) struct RuntimeState {
     pub(crate) code_slots: OnceLock<Vec<AtomicU64>>,
     pub(crate) gil: Mutex<()>,
     pub(crate) start_time: OnceLock<Instant>,
-    /// VFS state injected by the host. `None` until the host enables VFS.
-    pub(crate) vfs_state: Mutex<Option<crate::vfs::VfsState>>,
+    /// VFS state lazily initialized from environment variables on first access.
+    pub(crate) vfs_state: OnceLock<Option<crate::vfs::VfsState>>,
 }
 
 impl RuntimeState {
@@ -325,7 +325,7 @@ impl RuntimeState {
             code_slots: OnceLock::new(),
             gil: Mutex::new(()),
             start_time: OnceLock::new(),
-            vfs_state: Mutex::new(None),
+            vfs_state: OnceLock::new(),
         }
     }
 
@@ -366,15 +366,13 @@ impl RuntimeState {
         })
     }
 
-    /// Returns a reference to the VFS state if the host has enabled it.
-    ///
-    /// The caller must hold the returned `MutexGuard` for the duration of use.
-    /// Use `get_vfs()` from `io.rs` / `modules.rs` to access mount tables.
-    pub(crate) fn get_vfs(
-        &self,
-    ) -> Option<std::sync::MutexGuard<'_, Option<crate::vfs::VfsState>>> {
-        let guard = self.vfs_state.lock().ok()?;
-        if guard.is_some() { Some(guard) } else { None }
+    /// Returns a reference to the VFS state, lazily initialized from
+    /// environment variables on first access.  Returns `None` when
+    /// `MOLT_VFS_BUNDLE` is not set in the environment.
+    pub(crate) fn get_vfs(&self) -> Option<&crate::vfs::VfsState> {
+        self.vfs_state
+            .get_or_init(crate::vfs::load_vfs)
+            .as_ref()
     }
 }
 
