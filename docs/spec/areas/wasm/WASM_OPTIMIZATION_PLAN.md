@@ -164,6 +164,8 @@ Migration path (aligned with spec 0400 Section 13):
 
 **UPDATE 2026-03-20:** `memory.fill` is now used for generator control block zero-initialization (2bff6165). `memory.copy` for buffer operations remains a future optimization.
 
+**UPDATE 2026-03-20:** `memory_copy` intrinsic op added to the WASM emitter. The op emits `memory.copy` (src_mem=0, dst_mem=0) for bulk linear-memory-to-linear-memory copies. IR signature: `memory_copy(dst, src, len)` where all three args are i64-boxed i32 byte offsets. Current buffer ops (`bytes_concat`, `str_concat`, `list_copy`, `slice`, etc.) all delegate to host imports which perform the copy on the host side; the new intrinsic is available for future IR lowering passes that can identify cases where both source and destination are already resolved to linear memory addresses (e.g. closure slot migration, frame spill/restore, data-segment-to-heap initialization).
+
 **Priority**: P2 -- moderate impact, low risk.
 
 ### 3.4 SIMD Proposal (128-bit)
