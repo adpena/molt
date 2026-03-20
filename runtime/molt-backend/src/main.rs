@@ -1,4 +1,5 @@
 use molt_backend::rust::RustBackend;
+#[cfg(feature = "wasm-backend")]
 use molt_backend::wasm::WasmBackend;
 use molt_backend::{SimpleBackend, SimpleIR};
 use serde::{Deserialize, Serialize};
@@ -294,8 +295,25 @@ fn compile_single_job(job: DaemonJobRequest, cache: &mut DaemonCache) -> DaemonJ
     };
 
     let output_bytes: Arc<[u8]> = if job.is_wasm {
-        let backend = WasmBackend::new();
-        Arc::from(backend.compile(ir))
+        #[cfg(feature = "wasm-backend")]
+        {
+            let backend = WasmBackend::new();
+            Arc::from(backend.compile(ir))
+        }
+        #[cfg(not(feature = "wasm-backend"))]
+        {
+            return DaemonJobResponse {
+                id: job.id,
+                ok: false,
+                cached: false,
+                cache_tier: None,
+                output_written: false,
+                needs_ir: false,
+                message: Some(
+                    "backend binary was built without wasm-backend support".to_string(),
+                ),
+            };
+        }
     } else {
         let backend = SimpleBackend::new_with_target(job.target_triple.as_deref());
         Arc::from(backend.compile(ir))
@@ -625,10 +643,20 @@ fn main() -> io::Result<()> {
         file.write_all(source.as_bytes())?;
         println!("Successfully transpiled to {output_file}");
     } else if is_wasm {
-        let backend = WasmBackend::new();
-        let wasm_bytes = backend.compile(ir);
-        file.write_all(&wasm_bytes)?;
-        println!("Successfully compiled to output.wasm");
+        #[cfg(feature = "wasm-backend")]
+        {
+            let backend = WasmBackend::new();
+            let wasm_bytes = backend.compile(ir);
+            file.write_all(&wasm_bytes)?;
+            println!("Successfully compiled to output.wasm");
+        }
+        #[cfg(not(feature = "wasm-backend"))]
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "backend binary was built without wasm-backend support",
+            ));
+        }
     } else {
         let backend = SimpleBackend::new_with_target(target_triple);
         let obj_bytes = backend.compile(ir);

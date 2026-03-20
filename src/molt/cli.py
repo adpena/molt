@@ -12929,6 +12929,7 @@ def _prepare_backend_dispatch(
         json_output=json_output,
         cargo_profile=backend_cargo_profile,
         project_root=molt_root,
+        enable_wasm_backend=is_wasm,
     ):
         return None, _fail("Backend build failed", json_output, command="build")
     if not backend_bin.exists():
@@ -15980,10 +15981,12 @@ def _backend_fingerprint(
     *,
     cargo_profile: str,
     rustflags: str,
+    backend_features: tuple[str, ...],
     stored_fingerprint: dict[str, Any] | None = None,
 ) -> dict[str, str | None] | None:
     meta = f"profile:{cargo_profile}\n"
     meta += f"rustflags:{rustflags}\n"
+    meta += f"features:{','.join(backend_features)}\n"
     source_paths = _backend_source_paths(project_root)
     rustc_info = _rustc_version()
     inputs_meta = _hash_source_tree_metadata(source_paths, project_root)
@@ -16025,8 +16028,10 @@ def _ensure_backend_binary(
     json_output: bool,
     cargo_profile: str,
     project_root: Path,
+    enable_wasm_backend: bool,
 ) -> bool:
     rustflags = os.environ.get("RUSTFLAGS", "")
+    backend_features = ("wasm-backend",) if enable_wasm_backend else ()
     fingerprint_path = _backend_fingerprint_path(
         project_root, backend_bin, cargo_profile
     )
@@ -16035,6 +16040,7 @@ def _ensure_backend_binary(
         project_root,
         cargo_profile=cargo_profile,
         rustflags=rustflags,
+        backend_features=backend_features,
         stored_fingerprint=stored_fingerprint,
     )
     lock_name = f"backend.{cargo_profile}"
@@ -16072,6 +16078,8 @@ def _ensure_backend_binary(
             "--profile",
             cargo_profile,
         ]
+        if backend_features:
+            cmd.extend(["--features", ",".join(backend_features)])
         build_env = os.environ.copy()
         _maybe_enable_sccache(build_env)
         try:

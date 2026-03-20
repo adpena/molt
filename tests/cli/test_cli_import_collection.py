@@ -4615,6 +4615,87 @@ def test_start_backend_daemon_leaves_warming_process_running(
     assert removed == []
 
 
+def test_ensure_backend_binary_skips_wasm_feature_for_native(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend_bin = tmp_path / "target" / "dev-fast" / "molt-backend"
+    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    seen_features: list[tuple[str, ...]] = []
+    build_cmds: list[list[str]] = []
+
+    def fake_backend_fingerprint(*args: object, **kwargs: object) -> dict[str, str]:
+        del args
+        seen_features.append(cast(tuple[str, ...], kwargs["backend_features"]))
+        return dict(fingerprint)
+
+    def fake_run_cargo(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        build_cmds.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli, "_backend_fingerprint", fake_backend_fingerprint)
+    monkeypatch.setattr(cli, "_run_cargo_with_sccache_retry", fake_run_cargo)
+
+    assert cli._ensure_backend_binary(
+        backend_bin,
+        cargo_timeout=1.0,
+        json_output=True,
+        cargo_profile="dev-fast",
+        project_root=tmp_path,
+        enable_wasm_backend=False,
+    )
+    assert seen_features == [()]
+    assert build_cmds == [
+        ["cargo", "build", "--package", "molt-backend", "--profile", "dev-fast"]
+    ]
+
+
+def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend_bin = tmp_path / "target" / "dev-fast" / "molt-backend"
+    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    seen_features: list[tuple[str, ...]] = []
+    build_cmds: list[list[str]] = []
+
+    def fake_backend_fingerprint(*args: object, **kwargs: object) -> dict[str, str]:
+        del args
+        seen_features.append(cast(tuple[str, ...], kwargs["backend_features"]))
+        return dict(fingerprint)
+
+    def fake_run_cargo(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        build_cmds.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli, "_backend_fingerprint", fake_backend_fingerprint)
+    monkeypatch.setattr(cli, "_run_cargo_with_sccache_retry", fake_run_cargo)
+
+    assert cli._ensure_backend_binary(
+        backend_bin,
+        cargo_timeout=1.0,
+        json_output=True,
+        cargo_profile="dev-fast",
+        project_root=tmp_path,
+        enable_wasm_backend=True,
+    )
+    assert seen_features == [("wasm-backend",)]
+    assert build_cmds == [
+        [
+            "cargo",
+            "build",
+            "--package",
+            "molt-backend",
+            "--profile",
+            "dev-fast",
+            "--features",
+            "wasm-backend",
+        ]
+    ]
+
+
 def test_backend_daemon_enabled_is_cached(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
