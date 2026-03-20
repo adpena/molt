@@ -1409,7 +1409,12 @@ impl SimpleBackend {
     pub fn new_with_target(target: Option<&str>) -> Self {
         let mut flag_builder = settings::builder();
         flag_builder.set("is_pic", "true").unwrap();
-        flag_builder.set("opt_level", "speed").unwrap();
+        // Cranelift speed optimizations cause heap corruption in generated
+        // code for large modules (5000+ lines). Use "none" until the root
+        // cause is identified and fixed upstream.
+        let cranelift_opt = env_setting("MOLT_BACKEND_CRANELIFT_OPT")
+            .unwrap_or_else(|| "none".to_string());
+        flag_builder.set("opt_level", &cranelift_opt).unwrap();
         // Force single_pass regalloc: backtracking produces incorrect code
         // for large modules (heap corruption / use-after-free in generated code).
         // TODO: File upstream Cranelift bug for backtracking regalloc.
