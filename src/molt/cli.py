@@ -13817,6 +13817,8 @@ def _prepare_non_native_build_result(
     *,
     is_rust_transpile: bool,
     is_wasm: bool,
+    is_wasm_freestanding: bool = False,
+    wasm_opt_enabled: bool = True,
     linked: bool,
     require_linked: bool,
     linked_output_path: Path | None,
@@ -13855,17 +13857,22 @@ def _prepare_non_native_build_result(
             if resolved_linked_output.parent != Path("."):
                 resolved_linked_output.parent.mkdir(parents=True, exist_ok=True)
             tool = molt_root / "tools" / "wasm_link.py"
+            link_cmd = [
+                sys.executable,
+                str(tool),
+                "--runtime",
+                str(runtime_reloc_wasm),
+                "--input",
+                str(output_wasm),
+                "--output",
+                str(resolved_linked_output),
+            ]
+            if is_wasm_freestanding:
+                link_cmd.append("--freestanding")
+            if wasm_opt_enabled:
+                link_cmd.extend(["--optimize", "--optimize-level", "Oz"])
             link_process = subprocess.run(
-                [
-                    sys.executable,
-                    str(tool),
-                    "--runtime",
-                    str(runtime_reloc_wasm),
-                    "--input",
-                    str(output_wasm),
-                    "--output",
-                    str(resolved_linked_output),
-                ],
+                link_cmd,
                 cwd=molt_root,
                 capture_output=True,
                 text=True,
