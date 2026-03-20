@@ -3714,6 +3714,7 @@ impl WasmBackend {
         };
 
         let mut needs_field_fast = false;
+        let mut needs_alloc_resolve = false;
         let mut stateful = false;
         let mut saw_jump_or_label = false;
         let mut const_seed_seen: HashSet<String> = HashSet::new();
@@ -3757,6 +3758,14 @@ impl WasmBackend {
                 "state_switch" | "state_transition" | "state_yield" | "chan_send_yield"
                 | "chan_recv_yield" => stateful = true,
                 "jump" | "label" => saw_jump_or_label = true,
+                "alloc_task" => {
+                    let tk = op.task_kind.as_deref().unwrap_or("future");
+                    let has_prefix = tk == "generator";
+                    let has_args = op.args.as_ref().map_or(false, |a| !a.is_empty());
+                    if has_prefix || has_args {
+                        needs_alloc_resolve = true;
+                    }
+                }
                 _ => {}
             }
         }
@@ -3774,6 +3783,16 @@ impl WasmBackend {
             {
                 entry.insert(local_count);
                 local_types.push(ValType::I64);
+                local_count += 1;
+            }
+        }
+
+        if needs_alloc_resolve {
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                locals.entry("__wasm_alloc_resolve".to_string())
+            {
+                entry.insert(local_count);
+                local_types.push(ValType::I32);
                 local_count += 1;
             }
         }
@@ -8559,21 +8578,27 @@ impl WasmBackend {
                         emit_call(func, reloc_enabled, import_ids["task_new"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
-                        // Zero-initialize the generator control block using
-                        // bulk memory.fill when this task has a control
-                        // block prefix (WASM_OPTIMIZATION_PLAN Section 3.3).
-                        if payload_base > 0 {
+                        // Resolve the task handle pointer once and cache in a
+                        // local, mirroring the trampoline codepath pattern
+                        // (WASM_OPTIMIZATION_PLAN Section 3.3).
+                        let has_args = op.args.as_ref().map_or(false, |a| !a.is_empty());
+                        if payload_base > 0 || has_args {
+                            let resolve_local = locals["__wasm_alloc_resolve"];
                             func.instruction(&Instruction::LocalGet(res));
                             emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                            func.instruction(&Instruction::I32Const(0)); // fill value
-                            func.instruction(&Instruction::I32Const(payload_base)); // byte count
-                            func.instruction(&Instruction::MemoryFill(0));
+                            func.instruction(&Instruction::LocalSet(resolve_local));
+                            if payload_base > 0 {
+                                func.instruction(&Instruction::LocalGet(resolve_local)); // dest
+                                func.instruction(&Instruction::I32Const(0)); // fill value
+                                func.instruction(&Instruction::I32Const(payload_base)); // byte count
+                                func.instruction(&Instruction::MemoryFill(0));
+                            }
                         }
                         if let Some(args) = op.args.as_ref() {
+                            let resolve_local = locals["__wasm_alloc_resolve"];
                             for (i, name) in args.iter().enumerate() {
                                 let arg_local = locals[name];
-                                func.instruction(&Instruction::LocalGet(res));
-                                emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                                func.instruction(&Instruction::LocalGet(resolve_local));
                                 func.instruction(&Instruction::I32Const(
                                     payload_base + (i as i32) * 8,
                                 ));
