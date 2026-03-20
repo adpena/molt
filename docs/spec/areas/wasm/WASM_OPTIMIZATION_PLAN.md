@@ -46,11 +46,18 @@ The direct WASM emitter produces correct but unoptimized code. Key observations:
 | Optimization | Impact | Effort | Priority |
 |---|---|---|---|
 | Local variable coalescing (liveness analysis) | 5-15% size reduction | Medium | P1 |
-| Box/unbox elimination when types are statically known | 10-20% speed improvement | High | P1 |
+| Box/unbox elimination when types are statically known | DONE (cd3f98df) — eq/ne skip unbox entirely, arithmetic uses trusted unbox saving 4 insns/op | High | P1 |
 | `br_table` for large state dispatch | 2-5x faster generator resume | DONE (c1ae684a) | P1 |
 | Constant folding at WASM emission time | 3-5% size reduction | Low | P2 |
 | Dead local elimination | 2-5% size reduction | DONE (0b9c39ad) | P2 |
 | Instruction combining (adjacent operations) | 3-8% speed improvement | Medium | P2 |
+
+### 1.4 Audit Findings (2026-03-20)
+
+- 215/602 imports unused (35.6%) — handled by wasm-opt --remove-unused-module-elements post-link
+- local.tee not used anywhere — potential 1-2% instruction reduction
+- Constant materialization in helper functions could be cached in locals
+- memory.copy for buffer operations not yet implemented (P2)
 
 ### 1.3 Missing Features
 
@@ -116,6 +123,8 @@ Migration path (aligned with spec 0400 Section 13):
 - Implementation: extend `WasmBackend` type section to generate multi-return types; modify call-site lowering to consume multi-value results.
 
 **Priority**: P1 -- high impact, low risk, universally supported.
+
+**UPDATE 2026-03-20:** Groundwork complete (a7b50199). Multi-value type signatures (Types 31-34) defined. detect_multi_return_candidates analysis pass identifies safe conversion candidates. Next: modify callee return sequences and call-site destructuring.
 
 ### 3.2 Reference Types / GC Proposal (externref)
 
@@ -241,6 +250,7 @@ brotli / gzip  -->  output_stripped.wasm.br
 | **Constant deduplication** in data segments | 3-5% | Partially implemented (`data_segment_cache`) |
 | **Function deduplication** (identical code merging) | 2-5% | Not implemented |
 | **Type section deduplication** | 1-2% | Not implemented (30+ types currently defined) |
+| **Import usage audit** (unused import detection) | Diagnostic available via MOLT_WASM_IMPORT_AUDIT=1 | Available |
 
 ### 4.4 wasm-opt Pass Selection
 
