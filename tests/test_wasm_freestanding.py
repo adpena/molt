@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -535,6 +536,24 @@ def test_stub_wasi_output_section_count_preserved():
     assert n_sections_after == n_sections_before, (
         f"Section count changed: {n_sections_before} -> {n_sections_after}"
     )
+
+
+# ---------------------------------------------------------------------------
+# wasm-validate integration test
+# ---------------------------------------------------------------------------
+
+_has_wasm_validate = shutil.which("wasm-validate") is not None
+
+
+@pytest.mark.skipif(not _has_wasm_validate, reason="wasm-validate not installed")
+def test_stub_wasi_output_validates():
+    """Stubbed output must pass wasm-validate when the tool is available."""
+    wasm = _build_minimal_wasm_with_wasi_import()
+    result, n_stubbed = stub_mod.stub_wasi_imports(wasm)
+    assert n_stubbed == 1
+
+    valid, msg = stub_mod.validate_wasm(result)
+    assert valid, f"wasm-validate failed on stubbed output: {msg}"
 
 
 # ---------------------------------------------------------------------------
