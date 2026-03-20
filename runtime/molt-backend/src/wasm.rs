@@ -4603,6 +4603,12 @@ impl WasmBackend {
                             label_stack: &mut Vec<i64>,
                             label_depths: &mut HashMap<i64, usize>,
                             base_idx: usize| {
+            // Peephole state: track WASM locals whose raw (unboxed) integer
+            // value is known at compile time.  Populated by `const` ops;
+            // invalidated when a local is overwritten by a non-const op or
+            // control flow diverges.
+            let mut known_raw_ints: HashMap<u32, i64> = HashMap::new();
+
             for (rel_idx, op) in ops.iter().enumerate() {
                 let op_idx = base_idx + rel_idx;
                 match op.kind.as_str() {
@@ -4611,6 +4617,9 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(box_int(val)));
                         let local_idx = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(local_idx));
+                        // Record the known raw value for this local so
+                        // subsequent fast_int unbox can be elided.
+                        known_raw_ints.insert(local_idx, val);
                     }
                     "const_bool" => {
                         let val = op.value.unwrap();
@@ -4738,13 +4747,13 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64Add);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-                            emit_box_int_from_local(func, tmp_raw);
+                            emit_box_int_from_local_opt(func, tmp_raw, &known_raw_ints);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -4766,13 +4775,13 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64Add);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-                            emit_box_int_from_local(func, tmp_raw);
+                            emit_box_int_from_local_opt(func, tmp_raw, &known_raw_ints);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5070,13 +5079,13 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64Sub);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-                            emit_box_int_from_local(func, tmp_raw);
+                            emit_box_int_from_local_opt(func, tmp_raw, &known_raw_ints);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5098,13 +5107,13 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64Mul);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-                            emit_box_int_from_local(func, tmp_raw);
+                            emit_box_int_from_local_opt(func, tmp_raw, &known_raw_ints);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5126,13 +5135,13 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64Sub);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-                            emit_box_int_from_local(func, tmp_raw);
+                            emit_box_int_from_local_opt(func, tmp_raw, &known_raw_ints);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5154,13 +5163,13 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64Mul);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-                            emit_box_int_from_local(func, tmp_raw);
+                            emit_box_int_from_local_opt(func, tmp_raw, &known_raw_ints);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5182,13 +5191,13 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64Or);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-                            emit_box_int_from_local(func, tmp_raw);
+                            emit_box_int_from_local_opt(func, tmp_raw, &known_raw_ints);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5210,13 +5219,13 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64And);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-                            emit_box_int_from_local(func, tmp_raw);
+                            emit_box_int_from_local_opt(func, tmp_raw, &known_raw_ints);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5238,13 +5247,13 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64Xor);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-                            emit_box_int_from_local(func, tmp_raw);
+                            emit_box_int_from_local_opt(func, tmp_raw, &known_raw_ints);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5274,13 +5283,13 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64Or);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-                            emit_box_int_from_local(func, tmp_raw);
+                            emit_box_int_from_local_opt(func, tmp_raw, &known_raw_ints);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5302,13 +5311,13 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64And);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-                            emit_box_int_from_local(func, tmp_raw);
+                            emit_box_int_from_local_opt(func, tmp_raw, &known_raw_ints);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5330,13 +5339,13 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64Xor);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-                            emit_box_int_from_local(func, tmp_raw);
+                            emit_box_int_from_local_opt(func, tmp_raw, &known_raw_ints);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5358,8 +5367,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64GeS);
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
@@ -5380,7 +5389,7 @@ impl WasmBackend {
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
                             func.instruction(&Instruction::I32And);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-                            emit_box_int_from_local(func, tmp_raw);
+                            emit_box_int_from_local_opt(func, tmp_raw, &known_raw_ints);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5408,8 +5417,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64GeS);
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
@@ -5421,7 +5430,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::I64ShrS);
                             func.instruction(&Instruction::LocalSet(tmp_raw));
-                            emit_box_int_from_local(func, tmp_raw);
+                            emit_box_int_from_local_opt(func, tmp_raw, &known_raw_ints);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5452,8 +5461,8 @@ impl WasmBackend {
                         if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
@@ -5484,8 +5493,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
@@ -5516,7 +5525,7 @@ impl WasmBackend {
 
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-                            emit_box_int_from_local(func, tmp_raw);
+                            emit_box_int_from_local_opt(func, tmp_raw, &known_raw_ints);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5543,8 +5552,8 @@ impl WasmBackend {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
-                            emit_unbox_int_local_trusted(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
@@ -5571,7 +5580,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::End);
                             emit_inline_int_range_check(func, tmp_raw, &const_cache);
                             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-                            emit_box_int_from_local(func, tmp_raw);
+                            emit_box_int_from_local_opt(func, tmp_raw, &known_raw_ints);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5639,8 +5648,8 @@ impl WasmBackend {
                         if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64LtS);
                             emit_box_bool_from_i32(func);
                         } else {
@@ -5658,8 +5667,8 @@ impl WasmBackend {
                         if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64LeS);
                             emit_box_bool_from_i32(func);
                         } else {
@@ -5677,8 +5686,8 @@ impl WasmBackend {
                         if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64GtS);
                             emit_box_bool_from_i32(func);
                         } else {
@@ -5696,8 +5705,8 @@ impl WasmBackend {
                         if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
-                            emit_unbox_int_local_trusted_tee(func, lhs, tmp_lhs, &const_cache);
-                            emit_unbox_int_local_trusted_tee(func, rhs, tmp_rhs, &const_cache);
+                            emit_unbox_int_local_trusted_tee_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
+                            emit_unbox_int_local_trusted_tee_opt(func, rhs, tmp_rhs, &const_cache, &known_raw_ints);
                             func.instruction(&Instruction::I64GeS);
                             emit_box_bool_from_i32(func);
                         } else {
@@ -9751,6 +9760,31 @@ impl WasmBackend {
                         }
                     }
                     _ => {}
+                }
+
+                // --- Peephole: invalidate known_raw_ints tracking ---
+                // Control-flow ops make compile-time value tracking
+                // unreliable across branches; clear everything.
+                match op.kind.as_str() {
+                    "if" | "else" | "end_if" | "loop_start" | "loop_index_start"
+                    | "loop_break" | "loop_break_if_true" | "loop_break_if_false"
+                    | "loop_continue" | "label" | "jump" | "state_switch"
+                    | "state_transition" | "state_yield" | "chan_send_yield"
+                    | "chan_recv_yield" | "try" | "except" | "end_try" | "ret"
+                    | "ret_void" => {
+                        known_raw_ints.clear();
+                    }
+                    // `const` already recorded its value above; skip invalidation.
+                    "const" => {}
+                    // All other ops: invalidate only the output local (if any),
+                    // since only that local's value changed.
+                    _ => {
+                        if let Some(ref out) = op.out {
+                            if let Some(&out_idx) = locals.get(out.as_str()) {
+                                known_raw_ints.remove(&out_idx);
+                            }
+                        }
+                    }
                 }
             }
         };
