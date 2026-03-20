@@ -321,13 +321,13 @@ fn load_tcl_api() -> Result<&'static TclApi, String> {
                         b"Tcl_ListObjAppendElement\0",
                     )?),
                     incr_ref_count: load_optional(b"Tcl_IncrRefCount\0")
-                        .map(|sym| unsafe { std::mem::transmute(sym) }),
+                        .map(|sym| std::mem::transmute(sym)),
                     decr_ref_count: load_optional(b"Tcl_DecrRefCount\0")
-                        .map(|sym| unsafe { std::mem::transmute(sym) }),
+                        .map(|sym| std::mem::transmute(sym)),
                     db_incr_ref_count: load_optional(b"Tcl_DbIncrRefCount\0")
-                        .map(|sym| unsafe { std::mem::transmute(sym) }),
+                        .map(|sym| std::mem::transmute(sym)),
                     db_decr_ref_count: load_optional(b"Tcl_DbDecrRefCount\0")
-                        .map(|sym| unsafe { std::mem::transmute(sym) }),
+                        .map(|sym| std::mem::transmute(sym)),
                     do_one_event: std::mem::transmute(load(b"Tcl_DoOneEvent\0")?),
                     split_list: std::mem::transmute(load(b"Tcl_SplitList\0")?),
                     merge: std::mem::transmute(load(b"Tcl_Merge\0")?),
@@ -1943,9 +1943,11 @@ fn clear_filehandler_registration_locked(
     let Some(registration) = app.filehandlers.remove(&fd) else {
         return Ok(());
     };
-    for command_name in registration.commands.values() {
+    for (&mask, command_name) in &registration.commands {
+        #[cfg(any(target_arch = "wasm32", not(feature = "molt_tk_native")))]
+        let _ = mask;
         #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
-        if let Some(event_name) = filehandler_event_name(*_mask) {
+        if let Some(event_name) = filehandler_event_name(mask) {
             let clear_result = app_interp_eval_list(
                 py,
                 app,

@@ -90,7 +90,7 @@ impl SnapshotHeader {
     /// Serialize to a `serde_json::Value` with computed integrity hash.
     pub fn to_json(&self) -> serde_json::Value {
         let integrity = self.compute_integrity_hash();
-        let mut obj = serde_json::json!({
+        serde_json::json!({
             "snapshot_version": self.snapshot_version,
             "abi_version": self.abi_version,
             "target_profile": self.target_profile,
@@ -100,8 +100,7 @@ impl SnapshotHeader {
             "determinism_stamp": self.determinism_stamp,
             "init_state_size": self.init_state_size,
             "integrity_hash": integrity,
-        });
-        obj
+        })
     }
 
     /// Deserialize from a `serde_json::Value`.

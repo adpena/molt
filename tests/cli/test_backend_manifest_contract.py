@@ -111,6 +111,14 @@ def test_runtime_manifest_uses_minimal_rustpython_parser_features() -> None:
     assert set(parser_dependency["features"]) == {"location", "num-bigint"}
 
 
+def test_runtime_manifest_dedupes_unicode_names2_version() -> None:
+    runtime_manifest_path = ROOT / "runtime" / "molt-runtime" / "Cargo.toml"
+    with runtime_manifest_path.open("rb") as handle:
+        runtime_manifest = tomllib.load(handle)
+
+    assert runtime_manifest["dependencies"]["unicode_names2"] == "1.3"
+
+
 def test_runtime_manifest_declares_vfs_bundle_tar_feature() -> None:
     runtime_manifest_path = ROOT / "runtime" / "molt-runtime" / "Cargo.toml"
     with runtime_manifest_path.open("rb") as handle:
