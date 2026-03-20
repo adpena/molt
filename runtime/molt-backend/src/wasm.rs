@@ -5,11 +5,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::iter::ExactSizeIterator;
 use std::rc::Rc;
 use wasm_encoder::{
-    BlockType, CodeSection, ConstExpr, CustomSection, DataSection, DataSymbolDefinition,
+    BlockType, Catch, CodeSection, ConstExpr, CustomSection, DataSection, DataSymbolDefinition,
     ElementMode, ElementSection, ElementSegment, Elements, Encode, EntityType, ExportKind,
     ExportSection, Function, FunctionSection, ImportSection, Instruction, LinkingSection,
     MemorySection, MemoryType, Module, RawSection, RefType, SymbolTable, TableSection, TableType,
-    TypeSection, ValType,
+    TagKind, TagSection, TagType, TypeSection, ValType,
 };
 use wasmparser::{DataKind, ElementItems, ExternalKind, Operator, Parser, Payload, TypeRef};
 
@@ -38,6 +38,43 @@ const STATE_REMAP_TABLE_MAX_ENTRIES: usize = 4096;
 const STATE_REMAP_TABLE_MAX_SPARSITY: usize = 8;
 /// Minimum number of sparse remap entries before we attempt `br_table` dispatch.
 const BR_TABLE_MIN_ENTRIES: usize = 5;
+
+// ---------------------------------------------------------------------------
+// WASM Exception Handling (WASM_OPTIMIZATION_PLAN.md Section 3.6)
+//
+// Native WASM exception handling replaces the host-imported exception
+// mechanism (exception_push/exception_pending/exception_pop) with the
+// standardized WASM exception handling instructions (try_table/throw/catch).
+//
+// The exception tag carries a single i64 payload: the exception object
+// handle.  This matches type index 1 in the static type section:
+// (i64) -> ().
+//
+// Current host-call exception model:
+//   try block entry:  call exception_push   (push handler frame)
+//   after each call:  call exception_pending (poll for raised exception)
+//                     br_if to handler      (branch if pending != 0)
+//   try block exit:   call exception_pop    (pop handler frame)
+//   raise:            call raise            (set pending + unwind)
+//
+// Native WASM EH model (target):
+//   try block entry:  try_table with catch clause
+//   after each call:  (eliminated -- WASM catches automatically)
+//   try block exit:   end (implicit)
+//   raise:            throw $molt_exception <handle>
+//
+// Estimated impact: 20-40% speedup for exception-heavy code; 5-10%
+// binary size reduction from eliminating exception_pending checks.
+//
+// Gated by MOLT_WASM_NATIVE_EH=1 environment variable.
+// ---------------------------------------------------------------------------
+
+/// Type index for the exception tag payload: (i64) -> ()
+/// This is type 1 in the static type section.
+const TAG_EXCEPTION_FUNC_TYPE: u32 = 1;
+
+/// Tag index for the molt exception tag (first and only tag in the module).
+const TAG_EXCEPTION_INDEX: u32 = 0;
 
 // ---------------------------------------------------------------------------
 // Multi-value return type indices (WASM 2.0 multi-value proposal)
@@ -165,6 +202,9 @@ struct CompileFuncContext<'a> {
     table_base: u32,
     import_ids: &'a TrackedImportIds,
     reloc_enabled: bool,
+    /// Functions eligible for multi-value return optimization.
+    /// Maps function name -> number of return values (2 or 3).
+    multi_return_candidates: &'a HashMap<String, usize>,
 }
 
 trait TypeSectionExt {
@@ -1046,6 +1086,8 @@ pub struct WasmBackend {
     data_segment_cache: BTreeMap<Vec<u8>, DataSegmentRef>,
     molt_main_index: Option<u32>,
     options: WasmCompileOptions,
+    /// Number of tail calls emitted via `return_call` (WASM tail calls proposal).
+    tail_calls_emitted: usize,
 }
 
 impl Default for WasmBackend {
@@ -1078,6 +1120,7 @@ impl WasmBackend {
             data_segment_cache: BTreeMap::new(),
             molt_main_index: None,
             options,
+            tail_calls_emitted: 0,
         }
     }
 
@@ -1142,9 +1185,8 @@ impl WasmBackend {
         for func_ir in &ir.functions {
             let ops = &func_ir.ops;
             for (i, op) in ops.iter().enumerate() {
-                // Look for "call" or "call_internal" ops that produce a result.
-                let is_call = op.kind == "call" || op.kind == "call_internal";
-                if !is_call {
+                // Only consider call_internal (user-defined functions we control).
+                if op.kind != "call_internal" {
                     continue;
                 }
                 let Some(callee) = op.s_value.as_ref() else {
@@ -1197,9 +1239,57 @@ impl WasmBackend {
             }
         }
 
-        candidate_arity
+        let call_site_candidates: HashMap<String, usize> = candidate_arity
             .into_iter()
             .filter_map(|(name, arity)| arity.map(|a| (name, a)))
+            .collect();
+
+        // Phase 2: Verify the callee function body — every `ret` must return
+        // a variable that was produced by a `tuple_new` with the expected arity.
+        // This ensures the callee genuinely always returns a fixed-size tuple.
+        let func_map: HashMap<&str, &FunctionIR> = ir
+            .functions
+            .iter()
+            .map(|f| (f.name.as_str(), f))
+            .collect();
+
+        call_site_candidates
+            .into_iter()
+            .filter(|(name, expected_arity)| {
+                let Some(func_ir) = func_map.get(name.as_str()) else {
+                    return false;
+                };
+                // Track which variables are produced by tuple_new of the right arity.
+                let mut tuple_new_vars: HashSet<String> = HashSet::new();
+                let mut has_any_ret = false;
+                let mut all_rets_ok = true;
+
+                for op in &func_ir.ops {
+                    match op.kind.as_str() {
+                        "tuple_new" => {
+                            if let Some(args) = &op.args {
+                                if args.len() == *expected_arity {
+                                    if let Some(out) = &op.out {
+                                        tuple_new_vars.insert(out.clone());
+                                    }
+                                }
+                            }
+                        }
+                        "ret" => {
+                            has_any_ret = true;
+                            match &op.var {
+                                Some(var) if tuple_new_vars.contains(var) => {}
+                                _ => {
+                                    all_rets_ok = false;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                has_any_ret && all_rets_ok
+            })
             .collect()
     }
 
@@ -1214,11 +1304,25 @@ impl WasmBackend {
         }
         crate::inline_functions(&mut ir);
 
-        // Multi-value return candidate detection (§3.1 groundwork).
-        // This analysis identifies functions whose call sites always
-        // destructure the result via 2-3 consecutive tuple_index ops,
-        // making them eligible for multi-value return in a future pass.
-        let _multi_return_candidates = Self::detect_multi_return_candidates(&ir);
+        // Multi-value return candidate detection (§3.1).
+        // This analysis identifies internal functions whose call sites always
+        // destructure the result via 2-3 consecutive tuple_index ops AND whose
+        // body always returns via tuple_new of the matching arity.
+        let multi_return_candidates = Self::detect_multi_return_candidates(&ir);
+
+        if std::env::var("MOLT_WASM_IMPORT_AUDIT").as_deref() == Ok("1")
+            && !multi_return_candidates.is_empty()
+        {
+            eprintln!(
+                "[molt-wasm-multi-return] {} candidate(s) detected:",
+                multi_return_candidates.len()
+            );
+            let mut sorted: Vec<_> = multi_return_candidates.iter().collect();
+            sorted.sort_by_key(|(name, _)| name.clone());
+            for (name, arity) in &sorted {
+                eprintln!("  - {name} (returns {arity} values)");
+            }
+        }
 
         // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
         let mut func_trampoline_spec: BTreeMap<String, (usize, bool)> = BTreeMap::new();
@@ -2424,6 +2528,42 @@ impl WasmBackend {
                 );
                 entry.insert(next_type_idx);
                 next_type_idx += 1;
+            }
+        }
+
+        // Multi-value return type signatures for candidate functions.
+        // Maps (param_count, return_count) -> type index.
+        let mut multi_return_type_map: HashMap<(usize, usize), u32> = HashMap::new();
+        {
+            // Collect unique (param_count, return_count) pairs from candidates.
+            let func_param_counts: HashMap<&str, usize> = ir
+                .functions
+                .iter()
+                .map(|f| (f.name.as_str(), f.params.len()))
+                .collect();
+            let mut needed: Vec<(usize, usize)> = Vec::new();
+            for (name, ret_count) in &multi_return_candidates {
+                if let Some(&param_count) = func_param_counts.get(name.as_str()) {
+                    let key = (param_count, *ret_count);
+                    if !multi_return_type_map.contains_key(&key) {
+                        multi_return_type_map.insert(key, next_type_idx);
+                        needed.push(key);
+                        next_type_idx += 1;
+                    }
+                }
+            }
+            // Sort for deterministic type section ordering.
+            needed.sort();
+            // Re-assign indices in sorted order.
+            let base = next_type_idx - needed.len() as u32;
+            for (i, key) in needed.iter().enumerate() {
+                multi_return_type_map.insert(*key, base + i as u32);
+            }
+            for (param_count, ret_count) in &needed {
+                self.types.function(
+                    std::iter::repeat_n(ValType::I64, *param_count),
+                    std::iter::repeat_n(ValType::I64, *ret_count),
+                );
             }
         }
 
@@ -3648,10 +3788,16 @@ impl WasmBackend {
             import_ids: &import_ids,
             reloc_enabled,
             table_base,
+            multi_return_candidates: &multi_return_candidates,
         };
         for func_ir in &ir.functions {
             let type_idx = if func_ir.name.ends_with("_poll") {
                 2
+            } else if let Some(&ret_count) = multi_return_candidates.get(&func_ir.name) {
+                let key = (func_ir.params.len(), ret_count);
+                *multi_return_type_map.get(&key).unwrap_or(
+                    user_type_map.get(&func_ir.params.len()).unwrap_or(&0),
+                )
             } else {
                 *user_type_map.get(&func_ir.params.len()).unwrap_or(&0)
             };
@@ -9759,6 +9905,42 @@ impl WasmBackend {
                             func.instruction(&Instruction::BrIf(depth as u32));
                         }
                     }
+                    // ---------------------------------------------------------------
+                    // memory_copy: bulk linear-memory copy (WASM 2.0 bulk-memory op)
+                    //
+                    // IR signature:  memory_copy(dst, src, len)
+                    //   dst, src  – i64 boxed integers holding i32 linear-memory byte
+                    //               offsets (e.g. from handle_resolve)
+                    //   len       – i64 boxed integer holding the byte count
+                    //
+                    // Emits:  memory.copy  (dst_mem=0, src_mem=0)
+                    //         stack: [dst:i32, src:i32, len:i32]
+                    //
+                    // This intrinsic enables the IR to emit efficient buffer-to-buffer
+                    // copies without round-tripping through host imports.  See
+                    // WASM_OPTIMIZATION_PLAN.md Section 3.3.
+                    // ---------------------------------------------------------------
+                    "memory_copy" => {
+                        let args = op.args.as_ref().unwrap();
+                        debug_assert!(
+                            args.len() == 3,
+                            "memory_copy requires exactly 3 args (dst, src, len)"
+                        );
+                        let dst = locals[&args[0]];
+                        let src = locals[&args[1]];
+                        let len = locals[&args[2]];
+                        // Unbox each i64 value to i32 for the memory.copy instruction.
+                        func.instruction(&Instruction::LocalGet(dst));
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::LocalGet(src));
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::LocalGet(len));
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::MemoryCopy {
+                            src_mem: 0,
+                            dst_mem: 0,
+                        });
+                    }
                     _ => {}
                 }
 
@@ -10991,6 +11173,19 @@ fn emit_call(func: &mut Function, reloc_enabled: bool, func_index: u32) {
         func.raw(bytes);
     } else {
         func.instruction(&Instruction::Call(func_index));
+    }
+}
+
+/// Emit a `return_call` instruction (WASM tail calls proposal).
+/// The callee's return value becomes the caller's return value without growing the stack.
+fn emit_return_call(func: &mut Function, reloc_enabled: bool, func_index: u32) {
+    if reloc_enabled {
+        let mut bytes = Vec::with_capacity(6);
+        bytes.push(0x12); // return_call opcode
+        encode_u32_leb128_padded(func_index, &mut bytes);
+        func.raw(bytes);
+    } else {
+        func.instruction(&Instruction::ReturnCall(func_index));
     }
 }
 
